@@ -1606,6 +1606,13 @@ export interface Translations {
       reorder: (label: string) => string
       toggle: (label: string, open: boolean) => string
       back: string
+      topicProjectAction: string
+      topicProjectTitle: string
+      topicProjectDesc: string
+      topicProjectPlaceholder: string
+      topicAliasPlaceholder: string
+      topicLink: string
+      topicUnlink: string
     }
     newSessionIn: (label: string) => string
     showMoreIn: (count: number, label: string) => string

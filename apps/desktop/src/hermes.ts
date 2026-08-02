@@ -143,6 +143,7 @@ export type {
   ComputerUseStatus,
   ConfigFieldSchema,
   ConfigSchemaResponse,
+  ConversationBindingInfo,
   CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,
@@ -394,6 +395,7 @@ export async function listSessions(
 export interface SessionSourceFilter {
   source?: string
   excludeSources?: string[]
+  includeOriginSources?: string[]
 }
 
 export async function listAllProfileSessions(
@@ -410,10 +412,14 @@ export async function listAllProfileSessions(
     ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
     : ''
 
+  const originParam = filter.includeOriginSources?.length
+    ? `&include_origin_sources=${encodeURIComponent(filter.includeOriginSources.join(','))}`
+    : ''
+
   const result = await window.hermesDesktop.api<PaginatedSessions>({
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}${originParam}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 
@@ -465,6 +471,7 @@ export interface SidebarSessionsRequest {
   cronLimit: number
   messagingLimit: number
   messagingExclude: string[]
+  messagingOriginSources: string[]
 }
 
 // The batched /sidebar endpoint shipped later than the per-slice route, so a
@@ -514,7 +521,8 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
     }),
     listAllProfileSessions(req.cronLimit, 1, 'exclude', 'recent', 'all', { source: 'cron' }),
     listAllProfileSessions(req.messagingLimit, 1, 'exclude', 'recent', 'all', {
-      excludeSources: req.messagingExclude
+      excludeSources: req.messagingExclude,
+      includeOriginSources: req.messagingOriginSources
     })
   ])
 
@@ -549,6 +557,10 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 
   if (req.messagingExclude.length) {
     params.set('messaging_exclude', req.messagingExclude.join(','))
+  }
+
+  if (req.messagingOriginSources.length) {
+    params.set('messaging_origin_sources', req.messagingOriginSources.join(','))
   }
 
   let result: SidebarSessionsResponse

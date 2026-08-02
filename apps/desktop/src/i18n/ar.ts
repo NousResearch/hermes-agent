@@ -1610,7 +1610,14 @@ export const ar = defineLocale({
       enter: label => `فتح ${label}`,
       reorder: label => `إعادة ترتيب ${label}`,
       toggle: (label, open) => `${open ? 'إظهار' : 'إخفاء'} جلسات ${label}`,
-      back: 'كل المشاريع'
+      back: 'كل المشاريع',
+      topicProjectAction: 'ربط المشروع',
+      topicProjectTitle: 'مشروع الموضوع',
+      topicProjectDesc: 'اربط موضوع المراسلة هذا بمشروع Hermes واحد. تبقى ردود سطح المكتب في سطح المكتب.',
+      topicProjectPlaceholder: 'اختر مشروعًا',
+      topicAliasPlaceholder: 'اسم محلي للموضوع',
+      topicLink: 'حفظ الربط',
+      topicUnlink: 'إلغاء الربط'
     },
     newSessionIn: label => `جلسة جديدة في ${label}`,
     showMoreIn: (count, label) => `إظهار ${count} أخرى في ${label}`,

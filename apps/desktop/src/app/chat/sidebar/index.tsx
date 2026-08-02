@@ -28,7 +28,6 @@ import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
-import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $cronJobs } from '@/store/cron'
 import { $bindings } from '@/store/keybinds'
@@ -110,6 +109,11 @@ import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
+import {
+  buildMessagingGroups,
+  type MessagingConversationGroup,
+  sessionConversationIdentity
+} from './messaging-groups'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
@@ -891,50 +895,46 @@ export function ChatSidebar({
       return []
     }
 
-    const bySource = new Map<string, SessionInfo[]>()
-    // Rows this platform owns that the Pinned section is showing instead. The
-    // backend's per-platform total counts them, so discount it or "load more"
-    // promises rows that will never appear.
-    const pinnedBySource = new Map<string, number>()
+    const visibleSessions: SessionInfo[] = []
+    const pinnedByPlatform: Record<string, number> = {}
 
     for (const session of messagingSessions) {
-      const sourceId = normalizeSessionSource(session.source)
-
-      if (!sourceId) {
-        continue
-      }
-
-      if (isPinnedSession(session)) {
-        pinnedBySource.set(sourceId, (pinnedBySource.get(sourceId) ?? 0) + 1)
+      if (!isPinnedSession(session)) {
+        visibleSessions.push(session)
 
         continue
       }
 
-      const list = bySource.get(sourceId) ?? []
-      list.push(session)
-      bySource.set(sourceId, list)
+      const sourceId = sessionConversationIdentity(session)?.platform
+
+      if (sourceId) {
+        pinnedByPlatform[sourceId] = (pinnedByPlatform[sourceId] ?? 0) + 1
+      }
     }
 
-    return [...bySource.entries()]
-      .map(([sourceId, list]) => {
-        const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
-        const known = messagingPlatformTotals[sourceId]
-        const unpinnedKnown = known == null ? null : Math.max(0, known - (pinnedBySource.get(sourceId) ?? 0))
-        const total = Math.max(ordered.length, unpinnedKnown ?? 0)
+    const visiblePlatformTotals = Object.fromEntries(
+      Object.entries(messagingPlatformTotals).map(([sourceId, total]) => [
+        sourceId,
+        Math.max(0, total - (pinnedByPlatform[sourceId] ?? 0))
+      ])
+    )
 
-        return {
-          // Known exact total → more exist iff total exceeds loaded; otherwise
-          // the seed fetch was capped, so assume more until a per-platform load
-          // resolves the count.
-          hasMore: unpinnedKnown != null ? unpinnedKnown > ordered.length : messagingTruncated,
-          label: sessionSourceLabel(sourceId) ?? sourceId,
-          sessions: ordered,
-          sourceId,
-          total
-        }
-      })
-      .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession])
+    return buildMessagingGroups({
+      platformTotals: visiblePlatformTotals,
+      projectProfile: showAllProfiles ? null : normalizeProfileKey(profileScope),
+      projects,
+      sessions: visibleSessions,
+      truncated: messagingTruncated
+    })
+  }, [
+    messagingSessions,
+    messagingPlatformTotals,
+    messagingTruncated,
+    projects,
+    profileScope,
+    showAllProfiles,
+    isPinnedSession
+  ])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.
@@ -1456,6 +1456,21 @@ export function ChatSidebar({
               messagingGroups.map(group => {
                 const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
                 const shownSessions = group.sessions.slice(0, visible)
+                const shownSessionIds = new Set(shownSessions.map(session => session.id))
+
+                const shownConversations = group.conversations
+                  .map(conversation => ({
+                    ...conversation,
+                    topics: conversation.topics
+                      .map(topic => ({
+                        ...topic,
+                        sessions: topic.sessions.filter(session => shownSessionIds.has(session.id))
+                      }))
+                      .filter(topic => topic.sessions.length > 0)
+                  }))
+                  .filter(conversation => conversation.topics.length > 0)
+
+                const shownFlatSessions = group.flatSessions.filter(session => shownSessionIds.has(session.id))
                 // More to show if rows are hidden behind the cap, or the backend
                 // still has older threads on disk.
                 const canRevealMore = visible < group.sessions.length || group.hasMore
@@ -1483,6 +1498,8 @@ export function ChatSidebar({
                         platformName={group.label}
                       />
                     }
+                    labelMeta={String(shownSessions.length)}
+                    messagingConversations={shownConversations}
                     onArchiveSession={onArchiveSession}
                     onDeleteSession={onDeleteSession}
                     onResumeSession={onResumeSession}
@@ -1490,8 +1507,9 @@ export function ChatSidebar({
                     onTogglePin={pinSession}
                     open={messagingOpenIds.includes(group.sourceId)}
                     pinned={false}
+                    projects={projects}
                     rootClassName="shrink-0 p-0"
-                    sessions={shownSessions}
+                    sessions={shownFlatSessions}
                     workingSessionIdSet={workingSessionIdSet}
                   />
                 )
@@ -1525,6 +1543,8 @@ export function ChatSidebar({
 interface MessagingSection {
   sourceId: string
   label: string
+  conversations: MessagingConversationGroup[]
+  flatSessions: SessionInfo[]
   sessions: SessionInfo[]
   total: number
   hasMore: boolean

@@ -95,6 +95,33 @@ Each session is tagged with its source platform:
 | `cron` | Scheduled cron jobs |
 | `batch` | Batch processing runs |
 
+### Desktop Messaging Topics and Projects
+
+Hermes Desktop groups messaging sessions by their stored origin when the
+backend has enough metadata:
+
+1. platform, such as Telegram, Slack, Discord, or Matrix
+2. conversation or chat
+3. topic or thread
+4. the sessions inside that topic
+
+Rows created before origin metadata existed, or rows with malformed origin
+metadata, continue to appear as ordinary flat messaging sessions. Topic labels
+prefer a local Project-binding alias, then the platform topic name, then the
+chat/display name with a thread-id fallback.
+
+In Desktop, a topic/thread can be linked to one first-class Hermes Project.
+That binding is stored per profile in `projects.db` by
+`platform + chat_id + thread_id`; an empty thread is treated as no thread.
+After linking, historical sessions from that same messaging topic appear in the
+Project even when they have no workspace folder (`cwd`). If a session matches a
+Project folder and a topic binding, it appears once.
+
+Phase 1 is organization only. Linking a Telegram topic or any other messaging
+thread to a Project does **not** route Desktop replies back to Telegram, create
+new platform threads from Desktop, or change outbound delivery. Reply in the
+messaging platform when you want the response to go there.
+
 ## CLI Session Resume
 
 Resume previous conversations from the CLI using `--continue` or `--resume`:

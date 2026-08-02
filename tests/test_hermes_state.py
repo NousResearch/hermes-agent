@@ -1770,6 +1770,33 @@ class TestExcludeSources:
         assert "s3" in ids
         assert "s2" not in ids
 
+    def test_list_sessions_rich_keeps_excluded_source_with_matching_origin(self, db):
+        db.create_session("local", "tui")
+        db.record_gateway_session_peer(
+            "local",
+            session_key="telegram:chat:topic",
+            source="tui",
+            origin_json=json.dumps({"platform": "Telegram", "chat_id": "chat", "thread_id": "topic"}),
+        )
+        db.create_session("plain", "tui")
+
+        sessions = db.list_sessions_rich(
+            exclude_sources=["tui"],
+            include_origin_sources=["telegram"],
+        )
+
+        assert [session["id"] for session in sessions] == ["local"]
+        assert db.session_count(
+            exclude_sources=["tui"],
+            include_origin_sources=["telegram"],
+        ) == 1
+        assert [
+            session["id"]
+            for session in db.list_sessions_rich(
+                source="telegram",
+                include_origin_sources=["telegram"],
+            )
+        ] == ["local"]
 
 
 

@@ -845,6 +845,44 @@ class TestWebServerEndpoints:
             {"index": 0, "error": "session id is required"}
         ]
 
+    def test_profiles_sessions_sidebar_includes_messaging_origin_handoff(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for sid, source in (
+                ("sb-desktop", "desktop"),
+                ("sb-handoff", "tui"),
+                ("sb-telegram", "telegram"),
+            ):
+                db.create_session(session_id=sid, source=source)
+                db.append_message(session_id=sid, role="user", content="hi")
+            db.record_gateway_session_peer(
+                "sb-handoff",
+                session_key="telegram:chat:topic",
+                source="tui",
+                origin_json=json.dumps(
+                    {"platform": "telegram", "chat_id": "chat", "thread_id": "topic"}
+                ),
+            )
+        finally:
+            db.close()
+
+        response = self.client.get(
+            "/api/profiles/sessions/sidebar"
+            "?recents_profile=all&recents_limit=20&recents_exclude=telegram"
+            "&messaging_limit=100"
+            "&messaging_exclude=cron,cli,codex,desktop,gateway,local,tui"
+            "&messaging_origin_sources=telegram,discord"
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        messaging_ids = {session["id"] for session in data["messaging"]["sessions"]}
+        assert "sb-telegram" in messaging_ids
+        assert "sb-handoff" in messaging_ids
+        assert "sb-desktop" not in messaging_ids
+
 
 
 

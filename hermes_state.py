@@ -5273,6 +5273,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         source: str = None,
         sources: List[str] = None,
         exclude_sources: List[str] = None,
+        include_origin_sources: List[str] = None,
         cwd_prefix: str = None,
         limit: int = 20,
         offset: int = 0,
@@ -5366,15 +5367,34 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_sources = [source] if source else list(sources or [])
         if include_sources:
             placeholders = ",".join("?" for _ in include_sources)
-            where_clauses.append(f"s.source IN ({placeholders})")
-            params.extend(include_sources)
+            if include_origin_sources:
+                origin_placeholders = ",".join("?" for _ in include_origin_sources)
+                where_clauses.append(
+                    f"(s.source IN ({placeholders}) OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(s.origin_json) "
+                    "THEN json_extract(s.origin_json, '$.platform') END, ''))) "
+                    f"IN ({origin_placeholders}))"
+                )
+                params.extend([*include_sources, *(item.lower().strip() for item in include_origin_sources)])
+            else:
+                where_clauses.append(f"s.source IN ({placeholders})")
+                params.extend(include_sources)
         if session_key:
             where_clauses.append("s.session_key = ?")
             params.append(session_key)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
-            where_clauses.append(f"s.source NOT IN ({placeholders})")
-            params.extend(exclude_sources)
+            source_clause = f"s.source NOT IN ({placeholders})"
+            source_params = list(exclude_sources)
+            if include_origin_sources:
+                origin_placeholders = ",".join("?" for _ in include_origin_sources)
+                source_clause = (
+                    f"({source_clause} OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(s.origin_json) "
+                    "THEN json_extract(s.origin_json, '$.platform') END, ''))) "
+                    f"IN ({origin_placeholders}))"
+                )
+                source_params.extend(item.lower().strip() for item in include_origin_sources)
+            where_clauses.append(source_clause)
+            params.extend(source_params)
         if cwd_prefix:
             clause, clause_params = _cwd_prefix_clause(cwd_prefix)
             where_clauses.append(clause)
@@ -7125,6 +7145,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         archived_only: bool = False,
         exclude_children: bool = False,
         exclude_sources: List[str] = None,
+        include_origin_sources: List[str] = None,
     ) -> int:
         """Count sessions, optionally filtered by source.
 
@@ -7152,12 +7173,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_sources = [source] if source else list(sources or [])
         if include_sources:
             placeholders = ",".join("?" for _ in include_sources)
-            where_clauses.append(f"s.source IN ({placeholders})")
-            params.extend(include_sources)
+            if include_origin_sources:
+                origin_placeholders = ",".join("?" for _ in include_origin_sources)
+                where_clauses.append(
+                    f"(s.source IN ({placeholders}) OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(s.origin_json) "
+                    "THEN json_extract(s.origin_json, '$.platform') END, ''))) "
+                    f"IN ({origin_placeholders}))"
+                )
+                params.extend([*include_sources, *(item.lower().strip() for item in include_origin_sources)])
+            else:
+                where_clauses.append(f"s.source IN ({placeholders})")
+                params.extend(include_sources)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
-            where_clauses.append(f"s.source NOT IN ({placeholders})")
-            params.extend(exclude_sources)
+            source_clause = f"s.source NOT IN ({placeholders})"
+            source_params = list(exclude_sources)
+            if include_origin_sources:
+                origin_placeholders = ",".join("?" for _ in include_origin_sources)
+                source_clause = (
+                    f"({source_clause} OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(s.origin_json) "
+                    "THEN json_extract(s.origin_json, '$.platform') END, ''))) "
+                    f"IN ({origin_placeholders}))"
+                )
+                source_params.extend(item.lower().strip() for item in include_origin_sources)
+            where_clauses.append(source_clause)
+            params.extend(source_params)
         if cwd_prefix:
             clause, clause_params = _cwd_prefix_clause(cwd_prefix)
             where_clauses.append(clause)

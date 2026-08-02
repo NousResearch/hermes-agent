@@ -223,7 +223,8 @@ describe('refreshSessions batches slices into one request', () => {
       expect.objectContaining({
         recentsProfile: 'work',
         recentsExclude: expect.arrayContaining(['cron']),
-        messagingExclude: expect.arrayContaining(['cron'])
+        messagingExclude: expect.arrayContaining(['cron']),
+        messagingOriginSources: expect.arrayContaining(['telegram', 'discord'])
       })
     )
   })
@@ -247,5 +248,41 @@ describe('refreshSessions batches slices into one request', () => {
     })
 
     expect(getCronJobs).toHaveBeenLastCalledWith('all')
+  })
+
+  it('selects an externally-originated local continuation into the messaging slice', async () => {
+    const handoff = row('handoff', {
+      source: 'tui',
+      origin_json: JSON.stringify({ platform: 'telegram', chat_id: 'chat', thread_id: 'topic' })
+    })
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }, [], [handoff]))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['handoff'])
+  })
+
+  it('pages a platform through direct and externally-originated local rows', async () => {
+    const handoff = row('handoff', {
+      source: 'desktop',
+      origin_json: JSON.stringify({ platform: 'telegram', chat_id: 'chat', thread_id: 'topic' })
+    })
+
+    listAllProfileSessions.mockResolvedValue({ sessions: [row('direct', { source: 'telegram' }), handoff], total: 2 })
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.loadMoreMessagingForPlatform('telegram')
+    })
+
+    expect(listAllProfileSessions).toHaveBeenCalledWith(expect.any(Number), 1, 'exclude', 'recent', 'all', {
+      source: 'telegram',
+      includeOriginSources: ['telegram']
+    })
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['direct', 'handoff'])
   })
 })

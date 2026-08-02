@@ -188,6 +188,26 @@ def test_reap_fails_open_when_is_still_current_raises(monkeypatch):
     assert calls == [True]
 
 
+def test_reap_skips_empty_task_id(monkeypatch):
+    """ProcessSession.task_id defaults to "" — a blank turn id must never
+    fan out into killing unrelated sessionless processes (#76188 review)."""
+    calls = []
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda *_a, **_k: calls.append(True) or 1,
+    )
+
+    killed = _reap_gateway_turn_processes(
+        "",
+        frozenset(),
+        source="gateway_turn_timeout",
+    )
+
+    assert killed == 0
+    assert calls == []
+
+
 def test_timeout_abandon_propagates_is_still_current_to_the_reap(monkeypatch):
     agent = _IdleAgent()
     worker_done, timeout_fired, cleanup_lock = _state()

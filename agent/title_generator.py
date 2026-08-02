@@ -29,6 +29,9 @@ from agent.message_content import flatten_message_text
 
 logger = logging.getLogger(__name__)
 
+_title_in_flight: set[str] = set()
+_title_in_flight_lock = threading.Lock()
+
 # Callback signature: (task_name, exception) -> None. Used to surface
 # auxiliary failures to the user through AIAgent._emit_auxiliary_failure
 # so silent-drops (e.g. OpenRouter 402 exhausting the fallback chain)
@@ -724,16 +727,34 @@ def maybe_auto_title(
 
     apply_instant_title(session_db, session_id, user_message, title_callback)
 
-    thread = threading.Thread(
-        target=auto_title_session,
-        args=(session_db, session_id, user_message),
-        kwargs={
-            "failure_callback": failure_callback,
-            "main_runtime": main_runtime,
-            "title_callback": title_callback,
-            "runtime_validator": runtime_validator,
-        },
-        daemon=True,
-        name="auto-title",
-    )
-    thread.start()
+    with _title_in_flight_lock:
+        if session_id in _title_in_flight:
+            return
+        _title_in_flight.add(session_id)
+
+    def _run() -> None:
+        try:
+            auto_title_session(
+                session_db,
+                session_id,
+                user_message,
+                failure_callback=failure_callback,
+                main_runtime=main_runtime,
+                title_callback=title_callback,
+                runtime_validator=runtime_validator,
+            )
+        finally:
+            with _title_in_flight_lock:
+                _title_in_flight.discard(session_id)
+
+    try:
+        thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name="auto-title",
+        )
+        thread.start()
+    except Exception:
+        with _title_in_flight_lock:
+            _title_in_flight.discard(session_id)
+        raise

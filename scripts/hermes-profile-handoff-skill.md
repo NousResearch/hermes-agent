@@ -81,8 +81,8 @@ set -euo pipefail
 declare -A M=(
     [default]="/home/kensei/repos/KenseiAgent/.venv/bin/hermes"
     [kensei]="/home/kensei/repos/KenseiAgent/.venv/bin/hermes"
-    [moss]="/home/kensei/repos/hermes-agent-upstream/.venv/bin/hermes"
-    [upstream]="/home/kensei/repos/hermes-agent-upstream/.venv/bin/hermes"
+    [moss]="/home/kensei/repos/hermes-agent-vanilla/.venv/bin/hermes"
+    [upstream]="/home/kensei/repos/hermes-agent-vanilla/.venv/bin/hermes"
 )
 P="${HERMES_PROFILE:-}"
 [[ -z "$P" && -f /home/kensei/.hermes/profile ]] && P=$(cat /home/kensei/.hermes/profile)

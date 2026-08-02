@@ -108,10 +108,15 @@ from plugins.memory.holographic import holographic as hrr
 
 
 @pytest.fixture
-def hoisted_retriever():
+def hoisted_retriever(tmp_path):
     """30 facts with HRR vectors, default dim (smaller dims trip an
-    inhomogeneous-shape edge in the fact encoder)."""
-    store = MemoryStore(":memory:")
+    inhomogeneous-shape edge in the fact encoder).
+
+    NOTE: a real tmp_path db, NOT ":memory:" — MemoryStore resolves the
+    path and shares one process-wide connection per file, so ":memory:"
+    becomes a literal ./:memory: file that leaks state across runs (and
+    the NULL-vector test below would permanently corrupt it)."""
+    store = MemoryStore(str(tmp_path / "hoist_store.db"))
     for i in range(30):
         store.add_fact(
             content=f"deploy target {i} setting alpha beta gamma option {i % 7}",

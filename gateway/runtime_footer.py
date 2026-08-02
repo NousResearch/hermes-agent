@@ -29,8 +29,55 @@ from __future__ import annotations
 import os
 from typing import Any, Iterable, Optional
 
+from utils import base_url_host_matches
+
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _DEFAULT_SEPARATOR = " · "
+_CREDIT_WARNING = "💸 consuming credits"
+
+# Providers whose normal Hermes route is usage-metered. OAuth/subscription
+# routes deliberately use distinct slugs (for example ``openai-codex`` and
+# ``xai-oauth``) and are therefore excluded. Host matching catches generic
+# OpenAI-compatible routes that actually terminate at a metered provider.
+_METERED_PROVIDER_SLUGS = frozenset({
+    "ai-gateway",
+    "anthropic",
+    "azure-openai",
+    "bedrock",
+    "cohere",
+    "deepinfra",
+    "deepseek",
+    "fireworks",
+    "gemini",
+    "google",
+    "groq",
+    "mistral",
+    "moonshot",
+    "novita",
+    "nvidia",
+    "openai",
+    "openrouter",
+    "perplexity",
+    "together",
+    "vertex",
+    "xai",
+})
+_METERED_PROVIDER_HOSTS = (
+    "openrouter.ai",
+    "api.openai.com",
+    "api.anthropic.com",
+    "api.x.ai",
+    "api.deepseek.com",
+    "api.groq.com",
+    "api.mistral.ai",
+    "api.together.ai",
+    "api.together.xyz",
+    "fireworks.ai",
+    "perplexity.ai",
+    "generativelanguage.googleapis.com",
+    "api.cohere.com",
+    "api.deepinfra.com",
+)
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -60,6 +107,18 @@ def _model_short(model: Optional[str]) -> str:
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def provider_consumes_credits(
+    provider: Optional[str],
+    base_url: Optional[str] = None,
+) -> bool:
+    """Return whether the effective backend is a known usage-metered route."""
+    slug = str(provider or "").strip().lower().replace("_", "-")
+    if slug in _METERED_PROVIDER_SLUGS:
+        return True
+    url = str(base_url or "")
+    return any(base_url_host_matches(url, host) for host in _METERED_PROVIDER_HOSTS)
 
 
 def reasoning_effort_label(reasoning_config: dict[str, Any] | None) -> str:
@@ -130,6 +189,8 @@ def format_runtime_footer(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
     cwd: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     fast_mode: bool = False,
@@ -177,9 +238,10 @@ def format_runtime_footer(
                 parts.append(short)
         # Unknown field names are silently ignored.
 
-    if not parts:
-        return ""
-    return separator.join(parts)
+    footer = separator.join(parts)
+    if provider_consumes_credits(provider, base_url):
+        return f"{footer}\n{_CREDIT_WARNING}" if footer else _CREDIT_WARNING
+    return footer
 
 
 def build_footer_line(
@@ -189,6 +251,8 @@ def build_footer_line(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
     cwd: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     fast_mode: bool = False,
@@ -206,6 +270,8 @@ def build_footer_line(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
+        provider=provider,
+        base_url=base_url,
         cwd=cwd,
         reasoning_effort=reasoning_effort,
         fast_mode=fast_mode,

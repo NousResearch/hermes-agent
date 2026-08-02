@@ -14,6 +14,7 @@ from gateway.runtime_footer import (
     _reasoning_short,
     build_footer_line,
     format_runtime_footer,
+    provider_consumes_credits,
     reasoning_effort_label,
     resolve_footer_config,
 )
@@ -162,6 +163,48 @@ def test_format_footer_fast_standalone_without_model_field():
         separator=" • ",
     )
     assert out == "⚡️ • 37%"
+
+
+@pytest.mark.parametrize(
+    "provider,base_url,expected",
+    [
+        ("openrouter", None, True),
+        ("openai", "https://openrouter.ai/api/v1", True),
+        ("openai", None, True),
+        ("anthropic", None, True),
+        ("openai-codex", None, False),
+        ("xai-oauth", None, False),
+        ("ollama", None, False),
+        (None, None, False),
+    ],
+)
+def test_provider_consumes_credits(provider, base_url, expected):
+    assert provider_consumes_credits(provider, base_url) is expected
+
+
+def test_format_footer_puts_metered_provider_warning_on_second_line():
+    out = format_runtime_footer(
+        model="gpt-5.6-sol",
+        provider="openrouter",
+        context_tokens=37,
+        context_length=100,
+        reasoning_effort="medium",
+        fields=("model", "reasoning_effort", "context_pct"),
+        separator=" • ",
+    )
+    assert out == "gpt-5.6-sol • 🧠 med • 37%\n💸 consuming credits"
+
+
+def test_format_footer_does_not_warn_for_codex_oauth():
+    out = format_runtime_footer(
+        model="gpt-5.6-sol",
+        provider="openai-codex",
+        context_tokens=37,
+        context_length=100,
+        fields=("model", "context_pct"),
+        separator=" • ",
+    )
+    assert out == "gpt-5.6-sol • 37%"
 
 
 # ---------------------------------------------------------------------------

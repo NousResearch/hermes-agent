@@ -188,3 +188,26 @@ class TestGatewaySessionEffectiveModel:
         assert ast.dump(source_keyword) == ast.dump(
             ast.parse("source", mode="eval").body
         )
+
+    def test_runtime_footer_uses_effective_provider_and_base_url(self):
+        """Credit warnings follow the backend that answered this turn."""
+        tree = ast.parse(
+            textwrap.dedent(
+                inspect.getsource(gateway_run.GatewayRunner._handle_message_with_agent)
+            )
+        )
+        footer_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_bfl"
+        ]
+        assert len(footer_calls) == 1
+        keywords = {kw.arg: kw.value for kw in footer_calls[0].keywords}
+        assert ast.dump(keywords["provider"]) == ast.dump(
+            ast.parse('agent_result.get("provider")', mode="eval").body
+        )
+        assert ast.dump(keywords["base_url"]) == ast.dump(
+            ast.parse('agent_result.get("base_url")', mode="eval").body
+        )

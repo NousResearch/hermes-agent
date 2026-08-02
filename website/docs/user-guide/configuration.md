@@ -1703,6 +1703,8 @@ Focus view is **display-only**. It never edits conversation history, the system 
 
 When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The footer can show the model, session-configured reasoning-effort level, Priority Processing state, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance. The `reasoning_effort` field follows session-scoped `/reasoning` overrides as well as the global setting; `reasoning` is accepted as a shorter alias. The optional `fast` field decorates the model with `⚡️` only while Priority Processing is effective for that session (or renders standalone when the model field is hidden). Provider-specific clamping may still adjust the value sent to a model.
 
+When the effective provider or base URL is a known usage-metered API, Hermes automatically adds a second line, `💸 consuming credits`. The warning follows the backend that actually answered the turn—including fallback routing—rather than trusting the visible model name. Subscription/OAuth and local routes such as `openai-codex`, `xai-oauth`, and `ollama` do not trigger it.
+
 ```yaml
 display:
   runtime_footer:
@@ -1718,6 +1720,13 @@ Example footer appended to a Telegram/Discord/Slack reply:
 
 ```
 gpt-5.6-sol ⚡️ • 🧠 med • 42% • hermes
+```
+
+With a usage-metered backend:
+
+```
+gpt-5.6-sol • 🧠 med • 42% • hermes
+💸 consuming credits
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.

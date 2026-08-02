@@ -19,7 +19,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Collection
 
 from agent.interrupt_compat import request_hard_interrupt
 
@@ -152,7 +152,10 @@ class ComputeHost:
         self._boot_id = uuid.uuid4().hex
         self._progress_counter = 0
         self._progress_lock = threading.Lock()
-        self._turn_futures: set[concurrent.futures.Future] = set()
+        # Future -> the ``sid`` whose turn it is running.  ``shutdown`` needs to
+        # know *whose* turn is still live, not merely that something is, so that
+        # it can leave those sessions unfinalized; a bare set cannot answer that.
+        self._turn_futures: dict[concurrent.futures.Future, str] = {}
         self._turn_futures_lock = threading.Lock()
         self._transport = _HostTransport(self.emit)
         self._heartbeat_secs = (
@@ -192,6 +195,15 @@ class ComputeHost:
         the drain, so the flush still runs when in-flight turns outlast the
         window. ``wait`` itself is unchanged, so this adds no shutdown latency
         and no new exposure to the supervisor's kill escalation.
+
+        Sessions whose turn is *still running* when the drain deadline expires
+        are excluded from that flush. Finalizing one would spend its single
+        latch mid-turn — ``shutdown(wait=False, cancel_futures=True)`` below
+        does not join the turn — leaving the session permanently
+        un-finalizable and its active-session lease released out from under
+        live work: exactly the race the drain exists to close, just moved later.
+        Leaving them unfinalized keeps them recoverable instead. Sessions with
+        no live turn finalize here as they always have.
         """
         self._closed.set()
         budget = max(0.0, wait)
@@ -208,15 +220,30 @@ class ComputeHost:
             # deadline and eat into the reserve it is there to protect, which
             # for a small ``wait`` can be the whole of it.
             time.sleep(min(0.05, remaining))
-        self.flush_all_sessions(reason=reason)
+        with self._turn_futures_lock:
+            live_sids = {sid for future, sid in self._turn_futures.items() if sid and not future.done()}
+        self.flush_all_sessions(reason=reason, skip_sids=live_sids)
         self._executor.shutdown(wait=False, cancel_futures=True)
 
-    def flush_all_sessions(self, *, reason: str = "shutdown") -> None:
+    def flush_all_sessions(
+        self,
+        *,
+        reason: str = "shutdown",
+        skip_sids: Collection[str] | None = None,
+    ) -> None:
+        """Finalize every server session except the ones named in ``skip_sids``.
+
+        ``skip_sids`` carries the sessions whose turn is still live, which must
+        not spend their one-shot ``_finalize_session`` while running.
+        """
         try:
             from tui_gateway import server
         except Exception:
             return
-        for session in list(getattr(server, "_sessions", {}).values()):
+        skip = set(skip_sids or ())
+        for sid, session in list(getattr(server, "_sessions", {}).items()):
+            if sid in skip:
+                continue
             try:
                 server._finalize_session(session, end_reason=f"compute_host_{reason}")
             except Exception:
@@ -262,15 +289,28 @@ class ComputeHost:
         self._sessions[sid] = HostSession(sid=sid, agent=SpikeAgent(sid, list(history)))
         self.emit({"type": "session.seeded", "sid": sid, "request_id": frame.get("request_id")})
 
+    def _track_turn_future(self, future: concurrent.futures.Future, sid: str) -> None:
+        """Register an in-flight turn against the session running it.
+
+        The callback has to remove the entry under the lock — a bare
+        ``dict.pop`` bound method is not the drop-in ``set.discard`` was — or
+        the mapping grows for the life of the host.
+        """
+        with self._turn_futures_lock:
+            self._turn_futures[future] = sid
+        future.add_done_callback(self._untrack_turn_future)
+
+    def _untrack_turn_future(self, future: concurrent.futures.Future) -> None:
+        with self._turn_futures_lock:
+            self._turn_futures.pop(future, None)
+
     def _handle_turn_start(self, frame: dict[str, Any]) -> None:
         sid = str(frame.get("sid") or "")
         if sid in self._sessions:
             self._handle_spike_turn_start(frame)
             return
         future = self._executor.submit(self._run_real_turn, dict(frame))
-        with self._turn_futures_lock:
-            self._turn_futures.add(future)
-        future.add_done_callback(self._turn_futures.discard)
+        self._track_turn_future(future, sid)
 
     def _handle_spike_turn_start(self, frame: dict[str, Any]) -> None:
         sid = str(frame.get("sid") or "")
@@ -284,9 +324,7 @@ class ComputeHost:
                 return
             session.running = True
         future = self._executor.submit(self._run_spike_turn, session, dict(frame))
-        with self._turn_futures_lock:
-            self._turn_futures.add(future)
-        future.add_done_callback(self._turn_futures.discard)
+        self._track_turn_future(future, sid)
 
     def _handle_interrupt(self, frame: dict[str, Any]) -> None:
         sid = str(frame.get("sid") or "")

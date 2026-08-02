@@ -435,7 +435,7 @@ class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
     
     @abstractmethod
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """Read a file with pagination support."""
         ...
 
@@ -711,7 +711,7 @@ MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_FILE_SIZE = 50 * 1024  # 50KB
 DEFAULT_READ_OFFSET = 1
-DEFAULT_READ_LIMIT = 500
+DEFAULT_READ_LIMIT = 2000
 DEFAULT_SEARCH_OFFSET = 0
 DEFAULT_SEARCH_LIMIT = 50
 
@@ -1116,7 +1116,7 @@ class ShellFileOperations(FileOperations):
     # READ Implementation
     # =========================================================================
     
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
         

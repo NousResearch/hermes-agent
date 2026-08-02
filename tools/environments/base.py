@@ -449,26 +449,25 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
-# Per-session variables that the gateway bridges freshly onto every command's
-# process environment (via tools/environments/local._inject_session_context_env,
-# reading gateway.session_context._VAR_MAP). They must NEVER be persisted into
-# the shared bash session snapshot: a single long-lived backend serves many
+# Per-session variables and the profile home are bridged freshly onto every
+# command's process environment (via tools/environments/local._inject_session_context_env
+# and ``_inject_context_hermes_home``). They must NEVER be persisted into the
+# shared bash session snapshot: a single long-lived backend serves many
 # concurrent sessions (the messaging gateway, TUI, desktop/web dashboard all
 # collapse the terminal to one "default" environment), so ``export -p`` dumping
-# the FIRST session's HERMES_SESSION_ID into the snapshot makes every LATER
-# session ``source`` that stale value and see a FOREIGN session's identity —
-# overriding the correct per-command Popen env (issue: cross-session
-# HERMES_SESSION_ID leak via the shared snapshot). Stripping them from the
-# snapshot is safe because they are re-injected on every command; a snapshot
-# should only carry the user's own shell state (PATH, functions, exports they
-# set), not Hermes' per-turn session identity.
+# the FIRST session's identity or ``HERMES_HOME`` makes every LATER session
+# ``source`` that stale value — overriding the correct per-command Popen env.
+# Stripping them from the snapshot is safe because they are re-injected on every
+# command; a snapshot should only carry the user's own shell state (PATH,
+# functions, exports they set), not Hermes' per-turn session identity.
 #
 # Kept in sync with gateway.session_context._VAR_MAP: every bridged name starts
 # with one of these prefixes (or is HERMES_UI_SESSION_ID). Used by unit tests
 # as the Python-side contract for the exclusion set; the dump path unsets by
 # name/prefix instead of grepping declare lines (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
-    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION)"
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
+    "HERMES_CRON_SESSION|HERMES_HOME(?:=|$))"
 )
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -478,8 +477,9 @@ def _export_dump_excluding_session_vars(
     excluded_names: Iterable[str] = (),
 ) -> str:
     """Return a shell snippet that dumps ``export -p`` to *tmp_path* minus the
-    per-session bridged vars (see ``_SNAPSHOT_EXCLUDED_ENV_REGEX``) and any
-    additional names supplied by the caller.
+    per-session bridged vars and ``HERMES_HOME`` (see
+    ``_SNAPSHOT_EXCLUDED_ENV_REGEX``), plus any additional names supplied by
+    the caller.
 
     Unset the bridged vars in a subshell *before* ``export -p``. A line-based
     ``grep -vE`` filter is unsafe: bash 3.2 prints a value containing a newline
@@ -511,7 +511,7 @@ def _export_dump_excluding_session_vars(
         extra_unset = f" {extra_unset}"
     return (
         "{ ( "
-        "unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
+        "unset HERMES_HOME ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; "
         ") || true; } "

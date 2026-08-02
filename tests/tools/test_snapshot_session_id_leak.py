@@ -41,6 +41,13 @@ def test_regex_matches_bridged_session_vars():
         assert rx.search(line), f"{name} should be excluded from the snapshot"
 
 
+def test_regex_matches_profile_home_only():
+    rx = re.compile(_SNAPSHOT_EXCLUDED_ENV_REGEX)
+
+    assert rx.search('declare -x HERMES_HOME="/profiles/profile-a"')
+    assert not rx.search('declare -x HERMES_HOME_BACKUP="/profiles/profile-a"')
+
+
 def test_export_snippet_shape():
     snippet = _export_dump_excluding_session_vars("/tmp/snap.tmp.$BASHPID")
     assert "export -p" in snippet
@@ -50,6 +57,7 @@ def test_export_snippet_shape():
     assert "${!HERMES_SESSION_*}" in snippet
     assert "${!HERMES_CRON_AUTO_DELIVER_*}" in snippet
     assert "HERMES_UI_SESSION_ID" in snippet
+    assert "HERMES_HOME" in snippet
     assert "grep -vE" not in snippet
     assert "/tmp/snap.tmp.$BASHPID" in snippet
     # The redirection must be attached to a brace group wrapping the dump,
@@ -101,7 +109,49 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
         # And the snapshot file must not carry the session id at all.
         snap = env._snapshot_path
         if os.path.exists(snap):
-            with open(snap) as f:
+            with open(snap, encoding="utf-8") as f:
                 assert "HERMES_SESSION_ID" not in f.read()
+    finally:
+        env.cleanup()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
+def test_shared_snapshot_preserves_context_profile_home(tmp_path):
+    """Each command must receive its profile HERMES_HOME, never its predecessor's."""
+    import threading
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.environments.local import LocalEnvironment
+
+    profile_a = tmp_path / "profiles" / "profile-a"
+    profile_b = tmp_path / "profiles" / "profile-b"
+    profile_a.mkdir(parents=True)
+    profile_b.mkdir(parents=True)
+
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+    try:
+        def run_as(profile_home):
+            out = {}
+
+            def worker():
+                token = set_hermes_home_override(profile_home)
+                try:
+                    out["result"] = env.execute('printf "[HOME=%s]" "$HERMES_HOME"')
+                finally:
+                    reset_hermes_home_override(token)
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join()
+            return out["result"].get("output", "")
+
+        out_a = run_as(profile_a)
+        out_b = run_as(profile_b)
+        assert f"[HOME={profile_a}]" in out_a
+        assert f"[HOME={profile_b}]" in out_b
+        assert f"[HOME={profile_a}]" not in out_b
+
+        with open(env._snapshot_path, encoding="utf-8") as snapshot:
+            assert "HERMES_HOME" not in snapshot.read()
     finally:
         env.cleanup()

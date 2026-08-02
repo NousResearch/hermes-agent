@@ -383,15 +383,16 @@ def _make_callback(event: str, target: WebhookTarget):
         if event in _TOOL_SCOPED_EVENTS:
             if not target.matches_tool(kwargs.get("tool_name")):
                 return None
+        delivery_id = uuid.uuid4().hex
         try:
-            body = _serialize_payload(event, kwargs)
+            body = _serialize_payload(event, kwargs, delivery_id)
         except Exception:  # defensive — a bad payload must not hurt the loop
             logger.warning(
                 "outbound webhook payload serialization failed (event=%s "
                 "target=%s)", event, target.label, exc_info=True,
             )
             return None
-        _enqueue(_build_delivery(event, target, body))
+        _enqueue(_build_delivery(event, target, body, delivery_id))
         return None
 
     _callback.__name__ = f"outbound_webhook[{event}:{target.label}]"
@@ -399,9 +400,16 @@ def _make_callback(event: str, target: WebhookTarget):
     return _callback
 
 
-def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> bytes:
+def _serialize_payload(
+    event: str, kwargs: Dict[str, Any], delivery_id: str,
+) -> bytes:
     """Render the POST body.  Same top-level shape as shell hooks' stdin
-    (documented in :mod:`agent.shell_hooks`), plus delivery metadata."""
+    (documented in :mod:`agent.shell_hooks`), plus delivery metadata.
+
+    ``delivery_id`` is shared with the ``X-Hermes-Delivery`` header so
+    receivers can dedupe on either — and since it (plus ``timestamp``)
+    lives inside the HMAC-signed body, it doubles as replay protection.
+    """
     extras = {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS}
     try:
         cwd = str(Path.cwd())
@@ -414,7 +422,7 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> bytes:
         "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
         "cwd": cwd,
         "extra": extras,
-        "delivery_id": uuid.uuid4().hex,
+        "delivery_id": delivery_id,
         "timestamp": datetime.now(tz=timezone.utc)
         .isoformat()
         .replace("+00:00", "Z"),
@@ -423,13 +431,13 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> bytes:
 
 
 def _build_delivery(
-    event: str, target: WebhookTarget, body: bytes,
+    event: str, target: WebhookTarget, body: bytes, delivery_id: str,
 ) -> Dict[str, Any]:
     headers = {
         "Content-Type": "application/json",
         "User-Agent": "Hermes-Agent-Outbound-Webhook",
         "X-Hermes-Event": event,
-        "X-Hermes-Delivery": uuid.uuid4().hex,
+        "X-Hermes-Delivery": delivery_id,
     }
     if target.secret:
         digest = hmac.new(
@@ -486,9 +494,26 @@ def _worker_loop() -> None:
             _delivery_queue.task_done()
 
 
+class _NoRedirectHandler(urlrequest.HTTPRedirectHandler):
+    """Refuse to follow redirects.
+
+    urllib's default handler converts a redirected POST into a body-less
+    GET — the signed payload would be silently dropped and the headers
+    re-sent to a location the user never configured.  Treat any 3xx as a
+    delivery failure instead (surfaced as HTTPError by returning None).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+_opener = urlrequest.build_opener(_NoRedirectHandler)
+
+
 def _deliver(delivery: Dict[str, Any]) -> None:
     """POST with bounded retries.  Retries on connection errors and 5xx;
-    4xx is the receiver telling us the request itself is wrong — no retry."""
+    4xx is the receiver telling us the request itself is wrong — no retry.
+    3xx redirects are never followed (misconfiguration — fix the URL)."""
     last_error = ""
     for attempt in range(1, MAX_DELIVERY_ATTEMPTS + 1):
         req = urlrequest.Request(
@@ -498,7 +523,7 @@ def _deliver(delivery: Dict[str, Any]) -> None:
             method="POST",
         )
         try:
-            with urlrequest.urlopen(req, timeout=delivery["timeout"]) as resp:
+            with _opener.open(req, timeout=delivery["timeout"]) as resp:
                 status = getattr(resp, "status", 200)
             if 200 <= status < 300:
                 logger.debug(
@@ -509,6 +534,14 @@ def _deliver(delivery: Dict[str, Any]) -> None:
             last_error = f"HTTP {status}"
         except urlerror.HTTPError as exc:
             last_error = f"HTTP {exc.code}"
+            if 300 <= exc.code < 400:
+                logger.warning(
+                    "outbound webhook target redirected (event=%s target=%s): "
+                    "%s -> %s — redirects are not followed; update the "
+                    "configured url", delivery["event"], delivery["label"],
+                    last_error, exc.headers.get("Location", "?"),
+                )
+                return
             if 400 <= exc.code < 500:
                 logger.warning(
                     "outbound webhook rejected (event=%s target=%s): %s — "

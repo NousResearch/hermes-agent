@@ -16,6 +16,7 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from utils import base_url_host_matches
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
@@ -101,6 +102,46 @@ def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
     if isinstance(config.get("thinkingBudget"), (int, float)):
         translated["thinking_budget"] = int(config["thinkingBudget"])
     return translated or None
+
+
+def _tool_effective_name(tool: Any) -> str | None:
+    """Return a tool's effective name for both OpenAI-style and flat tools.
+
+    OpenAI function tools nest the name under ``{"function": {"name": …}}``;
+    some providers/tools carry a flat top-level ``{"name": …}``.
+    """
+    if not isinstance(tool, dict):
+        return None
+    fn = tool.get("function")
+    if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+        return fn["name"]
+    name = tool.get("name")
+    return name if isinstance(name, str) else None
+
+
+def _omit_openrouter_online_web_search(
+    tools: list | None, model: str, base_url: Any
+) -> list | None:
+    """Drop the client ``web_search`` tool on OpenRouter xAI ``:online`` requests.
+
+    An OpenRouter ``x-ai/…:online`` request already carries OpenRouter's own
+    server-side online-search tool named ``web_search``.  Also forwarding
+    Hermes' client ``web_search`` makes xAI reject the whole request with
+    ``HTTP 400: Duplicate tool names: web_search`` (#76481).  Only the client
+    ``web_search`` is removed — ``web_extract``, terminal, and every other tool
+    are preserved.  Bare xAI, non-OpenRouter xAI, and non-xAI OpenRouter
+    requests keep the client ``web_search`` unchanged.
+    """
+    if not tools:
+        return tools
+    model_lower = (model or "").lower()
+    if not (
+        model_lower.endswith(":online")
+        and "x-ai/" in model_lower
+        and base_url_host_matches(str(base_url or ""), "openrouter.ai")
+    ):
+        return tools
+    return [t for t in tools if _tool_effective_name(t) != "web_search"]
 
 
 def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
@@ -371,7 +412,11 @@ class ChatCompletionsTransport(ProviderTransport):
             # etc.) compatible, in addition to direct moonshot.ai endpoints.
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
-            api_kwargs["tools"] = tools
+            tools = _omit_openrouter_online_web_search(
+                tools, model, params.get("base_url")
+            )
+            if tools:
+                api_kwargs["tools"] = tools
 
         # max_tokens resolution — priority: ephemeral > user > provider default
         max_tokens_fn = params.get("max_tokens_param_fn")
@@ -556,7 +601,11 @@ class ChatCompletionsTransport(ProviderTransport):
         if tools:
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
-            api_kwargs["tools"] = tools
+            tools = _omit_openrouter_online_web_search(
+                tools, model, params.get("base_url")
+            )
+            if tools:
+                api_kwargs["tools"] = tools
 
         # max_tokens resolution — priority: ephemeral > user > profile default
         max_tokens_fn = params.get("max_tokens_param_fn")

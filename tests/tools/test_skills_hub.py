@@ -1304,6 +1304,136 @@ class TestInstallPathSafety:
         assert installed.exists()
         assert (installed / "SKILL.md").exists()
 
+    def test_install_from_quarantine_rejects_nested_only_category(self, tmp_path):
+        """A category whose skills live only in sub-categories (depth >= 2,
+        e.g. ``mlops/training/<skill>``) must also be protected — the guard
+        must not be fooled by the absence of direct-child skills (#75983)."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        # Nested-only category: no skill directly under mlops/, skills at depth 2.
+        for sub, name in (("training", "trl"), ("inference", "vllm")):
+            skill = skills_dir / "mlops" / sub / name
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: mlops\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="mlops",
+            files={"SKILL.md": "---\nname: mlops\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="mlops",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            with pytest.raises(ValueError, match="category directory"):
+                hub.install_from_quarantine(
+                    q_dir, "mlops", "", bundle, scan_result,
+                )
+
+        # Every nested skill must survive.
+        assert (skills_dir / "mlops" / "training" / "trl" / "SKILL.md").is_file()
+        assert (skills_dir / "mlops" / "inference" / "vllm" / "SKILL.md").is_file()
+
+    def test_install_from_quarantine_rejects_category_inside_skill(self, tmp_path):
+        """Installing with --category naming an existing *skill* directory must
+        be refused: it would create a hybrid skill-plus-category dir whose later
+        update/uninstall rmtree would destroy the nested skill (#75983 sibling)."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        # Existing normal skill directory.
+        outer = skills_dir / "devops"
+        outer.mkdir(parents=True)
+        (outer / "SKILL.md").write_text("---\nname: devops\n---\n")
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: docker\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="docker",
+            files={"SKILL.md": "---\nname: docker\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="docker",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            with pytest.raises(ValueError, match="existing skill directory"):
+                hub.install_from_quarantine(
+                    q_dir, "docker", "devops", bundle, scan_result,
+                )
+
+        # The outer skill is untouched and no hybrid child was created.
+        assert (outer / "SKILL.md").is_file()
+        assert not (outer / "docker").exists()
+
+    def test_install_from_quarantine_rejects_regular_file_collision(self, tmp_path):
+        """A stray regular file at the install path must produce the caller's
+        ValueError contract, not an uncaught NotADirectoryError from iterdir/rmtree."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        (skills_dir / "notes").write_text("not a directory")
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: notes\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="notes",
+            files={"SKILL.md": "---\nname: notes\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="notes",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            with pytest.raises(ValueError, match="not a directory"):
+                hub.install_from_quarantine(
+                    q_dir, "notes", "", bundle, scan_result,
+                )
+
+        assert (skills_dir / "notes").read_text() == "not a directory"
+
 
 # ---------------------------------------------------------------------------
 # parallel_search_sources — overall_timeout must be honoured even when a

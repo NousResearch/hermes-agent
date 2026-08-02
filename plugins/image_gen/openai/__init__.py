@@ -138,31 +138,35 @@ def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
         # every hop (same posture as save_url_image / vision downloads).
         from urllib.parse import urljoin
 
-        import requests
-
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import create_ssrf_safe_client, is_safe_url
 
         current = ref
         if not is_safe_url(current):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {current}")
 
         _max_redirects = 10
-        resp = None
-        for _ in range(_max_redirects + 1):
-            resp = requests.get(current, timeout=60, allow_redirects=False)
-            if resp.is_redirect and resp.headers.get("Location"):
-                next_url = urljoin(current, resp.headers["Location"])
-                if not is_safe_url(next_url):
-                    raise ValueError(
-                        f"Blocked unsafe redirect URL (SSRF protection): {next_url}"
-                    )
-                current = next_url
-                continue
-            break
-        else:
-            raise ValueError(
-                f"Blocked: too many redirects (>{_max_redirects}) fetching image URL"
-            )
+        with create_ssrf_safe_client(timeout=60, follow_redirects=False) as client:
+            resp = None
+            for _ in range(_max_redirects + 1):
+                resp = client.get(current)
+                if 300 <= resp.status_code < 400:
+                    location = resp.headers.get("Location")
+                    if not location:
+                        raise ValueError(
+                            "Blocked redirect response without Location header"
+                        )
+                    next_url = urljoin(current, location)
+                    if not is_safe_url(next_url):
+                        raise ValueError(
+                            f"Blocked unsafe redirect URL (SSRF protection): {next_url}"
+                        )
+                    current = next_url
+                    continue
+                break
+            else:
+                raise ValueError(
+                    f"Blocked: too many redirects (>{_max_redirects}) fetching image URL"
+                )
 
         resp.raise_for_status()
         name = current.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"

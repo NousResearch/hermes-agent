@@ -94,6 +94,31 @@ class TestVisionAnalyzeNative:
         url = next(p["image_url"]["url"] for p in parts if p.get("type") == "image_url")
         assert url.startswith("data:image/")
 
+    def test_truncated_supported_image_is_rejected_before_embedding(self, tmp_path):
+        """A valid header must not let partially downloaded bytes poison history."""
+        pytest = __import__("pytest")
+        Image = pytest.importorskip(
+            "PIL.Image", reason="Pillow is required for full raster decode validation"
+        )
+
+        truncated = tmp_path / "truncated.png"
+        truncated.write_bytes(_TINY_PNG[:-22])
+
+        # This is the production failure shape: header parsing succeeds, but a
+        # complete decode fails after the partial download is read.
+        with Image.open(truncated) as image:
+            assert image.format == "PNG"
+            with pytest.raises(OSError, match="truncated"):
+                image.load()
+
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(truncated), "describe")
+        )
+
+        assert isinstance(result, str), "corrupt image must not return a multimodal envelope"
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "decode" in payload["error"].lower()
 
     def test_file_url_scheme_resolves(self, tmp_path):
         img = tmp_path / "t.png"

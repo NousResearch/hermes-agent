@@ -3648,6 +3648,12 @@ def run_conversation(
                     "does not support multimodal",
                     "does not support vision",
                     "model does not support image",
+                    # OpenAI/Codex rejects corrupt or truncated image bytes
+                    # with this 400. Strip retained image parts so the
+                    # conversation can recover instead of replaying the same
+                    # malformed payload forever. Proactive full-decode
+                    # validation in vision_tools prevents new occurrences.
+                    "does not represent a valid image",
                     # ChatGPT-account Codex backend
                     # (https://chatgpt.com/backend-api/codex) rejects
                     # data:image/...base64 URLs in input_image fields

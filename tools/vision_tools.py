@@ -379,6 +379,30 @@ def _normalize_to_supported_image(
     )
 
 
+def _validate_raster_image_decodable(image_path: Path) -> Optional[str]:
+    """Return an error when Pillow cannot completely decode every image frame.
+
+    Magic-byte MIME sniffing and ``Image.open`` only inspect container headers.
+    A timed-out download can therefore look like a supported PNG/JPEG/GIF/WebP
+    while its pixel stream is truncated. Native vision results are retained in
+    conversation history, so embedding those bytes poisons every later provider
+    request. Verify structure, then reopen and force every frame to decode before
+    the image can enter history.
+    """
+    try:
+        from PIL import Image as _PILImage
+        from PIL import ImageSequence as _PILImageSequence
+
+        with _PILImage.open(image_path) as image:
+            image.verify()
+        with _PILImage.open(image_path) as image:
+            for frame in _PILImageSequence.Iterator(image):
+                frame.load()
+    except Exception as exc:
+        return f"Image could not be fully decoded: {exc}"
+    return None
+
+
 def _is_retryable_download_error(error: Exception) -> bool:
     """Return True only for transient image-download failures worth retrying.
 
@@ -1025,6 +1049,12 @@ async def _vision_analyze_native(
             temp_image_path = normalized_path
             should_cleanup = True
             image_size_bytes = temp_image_path.stat().st_size
+
+        decode_error = await _run_encode_on_cpu_executor(
+            _validate_raster_image_decodable, temp_image_path,
+        )
+        if decode_error:
+            return tool_error(decode_error, success=False)
 
         image_data_url = await _run_encode_on_cpu_executor(
             _image_to_base64_data_url,

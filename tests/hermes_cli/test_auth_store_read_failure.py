@@ -64,7 +64,7 @@ def test_read_failure_raises_and_leaves_the_store_alone(store_file, monkeypatch,
     )
 
 
-def test_unparseable_json_still_degrades_and_preserves_a_timestamped_copy(store_file):
+def test_unparseable_json_still_degrades_and_preserves_a_copy(store_file):
     store_file.write_text("{ not json", encoding="utf-8")
 
     result = auth._load_auth_store(store_file)
@@ -72,28 +72,72 @@ def test_unparseable_json_still_degrades_and_preserves_a_timestamped_copy(store_
     assert result["version"] == auth.AUTH_STORE_VERSION
     assert result["providers"] == {}
     matches = glob.glob(str(store_file) + ".corrupt.*")
-    assert len(matches) == 1, "genuine corruption must still be preserved, timestamped"
+    assert len(matches) == 1, "genuine corruption must still be preserved"
     corrupt = matches[0]
     assert not corrupt.endswith(".corrupt"), (
-        "backup filename must be timestamped, not the old fixed auth.json.corrupt"
+        "backup filename must be content-addressed, not the old fixed auth.json.corrupt"
     )
+    assert corrupt.endswith(".bak")
     with open(corrupt, encoding="utf-8") as fh:
         assert fh.read() == "{ not json"
 
 
-def test_second_corruption_event_does_not_clobber_first_backup(store_file):
+def test_repeated_loads_of_unchanged_corruption_reuse_one_backup(store_file):
+    """The corrupt file stays on disk, so this branch runs on every load.
+
+    A unique-per-attempt backup name would mint a new copy each time and
+    amplify disk usage without bound. Identical bytes must map to one backup.
+    """
+    store_file.write_text("{ not json", encoding="utf-8")
+
+    for _ in range(25):
+        auth._load_auth_store(store_file)
+
+    backups = glob.glob(str(store_file) + ".corrupt.*")
+    assert len(backups) == 1, (
+        "repeated loads of UNCHANGED corrupt bytes must reuse a single "
+        f"content-addressed backup, got {len(backups)}"
+    )
+    with open(backups[0], encoding="utf-8") as fh:
+        assert fh.read() == "{ not json"
+
+
+def test_changed_corrupt_bytes_get_their_own_backup(store_file):
+    """Deduping must not lose genuinely different corrupt content."""
     store_file.write_text("{ not json one", encoding="utf-8")
     auth._load_auth_store(store_file)
-    first_backups = sorted(glob.glob(str(store_file) + ".corrupt.*"))
-    assert len(first_backups) == 1
+    assert len(glob.glob(str(store_file) + ".corrupt.*")) == 1
 
     store_file.write_text("{ not json two", encoding="utf-8")
     auth._load_auth_store(store_file)
-    second_backups = sorted(glob.glob(str(store_file) + ".corrupt.*"))
 
-    assert len(second_backups) == 2, "a second corruption must not overwrite the first backup"
-    with open(first_backups[0], encoding="utf-8") as fh:
-        assert fh.read() == "{ not json one", "the first backup's content must survive"
+    backups = sorted(glob.glob(str(store_file) + ".corrupt.*"))
+    assert len(backups) == 2, "changed corrupt bytes must be preserved separately"
+    contents = set()
+    for path in backups:
+        with open(path, encoding="utf-8") as fh:
+            contents.add(fh.read())
+    assert contents == {"{ not json one", "{ not json two"}
+
+
+def test_corrupt_backups_are_capped_by_retention(store_file, monkeypatch):
+    """A mutating-corruption loop must not accumulate backups forever."""
+    monkeypatch.setattr(auth, "_CORRUPT_AUTH_BACKUP_RETENTION", 5)
+
+    for i in range(20):
+        store_file.write_text(f"{{ not json {i}", encoding="utf-8")
+        auth._load_auth_store(store_file)
+
+    backups = glob.glob(str(store_file) + ".corrupt.*")
+    assert len(backups) <= 5, (
+        f"retention cap must bound corrupt backups, got {len(backups)}"
+    )
+    # The most recent corruption must be among what we kept.
+    contents = set()
+    for path in backups:
+        with open(path, encoding="utf-8") as fh:
+            contents.add(fh.read())
+    assert "{ not json 19" in contents
 
 
 def test_healthy_store_is_returned_unchanged(store_file):

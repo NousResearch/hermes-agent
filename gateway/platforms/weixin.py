@@ -65,6 +65,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    safe_url_for_log,
 )
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -1154,6 +1155,7 @@ async def qr_login(
 class WeixinAdapter(BasePlatformAdapter):
     """Native Hermes adapter for Weixin personal accounts."""
 
+    supports_native_remote_images = True
     supports_code_blocks = True  # Weixin renders fenced code blocks
     splits_long_messages = True  # send() chunks via _split_text()
 
@@ -2108,7 +2110,11 @@ class WeixinAdapter(BasePlatformAdapter):
         from tools.url_safety import is_safe_url
 
         if not is_safe_url(url):
-            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
+            logger.warning(
+                "weixin: blocked unsafe remote-media URL: %s",
+                safe_url_for_log(url),
+            )
+            raise ValueError("Blocked unsafe remote-media URL (SSRF protection)")
 
         assert self._send_session is not None
         # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid

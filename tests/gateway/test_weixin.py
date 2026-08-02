@@ -340,16 +340,21 @@ class TestWeixinOutboundMedia:
 
 
 class TestWeixinRemoteMediaSafety:
-    def test_download_remote_media_blocks_unsafe_urls(self):
+    def test_download_remote_media_blocks_unsafe_urls_without_leaking_query(
+        self, caplog,
+    ):
         adapter = _make_adapter()
+        secret = "opaqueSignedQueryCredential123"
+        url = f"http://127.0.0.1/private.png?token={secret}"
 
         with patch("tools.url_safety.is_safe_url", return_value=False):
-            try:
-                asyncio.run(adapter._download_remote_media("http://127.0.0.1/private.png"))
-            except ValueError as exc:
-                assert "Blocked unsafe URL" in str(exc)
-            else:
-                raise AssertionError("expected ValueError for unsafe URL")
+            with pytest.raises(ValueError) as exc_info:
+                asyncio.run(adapter._download_remote_media(url))
+
+        assert "Blocked unsafe remote-media URL" in str(exc_info.value)
+        assert secret not in str(exc_info.value)
+        assert secret not in caplog.text
+        assert "http://127.0.0.1/.../private.png" in caplog.text
 
 
 class TestWeixinMarkdownLinks:

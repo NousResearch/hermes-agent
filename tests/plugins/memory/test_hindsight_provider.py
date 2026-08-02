@@ -494,20 +494,32 @@ class TestEmbeddedDaemonConfigChangeRestart:
         provider = HindsightMemoryProvider()
         monkeypatch.setattr(provider, "_get_client", lambda: fake_client)
 
-        threads_before = {t.ident for t in threading.enumerate()}
+        # Capture the daemon-start thread at construction time rather than
+        # discovering it afterwards with threading.enumerate(). The mocked
+        # daemon path can finish before initialize() returns, in which case
+        # the thread is already gone from enumerate() and a discovery-based
+        # helper fails intermittently with no product regression behind it.
+        # Wrapping the constructor makes the handle available regardless of
+        # how fast the thread runs.
+        spawned: list[threading.Thread] = []
+        real_thread_cls = threading.Thread
+
+        class _CapturingThread(real_thread_cls):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                if kwargs.get("name") == "hindsight-daemon-start":
+                    spawned.append(self)
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.threading.Thread", _CapturingThread
+        )
+
         provider.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
 
-        # initialize() spawns the daemon-start work on a background thread
-        # named "hindsight-daemon-start" (or resolves synchronously if
-        # local_embedded got disabled). Find and join it if present.
-        new_thread = None
-        for t in threading.enumerate():
-            if t.ident not in threads_before and t.name == "hindsight-daemon-start":
-                new_thread = t
-                break
-        assert new_thread is not None, "expected initialize() to spawn the daemon-start thread"
+        assert spawned, "expected initialize() to spawn the daemon-start thread"
+        new_thread = spawned[0]
         new_thread.join(timeout=5)
-        assert not new_thread.is_alive()
+        assert not new_thread.is_alive(), "daemon-start thread did not finish in time"
 
         return provider
 

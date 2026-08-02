@@ -411,11 +411,19 @@ def check_kanban() -> dict | None:
         return None  # dry-run: skip _board_compat (hermes_cli import chain)
     # W1-G (Batch 1): board DB identities resolved via _board_compat.
     import _board_compat
-    # Normalise the compatibility boundary so Path methods remain safe even if
-    # an older/custom resolver supplies string paths.
-    boards = {slug: Path(p) for slug, p in _board_compat.build_board_db_map([
+    raw_boards = _board_compat.build_board_db_map([
         "ops", "research", "apps", "content-lead", "default",
-    ]).items()}
+    ])
+    boards: dict[str, Path] = {}
+    for slug, configured_path in raw_boards.items():
+        if configured_path is None or (
+            isinstance(configured_path, str) and not configured_path.strip()
+        ):
+            continue
+        try:
+            boards[slug] = Path(configured_path).expanduser()
+        except (TypeError, ValueError, OSError, RuntimeError):
+            continue
 
     triage_total = 0
     blocked_total = 0

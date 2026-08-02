@@ -48,6 +48,17 @@ const BLOCKING_OVERLAY =
 // must not take the foreground composer's letter keys.
 const BLOCKING_IN_SURFACE = '[data-clarify-choices]'
 
+/**
+ * THE live clarify card — the single card whose shortcuts are armed right now.
+ *
+ * Exported because the card's own `keydown` handler has to resolve the same
+ * element this module does. Both bind the same keys on `window`, so if they
+ * disagree about which card is live they act for different sessions: this
+ * resolver yields to the VISIBLE card, while a handler keyed on anything else
+ * (mount order, say) answers one the user cannot see.
+ */
+export const visibleClarifyCard = (): HTMLElement | null => queryVisible(BLOCKING_IN_SURFACE)
+
 /** True when the focused control would normally handle Enter itself. */
 export function isActivateOnEnterTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
@@ -70,7 +81,7 @@ export function isActivateOnEnterTarget(target: EventTarget | null): boolean {
  * with no store coupling.
  */
 export function clarifyCardOwnsKey(event: KeyboardEvent): boolean {
-  const card = queryVisible(BLOCKING_IN_SURFACE)
+  const card = visibleClarifyCard()
 
   if (!card) {
     return false

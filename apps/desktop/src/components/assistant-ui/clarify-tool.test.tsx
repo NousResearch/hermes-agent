@@ -1,9 +1,12 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerInsertRequest } from '@/app/chat/composer/focus'
+import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
+import { hiddenPaneProps } from '@/components/pane-shell/pane-visibility'
 import { I18nProvider } from '@/i18n'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
@@ -339,5 +342,91 @@ describe('ClarifyTool pending marker', () => {
 
     // No shortcuts → nothing to protect → composer type-to-focus stays live.
     expect(document.querySelector('[data-clarify-choices]')).toBeNull()
+  })
+})
+
+describe('ClarifyTool visible-card scoping', () => {
+  const BACKGROUND_SESSION = 'session-background'
+  const FOREGROUND_SESSION = 'session-foreground'
+  const BACKGROUND_REQUEST = 'request-background'
+  const FOREGROUND_REQUEST = 'request-foreground'
+  const QUESTION = 'Which deployment target?'
+
+  /** Minimal per-session view — the pending card only reads `$runtimeId`. */
+  function tileView(sessionId: string): SessionView {
+    return { ...({} as SessionView), $runtimeId: atom<null | string>(sessionId), kind: 'tile' }
+  }
+
+  function pendingCardProps(toolCallId: string): ToolCallMessagePartProps {
+    const args = { choices: ['staging', 'production'], question: QUESTION }
+
+    return { ...liveClarifyProps(), args, argsText: JSON.stringify(args), toolCallId }
+  }
+
+  function parkClarify(requestId: string, sessionId: string) {
+    setClarifyRequest({
+      choices: ['staging', 'production'],
+      question: QUESTION,
+      requestId,
+      sessionId
+    })
+  }
+
+  /** A card inside an inactive tab layer — mounted and live, just not on screen. */
+  function backgroundCard() {
+    return (
+      <div {...hiddenPaneProps(true)}>
+        <SessionViewProvider value={tileView(BACKGROUND_SESSION)}>
+          <ClarifyTool {...pendingCardProps('clarify-background')} />
+        </SessionViewProvider>
+      </div>
+    )
+  }
+
+  it('answers the visible card, not a background one that mounted first', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true })
+
+    $gateway.set({ request } as never)
+    parkClarify(BACKGROUND_REQUEST, BACKGROUND_SESSION)
+    parkClarify(FOREGROUND_REQUEST, FOREGROUND_SESSION)
+
+    // The background card is rendered FIRST, so its window listener registers
+    // first. Registration order used to decide the winner, which meant the card
+    // the user was looking at lost to one parked in an inactive tab.
+    renderClarify(
+      <>
+        {backgroundCard()}
+        <SessionViewProvider value={tileView(FOREGROUND_SESSION)}>
+          <ClarifyTool {...pendingCardProps('clarify-foreground')} />
+        </SessionViewProvider>
+      </>
+    )
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(1)
+    })
+
+    // Exactly one answer, carrying the FOREGROUND request id — the background
+    // session's turn must not be resumed by a keystroke aimed at this one.
+    expect(request).toHaveBeenCalledWith('clarify.respond', {
+      answer: 'staging',
+      request_id: FOREGROUND_REQUEST
+    })
+  })
+
+  it('leaves the key alone when the only pending card is hidden', () => {
+    const request = vi.fn().mockResolvedValue({ ok: true })
+
+    $gateway.set({ request } as never)
+    parkClarify(BACKGROUND_REQUEST, BACKGROUND_SESSION)
+
+    renderClarify(backgroundCard())
+
+    // Untouched (no preventDefault) ⇒ the keystroke stays available to the
+    // composer, matching what `clarifyCardOwnsKey` reports with no visible card.
+    expect(fireEvent.keyDown(window, { key: 'Enter' })).toBe(true)
+    expect(request).not.toHaveBeenCalled()
   })
 })

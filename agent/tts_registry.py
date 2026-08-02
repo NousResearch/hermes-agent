@@ -29,10 +29,10 @@ happens to be installed.
 from __future__ import annotations
 
 import logging
-import threading
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from agent.tts_provider import TTSProvider
+from agent.plugin_profile_scope import ProfileKeyLike, ProfileProviderRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +60,16 @@ _BUILTIN_NAMES = frozenset({
 })
 
 
-_providers: Dict[str, TTSProvider] = {}
-_lock = threading.Lock()
+_registry: ProfileProviderRegistry[TTSProvider] = ProfileProviderRegistry(
+    normalize_name=lambda name: name.strip().lower()
+)
+_lock = _registry.lock
+_providers = _registry.compatibility_mapping()
 
 
-def register_provider(provider: TTSProvider) -> None:
+def register_provider(
+    provider: TTSProvider, *, profile_key: Optional[ProfileKeyLike] = None
+) -> None:
     """Register a TTS provider.
 
     Rejects:
@@ -94,9 +99,7 @@ def register_provider(provider: TTSProvider) -> None:
             key, ", ".join(sorted(_BUILTIN_NAMES)),
         )
         return
-    with _lock:
-        existing = _providers.get(key)
-        _providers[key] = provider
+    existing = _registry.register(key, provider, profile_key=profile_key)
     if existing is not None:
         logger.debug(
             "TTS provider '%s' re-registered (was %r)",
@@ -109,14 +112,17 @@ def register_provider(provider: TTSProvider) -> None:
         )
 
 
-def list_providers() -> List[TTSProvider]:
+def list_providers(
+    *, profile_key: Optional[ProfileKeyLike] = None
+) -> List[TTSProvider]:
     """Return all registered providers, sorted by name."""
-    with _lock:
-        items = list(_providers.values())
+    items = _registry.list(profile_key=profile_key)
     return sorted(items, key=lambda p: p.name)
 
 
-def get_provider(name: str) -> Optional[TTSProvider]:
+def get_provider(
+    name: str, *, profile_key: Optional[ProfileKeyLike] = None
+) -> Optional[TTSProvider]:
     """Return the provider registered under *name*, or None.
 
     Name matching is case-insensitive and whitespace-tolerant — mirrors
@@ -125,10 +131,9 @@ def get_provider(name: str) -> Optional[TTSProvider]:
     """
     if not isinstance(name, str):
         return None
-    return _providers.get(name.strip().lower())
+    return _registry.get(name, profile_key=profile_key)
 
 
 def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
-    with _lock:
-        _providers.clear()
+    _registry.reset_for_tests()

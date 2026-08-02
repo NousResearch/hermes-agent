@@ -21,19 +21,27 @@ If unset, :func:`get_active_provider` applies fallback logic:
 from __future__ import annotations
 
 import logging
-import threading
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from agent.image_gen_provider import ImageGenProvider
+from agent.plugin_profile_scope import (
+    bind_profile_key,
+    ProfileKeyLike,
+    ProfileProviderRegistry,
+    selected_profile_key,
+)
 
 logger = logging.getLogger(__name__)
 
 
-_providers: Dict[str, ImageGenProvider] = {}
-_lock = threading.Lock()
+_registry: ProfileProviderRegistry[ImageGenProvider] = ProfileProviderRegistry()
+_lock = _registry.lock
+_providers = _registry.compatibility_mapping()
 
 
-def register_provider(provider: ImageGenProvider) -> None:
+def register_provider(
+    provider: ImageGenProvider, *, profile_key: Optional[ProfileKeyLike] = None
+) -> None:
     """Register an image generation provider.
 
     Re-registration (same ``name``) overwrites the previous entry and logs
@@ -48,31 +56,33 @@ def register_provider(provider: ImageGenProvider) -> None:
     name = provider.name
     if not isinstance(name, str) or not name.strip():
         raise ValueError("Image gen provider .name must be a non-empty string")
-    with _lock:
-        existing = _providers.get(name)
-        _providers[name] = provider
+    existing = _registry.register(name, provider, profile_key=profile_key)
     if existing is not None:
         logger.debug("Image gen provider '%s' re-registered (was %r)", name, type(existing).__name__)
     else:
         logger.debug("Registered image gen provider '%s' (%s)", name, type(provider).__name__)
 
 
-def list_providers() -> List[ImageGenProvider]:
+def list_providers(
+    *, profile_key: Optional[ProfileKeyLike] = None
+) -> List[ImageGenProvider]:
     """Return all registered providers, sorted by name."""
-    with _lock:
-        items = list(_providers.values())
+    items = _registry.list(profile_key=profile_key)
     return sorted(items, key=lambda p: p.name)
 
 
-def get_provider(name: str) -> Optional[ImageGenProvider]:
+def get_provider(
+    name: str, *, profile_key: Optional[ProfileKeyLike] = None
+) -> Optional[ImageGenProvider]:
     """Return the provider registered under *name*, or None."""
     if not isinstance(name, str):
         return None
-    with _lock:
-        return _providers.get(name.strip())
+    return _registry.get(name, profile_key=profile_key)
 
 
-def get_active_provider() -> Optional[ImageGenProvider]:
+def get_active_provider(
+    *, profile_key: Optional[ProfileKeyLike] = None
+) -> Optional[ImageGenProvider]:
     """Resolve the currently-active provider.
 
     Reads ``image_gen.provider`` from config.yaml; falls back per the
@@ -89,11 +99,13 @@ def get_active_provider() -> Optional[ImageGenProvider]:
       ``is_available()`` so we don't pick a provider the user has no
       credentials for.
     """
+    key = selected_profile_key(profile_key)
     configured: Optional[str] = None
     try:
         from hermes_cli.config import load_config_readonly
 
-        cfg = load_config_readonly()
+        with bind_profile_key(key):
+            cfg = load_config_readonly()
         section = cfg.get("image_gen") if isinstance(cfg, dict) else None
         if isinstance(section, dict):
             raw = section.get("provider")
@@ -102,13 +114,13 @@ def get_active_provider() -> Optional[ImageGenProvider]:
     except Exception as exc:
         logger.debug("Could not read image_gen.provider from config: %s", exc)
 
-    with _lock:
-        snapshot = dict(_providers)
+    snapshot = _registry.snapshot(profile_key=key)
 
     def _is_available_safe(p: ImageGenProvider) -> bool:
         """Wrap ``is_available()`` so a buggy provider doesn't kill resolution."""
         try:
-            return bool(p.is_available())
+            with bind_profile_key(key):
+                return bool(p.is_available())
         except Exception as exc:  # noqa: BLE001
             logger.debug("image_gen provider %s.is_available() raised %s", p.name, exc)
             return False
@@ -141,5 +153,4 @@ def get_active_provider() -> Optional[ImageGenProvider]:
 
 def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
-    with _lock:
-        _providers.clear()
+    _registry.reset_for_tests()

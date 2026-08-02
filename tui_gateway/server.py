@@ -699,6 +699,19 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # persist state, or close connections before the gateway exits.
     # Mirrors cli.py's atexit handler that fires the same hook when
     # the user Ctrl‑C's mid‑turn.
+    plugin_token = None
+    finalize_home_token = None
+    finalize_secret_token = None
+    try:
+        profile_home = session.get("profile_home")
+        if profile_home:
+            finalize_home_token = set_hermes_home_override(profile_home)
+            finalize_secret_token = set_secret_scope(
+                build_profile_secret_scope(Path(profile_home))
+            )
+        plugin_token = _bind_session_plugin_manager(session)
+    except Exception:
+        logger.debug("failed to bind session profile scopes during finalize", exc_info=True)
     if agent is not None:
         try:
             from hermes_cli.lifecycle import invoke_hook
@@ -724,6 +737,11 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
     _notify_session_boundary("on_session_finalize", session_id, _session_source(session))
+    _reset_session_plugin_manager(plugin_token)
+    if finalize_secret_token is not None:
+        reset_secret_scope(finalize_secret_token)
+    if finalize_home_token is not None:
+        reset_hermes_home_override(finalize_home_token)
 
     # Mark session ended in DB so it doesn't linger as a ghost row in /resume.
     # Use session_id (from agent.session_id) not session_key — after compression,
@@ -1264,6 +1282,27 @@ def _profile_home(profile: str | None) -> Path | None:
     if home.resolve() == Path(_hermes_home).resolve():
         return None
     return home if (home / "state.db").exists() or home.exists() else None
+
+
+def _bind_session_plugin_manager(session: dict):
+    """Discover once, freeze on the live session, and bind plugin dispatch."""
+    from hermes_cli.plugins import bind_plugin_manager, discover_plugins
+
+    manager = session.get("plugin_manager")
+    if manager is None:
+        profile_home = session.get("profile_home") or _hermes_home
+        manager = discover_plugins(profile_home=profile_home)
+        session["plugin_manager"] = manager
+    return bind_plugin_manager(manager)
+
+
+def _reset_session_plugin_manager(token) -> None:
+    """Restore the previous plugin manager after a build/turn/session callback."""
+    if token is None:
+        return
+    from hermes_cli.plugins import reset_plugin_manager
+
+    reset_plugin_manager(token)
 
 
 def _profile_scoped(handler):
@@ -1971,6 +2010,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
         notify_registered = False
         home_token = None
         secret_token = None
+        plugin_token = None
         profile_home = current.get("profile_home")
         try:
             tokens = _set_session_context(key)
@@ -1992,6 +2032,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     session_db = SessionDB(db_path=Path(profile_home) / "state.db")
                 except Exception:
                     session_db = None
+
+            # Discovery and the agent snapshot must happen under the same
+            # selected profile. Binding is context-local and is always reset.
+            plugin_token = _bind_session_plugin_manager(current)
 
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started
@@ -2104,8 +2148,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
-            if home_token is not None:
-                reset_hermes_home_override(home_token)
+            _reset_session_plugin_manager(plugin_token)
             if secret_token is not None:
                 try:
                     from agent.secret_scope import reset_secret_scope
@@ -2113,6 +2156,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     reset_secret_scope(secret_token)
                 except Exception:
                     pass
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
             # _attach_worker already closed the worker if this session was
             # reaped mid-build; only the late notify registration can still
             # leak (session.close unregistered before _build registered it).
@@ -5954,7 +5999,18 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
+    home_token = None
+    secret_token = None
+    plugin_token = None
     try:
+        profile_home = session.get("profile_home")
+        if profile_home:
+            home_token = set_hermes_home_override(profile_home)
+            secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+        # /new is a new conversation snapshot: select the profile's current
+        # cache entry, while the prior live conversation kept its old manager.
+        session["plugin_manager"] = None
+        plugin_token = _bind_session_plugin_manager(session)
         # /new is a full conversation boundary: session-scoped runtime
         # overrides (/model, /reasoning, /fast) do NOT carry forward — the
         # fresh agent re-derives model/provider, reasoning, and service tier
@@ -5973,6 +6029,11 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
             platform_override=_session_source(session),
         )
     finally:
+        _reset_session_plugin_manager(plugin_token)
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
         _clear_session_context(tokens)
     session["agent"] = new_agent
     session["config_model_seen"] = _config_model_target()
@@ -6142,6 +6203,15 @@ def _make_agent(
     service_tier_override: str | None = None,
     platform_override: str | None = None,
 ):
+    # Plugin discovery must complete under the selected/bound profile before
+    # AIAgent snapshots tools, hooks, commands, context, auxiliary tasks, and
+    # skills. The manager object is then attached as the immutable live-session
+    # snapshot used by later turns.
+    from hermes_cli.plugins import get_plugin_manager
+
+    plugin_manager = get_plugin_manager()
+    plugin_manager.discover_and_load()
+
     # AC-4 test seam: dead unless explicitly armed by the isolated certify
     # harness. Both inline and compute-host paths construct through _make_agent,
     # leaving the process boundary as the only experimental variable.
@@ -6149,6 +6219,7 @@ def _make_agent(
 
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
     if synthetic is not None:
+        synthetic.plugin_manager = plugin_manager
         return synthetic
 
     from run_agent import AIAgent
@@ -6269,7 +6340,7 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
-    return AIAgent(
+    agent = AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
         provider=runtime.get("provider"),
@@ -6316,6 +6387,8 @@ def _make_agent(
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
+    agent.plugin_manager = plugin_manager
+    return agent
 
 
 def _init_session(
@@ -6355,6 +6428,9 @@ def _init_session(
             # launch profile. SessionBranch copies the parent's value so the
             # child stays on the same state.db.
             "profile_home": profile_home,
+            # Eager sessions inherit the manager captured by _make_agent. Lazy
+            # sessions populate this slot before their first agent snapshot.
+            "plugin_manager": getattr(agent, "plugin_manager", None),
             # Per-session model override set by an in-session /model switch.
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
@@ -6433,8 +6509,24 @@ def _init_session(
     with _sessions_lock:
         if sid in _sessions:
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
-    _notify_session_boundary("on_session_reset", key, _session_source(_sessions.get(sid, {})))
-    _emit("session.info", sid, _session_info(agent, _sessions.get(sid, {})))
+    session = _sessions.get(sid, {})
+    home_token = None
+    secret_token = None
+    plugin_token = None
+    try:
+        profile_home = session.get("profile_home")
+        if profile_home:
+            home_token = set_hermes_home_override(profile_home)
+            secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+        plugin_token = _bind_session_plugin_manager(session)
+        _notify_session_boundary("on_session_reset", key, _session_source(session))
+    finally:
+        _reset_session_plugin_manager(plugin_token)
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+    _emit("session.info", sid, _session_info(agent, session))
     _schedule_mcp_late_refresh(sid, agent)
 
 
@@ -7551,6 +7643,9 @@ def _deferred_session_record(
         "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
+        # Populated exactly once before agent construction. Cache replacement
+        # affects future sessions only; this live session keeps its snapshot.
+        "plugin_manager": None,
         "resume_runtime_overrides": resume_runtime_overrides,
         "resume_session_id": session_key,
         "running": False,
@@ -9213,6 +9308,7 @@ def _run_prompt_submit(
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         secret_token = None
+        plugin_token = None
         goal_followup = None  # set by the post-turn goal hook below
         result = None  # turn outcome; read after the finally for leftover /steer
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)
@@ -9248,6 +9344,7 @@ def _run_prompt_submit(
             if _profile_home_str:
                 home_token = set_hermes_home_override(_profile_home_str)
                 secret_token = set_secret_scope(build_profile_secret_scope(Path(_profile_home_str)))
+            plugin_token = _bind_session_plugin_manager(session)
             # The sudo password callback is thread-local (tools.terminal_tool
             # _callback_tls), so wiring it on the build thread doesn't reach this
             # turn thread — terminal sudo prompts would fall through to /dev/tty
@@ -9850,10 +9947,11 @@ def _run_prompt_submit(
                     reset_current_session_key(approval_token)
             except Exception:
                 pass
-            if home_token is not None:
-                reset_hermes_home_override(home_token)
+            _reset_session_plugin_manager(plugin_token)
             if secret_token is not None:
                 reset_secret_scope(secret_token)
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
             _clear_session_context(session_tokens)
             # Clear the per-turn interim callback so a stale closure from
             # this turn can't fire during a later turn on the same agent.

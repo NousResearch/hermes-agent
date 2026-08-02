@@ -38,14 +38,17 @@ class _MinimalManager:
     """The fixture only needs whatever PluginContext touches at register-time.
 
     We don't import the real PluginManager because it pulls in the full
-    plugin-discovery surface.  The hook we're testing only reads from
-    ``ctx.manifest``, so the manager attributes don't matter — but we set
-    the few that other PluginContext methods touch defensively.
+    plugin-discovery surface. The hook under test runs the launch-publication
+    guard before validating the provider, so this launch-like fixture exposes
+    that guard as an allowed no-op.
     """
 
     _cli_ref = None
     _context_engine = None
     _tools: dict = {}
+
+    def require_global_publication(self, capability: str) -> None:
+        pass
 
 
 @pytest.fixture(autouse=True)

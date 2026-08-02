@@ -34,6 +34,32 @@ from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
+
+# Imported lazily so this slice remains testable before the integration-owned
+# agent/plugin_profile_scope.py lands. Once present, these resolve the exact
+# agreed profile-key API and preserve frozen keys across callbacks/threads.
+_FALLBACK_PROFILE_KEY = "__hermes_launch_profile__"
+
+
+def _capture_tool_profile_key(profile_key=None):
+    try:
+        from agent.plugin_profile_scope import freeze_profile_key
+
+        return freeze_profile_key(profile_key)
+    except ImportError:
+        return str(profile_key) if profile_key is not None else _FALLBACK_PROFILE_KEY
+
+
+def _bind_tool_profile_key(profile_key):
+    try:
+        from agent.plugin_profile_scope import bind_profile_key
+
+        return bind_profile_key(profile_key)
+    except ImportError:
+        from contextlib import nullcontext
+
+        return nullcontext(profile_key)
+
 # Tracks platform-bundle names already flagged in disabled_toolsets so the
 # advisory (#33924) is logged once per name, not on every tool recompute.
 _WARNED_DISABLED_BUNDLES: set = set()
@@ -225,9 +251,12 @@ TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
 
 TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 
-# Resolved tool names from the last get_tool_definitions() call.
-# Used by code_execution_tool to know which tools are available in this session.
+# Resolved tool names are retained per profile for legacy execute_code callers
+# that do not pass the agent's explicit frozen enabled_tools snapshot. The
+# process-global list remains as a compatibility observation only; dispatch no
+# longer trusts it as an authority boundary.
 _last_resolved_tool_names: List[str] = []
+_last_resolved_tool_names_by_profile: Dict[str, List[str]] = {}
 
 
 # =============================================================================
@@ -268,6 +297,7 @@ _LEGACY_TOOLSET_MAP = {
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+_tool_defs_cache_lock = threading.RLock()
 
 # Hard cap on memoized get_tool_definitions() results. A long-lived Gateway
 # process sees many distinct toolset/config fingerprints over its lifetime
@@ -278,11 +308,28 @@ _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 _TOOL_DEFS_CACHE_MAX = 8
 
 
-def _clear_tool_defs_cache() -> None:
-    """Drop memoized get_tool_definitions() results. Called when dynamic
-    schema dependencies change (e.g. discord capability cache reset,
-    execute_code sandbox reconfigured)."""
-    _tool_defs_cache.clear()
+def _clear_tool_defs_cache(profile_key=None, *, all_profiles: bool = False) -> None:
+    """Drop schema memoization for one profile (or every profile)."""
+    global _last_resolved_tool_names
+    with _tool_defs_cache_lock:
+        if all_profiles or profile_key == "*":
+            _tool_defs_cache.clear()
+            _last_resolved_tool_names_by_profile.clear()
+            _last_resolved_tool_names = []
+            return
+        key = _capture_tool_profile_key(profile_key)
+        for cache_key in [item for item in _tool_defs_cache if item[0] == key]:
+            _tool_defs_cache.pop(cache_key, None)
+        _last_resolved_tool_names_by_profile.pop(key, None)
+
+
+def _publish_resolved_tool_names(profile_key: str, tool_defs: List[Dict[str, Any]]) -> None:
+    """Publish one generation-stable schema as the compatibility fallback."""
+    global _last_resolved_tool_names
+    resolved_names = [tool_def["function"]["name"] for tool_def in tool_defs]
+    with _tool_defs_cache_lock:
+        _last_resolved_tool_names = list(resolved_names)
+        _last_resolved_tool_names_by_profile[profile_key] = list(resolved_names)
 
 
 def get_tool_definitions(
@@ -309,6 +356,12 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    profile_key = _capture_tool_profile_key()
+
+    def registry_generation():
+        getter = getattr(registry, "generation", None)
+        return getter(profile_key) if getter is not None else registry._generation
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).
@@ -317,6 +370,7 @@ def get_tool_definitions(
     # user-visible config edits that affect dynamic schemas (execute_code
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
+    cache_key = None
     if quiet_mode:
         try:
             from hermes_cli.config import get_config_path
@@ -326,40 +380,51 @@ def get_tool_definitions(
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
         cache_key = (
+            profile_key,
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
-            registry._generation,
+            registry_generation(),
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
             _is_delegated_child_context(),
         )
-        cached = _tool_defs_cache.get(cache_key)
+        with _tool_defs_cache_lock:
+            cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
-            # Update _last_resolved_tool_names so downstream callers see
-            # consistent state even on a cache hit.
-            global _last_resolved_tool_names
-            _last_resolved_tool_names = [t["function"]["name"] for t in cached]
-            # Return a shallow copy of the list but share the dict references —
-            # schemas are treated as read-only by all known callers.
+            _publish_resolved_tool_names(profile_key, cached)
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
-    if quiet_mode:
-        # Cache the freshly-computed list, but hand callers a shallow copy so
-        # downstream mutations (e.g. run_agent appending memory/LCM tool
-        # schemas to self.tools) don't poison the cache. Without this, a
-        # long-lived Gateway process accumulates duplicate tool names across
-        # agent inits and providers that enforce unique tool names
-        # (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with
-        # HTTP 400. Mirrors the cache-hit path above. (issue #17335)
-        # Bound the cache with LRU eviction so a long-lived Gateway process
-        # doesn't accumulate entries unboundedly across the many distinct
-        # toolset/config fingerprints it sees over its lifetime (#19251).
-        if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
-            _tool_defs_cache.pop(next(iter(_tool_defs_cache)))  # evict oldest
-        _tool_defs_cache[cache_key] = result
+    generation_before = registry_generation()
+    stable_generation = False
+    result = []
+    # Retry a bounded number of times if publication races a profile reload.
+    # If churn continues, fail closed rather than expose definitions assembled
+    # against a generation that changed while they were being computed.
+    for _attempt in range(3):
+        with _bind_tool_profile_key(profile_key):
+            result = _compute_tool_definitions(
+                enabled_toolsets, disabled_toolsets, quiet_mode,
+                skip_tool_search_assembly=skip_tool_search_assembly,
+            )
+        generation_after = registry_generation()
+        if generation_after == generation_before:
+            stable_generation = True
+            break
+        generation_before = generation_after
+    if not stable_generation:
+        raise RuntimeError(
+            "Tool registry changed during schema assembly; "
+            "refusing to publish stale definitions"
+        )
+    _publish_resolved_tool_names(profile_key, result)
+    if quiet_mode and stable_generation:
+        assert cache_key is not None
+        cache_key = (*cache_key[:3], generation_before, *cache_key[4:])
+        with _tool_defs_cache_lock:
+            if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
+                _tool_defs_cache.pop(next(iter(_tool_defs_cache)))
+            _tool_defs_cache[cache_key] = result
         return list(result)
     return result
 
@@ -532,9 +597,6 @@ def _compute_tool_definitions(
             print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
-
-    global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
     # Sanitize schemas for broad backend compatibility. llama.cpp's
     # json-schema-to-grammar converter (used by its OAI server to build
@@ -1108,8 +1170,8 @@ def handle_function_call(
         user_task: The user's original task (for browser_snapshot context).
         enabled_tools: Tool names enabled for this session.  When provided,
                        execute_code uses this list to determine which sandbox
-                       tools to generate.  Falls back to the process-global
-                       ``_last_resolved_tool_names`` for backward compat.
+                       tools to generate.  Falls back to the captured profile's
+                       last resolved names for backward compatibility.
         enabled_toolsets: The session's enabled toolsets.  Used to scope the
                        Tool Search bridge catalog so ``tool_search`` /
                        ``tool_describe`` / ``tool_call`` only see and invoke
@@ -1122,6 +1184,7 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    profile_key = _capture_tool_profile_key()
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
@@ -1324,22 +1387,27 @@ def handle_function_call(
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
-                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                sandbox_enabled = (
+                    enabled_tools if enabled_tools is not None
+                    else list(_last_resolved_tool_names_by_profile.get(profile_key, ()))
+                )
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
-                        task_id=task_id,
-                        session_id=session_id,
-                        enabled_tools=sandbox_enabled,
-                    )
+                    with _bind_tool_profile_key(profile_key):
+                        return registry.dispatch(
+                            function_name, next_args,
+                            task_id=task_id,
+                            session_id=session_id,
+                            enabled_tools=sandbox_enabled,
+                        )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
-                        task_id=task_id,
-                        session_id=session_id,
-                        user_task=user_task,
-                    )
+                    with _bind_tool_profile_key(profile_key):
+                        return registry.dispatch(
+                            function_name, next_args,
+                            task_id=task_id,
+                            session_id=session_id,
+                            user_task=user_task,
+                        )
             if skip_tool_execution_middleware:
                 result = _dispatch(function_args)
             else:

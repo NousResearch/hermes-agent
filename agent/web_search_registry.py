@@ -33,19 +33,27 @@ extract-capable backend.
 from __future__ import annotations
 
 import logging
-import threading
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from agent.web_search_provider import WebSearchProvider
+from agent.plugin_profile_scope import (
+    bind_profile_key,
+    ProfileKeyLike,
+    ProfileProviderRegistry,
+    selected_profile_key,
+)
 
 logger = logging.getLogger(__name__)
 
 
-_providers: Dict[str, WebSearchProvider] = {}
-_lock = threading.Lock()
+_registry: ProfileProviderRegistry[WebSearchProvider] = ProfileProviderRegistry()
+_lock = _registry.lock
+_providers = _registry.compatibility_mapping()
 
 
-def register_provider(provider: WebSearchProvider) -> None:
+def register_provider(
+    provider: WebSearchProvider, *, profile_key: Optional[ProfileKeyLike] = None
+) -> None:
     """Register a web search/extract provider.
 
     Re-registration (same ``name``) overwrites the previous entry and logs
@@ -60,9 +68,7 @@ def register_provider(provider: WebSearchProvider) -> None:
     name = provider.name
     if not isinstance(name, str) or not name.strip():
         raise ValueError("Web provider .name must be a non-empty string")
-    with _lock:
-        existing = _providers.get(name)
-        _providers[name] = provider
+    existing = _registry.register(name, provider, profile_key=profile_key)
     if existing is not None:
         logger.debug(
             "Web provider '%s' re-registered (was %r)",
@@ -75,19 +81,21 @@ def register_provider(provider: WebSearchProvider) -> None:
         )
 
 
-def list_providers() -> List[WebSearchProvider]:
+def list_providers(
+    *, profile_key: Optional[ProfileKeyLike] = None
+) -> List[WebSearchProvider]:
     """Return all registered providers, sorted by name."""
-    with _lock:
-        items = list(_providers.values())
+    items = _registry.list(profile_key=profile_key)
     return sorted(items, key=lambda p: p.name)
 
 
-def get_provider(name: str) -> Optional[WebSearchProvider]:
+def get_provider(
+    name: str, *, profile_key: Optional[ProfileKeyLike] = None
+) -> Optional[WebSearchProvider]:
     """Return the provider registered under *name*, or None."""
     if not isinstance(name, str):
         return None
-    with _lock:
-        return _providers.get(name.strip())
+    return _registry.get(name, profile_key=profile_key)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +138,12 @@ _LEGACY_PREFERENCE = (
 )
 
 
-def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearchProvider]:
+def _resolve(
+    configured: Optional[str],
+    *,
+    capability: str,
+    profile_key: Optional[ProfileKeyLike] = None,
+) -> Optional[WebSearchProvider]:
     """Resolve the active provider for a capability ("search" | "extract").
 
     Resolution rules (in order):
@@ -160,20 +173,22 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
     matches the legacy preference; the dispatcher then returns a "set up a
     provider" error to the user.
     """
-    with _lock:
-        snapshot = dict(_providers)
+    key = selected_profile_key(profile_key)
+    snapshot = _registry.snapshot(profile_key=key)
 
     def _capable(p: WebSearchProvider) -> bool:
-        if capability == "search":
-            return bool(p.supports_search())
-        if capability == "extract":
-            return bool(p.supports_extract())
-        return False
+        with bind_profile_key(key):
+            if capability == "search":
+                return bool(p.supports_search())
+            if capability == "extract":
+                return bool(p.supports_extract())
+            return False
 
     def _is_available_safe(p: WebSearchProvider) -> bool:
         """Wrap ``is_available()`` so a buggy provider doesn't kill resolution."""
         try:
-            return bool(p.is_available())
+            with bind_profile_key(key):
+                return bool(p.is_available())
         except Exception as exc:  # noqa: BLE001
             logger.debug("provider %s.is_available() raised %s", p.name, exc)
             return False
@@ -278,27 +293,38 @@ def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Op
     return None
 
 
-def get_active_search_provider() -> Optional[WebSearchProvider]:
+def get_active_search_provider(
+    *, profile_key: Optional[ProfileKeyLike] = None
+) -> Optional[WebSearchProvider]:
     """Resolve the currently-active web search provider.
 
     Reads ``web.search_backend`` (preferred) or ``web.backend`` (shared
     fallback) from config.yaml; falls back per the module docstring.
     """
-    explicit = _read_config_key("web", "search_backend") or _read_config_key("web", "backend")
-    return _resolve(explicit, capability="search")
+    key = selected_profile_key(profile_key)
+    with bind_profile_key(key):
+        explicit = _read_config_key("web", "search_backend") or _read_config_key(
+            "web", "backend"
+        )
+        return _resolve(explicit, capability="search", profile_key=key)
 
 
-def get_active_extract_provider() -> Optional[WebSearchProvider]:
+def get_active_extract_provider(
+    *, profile_key: Optional[ProfileKeyLike] = None
+) -> Optional[WebSearchProvider]:
     """Resolve the currently-active web extract provider.
 
     Reads ``web.extract_backend`` (preferred) or ``web.backend`` (shared
     fallback) from config.yaml; falls back per the module docstring.
     """
-    explicit = _read_config_key("web", "extract_backend") or _read_config_key("web", "backend")
-    return _resolve(explicit, capability="extract")
+    key = selected_profile_key(profile_key)
+    with bind_profile_key(key):
+        explicit = _read_config_key("web", "extract_backend") or _read_config_key(
+            "web", "backend"
+        )
+        return _resolve(explicit, capability="extract", profile_key=key)
 
 
 def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
-    with _lock:
-        _providers.clear()
+    _registry.reset_for_tests()

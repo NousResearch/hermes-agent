@@ -15,16 +15,65 @@ Import chain (circular-import safe):
 """
 
 import ast
+import copy
 import importlib
 import json
 import logging
 import sys
 import threading
 import time
+from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+_MISSING = object()
+
+
+# The profile-scope module is introduced by the integration slice. Keep these
+# imports lazy so this independently-testable slice remains single-profile
+# compatible until that file is merged, while consuming its exact public API.
+_FALLBACK_PROFILE_KEY = "__hermes_launch_profile__"
+
+
+def _plugin_namespace_root(module_name: str) -> str:
+    """Return the plugin package root for legacy and profile-qualified modules."""
+    parts = module_name.split(".")
+    if len(parts) < 2:
+        return module_name
+    profile_component = parts[1]
+    profile_hash = profile_component.removeprefix("profile_")
+    if (
+        len(parts) >= 3
+        and profile_component.startswith("profile_")
+        and len(profile_hash) == 16
+        and all(char in "0123456789abcdef" for char in profile_hash)
+    ):
+        return ".".join(parts[:3])
+    return ".".join(parts[:2])
+
+
+def _capture_profile_key(profile_key=None):
+    try:
+        from agent.plugin_profile_scope import freeze_profile_key
+
+        return freeze_profile_key(profile_key)
+    except ImportError:
+        return str(profile_key) if profile_key is not None else _FALLBACK_PROFILE_KEY
+
+
+_check_fn_profile_generations: Dict[object, int] = {}
+
+
+def _check_fn_profile_generation(profile_key=None) -> int:
+    return _check_fn_profile_generations.get(_capture_profile_key(profile_key), 0)
+
+
+def _bump_check_fn_profile_generation(profile_key=None) -> int:
+    key = _capture_profile_key(profile_key)
+    generation = _check_fn_profile_generations.get(key, 0) + 1
+    _check_fn_profile_generations[key] = generation
+    return generation
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
@@ -188,6 +237,50 @@ class ToolEntry:
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
 
+    def snapshot(self) -> "ToolEntry":
+        """Freeze mutable metadata while preserving executable callables."""
+        return ToolEntry(
+            name=self.name,
+            toolset=self.toolset,
+            schema=copy.deepcopy(self.schema),
+            handler=self.handler,
+            check_fn=self.check_fn,
+            requires_env=list(self.requires_env),
+            is_async=self.is_async,
+            description=self.description,
+            emoji=self.emoji,
+            max_result_size_chars=self.max_result_size_chars,
+            dynamic_schema_overrides=self.dynamic_schema_overrides,
+        )
+
+
+class ToolProfileSnapshot:
+    """Immutable-by-convention tool authority captured for one live manager."""
+
+    __slots__ = (
+        "registry", "profile_key", "tools", "override_policies",
+        "toolset_checks", "toolset_aliases", "generation",
+    )
+
+    def __init__(
+        self,
+        *,
+        registry: "ToolRegistry",
+        profile_key,
+        tools: Dict[str, ToolEntry],
+        override_policies: Dict[str, bool],
+        toolset_checks: Dict[str, Callable],
+        toolset_aliases: Dict[str, str],
+        generation: int,
+    ) -> None:
+        self.registry = registry
+        self.profile_key = profile_key
+        self.tools = tools
+        self.override_policies = override_policies
+        self.toolset_checks = toolset_checks
+        self.toolset_aliases = toolset_aliases
+        self.generation = generation
+
 
 # ---------------------------------------------------------------------------
 # check_fn TTL cache
@@ -218,9 +311,9 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # as a flake (last-good True is served) rather than a real outage. Kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
-_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_check_fn_cache: Dict[tuple[str, int, Callable], tuple[float, bool]] = {}
 # Monotonic timestamp of the most recent True result per check_fn.
-_check_fn_last_good: Dict[Callable, float] = {}
+_check_fn_last_good: Dict[tuple[str, Callable], float] = {}
 _check_fn_cache_lock = threading.Lock()
 
 
@@ -234,8 +327,12 @@ def _check_fn_cached(fn: Callable) -> bool:
     contention, probe timeout) from silently stripping tools mid-session.
     """
     now = time.monotonic()
+    profile_key = _capture_profile_key()
+    generation = _check_fn_profile_generation(profile_key)
+    cache_key = (profile_key, generation, fn)
+    last_good_key = (profile_key, fn)
     with _check_fn_cache_lock:
-        cached = _check_fn_cache.get(fn)
+        cached = _check_fn_cache.get(cache_key)
         if cached is not None:
             ts, value = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
@@ -250,11 +347,11 @@ def _check_fn_cached(fn: Callable) -> bool:
 
     with _check_fn_cache_lock:
         if value:
-            _check_fn_last_good[fn] = now
-            _check_fn_cache[fn] = (now, True)
+            _check_fn_last_good[last_good_key] = now
+            _check_fn_cache[cache_key] = (now, True)
             return True
 
-        last_good = _check_fn_last_good.get(fn)
+        last_good = _check_fn_last_good.get(last_good_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
             # Recent success → treat this failure as a flake. Serve last-good
             # True and do NOT cache the failure, so the next call re-probes
@@ -275,50 +372,171 @@ def _check_fn_cached(fn: Callable) -> bool:
             getattr(fn, "__qualname__", fn),
             "raised" if raised else "returned False",
         )
-        _check_fn_cache[fn] = (now, False)
+        _check_fn_cache[cache_key] = (now, False)
         return False
 
 
-def invalidate_check_fn_cache() -> None:
-    """Drop all cached ``check_fn`` results. Call after config changes that
-    affect tool availability (e.g. ``hermes tools enable``)."""
+def invalidate_check_fn_cache(profile_key=None, *, all_profiles: bool = False) -> None:
+    """Drop cached ``check_fn`` results for one profile (or every profile).
+
+    Profile-local invalidation prevents a config/reload event in one selected
+    profile from flushing or reusing another profile's secret-dependent probe.
+    """
     with _check_fn_cache_lock:
-        _check_fn_cache.clear()
-        _check_fn_last_good.clear()
+        if all_profiles:
+            _check_fn_cache.clear()
+            _check_fn_last_good.clear()
+            return
+        key = _capture_profile_key(profile_key)
+        for cache_key in [item for item in _check_fn_cache if item[0] == key]:
+            _check_fn_cache.pop(cache_key, None)
+        for cache_key in [item for item in _check_fn_last_good if item[0] == key]:
+            _check_fn_last_good.pop(cache_key, None)
 
 
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
     def __init__(self):
+        # Shared built-in base plus per-profile overlays. The base is never
+        # replaced by selected-profile plugin discovery.
+        self._launch_profile_key = _capture_profile_key()
         self._tools: Dict[str, ToolEntry] = {}
-        # Durable map: plugin module namespace (handler.__globals__["__name__"])
-        # -> operator opt-in for built-in override. Populated at plugin load and
-        # never cleared, so a plugin's override authorization is bound to the
-        # code that defined the handler, independent of WHEN the register() call
-        # happens (sync during load, or a delayed/threaded callback afterwards).
+        # Kept for backward compatibility with callers/tests that inspect the
+        # launch policy map; new plugin policy is profile-local below.
         self._plugin_override_policy: Dict[str, bool] = {}
+        self._profile_tools: Dict[object, Dict[str, ToolEntry]] = {}
+        self._profile_override_policies: Dict[object, Dict[str, bool]] = {}
+        self._profile_toolset_checks: Dict[object, Dict[str, Callable]] = {}
+        self._profile_toolset_aliases: Dict[object, Dict[str, str]] = {}
+        self._profile_registry_generations: Dict[object, int] = {}
+        # Per-publication compare-and-swap tokens make failed-plugin rollback
+        # safe against a concurrent later writer, even when it writes the same
+        # object back into the same logical slot.
+        self._profile_slot_generations: Dict[object, Dict[tuple[str, str], int]] = {}
+        self._next_profile_slot_generation: int = 0
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
         # reading tool metadata, so keep mutations serialized and readers on
         # stable snapshots.
         self._lock = threading.RLock()
-        # Monotonically-increasing generation counter. Bumped on every
-        # mutation (register / deregister / register_toolset_alias / MCP
-        # refresh). External callers (e.g. get_tool_definitions) can memoize
-        # against it: a cache entry keyed on the generation is valid for as
-        # long as the generation hasn't changed.
-        self._generation: int = 0
+        # Built-in generation. Profile-local mutations are tracked separately.
+        self._base_generation: int = 0
+        self._bound_profile_snapshot: ContextVar[Optional[ToolProfileSnapshot]] = (
+            ContextVar(f"tool_registry_snapshot_{id(self)}", default=None)
+        )
 
-    def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
-        """Return a coherent snapshot of registry entries and toolset checks."""
+    def capture_profile_snapshot(self, profile_key=None) -> ToolProfileSnapshot:
+        """Capture one profile overlay for a live plugin-manager generation."""
+        key = _capture_profile_key(profile_key)
         with self._lock:
-            return list(self._tools.values()), dict(self._toolset_checks)
+            return ToolProfileSnapshot(
+                registry=self,
+                profile_key=key,
+                tools={
+                    name: entry.snapshot()
+                    for name, entry in self._profile_tools.get(key, {}).items()
+                },
+                override_policies=dict(self._profile_override_policies.get(key, {})),
+                toolset_checks=dict(self._profile_toolset_checks.get(key, {})),
+                toolset_aliases=dict(self._profile_toolset_aliases.get(key, {})),
+                generation=self._profile_registry_generations.get(key, 0),
+            )
+
+    def bind_profile_snapshot(self, snapshot: ToolProfileSnapshot) -> Token:
+        """Select the exact tool overlay owned by a live plugin manager."""
+        if snapshot.registry is not self:
+            raise ValueError("tool profile snapshot belongs to a different registry")
+        return self._bound_profile_snapshot.set(snapshot)
+
+    def reset_profile_snapshot(self, token: Token) -> None:
+        self._bound_profile_snapshot.reset(token)
+
+    def _selected_profile_snapshot(self, profile_key=None) -> Optional[ToolProfileSnapshot]:
+        snapshot = self._bound_profile_snapshot.get()
+        if snapshot is None:
+            return None
+        key = _capture_profile_key(profile_key)
+        return snapshot if snapshot.profile_key == key else None
+
+    def _snapshot_state(self, profile_key=None) -> tuple[List[ToolEntry], Dict[str, Callable]]:
+        """Return a coherent built-in + profile-overlay snapshot."""
+        key = _capture_profile_key(profile_key)
+        with self._lock:
+            snapshot = self._selected_profile_snapshot(key)
+            tools = dict(self._tools)
+            tools.update(
+                snapshot.tools
+                if snapshot is not None
+                else self._profile_tools.get(key, {})
+            )
+            checks = dict(self._toolset_checks)
+            checks.update(
+                snapshot.toolset_checks
+                if snapshot is not None
+                else self._profile_toolset_checks.get(key, {})
+            )
+            return list(tools.values()), checks
 
     def _snapshot_entries(self) -> List[ToolEntry]:
         """Return a stable snapshot of registered tool entries."""
         return self._snapshot_state()[0]
+
+    def generation(self, profile_key=None) -> tuple[int, int]:
+        """Return a cache fingerprint for built-ins and one profile overlay."""
+        key = _capture_profile_key(profile_key)
+        with self._lock:
+            snapshot = self._selected_profile_snapshot(key)
+            return (
+                self._base_generation,
+                snapshot.generation
+                if snapshot is not None
+                else self._profile_registry_generations.get(key, 0),
+            )
+
+    @property
+    def _generation(self) -> int:
+        """Backward-compatible current-profile monotonic generation."""
+        key = _capture_profile_key()
+        with self._lock:
+            snapshot = self._selected_profile_snapshot(key)
+            return (
+                self._base_generation
+                + (
+                    snapshot.generation
+                    if snapshot is not None
+                    else self._profile_registry_generations.get(key, 0)
+                )
+            )
+
+    def _bump_profile_mutation(self, profile_key: object) -> None:
+        self._profile_registry_generations[profile_key] = (
+            self._profile_registry_generations.get(profile_key, 0) + 1
+        )
+        _bump_check_fn_profile_generation(profile_key)
+
+    def _write_profile_slot_generation(
+        self, profile_key: object, category: str, name: str
+    ) -> int:
+        self._next_profile_slot_generation += 1
+        generation = self._next_profile_slot_generation
+        self._profile_slot_generations.setdefault(profile_key, {})[
+            (category, name)
+        ] = generation
+        return generation
+
+    def clear_profile(self, profile_key=None) -> None:
+        """Discard one overlay without touching built-ins or peer profiles."""
+        key = _capture_profile_key(profile_key)
+        with self._lock:
+            self._profile_tools.pop(key, None)
+            self._profile_override_policies.pop(key, None)
+            self._profile_toolset_checks.pop(key, None)
+            self._profile_toolset_aliases.pop(key, None)
+            self._profile_slot_generations.pop(key, None)
+            self._bump_profile_mutation(key)
+        invalidate_check_fn_cache(key)
 
     def _toolset_has_exposable_tools(
         self,
@@ -345,9 +563,12 @@ class ToolRegistry:
         return False
 
     def get_entry(self, name: str) -> Optional[ToolEntry]:
-        """Return a registered tool entry by name, or None."""
+        """Return the current profile's overlay entry, then built-in base."""
+        key = _capture_profile_key()
         with self._lock:
-            return self._tools.get(name)
+            snapshot = self._selected_profile_snapshot(key)
+            overlay = snapshot.tools if snapshot is not None else self._profile_tools.get(key, {})
+            return overlay.get(name, self._tools.get(name))
 
     def get_registered_toolset_names(self) -> List[str]:
         """Return sorted unique toolset names present in the registry."""
@@ -361,63 +582,121 @@ class ToolRegistry:
         )
 
     def register_toolset_alias(self, alias: str, toolset: str) -> None:
-        """Register an explicit alias for a canonical toolset name."""
+        """Register an explicit alias for the current profile."""
+        key = _capture_profile_key()
         with self._lock:
-            existing = self._toolset_aliases.get(alias)
+            aliases = self._profile_toolset_aliases.setdefault(key, {})
+            existing = aliases.get(alias)
             if existing and existing != toolset:
                 logger.warning(
                     "Toolset alias collision: '%s' (%s) overwritten by %s",
                     alias, existing, toolset,
                 )
-            self._toolset_aliases[alias] = toolset
-            self._generation += 1
+            aliases[alias] = toolset
+            self._bump_profile_mutation(key)
 
     def get_registered_toolset_aliases(self) -> Dict[str, str]:
-        """Return a snapshot of ``{alias: canonical_toolset}`` mappings."""
+        """Return a built-in + current-profile alias snapshot."""
         with self._lock:
-            return dict(self._toolset_aliases)
+            key = _capture_profile_key()
+            snapshot = self._selected_profile_snapshot(key)
+            aliases = dict(self._toolset_aliases)
+            aliases.update(
+                snapshot.toolset_aliases
+                if snapshot is not None
+                else self._profile_toolset_aliases.get(key, {})
+            )
+            return aliases
 
     def get_toolset_alias_target(self, alias: str) -> Optional[str]:
-        """Return the canonical toolset name for an alias, or None."""
+        """Return the current profile's canonical target, or None."""
         with self._lock:
-            return self._toolset_aliases.get(alias)
+            key = _capture_profile_key()
+            snapshot = self._selected_profile_snapshot(key)
+            profile_aliases = (
+                snapshot.toolset_aliases
+                if snapshot is not None
+                else self._profile_toolset_aliases.get(key, {})
+            )
+            return profile_aliases.get(alias, self._toolset_aliases.get(alias))
 
     # ------------------------------------------------------------------
     # Registration
     # ------------------------------------------------------------------
 
     def register_plugin_override_policy(self, module_namespace: str, allowed: bool) -> None:
-        """Bind a plugin module namespace to its operator opt-in for built-in
-        override. Called once per plugin at load time. Durable: never cleared,
-        so later (even threaded/delayed) register() calls from that module are
-        still gated by the same policy.
-        """
+        """Bind a plugin package's override opt-in to the current profile."""
+        key = _capture_profile_key()
+        module_root = _plugin_namespace_root(module_namespace)
         with self._lock:
-            self._plugin_override_policy[module_namespace] = bool(allowed)
+            policies = self._profile_override_policies.setdefault(key, {})
+            previous = policies.get(module_root, _MISSING)
+            policies[module_root] = bool(allowed)
+            written_generation = self._write_profile_slot_generation(
+                key, "override-policy", module_root
+            )
+            self._bump_profile_mutation(key)
 
-    def _plugin_owner_of(self, handler: Callable) -> Optional[str]:
-        """Return the plugin module namespace that defined *handler*, or None
-        if it was not defined in a loaded plugin module.
+            try:
+                from agent.plugin_profile_scope import record_registration_undo
+            except ImportError:
+                record_registration_undo = None
+            if record_registration_undo is not None:
+                def _undo() -> None:
+                    with self._lock:
+                        generations = self._profile_slot_generations.get(key, {})
+                        if generations.get(("override-policy", module_root)) != written_generation:
+                            return
+                        current = self._profile_override_policies.get(key)
+                        if current is None:
+                            return
+                        if previous is _MISSING:
+                            current.pop(module_root, None)
+                        else:
+                            current[module_root] = previous
+                        self._write_profile_slot_generation(
+                            key, "override-policy", module_root
+                        )
+                        self._bump_profile_mutation(key)
 
-        Authorization is bound to where the handler was DEFINED
-        (``handler.__globals__["__name__"]``), which is fixed at definition
-        time and cannot drift with the call site, thread, or timing. Lambdas
-        and nested functions inherit the defining module's globals, so a
-        plugin cannot launder an override through a callback. Built-in/MCP
-        handlers live outside the plugin namespace and return None (unchanged
-        behavior).
-        """
+                record_registration_undo(key, _undo)
+
+    def _plugin_owner_of(
+        self, handler: Callable, profile_key: object | None = None
+    ) -> Optional[str]:
+        """Return the defining plugin package root for *handler*, if any."""
         try:
             mod = handler.__globals__.get("__name__", "")  # type: ignore[attr-defined]
         except AttributeError:
             return None
-        if mod in self._plugin_override_policy:
-            return mod
-        # Also gate plugin modules currently loading but not yet policy-recorded
-        # (defensive: a handler defined in the plugin namespace is plugin code).
-        if isinstance(mod, str) and mod.startswith("hermes_plugins."):
-            return mod
-        return None
+        if not isinstance(mod, str):
+            return None
+        return self._plugin_owner_from_module(mod, profile_key)
+
+    def _plugin_owner_from_module(
+        self, module_name: str, profile_key: object | None = None
+    ) -> Optional[str]:
+        """Resolve a module to its exact plugin policy owner, when applicable."""
+        if not module_name.startswith("hermes_plugins."):
+            return None
+        key = _capture_profile_key(profile_key)
+        policy_owners = self._profile_policy(key)
+        matching_owners = [
+            owner
+            for owner in policy_owners
+            if module_name == owner or module_name.startswith(f"{owner}.")
+        ]
+        if matching_owners:
+            return max(matching_owners, key=len)
+        return _plugin_namespace_root(module_name)
+
+    def _profile_policy(self, profile_key: object) -> Dict[str, bool]:
+        snapshot = self._selected_profile_snapshot(profile_key)
+        return (
+            snapshot.override_policies
+            if snapshot is not None
+            else self._profile_override_policies.get(profile_key, {})
+        )
 
     @staticmethod
     def _caller_module() -> str:
@@ -458,45 +737,42 @@ class ToolRegistry:
         registrations that would shadow an existing tool from a different
         toolset are rejected to prevent accidental overwrites.
         """
+        profile_key = _capture_profile_key()
         with self._lock:
-            existing = self._tools.get(name)
+            owner = self._plugin_owner_of(handler, profile_key)
+            is_profile_entry = (
+                owner is not None or profile_key != self._launch_profile_key
+            )
+            overlay = self._profile_tools.setdefault(profile_key, {})
+            previous_profile_entry = overlay.get(name, _MISSING)
+            existing = overlay.get(name, self._tools.get(name))
             if existing and existing.toolset != toolset:
                 if override:
-                    _owner = self._plugin_owner_of(handler)
-                    if _owner is not None and not self._plugin_override_policy.get(_owner, False):
+                    if owner is not None and not self._profile_policy(profile_key).get(owner, False):
                         logger.error(
                             "Tool registration REJECTED: plugin %r attempted to "
-                            "override built-in tool %r (existing toolset %r) without "
-                            "operator opt-in. Set "
-                            "plugins.entries.<plugin_id>.allow_tool_override: true "
-                            "in config.yaml to allow it.",
-                            _owner, name, existing.toolset,
+                            "override tool %r for profile %r without operator opt-in",
+                            owner, name, profile_key,
                         )
                         raise PermissionError(
-                            f"Plugin module {_owner!r} cannot override built-in "
-                            f"tool {name!r} without operator opt-in "
+                            f"Plugin module {owner!r} cannot override tool {name!r} "
+                            f"for profile {profile_key!r} without operator opt-in "
                             f"(allow_tool_override)."
                         )
-                    # Explicit opt-in (or non-plugin caller): replace the tool.
-                    # Logged at INFO so the override is auditable in agent.log.
                     logger.info(
                         "Tool '%s': toolset '%s' overriding existing toolset '%s' "
-                        "(override=True opt-in)",
-                        name, toolset, existing.toolset,
+                        "for profile %r (override=True opt-in)",
+                        name, toolset, existing.toolset, profile_key,
                     )
                 else:
-                    # Reject every cross-toolset shadow, including MCP-to-MCP
-                    # collisions. Legitimate MCP reconnect/refresh re-registers
-                    # within the same canonical toolset and remains allowed.
                     logger.error(
                         "Tool registration REJECTED: '%s' (toolset '%s') would "
-                        "shadow existing tool from toolset '%s'. Pass "
-                        "override=True to register() if the replacement is "
-                        "intentional, or deregister the existing tool first.",
-                        name, toolset, existing.toolset,
+                        "shadow existing tool from toolset '%s' in profile %r. "
+                        "Pass override=True if intentional.",
+                        name, toolset, existing.toolset, profile_key,
                     )
                     return
-            self._tools[name] = ToolEntry(
+            entry = ToolEntry(
                 name=name,
                 toolset=toolset,
                 schema=schema,
@@ -509,15 +785,58 @@ class ToolRegistry:
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
             )
-            # Availability is now derived per-tool (_toolset_has_exposable_tools),
-            # so this map no longer gates a toolset. It is still consumed by
-            # get_toolset_requirements -> TOOLSET_REQUIREMENTS["check_fn"], which
-            # banner.py reads (presence only, never called) to classify an
-            # already-unavailable toolset as lazy-init vs disabled. Keep the
-            # write path for that classification.
-            if check_fn and toolset not in self._toolset_checks:
-                self._toolset_checks[toolset] = check_fn
-            self._generation += 1
+            if is_profile_entry:
+                checks = self._profile_toolset_checks.setdefault(profile_key, {})
+                previous_check = checks.get(toolset, _MISSING)
+                overlay[name] = entry
+                if check_fn and toolset not in checks:
+                    checks[toolset] = check_fn
+                written_generation = self._write_profile_slot_generation(
+                    profile_key, "tool", name
+                )
+                self._bump_profile_mutation(profile_key)
+
+                try:
+                    from agent.plugin_profile_scope import record_registration_undo
+                except ImportError:
+                    record_registration_undo = None
+                if record_registration_undo is not None:
+                    def _undo() -> None:
+                        with self._lock:
+                            generations = self._profile_slot_generations.get(
+                                profile_key, {}
+                            )
+                            if generations.get(("tool", name)) != written_generation:
+                                return
+                            current_overlay = self._profile_tools.get(profile_key)
+                            if current_overlay is None:
+                                return
+                            if previous_profile_entry is _MISSING:
+                                current_overlay.pop(name, None)
+                            else:
+                                current_overlay[name] = previous_profile_entry
+                            current_checks = self._profile_toolset_checks.get(
+                                profile_key, {}
+                            )
+                            if previous_check is _MISSING:
+                                if not any(
+                                    candidate.toolset == toolset
+                                    for candidate in current_overlay.values()
+                                ):
+                                    current_checks.pop(toolset, None)
+                            else:
+                                current_checks[toolset] = previous_check
+                            self._write_profile_slot_generation(
+                                profile_key, "tool", name
+                            )
+                            self._bump_profile_mutation(profile_key)
+
+                    record_registration_undo(profile_key, _undo)
+            else:
+                self._tools[name] = entry
+                if check_fn and toolset not in self._toolset_checks:
+                    self._toolset_checks[toolset] = check_fn
+                self._base_generation += 1
 
     def deregister(self, name: str) -> None:
         """Remove a tool from the registry.
@@ -535,55 +854,70 @@ class ToolRegistry:
         dynamic tool discovery legitimately nukes-and-repaves its own tools on
         every refresh and has no plugin-override concept.
         """
+        profile_key = _capture_profile_key()
         with self._lock:
-            entry = self._tools.get(name)
+            overlay = self._profile_tools.get(profile_key, {})
+            entry = overlay.get(name)
+            target_is_profile = entry is not None
+            if entry is None:
+                entry = self._tools.get(name)
             if entry is None:
                 return
             if not entry.toolset.startswith("mcp-"):
                 caller_mod = self._caller_module()
-                owner = self._plugin_owner_of(entry.handler)
-                # Ownership check: bind to the plugin package root
-                # (``hermes_plugins.{name}``), not the exact module string.
-                # A handler defined in ``hermes_plugins.pkg.handlers`` is
-                # still owned by the ``hermes_plugins.pkg`` package — exact
-                # string equality would wrongly block root-module cleanup code
-                # from removing tools registered by a submodule of the same
-                # plugin (egilewski review on #55840).
-                caller_root = ".".join(caller_mod.split(".")[:2])
-                owner_root = ".".join(owner.split(".")[:2]) if owner else ""
-                same_plugin = bool(owner and caller_root == owner_root)
+                owner = self._plugin_owner_of(entry.handler, profile_key)
+                caller_root = (
+                    self._plugin_owner_from_module(caller_mod, profile_key)
+                    if caller_mod.startswith("hermes_plugins.")
+                    else caller_mod
+                )
+                same_plugin = bool(owner and caller_root == owner)
                 if (
                     caller_mod.startswith("hermes_plugins.")
                     and not same_plugin
-                    and not self._plugin_override_policy.get(caller_root, False)
+                    and not self._profile_policy(profile_key).get(caller_root, False)
                 ):
                     logger.error(
                         "Tool deregistration REJECTED: plugin %r attempted to "
-                        "remove tool %r (toolset %r) it does not own, without "
-                        "operator opt-in. Set "
-                        "plugins.entries.%s.allow_tool_override: true in "
-                        "config.yaml to allow it.",
-                        caller_mod, name, entry.toolset, caller_mod,
+                        "remove tool %r (toolset %r) in profile %r without opt-in",
+                        caller_mod, name, entry.toolset, profile_key,
                     )
                     raise PermissionError(
                         f"Plugin module {caller_mod!r} cannot deregister tool "
                         f"{name!r} (toolset {entry.toolset!r}) without operator "
                         f"opt-in (allow_tool_override)."
                     )
-            del self._tools[name]
-            # Drop the toolset check and aliases if this was the last tool in
-            # that toolset.
-            toolset_still_exists = any(
-                e.toolset == entry.toolset for e in self._tools.values()
-            )
-            if not toolset_still_exists:
-                self._toolset_checks.pop(entry.toolset, None)
-                self._toolset_aliases = {
-                    alias: target
-                    for alias, target in self._toolset_aliases.items()
+            if target_is_profile:
+                del overlay[name]
+                remaining = list(overlay.values())
+                checks = self._profile_toolset_checks.get(profile_key, {})
+                aliases = self._profile_toolset_aliases.get(profile_key, {})
+            else:
+                del self._tools[name]
+                remaining = list(self._tools.values())
+                checks = self._toolset_checks
+                aliases = self._toolset_aliases
+            if not any(item.toolset == entry.toolset for item in remaining):
+                checks.pop(entry.toolset, None)
+                filtered = {
+                    alias: target for alias, target in aliases.items()
                     if target != entry.toolset
                 }
-            self._generation += 1
+                if target_is_profile:
+                    self._profile_toolset_aliases[profile_key] = filtered
+                else:
+                    self._toolset_aliases = filtered
+                    # MCP aliases are registered in the active profile overlay
+                    # even when their launch-time tool entry is in the base.
+                    profile_aliases = self._profile_toolset_aliases.get(profile_key, {})
+                    self._profile_toolset_aliases[profile_key] = {
+                        alias: target for alias, target in profile_aliases.items()
+                        if target != entry.toolset
+                    }
+            if target_is_profile:
+                self._bump_profile_mutation(profile_key)
+            else:
+                self._base_generation += 1
         logger.debug("Deregistered tool: %s", name)
 
     # ------------------------------------------------------------------

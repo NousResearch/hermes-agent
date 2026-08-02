@@ -37,19 +37,27 @@ job is purely selection, not capability routing.
 from __future__ import annotations
 
 import logging
-import threading
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from agent.browser_provider import BrowserProvider
+from agent.plugin_profile_scope import (
+    bind_profile_key,
+    ProfileKeyLike,
+    ProfileProviderRegistry,
+    selected_profile_key,
+)
 
 logger = logging.getLogger(__name__)
 
 
-_providers: Dict[str, BrowserProvider] = {}
-_lock = threading.Lock()
+_registry: ProfileProviderRegistry[BrowserProvider] = ProfileProviderRegistry()
+_lock = _registry.lock
+_providers = _registry.compatibility_mapping()
 
 
-def register_provider(provider: BrowserProvider) -> None:
+def register_provider(
+    provider: BrowserProvider, *, profile_key: Optional[ProfileKeyLike] = None
+) -> None:
     """Register a cloud browser provider.
 
     Re-registration (same ``name``) overwrites the previous entry and logs
@@ -64,9 +72,7 @@ def register_provider(provider: BrowserProvider) -> None:
     name = provider.name
     if not isinstance(name, str) or not name.strip():
         raise ValueError("Browser provider .name must be a non-empty string")
-    with _lock:
-        existing = _providers.get(name)
-        _providers[name] = provider
+    existing = _registry.register(name, provider, profile_key=profile_key)
     if existing is not None:
         logger.debug(
             "Browser provider '%s' re-registered (was %r)",
@@ -79,19 +85,21 @@ def register_provider(provider: BrowserProvider) -> None:
         )
 
 
-def list_providers() -> List[BrowserProvider]:
+def list_providers(
+    *, profile_key: Optional[ProfileKeyLike] = None
+) -> List[BrowserProvider]:
     """Return all registered providers, sorted by name."""
-    with _lock:
-        items = list(_providers.values())
+    items = _registry.list(profile_key=profile_key)
     return sorted(items, key=lambda p: p.name)
 
 
-def get_provider(name: str) -> Optional[BrowserProvider]:
+def get_provider(
+    name: str, *, profile_key: Optional[ProfileKeyLike] = None
+) -> Optional[BrowserProvider]:
     """Return the provider registered under *name*, or None."""
     if not isinstance(name, str):
         return None
-    with _lock:
-        return _providers.get(name.strip())
+    return _registry.get(name, profile_key=profile_key)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +118,9 @@ _LEGACY_PREFERENCE = (
 )
 
 
-def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
+def _resolve(
+    configured: Optional[str], *, profile_key: Optional[ProfileKeyLike] = None
+) -> Optional[BrowserProvider]:
     """Resolve the active browser provider.
 
     Resolution rules (in order):
@@ -143,13 +153,14 @@ def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
     matches the legacy preference; the dispatcher then falls back to local
     browser mode.
     """
-    with _lock:
-        snapshot = dict(_providers)
+    key = selected_profile_key(profile_key)
+    snapshot = _registry.snapshot(profile_key=key)
 
     def _is_available_safe(p: BrowserProvider) -> bool:
         """Wrap ``is_available()`` so a buggy provider doesn't kill resolution."""
         try:
-            return bool(p.is_available())
+            with bind_profile_key(key):
+                return bool(p.is_available())
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Browser provider %s.is_available() raised %s — treating as unavailable",
@@ -188,5 +199,4 @@ def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
 
 def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
-    with _lock:
-        _providers.clear()
+    _registry.reset_for_tests()

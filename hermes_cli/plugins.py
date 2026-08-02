@@ -34,6 +34,8 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import hashlib
 import importlib.metadata
 import importlib.util
 import inspect
@@ -46,7 +48,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from utils import env_var_enabled, fast_safe_load
 from hermes_cli.config import cfg_get
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
@@ -74,6 +80,10 @@ class PluginToolOverrideError(PermissionError):
     """Raised when a plugin attempts to override a built-in tool without
     operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override``.
     """
+
+
+class PluginScopeError(PermissionError):
+    """Raised when a profile plugin tries to publish process-global state."""
 
 
 logger = logging.getLogger(__name__)
@@ -346,6 +356,15 @@ class PluginContext:
         self._llm: Any = None
         self._subagent_lifecycle: Any = None
 
+    def _record_undo(self, undo: Callable[[], None]) -> None:
+        """Attach a compare-before-restore undo to the active plugin load."""
+        from agent.plugin_profile_scope import (
+            record_registration_undo,
+            selected_profile_key,
+        )
+
+        record_registration_undo(selected_profile_key(), undo)
+
     # -- host-owned LLM access ----------------------------------------------
 
     @property
@@ -533,6 +552,7 @@ class PluginContext:
         The *setup_fn* receives an argparse subparser and should add any
         arguments/sub-subparsers.  If *handler_fn* is provided it is set
         as the default dispatch function via ``set_defaults(func=...)``."""
+        self._manager.require_global_publication("CLI command")
         self._manager._cli_commands[name] = {
             "name": name,
             "help": help,
@@ -704,9 +724,11 @@ class PluginContext:
         cannot crash the host. Same convention as
         ``register_image_gen_provider``.
         """
+        self._manager.require_global_publication("dashboard-auth provider")
         from hermes_cli.dashboard_auth import (
             DashboardAuthProvider, register_provider,
         )
+        from hermes_cli.dashboard_auth import registry as _dashboard_registry
 
         if not isinstance(provider, DashboardAuthProvider):
             logger.warning(
@@ -728,6 +750,13 @@ class PluginContext:
             "Plugin '%s' registered dashboard-auth provider: %s (%s)",
             self.manifest.name, provider.name, provider.display_name,
         )
+
+        def _undo_dashboard_provider() -> None:
+            with _dashboard_registry._lock:
+                if _dashboard_registry._providers.get(provider.name) is provider:
+                    _dashboard_registry._providers.pop(provider.name, None)
+
+        self._record_undo(_undo_dashboard_provider)
 
     # -- video gen provider registration -------------------------------------
 
@@ -847,7 +876,9 @@ class PluginContext:
         set), and a ``fetch()`` that never raises and never prompts.
         See the base-module docstring for the full contract.
         """
+        self._manager.require_global_publication("secret source")
         from agent.secret_sources.base import SecretSource
+        from agent.secret_sources import registry as _secret_registry
         from agent.secret_sources.registry import register_source
 
         if not isinstance(source, SecretSource):
@@ -862,6 +893,12 @@ class PluginContext:
                 "Plugin '%s' registered secret source: %s",
                 self.manifest.name, source.name,
             )
+
+            def _undo_secret_source() -> None:
+                if _secret_registry._SOURCES.get(source.name) is source:
+                    _secret_registry._SOURCES.pop(source.name, None)
+
+            self._record_undo(_undo_secret_source)
 
     # -- TTS provider registration -------------------------------------------
 
@@ -979,6 +1016,7 @@ class PluginContext:
                 setup_fn=irc_interactive_setup,
             )
         """
+        self._manager.require_global_publication("gateway platform")
         from gateway.platform_registry import platform_registry, PlatformEntry
 
         entry_kwargs.setdefault("plugin_name", self.manifest.name)
@@ -993,8 +1031,22 @@ class PluginContext:
             source="plugin",
             **entry_kwargs,
         )
+        previous_entry = platform_registry._entries.get(name)
+        previous_deferred = platform_registry._deferred.get(name)
         platform_registry.register(entry)
         self._manager._plugin_platform_names.add(name)
+
+        def _undo_platform() -> None:
+            if platform_registry._entries.get(name) is not entry:
+                return
+            if previous_entry is None:
+                platform_registry._entries.pop(name, None)
+            else:
+                platform_registry._entries[name] = previous_entry
+            if previous_deferred is not None:
+                platform_registry._deferred[name] = previous_deferred
+
+        self._record_undo(_undo_platform)
         logger.debug(
             "Plugin %s registered platform: %s",
             self.manifest.name,
@@ -1040,6 +1092,7 @@ class PluginContext:
 
             ctx.register_slack_action_handler("inbox_sweep_approve", _on_approve)
         """
+        self._manager.require_global_publication("Slack action handler")
         if not callable(callback):
             raise ValueError(
                 f"Plugin '{self.manifest.name}' tried to register a Slack "
@@ -1265,9 +1318,19 @@ class PluginContext:
 # ---------------------------------------------------------------------------
 
 class PluginManager:
-    """Central manager that discovers, loads, and invokes plugins."""
+    """Central manager that discovers, loads, and invokes one profile's plugins."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        profile_home: str | Path | None = None,
+        allow_global_publication: bool = True,
+    ) -> None:
+        resolved_home = Path(profile_home or get_hermes_home()).expanduser().resolve()
+        self.profile_home = resolved_home
+        self.profile_key = hashlib.sha256(str(resolved_home).encode("utf-8")).hexdigest()[:16]
+        self.module_namespace = f"{_NS_PARENT}.profile_{self.profile_key}"
+        self.allow_global_publication = bool(allow_global_publication)
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._middleware: Dict[str, List[Callable]] = {}
@@ -1290,6 +1353,53 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        self._discovery_lock = threading.RLock()
+        self._tool_registry_snapshot = None
+
+    def _capture_registration_state(self) -> dict:
+        """Snapshot every manager-owned publication surface for one plugin call."""
+        return {
+            "hooks": {name: list(callbacks) for name, callbacks in self._hooks.items()},
+            "middleware": {
+                name: list(callbacks) for name, callbacks in self._middleware.items()
+            },
+            "plugin_tool_names": set(self._plugin_tool_names),
+            "plugin_platform_names": set(self._plugin_platform_names),
+            "cli_commands": dict(self._cli_commands),
+            "context_engine": self._context_engine,
+            "plugin_commands": dict(self._plugin_commands),
+            "plugin_skills": dict(self._plugin_skills),
+            "aux_tasks": dict(self._aux_tasks),
+            "slack_action_handlers": list(self._slack_action_handlers),
+        }
+
+    def _restore_registration_state(self, snapshot: dict) -> None:
+        """Restore a failed call while the manager discovery lock is held."""
+        self._hooks = snapshot["hooks"]
+        self._middleware = snapshot["middleware"]
+        self._plugin_tool_names = snapshot["plugin_tool_names"]
+        self._plugin_platform_names = snapshot["plugin_platform_names"]
+        self._cli_commands = snapshot["cli_commands"]
+        self._context_engine = snapshot["context_engine"]
+        self._plugin_commands = snapshot["plugin_commands"]
+        self._plugin_skills = snapshot["plugin_skills"]
+        self._aux_tasks = snapshot["aux_tasks"]
+        self._slack_action_handlers = snapshot["slack_action_handlers"]
+
+    def require_global_publication(self, capability: str) -> None:
+        """Reject process-global publication from a selected remote profile.
+
+        Hooks, middleware, slash commands, auxiliary tasks, context engines,
+        and skills stay manager-owned. CLI/Slack/dashboard-auth/secret/platform
+        registrations target launch-global surfaces and therefore cannot be
+        published by a selected profile served inside that process.
+        """
+        if self.allow_global_publication:
+            return
+        raise PluginScopeError(
+            f"{capability} publication is restricted to the launch profile; "
+            f"selected profile {self.profile_home} is session-scoped"
+        )
 
     # -----------------------------------------------------------------------
     # Public
@@ -1302,36 +1412,41 @@ class PluginManager:
         changes or newly-added bundled backends become visible in long-lived
         sessions without requiring a full agent restart.
         """
-        if self._discovered and not force:
-            return
-        if env_var_enabled("HERMES_SAFE_MODE"):
-            logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
+        with self._discovery_lock:
+            if self._discovered and not force:
+                return
+            if env_var_enabled("HERMES_SAFE_MODE"):
+                logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
+                self._discovered = True
+                return
+            if force:
+                self._plugins.clear()
+                self._hooks.clear()
+                self._middleware.clear()
+                self._plugin_tool_names.clear()
+                self._plugin_platform_names.clear()
+                self._cli_commands.clear()
+                self._plugin_commands.clear()
+                self._plugin_skills.clear()
+                self._aux_tasks.clear()
+                self._slack_action_handlers.clear()
+                self._context_engine = None
+            # Set the flag before loading as a same-thread re-entrancy guard.
+            # The RLock serializes concurrent first discovery for this profile.
             self._discovered = True
-            return
-        if force:
-            self._plugins.clear()
-            self._hooks.clear()
-            self._middleware.clear()
-            self._plugin_tool_names.clear()
-            self._plugin_platform_names.clear()
-            self._cli_commands.clear()
-            self._plugin_commands.clear()
-            self._plugin_skills.clear()
-            self._aux_tasks.clear()
-            self._slack_action_handlers.clear()
-            self._context_engine = None
-        # Set the flag up front as a re-entrancy guard (a plugin's register()
-        # can transitively trigger discovery again), but reset it if the sweep
-        # raises so a failed scan is NOT cached as "discovered with an empty
-        # registry" — callers swallow the exception and would otherwise be
-        # permanently stranded on the early-return above (the "No web provider
-        # configured" class of failures).
-        self._discovered = True
-        try:
-            self._discover_and_load_inner()
-        except BaseException:
-            self._discovered = False
-            raise
+            home_token = set_hermes_home_override(self.profile_home)
+            try:
+                self._discover_and_load_inner()
+                from tools.registry import registry
+
+                self._tool_registry_snapshot = registry.capture_profile_snapshot(
+                    self.profile_home
+                )
+            except BaseException:
+                self._discovered = False
+                raise
+            finally:
+                reset_hermes_home_override(home_token)
 
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
@@ -1366,7 +1481,7 @@ class PluginManager:
         manifests.extend(bundled_platforms)
 
         # 2. User plugins (~/.hermes/plugins/)
-        user_dir = get_hermes_home() / "plugins"
+        user_dir = self.profile_home / "plugins"
         logger.debug("Scanning user plugins: %s", user_dir)
         user_manifests = self._scan_directory(user_dir, source="user")
         logger.debug("  user: %d manifest(s)", len(user_manifests))
@@ -1463,7 +1578,12 @@ class PluginManager:
             # path actually asks for that platform. Every platform Hermes ships
             # remains available out of the box — it just loads on first use.
             if manifest.source == "bundled" and manifest.kind == "platform":
-                self._register_deferred_platform(manifest)
+                if self.allow_global_publication:
+                    self._register_deferred_platform(manifest)
+                else:
+                    loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                    loaded.error = "launch-only platform publication"
+                    self._plugins[lookup_key] = loaded
                 continue
 
             # Everything else (standalone, user-installed backends,
@@ -1732,6 +1852,7 @@ class PluginManager:
         ``hermes plugins list`` still shows the platform as available, and we
         hand the registry a loader that runs the normal eager-load path.
         """
+        self.require_global_publication("deferred gateway platform")
         lookup_key = manifest.key or manifest.name
         platform_name = self._platform_name_from_manifest(manifest)
 
@@ -1775,10 +1896,6 @@ class PluginManager:
         from tools.registry import registry as _registry
         _plugin_id = manifest.key or manifest.name
         _slug = _plugin_id.replace("/", "__").replace("-", "_")
-        _registry.register_plugin_override_policy(
-            f"{_NS_PARENT}.{_slug}",
-            PluginContext(manifest, self)._tool_override_allowed(""),
-        )
         try:
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
@@ -1808,7 +1925,27 @@ class PluginManager:
                 _mw_counts_before = {
                     kind: len(cbs) for kind, cbs in self._middleware.items()
                 }
-                register_fn(ctx)
+                from agent.plugin_profile_scope import (
+                    plugin_registration_transaction,
+                    record_registration_undo,
+                )
+
+                transaction_profile = (
+                    None if self.allow_global_publication else self.profile_home
+                )
+                with plugin_registration_transaction(
+                    transaction_profile
+                ) as transaction_key:
+                    manager_state = self._capture_registration_state()
+                    record_registration_undo(
+                        transaction_key,
+                        lambda: self._restore_registration_state(manager_state),
+                    )
+                    _registry.register_plugin_override_policy(
+                        f"{self.module_namespace}.{_slug}",
+                        ctx._tool_override_allowed(""),
+                    )
+                    register_fn(ctx)
                 loaded.tools_registered = [
                     t for t in self._plugin_tool_names
                     if t not in _tools_before
@@ -1861,16 +1998,24 @@ class PluginManager:
         if not init_file.exists():
             raise FileNotFoundError(f"No __init__.py in {plugin_dir}")
 
-        # Ensure the namespace parent package exists
+        # Ensure the namespace parent packages exist. The profile component is
+        # load-bearing: two profiles may install different code under the same
+        # plugin key in one dashboard process.
         if _NS_PARENT not in sys.modules:
             ns_pkg = types.ModuleType(_NS_PARENT)
             ns_pkg.__path__ = []  # type: ignore[attr-defined]
             ns_pkg.__package__ = _NS_PARENT
             sys.modules[_NS_PARENT] = ns_pkg
 
+        if self.module_namespace not in sys.modules:
+            profile_pkg = types.ModuleType(self.module_namespace)
+            profile_pkg.__path__ = []  # type: ignore[attr-defined]
+            profile_pkg.__package__ = self.module_namespace
+            sys.modules[self.module_namespace] = profile_pkg
+
         key = manifest.key or manifest.name
         slug = key.replace("/", "__").replace("-", "_")
-        module_name = f"{_NS_PARENT}.{slug}"
+        module_name = f"{self.module_namespace}.{slug}"
         spec = importlib.util.spec_from_file_location(
             module_name,
             init_file,
@@ -1883,7 +2028,16 @@ class PluginManager:
         module.__package__ = module_name
         module.__path__ = [str(plugin_dir)]  # type: ignore[attr-defined]
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)
+        # Force discovery is an operator request to observe current source.
+        # SourceFileLoader may reuse a timestamp/size-valid ``.pyc`` after a
+        # rapid same-size rewrite, so execute the current bytes directly.  The
+        # spec/package metadata above still preserves relative imports.
+        source = init_file.read_bytes()
+        exec(compile(source, str(init_file), "exec"), module.__dict__)
+        # Keep the historical unqualified import only for the launch manager.
+        # Selected profiles never publish it, so same-key plugins cannot collide.
+        if self.allow_global_publication:
+            sys.modules[f"{_NS_PARENT}.{slug}"] = module
         return module
 
     def _load_entrypoint_module(self, manifest: PluginManifest) -> types.ModuleType:
@@ -2046,23 +2200,130 @@ class PluginManager:
 # ---------------------------------------------------------------------------
 
 _plugin_manager: Optional[PluginManager] = None
+_plugin_managers: Dict[str, PluginManager] = {}
+_plugin_managers_lock = threading.RLock()
+_bound_plugin_manager: contextvars.ContextVar[Optional[PluginManager]] = (
+    contextvars.ContextVar("hermes_plugin_manager", default=None)
+)
+_launch_profile_home = Path(get_hermes_home()).expanduser().resolve()
 
 
-def get_plugin_manager() -> PluginManager:
-    """Return (and lazily create) the global PluginManager singleton."""
-    global _plugin_manager
-    if _plugin_manager is None:
-        _plugin_manager = PluginManager()
-    return _plugin_manager
+def get_bound_plugin_manager() -> Optional[PluginManager]:
+    """Return the manager pinned to the current session/turn context."""
+    return _bound_plugin_manager.get()
 
 
-def discover_plugins(force: bool = False) -> None:
-    """Discover and load all plugins.
+def bind_plugin_manager(manager: PluginManager):
+    """Pin manager-owned plugin and profile state to the current context.
 
-    Default behavior is idempotent. Pass ``force=True`` to rescan plugin
-    manifests and reload state in the current process.
+    Tool and provider registries key their overlays from the profile-scope
+    ContextVar, while hooks and commands key from the manager ContextVar.  The
+    two bindings must move together: binding only the manager can otherwise
+    make a live session resolve the launch profile's tool handlers after a peer
+    profile has been discovered.
     """
-    get_plugin_manager().discover_and_load(force=force)
+    from agent.plugin_profile_scope import reset_profile_key, set_profile_key
+    from tools.registry import registry
+
+    manager_token = _bound_plugin_manager.set(manager)
+    profile_token = None
+    home_token = None
+    registry_token = None
+    try:
+        profile_token = set_profile_key(manager.profile_home)
+        home_token = set_hermes_home_override(manager.profile_home)
+        if manager._tool_registry_snapshot is not None:
+            registry_token = registry.bind_profile_snapshot(
+                manager._tool_registry_snapshot
+            )
+    except BaseException:
+        if registry_token is not None:
+            registry.reset_profile_snapshot(registry_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+        if profile_token is not None:
+            reset_profile_key(profile_token)
+        _bound_plugin_manager.reset(manager_token)
+        raise
+    return manager_token, profile_token, home_token, registry_token
+
+
+def reset_plugin_manager(token) -> None:
+    """Restore the prior manager, profile, and Hermes-home bindings."""
+    from agent.plugin_profile_scope import reset_profile_key
+    from tools.registry import registry
+
+    manager_token, profile_token, home_token, registry_token = token
+    try:
+        if registry_token is not None:
+            registry.reset_profile_snapshot(registry_token)
+    finally:
+        try:
+            reset_hermes_home_override(home_token)
+        finally:
+            try:
+                reset_profile_key(profile_token)
+            finally:
+                _bound_plugin_manager.reset(manager_token)
+
+
+def get_plugin_manager(profile_home: str | Path | None = None) -> PluginManager:
+    """Return the bound, launch, or explicit profile-keyed manager."""
+    global _plugin_manager
+    if profile_home is None:
+        bound = get_bound_plugin_manager()
+        if bound is not None:
+            return bound
+        if _plugin_manager is None:
+            _plugin_manager = PluginManager(
+                profile_home=get_hermes_home(), allow_global_publication=True
+            )
+        return _plugin_manager
+
+    home = Path(profile_home).expanduser().resolve()
+    key = str(home)
+    with _plugin_managers_lock:
+        if home == _launch_profile_home:
+            if _plugin_manager is None:
+                _plugin_manager = PluginManager(
+                    profile_home=home, allow_global_publication=True
+                )
+            return _plugin_manager
+        manager = _plugin_managers.get(key)
+        if manager is None:
+            manager = PluginManager(
+                profile_home=home, allow_global_publication=False
+            )
+            _plugin_managers[key] = manager
+        return manager
+
+
+def discover_plugins(
+    force: bool = False,
+    *,
+    profile_home: str | Path | None = None,
+) -> PluginManager:
+    """Discover plugins for one profile and return its manager snapshot.
+
+    ``force=True`` replaces the cached manager rather than mutating it, so
+    already-live sessions keep immutable hooks/commands/context/skills.
+    """
+    global _plugin_manager
+    manager = get_plugin_manager(profile_home=profile_home)
+    if force:
+        replacement = PluginManager(
+            profile_home=manager.profile_home,
+            allow_global_publication=manager.allow_global_publication,
+        )
+        replacement.discover_and_load()
+        with _plugin_managers_lock:
+            if manager.allow_global_publication:
+                _plugin_manager = replacement
+            else:
+                _plugin_managers[str(manager.profile_home)] = replacement
+        return replacement
+    manager.discover_and_load()
+    return manager
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:

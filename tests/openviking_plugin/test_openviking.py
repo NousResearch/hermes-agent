@@ -16,7 +16,8 @@ def _write_skill(skills_dir, name, body="Do the thing."):
     skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: Description for {name}\n---\n\n# {name}\n\n{body}\n"
+        f"---\nname: {name}\ndescription: Description for {name}\n---\n\n# {name}\n\n{body}\n",
+        encoding="utf-8",
     )
     return skill_dir
 
@@ -25,7 +26,10 @@ def _write_bundle(bundles_dir, slug, skills):
     bundles_dir.mkdir(parents=True, exist_ok=True)
     lines = [f"name: {slug}", "skills:"]
     lines.extend(f"  - {skill}" for skill in skills)
-    (bundles_dir / f"{slug}.yaml").write_text("\n".join(lines) + "\n")
+    (bundles_dir / f"{slug}.yaml").write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
 
 
 class FakeVikingClient:
@@ -266,6 +270,7 @@ class TestOpenVikingConfigSchema:
         provider = OpenVikingMemoryProvider()
 
         schema = provider.get_config_schema()
+        fields = {entry["key"]: entry for entry in schema}
         env_vars = {entry.get("env_var") for entry in schema}
 
         assert "OPENVIKING_RECALL_LIMIT" in env_vars
@@ -276,6 +281,11 @@ class TestOpenVikingConfigSchema:
         assert "OPENVIKING_RECALL_FULL_READ_LIMIT" in env_vars
         assert "OPENVIKING_RECALL_PREFER_ABSTRACT" in env_vars
         assert "OPENVIKING_RECALL_RESOURCES" in env_vars
+        assert fields["recall_limit"]["type"] == "integer"
+        assert fields["recall_limit"]["minimum"] == 1
+        assert fields["recall_limit"]["maximum"] == 100
+        assert fields["recall_score_threshold"]["type"] == "number"
+        assert fields["recall_prefer_abstract"]["type"] == "boolean"
         assert provider._recall_config() == {
             "limit": 6,
             "score_threshold": 0.15,
@@ -294,19 +304,23 @@ class TestOpenVikingConfigSchema:
         hermes_home = tmp_path / "hermes_test"
         hermes_home.mkdir(exist_ok=True)
         config_yaml = hermes_home / "config.yaml"
-        config_yaml.write_text("""\
+        config_yaml.write_text(
+            """\
 memory:
   provider: openviking
   openviking:
     recall_limit: 12
     recall_score_threshold: 0.42
     recall_max_injected_chars: 8000
+    profile_token_budget: 7000
     recall_timeout_seconds: 2.0
     recall_request_timeout_seconds: 1.5
     recall_full_read_limit: 5
     recall_prefer_abstract: true
     recall_resources: true
-""")
+""",
+            encoding="utf-8",
+        )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         # Clear any OPENVIKING_RECALL_* env vars so config.yaml prevails
         for key in list(os.environ):
@@ -324,6 +338,7 @@ memory:
         assert cfg["full_read_limit"] == 5
         assert cfg["prefer_abstract"] is True
         assert cfg["resources"] is True
+        assert provider._profile_token_budget() == 7000
 
     def test_recall_config_env_overrides_config_yaml(self, monkeypatch, tmp_path):
         """Env vars OPENVIKING_RECALL_* take precedence over config.yaml values
@@ -331,13 +346,16 @@ memory:
         hermes_home = tmp_path / "hermes_test"
         hermes_home.mkdir(exist_ok=True)
         config_yaml = hermes_home / "config.yaml"
-        config_yaml.write_text("""\
+        config_yaml.write_text(
+            """\
 memory:
   provider: openviking
   openviking:
     recall_limit: 12
     recall_resources: true
-""")
+""",
+            encoding="utf-8",
+        )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         # Override config.yaml via env
         monkeypatch.setenv("OPENVIKING_RECALL_LIMIT", "6")
@@ -355,13 +373,16 @@ memory:
         hermes_home = tmp_path / "hermes_test"
         hermes_home.mkdir(exist_ok=True)
         config_yaml = hermes_home / "config.yaml"
-        config_yaml.write_text("""\
+        config_yaml.write_text(
+            """\
 memory:
   provider: openviking
   openviking:
     recall_limit: 3
     # No recall_resources set — should use default (False)
-""")
+""",
+            encoding="utf-8",
+        )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         for key in list(os.environ):
             if key.startswith("OPENVIKING_RECALL_"):
@@ -373,6 +394,68 @@ memory:
         assert cfg["limit"] == 3, "config.yaml value should be picked up"
         assert cfg["resources"] is False, "omitted key should use default"
         assert cfg["timeout_seconds"] == 4.0, "omitted key should use built-in default"
+
+    def test_dashboard_shaped_string_values_are_typed(self, monkeypatch):
+        for key in list(os.environ):
+            if key.startswith("OPENVIKING_RECALL_") or key == "OPENVIKING_PROFILE_TOKEN_BUDGET":
+                monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(
+            openviking_plugin,
+            "_load_hermes_openviking_config",
+            lambda: {
+                "recall_limit": "12",
+                "recall_score_threshold": "0.42",
+                "recall_prefer_abstract": "false",
+                "recall_resources": "true",
+                "profile_token_budget": "7500",
+            },
+        )
+        provider = OpenVikingMemoryProvider()
+
+        cfg = provider._recall_config()
+
+        assert cfg["limit"] == 12
+        assert cfg["score_threshold"] == 0.42
+        assert cfg["prefer_abstract"] is False
+        assert cfg["resources"] is True
+        assert provider._profile_token_budget() == 7500
+
+    def test_invalid_recall_values_fall_back_without_type_errors(self, monkeypatch):
+        for key in list(os.environ):
+            if key.startswith("OPENVIKING_RECALL_") or key == "OPENVIKING_PROFILE_TOKEN_BUDGET":
+                monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(
+            openviking_plugin,
+            "_load_hermes_openviking_config",
+            lambda: {
+                "recall_limit": "many",
+                "recall_score_threshold": True,
+                "recall_prefer_abstract": "sometimes",
+                "profile_token_budget": "7.5",
+            },
+        )
+        provider = OpenVikingMemoryProvider()
+
+        cfg = provider._recall_config()
+
+        assert cfg["limit"] == 6
+        assert cfg["score_threshold"] == 0.15
+        assert cfg["prefer_abstract"] is False
+        assert provider._profile_token_budget() == 6000
+
+    def test_recall_env_overrides_string_config_with_native_types(self, monkeypatch):
+        monkeypatch.setattr(
+            openviking_plugin,
+            "_load_hermes_openviking_config",
+            lambda: {"recall_limit": "12", "recall_resources": "false"},
+        )
+        monkeypatch.setenv("OPENVIKING_RECALL_LIMIT", "4")
+        monkeypatch.setenv("OPENVIKING_RECALL_RESOURCES", "true")
+
+        cfg = OpenVikingMemoryProvider()._recall_config()
+
+        assert cfg["limit"] == 4
+        assert cfg["resources"] is True
 
 
 class TestOpenVikingTurnConversion:
@@ -569,7 +652,7 @@ class TestOpenVikingAutoRecallPrefetch:
             def do_GET(self):
                 parsed = urlparse(self.path)
                 if parsed.path == "/health":
-                    self._send_json({"healthy": True})
+                    self._send_json({"status": "ok", "healthy": True, "version": "test"})
                     return
                 if parsed.path == "/api/v1/content/read":
                     query = parse_qs(parsed.query)
@@ -933,7 +1016,7 @@ class TestEnsureClientReloadsEnv:
                 start_calls.append(endpoint)
             first_start_entered.set()
             release_start.wait(timeout=2)
-            return True, "started"
+            return openviking_plugin._LOCAL_SERVER_STARTED, "started"
 
         monkeypatch.setattr(openviking_plugin, "_start_local_openviking_server", start_local)
         monkeypatch.setattr(
@@ -1085,7 +1168,10 @@ class TestUnavailableWarningsPromiseRetry:
         monkeypatch.setattr(
             openviking_plugin,
             "_start_local_openviking_server",
-            lambda endpoint: (False, "openviking-server was not found on PATH."),
+            lambda endpoint: (
+                openviking_plugin._LOCAL_SERVER_FAILED,
+                "openviking-server was not found on PATH.",
+            ),
         )
         provider = OpenVikingMemoryProvider()
         provider._endpoint = "http://127.0.0.1:1934"

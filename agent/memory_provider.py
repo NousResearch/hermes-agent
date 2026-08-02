@@ -291,6 +291,10 @@ class MemoryProvider(ABC):
           required:    True if required (default: False)
           default:     default value (optional)
           choices:     list of valid values (optional)
+          type:        text, integer, number, or boolean (optional)
+          minimum:     numeric lower bound for integer/number fields (optional)
+          maximum:     numeric upper bound for integer/number fields (optional)
+          step:        numeric input step for Dashboard rendering (optional)
           url:         URL where user can get this credential (optional)
           env_var:     explicit env var name for secrets (default: auto-generated)
 

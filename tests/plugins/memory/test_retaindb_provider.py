@@ -61,6 +61,53 @@ def _capture_initialized_client(monkeypatch, tmp_path):
     return retaindb_module, captured
 
 
+def test_retaindb_config_loader_uses_readonly_config(monkeypatch):
+    import hermes_cli.config as config_mod
+    import plugins.memory.retaindb as retaindb_module
+
+    backing_config = {
+        "memory": {
+            "retaindb": {
+                "base_url": "https://saved.example",
+                "project": "saved-project",
+            }
+        }
+    }
+    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: backing_config)
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        MagicMock(side_effect=AssertionError("read-only provider path must not load a mutable copy")),
+    )
+
+    config = retaindb_module._load_retaindb_config()
+
+    assert config == backing_config["memory"]["retaindb"]
+    assert config is not backing_config["memory"]["retaindb"]
+
+
+def test_initialize_reads_real_dashboard_config_file(tmp_path, monkeypatch):
+    for var in ("RETAINDB_API_KEY", "RETAINDB_BASE_URL", "RETAINDB_PROJECT"):
+        monkeypatch.delenv(var, raising=False)
+    (tmp_path / "config.yaml").write_text(
+        """\
+memory:
+  provider: retaindb
+  retaindb:
+    base_url: https://retaindb.saved.example/
+    project: dashboard-project
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _retaindb_module, captured = _capture_initialized_client(monkeypatch, tmp_path)
+
+    RetainDBMemoryProvider().initialize("sess-1")
+
+    assert captured["base_url"] == "https://retaindb.saved.example"
+    assert captured["project"] == "dashboard-project"
+
+
 def test_initialize_reads_base_url_and_project_from_config_yaml(tmp_path, monkeypatch):
     """#68209: non-secret base_url/project come from config.yaml when env is unset."""
     for var in ("RETAINDB_API_KEY", "RETAINDB_BASE_URL", "RETAINDB_PROJECT"):

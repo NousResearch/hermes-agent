@@ -18962,17 +18962,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if rename_thread is None:
             return
         target_thread_id = relay_info[0] if relay_info else str(source.thread_id)
+        # Relay lane (relay_info present): ask the CONNECTOR to enforce the
+        # no-clobber guard from its own created-name memory — the gateway
+        # can't reliably reproduce the thread's initial name byte-for-byte
+        # (normalization drift silently declined every rename before this).
+        # Native-marker lane keeps the legacy string guard.
+        use_connector_guard = relay_info is not None
         guard_name = (
-            relay_info[1]
-            if relay_info
+            None
+            if use_connector_guard
             else getattr(source, "auto_thread_initial_name", None)
         )
         thread_name = self._sanitize_discord_thread_title(title)
+        # Relay lane only: the connector's egress guard resolves the owning
+        # tenant from the outbound metadata's scope_id (guild) / user_id
+        # (author). Those discriminator caches are keyed by the PARENT channel
+        # chat_id (learned at inbound), NOT the thread id. rename_thread
+        # defaults chat_id to the thread id when no parent is given, so the
+        # scope/author lookup misses and the connector declines the op
+        # ("target not routed to an onboarded tenant" — the live failure on
+        # staging 2026-08-01). Pass the parent channel id (the relay source's
+        # chat_id IS the parent channel; the thread came from send-result
+        # feedback) so the discriminators resolve. Native lane needs nothing:
+        # its source IS the thread and it renames via the direct Discord API,
+        # not the relay egress guard.
+        parent_chat_id = (
+            str(source.chat_id) if use_connector_guard and source.chat_id else None
+        )
+        logger.info(
+            "discord auto-thread rename: thread=%s lane=%s new_title=%r",
+            target_thread_id,
+            "relay" if use_connector_guard else "native",
+            thread_name,
+        )
         try:
-            await rename_thread(
+            renamed = await rename_thread(
                 target_thread_id,
                 thread_name,
+                prefer_connector_created=use_connector_guard,
                 only_if_current_name=guard_name,
+                parent_chat_id=parent_chat_id,
+            )
+            logger.info(
+                "discord auto-thread rename result: thread=%s applied=%s",
+                target_thread_id,
+                bool(renamed),
             )
         except Exception:
             logger.debug("Failed to rename Discord auto-thread for generated session title", exc_info=True)
@@ -23999,6 +24033,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if consumer is None:
                 return False
             if getattr(consumer, "final_response_sent", False):
+                # A successful finalize call is not proof the *content* was
+                # final: the edit may have carried only the last preview
+                # snapshot while the tail generated between that snapshot and
+                # stream completion never reached any API call (#71643).
+                # Reconcile the recorded turn-final payload against the
+                # completed response; only a demonstrable mismatch (False)
+                # overrides the flag — None (no record / multi-message split
+                # delivery) keeps the legacy trust so overflow splits are not
+                # re-sent.
+                matcher = getattr(consumer, "delivered_final_matches", None)
+                if callable(matcher):
+                    try:
+                        if matcher(final_text) is False:
+                            return False
+                    except Exception:
+                        pass
                 return True
             if previewed:
                 has_delivered_text = getattr(consumer, "has_delivered_text", None)
@@ -24685,6 +24735,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _content_delivered = bool(
                 _sc and getattr(_sc, "final_content_delivered", False)
             )
+            # #71643: a *successful* finalize edit can still carry only the
+            # last preview snapshot — deltas generated between that edit and
+            # stream completion never reach any API call, and both suppression
+            # flags are set from the call's success rather than its content.
+            # Reconcile the consumer's recorded turn-final payload against the
+            # completed response: on a demonstrable mismatch (False) neither
+            # final_response_sent nor final_content_delivered may suppress the
+            # normal final send. None (no record / multi-message split
+            # delivery) keeps legacy trust; the failed-finalize family
+            # (#51828 / #33793) is unaffected because those paths leave the
+            # flags False or record the complete fallback payload.
+            _stale_finalized = False
+            if _content_delivered and not _is_empty_sentinel:
+                _matcher = getattr(_sc, "delivered_final_matches", None)
+                if callable(_matcher):
+                    try:
+                        _stale_finalized = _matcher(_final) is False
+                    except Exception:
+                        _stale_finalized = False
+                if _stale_finalized:
+                    _content_delivered = False
             # Plugin hooks (e.g. transform_llm_output) may have appended content
             # after streaming finished — when the response was transformed, always
             # send the final version so the appended content reaches the client.
@@ -24709,6 +24780,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _content_delivered,
                 )
                 response["already_sent"] = True
+            elif not _is_empty_sentinel and not _transformed and _stale_finalized and _sc is not None:
+                # Stale finalize (#71643): the streamed message holds only the
+                # last preview snapshot. Prefer editing it up to the complete
+                # response (same shape as the transformed branch below) so the
+                # user gets one corrected message; on edit failure fall through
+                # with already_sent unset so the normal final send delivers the
+                # complete text.
+                _sc_msg_id = _sc.message_id
+                _sc_adapter = getattr(_sc, "adapter", None)
+                if _sc_msg_id and _sc_msg_id != "__no_edit__" and _sc_adapter is not None:
+                    try:
+                        _reconcile_res = await _sc_adapter.edit_message(
+                            chat_id=source.chat_id,
+                            message_id=_sc_msg_id,
+                            content=_final,
+                            finalize=True,
+                        )
+                        if getattr(_reconcile_res, "success", True):
+                            response["already_sent"] = True
+                            logger.info(
+                                "Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).",
+                                session_key or "?", _sc_msg_id,
+                            )
+                        else:
+                            logger.warning(
+                                "Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
+                                session_key or "?",
+                                getattr(_reconcile_res, "error", None),
+                            )
+                    except Exception as _edit_err:
+                        logger.warning(
+                            "Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
+                            session_key or "?", _edit_err,
+                        )
+                else:
+                    logger.info(
+                        "Stale streamed finalize detected for session %s with no editable message; delivering complete response via normal final send (#71643).",
+                        session_key or "?",
+                    )
             elif not _is_empty_sentinel and _transformed and _sc is not None:
                 # Plugin hooks transformed the response after streaming — edit the
                 # existing streamed message instead of sending a duplicate.

@@ -39,7 +39,9 @@ describe('edgeMask', () => {
   })
 
   it('leaves the last row fully opaque once the bottom is reached', () => {
-    expect(edgeMask({ above: true, below: false })).toBe('linear-gradient(to bottom, transparent, black 1.25rem, black)')
+    expect(edgeMask({ above: true, below: false })).toBe(
+      'linear-gradient(to bottom, transparent, black 1.25rem, black)'
+    )
   })
 
   it('fades both edges mid-scroll', () => {

@@ -459,6 +459,20 @@ class TestSensitivePathCheck:
         assert "error" in result
         assert "sensitive system path" in result["error"]
 
+    def test_macos_private_var_carveouts(self):
+        """macOS temp dirs under /private/var must not be blanket-blocked,
+        while the genuinely-sensitive /private/var subtrees still are."""
+        from tools.file_tools import _check_sensitive_path
+
+        # $TMPDIR / /tmp / /var/folders realpath into these on macOS.
+        assert _check_sensitive_path("/private/var/folders/xy/T/tmp.txt") is None
+        assert _check_sensitive_path("/private/var/tmp/build.log") is None
+        # Sensitive subtrees remain blocked.
+        assert _check_sensitive_path("/private/var/db/secret") is not None
+        assert _check_sensitive_path("/private/var/root/x") is not None
+        # /etc (and its macOS /private/etc mirror) stay blocked.
+        assert _check_sensitive_path("/private/etc/hosts") is not None
+
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")
@@ -657,3 +671,48 @@ class TestSilentFileMisplacementE2E:
             "file silently misplaced into config default (the #26211 bug)"
 
         tt.clear_session_cwd(task_id)
+
+
+class TestDedupInvalidationTaskResolution:
+    """Real-IO regression: dedup eviction must resolve paths per-task.
+
+    ``_invalidate_dedup_for_path`` looked up the read-tracker under the correct
+    task_id but resolved the path with the DEFAULT task, so for any task whose
+    workspace cwd differs from the process cwd (every ``-w``/Desktop/ACP
+    session using relative paths) the computed key never matched the cached
+    key and the stale-read entry was never evicted. A read after a write could
+    then be served the OLD content stub.
+    """
+
+    def test_invalidate_evicts_the_task_resolved_key(self, tmp_path, monkeypatch):
+        import tools.terminal_tool as tt
+        import tools.file_tools as ft
+
+        workspace = tmp_path / "workspace"
+        proc = tmp_path / "proc"
+        workspace.mkdir()
+        proc.mkdir()
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.chdir(proc)  # process cwd != task workspace
+
+        task_id = "acp-dedup"
+        monkeypatch.setattr(tt, "_task_env_overrides", {task_id: {"cwd": str(workspace)}})
+        (workspace / "data.txt").write_text("v1\n")
+
+        # The task resolves the relative path into the workspace; the default
+        # task (the old buggy resolution) would resolve into proc.
+        correct = str(ft._resolve_path("data.txt", task_id))
+        buggy = str(ft._resolve_path("data.txt"))
+        assert correct != buggy, "test precondition: cwds must diverge"
+
+        # Populate the dedup cache via a real read.
+        ft.read_file_tool("data.txt", task_id=task_id)
+        keys = [k[0] for k in ft._read_tracker.get(task_id, {}).get("dedup", {})]
+        assert correct in keys, keys
+
+        # Invalidate as write_file_tool does; the entry must be gone.
+        ft._invalidate_dedup_for_path("data.txt", task_id)
+        remaining = [k[0] for k in ft._read_tracker.get(task_id, {}).get("dedup", {})]
+        assert correct not in remaining, remaining
+
+        ft._read_tracker.pop(task_id, None)

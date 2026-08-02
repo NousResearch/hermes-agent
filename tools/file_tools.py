@@ -439,6 +439,79 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
         return None
 
 
+def _file_ops_uses_host_paths(file_ops) -> bool:
+    """Return True when *file_ops* targets the same host filesystem as Hermes.
+
+    Only then may we rewrite V4A header paths to resolved host-absolute
+    paths: a container/remote backend has its own filesystem namespace where
+    a host-absolute path would be meaningless.
+    """
+    env = getattr(file_ops, "env", None)
+    if env is None:
+        return True
+    try:
+        from tools.environments.local import LocalEnvironment
+    except ImportError:
+        return True
+    return isinstance(env, LocalEnvironment)
+
+
+def _rewrite_v4a_patch_paths_for_host(
+    patch: str,
+    path_to_resolved: dict,
+    file_ops,
+) -> str:
+    """Rewrite V4A file headers to the exact host paths the tool layer resolved.
+
+    ``patch_tool`` resolves every header path against the task's workspace for
+    locking, staleness, and reporting, but historically handed the *original*
+    patch text to ``file_ops.patch_v4a`` — so the shell layer re-resolved the
+    (often relative) header against its own cwd, which can differ from the
+    tool layer's workspace (the git-worktree cwd bug). That made a relative
+    header land in a different directory than everything else the tool
+    reported. This rewrites ``*** Update/Add/Delete/Move File:`` headers to the
+    resolved absolute paths so both layers agree on the target.
+
+    Header patterns mirror ``patch_parser`` (``\\s*`` after ``***`` accepts the
+    no-space ``***Update File:`` form) and cover ``Move File: src -> dst``.
+    Only applied when *file_ops* targets the host filesystem.
+    """
+    if not _file_ops_uses_host_paths(file_ops):
+        return patch
+
+    import re as _re
+
+    def _resolved_or_original(raw: str) -> str:
+        raw = raw.strip()
+        return path_to_resolved.get(raw) or raw
+
+    def _replace_single(match):
+        prefix = match.group(1)
+        resolved = _resolved_or_original(match.group(2))
+        return f"{prefix}{resolved}"
+
+    patch = _re.sub(
+        r'^(\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*)(.+)$',
+        _replace_single,
+        patch,
+        flags=_re.MULTILINE,
+    )
+
+    def _replace_move(match):
+        prefix = match.group(1)
+        src = _resolved_or_original(match.group(2))
+        dst = _resolved_or_original(match.group(3))
+        return f"{prefix}{src} -> {dst}"
+
+    patch = _re.sub(
+        r'^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+)$',
+        _replace_move,
+        patch,
+        flags=_re.MULTILINE,
+    )
+    return patch
+
+
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
     normalized = os.path.normpath(_expand_tilde(path))
@@ -568,7 +641,13 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
-    "/private/etc/", "/private/var/",
+    "/private/etc/",
+    # macOS: /private/var mirrors /var. Block the sensitive subtrees, NOT the
+    # whole thing — a blanket "/private/var/" refused every legitimate temp-file
+    # write, because $TMPDIR, /tmp, and /var/folders all realpath() into
+    # /private/var/folders/... on macOS (and _resolve_path_for_task resolves
+    # symlinks), and /private/var/tmp is a normal temp dir.
+    "/private/var/db/", "/private/var/root/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
@@ -1457,7 +1536,7 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
     internally.
     """
     try:
-        resolved = str(_resolve_path(filepath))
+        resolved = str(_resolve_path(filepath, task_id))
     except (OSError, ValueError):
         return
     with _read_tracker_lock:
@@ -1768,7 +1847,15 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(patch)
+                # Rewrite V4A headers to the resolved absolute paths so the
+                # shell layer patches the exact files the tool layer resolved
+                # (locked/reported). Without this a relative header re-resolves
+                # against the shell's cwd, which can differ from the workspace
+                # (git-worktree cwd bug) — landing the edit elsewhere.
+                patch_for_ops = _rewrite_v4a_patch_paths_for_host(
+                    patch, _path_to_resolved, file_ops
+                )
+                result = file_ops.patch_v4a(patch_for_ops)
             else:
                 return tool_error(f"Unknown mode: {mode}")
 

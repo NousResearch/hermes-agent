@@ -713,6 +713,7 @@ async function connect(deps) {
       pidAlive &&
       owned &&
       lock.port > 0 &&
+      lock.profile === profile &&
       Boolean(reuseToken) &&
       lock.tokenFingerprint === fingerprintToken(reuseToken) &&
       lock.hermesPath === hermesPath &&

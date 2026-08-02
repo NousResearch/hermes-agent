@@ -348,6 +348,11 @@ export interface Translations {
       toolViewDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
+      terminalFontTitle: string
+      terminalFontDesc: string
+      terminalFontPlaceholder: string
+      terminalFontPreview: string
+      terminalFontReset: string
       translucencyTitle: string
       translucencyDesc: string
       backdropTitle: string
@@ -606,6 +611,8 @@ export interface Translations {
       sshHermesPathTitle: string
       sshHermesPathDesc: string
       sshHermesPathPlaceholder: string
+      sshRemoteProfileTitle: string
+      sshRemoteProfileDesc: string
       sshTestConnection: string
       sshConnect: string
       sshButtonsHint: string

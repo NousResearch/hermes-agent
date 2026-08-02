@@ -750,6 +750,10 @@ def _stage_candidate_venv(
         logger.warning("candidate dependency sync refused: uv.lock is missing")
         _remove_tree(candidate, boundary=runtime_root)
         return None
+    # Locked sync must see project [tool.uv] exclude-newer; --no-config /
+    # UV_NO_CONFIG drops it and uv 0.12+ refuses --locked.
+    sync_env = dict(env)
+    sync_env.pop("UV_NO_CONFIG", None)
     synced = subprocess.run(
         [
             uv_bin,
@@ -759,10 +763,9 @@ def _stage_candidate_venv(
             "--locked",
             "--python",
             str(_venv_python(candidate)),
-            "--no-config",
         ],
         cwd=project_root,
-        env=env,
+        env=sync_env,
         check=False,
     )
     if synced.returncode != 0:

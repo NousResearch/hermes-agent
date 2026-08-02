@@ -310,6 +310,22 @@ _EXCHANGE_BACKOFF_BASE_SECONDS = 1.5  # sleeps ~1.5s, ~3.0s between attempts
 _JWT_DISK_FILENAME = ".copilot_jwt.json"
 _JWT_DISK_MAX_BYTES = 1_048_576  # 1 MiB cap on the persisted JWT store read
 
+# Negative cache for failed exchanges. Without it, every load_pool("copilot")
+# call re-runs the full exchange — and on a permanently-rejected token
+# (HTTP 403: account not Copilot-entitled, expired grant, org policy) the
+# retry backoff burned ~4.5s of time.sleep() on EVERY provider-discovery
+# pass. The /model picker, delegation child spawns, and the web dashboard
+# all walk that path, so a single bad Copilot token made all of them crawl.
+# Maps raw-token fingerprint -> epoch until which exchange attempts are
+# skipped (raise immediately). Success clears the entry.
+_exchange_failure_cache: dict[str, float] = {}
+_EXCHANGE_FAILURE_TTL_TRANSIENT_SECONDS = 60.0     # network blips: retry soon
+_EXCHANGE_FAILURE_TTL_PERMANENT_SECONDS = 1800.0   # 401/403/404: won't heal
+# HTTP statuses that indicate the token itself is rejected — retrying with
+# backoff is pointless (the retry loop exists for startup network races,
+# not for auth rejections) and sleeping on them just blocks the caller.
+_EXCHANGE_PERMANENT_HTTP_STATUSES = frozenset({401, 403, 404})
+
 
 def _token_fingerprint(raw_token: str) -> str:
     """Short fingerprint of a raw token for cache keying (avoids storing full token)."""
@@ -352,6 +368,10 @@ def evict_cached_exchanged_token(raw_token: str) -> None:
         return
     fp = _token_fingerprint(raw_token)
     _jwt_cache.pop(fp, None)
+    # Also clear any negative-cache entry: eviction is an explicit "force a
+    # fresh exchange" signal from the stale-credential recovery path, so the
+    # next exchange_copilot_token() must be allowed to hit the network.
+    _exchange_failure_cache.pop(fp, None)
     path = _jwt_disk_path()
     if not path or not path.exists():
         return
@@ -478,6 +498,17 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
             _jwt_cache[fp] = (api_token, expires_at, base_url)
             return api_token, expires_at, base_url
 
+    # Negative cache: a recent exchange failure for this token means the
+    # network round-trip (and its retry backoff) would just repeat. Fail
+    # fast so provider discovery / picker opens don't block on a token we
+    # already know is rejected or unreachable.
+    _fail_until = _exchange_failure_cache.get(fp, 0.0)
+    if time.time() < _fail_until:
+        raise ValueError(
+            "Copilot token exchange recently failed; skipping re-attempt "
+            f"for another {int(_fail_until - time.time())}s"
+        )
+
     req = urllib.request.Request(
         _TOKEN_EXCHANGE_URL,
         method="GET",
@@ -492,8 +523,13 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     # Retry with backoff. Startup network races (launchd relaunch, VPN/DHCP
     # settling) make the first attempt flaky; without this the sole failure
     # silently degrades to the raw token for the whole process lifetime.
+    # Permanent HTTP rejections (401/403/404 — token not Copilot-entitled,
+    # revoked, or org-blocked) skip the retry loop entirely: backoff exists
+    # for transient network races, and sleeping on an auth rejection just
+    # blocks the caller for ~4.5s with an identical outcome.
     data = None
     last_exc: Optional[Exception] = None
+    permanent_failure = False
     for attempt in range(_EXCHANGE_MAX_ATTEMPTS):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -501,6 +537,14 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
             break
         except Exception as exc:  # noqa: BLE001 — retry all, re-raise below
             last_exc = exc
+            status = getattr(exc, "code", None) or getattr(exc, "status", None)
+            if status in _EXCHANGE_PERMANENT_HTTP_STATUSES:
+                permanent_failure = True
+                logger.debug(
+                    "Copilot token exchange rejected (HTTP %s); not retrying",
+                    status,
+                )
+                break
             if attempt < _EXCHANGE_MAX_ATTEMPTS - 1:
                 sleep_s = _EXCHANGE_BACKOFF_BASE_SECONDS * (attempt + 1)
                 logger.debug(
@@ -509,9 +553,16 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
                 )
                 time.sleep(sleep_s)
     if data is None:
+        ttl = (
+            _EXCHANGE_FAILURE_TTL_PERMANENT_SECONDS
+            if permanent_failure
+            else _EXCHANGE_FAILURE_TTL_TRANSIENT_SECONDS
+        )
+        _exchange_failure_cache[fp] = time.time() + ttl
         raise ValueError(
             f"Copilot token exchange failed after {_EXCHANGE_MAX_ATTEMPTS} attempts: {last_exc}"
         ) from last_exc
+    _exchange_failure_cache.pop(fp, None)
 
     api_token = data.get("token", "")
     expires_at = data.get("expires_at", 0)

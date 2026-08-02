@@ -348,3 +348,123 @@ def test_patched_is_windows_reaches_the_venv_path_derivation():
         venv_python_path("/nope/venv", windows=True).as_posix()
         == "/nope/venv/Scripts/python.exe"
     )
+
+
+# ---------------------------------------------------------------------------
+# Crash between "move dst aside" and "move staging in" (Phase 2 review HIGH)
+# ---------------------------------------------------------------------------
+
+def test_staging_restores_backup_when_dst_is_missing(tmp_path, monkeypatch):
+    """A previous run that died mid-swap leaves dst missing and the backup as
+    the ONLY copy of that entry. On retry, _stage_replacement must restore
+    the backup to dst BEFORE clearing leftovers — otherwise a staging failure
+    right after (disk exhaustion is likeliest exactly then) leaves a hole in
+    the install with nothing to roll back to."""
+    live, new = tmp_path / "live", tmp_path / "new"
+    live.mkdir()
+    _live_tree(new, {"agent": "new"})
+    # Simulate the crashed state: dst gone, backup holds the old tree.
+    backup = live / "agent.hermes-update-old"
+    backup.mkdir()
+    (backup / "version.txt").write_text("old")
+
+    # Staging fails (disk full) on the fresh copy.
+    def boom(src, dst, *a, **kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(update_cmd.shutil, "copytree", boom)
+    with pytest.raises(OSError):
+        update_cmd._stage_replacement(str(new / "agent"), str(live / "agent"))
+    monkeypatch.undo()
+
+    # The old tree must have been restored to dst before the failure.
+    assert (live / "agent" / "version.txt").read_text() == "old"
+    assert not backup.exists()
+
+    # And a clean retry completes the update normally.
+    staged = _stage_all(live, new, ["agent"])
+    update_cmd._commit_staged_replacements(staged)
+    assert (live / "agent" / "version.txt").read_text() == "new"
+    assert not [p for p in os.listdir(live) if "hermes-update" in p]
+
+
+def test_commit_failure_plus_discard_leaves_no_staging_litter(tmp_path, monkeypatch):
+    """Phase-2 failure must not orphan staging copies for unswapped entries.
+
+    _update_via_zip calls _discard_staged when _commit_staged_replacements
+    raises. The rollback restores every swapped entry, but staging copies for
+    the not-yet-swapped entries (potentially most of a full tree) would
+    otherwise survive — and the retry's up-front free-space check runs BEFORE
+    the lazy per-entry leftover cleanup, so the litter makes the retry fail
+    harder than the original attempt. This pins the combination: rollback +
+    discard leaves the old tree intact and ZERO update litter."""
+    live, new = tmp_path / "live", tmp_path / "new"
+    _live_tree(live, {"agent": "old", "tools": "old", "gateway": "old"})
+    _live_tree(new, {"agent": "new", "tools": "new", "gateway": "new"})
+    staged = _stage_all(live, new, ["agent", "tools", "gateway"])
+
+    real_rename = os.rename
+    calls = {"n": 0}
+
+    def flaky_rename(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 4:  # first entry fully swapped, second breaks
+            raise OSError("simulated AV interference")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(update_cmd.os, "rename", flaky_rename)
+    with pytest.raises(OSError):
+        try:
+            update_cmd._commit_staged_replacements(staged)
+        except OSError:
+            # Mirrors the _update_via_zip wiring.
+            update_cmd._discard_staged(staged)
+            raise
+    monkeypatch.undo()
+
+    # Old tree intact...
+    for n in ("agent", "tools", "gateway"):
+        assert (live / n / "version.txt").read_text() == "old"
+    # ...and zero litter of any kind (staging OR backup).
+    litter = [p for p in os.listdir(live) if "hermes-update" in p]
+    assert litter == [], f"orphaned update litter: {litter}"
+
+
+def test_update_via_zip_wires_discard_into_the_commit_failure_path():
+    """AST wiring contract: _update_via_zip must call _discard_staged from an
+    exception handler around _commit_staged_replacements. The behavioral test
+    above mirrors that wiring; this pins the production function itself so a
+    refactor can't silently drop the cleanup."""
+    import ast
+    import inspect
+    import textwrap
+
+    src = textwrap.dedent(inspect.getsource(update_cmd._update_via_zip))
+    tree = ast.parse(src)
+
+    def _calls(node, name):
+        return any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == name
+            for n in ast.walk(node)
+        )
+
+    wired = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        body_commits = any(
+            _calls(stmt, "_commit_staged_replacements") for stmt in node.body
+        )
+        handler_discards = any(
+            _calls(handler, "_discard_staged") for handler in node.handlers
+        )
+        if body_commits and handler_discards:
+            wired = True
+            break
+    assert wired, (
+        "_update_via_zip no longer discards staging copies when "
+        "_commit_staged_replacements fails — commit-phase litter will make "
+        "the retry's free-space check fail harder than the first attempt"
+    )

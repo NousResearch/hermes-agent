@@ -17,8 +17,11 @@ Scope of the repair is deliberately narrow. Hermes only upgrades an npm that
 lives inside its **own** managed Node tree (``$HERMES_HOME/node``), installing
 in place with ``--prefix`` so ``bin/npm`` keeps resolving to the upgraded
 ``lib/node_modules/npm``. A system / nvm / brew / Nix npm belongs to the user
-and their other projects; for those we print the exact command and let the
-original failure stand.
+and their other projects; Hermes never modifies those. When the failing npm is
+one of those foreign installs, Hermes instead provisions its own managed Node
+tree (the same tree a fresh install creates), upgrades *that* npm into range,
+and hands the caller the managed npm to retry with — leaving the user's
+toolchain untouched.
 """
 
 from __future__ import annotations
@@ -31,7 +34,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, with_hermes_node_path
+from hermes_constants import (
+    bootstrap_hermes_managed_node,
+    get_hermes_home,
+    with_hermes_node_path,
+)
 
 __all__ = [
     "is_ebadengine",
@@ -242,11 +249,46 @@ def _print_manual_fix(npm: str, npm_range: str, actual: str | None) -> None:
     print(
         f"\n✗ {have}does not satisfy the range this project requires: {npm_range}\n"
         f"  Resolved npm: {npm}\n"
-        "  Hermes only upgrades npm inside its own managed Node install, so this\n"
-        "  one is left alone. Upgrade it yourself with:\n"
+        "  Hermes could not provision its own Node.js runtime and never\n"
+        "  modifies a system/nvm/brew/Nix npm. Upgrade yours yourself with:\n"
         f'      npm install -g npm@"{npm_range}"',
         file=sys.stderr,
     )
+
+
+def _provision_managed_npm(npm_range: str | None, *, quiet: bool = False) -> str | None:
+    """Provision a Hermes-managed Node tree and return a satisfying npm.
+
+    Installs the managed tree under ``$HERMES_HOME/node`` (reusing a healthy
+    one when present), then upgrades its bundled npm to *npm_range* — a fresh
+    Node LTS bundles an npm that may itself be outside the repo's range, so
+    without the upgrade the caller's single retry would fail the same way.
+    Falls back to the checkout's own ``engines.npm`` when npm did not state a
+    range (a Node-only mismatch), so the managed npm ends up in range either
+    way. Returns the managed npm path, or ``None`` when provisioning failed.
+    """
+    if not quiet:
+        print(
+            "→ Provisioning a Hermes-managed Node.js runtime "
+            "(the resolved npm belongs to your system and is left alone)…",
+            flush=True,
+        )
+    managed_npm = bootstrap_hermes_managed_node()
+    if not managed_npm:
+        if not quiet:
+            print("  ✗ Managed Node.js provisioning failed", file=sys.stderr)
+        return None
+
+    prefix = managed_npm_prefix(managed_npm)
+    if prefix is None:  # pragma: no cover - bootstrap returned a foreign path
+        return None
+
+    target_range = npm_range or _repo_npm_range()
+    if target_range and not upgrade_managed_npm(
+        managed_npm, target_range, prefix=prefix, quiet=quiet
+    ):
+        return None
+    return managed_npm
 
 
 def maybe_repair_npm_engine(
@@ -254,23 +296,44 @@ def maybe_repair_npm_engine(
     output: str,
     *,
     quiet: bool = False,
-) -> bool:
-    """Repair an ``EBADENGINE`` failure when Hermes owns the npm involved.
+) -> str | None:
+    """Repair an ``EBADENGINE`` failure, never touching a foreign toolchain.
 
     *output* is the combined stdout/stderr of the npm command that just failed.
-    Returns ``True`` only when npm was actually upgraded, meaning the caller
-    should retry its command once. Returns ``False`` for every other case —
-    not an engine failure, a Node (not npm) mismatch, an npm Hermes does not
-    own, or a failed upgrade — leaving the original failure to stand.
+    Returns the npm executable the caller should retry its command with —
+    the same *npm* after an in-place upgrade of a Hermes-managed install, or
+    a freshly provisioned managed npm when the failing npm belongs to the
+    user (system / nvm / brew / Nix installs are never modified). Returns
+    ``None`` when no repair happened — not an engine failure, a Node mismatch
+    a managed npm upgrade cannot fix, or a failed upgrade/bootstrap — leaving
+    the original failure to stand.
+
+    The returned value is truthy exactly when the caller should retry once,
+    so ``if maybe_repair_npm_engine(...)`` call sites keep working; they just
+    must run the retry with the returned path.
     """
+    if not npm or not is_ebadengine(output):
+        return None
+
     npm_range = required_npm_range(output)
-    if not npm_range or not npm:
-        return False
-
     prefix = managed_npm_prefix(npm)
-    if prefix is None:
-        if not quiet:
-            _print_manual_fix(npm, npm_range, actual_npm_version(output))
-        return False
 
-    return upgrade_managed_npm(npm, npm_range, prefix=prefix, quiet=quiet)
+    if prefix is not None:
+        # Hermes owns this npm — upgrade it in place. Only an npm-range
+        # failure is fixable this way; a Node mismatch needs a Node upgrade.
+        if not npm_range:
+            return None
+        if upgrade_managed_npm(npm, npm_range, prefix=prefix, quiet=quiet):
+            return npm
+        return None
+
+    # Foreign npm (system / nvm / brew / Nix): provision our own runtime
+    # instead. This also covers Node-version mismatches — the managed tree
+    # ships a Node the repo supports.
+    managed = _provision_managed_npm(npm_range, quiet=quiet)
+    if managed:
+        return managed
+
+    if not quiet and npm_range:
+        _print_manual_fix(npm, npm_range, actual_npm_version(output))
+    return None

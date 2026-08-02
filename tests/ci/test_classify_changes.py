@@ -23,6 +23,7 @@ ci_review_files = _mod.ci_review_files
 
 DEFAULT = {
     "python": True,
+    "python_prod": True,
     "frontend": True,
     "docker_meta": True,
     "site": True,
@@ -34,9 +35,12 @@ DEFAULT = {
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm_lock=False, mcp_catalog=False, docker_meta=False, ci_review=False) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm_lock=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None) -> dict[str, bool]:
+    # python_prod tracks python except for tests-only diffs; default it to
+    # python so the majority of cases don't need to spell it out.
     return {
         "python": python,
+        "python_prod": python if python_prod is None else python_prod,
         "frontend": frontend,
         "docker_meta": docker_meta,
         "site": site,
@@ -67,6 +71,22 @@ CASES = {
     "unknown toplevel → python": (["Makefile"], _lanes(python=True)),
     "mixed docs+python → python": (["README.md", "agent/x.py"], _lanes(python=True, scan=True)),
     "mixed docs+frontend → frontend": (["README.md", "apps/x.tsx"], _lanes(frontend=True)),
+    # tests-only diffs: pytest lanes stay ON, product jobs (Desktop E2E,
+    # Docker) gate on python_prod and skip.
+    "tests-only → python without python_prod": (
+        ["tests/agent/test_foo.py", "tests/conftest.py"],
+        _lanes(python=True, python_prod=False, scan=True),
+    ),
+    "tests + prod source → both lanes": (
+        ["tests/agent/test_foo.py", "agent/x.py"],
+        _lanes(python=True, scan=True),
+    ),
+    # Runner infrastructure is NOT tests-only — a bad runner edit can mask
+    # real failures, so it keeps the conservative full lane set.
+    "test runner script → python_prod stays on": (
+        ["scripts/run_tests_parallel.py"],
+        _lanes(python=True, scan=True),
+    ),
     # Supply-chain lanes
     ".pth file → scan": (["evil.pth"], _lanes(python=True, scan=True)),
     "setup.py → scan": (["setup.py"], _lanes(python=True, scan=True)),

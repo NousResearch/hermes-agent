@@ -19,7 +19,7 @@
     "fix": "npm run lint:fix"
   },
   "dependencies": {
-    "@nous-research/ui": "0.16.0",
+    "@nous-research/ui": "0.18.2",
     "@tailwindcss/typography": "0.5.20",
     "@tailwindcss/vite": "4.3.3",
     "@tauri-apps/api": "2.11.1",

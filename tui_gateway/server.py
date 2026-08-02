@@ -2346,13 +2346,24 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     A plain `cd` is deliberately NOT a workspace move (see
     ``_apply_project_workspace``): browsing to /tmp to read a log must not
     re-home the chat. What we adopt here is narrower — the session's recorded
-    cwd is in a DIFFERENT git working tree than its workspace. That is a
-    relocation by any reading, and it is the only shape this reconciles.
+    cwd is in a DIFFERENT working tree of the SAME repository (the shape
+    ``git worktree add`` produces). Everything else — a non-git workspace
+    stepping into a repo, or a git workspace visiting an unrelated repo — is
+    a browsing visit, and a user's explicitly chosen workspace is never
+    overridden at all.
 
     Local backends only: a remote/SSH cwd names a path on the host, which this
     gateway can neither stat nor probe with git.
     """
     if not session or not _is_local_terminal_backend():
+        return False
+
+    # A workspace the user (or GUI) explicitly chose is never overridden by
+    # where the agent's terminal happened to settle — only another explicit
+    # action (`_set_session_cwd`, a project switch) moves it. A cwd this very
+    # function adopted is marked `cwd_from_settle` so a session can keep
+    # following the agent through successive worktrees.
+    if session.get("explicit_cwd") and not session.get("cwd_from_settle"):
         return False
 
     try:
@@ -2373,13 +2384,33 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     # The worktree ROOT, not the common repo root: folding worktrees together
     # here is exactly what hides the move we're looking for.
     landed = _git_repo_root_for_cwd(resolved)
-    if not landed or landed == _git_repo_root_for_cwd(current):
+    current_root = _git_repo_root_for_cwd(current)
+    # A relocation is a move between two DIFFERENT git working trees. When the
+    # session's own workspace is not in a git repo, the agent stepping into one
+    # to read a file or run a command is a browsing visit, not a re-home:
+    # adopting it would hijack a non-git workspace onto whatever repo a tool
+    # call touched first (e.g. a home-directory session pinned to the checkout
+    # it read a file from).
+    if not landed or not current_root or landed == current_root:
+        return False
+
+    # And only between checkouts of the SAME repository — the shape a real
+    # `git worktree add` produces (linked worktrees share the common .git
+    # dir). Settling in an UNRELATED repo (`cd ~/other-project && git log`)
+    # is likewise a visit: adopting it would re-home the chat onto whatever
+    # foreign repo the terminal last touched.
+    landed_common = _git_common_repo_root_for_cwd(resolved)
+    current_common = _git_common_repo_root_for_cwd(current)
+    if not landed_common or landed_common != current_common:
         return False
 
     session["cwd"] = resolved
     # The session works here now, so this is its workspace — a desktop chat
-    # whose cwd was an unpersisted launch artifact earns a real row.
+    # whose cwd was an unpersisted launch artifact earns a real row. The
+    # settle marker keeps this adoption overridable by the NEXT settle while
+    # still yielding to a user's explicit choice (see the guard above).
     session["explicit_cwd"] = True
+    session["cwd_from_settle"] = True
     _register_session_cwd(session)
 
     with _session_db(session) as db:
@@ -2677,6 +2708,9 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     # An explicit user choice — persist it as the workspace (and let a later
     # lazy row creation persist it too, not the launch-dir fallback).
     session["explicit_cwd"] = True
+    # A user's choice supersedes any earlier settle-adopted cwd: from here on
+    # the terminal wandering must not move the workspace again.
+    session["cwd_from_settle"] = False
     _register_session_cwd(session)
     with _session_db(session) as db:
         if db is not None:
@@ -5542,6 +5576,8 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
 
     session["cwd"] = resolved
     session["explicit_cwd"] = True
+    # An explicit project switch supersedes any earlier settle-adopted cwd.
+    session["cwd_from_settle"] = False
     _register_session_cwd(session)
 
     with _session_db(session) as db:

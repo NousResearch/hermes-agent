@@ -2040,6 +2040,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         ]
 
         def _run_tui_install() -> subprocess.CompletedProcess:
+            from hermes_constants import with_hermes_node_path
+
+            # Managed tree first on PATH: if the EBADENGINE repair below
+            # provisioned a managed Node, npm's shebang/lifecycle scripts must
+            # resolve that node, not the mismatched system one.
             return subprocess.run(
                 npm_install_cmd,
                 cwd=str(npm_cwd),
@@ -2048,18 +2053,22 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                env={**os.environ, "CI": "1"},
+                env={**with_hermes_node_path(), "CI": "1"},
             )
 
         result = _run_tui_install()
         if result.returncode != 0:
             # An npm outside the root package.json's `engines.npm` range fails
-            # here before doing any work; upgrade a Hermes-managed npm once and
-            # retry rather than dumping EBADENGINE at the user.
+            # here before doing any work; repair once (upgrade a Hermes-managed
+            # npm in place, or provision a managed runtime when the npm belongs
+            # to the user) and retry rather than dumping EBADENGINE at the user.
             from hermes_cli.npm_engine import maybe_repair_npm_engine
 
             combined_output = f"{result.stdout or ''}\n{result.stderr or ''}"
-            if maybe_repair_npm_engine(npm, combined_output):
+            repaired_npm = maybe_repair_npm_engine(npm, combined_output)
+            if repaired_npm:
+                npm = repaired_npm
+                npm_install_cmd[0] = repaired_npm
                 result = _run_tui_install()
         if result.returncode != 0:
             combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
@@ -2693,6 +2702,7 @@ def cmd_chat(args):
     kwargs = {
         "model": args.model,
         "provider": getattr(args, "provider", None),
+        "reasoning": getattr(args, "reasoning", None),
         "toolsets": args.toolsets,
         "skills": getattr(args, "skills", None),
         "verbose": getattr(args, "verbose", None),
@@ -5480,30 +5490,39 @@ def _run_npm_install_deterministic(
             capture_output=capture_output,
         )
 
-    def _attempt() -> subprocess.CompletedProcess:
+    def _attempt(npm_exe: str) -> subprocess.CompletedProcess:
         lockfile = cwd / "package-lock.json"
         if lockfile.exists():
-            ci_result = _run([npm, "ci", "--include=dev", *extra_args])
+            ci_result = _run([npm_exe, "ci", "--include=dev", *extra_args])
             if ci_result.returncode == 0:
                 return ci_result
             # Fall through to `npm install` — lockfile may be out of sync on a
             # WIP fork/branch, or `npm ci` may not be available on very old npm.
-        return _run([npm, "install", "--no-save", "--include=dev", *extra_args])
+        return _run([npm_exe, "install", "--no-save", "--include=dev", *extra_args])
 
-    result = _attempt()
+    result = _attempt(npm)
     if result.returncode == 0:
         return result
 
     # An npm outside the root package.json's `engines.npm` range fails every
     # command here identically (the `npm install` fallback included), so the
-    # failure is worth exactly one upgrade attempt. `maybe_repair_npm_engine`
-    # returns True only when it actually upgraded a Hermes-managed npm.
+    # failure is worth exactly one repair attempt. `maybe_repair_npm_engine`
+    # returns the npm to retry with — the same one after an in-place upgrade
+    # of a Hermes-managed install, or a freshly provisioned managed npm when
+    # the failing npm belongs to the user's own toolchain.
     from hermes_cli.npm_engine import maybe_repair_npm_engine
 
     combined = f"{result.stdout or ''}\n{result.stderr or ''}"
-    if not maybe_repair_npm_engine(npm, combined):
+    repaired_npm = maybe_repair_npm_engine(npm, combined)
+    if not repaired_npm:
         return result
-    return _attempt()
+    # The repaired npm may be a freshly provisioned managed one whose shebang
+    # and lifecycle scripts resolve `node` from PATH — put the managed tree
+    # first so they find the managed Node, not the mismatched system one.
+    from hermes_constants import with_hermes_node_path
+
+    run_env["PATH"] = with_hermes_node_path(run_env)["PATH"]
+    return _attempt(repaired_npm)
 
 
 def _run_npm_watching_for_engine_failure(
@@ -10047,13 +10066,19 @@ def _read_ssh_session_token_file(path: str) -> str:
 
     import stat as _stat
     from pathlib import Path as _Path
-    from hermes_constants import get_hermes_home as _get_hermes_home
 
     if not os.path.isabs(path):
         raise SystemExit("--ssh-session-token-file must be absolute")
 
     token_path = _Path(path)
-    token_root = _get_hermes_home() / "desktop-ssh"
+    # The Desktop client writes the token under $HOME/.hermes/desktop-ssh: a
+    # literal "~/.hermes/desktop-ssh" in apps/desktop/electron/remote-lifecycle.ts
+    # expanded against the account's $HOME, independent of HERMES_HOME and the
+    # active profile. Anchor validation to that same OS-home path, NOT to
+    # get_hermes_home(): a non-default sticky profile (or any HERMES_HOME pointing
+    # elsewhere, e.g. a Docker /opt/data root) re-homes get_hermes_home() and
+    # would otherwise reject every token the client legitimately wrote (#69551).
+    token_root = _Path.home() / ".hermes" / "desktop-ssh"
     try:
         relative = token_path.relative_to(token_root)
     except ValueError as exc:

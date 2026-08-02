@@ -239,6 +239,14 @@ DEFAULT_CONFIG = {
         "backend": "local",
         "modal_mode": "auto",
         "cwd": ".",  # Use current directory
+        # Terminal font family for the desktop app's embedded xterm.js terminal.
+        # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),
+        # the desktop terminal uses this as the CSS font-family value, with the
+        # built-in default ("'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo,
+        # Consolas, monospace") as fallback when the field is empty or unset.
+        # This lets users install a Nerd Font (or any custom font) and configure
+        # it here without patching the built desktop app.
+        "font_family": "",
         "timeout": 180,
         # Bounded grace period (seconds) between SIGTERM and an escalated
         # SIGKILL when terminating a host process tree (browser daemons, etc.).

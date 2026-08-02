@@ -118,6 +118,72 @@ async def test_rename_thread_parent_chat_and_gating():
     assert gated_stub.sent == []
 
 
+@pytest.mark.asyncio
+async def test_rename_thread_prefers_connector_owned_guard():
+    """The relay lane sends only_if_connector_created (connector resolves the
+    no-clobber guard from its own created-name memory) instead of the fragile
+    cross-repo only_if_current_name string."""
+    adapter, stub = _adapter()
+    ok = await adapter.rename_thread(
+        "th9", "Real Session Title", prefer_connector_created=True
+    )
+    assert ok is True
+    action = stub.sent[-1]
+    assert action["op"] == "thread_rename"
+    assert action["only_if_connector_created"] is True
+    # The fragile string guard is NOT sent when the connector owns the check.
+    assert "only_if_current_name" not in action
+
+
+@pytest.mark.asyncio
+async def test_rename_thread_connector_guard_takes_precedence_over_string():
+    """prefer_connector_created wins even if a legacy string is also passed."""
+    adapter, stub = _adapter()
+    await adapter.rename_thread(
+        "th9",
+        "Title",
+        prefer_connector_created=True,
+        only_if_current_name="ignored initial words",
+    )
+    action = stub.sent[-1]
+    assert action["only_if_connector_created"] is True
+    assert "only_if_current_name" not in action
+
+
+@pytest.mark.asyncio
+async def test_rename_thread_resolves_scope_from_parent_chat_not_thread():
+    """The connector's egress guard resolves the owning tenant from the
+    outbound metadata's scope_id / user_id, and the adapter's discriminator
+    caches are keyed by the PARENT channel chat_id (learned at inbound), never
+    the thread id. A rename that passes parent_chat_id must carry that
+    discriminator; a rename keyed only on the thread id must not — reproducing
+    the live decline ("target not routed to an onboarded tenant") and its fix.
+    """
+    adapter, stub = _adapter()
+    # Simulate the inbound-learned scope for the PARENT channel only.
+    adapter._scope_by_chat["chan-parent"] = "guild-123"
+
+    # Fix: pass the parent chat id -> scope_id resolves.
+    await adapter.rename_thread(
+        "th-9",
+        "Real Title",
+        prefer_connector_created=True,
+        parent_chat_id="chan-parent",
+    )
+    fixed = stub.sent[-1]
+    assert fixed["metadata"].get("scope_id") == "guild-123"
+
+    # Regression shape: keyed on the thread id alone (no parent) -> no scope_id,
+    # which is exactly what made the connector decline the op.
+    await adapter.rename_thread(
+        "th-9",
+        "Real Title",
+        prefer_connector_created=True,
+    )
+    unscoped = stub.sent[-1]
+    assert "scope_id" not in unscoped["metadata"]
+
+
 # ── the relay semantic-rename lane (marker parity) ───────────────────────
 
 
@@ -291,8 +357,15 @@ async def test_title_rename_polls_feedback_that_arrives_late():
     adapter, stub_conn = _adapter()
     renames: list = []
 
-    async def rename_thread(thread_id, name, *, only_if_current_name=None, parent_chat_id=None):
-        renames.append((thread_id, name, only_if_current_name))
+    async def rename_thread(
+        thread_id,
+        name,
+        *,
+        only_if_current_name=None,
+        prefer_connector_created=False,
+        parent_chat_id=None,
+    ):
+        renames.append((thread_id, name, prefer_connector_created, parent_chat_id))
         return True
 
     adapter.rename_thread = rename_thread  # type: ignore[method-assign]
@@ -308,7 +381,15 @@ async def test_title_rename_polls_feedback_that_arrives_late():
         src, "sess1", "Debugging the flux capacitor"
     )
     await task
-    assert renames == [("th-9", "Debugging the flux capacitor", "Initial words")]
+    # Relay lane uses the connector-owned guard (prefer_connector_created=True),
+    # not the fragile cross-repo initial-name string. It MUST pass the PARENT
+    # channel chat_id so the connector's egress guard can resolve the tenant
+    # (the discriminator caches are keyed by the parent channel, not the thread;
+    # omitting it made the connector decline "target not routed to an onboarded
+    # tenant" — the live failure on staging 2026-08-01).
+    assert renames == [
+        ("th-9", "Debugging the flux capacitor", True, "chan-parent")
+    ]
 
 
 @pytest.mark.asyncio

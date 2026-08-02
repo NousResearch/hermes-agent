@@ -4205,6 +4205,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         model: str = None,
         toolsets: List[str] = None,
         provider: str = None,
+        reasoning: str = None,
         api_key: str = None,
         base_url: str = None,
         max_turns: int = None,
@@ -4222,6 +4223,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
             provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
+            reasoning: Reasoning effort override for this run (none|minimal|low|medium|high|xhigh|max|ultra). Wins over config.
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
             max_turns: Maximum tool-calling iterations shared with subagents (default: 500)
@@ -4487,6 +4489,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # shared chokepoint in hermes_constants (Closes #21256).
         from hermes_constants import resolve_reasoning_config
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
+        # An explicit --reasoning wins over config for this run only (never
+        # persisted). Kanban's dispatcher uses it to pin a task's thinking
+        # depth without touching the worker profile's config.yaml. An
+        # unparseable level is ignored with a warning rather than silently
+        # swapping in the default — same contract as the config path.
+        if reasoning is not None and str(reasoning).strip():
+            _cli_reasoning = _parse_reasoning_config(reasoning)
+            if _cli_reasoning is None:
+                logger.warning(
+                    "Unknown --reasoning '%s', keeping the configured level",
+                    reasoning,
+                )
+            else:
+                self.reasoning_config = _cli_reasoning
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
@@ -14830,6 +14846,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Surface any active supply-chain security advisories right after the
         # welcome banner. Quiet/single-query paths call this themselves.
         self._show_security_advisories()
+
+        # First-run: a completely unconfigured install must route into
+        # provider onboarding, not a chat that cannot work. Previously a
+        # keyless `hermes` accepted a message, spun for ~30s, then failed
+        # with a provider-specific error the user never chose. Only fires
+        # on a real TTY; quiet/single-query paths keep their own handling.
+        try:
+            if sys.stdin.isatty() and not self._runtime_credentials_ready():
+                self._offer_first_run_setup()
+        except Exception:
+            logger.debug("first-run setup offer failed", exc_info=True)
+
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.
         if self._resumed:
@@ -17842,6 +17870,7 @@ def main(
     skills: str | list[str] | tuple[str, ...] = None,
     model: str = None,
     provider: str = None,
+    reasoning: str = None,
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,
@@ -17870,6 +17899,7 @@ def main(
         skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
         provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
+        reasoning: Reasoning effort for this run (none|minimal|low|medium|high|xhigh|max|ultra). Overrides agent.reasoning_effort.
         api_key: API key for authentication
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)
@@ -17984,6 +18014,7 @@ def main(
         model=model,
         toolsets=toolsets_list,
         provider=provider,
+        reasoning=reasoning,
         api_key=api_key,
         base_url=base_url,
         max_turns=max_turns,

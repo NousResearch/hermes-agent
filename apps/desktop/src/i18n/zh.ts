@@ -431,6 +431,12 @@ export const zh: Translations = {
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      terminalFontTitle: '终端字体',
+      terminalFontDesc:
+        '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',
+      terminalFontPlaceholder: 'MesloLGS NF 或 CSS 字体栈',
+      terminalFontPreview: '字形预览',
+      terminalFontReset: '使用默认字体',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
       backdropTitle: '聊天背景',
@@ -919,6 +925,8 @@ export const zh: Translations = {
       sshHermesPathTitle: 'Hermes 路径（可选）',
       sshHermesPathDesc: '远程 hermes 可执行文件的完整路径。留空 = 自动检测。',
       sshHermesPathPlaceholder: '自动检测',
+      sshRemoteProfileTitle: '远程配置文件（可选）',
+      sshRemoteProfileDesc: '远程主机上的配置文件名称。留空 = 使用 Desktop 配置文件名称。',
       sshTestConnection: '测试 SSH',
       sshConnect: '连接',
       sshButtonsHint: '“保存”将在下次启动时生效，“连接”则立即重新连接。',

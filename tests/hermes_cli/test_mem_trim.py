@@ -108,7 +108,10 @@ def test_force_logs_even_when_periodic_log_sampling_skips(monkeypatch, caplog):
     monkeypatch.setattr(mem_trim.gc, "collect", lambda: None)
     monkeypatch.setattr(mem_trim, "_malloc_trim", lambda _pad: 1)
     monkeypatch.setattr(mem_trim, "_config_settings", lambda: (True, 0.0, 99, 1.0))
-    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+    # Two ticks: the forced call comes after the 5s force floor so it runs
+    # (the floor exists to coalesce burst closes, not to mute logging).
+    _ticks = iter([100.0, 110.0])
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: next(_ticks, 110.0))
     monkeypatch.setattr(
         mem_trim,
         "collect_memory_snapshot",
@@ -178,3 +181,36 @@ def test_libc_failure_is_fail_open_and_rate_limited(monkeypatch):
     assert mem_trim._last_trim_monotonic == 100.0
     assert mem_trim.trim_memory(cooldown_seconds=60) is False
     assert trim.call_count == 1
+
+
+def test_force_floor_coalesces_burst_closes(monkeypatch):
+    """A delegate batch closes N child agents back-to-back, each forcing a
+    trim — the short force floor must coalesce the burst instead of stacking
+    N uncooled full gc.collect() passes in the same process."""
+    collect = Mock()
+    trim = Mock(return_value=1)
+    monkeypatch.setattr(mem_trim.gc, "collect", collect)
+    monkeypatch.setattr(mem_trim, "_malloc_trim", trim)
+    monkeypatch.setattr(mem_trim, "_config_settings", lambda: (True, 0.0, 1, 0.0))
+    monkeypatch.setattr(
+        mem_trim,
+        "collect_memory_snapshot",
+        lambda: {"rss_kib": 4096, "rss_anon_kib": 3072, "thread_count": 3},
+    )
+    monkeypatch.setattr(mem_trim, "_last_trim_monotonic", 0.0)
+
+    # t=100: first forced close runs.
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+    assert mem_trim.trim_memory(force=True, reason="agent close") is True
+    assert trim.call_count == 1
+
+    # t=101..103: three more child closes inside the floor — all coalesced.
+    for t in (101.0, 102.0, 103.0):
+        monkeypatch.setattr(mem_trim.time, "monotonic", lambda t=t: t)
+        assert mem_trim.trim_memory(force=True, reason="agent close") is False
+    assert trim.call_count == 1, "burst closes must not stack forced trims"
+
+    # t=106: past the floor — the parent's final close-trim still fires.
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 106.0)
+    assert mem_trim.trim_memory(force=True, reason="agent close") is True
+    assert trim.call_count == 2

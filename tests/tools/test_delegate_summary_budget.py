@@ -69,6 +69,23 @@ def test_batch_overflow_trimmed_and_spilled_losslessly(monkeypatch):
             assert os.path.join("cache", "delegation") in path
 
 
+def test_docker_spill_path_points_to_the_mounted_cache(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    big = "HEAD\n" + ("X" * 30_000) + "\nTAIL"
+    results = [{"task_index": 0, "summary": big, "status": "completed"}]
+
+    dt._apply_summary_budget(results, _FakeParent(131_000, 120_000, 8_000))
+
+    agent_path = results[0]["summary_full_path"]
+    assert agent_path.startswith("/root/.hermes/cache/delegation/")
+    assert f'path="{agent_path}"' in results[0]["summary"]
+    host_files = list((hermes_home / "cache" / "delegation").glob("subagent-summary-*.txt"))
+    assert len(host_files) == 1
+    assert host_files[0].read_text(encoding="utf-8") == big
+
+
 def test_empty_results_is_noop():
     # No summaries → nothing to do, must not raise.
     dt._apply_summary_budget([], _FakeParent(131_000, 1_000, 8_000))

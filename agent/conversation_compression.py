@@ -972,7 +972,12 @@ def run_compress_context_with_progress_timeout(
                 break
             cancelled = fence.try_cancel_before_commit()
             if cancelled is None:
-                time.sleep(0.001)
+                # Round-2 #5: the fence is only held transiently here (lock
+                # setup / cancel admission — an in-flight commit is caught by
+                # the commit_in_flight check above), but that window rides
+                # SessionDB write patience and can last seconds. 25ms keeps
+                # sub-tick latency without a 1kHz spin.
+                time.sleep(0.025)
         if not cancelled:
             # Pre-commit ceiling already elapsed, but begin_commit() won the
             # race. Waiting is intentional: SessionDB mutation cannot be

@@ -160,6 +160,52 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # API helpers
     # ------------------------------------------------------------------
 
+    def _build_http_client(self):
+        """Build the adapter's HTTP client.
+
+        Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+
+        Attachment downloads follow redirects, so this uses the SSRF-safe
+        client: every hop (the initial request *and* each redirect target) is
+        resolved and validated at TCP-connect time.  Response-hook URL
+        preflight alone does not close DNS rebinding — see the note at
+        tools/url_safety.py:15-21 — which is why connect-time validation is
+        required here rather than a raw ``httpx.AsyncClient``.
+
+        Private-origin support is preserved: the *configured* BlueBubbles
+        origin is allowlisted for private/loopback resolution, so self-hosted
+        installs (``http://localhost:1234``) keep working.  Any hop that leaves
+        that origin for private/link-local/metadata space is refused at
+        connect.  The origin-aware response hook is retained on top for defence
+        in depth (earlier, clearer error; strips ``Authorization`` on
+        cross-origin hops when ``next_request`` is available).
+
+        Scope note: this client backs *all* BlueBubbles requests, not only
+        attachment downloads, so plain API calls get the same connect-time
+        validation and the same private-origin allowance.
+        """
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        from tools.url_safety import (
+            create_ssrf_safe_async_client,
+            make_origin_aware_redirect_hooks,
+            private_origin_key,
+        )
+
+        origin_key = private_origin_key(self.server_url)
+        allow_private_origins = {origin_key} if origin_key else set()
+
+        return create_ssrf_safe_async_client(
+            allow_private_origins=allow_private_origins,
+            timeout=30.0,
+            limits=platform_httpx_limits(),
+            follow_redirects=True,
+            event_hooks={
+                "response": make_origin_aware_redirect_hooks(
+                    self.server_url, label="BlueBubbles"
+                ),
+            },
+        )
+
     def _api_url(self, path: str) -> str:
         sep = "&" if "?" in path else "?"
         return f"{self.server_url}{path}{sep}password={quote(self.password, safe='')}"
@@ -244,23 +290,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return False
         from aiohttp import web
 
-        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
-        # Attachment downloads follow redirects; re-validate hops so a
-        # public BB server URL cannot 302 into cloud metadata / private
-        # space. Localhost BB installs remain usable (origin-aware policy).
-        from gateway.platforms._http_client_limits import platform_httpx_limits
-        from tools.url_safety import make_origin_aware_redirect_hooks
-
-        self.client = httpx.AsyncClient(
-            timeout=30.0,
-            limits=platform_httpx_limits(),
-            follow_redirects=True,
-            event_hooks={
-                "response": make_origin_aware_redirect_hooks(
-                    self.server_url, label="BlueBubbles"
-                ),
-            },
-        )
+        self.client = self._build_http_client()
         try:
             await self._api_get("/api/v1/ping")
             info = await self._api_get("/api/v1/server/info")

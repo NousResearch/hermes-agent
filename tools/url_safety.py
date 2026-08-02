@@ -488,7 +488,31 @@ def _safe_connect_scheme(host: str, port: int, schemes_by_origin: dict[tuple[str
     return schemes_by_origin.get((host, port)) or ("https" if port == 443 else "http")
 
 
-def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
+def private_origin_key(url: str) -> Optional[tuple[str, int]]:
+    """Return the ``(hostname, port)`` connect key for *url*, or ``None``.
+
+    Used to build the ``allow_private_origins`` allowlist for
+    :func:`create_ssrf_safe_async_client`: a self-hosted service (local
+    BlueBubbles, local MCP) is a legitimate private target, but only for the
+    exact configured origin — every other redirect hop stays fully validated.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not hostname or parsed.scheme not in {"http", "https"}:
+        return None
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return (hostname, port)
+
+
+def _resolved_http_connect_ips(
+    host: str,
+    port: int,
+    scheme: str,
+    allow_private_origins: Any = None,
+) -> list[str]:
     """Resolve and validate *host* for one HTTP connect attempt.
 
     Unlike :func:`is_safe_url`, this is called from the HTTP transport at the
@@ -505,6 +529,8 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
 
     allow_all_private = _global_allow_private_urls()
     allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
+    if not allow_private_ip and allow_private_origins:
+        allow_private_ip = (hostname, port) in allow_private_origins
 
     try:
         addr_info = socket.getaddrinfo(
@@ -548,11 +574,12 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
 
 
 class _SSRFGuardedAsyncNetworkBackend:
-    def __init__(self, schemes_by_origin_var: Any):
+    def __init__(self, schemes_by_origin_var: Any, allow_private_origins: Any = None):
         from httpcore._backends.auto import AutoBackend
 
         self._backend = AutoBackend()
         self._schemes_by_origin_var = schemes_by_origin_var
+        self._allow_private_origins = frozenset(allow_private_origins or ())
 
     async def connect_tcp(
         self,
@@ -566,7 +593,13 @@ class _SSRFGuardedAsyncNetworkBackend:
 
         schemes_by_origin = self._schemes_by_origin_var.get({})
         scheme = _safe_connect_scheme(host, port, schemes_by_origin)
-        ips = await asyncio.to_thread(_resolved_http_connect_ips, host, port, scheme)
+        ips = await asyncio.to_thread(
+            _resolved_http_connect_ips,
+            host,
+            port,
+            scheme,
+            self._allow_private_origins,
+        )
 
         last_exc: Exception | None = None
         for ip in ips:
@@ -704,7 +737,11 @@ def ssrf_safe_http_transport(**kwargs: Any) -> Any:
     return _Transport(**kwargs)
 
 
-def _install_ssrf_guard_on_async_transport(transport: Any, schemes_by_origin_var: Any) -> None:
+def _install_ssrf_guard_on_async_transport(
+    transport: Any,
+    schemes_by_origin_var: Any,
+    allow_private_origins: Any = None,
+) -> None:
     state = getattr(transport, "__dict__", {}) if transport is not None else {}
     if transport is None or state.get("_hermes_ssrf_guarded", False):
         return
@@ -712,7 +749,9 @@ def _install_ssrf_guard_on_async_transport(transport: Any, schemes_by_origin_var
     pool = state.get("_pool")
     if pool is None or not hasattr(pool, "_network_backend"):
         raise SSRFConnectionBlocked("Unsupported async httpx transport cannot be made SSRF-safe")
-    pool._network_backend = _SSRFGuardedAsyncNetworkBackend(schemes_by_origin_var)
+    pool._network_backend = _SSRFGuardedAsyncNetworkBackend(
+        schemes_by_origin_var, allow_private_origins
+    )
 
     handle_async_request = getattr(transport, "handle_async_request", None)
     if handle_async_request is None:
@@ -754,13 +793,13 @@ def _install_ssrf_guard_on_transport(transport: Any, schemes_by_origin_var: Any)
     transport._hermes_ssrf_guarded = True
 
 
-def _install_ssrf_guard_on_async_client(client: Any) -> None:
+def _install_ssrf_guard_on_async_client(client: Any, allow_private_origins: Any = None) -> None:
     import contextvars
 
     schemes_by_origin_var = contextvars.ContextVar("hermes_ssrf_async_origin_schemes")
     state = getattr(client, "__dict__", {})
     _install_ssrf_guard_on_async_transport(
-        state.get("_transport"), schemes_by_origin_var
+        state.get("_transport"), schemes_by_origin_var, allow_private_origins
     )
 
 
@@ -774,7 +813,9 @@ def _install_ssrf_guard_on_client(client: Any) -> None:
     )
 
 
-def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
+def create_ssrf_safe_async_client(
+    *, allow_private_origins: Any = None, **kwargs: Any
+) -> Any:
     """Create an ``httpx.AsyncClient`` with connect-time SSRF validation.
 
     Direct HTTP(S) connections are resolved, validated, and dialed by IP at
@@ -782,11 +823,17 @@ def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
     SNI, and certificate verification.  If httpx routes through a proxy, final
     target resolution is delegated to that configured proxy; treat the proxy as
     a trusted egress boundary.
+
+    ``allow_private_origins`` is an optional iterable of ``(hostname, port)``
+    keys (see :func:`private_origin_key`) that may resolve to private/loopback
+    addresses.  This keeps self-hosted deployments (local BlueBubbles, local
+    MCP) working while every *other* connect — including every redirect hop —
+    is still validated.  Cloud metadata addresses stay blocked regardless.
     """
     import httpx
 
     client = httpx.AsyncClient(**kwargs)
-    _install_ssrf_guard_on_async_client(client)
+    _install_ssrf_guard_on_async_client(client, allow_private_origins)
     return client
 
 

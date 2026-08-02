@@ -934,3 +934,174 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+class TestBlueBubblesRedirectSSRF:
+    """Adapter-level redirect regressions for the attachment download path.
+
+    The attachment download follows redirects, so the adapter's client must
+    apply *connect-time* validation to every hop (``create_ssrf_safe_async_client``)
+    rather than relying on a response-hook URL preflight, which does not close
+    DNS rebinding and which cannot depend on ``response.next_request`` (often
+    ``None`` inside a response hook).
+
+    Private-origin support must survive: a self-hosted BlueBubbles on loopback
+    is a legitimate target, so loopback -> same-origin loopback is the control.
+
+    Scope: the adapter uses one client for attachment downloads *and* plain API
+    requests, so these guarantees apply to non-attachment API calls too; the
+    loopback control below exercises exactly that shared client.
+    """
+
+    @staticmethod
+    def _start_server():
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):  # silence test output
+                pass
+
+            def do_GET(self):
+                if self.path.startswith("/redirect-metadata"):
+                    self.send_response(302)
+                    self.send_header(
+                        "Location", "http://169.254.169.254/latest/meta-data/"
+                    )
+                    self.end_headers()
+                elif self.path.startswith("/redirect-private"):
+                    self.send_response(302)
+                    self.send_header("Location", "http://10.0.0.7/internal")
+                    self.end_headers()
+                elif self.path.startswith("/redirect-local"):
+                    self.send_response(302)
+                    self.send_header("Location", "/ok")
+                    self.end_headers()
+                else:
+                    body = b"attachment-bytes"
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+    def _adapter_for(self, monkeypatch, base_url):
+        adapter = _make_adapter(monkeypatch, server_url=base_url)
+        assert adapter.server_url == base_url
+        return adapter
+
+    def test_loopback_to_loopback_redirect_is_allowed(self, monkeypatch):
+        """Control: self-hosted (private) BlueBubbles origin keeps working."""
+        server, base = self._start_server()
+        try:
+            adapter = self._adapter_for(monkeypatch, base)
+            client = adapter._build_http_client()
+
+            async def run():
+                try:
+                    resp = await client.get(f"{base}/redirect-local")
+                    return resp.status_code, resp.content
+                finally:
+                    await client.aclose()
+
+            status, body = asyncio.run(run())
+            assert status == 200
+            assert body == b"attachment-bytes"
+        finally:
+            server.shutdown()
+
+    def test_redirect_to_cloud_metadata_is_blocked(self, monkeypatch):
+        """Regression: allowlisted private origin must not 302 into metadata."""
+        server, base = self._start_server()
+        try:
+            adapter = self._adapter_for(monkeypatch, base)
+            client = adapter._build_http_client()
+
+            async def run():
+                try:
+                    await client.get(f"{base}/redirect-metadata")
+                finally:
+                    await client.aclose()
+
+            with pytest.raises(Exception) as exc:
+                asyncio.run(run())
+            assert "169.254.169.254" in str(exc.value) or "metadata" in str(
+                exc.value
+            ).lower()
+        finally:
+            server.shutdown()
+
+    def test_redirect_to_other_private_host_is_blocked(self, monkeypatch):
+        """The private allowance is scoped to the configured origin only.
+
+        Loopback BlueBubbles is allowed, but a redirect to a *different*
+        private host is refused, so private-origin support cannot be abused as
+        a blanket private-network bypass.
+        """
+        server, base = self._start_server()
+        try:
+            adapter = self._adapter_for(monkeypatch, base)
+            client = adapter._build_http_client()
+
+            async def run():
+                try:
+                    await client.get(f"{base}/redirect-private")
+                finally:
+                    await client.aclose()
+
+            with pytest.raises(Exception) as exc:
+                asyncio.run(run())
+            assert "10.0.0.7" in str(exc.value) or "private" in str(exc.value).lower()
+        finally:
+            server.shutdown()
+
+    def test_connect_time_guard_is_installed_independently_of_hooks(
+        self, monkeypatch
+    ):
+        """The guard must not depend on the response hook / ``next_request``.
+
+        Build the same client the adapter builds but with no event hooks: the
+        connect-time validator alone must still refuse metadata and foreign
+        private targets, while the allowlisted origin still connects.
+        """
+        from tools.url_safety import (
+            SSRFConnectionBlocked,
+            create_ssrf_safe_async_client,
+            private_origin_key,
+        )
+
+        server, base = self._start_server()
+        try:
+            allow = {private_origin_key(base)}
+            client = create_ssrf_safe_async_client(
+                allow_private_origins=allow,
+                timeout=10.0,
+                follow_redirects=True,
+            )
+
+            async def run():
+                try:
+                    ok = await client.get(f"{base}/ok")
+                    blocked = []
+                    for url in (
+                        "http://169.254.169.254/latest/meta-data/",
+                        "http://10.0.0.7/internal",
+                    ):
+                        try:
+                            await client.get(url)
+                            blocked.append(None)
+                        except SSRFConnectionBlocked as err:
+                            blocked.append(str(err))
+                    return ok.status_code, blocked
+                finally:
+                    await client.aclose()
+
+            status, blocked = asyncio.run(run())
+            assert status == 200  # allowlisted private origin still reachable
+            assert all(b for b in blocked), blocked
+        finally:
+            server.shutdown()

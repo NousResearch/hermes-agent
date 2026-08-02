@@ -5,7 +5,7 @@ pins an ``engines.npm`` range, so an npm outside that range aborts every
 ``npm ci`` / ``npm install`` we run inside the checkout::
 
     npm error code EBADENGINE
-    npm error notsup Required: {"node":">=20.0.0","npm":">=11.17.0"}
+    npm error notsup Required: {"node":">=26.0.0","npm":">=12.0.0"}
     npm error notsup Actual:   {"npm":"10.9.8","node":"v22.23.1"}
 
 Rather than predicting the failure (which would mean a semver range matcher and

@@ -196,12 +196,18 @@ class ComputeHost:
         self._closed.set()
         budget = max(0.0, wait)
         deadline = time.monotonic() + budget - min(_FLUSH_RESERVE_SECS, budget / 2.0)
-        while time.monotonic() < deadline:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             with self._turn_futures_lock:
                 pending = [f for f in self._turn_futures if not f.done()]
             if not pending:
                 break
-            time.sleep(0.05)
+            # Bounded by ``remaining``: a flat 0.05s sleep would overshoot the
+            # deadline and eat into the reserve it is there to protect, which
+            # for a small ``wait`` can be the whole of it.
+            time.sleep(min(0.05, remaining))
         self.flush_all_sessions(reason=reason)
         self._executor.shutdown(wait=False, cancel_futures=True)
 

@@ -1868,8 +1868,11 @@ class HermesACPAgent(acp.Agent):
                 # while the tools are rooted at the client's project, so the
                 # model emits absolute paths under ~/.hermes/workspace and the
                 # edit silently lands outside the editor's workspace.
+                # cron_session="" explicitly marks this as a non-cron context,
+                # masking any leaked process-global HERMES_CRON_SESSION (#37968).
                 session_tokens = set_session_vars(
                     session_key=session_id, session_id=session_id, cwd=state.cwd,
+                    cron_session="",
                 )
             except Exception:
                 session_tokens = None

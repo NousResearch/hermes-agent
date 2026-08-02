@@ -5907,6 +5907,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_key=session_key,
             session_id=session_id,
             async_delivery=False,
+            cron_session="",
         )
 
     async def _run_agent(

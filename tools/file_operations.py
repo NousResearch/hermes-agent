@@ -2137,6 +2137,15 @@ class ShellFileOperations(FileOperations):
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:
+            # Multi-path recovery: models frequently pass several paths in
+            # one string ("dir1 dir2 dir3" or comma-separated). Instead of
+            # failing the whole call, split, search every path that exists,
+            # merge the results, and report the skipped parts.
+            multi = self._try_multi_path_search(
+                pattern, path, target, file_glob, limit, offset, output_mode, context
+            )
+            if multi is not None:
+                return multi
             # Try to suggest nearby paths
             parent = os.path.dirname(path) or "."
             basename_query = os.path.basename(path)
@@ -2173,6 +2182,106 @@ class ShellFileOperations(FileOperations):
             return self._search_content(pattern, path, file_glob, limit, offset, 
                                         output_mode, context)
     
+    def _try_multi_path_search(self, pattern: str, path: str, target: str,
+                               file_glob: Optional[str], limit: int, offset: int,
+                               output_mode: str, context: int) -> Optional[SearchResult]:
+        """Recover a not-found ``path`` that is really several paths in one string.
+
+        Production trajectories show models passing "dir1 dir2 dir3" (or
+        comma-separated lists) as ``path``. Split on whitespace/commas; when
+        at least one candidate exists and at least two candidates were given,
+        search every existing path, merge results, and note skipped parts.
+        Returns None when this doesn't look like a multi-path string.
+        """
+        parts = [p for chunk in path.split(",") for p in chunk.split() if p.strip()]
+        if len(parts) < 2:
+            return None
+        existing, missing = [], []
+        for p in parts:
+            expanded = self._expand_path(p)
+            chk = self._exec(
+                f"test -e {self._escape_shell_arg(expanded)} && echo exists || echo not_found"
+            )
+            (existing if "exists" in chk.stdout else missing).append(expanded)
+        if not existing:
+            return None
+
+        merged = SearchResult()
+        for p in existing:
+            if target == "files":
+                sub = self._search_files(pattern, p, limit, offset)
+            else:
+                sub = self._search_content(pattern, p, file_glob, limit, offset,
+                                           output_mode, context)
+            if sub.error:
+                continue
+            merged.matches.extend(sub.matches)
+            merged.files.extend(sub.files)
+            merged.counts.update(sub.counts)
+            merged.total_count += sub.total_count
+            merged.truncated = merged.truncated or sub.truncated
+        # Respect the caller's limit across the merged set.
+        merged.matches = merged.matches[:limit]
+        merged.files = merged.files[:limit]
+        note = f"path contained {len(parts)} entries; searched {len(existing)} that exist"
+        if missing:
+            note += "; skipped missing: " + ", ".join(missing[:3])
+            if len(missing) > 3:
+                note += f" (+{len(missing) - 3} more)"
+        merged.warning = note
+        return merged
+
+    def _zero_match_probe(self, pattern: str, path: str,
+                          file_glob: Optional[str]) -> Optional[str]:
+        """Return a hint for a 0-match content search, or None.
+
+        13.9% of production content searches return zero matches and give
+        the model nothing to steer by. Run ONE cheap case-insensitive count
+        probe; if it hits, say so. If the pattern contains regex
+        metacharacters, also probe it as a fixed string. Bounded: two rg
+        invocations max, count-only output.
+        """
+        if not self._has_command('rg'):
+            return None
+        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        probe = self._exec(
+            f"rg -i --count-matches{glob_expr} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"2>/dev/null | head -50",
+            timeout=30,
+        )
+        ci_total = 0
+        ci_files = 0
+        for line in (probe.stdout or "").strip().splitlines():
+            _p, _sep, n = line.rpartition(":")
+            if n.isdigit():
+                ci_total += int(n)
+                ci_files += 1
+        if ci_total > 0:
+            return (
+                f"0 exact matches, but {ci_total} case-insensitive match(es) "
+                f"in {ci_files} file(s) — the pattern's casing may be wrong."
+            )
+        if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
+            fixed = self._exec(
+                f"rg -F --count-matches{glob_expr} "
+                f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+                f"2>/dev/null | head -50",
+                timeout=30,
+            )
+            f_total = sum(
+                int(line.rpartition(":")[2])
+                for line in (fixed.stdout or "").strip().splitlines()
+                if line.rpartition(":")[2].isdigit()
+            )
+            if f_total > 0:
+                return (
+                    f"0 regex matches, but {f_total} literal match(es) — the "
+                    "pattern contains regex metacharacters that likely need "
+                    "escaping (or pass a simpler substring)."
+                )
+        return None
+
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
         # Auto-prepend **/ for recursive search if not already present
@@ -2321,6 +2430,18 @@ class ShellFileOperations(FileOperations):
                 error="Content search requires ripgrep (rg) or grep. "
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
             )
+
+        # Zero-match steering: a 0-match result with no guidance is a dead
+        # turn. Probe cheaply for near-misses (wrong casing, unescaped regex
+        # metacharacters) and attach the finding as a warning.
+        if (not result.error and result.total_count == 0
+                and not result.matches and not result.files and not result.counts):
+            try:
+                hint = self._zero_match_probe(pattern, path, file_glob)
+            except Exception:
+                hint = None
+            if hint:
+                result.warning = hint if not result.warning else f"{result.warning} {hint}"
 
         return _maybe_warn_line_oriented_newline_pattern(result, pattern)
     

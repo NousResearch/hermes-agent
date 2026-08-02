@@ -5058,6 +5058,25 @@ def _request_device_code(
     return data
 
 
+def _nous_device_auth_timeout_message(portal_base_url: str) -> str:
+    """Actionable timeout text for Nous device-code login failures.
+
+    A bare "Timed out waiting for device authorization" gives the user
+    nothing to act on. The most common cause is Portal sign-in failing in
+    the opened browser tab (including the server-side CAPTCHA loop from
+    #20605), so point at the Portal login page and the retry command.
+    """
+    portal = (portal_base_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+    return (
+        "Timed out waiting for device authorization.\n"
+        "  Portal sign-in is required before the device code can be approved.\n"
+        "  If the browser showed a CAPTCHA / 'You did not pass CAPTCHA' error,\n"
+        "  finish signing in at the Portal in a normal browser tab, then retry:\n"
+        "    hermes portal\n"
+        f"  Portal login: {portal}/login"
+    )
+
+
 def _poll_for_token(
     client: httpx.Client,
     portal_base_url: str,
@@ -8612,14 +8631,19 @@ def _nous_device_code_login(
         effective_interval = max(1, min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
         print(f"Waiting for approval (polling every {effective_interval}s)...")
 
-        token_data = _poll_for_token(
-            client=client,
-            portal_base_url=portal_base_url,
-            client_id=client_id,
-            device_code=str(device_data["device_code"]),
-            expires_in=expires_in,
-            poll_interval=interval,
-        )
+        try:
+            token_data = _poll_for_token(
+                client=client,
+                portal_base_url=portal_base_url,
+                client_id=client_id,
+                device_code=str(device_data["device_code"]),
+                expires_in=expires_in,
+                poll_interval=interval,
+            )
+        except TimeoutError as exc:
+            raise TimeoutError(
+                _nous_device_auth_timeout_message(portal_base_url)
+            ) from exc
 
     now = datetime.now(timezone.utc)
     token_expires_in = _coerce_ttl_seconds(token_data.get("expires_in", 0))

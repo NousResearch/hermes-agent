@@ -120,7 +120,9 @@ test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () =
 
   assert.equal(env.PYTHONPATH, '/repo/hermes-agent:/existing/pythonpath')
   assert.ok(
-    env.PATH.startsWith('/Users/test/.hermes/node/bin:/Users/test/.hermes/node:/Users/test/.hermes/hermes-agent/venv/bin:')
+    env.PATH.startsWith(
+      '/Users/test/.hermes/node/bin:/Users/test/.hermes/node:/Users/test/.hermes/hermes-agent/venv/bin:'
+    )
   )
   assert.ok(env.PATH.includes('/opt/homebrew/bin'))
 })

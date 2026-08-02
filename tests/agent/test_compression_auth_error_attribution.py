@@ -614,4 +614,3 @@ def test_real_compressor_no_provider_does_not_emit_aux_diagnostic(
     assert "Provider: auto" not in rendered, (
         f"phantom 'Provider: auto' on no-provider: {emitted}"
     )
-

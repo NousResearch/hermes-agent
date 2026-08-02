@@ -1867,6 +1867,37 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 duration_ms=int(tool_duration * 1000),
                 middleware_trace=list(middleware_trace),
             )
+        # Agent-runtime tools also never reach handle_function_call, which is
+        # the sole call site of transform_tool_result for registry-dispatched
+        # tools. Fire it here for the same set of inline-dispatched tools so
+        # the hook applies to every tool as documented.
+        if not _execution_blocked and agent_runtime_owns_post_tool_hook(agent, function_name):
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("transform_tool_result"):
+                    from model_tools import _tool_result_observer_fields
+                    _tr_status, _tr_err_type, _tr_err_msg = _tool_result_observer_fields(function_result)
+                    _tr_results = invoke_hook(
+                        "transform_tool_result",
+                        tool_name=function_name,
+                        args=function_args,
+                        result=function_result,
+                        task_id=effective_task_id or "",
+                        session_id=agent.session_id or "",
+                        tool_call_id=getattr(tool_call, "id", "") or "",
+                        turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                        duration_ms=int(tool_duration * 1000),
+                        status=_tr_status,
+                        error_type=_tr_err_type,
+                        error_message=_tr_err_msg,
+                    )
+                    for _tr_hook_result in _tr_results:
+                        if isinstance(_tr_hook_result, str):
+                            function_result = _tr_hook_result
+                            break
+            except Exception as _tr_hook_err:
+                logger.debug("transform_tool_result hook error: %s", _tr_hook_err)
         if not _execution_blocked:
             function_result = agent._append_guardrail_observation(
                 function_name,

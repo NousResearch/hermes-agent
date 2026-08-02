@@ -1341,26 +1341,66 @@ def compress_context(
     # the app server does not expose its native summary prompt, so there is no
     # truthful injection point for ``on_pre_compress()`` return text here.
     if getattr(agent, "api_mode", None) == "codex_app_server":
-        _codex_fence_entered = False
-        if commit_fence is not None:
-            _codex_fence_entered = commit_fence.begin_commit()
-            if not _codex_fence_entered:
-                existing_prompt = getattr(agent, "_cached_system_prompt", None)
-                if not existing_prompt:
-                    existing_prompt = agent._build_system_prompt(system_message)
-                return messages, existing_prompt
-        try:
-            return _compress_context_via_codex_app_server(
-                agent,
-                messages,
-                system_message,
-                approx_tokens=approx_tokens,
-                task_id=task_id,
-                force=force,
+        _auto_mode = str(
+            getattr(agent, "codex_app_server_auto_compaction", "native") or "native"
+        ).lower()
+        if _auto_mode not in {"native", "hermes", "off"}:
+            _auto_mode = "native"
+
+        # Native/off mode: skip compression entirely (the codex agent owns
+        # the real thread context and will compact it on its own schedule).
+        if not force and _auto_mode in {"native", "off"}:
+            logger.info(
+                "codex app-server compaction skipped: mode=%s force=false "
+                "(session=%s messages=%d tokens=~%s)",
+                _auto_mode,
+                getattr(agent, "session_id", None) or "none",
+                len(messages),
+                f"{approx_tokens:,}" if approx_tokens else "unknown",
             )
-        finally:
-            if _codex_fence_entered:
-                commit_fence.finish_commit()
+            existing_prompt = getattr(agent, "_cached_system_prompt", None)
+            if not existing_prompt:
+                existing_prompt = agent._build_system_prompt(system_message)
+            return messages, existing_prompt
+
+        _codex_session_exists = (
+            getattr(agent, "_codex_session", None) is not None
+        )
+        if _codex_session_exists:
+            # Route to codex-specific compaction (active thread present).
+            _codex_fence_entered = False
+            if commit_fence is not None:
+                _codex_fence_entered = commit_fence.begin_commit()
+                if not _codex_fence_entered:
+                    existing_prompt = getattr(agent, "_cached_system_prompt", None)
+                    if not existing_prompt:
+                        existing_prompt = agent._build_system_prompt(system_message)
+                    return messages, existing_prompt
+            try:
+                return _compress_context_via_codex_app_server(
+                    agent,
+                    messages,
+                    system_message,
+                    approx_tokens=approx_tokens,
+                    task_id=task_id,
+                    force=force,
+                )
+            finally:
+                if _codex_fence_entered:
+                    commit_fence.finish_commit()
+
+        # Hermes mode but no active codex session yet — fall through to the
+        # built-in Hermes compressor so preflight / hygiene / /compress still
+        # work instead of being a no-op (#73503).
+        logger.info(
+            "codex app-server: no active codex thread (session=%s); "
+            "falling through to Hermes native compression "
+            "(mode=%s messages=%d tokens=~%s)",
+            getattr(agent, "session_id", None) or "none",
+            _auto_mode,
+            len(messages),
+            f"{approx_tokens:,}" if approx_tokens else "unknown",
+        )
 
     # Every automatic entrypoint must honor compressor-owned cooldown and
     # breaker state. Gateway hygiene constructs a fresh AIAgent, so the

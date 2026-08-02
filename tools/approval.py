@@ -587,17 +587,31 @@ def _user_deny_block_result(pattern: str) -> dict:
 
 def _hardline_block_result(description: str) -> dict:
     """Build the standard block result for a hardline match."""
+    message = (
+        f"BLOCKED (hardline): {description}. "
+        "This command is on the unconditional blocklist and cannot "
+        "be executed via the agent — not even with --yolo, /yolo, "
+        "approvals.mode=off, or cron approve mode. If you genuinely "
+        "need to run it, run it yourself in a terminal outside the "
+        "agent."
+    )
+    # The parser-limit block is almost always a giant inline payload
+    # (heredoc script, base64 blob, one-line python -c program) — not a
+    # genuinely forbidden operation. 198 occurrences in a 250k-call
+    # production window, typically followed by blind rephrase retries.
+    # Tell the model the working alternative explicitly.
+    if description in (_PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION):
+        message += (
+            " RECOVERY: this block fires on oversized/unparseable inline "
+            "command payloads (heredocs, giant one-liners), not on the "
+            "operation itself. Write the script to a file with write_file, "
+            "then run it: terminal(command=\"bash /path/script.sh\") or "
+            "\"python3 /path/script.py\". Do not retry inline."
+        )
     return {
         "approved": False,
         "hardline": True,
-        "message": (
-            f"BLOCKED (hardline): {description}. "
-            "This command is on the unconditional blocklist and cannot "
-            "be executed via the agent — not even with --yolo, /yolo, "
-            "approvals.mode=off, or cron approve mode. If you genuinely "
-            "need to run it, run it yourself in a terminal outside the "
-            "agent."
-        ),
+        "message": message,
     }
 
 

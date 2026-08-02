@@ -247,6 +247,29 @@ def test_absent_config_is_still_created(tmp_path: Path):
     assert "anthropic/claude-sonnet-4" in config_path.read_text(encoding="utf-8")
 
 
+def test_symlinked_config_stays_a_symlink(tmp_path: Path):
+    """Managed deployments symlink ~/.hermes/config.yaml into a dotfiles repo.
+
+    A plain ``os.replace`` onto the link would detach it into a regular file;
+    ``dump_yaml_file`` resolves the link first, as ``utils.atomic_replace`` does.
+    """
+    mod = load_module()
+    real = tmp_path / "dotfiles" / "config.yaml"
+    real.parent.mkdir(parents=True)
+    real.write_text("model: hermes-4-405b\ncommand_allowlist:\n  - /usr/bin/*\n",
+                    encoding="utf-8")
+    migrator, config_path = _allowlist_migrator(mod, tmp_path, "placeholder: true\n")
+    config_path.unlink()
+    config_path.symlink_to(real)
+
+    migrator.migrate()
+
+    assert config_path.is_symlink()
+    assert config_path.resolve() == real.resolve()
+    assert "/home/test/**" in real.read_text(encoding="utf-8")
+    assert "hermes-4-405b" in real.read_text(encoding="utf-8")
+
+
 def test_unreadable_config_refused_by_model_config_too(tmp_path: Path):
     """The refusal is at the shared helper, so every config step inherits it."""
     mod = load_module()

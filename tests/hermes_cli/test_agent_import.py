@@ -548,7 +548,9 @@ class TestExistingConfigPreserved:
         """A permission problem is the other half of the same root cause."""
         import os
 
-        if os.geteuid() == 0:
+        if os.name != "posix":
+            pytest.skip("chmod-based permission denial is POSIX-only")
+        if getattr(os, "geteuid", lambda: 1)() == 0:
             pytest.skip("root bypasses file permissions")
         config_path.write_text(EXISTING_CONFIG, encoding="utf-8")
         before = config_path.read_bytes()

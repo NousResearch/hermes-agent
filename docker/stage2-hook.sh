@@ -104,9 +104,32 @@ validate_uid_gid() {
 HERMES_UID="${HERMES_UID:-${PUID:-}}"
 HERMES_GID="${HERMES_GID:-${PGID:-}}"
 
+# Remap hermes UID without walking $HERMES_HOME. `usermod -u` always
+# recursively chowns files under the user's home directory; when that
+# home is the data volume (/opt/data) and contains FUSE mounts
+# (rclone, etc.), the chown can hang forever in uninterruptible sleep
+# and stall the entire s6 cont-init boot (#77072). Hermes-managed path
+# ownership is repaired by the targeted chown block below — usermod
+# only needs to update the passwd entry here.
+remap_hermes_uid() {
+    new_uid="$1"
+    original_home=$(getent passwd hermes | cut -d: -f6)
+    [ -n "$original_home" ] || original_home="$HERMES_HOME"
+    staging="/tmp/hermes-uid-remap"
+    mkdir -p "$staging"
+    # Point home at an empty staging dir for the UID change so usermod's
+    # automatic home-tree chown never enters $HERMES_HOME / FUSE mounts.
+    usermod -d "$staging" hermes
+    usermod_rc=0
+    usermod -u "$new_uid" hermes || usermod_rc=$?
+    # Always restore home even if the UID change failed mid-flight.
+    usermod -d "$original_home" hermes
+    return "$usermod_rc"
+}
+
 if [ -n "${HERMES_UID:-}" ] && validate_uid_gid "$HERMES_UID" && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
     echo "[stage2] Changing hermes UID to $HERMES_UID"
-    usermod -u "$HERMES_UID" hermes
+    remap_hermes_uid "$HERMES_UID"
 fi
 if [ -n "${HERMES_GID:-}" ] && validate_uid_gid "$HERMES_GID" && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
     echo "[stage2] Changing hermes GID to $HERMES_GID"

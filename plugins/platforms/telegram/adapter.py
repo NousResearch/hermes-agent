@@ -6335,7 +6335,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if data.startswith("ea:"):
             parts = data.split(":", 2)
             if len(parts) == 3:
-                choice = parts[1]  # once, session, always, deny
+                choice = parts[1]  # once, session, always, changes, deny
                 try:
                     approval_id = int(parts[2])
                 except (ValueError, IndexError):
@@ -6352,6 +6352,25 @@ class TelegramAdapter(BasePlatformAdapter):
                     user_name=query_user_name,
                 ):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
+                    return
+
+                # "Request changes" needs the approval entry to stay pending
+                # while we collect free-text feedback. Peek (don't pop) so
+                # the entry survives across the user's typed reply. Every
+                # other choice still uses the pop-on-resolve flow because
+                # those terminate the approval immediately.
+                user_display = getattr(query.from_user, "first_name", "User")
+                if choice == "changes":
+                    session_key = self._approval_state.get(approval_id)
+                    if not session_key:
+                        await query.answer(text="This approval has already been resolved.")
+                        return
+                    await self._begin_approval_changes_capture(
+                        query=query,
+                        approval_id=approval_id,
+                        session_key=session_key,
+                        user_display=user_display,
+                    )
                     return
 
                 session_key = self._approval_state.pop(approval_id, None)

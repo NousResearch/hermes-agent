@@ -22,6 +22,7 @@ from collections import deque
 from pathlib import Path
 from typing import IO, Callable, Iterable, Protocol
 
+from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, KANBAN_ENV_KEYS
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.interrupt import is_interrupted
@@ -534,13 +535,41 @@ def _cwd_marker(session_id: str) -> str:
 # lineage.
 #
 # Kept in sync with gateway.session_context._VAR_MAP and agent.delegation_context
-# (DELEGATED_CHILD_ENV_MARKER + KANBAN_ENV_KEYS): every owned name starts with one
-# of these prefixes (or is HERMES_UI_SESSION_ID). Used by unit tests as the
-# Python-side contract for the exclusion set; the dump path unsets by name/prefix
-# instead of grepping declare lines (see below / issue #71296).
+# (DELEGATED_CHILD_ENV_MARKER + KANBAN_ENV_KEYS). The session/cron families are
+# matched by prefix; the delegation marker and the dispatcher-owned Kanban keys
+# are matched by EXACT name imported from agent.delegation_context — a broad
+# ``HERMES_KANBAN_`` prefix would also strip user-authored, non-invocation config
+# such as HERMES_KANBAN_HOME / HERMES_KANBAN_DISPATCH_IN_GATEWAY, which a snapshot
+# must preserve. Used by unit tests as the Python-side contract for the exclusion
+# set; the dump path unsets by name/prefix instead of grepping declare lines
+# (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
-    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION"
-    "|HERMES_DELEGATED_CHILD_CONTEXT|HERMES_KANBAN_)"
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION|"
+    + "|".join((DELEGATED_CHILD_ENV_MARKER, *KANBAN_ENV_KEYS))
+    + ")"
+)
+
+# The exact shell token list of invocation-scoped names to ``unset``. Prefix
+# families use ${!PREFIX*} indirection; the marker and Kanban ownership keys are
+# unset by exact name so user-authored HERMES_KANBAN_HOME survives. Shared by the
+# export-dump filter and the post-source cleanup so the two never drift.
+_SNAPSHOT_EXCLUDED_UNSET_NAMES = " ".join(
+    (
+        "${!HERMES_SESSION_*}",
+        "${!HERMES_CRON_AUTO_DELIVER_*}",
+        "HERMES_UI_SESSION_ID",
+        # AI_AGENT / HERMES_AGENT are per-command attribution markers
+        # (re-exported by every _wrap_command with outer-harness-preserving
+        # ${VAR:-default} semantics). Persisting them into the snapshot would
+        # make the FIRST command's value override a later outer-harness value
+        # arriving via the process env, exactly like the session-var leak this
+        # dump already guards against. Unset by exact name (not in the grep
+        # regex — the values carry no newline-smuggling risk).
+        "AI_AGENT",
+        "HERMES_AGENT",
+        DELEGATED_CHILD_ENV_MARKER,
+        *KANBAN_ENV_KEYS,
+    )
 )
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -583,16 +612,7 @@ def _export_dump_excluding_session_vars(
         extra_unset = f" {extra_unset}"
     return (
         "{ ( "
-        "unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
-        # AI_AGENT / HERMES_AGENT are per-command attribution markers
-        # (re-exported by every _wrap_command with outer-harness-preserving
-        # ${VAR:-default} semantics).  Persisting them into the snapshot
-        # would make the FIRST command's value override a later outer
-        # harness value arriving via the process env, exactly like the
-        # session-var leak this dump already guards against.
-        "AI_AGENT HERMES_AGENT "
-        "${!HERMES_DELEGATED_CHILD_CONTEXT*} ${!HERMES_KANBAN_*} "
-        f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
+        f"unset {_SNAPSHOT_EXCLUDED_UNSET_NAMES}{extra_unset} 2>/dev/null; "
         "export -p; "
         ") || true; } "
         f"> {tmp_path}"
@@ -901,8 +921,30 @@ class BaseEnvironment(ABC):
         # vars into every tool response (issue #15459).  Linux bash is
         # silent here, but the redirect is harmless.
         if self._snapshot_ready:
+            # Capture the delegate_task lineage marker's AUTHORITATIVE state from
+            # this command's process env (set only for genuine delegated children
+            # by agent.delegation_context.delegated_child_subprocess_env) BEFORE
+            # sourcing. The export dump strips the marker on WRITE, but a snapshot
+            # persisted by an older build may still carry a stale
+            # HERMES_DELEGATED_CHILD_CONTEXT=1 that this ``source`` would leak
+            # until the next dump rewrites the file. Restoring the captured state
+            # afterwards keeps that one-command window from misidentifying a
+            # non-delegated command as a delegated child (issue #71941). Scoped to
+            # the marker alone: the session/Kanban vars are legitimately supplied
+            # per command via the process env, so a blanket post-source unset
+            # would drop the current command's own values.
+            _m = DELEGATED_CHILD_ENV_MARKER
+            parts.append(
+                f'if [ "${{{_m}+x}}" = x ]; then __hermes_dcc=${{{_m}}}; '
+                f"else __hermes_dcc=; fi"
+            )
             parts.append(
                 f"source {_quoted_snap} >/dev/null 2>&1 || true"
+            )
+            parts.append(
+                f'unset {_m}; '
+                f'[ -n "$__hermes_dcc" ] && export {_m}="$__hermes_dcc"; '
+                f"unset __hermes_dcc"
             )
 
         for name, present, value in saved_names:

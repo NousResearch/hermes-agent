@@ -35,6 +35,12 @@ def wait_for_title_upgrades(timeout: float = 10.0) -> None:
     for thread in list(_UPGRADE_THREADS):
         thread.join(max(0.0, deadline - time.monotonic()))
 
+
+# Sessions whose stage-2 title call is already running; concurrent turn hooks must not
+# start a second LLM upgrade for the same session.
+_title_in_flight: set[str] = set()
+_title_in_flight_lock = threading.Lock()
+
 # (task_name, exception) -> None; surfaces auxiliary failures so silent drops don't pile up as NULL titles.
 FailureCallback = Callable[[str, BaseException], None]
 # (title, source) -> None; source is the persisted provenance (``derived`` / ``llm``). Consumers paying a
@@ -838,10 +844,22 @@ def maybe_auto_title(
                           runtime_validator=runtime_validator)
     if isinstance(title_preview, str) and title_preview.strip():
         upgrade_kwargs["title_preview"] = title_preview
+
+    def _run() -> None:
+        # Claim only while executing: deferred or failed-to-start threads
+        # must never suppress a later eligible upgrade.
+        with _title_in_flight_lock:
+            if session_id in _title_in_flight:
+                return
+            _title_in_flight.add(session_id)
+        try:
+            auto_title_session(session_db, session_id, user_message, **upgrade_kwargs)
+        finally:
+            with _title_in_flight_lock:
+                _title_in_flight.discard(session_id)
+
     upgrade = spawn_context_thread(
-        auto_title_session, name="auto-title",
-        args=(session_db, session_id, user_message),
-        kwargs=upgrade_kwargs,
+        _run, name="auto-title", args=(), kwargs={},
     )
     if title_upgrade_must_wait_for_turn(main_runtime):
         logger.debug("Auto-title upgrade deferred past the turn: shares the self-hosted endpoint with the main request")

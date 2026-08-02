@@ -761,11 +761,18 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     try:
         from tools.async_delegation import interrupt_for_session
 
-        _own_sid, _owned_session_key = _session_async_delegation_selectors(
-            session, sid_hint=str(session.get("_sid") or "")
-        )
+        _own_sid = str(session.get("_sid") or "")
+        if not _own_sid:
+            try:
+                with _sessions_lock:
+                    for _cand_sid, _cand in _sessions.items():
+                        if _cand is session:
+                            _own_sid = _cand_sid
+                            break
+            except Exception:
+                _own_sid = ""
         interrupt_for_session(
-            session_key=_owned_session_key,
+            session_key=str(session_key or "") if _tui_owns_lifecycle else "",
             origin_ui_session_id=_own_sid,
             reason=end_reason,
         )

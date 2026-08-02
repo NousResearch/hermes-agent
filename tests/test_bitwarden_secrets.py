@@ -713,7 +713,8 @@ def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
 
     secrets, warnings = bw.fetch_bitwarden_secrets(
         access_token="0.t", project_id="proj-1", binary=fake_binary,
-        cache_ttl_seconds=300, home_path=home,
+        cache_ttl_seconds=300, encrypted_cache_max_stale_seconds=7200,
+        home_path=home,
     )
     assert secrets == {"OPENAI_API_KEY": "sk-old"}
     assert len(warnings) == 1

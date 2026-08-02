@@ -825,6 +825,7 @@ def run_compress_context_with_progress_timeout(
     on_timeout: Optional[Callable[[float, float, float], None]] = None,
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
     fence: Optional[CompressionCommitFence] = None,
+    telemetry_agent: Any = None,
 ) -> Tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware timeout.
 
@@ -891,6 +892,17 @@ def run_compress_context_with_progress_timeout(
             "provider health.",
             _COMPRESS_EXECUTOR_MAX_WORKERS,
         )
+        # Round-2 #6: saturation refusals must be visible in the same
+        # telemetry stream as every other failed attempt, or a wedged pool
+        # looks like compression simply stopped being attempted.
+        if telemetry_agent is not None:
+            _emit_compression_attempt_telemetry(
+                telemetry_agent,
+                started_at=time.monotonic(),
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class="pool_saturated",
+            )
         return messages, _resolve_fallback_prompt()
 
     def _fence_gated_worker(worker_fence: CompressionCommitFence):

@@ -356,7 +356,9 @@ def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"max_live_sessions": 2})
     evicted: list[str] = []
     monkeypatch.setattr(
-        server, "_close_session_by_id", lambda sid, end_reason=None: evicted.append(sid)
+        server,
+        "_close_session_by_id",
+        lambda sid, end_reason=None, predicate=None: evicted.append(sid),
     )
 
     def _ready() -> threading.Event:

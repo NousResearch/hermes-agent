@@ -100,8 +100,13 @@ def _resolve_base_url(config_value: Any = "") -> str:
                 base,
             )
             return _DEFAULT_BASE_URL
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "Supermemory base URL safety check failed; falling back to the "
+            "default endpoint: %s",
+            exc,
+        )
+        return _DEFAULT_BASE_URL
     return base
 
 

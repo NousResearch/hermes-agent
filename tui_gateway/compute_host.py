@@ -124,6 +124,14 @@ def _build_sha() -> str:
         return "unknown"
 
 
+# Slice of ``ComputeHost.shutdown``'s budget held back for the post-drain
+# finalize.  ``HostSupervisor._terminate_pid`` SIGKILLs the host
+# ``_SHUTDOWN_TIMEOUT_SECS`` (10s — the same value as ``shutdown``'s default
+# ``wait``) after SIGTERM, so a drain allowed to consume the whole budget would
+# leave the flush racing that kill and persist nothing at all.
+_FLUSH_RESERVE_SECS = 1.0
+
+
 class ComputeHost:
     def __init__(
         self,
@@ -167,15 +175,34 @@ class ComputeHost:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def shutdown(self, *, reason: str = "shutdown", wait: float = 10.0) -> None:
+        """Drain in-flight turns, then finalize every session.
+
+        Order matters. ``_finalize_session`` is a one-shot latch: it sets
+        ``session["_finalized"]`` and every later call returns immediately, so
+        the flush gets exactly one chance to snapshot the session. Running it
+        before the drain meant that chance was spent while turns were still
+        producing output — the tail was unpersistable, ``on_session_end`` fired
+        with ``interrupted=True`` against a session that was still running, and
+        the active-session lease was released out from under a live turn. The
+        drain loop exists precisely so that work survives; finalizing first
+        defeated it.
+
+        ``_FLUSH_RESERVE_SECS`` of the budget — but never more than half of it,
+        so a short explicit ``wait`` still gets a real drain — is withheld from
+        the drain, so the flush still runs when in-flight turns outlast the
+        window. ``wait`` itself is unchanged, so this adds no shutdown latency
+        and no new exposure to the supervisor's kill escalation.
+        """
         self._closed.set()
-        self.flush_all_sessions(reason=reason)
-        deadline = time.monotonic() + max(0.0, wait)
+        budget = max(0.0, wait)
+        deadline = time.monotonic() + budget - min(_FLUSH_RESERVE_SECS, budget / 2.0)
         while time.monotonic() < deadline:
             with self._turn_futures_lock:
                 pending = [f for f in self._turn_futures if not f.done()]
             if not pending:
                 break
             time.sleep(0.05)
+        self.flush_all_sessions(reason=reason)
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def flush_all_sessions(self, *, reason: str = "shutdown") -> None:

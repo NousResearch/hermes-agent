@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tui_gateway import server
 from tui_gateway.compute_host import ComputeHost, _default_workers
 from tui_gateway.host_supervisor import (
     MUTATOR_ROUTE_TABLE,
@@ -132,3 +133,71 @@ def _make_compress_host_session(events: list) -> dict:
     }
 
 
+def _record_finalize(monkeypatch, events: list[str]) -> None:
+    """Give ``flush_all_sessions`` one session and record when it finalizes."""
+    monkeypatch.setattr(server, "_sessions", {"s1": {"session_key": "s1"}}, raising=False)
+    monkeypatch.setattr(
+        server,
+        "_finalize_session",
+        lambda _session, end_reason="tui_close": events.append(f"finalize:{end_reason}"),
+        raising=False,
+    )
+
+
+def _register_turn(host: ComputeHost, fn) -> None:
+    """Submit a turn exactly the way ``_handle_turn_start`` does."""
+    future = host._executor.submit(fn)
+    with host._turn_futures_lock:
+        host._turn_futures.add(future)
+    future.add_done_callback(host._turn_futures.discard)
+
+
+def test_shutdown_drains_in_flight_turn_before_finalizing_sessions(monkeypatch):
+    events: list[str] = []
+    _record_finalize(monkeypatch, events)
+
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    running = threading.Event()
+
+    def _turn() -> None:
+        running.set()
+        time.sleep(0.3)
+        events.append("turn_end")
+
+    _register_turn(host, _turn)
+    assert running.wait(timeout=5.0)
+
+    host.shutdown(reason="sigterm", wait=3.0)
+
+    # ``_finalize_session`` latches on ``session["_finalized"]``, so its single
+    # run has to observe the finished turn or the tail is unpersistable.
+    assert events == ["turn_end", "finalize:compute_host_sigterm"]
+
+
+def test_shutdown_still_finalizes_when_the_drain_deadline_expires(monkeypatch):
+    events: list[str] = []
+    _record_finalize(monkeypatch, events)
+
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    release = threading.Event()
+    running = threading.Event()
+
+    def _stuck_turn() -> None:
+        running.set()
+        release.wait(timeout=30.0)
+
+    _register_turn(host, _stuck_turn)
+    assert running.wait(timeout=5.0)
+
+    try:
+        started = time.monotonic()
+        host.shutdown(reason="sigterm", wait=1.0)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    # A turn that outlives the window must not cost the flush entirely: the
+    # supervisor's SIGKILL lands on the same deadline this budget comes from,
+    # so the drain has to stop short and leave the finalize room to run.
+    assert events == ["finalize:compute_host_sigterm"]
+    assert elapsed < 1.0

@@ -49,7 +49,10 @@ widgets.
 Aliases: `ls`→list, `rl`→reload, `rm`→unload, `up`→update. `/widgets-reload`
 routes to full `reload`.
 
-For forced data refresh without re-import, subscribe in `register(sdk)`:
+For forced data refresh without re-import, subscribe in `register(sdk)`.
+The loader owns those subscriptions per source file and disposes them on
+reload, unload, and delete-sync so `/widgets update` does not stack stale
+callbacks:
 
 ```js
 sdk.onWidgetRefresh((id) => {

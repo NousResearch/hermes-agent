@@ -1,5 +1,5 @@
 import { watch } from 'fs'
-import { access, readdir, readFile, rm, writeFile } from 'fs/promises'
+import { access, cp, mkdtemp, readdir, rm } from 'fs/promises'
 import { homedir, tmpdir } from 'os'
 import { basename, dirname, isAbsolute, join, resolve } from 'path'
 import { pathToFileURL } from 'url'
@@ -16,6 +16,7 @@ import { recordParentLifecycle } from '../lib/parentLog.js'
 
 import { closeWidget, openWidget, updateWidget } from './host.js'
 import { defineWidgetApp, getWidgetApp, listWidgetApps, removeWidgetApp } from './registry.js'
+import type { WidgetApp } from './types.js'
 import { isCtrl } from './types.js'
 
 /**
@@ -32,6 +33,11 @@ import { isCtrl } from './types.js'
  */
 
 const widgetsDir = () => join(process.env.HERMES_HOME?.trim() || join(homedir(), '.hermes'), 'tui-widgets')
+
+/** Marker segment for same-dir cache-bust copies — excluded from directory scans. */
+const RELOAD_MARKER = '.__hermes_reload_'
+
+const isUserWidgetFile = (name: string): boolean => name.endsWith('.mjs') && !name.includes(RELOAD_MARKER)
 
 export interface UserWidgetLoadResult {
   /** App ids newly registered by this scan. */
@@ -52,18 +58,82 @@ export interface WidgetSource {
  *  keys are external loads (via `/widgets load`) and skip delete-sync. */
 const fileApps = new Map<string, string[]>()
 
+/** Files skipped by automatic scans until an explicit load/reload. */
+const disabledFiles = new Set<string>()
+
+/** App ids removed via unload while their source file may still exist. */
+const disabledAppIds = new Set<string>()
+
+/** Last known source file for a disabled app id (reload-by-id after unload). */
+const disabledAppSource = new Map<string, string>()
+
 const listeners = new Set<(result: UserWidgetLoadResult) => void>()
 
 /** Manual refresh bus for `/widgets update`. Widgets subscribe in register()
  *  or inside a component effect. `id` is null when every widget should refresh. */
 type WidgetRefreshListener = (id: null | string) => void
 const refreshListeners = new Set<WidgetRefreshListener>()
+/** Listeners owned by a source file (subscribed during that file's register). */
+const refreshByFile = new Map<string, Set<WidgetRefreshListener>>()
+/** File key whose register() is currently executing (if any). */
+let currentImportFileKey: null | string = null
+
+const disposeRefreshForFile = (fileKey: string): void => {
+  const owned = refreshByFile.get(fileKey)
+
+  if (!owned) {
+    return
+  }
+
+  for (const listener of owned) {
+    refreshListeners.delete(listener)
+  }
+
+  refreshByFile.delete(fileKey)
+}
+
+const enableSource = (fileKey: string, appIds: string[] = []): void => {
+  disabledFiles.delete(fileKey)
+
+  for (const id of appIds) {
+    disabledAppIds.delete(id)
+    disabledAppSource.delete(id)
+  }
+
+  for (const [id, file] of [...disabledAppSource.entries()]) {
+    if (file === fileKey) {
+      disabledAppIds.delete(id)
+      disabledAppSource.delete(id)
+    }
+  }
+}
 
 export function onWidgetRefresh(listener: WidgetRefreshListener): () => void {
   refreshListeners.add(listener)
 
+  const owner = currentImportFileKey
+
+  if (owner) {
+    let owned = refreshByFile.get(owner)
+
+    if (!owned) {
+      owned = new Set()
+      refreshByFile.set(owner, owned)
+    }
+
+    owned.add(listener)
+  }
+
   return () => {
     refreshListeners.delete(listener)
+
+    if (owner) {
+      refreshByFile.get(owner)?.delete(listener)
+    }
+
+    for (const owned of refreshByFile.values()) {
+      owned.delete(listener)
+    }
   }
 }
 
@@ -130,56 +200,146 @@ const emitLoadResult = (result: UserWidgetLoadResult): UserWidgetLoadResult => {
   return result
 }
 
-/** Import one on-disk .mjs via a unique temp path so ESM loaders (Node query
- *  bust and Vitest/vite-node) always re-execute after edits. */
-async function importRegister(absPath: string, fileKey: string, result: UserWidgetLoadResult): Promise<void> {
-  const before = new Set(listWidgetApps().map(app => app.id))
-  const previous = fileApps.get(fileKey) ?? []
+const claimedElsewhere = (fileKey: string, id: string): boolean =>
+  [...fileApps.entries()].some(([key, ids]) => key !== fileKey && ids.includes(id))
 
-  const tmp = join(
-    tmpdir(),
-    `hermes-widget-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.mjs`
-  )
+/** Cache-bust by staging the source directory into a unique temp tree.
+ *  Relative imports keep a real directory base (unlike a lone /tmp entry
+ *  copy), and every path is a fresh URL so Node/Vitest re-execute helpers. */
+async function importWidgetModule(absPath: string): Promise<{ default?: (sdk: WidgetSdk) => void }> {
+  const stageRoot = await mkdtemp(join(tmpdir(), 'hermes-widget-'))
 
   try {
-    const src = await readFile(absPath, 'utf8')
+    await cp(dirname(absPath), stageRoot, {
+      filter: src => !basename(src).includes(RELOAD_MARKER),
+      recursive: true
+    })
 
-    await writeFile(tmp, src)
+    const staged = join(stageRoot, basename(absPath))
 
-    const mod = (await import(pathToFileURL(tmp).href)) as {
-      default?: (sdk: WidgetSdk) => void
+    return (await import(pathToFileURL(staged).href)) as { default?: (sdk: WidgetSdk) => void }
+  } finally {
+    await rm(stageRoot, { force: true, recursive: true }).catch(() => {})
+  }
+}
+
+/** Import + register one file. Keeps prior apps docked on successful replace;
+ *  restores prior definitions if register() fails after a partial apply. */
+async function importRegister(absPath: string, fileKey: string, result: UserWidgetLoadResult): Promise<void> {
+  const previous = fileApps.get(fileKey) ?? []
+  const previousDefs = new Map<string, WidgetApp<never>>()
+
+  for (const id of previous) {
+    const app = getWidgetApp(id)
+
+    if (app) {
+      previousDefs.set(id, app)
     }
+  }
 
-    if (typeof mod.default !== 'function') {
-      throw new Error('default export must be register(sdk)')
-    }
+  let mod: { default?: (sdk: WidgetSdk) => void }
 
-    mod.default(widgetSdk)
-    result.loaded.push(fileKey)
-
-    const added = listWidgetApps()
-      .map(app => app.id)
-      .filter(id => !before.has(id))
-
-    // First registration of this file, or new ids from a multi-app file.
-    if (added.length) {
-      fileApps.set(fileKey, [...new Set([...previous, ...added])])
-      result.added.push(...added)
-
-      return
-    }
-
-    // Re-import of existing ids (hot reload): keep prior attribution.
-    if (previous.length) {
-      fileApps.set(fileKey, previous)
-    }
+  try {
+    mod = await importWidgetModule(absPath)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
 
     result.errors.push({ file: fileKey, message })
     recordParentLifecycle(`user widget ${fileKey} failed to load: ${message}`)
+
+    return
+  }
+
+  if (typeof mod.default !== 'function') {
+    const message = 'default export must be register(sdk)'
+
+    result.errors.push({ file: fileKey, message })
+    recordParentLifecycle(`user widget ${fileKey} failed to load: ${message}`)
+
+    return
+  }
+
+  // Drop prior refresh ownership for this source only after the module parsed.
+  disposeRefreshForFile(fileKey)
+
+  const registeredIds: string[] = []
+  const priorImportOwner = currentImportFileKey
+
+  currentImportFileKey = fileKey
+
+  try {
+    const sdk: WidgetSdk = {
+      ...widgetSdk,
+      defineWidgetApp: <S,>(app: WidgetApp<S>) => {
+        registeredIds.push(app.id)
+
+        return defineWidgetApp(app)
+      }
+    }
+
+    mod.default(sdk)
+  } catch (error) {
+    // Roll back any ids this register touched and restore prior definitions.
+    for (const id of new Set(registeredIds)) {
+      if (previousDefs.has(id)) {
+        defineWidgetApp(previousDefs.get(id)!)
+      } else {
+        closeWidget(id)
+        removeWidgetApp(id)
+      }
+    }
+
+    for (const [id, app] of previousDefs) {
+      if (!registeredIds.includes(id)) {
+        defineWidgetApp(app)
+      }
+    }
+
+    const message = error instanceof Error ? error.message : String(error)
+
+    result.errors.push({ file: fileKey, message })
+    recordParentLifecycle(`user widget ${fileKey} failed to load: ${message}`)
+
+    return
   } finally {
-    await rm(tmp, { force: true }).catch(() => {})
+    currentImportFileKey = priorImportOwner
+  }
+
+  // Successful register: re-enable this source and strip disabled flags.
+  enableSource(fileKey, registeredIds)
+
+  // Drop apps this file no longer defines (id rename / multi-app shrink).
+  // Do not dispose refresh here — new listeners were just bound by register().
+  for (const id of previous) {
+    if (registeredIds.includes(id) || claimedElsewhere(fileKey, id)) {
+      continue
+    }
+
+    closeWidget(id)
+    removeWidgetApp(id)
+    result.removed.push(id)
+  }
+
+  // Honor per-app unload while the file still loads siblings.
+  const keptIds = registeredIds.filter(id => {
+    if (!disabledAppIds.has(id)) {
+      return true
+    }
+
+    closeWidget(id)
+    removeWidgetApp(id)
+    result.removed.push(id)
+
+    return false
+  })
+
+  fileApps.set(fileKey, keptIds)
+  result.loaded.push(fileKey)
+
+  for (const id of keptIds) {
+    if (!previous.includes(id)) {
+      result.added.push(id)
+    }
   }
 }
 
@@ -211,6 +371,27 @@ export function findWidgetFile(target: string): null | string {
     }
 
     if (basename(file, '.mjs') === needle || basename(file, '.mjs') === base.replace(/\.mjs$/, '')) {
+      return file
+    }
+  }
+
+  const disabledSource = disabledAppSource.get(needle)
+
+  if (disabledSource) {
+    return disabledSource
+  }
+
+  // Disabled sources still resolve so reload can re-enable them.
+  if (disabledFiles.has(needle)) {
+    return needle
+  }
+
+  if (!needle.endsWith('.mjs') && disabledFiles.has(`${needle}.mjs`)) {
+    return `${needle}.mjs`
+  }
+
+  for (const file of disabledFiles) {
+    if (file === base || basename(file) === base || basename(file, '.mjs') === needle) {
       return file
     }
   }
@@ -264,20 +445,8 @@ export async function reloadWidgetFile(target: string, dir = widgetsDir()): Prom
     return emitLoadResult(result)
   }
 
-  // Drop prior ids owned solely by this file so a rename does not leave ghosts.
-  const previous = fileApps.get(fileKey) ?? []
-
-  for (const id of previous) {
-    const claimedElsewhere = [...fileApps.entries()].some(([k, ids]) => k !== fileKey && ids.includes(id))
-
-    if (!claimedElsewhere) {
-      closeWidget(id)
-      removeWidgetApp(id)
-      result.removed.push(id)
-    }
-  }
-
-  fileApps.delete(fileKey)
+  // Explicit reload re-enables a previously unloaded source.
+  enableSource(fileKey, fileApps.get(fileKey) ?? [])
   await importRegister(abs, fileKey, result)
 
   return emitLoadResult(result)
@@ -302,12 +471,14 @@ export async function loadWidgetPath(path: string): Promise<UserWidgetLoadResult
     return emitLoadResult(result)
   }
 
+  enableSource(abs, fileApps.get(abs) ?? [])
   await importRegister(abs, abs, result)
 
   return emitLoadResult(result)
 }
 
-/** Unregister one app, dismiss it from the dock/modal, and drop file attribution. */
+/** Unregister one app, dismiss it from the dock/modal, and remember the
+ *  source so automatic rescans do not immediately re-register it. */
 export function unloadWidgetApp(id: string): { ok: boolean; reason?: string } {
   const appId = id.trim()
 
@@ -321,18 +492,22 @@ export function unloadWidgetApp(id: string): { ok: boolean; reason?: string } {
 
   closeWidget(appId)
   removeWidgetApp(appId)
+  disabledAppIds.add(appId)
 
   for (const [file, ids] of [...fileApps.entries()]) {
     if (!ids.includes(appId)) {
       continue
     }
 
+    disabledAppSource.set(appId, file)
     const next = ids.filter(x => x !== appId)
 
     if (next.length) {
       fileApps.set(file, next)
     } else {
       fileApps.delete(file)
+      disabledFiles.add(file)
+      disposeRefreshForFile(file)
     }
   }
 
@@ -348,7 +523,7 @@ export async function loadUserWidgets(dir = widgetsDir()): Promise<UserWidgetLoa
   let files: string[] = []
 
   try {
-    files = (await readdir(dir)).filter(f => f.endsWith('.mjs')).sort()
+    files = (await readdir(dir)).filter(isUserWidgetFile).sort()
   } catch {
     // No directory: fall through so previously-loaded files still delete-sync.
   }
@@ -361,8 +536,12 @@ export async function loadUserWidgets(dir = widgetsDir()): Promise<UserWidgetLoa
 
     if (!files.includes(file)) {
       fileApps.delete(file)
+      disabledFiles.delete(file)
+      disposeRefreshForFile(file)
 
       for (const id of ids) {
+        disabledAppIds.delete(id)
+        disabledAppSource.delete(id)
         closeWidget(id)
 
         if (removeWidgetApp(id)) {
@@ -372,7 +551,20 @@ export async function loadUserWidgets(dir = widgetsDir()): Promise<UserWidgetLoa
     }
   }
 
+  // Drop disable records for files that no longer exist on disk.
+  for (const file of [...disabledFiles]) {
+    if (isAbsolute(file) || files.includes(file)) {
+      continue
+    }
+
+    disabledFiles.delete(file)
+  }
+
   for (const file of files) {
+    if (disabledFiles.has(file)) {
+      continue
+    }
+
     await importRegister(join(dir, file), file, result)
   }
 

@@ -97,3 +97,44 @@ def test_e2e_no_scrub_child_keeps_planted_secret(tmp_path, monkeypatch):
         env=env, capture_output=True, text=True, timeout=60, check=True,
     )
     assert out.stdout.strip() == "sk-FAKE-planted"
+
+
+def test_e2e_child_never_sees_bws_token_or_password(tmp_path, monkeypatch):
+    """The BWS bootstrap token and *_PASSWORD values must never reach a
+    scrubbed child — the same disclosure class the status-line and log
+    masking PRs close at the emission side, here at the process boundary."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.abc123.def456:xyz789")
+    monkeypatch.setenv("DB_PASSWORD", "db-pass-9f2c1a")
+
+    env = build_subprocess_env()  # scrub on (default)
+
+    code = (
+        "import os, json; "
+        "print(json.dumps({'bws': 'BWS_ACCESS_TOKEN' in os.environ, "
+        "'pw': 'DB_PASSWORD' in os.environ}))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env, capture_output=True, text=True, timeout=60, check=True,
+    )
+    import json
+
+    result = json.loads(out.stdout)
+    assert result["bws"] is False
+    assert result["pw"] is False
+
+
+def test_hermes_subprocess_env_strips_bws_token_and_password(monkeypatch):
+    """The non-terminal spawn factory (browser/ACP/computer-use surface)
+    must also strip the BWS token and *_PASSWORD values by default."""
+    from tools.environments.local import hermes_subprocess_env
+
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.abc123.def456:xyz789")
+    monkeypatch.setenv("DB_PASSWORD", "db-pass-9f2c1a")
+
+    env = hermes_subprocess_env()  # inherit_credentials=False (default)
+    assert "BWS_ACCESS_TOKEN" not in env
+    assert "DB_PASSWORD" not in env

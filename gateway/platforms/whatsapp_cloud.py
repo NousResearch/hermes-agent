@@ -255,15 +255,24 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         # Allowlist: honor the *documented* WHATSAPP_CLOUD_ALLOWED_USERS (the
         # var the setup wizard writes) in addition to WHATSAPP_CLOUD_ALLOW_FROM.
-        # The adapter historically read only ALLOW_FROM, so an allowlist
-        # configured via the documented var silently dropped every inbound.
+        # Precedence matches construction forever: explicit config, then legacy
+        # ALLOW_FROM, then ALLOWED_USERS. Track the winning source so live DM
+        # checks do not let a lower-precedence env broaden access.
+        explicit_allow = extra.get("allow_from") or extra.get("allowFrom")
+        if explicit_allow:
+            self._dm_allowlist_source = "config"
+            allow_raw = explicit_allow
+        elif os.getenv("WHATSAPP_CLOUD_ALLOW_FROM"):
+            self._dm_allowlist_source = "WHATSAPP_CLOUD_ALLOW_FROM"
+            allow_raw = os.getenv("WHATSAPP_CLOUD_ALLOW_FROM")
+        elif os.getenv("WHATSAPP_CLOUD_ALLOWED_USERS"):
+            self._dm_allowlist_source = "WHATSAPP_CLOUD_ALLOWED_USERS"
+            allow_raw = os.getenv("WHATSAPP_CLOUD_ALLOWED_USERS")
+        else:
+            self._dm_allowlist_source = None
+            allow_raw = None
         self._allow_from: set[str] = self._normalize_allow_ids(
-            self._coerce_allow_list(
-                extra.get("allow_from")
-                or extra.get("allowFrom")
-                or os.getenv("WHATSAPP_CLOUD_ALLOW_FROM")
-                or os.getenv("WHATSAPP_CLOUD_ALLOWED_USERS")
-            )
+            self._coerce_allow_list(allow_raw)
         )
         # DM policy: explicit config wins; otherwise choose a safe, working
         # default -- "open" if the operator opted into allow-all, else
@@ -384,10 +393,6 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             digits = re.sub(r"\D", "", bare)
             normalized.add(digits or entry)
         return normalized
-
-    def _dm_allowlist_env_keys(self) -> tuple[str, ...]:
-        """Cloud pairing mirrors WHATSAPP_CLOUD_ALLOWED_USERS (then legacy ALLOW_FROM)."""
-        return ("WHATSAPP_CLOUD_ALLOWED_USERS", "WHATSAPP_CLOUD_ALLOW_FROM")
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Allowlist check against the normalized bare wa_id."""

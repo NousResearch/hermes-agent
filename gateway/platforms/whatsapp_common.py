@@ -134,27 +134,21 @@ class WhatsAppBehaviorMixin:
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
-    def _dm_allowlist_env_keys(self) -> tuple[str, ...]:
-        """Env vars that carry the live DM allowlist for this adapter.
-
-        Pairing approve/revoke mutates the documented ``*_ALLOWED_USERS`` var
-        in-process. Intake must prefer that live carrier over the construction
-        snapshot in ``_allow_from`` so sole-entry revocation takes effect
-        without a gateway restart.
-        """
-        return ("WHATSAPP_ALLOWED_USERS",)
-
     def _live_dm_allow_from(self) -> set[str]:
         """Allowlist currently enforced for DM intake / strict DM auth.
 
-        When a pairing-synced env allowlist key is present in ``os.environ``,
-        that value is authoritative (including the empty set after the last
-        entry is cleared but before the key is removed). Otherwise fall back
-        to the adapter snapshot seeded at construction from config/env.
+        Source precedence matches construction: explicit config wins over any
+        env carrier. When the adapter was seeded from an env var, re-read that
+        same key so pairing approve/revoke takes effect without restart
+        (including an empty value while the key is still present). Config-seeded
+        adapters keep the in-memory snapshot, which pairing revoke purges in
+        place — a lower-precedence or stale env value must not broaden access.
         """
-        for key in self._dm_allowlist_env_keys():
-            if key in os.environ:
-                return self._coerce_allow_list(os.environ.get(key, ""))
+        source = getattr(self, "_dm_allowlist_source", None)
+        if isinstance(source, str) and source != "config":
+            if source in os.environ:
+                return self._coerce_allow_list(os.environ.get(source, ""))
+            return set(self._allow_from or ())
         return set(self._allow_from or ())
 
     # ------------------------------------------------------------------ JID helpers

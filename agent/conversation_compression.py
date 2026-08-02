@@ -543,6 +543,12 @@ class CompressionCommitFence:
         ):
             self._cancelled = True
             self._lock.release()
+            if self._admission_revoked:
+                # Round-2 #1: a revoke that lost the fence-lock race to this
+                # very begin_commit deferred its lease release; the commit was
+                # refused, so the release is safe (and idempotent with the
+                # worker's own holder-qualified cleanup) right now.
+                self.release_cancelled_compression_lock()
             return False
         self._commit_started = True
         # Set while the fence lock is held so observers can never see
@@ -554,6 +560,15 @@ class CompressionCommitFence:
         """Leave a commit boundary entered by :meth:`begin_commit`."""
         self._commit_phase.clear()
         self._lock.release()
+        if self._admission_revoked:
+            # Round-2 #1: a revoke that arrived while THIS commit was in
+            # flight deferred its durable-lease release rather than freeing
+            # the lock out from under an active SessionDB mutation. The
+            # commit is now fully complete, so perform the deferred release
+            # here — promptly, without relying on the (possibly parked)
+            # worker thread's outer cleanup. Idempotent with that cleanup:
+            # the DB release is holder-qualified.
+            self.release_cancelled_compression_lock()
 
     @property
     def commit_in_flight(self) -> bool:
@@ -573,21 +588,44 @@ class CompressionCommitFence:
         return self._cancelled or self._admission_revoked
 
     def revoke_commit_admission(self) -> None:
-        """Revoke FUTURE commit admission without acquiring the fence lock.
+        """Revoke FUTURE commit admission without blocking on the fence lock.
 
         #76354 review F2: every host unwind path (KeyboardInterrupt, task
         cancellation, unexpected exception while waiting) must guarantee a
         detached worker cannot later enter the commit boundary and mutate
-        durable/session state. This is deliberately lock-free: a commit that
-        is ALREADY in flight cannot be safely abandoned (the invariant
-        "commit never abandoned mid-mutation" holds), but no NEW commit will
-        be admitted after this call — ``begin_commit`` re-checks the flag
-        under the fence lock. Also releases the worker's durable compression
-        lease via the holder-qualified hook when one was published (F4), so
-        a hung worker cannot retain the durable lock past a host unwind.
+        durable/session state. The flag store is lock-free: a commit that is
+        ALREADY in flight cannot be safely abandoned (the invariant "commit
+        never abandoned mid-mutation" holds), but no NEW commit will be
+        admitted after this call — ``begin_commit`` re-checks the flag under
+        the fence lock.
+
+        Round-2 #1 (durable-lease timing): the worker's holder-qualified
+        lease release (F4) must NOT run while an admitted commit is still
+        mutating SessionDB — a second compressor could otherwise acquire the
+        durable lock mid-commit and interleave with the first commit's
+        writes. The release decision is therefore made under the fence lock:
+
+        - non-blocking acquire succeeds → no commit is in flight (an
+          admitted commit RETAINS the lock until ``finish_commit``), so the
+          lease is released immediately, while still holding the lock so a
+          concurrent ``begin_commit`` cannot slip in between the check and
+          the release (it would be refused anyway — the flag is already set).
+        - acquire fails → the lock holder is either an in-flight commit or a
+          transient boundary (lock-setup / cancel admission). Defer: the
+          release then runs in ``finish_commit`` (after the mutation fully
+          completes) or on the ``begin_commit``-refusal path, whichever the
+          worker reaches first. Both are idempotent with the worker's own
+          outer cleanup because the DB release is holder-qualified.
         """
         self._admission_revoked = True
-        self.release_cancelled_compression_lock()
+        if self._lock.acquire(blocking=False):
+            try:
+                self.release_cancelled_compression_lock()
+            finally:
+                self._lock.release()
+        # else: deferred — finish_commit()/begin_commit() re-check
+        # _admission_revoked and perform the release once no commit can be
+        # mid-mutation.
 
     # ── Holder-qualified durable-lease cancellation (#76354 F4) ──────────
     # Transplanted from PR #71569 (@ciabata-git): the worker publishes an

@@ -932,6 +932,17 @@ def _bash_starts(bash: str) -> bool:
 _git_bash_bin_dirs_cache: "list[str] | None" = None
 
 
+def _env_path_sep() -> str:
+    """PATH separator for the *logical* platform (honours ``_IS_WINDOWS`` patches).
+
+    Tests monkeypatch ``_IS_WINDOWS`` to exercise Unix/Windows PATH branches on
+    a single host. Using bare ``os.pathsep`` there mixes ``;`` into ``:``-joined
+    PATH strings (and the reverse), which corrupts entries such as
+    ``C:\\Program Files\\…`` when later split on ``:``.
+    """
+    return ";" if _IS_WINDOWS else ":"
+
+
 def _git_bash_bin_dirs() -> list[str]:
     """Git Bash's coreutils/binary dirs, in ``/etc/profile`` precedence order.
 
@@ -950,11 +961,12 @@ def _git_bash_bin_dirs() -> list[str]:
     (mingw first, then usr/bin, then bin) and only if they exist on disk.
     """
     global _git_bash_bin_dirs_cache
-    if _git_bash_bin_dirs_cache is not None:
-        return _git_bash_bin_dirs_cache
-
+    # Honour live ``_IS_WINDOWS`` *before* the cache: tests flip the flag, and a
+    # prior Windows resolution must not leak Git dirs into a simulated Unix PATH.
     if not _IS_WINDOWS:
-        _git_bash_bin_dirs_cache = []
+        return []
+
+    if _git_bash_bin_dirs_cache is not None:
         return _git_bash_bin_dirs_cache
 
     dirs: list[str] = []
@@ -994,10 +1006,12 @@ def _prepend_git_bash_dirs(existing_path: str) -> str:
     case the session snapshot re-exports the full login PATH inside the shell,
     so this only matters when that snapshot is absent.
     """
+    if not _IS_WINDOWS:
+        return existing_path
     git_dirs = _git_bash_bin_dirs()
     if not git_dirs:
         return existing_path
-    sep = os.pathsep
+    sep = _env_path_sep()
     entries = [e for e in existing_path.split(sep) if e] if existing_path else []
     missing = [d for d in git_dirs if d not in entries]
     if not missing:
@@ -1126,14 +1140,15 @@ def _resolve_hermes_bin_dir() -> str | None:
 def _prepend_hermes_bin_dir(existing_path: str) -> str:
     """Prepend the hermes install dir to ``existing_path`` if it's missing.
 
-    Cross-platform (uses ``os.pathsep``). First-occurrence wins, so a PATH
-    that already contains the dir is returned unchanged. Returns the input
-    unchanged when the install dir can't be resolved.
+    Cross-platform via ``_env_path_sep()`` so ``_IS_WINDOWS`` test patches keep
+    Unix ``:`` and Windows ``;`` branches consistent. First-occurrence wins, so
+    a PATH that already contains the dir is returned unchanged. Returns the
+    input unchanged when the install dir can't be resolved.
     """
     bin_dir = _resolve_hermes_bin_dir()
     if not bin_dir:
         return existing_path
-    sep = os.pathsep
+    sep = _env_path_sep()
     entries = [e for e in existing_path.split(sep) if e] if existing_path else []
     if bin_dir in entries:
         return existing_path
@@ -1155,6 +1170,10 @@ def _managed_runtime_path_entries() -> list[str]:
       and nothing has ever put that directory on PATH, so an install whose only
       uv is the managed one looks uv-less to both the agent and the model.
 
+    When ``_IS_WINDOWS`` is patched to simulate Unix on a Windows host (or the
+    reverse), skip entries whose separator/drive spelling does not match the
+    logical platform so they are not spliced into the wrong PATH dialect.
+
     Resolved per call rather than cached in a module constant because
     ``get_hermes_home()`` is profile-scoped and a managed tree can appear
     mid-process (``heal_hermes_managed_node``, a first browser install).
@@ -1163,7 +1182,16 @@ def _managed_runtime_path_entries() -> list[str]:
         from hermes_constants import get_hermes_home, iter_hermes_node_dirs
 
         candidates = [*iter_hermes_node_dirs(), get_hermes_home() / "bin"]
-        return [str(d) for d in candidates if d.is_dir()]
+        entries = [str(d) for d in candidates if d.is_dir()]
+        if _IS_WINDOWS:
+            return entries
+        # Simulated/native POSIX PATH must not absorb ``C:\…`` drive entries —
+        # ``:`` splitting would turn ``C:\Users\…`` into ``["C", "\\Users\\…"]``.
+        return [
+            entry
+            for entry in entries
+            if "\\" not in entry and not (len(entry) >= 2 and entry[1] == ":")
+        ]
     except Exception:
         return []
 

@@ -563,6 +563,10 @@ class TestSanePathIncludesHomebrew:
         from tools.environments.local import _make_run_env
         windows_env = {"Path": r"C:\Windows\System32;C:\Program Files\Git\bin"}
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        # Isolate casing behaviour from the Git-Bash coreutils prepend (covered
+        # elsewhere). On a Windows host with Git installed, the prepend would
+        # otherwise rewrite Path and mask the Path-vs-PATH assertion.
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
         with patch.object(local_mod.os, "environ", windows_env):
             result = _make_run_env({})
         assert result["Path"] == windows_env["Path"]

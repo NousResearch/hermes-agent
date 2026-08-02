@@ -6,7 +6,9 @@ import type { FC } from 'react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 
 import { ZoomableImage } from '@/components/chat/zoomable-image'
+import type { I18nContextValue } from '@/i18n'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
+import { openExternalLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
 import { useSessionLinkTitle } from '@/lib/session-link-title'
@@ -442,7 +444,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
  *  it's already a tile/main, otherwise open a stacked tab (never steals main
  *  from under the chat you're reading). Lazy-imports so the composer's rich
  *  editor can pull this module in without booting the profile/REST stack. */
-function openSessionRef(value: string) {
+export function openSessionRef(value: string) {
   const { sessionId } = parseSessionRefValue(value)
 
   if (!sessionId) {
@@ -452,6 +454,33 @@ function openSessionRef(value: string) {
   triggerHaptic('selection')
   // navigate is unused for the `tab` intent (focus-or-tile only).
   void import('@/app/open-session').then(({ openSession }) => openSession(sessionId, () => undefined, 'tab'))
+}
+
+/** What activating a directive of a given kind does. The single source of truth
+ *  for "you can act on this reference," shared by every surface that renders a
+ *  chip: the composer's hover pill (`ComposerDirectiveActions`) and the sent
+ *  message's clickable chip below. A kind with no entry is inert everywhere.
+ *
+ *  Add a kind here and both surfaces light up — that's the whole point of one
+ *  table. `icon`/`label` are for the pill; the transcript chip carries its own
+ *  glyph and only reads `run`. */
+export interface DirectiveAction {
+  icon: string
+  label: (t: I18nContextValue['t']) => string
+  run: (value: string) => void
+}
+
+export const DIRECTIVE_ACTIONS: Record<string, DirectiveAction> = {
+  session: {
+    icon: 'link-external',
+    label: t => t.composer.openDirective,
+    run: openSessionRef
+  },
+  url: {
+    icon: 'link-external',
+    label: t => t.composer.openDirective,
+    run: openExternalLink
+  }
 }
 
 /** A `@session:<profile>/<id>` reference in the user transcript (directive
@@ -501,14 +530,18 @@ const SlashChip: FC<{ kind: SlashChipKind; label: string; value: string }> = ({ 
   </span>
 )
 
-/** Inert by default; `onClick` promotes the chip to a real button (session
- *  refs, which open the session they name). */
+/** A directive reference in a sent message. A kind with a `DIRECTIVE_ACTIONS`
+ *  entry (a url, …) renders as a real button that runs it on click; everything
+ *  else is inert text. `onClick` overrides for chips that resolve their target
+ *  themselves (session, which needs the async navigator). */
 const DirectiveChip: FC<{
   type: string
   label: string
   id: string
   onClick?: () => void
 }> = ({ type, label, id, onClick }) => {
+  const activate = onClick ?? (DIRECTIVE_ACTIONS[type] ? () => DIRECTIVE_ACTIONS[type]!.run(id) : undefined)
+
   const body = (
     <>
       <DirectiveIcon type={type} />
@@ -517,14 +550,14 @@ const DirectiveChip: FC<{
   )
 
   const props = {
-    ...refAttrs(type, cn('wrap-anywhere', onClick && 'cursor-pointer')),
+    ...refAttrs(type, cn('wrap-anywhere', activate && 'cursor-pointer')),
     'data-directive-id': id,
     'data-slot': 'aui_directive-chip',
     title: id
   }
 
-  return onClick ? (
-    <button {...props} onClick={onClick} type="button">
+  return activate ? (
+    <button {...props} onClick={activate} type="button">
       {body}
     </button>
   ) : (

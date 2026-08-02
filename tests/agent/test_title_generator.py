@@ -219,7 +219,7 @@ class TestMaybeAutoTitle:
 
         assert db.get_session_title("sess-technical") == "Recovered Session"
 
-    def test_skips_after_two_distinct_real_exchanges(self):
+    def test_skips_after_two_real_exchanges(self):
         db = MagicMock()
         db.get_session_title.return_value = None
         history = [
@@ -233,6 +233,23 @@ class TestMaybeAutoTitle:
 
         with patch("agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "sess-third-turn", "third", "response 3", history)
+            mock_auto.assert_not_called()
+
+    def test_skips_after_two_repeated_real_exchanges(self):
+        """Repeated user text still represents a separate completed turn."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "repeat"},
+            {"role": "assistant", "content": "response 1"},
+            {"role": "user", "content": "repeat"},
+            {"role": "assistant", "content": "response 2"},
+            {"role": "user", "content": "repeat"},
+            {"role": "assistant", "content": "response 3"},
+        ]
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-repeated-turn", "repeat", "response 3", history)
             mock_auto.assert_not_called()
 
     def test_skips_if_session_already_has_title(self):

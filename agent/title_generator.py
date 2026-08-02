@@ -42,23 +42,26 @@ FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
 
-def _title_history_user_key(message: Mapping[str, object]) -> Optional[tuple[str, str]]:
-    """Return a stable key for a real user turn, excluding runtime scaffolding."""
+def _is_title_history_user(message: object) -> bool:
+    """Return whether a history row is a real user turn, excluding scaffolding."""
     if not isinstance(message, Mapping) or message.get("role") != "user":
-        return None
-    if message.get("display_kind") or any(message.get(flag) for flag in _TITLE_SYNTHETIC_USER_FLAGS):
-        return None
+        return False
+    if message.get("display_kind") or any(
+        message.get(flag) for flag in _TITLE_SYNTHETIC_USER_FLAGS
+    ):
+        return False
 
     content = message.get("content")
     if isinstance(content, list):
         content = str(content)
     if not isinstance(content, str):
-        return None
+        return False
     text = content.strip()
     if not text or text.startswith(_TITLE_SYNTHETIC_USER_PREFIXES):
-        return None
+        return False
 
-    return "text", text
+    return True
+
 
 # Validation callback: () -> bool. Called right before the LLM request in
 # generate_title(). Return False to skip — e.g. the user switched models
@@ -408,24 +411,22 @@ def maybe_auto_title(
     """Fire-and-forget title generation after a completed exchange.
 
     Only generates a title when:
-    - This is within the first two distinct real user exchanges
+    - This is within the first two real user exchanges
     - No title is already set
 
     ``conversation_history`` remains part of the public signature for callers
     that already provide it. Runtime scaffolding is excluded from the
     first-exchange check by display metadata, stable technical prefixes, and
-    duplicate-content suppression, so replayed or injected ``role="user"``
-    entries cannot block a valid title attempt.
+    synthetic flags. Each qualifying history row counts as one exchange, so
+    repeated user messages cannot start a title worker after the second turn.
     """
     if not session_db or not session_id or not user_message or not assistant_response:
         return
 
-    real_user_keys = set()
-    for message in conversation_history or []:
-        key = _title_history_user_key(message)
-        if key is not None:
-            real_user_keys.add(key)
-    if len(real_user_keys) > 2:
+    real_user_turns = sum(
+        _is_title_history_user(message) for message in conversation_history or []
+    )
+    if real_user_turns > 2:
         return
 
     with _title_in_flight_lock:

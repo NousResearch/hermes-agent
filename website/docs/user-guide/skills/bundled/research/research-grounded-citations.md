@@ -98,6 +98,7 @@ id within a ledger, so ids stay stable across many search/extract rounds.
 | Show ledger | `sources.py list [--json]` |
 | Render the Sources block | `sources.py render [--style markdown\|plain\|footnotes\|bibtex\|evidence] [--only 1,3]` |
 | Render only what a draft cites | `sources.py render --cited-in draft.md` |
+| Rewrite a draft's Sources block in place | `sources.py render --replace-in draft.md` |
 | Check a draft's citations | `sources.py verify draft.md [--strict] [--min-coverage 0.6] [--evidence]` |
 
 ## Procedure
@@ -156,8 +157,12 @@ python3 "$S" quote 1 --text "Ice is about 9% less dense than liquid water." --fr
 ```
 
 The quote is rejected unless it appears verbatim in the evidence text
-(whitespace- and case-insensitive), so a paraphrase or misremembered figure
-cannot masquerade as evidence. Copy-paste from the fetched text; never retype.
+(insensitive to whitespace, case, and markdown markup — inline links like
+`_[ERAP1](https://…)_` in extracted text match the plain prose a reader sees),
+so a paraphrase or misremembered figure cannot masquerade as evidence.
+Copy-paste from the fetched text; never retype. Quote the sentence as the
+reader sees it — the matcher sees through the extractor's markup for you, so
+you don't have to reproduce link syntax or escaped asterisks in your quote.
 
 ② **Flag model-knowledge claims with `[unverified]`.** A load-bearing claim
 you could not source gets an explicit marker instead of a citation:
@@ -181,13 +186,24 @@ corroboration.
 
 ```bash
 python3 "$S" verify report.md --evidence --min-coverage 0.5
-python3 "$S" render --style evidence --cited-in report.md
+python3 "$S" render --style evidence --replace-in report.md
 ```
 
 `--evidence` fails the draft if any cited source has no attached quote. The
 `evidence` render style prints each source's quotes beneath its URL, so the
 deliverable shows claim → source → exact supporting text with nothing taken on
-faith.
+faith. Use `--replace-in <draft>` to rewrite an existing Sources block in place
+(idempotent — safe to re-run after attaching more quotes); `--cited-in` prints
+to stdout instead. Both emit the heading `## Sources` (`--style plain` emits
+`Sources:`).
+
+**What `--min-coverage` counts.** Coverage is
+`sentences with declared provenance / prose sentences`. A prose sentence is a
+non-empty line fragment of 4+ words after the Sources block, headings (`#`),
+table rows (`|`), and fenced code are dropped; blockquote markers are stripped.
+Provenance is declared by either a `[n]` citation or an `[unverified]` marker,
+so a sentence carrying both counts once. Run `verify` without a threshold first
+and read the `info: stats:` line to see the counts before picking a number.
 
 ## Pitfalls
 
@@ -217,6 +233,8 @@ faith.
 - **Using `[unverified]` as an escape hatch.** It marks the rare claim that
   genuinely cannot be sourced; if most sentences carry it, the task needed more
   retrieval, not more markers.
+- **Hand-editing the Sources block.** Use `render --replace-in <draft>`; slicing
+  the file yourself risks a stale or duplicated block that `verify` then flags.
 
 ## Verification
 

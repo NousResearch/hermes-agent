@@ -55,6 +55,7 @@ export {
   dispatchWidgetInput,
   launchWidget,
   openWidget,
+  softUpdateWidget,
   updateWidget
 } from './host.js'
 export { defineWidgetApp, getWidgetApp, listWidgetApps } from './registry.js'

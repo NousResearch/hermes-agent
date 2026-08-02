@@ -3143,8 +3143,15 @@ class TestCryptoPickleKeyMigration:
 
         fake_mod = types.ModuleType("mautrix.crypto.store.asyncpg")
         fake_mod.PgCryptoStore = FakePgCryptoStore
-        with patch.dict(sys.modules, {"mautrix.crypto.store.asyncpg": fake_mod}), \
-                caplog.at_level(logging.INFO):
+        with patch.dict(
+            sys.modules,
+            {
+                "mautrix.crypto.store.asyncpg": fake_mod,
+                # _repickle_crypto_sessions imports the olm C-extension;
+                # fake it so this test does not require libolm.
+                "olm": self._fake_olm_module(),
+            },
+        ), caplog.at_level(logging.INFO):
             result = await adapter._migrate_legacy_crypto_pickle(
                 store, crypto_db, "@bot:example.org", "@bot:example.org:NEWDEV"
             )
@@ -3188,3 +3195,150 @@ class TestCryptoPickleKeyMigration:
         assert result is False
         store.put_account.assert_not_awaited()
         assert "cannot be unpickled" in caplog.text
+
+    def _fake_olm_module(self):
+        """Fake the `olm` C-extension module.
+
+        _repickle_crypto_sessions does `import olm`, which needs libolm.
+        Sessions unpickle only with the key they were pickled under.
+        """
+        olm_mod = types.ModuleType("olm")
+
+        class _Session:
+            def __init__(self, key):
+                self._key = key
+
+            @classmethod
+            def from_pickle(cls, blob, key):
+                pickled_under = blob.decode().split("|")[1]
+                if pickled_under != key:
+                    raise RuntimeError("BAD_ACCOUNT_KEY")
+                return cls(key)
+
+            def pickle(self, key):
+                return f"sess|{key}".encode()
+
+        for name in ("Session", "InboundGroupSession", "OutboundGroupSession"):
+            setattr(olm_mod, name, type(name, (_Session,), {}))
+        return olm_mod
+
+    @pytest.mark.asyncio
+    async def test_session_rows_are_repickled_under_current_key(self):
+        """The session sweep must actually rewrite legacy-key rows."""
+        adapter = _make_adapter()
+        legacy = "@bot:example.org:default"
+        current = "@bot:example.org:NEWDEV"
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(
+            return_value=[{"session_id": "s1", "session": f"sess|{legacy}".encode()}]
+        )
+        crypto_db.execute = AsyncMock()
+
+        with patch.dict(sys.modules, {"olm": self._fake_olm_module()}):
+            await adapter._repickle_crypto_sessions(
+                crypto_db, "@bot:example.org", legacy, current
+            )
+
+        # One UPDATE per session table, each writing the current-key blob.
+        assert crypto_db.execute.await_count == 3
+        for call in crypto_db.execute.await_args_list:
+            assert call.args[1] == f"sess|{current}".encode()
+            assert call.args[3] == "s1"
+
+    @pytest.mark.asyncio
+    async def test_rows_already_on_current_key_are_left_alone(self):
+        adapter = _make_adapter()
+        current = "@bot:example.org:NEWDEV"
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(
+            return_value=[{"session_id": "s1", "session": f"sess|{current}".encode()}]
+        )
+        crypto_db.execute = AsyncMock()
+
+        with patch.dict(sys.modules, {"olm": self._fake_olm_module()}):
+            await adapter._repickle_crypto_sessions(
+                crypto_db, "@bot:example.org", "@bot:example.org:default", current
+            )
+
+        crypto_db.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_rows_are_left_in_place_not_dropped(self, caplog):
+        """A row readable under neither key is skipped and left untouched.
+
+        The log must not claim the row was dropped when no DELETE is issued.
+        """
+        import logging
+        adapter = _make_adapter()
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(
+            return_value=[{"session_id": "s1", "session": b"sess|@bot:other:KEY"}]
+        )
+        crypto_db.execute = AsyncMock()
+
+        with patch.dict(sys.modules, {"olm": self._fake_olm_module()}), \
+                caplog.at_level(logging.WARNING):
+            await adapter._repickle_crypto_sessions(
+                crypto_db,
+                "@bot:example.org",
+                "@bot:example.org:default",
+                "@bot:example.org:NEWDEV",
+            )
+
+        crypto_db.execute.assert_not_awaited()
+        assert "leaving it in place" in caplog.text
+        assert "dropping" not in caplog.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_failed_sweep_leaves_account_on_legacy_key_and_retries(
+        self, caplog
+    ):
+        """A sweep failure must not commit the account.
+
+        The account is the migration's commit marker: if it is written first
+        and the sweep then fails, the next startup takes the current-key fast
+        path and the remaining legacy-key sessions are stranded permanently.
+        """
+        import logging
+        adapter = _make_adapter()
+        legacy_account = MagicMock()
+
+        store = MagicMock()
+        store.get_account = AsyncMock(side_effect=RuntimeError("BAD_ACCOUNT_KEY"))
+        store.put_account = AsyncMock()
+
+        class FakePgCryptoStore:
+            def __init__(self, account_id, pickle_key, db):
+                self.pickle_key = pickle_key
+
+            async def get_account(self):
+                if self.pickle_key == "@bot:example.org:default":
+                    return legacy_account
+                raise RuntimeError("BAD_ACCOUNT_KEY")
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(side_effect=RuntimeError("db went away"))
+        crypto_db.execute = AsyncMock()
+
+        fake_mod = types.ModuleType("mautrix.crypto.store.asyncpg")
+        fake_mod.PgCryptoStore = FakePgCryptoStore
+
+        with patch.dict(
+            sys.modules,
+            {
+                "mautrix.crypto.store.asyncpg": fake_mod,
+                "olm": self._fake_olm_module(),
+            },
+        ), caplog.at_level(logging.ERROR):
+            result = await adapter._migrate_legacy_crypto_pickle(
+                store, crypto_db, "@bot:example.org", "@bot:example.org:NEWDEV"
+            )
+
+        assert result is False
+        # The critical assertion: the account was NOT committed, so the next
+        # start still sees a legacy-key account and retries the migration.
+        store.put_account.assert_not_awaited()
+        assert "retried on the next start" in caplog.text

@@ -1394,10 +1394,24 @@ class MatrixAdapter(BasePlatformAdapter):
                 continue
             if account is None:
                 continue
+            # Sessions first, account last. The account is the migration's
+            # commit marker: once it reads under the current key, the fast
+            # path above short-circuits every later startup. Writing it
+            # before the sweep means an interrupted sweep is never retried
+            # and the remaining legacy-key sessions are stranded for good.
+            try:
+                await self._repickle_crypto_sessions(
+                    crypto_db, acct_id, legacy_key, pickle_key
+                )
+            except Exception as exc:
+                logger.error(
+                    "Matrix: pickle key migration failed while re-pickling "
+                    "sessions (%s) — leaving the account under the legacy "
+                    "key so the migration is retried on the next start.",
+                    exc,
+                )
+                return False
             await crypto_store.put_account(account)
-            await self._repickle_crypto_sessions(
-                crypto_db, acct_id, legacy_key, pickle_key
-            )
             logger.info(
                 "Matrix: re-pickled crypto store account and sessions under "
                 "the current pickle key (device ID was configured after the "
@@ -1446,9 +1460,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 try:
                     session = session_cls.from_pickle(pickled, legacy_key)
                 except Exception as exc:
+                    # Readable under neither key. The row is left untouched
+                    # rather than deleted — it is already unusable, and
+                    # removing crypto material is not worth doing on a
+                    # guess. It stays inert.
                     logger.warning(
-                        "Matrix: dropping unreadable %s row %s during pickle "
-                        "key migration: %s",
+                        "Matrix: %s row %s cannot be unpickled with the "
+                        "current or legacy key; leaving it in place, its "
+                        "sessions are unrecoverable: %s",
                         table,
                         row["session_id"],
                         exc,

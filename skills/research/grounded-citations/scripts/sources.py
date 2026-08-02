@@ -234,11 +234,33 @@ def _normalize_ws(text: str) -> str:
     return " ".join((text or "").split())
 
 
+# Markdown artifacts that retrieval tools inject into otherwise-identical prose.
+# ``web_extract`` returns markdown, so the most citation-worthy sentences are
+# exactly the ones carrying inline links and emphasis around terms:
+#   "including _[ERAP1](https://…/erap1/)_, _[IL1A](…)_, have also been…"
+# reads identically to the page a human sees.  Matching has to see through that
+# markup, or the skill pushes the agent toward weaker evidence fragments.
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((?:[^()\s]|\([^()]*\))*\)")
+_MD_NOISE_RE = re.compile(r"[*_`~]|\\(?=[^\w\s])")
+
+
+def _match_key(text: str) -> str:
+    """Canonicalize text for verbatim comparison.
+
+    Whitespace-, case-, and markdown-insensitive: inline links collapse to
+    their label, emphasis/code markers and backslash escapes are dropped.  The
+    stored quote keeps whatever the caller passed, so the rendered evidence
+    block shows clean prose rather than extractor artifacts.
+    """
+    collapsed = _MD_LINK_RE.sub(r"\1", text or "")
+    return _normalize_ws(_MD_NOISE_RE.sub("", collapsed)).casefold()
+
+
 def quote_in_evidence(quote: str, evidence: str) -> bool:
-    """True when ``quote`` appears verbatim (whitespace-insensitively,
-    case-insensitively) in the fetched ``evidence`` text."""
-    q = _normalize_ws(quote).casefold()
-    return bool(q) and q in _normalize_ws(evidence).casefold()
+    """True when ``quote`` appears verbatim in the fetched ``evidence`` text,
+    ignoring whitespace, case, and markdown markup on either side."""
+    q = _match_key(quote)
+    return bool(q) and q in _match_key(evidence)
 
 
 def attach_quote(path: Path, source_id: int, quote: str, evidence: str) -> dict[str, Any]:
@@ -260,8 +282,8 @@ def attach_quote(path: Path, source_id: int, quote: str, evidence: str) -> dict[
         if entry is None:
             raise SystemExit(f"error: no source [{source_id}] in the ledger")
         quotes = entry.setdefault("quotes", [])
-        norm = _normalize_ws(quote).casefold()
-        if not any(_normalize_ws(q.get("text", "")).casefold() == norm for q in quotes):
+        norm = _match_key(quote)
+        if not any(_match_key(q.get("text", "")) == norm for q in quotes):
             quotes.append({"text": quote, "added": time.strftime("%Y-%m-%d")})
             save_ledger(path, data)
     return entry
@@ -342,6 +364,23 @@ def _split_draft(text: str) -> tuple[str, dict[int, str]]:
         if not in_fence:
             prose.append(line)
     return "\n".join(prose), listed
+
+
+def _strip_sources_block(text: str) -> str:
+    """Return the draft with its trailing Sources block removed.
+
+    Everything from the last Sources header onward goes; a draft with no such
+    header is returned unchanged.  This is what makes ``render --replace-in``
+    idempotent instead of stacking duplicate blocks.
+    """
+    lines = text.splitlines()
+    header_idx = -1
+    for i, line in enumerate(lines):
+        if _SOURCES_HEADER_RE.match(line):
+            header_idx = i
+    if header_idx < 0:
+        return text
+    return "\n".join(lines[:header_idx])
 
 
 def _sentences(prose: str) -> list[str]:
@@ -448,8 +487,9 @@ def verify_draft(
     code = 1 if errors else (1 if (strict and warnings) else 0)
     quoted = sum(1 for s in sources if s.get("quotes"))
     stats = (
-        f"{len(sentences)} prose sentence(s), {len(cited_sentences)} cited, "
-        f"{len(unverified_sentences)} marked [unverified] ({coverage:.0%} covered), "
+        f"{len(sentences)} prose sentence(s), {len(covered)} with declared provenance "
+        f"({coverage:.0%}) — {len(cited_sentences)} cited, "
+        f"{len(unverified_sentences)} marked [unverified] (a sentence may be both); "
         f"{len(cited_set)} distinct source(s) cited, "
         f"{len(by_id)} in ledger ({quoted} with evidence quotes)"
     )
@@ -514,6 +554,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_render.add_argument("--only", help="ids to include, e.g. 1,3,5-7")
     p_render.add_argument("--cited-in", help="include only ids cited in this draft file")
+    p_render.add_argument(
+        "--replace-in",
+        help="rewrite this draft's Sources block in place (implies --cited-in on it)",
+    )
 
     p_ver = sub.add_parser("verify", help="check a draft's citations against the ledger")
     p_ver.add_argument("draft")
@@ -588,8 +632,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "render":
         only = _parse_only(args.only)
-        if args.cited_in:
-            draft = Path(args.cited_in).read_text(encoding="utf-8")
+        draft_for_ids = args.replace_in or args.cited_in
+        if draft_for_ids:
+            draft = Path(draft_for_ids).read_text(encoding="utf-8")
             prose, _ = _split_draft(draft)
             cited = {int(m) for m in _CITE_RE.findall(prose)}
             only = cited if only is None else (only & cited)
@@ -597,6 +642,12 @@ def main(argv: list[str] | None = None) -> int:
         if not block:
             print("no sources to render", file=sys.stderr)
             return 1
+        if args.replace_in:
+            target = Path(args.replace_in)
+            body = _strip_sources_block(target.read_text(encoding="utf-8"))
+            target.write_text(body.rstrip("\n") + "\n\n" + block + "\n", encoding="utf-8")
+            print(f"Sources block rewritten in {target}")
+            return 0
         print(block)
         return 0
 
@@ -613,7 +664,8 @@ def main(argv: list[str] | None = None) -> int:
             require_evidence=args.evidence,
         )
         for w in warnings:
-            print(f"warn: {w}")
+            prefix = "info" if w.startswith("stats: ") else "warn"
+            print(f"{prefix}: {w}")
         for e in errors:
             print(f"FAIL: {e}", file=sys.stderr)
         print("citations OK" if code == 0 else "verification failed")

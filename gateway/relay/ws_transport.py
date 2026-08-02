@@ -219,6 +219,12 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         # (_is_discord_auto_thread_lane's relay-aware sibling reads these).
         auto_thread_created=bool(src.get("auto_thread_created", False)),
         auto_thread_initial_name=src.get("auto_thread_initial_name"),
+        # Discord auto-thread session continuity: the connector stamps the
+        # thread id this channel message's reply WILL be auto-threaded into
+        # (== the message id) so the gateway keys the initiating channel message
+        # and its later in-thread follow-ups to ONE session. See
+        # build_session_key / SessionSource.prospective_thread_id.
+        prospective_thread_id=src.get("prospective_thread_id"),
         # Authentic upstream-trust signal: this event arrived over the
         # per-instance-authenticated relay WS, so the connector already resolved
         # it to this instance's owner-bound author. ``platform`` is the

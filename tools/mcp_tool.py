@@ -3300,7 +3300,7 @@ class MCPServerTask:
                             "MCP server '%s' failed initial connection after "
                             "%d attempts, parking until a reconnect is "
                             "requested (state: connecting → parked): %s: %s",
-                            self.name, _MAX_INITIAL_CONNECT_RETRIES,
+                            self.name, initial_retries,
                             type(root).__name__, root,
                         )
                         self._error = exc

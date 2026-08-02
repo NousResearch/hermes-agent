@@ -1,6 +1,7 @@
 """Tests for MCP stability fixes — event loop handler, PID tracking, shutdown robustness."""
 
 import asyncio
+import logging
 import os
 import signal
 from unittest.mock import patch, MagicMock
@@ -482,6 +483,45 @@ class TestMCPInitialConnectionRetry:
         from tools.mcp_tool import _MAX_INITIAL_CONNECT_RETRIES
         assert _MAX_INITIAL_CONNECT_RETRIES >= 1
 
+    def test_initial_connect_gives_up_after_max_retries(self, caplog):
+        """Server parks (does not exit) after _MAX_INITIAL_CONNECT_RETRIES failures."""
+        from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
+
+        call_count = 0
+
+        async def _run():
+            nonlocal call_count
+            server = MCPServerTask("test-exhaust")
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal call_count
+                call_count += 1
+                raise ConnectionError("DNS resolution failed")
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
+                 caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await server._ready.wait()
+
+                # Should have an error after exhausting retries
+                assert server._error is not None
+                assert "DNS resolution failed" in str(server._error)
+                # 1 initial + N retries = _MAX_INITIAL_CONNECT_RETRIES + 1 total attempts
+                assert call_count == _MAX_INITIAL_CONNECT_RETRIES + 1
+                assert any(
+                    "failed initial connection after "
+                    f"{call_count} attempts" in record.getMessage()
+                    for record in caplog.records
+                )
+                # The task parks for later revival instead of exiting.
+                await asyncio.sleep(0)
+                assert not task.done(), "run task should park, not exit"
+
+                server._shutdown_event.set()
+                server._reconnect_event.set()
+                await asyncio.wait_for(task, timeout=5)
+
+        asyncio.get_event_loop().run_until_complete(_run())
 
     def test_initial_connect_retry_respects_shutdown(self):
         """Shutdown during initial retry backoff aborts cleanly."""

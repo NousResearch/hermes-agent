@@ -840,6 +840,82 @@ def _detect_kind_from_source(source_text: str) -> Optional[str]:
     return None
 
 
+def _read_source_from_origin(origin: Optional[str], limit: int = 8192) -> str:
+    """Read the first ``limit`` chars of a module's source file.
+
+    Returns ``""`` on any failure (callers fall back to ``standalone``).
+    ``.pyc``/``.pyo`` origins are mapped back to their source path so
+    source is still scanned when only the bytecode cache is present.
+    """
+    if not origin:
+        return ""
+    if origin.endswith((".pyc", ".pyo")):
+        try:
+            origin = importlib.util.source_from_cache(origin)
+        except Exception:
+            return ""
+    if not origin.endswith(".py"):
+        return ""
+    try:
+        return Path(origin).read_text(encoding="utf-8", errors="replace")[:limit]
+    except Exception:
+        return ""
+
+
+def _resolve_module_source(module_name: str, limit: int = 8192) -> str:
+    """Return the first ``limit`` chars of a module's source WITHOUT importing it.
+
+    ``importlib.util.find_spec`` on a dotted name imports the parent
+    package first (executing its ``__init__.py``), which would run
+    arbitrary package initialization during discovery and pay the very
+    import cost this classification exists to avoid — a provider whose
+    heavy imports live in ``package/__init__.py`` would still pay them.
+
+    Only the top-level name is resolved with ``find_spec`` (import-free
+    for top-level names); the remaining dotted segments are walked
+    through ``submodule_search_locations`` by hand, mirroring the file
+    layout conventions of the default PathFinder (``part.py`` module or
+    ``part/__init__.py`` package). Namespace packages, zipped modules,
+    extension modules, and anything else unexpected fall back to ``""``
+    (→ ``standalone``, the safe default).
+    """
+    parts = [p for p in module_name.split(".") if p]
+    if not parts:
+        return ""
+    try:
+        spec = importlib.util.find_spec(parts[0])
+        if spec is None or not spec.origin:
+            return ""
+        if len(parts) == 1:
+            return _read_source_from_origin(spec.origin, limit)
+
+        search_paths = spec.submodule_search_locations
+        if not search_paths:
+            return ""
+        for i, part in enumerate(parts[1:], start=2):
+            found_origin = None
+            next_paths = None
+            for base in search_paths:
+                base = Path(base)
+                pkg_init = base / part / "__init__.py"
+                if pkg_init.is_file():
+                    found_origin = str(pkg_init)
+                    next_paths = [base / part]
+                    break
+                mod_file = base / (part + ".py")
+                if mod_file.is_file():
+                    found_origin = str(mod_file)
+                    break
+            if found_origin is None:
+                return ""
+            if i == len(parts) or next_paths is None:
+                return _read_source_from_origin(found_origin, limit)
+            search_paths = next_paths
+        return ""
+    except Exception:
+        return ""
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -4138,22 +4214,16 @@ class PluginManager:
         memory-provider plugin pulling in onnxruntime via fastembed —
         ~60 MB RSS on startup).
 
-        The module is resolved with ``importlib.util.find_spec`` — no
-        import for top-level module names (for dotted names only the
-        parent package may be imported). Only the first 8192 chars of
-        source are scanned, mirroring the directory-plugin heuristic.
-        Unresolvable or non-Python modules stay ``standalone``.
+        The module source is read without importing the module or any
+        of its parent packages (see ``_resolve_module_source``); only
+        the first 8192 chars are scanned, mirroring the directory-plugin
+        heuristic. Unresolvable or non-Python modules stay ``standalone``.
         """
         try:
             module_name = ep.value.split(":", 1)[0].strip()
             if not module_name:
                 return "standalone"
-            spec = importlib.util.find_spec(module_name)
-            if spec is None or not spec.origin or not spec.origin.endswith(".py"):
-                return "standalone"
-            source_text = Path(spec.origin).read_text(
-                errors="replace", encoding="utf-8"
-            )[:8192]
+            source_text = _resolve_module_source(module_name)
             return _detect_kind_from_source(source_text) or "standalone"
         except Exception:
             return "standalone"

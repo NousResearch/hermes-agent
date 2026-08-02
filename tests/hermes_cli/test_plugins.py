@@ -577,6 +577,70 @@ class TestPluginLoading:
         assert entry.module is None
         assert "fakeprovider" not in sys.modules
 
+    def test_entrypoint_dotted_name_never_imports_parent_package(
+        self, tmp_path, monkeypatch
+    ):
+        """A dotted entry point (pkg.mod:register) must NOT import the
+        parent package during classification.
+
+        ``importlib.util.find_spec`` on a dotted name imports the parent
+        first — executing its ``__init__.py``, which is where a provider's
+        heavy imports typically live. The classifier must resolve the
+        module path by hand so the parent's initialization code never
+        runs and neither the parent nor the child enters ``sys.modules``.
+        """
+        from importlib.metadata import EntryPoint
+        from types import SimpleNamespace
+
+        marker = tmp_path / "parent_executed"
+        pkg_dir = tmp_path / "mempalace_pkg"
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text(
+            "# If this ever executes, the no-import property is broken.\n"
+            f"from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('executed')\n"
+            "from .provider import register_memory_provider\n"
+        )
+        (pkg_dir / "provider.py").write_text(
+            "class MemPalaceProvider:\n"
+            "    pass\n"
+            "def register_memory_provider(name, cls):\n"
+            "    pass\n"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        ep = EntryPoint(
+            name="mempalace_dotted",
+            value="mempalace_pkg.provider:register",
+            group=ENTRY_POINTS_GROUP,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.importlib.metadata.entry_points",
+            lambda: SimpleNamespace(
+                select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
+            ),
+        )
+
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["mempalace_dotted"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        entry = mgr._plugins["mempalace_dotted"]
+        assert entry.manifest.kind == "exclusive", (
+            f"Expected auto-coerced kind='exclusive', got {entry.manifest.kind}"
+        )
+        assert entry.module is None
+        # Neither the parent package nor the child module was imported.
+        assert "mempalace_pkg" not in sys.modules
+        assert "mempalace_pkg.provider" not in sys.modules
+        # And the parent's __init__.py never executed.
+        assert not marker.exists()
+
 
 # ── TestPluginHooks ────────────────────────────────────────────────────────
 

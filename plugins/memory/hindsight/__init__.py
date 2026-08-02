@@ -493,6 +493,19 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _fmt_memory(r) -> str:
+    """Format a recall result with a freshness timestamp prefix.
+
+    Prepends [YYYY-MM-DD] when the memory carries a time anchor, so the agent
+    can judge how old a recalled memory is (local hit != already searched).
+    mentioned_at (write time) is the freshness signal and is populated in
+    practice; occurred_start (event time) is a fallback that is usually empty.
+    """
+    t = getattr(r, "mentioned_at", None) or getattr(r, "occurred_start", None) or ""
+    ts = t[:10] if t else ""
+    return f"[{ts}] {r.text}" if ts else r.text
+
+
 def _embedded_profile_name(config: dict[str, Any]) -> str:
     """Return the Hindsight embedded profile name for this Hermes config."""
     profile = config.get("profile", "hermes")
@@ -1568,7 +1581,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                     num_results = len(resp.results) if resp.results else 0
                     logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                    text = "\n".join(_fmt_memory(r) for r in resp.results if r.text) if resp.results else ""
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1799,7 +1812,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Tool hindsight_recall: %d results", num_results)
                 if not resp.results:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
+                lines = [f"{i}. {_fmt_memory(r)}" for i, r in enumerate(resp.results, 1)]
                 return json.dumps({"result": "\n".join(lines)})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)

@@ -669,6 +669,22 @@ class HermesTokenStorage:
 # ---------------------------------------------------------------------------
 
 
+def _authorization_code_result(code: str, state: "str | None", iss: "str | None" = None):
+    """Package redirect parameters in the shape the installed SDK expects.
+
+    mcp 2.0 changed ``callback_handler``'s contract from a
+    ``tuple[str, str | None]`` to an ``AuthorizationCodeResult`` model, and the
+    SDK now reads ``result.state`` / ``result.iss`` off it — a tuple raises
+    ``AttributeError`` mid-flow. Fall back to the tuple when the model is
+    absent so the handler still satisfies an older SDK.
+    """
+    try:
+        from mcp.shared.auth import AuthorizationCodeResult
+    except ImportError:  # mcp < 2.0
+        return code, state
+    return AuthorizationCodeResult(code=code, state=state, iss=iss)
+
+
 def _make_callback_handler() -> tuple[type, dict]:
     """Create a per-flow callback HTTP handler class with its own result dict.
 
@@ -677,7 +693,9 @@ def _make_callback_handler() -> tuple[type, dict]:
     OAuth redirect arrives.  Each call returns a fresh pair so concurrent
     flows don't stomp on each other.
     """
-    result: dict[str, Any] = {"auth_code": None, "state": None, "error": None}
+    result: dict[str, Any] = {
+        "auth_code": None, "state": None, "error": None, "iss": None,
+    }
 
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -685,10 +703,17 @@ def _make_callback_handler() -> tuple[type, dict]:
             code = params.get("code", [None])[0]
             state = params.get("state", [None])[0]
             error = params.get("error", [None])[0]
+            # RFC 9207 authorization-response issuer. mcp 2.0 validates it
+            # against the discovered metadata and *rejects* a response that
+            # omits it when the authorization server advertised
+            # `authorization_response_iss_parameter_supported`, so dropping it
+            # here would break login against those providers.
+            iss = params.get("iss", [None])[0]
 
             result["auth_code"] = code
             result["state"] = state
             result["error"] = error
+            result["iss"] = iss
 
             body = (
                 "<html><body><h2>Authorization Successful</h2>"
@@ -831,8 +856,13 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     return await _make_callback_waiter(_oauth_port)()
 
 
-def _make_callback_waiter(port: int):
+def _make_callback_waiter(port: int, timeout: float = 300.0):
     """Return a callback waiter bound to a single OAuth flow's port.
+
+    ``timeout`` bounds how long the waiter polls for the redirect. It used to
+    be passed to ``OAuthClientProvider(timeout=...)`` as well, but mcp 2.0
+    dropped that constructor argument — the wait happens here, so this is now
+    the only place the configured ``oauth.timeout`` takes effect.
 
     Closing over the port (instead of reading the module-level
     ``_oauth_port``) keeps concurrent OAuth flows isolated: flow A's waiter
@@ -850,12 +880,15 @@ def _make_callback_waiter(port: int):
             to complete the browser auth), or in non-interactive contexts.
     """
 
-    async def _wait() -> tuple[str, str | None]:
+    async def _wait():
         from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
 
         dashboard_flow = get_dashboard_oauth_flow()
         if dashboard_flow is not None:
-            return await dashboard_flow.wait_for_callback()
+            # The dashboard flow still speaks the legacy tuple; normalize it
+            # here so both callback sources hand the SDK one shape.
+            dash_code, dash_state = await dashboard_flow.wait_for_callback()
+            return _authorization_code_result(dash_code, dash_state)
 
         # Reject before binding the callback listener in non-interactive
         # contexts. Reaching here means the SDK entered the authorization-code
@@ -932,7 +965,6 @@ def _make_callback_waiter(port: int):
             )
             paste_thread.start()
 
-        timeout = 300.0
         poll_interval = 0.5
         elapsed = 0.0
         try:
@@ -954,7 +986,9 @@ def _make_callback_waiter(port: int):
                 "Ensure you completed the browser authorization flow."
             )
 
-        return result["auth_code"], result["state"]
+        return _authorization_code_result(
+            result["auth_code"], result["state"], result.get("iss")
+        )
 
     return _wait
 
@@ -1024,6 +1058,7 @@ def _paste_callback_reader(result: dict) -> None:
     code = params.get("code", [None])[0]
     state = params.get("state", [None])[0]
     error = params.get("error", [None])[0]
+    iss = params.get("iss", [None])[0]  # RFC 9207 — see _make_callback_handler
 
     if not code and not error:
         print(
@@ -1039,6 +1074,7 @@ def _paste_callback_reader(result: dict) -> None:
     result["auth_code"] = code
     result["state"] = state
     result["error"] = error
+    result["iss"] = iss
     if code:
         print("  Got authorization code from paste — completing flow.", file=sys.stderr)
 
@@ -1530,7 +1566,9 @@ def build_oauth_auth(
     redirect_handler = _make_redirect_handler(
         resolved_port, redirect_uri=cfg.get("redirect_uri") or None
     )
-    callback_handler = _make_callback_waiter(resolved_port)
+    callback_handler = _make_callback_waiter(
+        resolved_port, timeout=float(cfg.get("timeout", 300))
+    )
 
     provider_class = _get_hermes_oauth_provider_class()
     if provider_class is None:
@@ -1545,6 +1583,8 @@ def build_oauth_auth(
         client_metadata=client_metadata,
         storage=storage,
         redirect_handler=redirect_handler,
+        # mcp 2.0 removed the provider's own `timeout` argument; the configured
+        # `oauth.timeout` is applied inside the callback waiter above, which is
+        # where the browser round-trip is actually awaited.
         callback_handler=callback_handler,
-        timeout=float(cfg.get("timeout", 300)),
     )

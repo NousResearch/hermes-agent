@@ -444,3 +444,111 @@ class TestS3IdleChargedFromLastProgress:
             f"silence exceeded ~2x idle budget shape: {elapsed:.2f}s"
         )
         _drain_admission_slots()
+
+
+class TestRound2MidCommitLeaseRelease:
+    """Round-2 #1: revoke must not release the durable lease mid-commit.
+
+    Invariant: at no point can a second compressor acquire the durable lock
+    while an admitted commit is still mutating; after the commit finishes
+    post-revoke, the lease IS released promptly even if the worker thread is
+    later parked (never runs its outer cleanup).
+    """
+
+    def _db_with_lease(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "R2_MID_COMMIT_LEASE"
+        db.create_session(session_id, source="cli")
+        holder = "pid:worker:original"
+        assert db.try_acquire_compression_lock(
+            session_id, holder, ttl_seconds=60
+        )
+        return db, session_id, holder
+
+    def test_revoke_during_in_flight_commit_defers_lease_release(
+        self, tmp_path
+    ):
+        """Event-gated fake commit; assertions run WHILE it is blocked."""
+        db, session_id, holder = self._db_with_lease(tmp_path)
+        fence = CompressionCommitFence()
+        fence.register_cancelled_lock_release(
+            lambda: db.release_compression_lock(session_id, holder)
+        )
+
+        commit_entered = threading.Event()
+        release_commit = threading.Event()
+        commit_finished = threading.Event()
+
+        def _committing_worker():
+            assert fence.begin_commit()
+            commit_entered.set()
+            assert release_commit.wait(timeout=10)
+            fence.finish_commit()
+            commit_finished.set()
+            # Park forever: the deferred release must NOT depend on this
+            # thread's outer cleanup running.
+            threading.Event().wait(30)
+
+        worker = threading.Thread(target=_committing_worker, daemon=True)
+        worker.start()
+        assert commit_entered.wait(timeout=5)
+
+        # Host revokes WHILE the commit is in flight.
+        fence.revoke_commit_admission()
+
+        # ── Assert the hung state BEFORE releasing the commit ────────────
+        assert not commit_finished.is_set()
+        assert db.get_compression_lock_holder(session_id) == holder, (
+            "revoke released the durable lease while a commit was still "
+            "mutating SessionDB"
+        )
+        assert not db.try_acquire_compression_lock(
+            session_id, "pid:second:contender", ttl_seconds=60
+        ), (
+            "a second compressor acquired the durable lock DURING an "
+            "admitted commit"
+        )
+
+        # ── Release the commit; deferred release must fire promptly ──────
+        release_commit.set()
+        assert commit_finished.wait(timeout=5)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if db.get_compression_lock_holder(session_id) is None:
+                break
+            time.sleep(0.01)
+        assert db.get_compression_lock_holder(session_id) is None, (
+            "lease was not released promptly after the post-revoke commit "
+            "finished (worker thread is parked, so finish_commit must have "
+            "performed the deferred release)"
+        )
+        assert db.try_acquire_compression_lock(
+            session_id, "pid:second:contender", ttl_seconds=60
+        )
+        db.release_compression_lock(session_id, "pid:second:contender")
+
+    def test_revoke_before_commit_releases_immediately_and_refuses_commit(
+        self, tmp_path
+    ):
+        """No commit in flight → immediate release; begin_commit refused."""
+        db, session_id, holder = self._db_with_lease(tmp_path)
+        fence = CompressionCommitFence()
+        fence.register_cancelled_lock_release(
+            lambda: db.release_compression_lock(session_id, holder)
+        )
+
+        fence.revoke_commit_admission()
+
+        # Release happened synchronously inside revoke — no worker involved.
+        assert db.get_compression_lock_holder(session_id) is None, (
+            "revoke before begin_commit must release the lease immediately"
+        )
+        assert fence.begin_commit() is False, (
+            "begin_commit must be refused after admission was revoked"
+        )
+        assert db.try_acquire_compression_lock(
+            session_id, "pid:second:contender", ttl_seconds=60
+        )
+        db.release_compression_lock(session_id, "pid:second:contender")

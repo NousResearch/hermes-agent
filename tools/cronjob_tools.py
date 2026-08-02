@@ -20,10 +20,19 @@ logger = logging.getLogger(__name__)
 
 # Cadence for the heartbeat that keeps the calling agent's inactivity watchdog
 # at bay while a manual `cronjob(action="run")` executes the job synchronously
-# in-process (#76502). Mirrors the 10s cadence used by
-# tools/environments/base.py::touch_activity_if_due and delegate_task's
-# heartbeat — comfortably below the 1800s default HERMES_AGENT_TIMEOUT.
+# in-process (#76502). Mirrors the 10s cadence of
+# tools/environments/base.py::touch_activity_if_due (delegate_task's heartbeat
+# uses 30s) — comfortably below the 1800s default HERMES_AGENT_TIMEOUT.
 _CRON_RUN_HEARTBEAT_INTERVAL = 10.0
+
+# Hard ceiling on how long the heartbeat keeps the parent watchdog at bay.
+# The child cron run has its own inactivity watchdog (HERMES_CRON_TIMEOUT,
+# default 600s) that bounds a wedged job, but with HERMES_CRON_TIMEOUT=0
+# (explicit "unlimited") a truly hung run_one_job would otherwise mask the
+# gateway watchdog forever — pre-#76502 the parent was at least reaped at
+# ~1800s. After this ceiling the heartbeat stops and the gateway watchdog
+# regains authority over the turn.
+_CRON_RUN_HEARTBEAT_CEILING = 6 * 3600.0
 
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -629,12 +638,12 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
         # if no activity callback is registered (direct Python callers, tests),
         # behavior is unchanged.
         try:
-            from tools.environments.base import _get_activity_callback
+            from tools.environments.base import get_activity_callback
 
             # Capture on THIS thread: the callback is thread-local (installed
             # by the tool executor as the calling agent's _touch_activity), so
             # a freshly spawned thread cannot read it back.
-            activity_cb = _get_activity_callback()
+            activity_cb = get_activity_callback()
         except Exception:
             activity_cb = None
 
@@ -647,13 +656,20 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             def _heartbeat_loop() -> None:
                 started = time.monotonic()
                 while not _heartbeat_stop.wait(_CRON_RUN_HEARTBEAT_INTERVAL):
+                    elapsed = time.monotonic() - started
+                    if elapsed > _CRON_RUN_HEARTBEAT_CEILING:
+                        # Stop masking the gateway watchdog — a run this long
+                        # with an unlimited child watchdog is likely wedged.
+                        return
                     try:
-                        elapsed = int(time.monotonic() - started)
                         activity_cb(
-                            f"cronjob: running job '{job_name}' ({elapsed}s elapsed)"
+                            f"cronjob: running job '{job_name}' ({int(elapsed)}s elapsed)"
                         )
                     except Exception:
-                        return  # never break the job run
+                        # Never break the job run; keep heartbeating — one
+                        # transient callback error must not silently drop
+                        # watchdog protection for the rest of a long job.
+                        continue
 
             _heartbeat_thread = threading.Thread(
                 target=_heartbeat_loop,

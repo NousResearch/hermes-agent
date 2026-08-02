@@ -150,7 +150,14 @@ def set_activity_callback(cb: Callable[[str], None] | None) -> None:
     _activity_callback_local.callback = cb
 
 
-def _get_activity_callback() -> Callable[[str], None] | None:
+def get_activity_callback() -> Callable[[str], None] | None:
+    """Return the thread-local activity callback (see ``set_activity_callback``).
+
+    Public accessor for callers outside this module that need to capture the
+    calling thread's callback before handing work to another thread (the
+    callback is thread-local, so a freshly spawned thread cannot read it
+    back) — e.g. the manual cron-run heartbeat (#76502).
+    """
     return getattr(_activity_callback_local, "callback", None)
 
 
@@ -172,7 +179,7 @@ def touch_activity_if_due(
         return
     state["last_touch"] = now
     try:
-        cb = _get_activity_callback()
+        cb = get_activity_callback()
         if cb:
             elapsed = int(now - state["start"])
             cb(f"{label} ({elapsed}s elapsed)")
@@ -997,7 +1004,7 @@ class BaseEnvironment(ABC):
         _iter_count = 0
         _last_heartbeat = _now
         _last_interrupt_state = False
-        _cb_was_none = _get_activity_callback() is None
+        _cb_was_none = get_activity_callback() is None
         if _DEBUG_INTERRUPT:
             logger.info(
                 "[interrupt-debug] _wait_for_process ENTER tid=%s pid=%s "
@@ -1047,7 +1054,7 @@ class BaseEnvironment(ABC):
                 # the activity-callback state (thread-local, can get clobbered
                 # by nested tool calls or executor thread reuse).
                 if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
-                    _cb_now_none = _get_activity_callback() is None
+                    _cb_now_none = get_activity_callback() is None
                     logger.info(
                         "[interrupt-debug] _wait_for_process HEARTBEAT "
                         "tid=%s pid=%s iter=%d elapsed=%.0fs "

@@ -122,7 +122,9 @@ function reconcile(): void {
     if (!current.has(id)) {
       mirrored.delete(id)
       pending.delete(id)
-      void writePin(id, false, profileFor(id)).catch(() => {})
+      void writePin(id, false, profileFor(id)).catch((err) => {
+        console.warn('[pin-sync] unpin failed:', id, err)
+      })
     }
   }
 

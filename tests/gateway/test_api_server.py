@@ -322,6 +322,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
         "/api/platforms/{platform}/events",
         adapter._handle_platform_event_callback,
     )
+    app.router.add_get("/api/sessions", adapter._handle_list_sessions)
+    app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
     return app
 
 
@@ -2616,5 +2618,127 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/sessions/{session_id} — pinned / archived metadata
+# ---------------------------------------------------------------------------
+
+
+class TestSessionPatchEndpoint:
+    """Desktop pin/unpin + archive surfaces PATCH the session object
+    (apps/desktop/src/store/session-pin-sync.ts, use-session-actions).
+    The gateway must accept `pinned` and `archived` and round-trip them in
+    the response so the client's pull/reconcile passes see the new state."""
+
+    @pytest.mark.asyncio
+    async def test_patch_pinned_and_archived_persisted(self, auth_adapter):
+        state = {"session_id": "sess-1", "pinned": False, "archived": False}
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = state
+        mock_db.set_session_pinned.side_effect = lambda sid, val: state.__setitem__(
+            "pinned", val
+        )
+        mock_db.set_session_archived.side_effect = lambda sid, val: state.__setitem__(
+            "archived", val
+        )
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.patch(
+                "/api/sessions/sess-1",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={"pinned": True, "archived": True},
+            )
+            body = await resp.json()
+        assert resp.status == 200
+        mock_db.set_session_pinned.assert_called_once_with("sess-1", True)
+        mock_db.set_session_archived.assert_called_once_with("sess-1", True)
+        assert body["object"] == "hermes.session"
+        assert body["session"]["pinned"] is True
+        assert body["session"]["archived"] is True
+
+    @pytest.mark.asyncio
+    async def test_patch_rejects_unknown_fields(self, auth_adapter):
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"session_id": "sess-1"}
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.patch(
+                "/api/sessions/sess-1",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={"pinned": True, "bogus_field": 42},
+            )
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["error"]["code"] == "unsupported_session_field"
+        mock_db.set_session_pinned.assert_not_called()
+
+    @pytest.mark.parametrize("bad", ["false", "true", 1, 0, 1.0])
+    @pytest.mark.asyncio
+    async def test_patch_rejects_non_boolean_pinned(self, auth_adapter, bad):
+        """A string or number is a malformed client, not a truthy/falsy value:
+        `bool("false")` would silently persist True. Reject non-bool with 400."""
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"session_id": "sess-1"}
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.patch(
+                "/api/sessions/sess-1",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={"pinned": bad},
+            )
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["error"]["code"] == "invalid_field_type"
+        mock_db.set_session_pinned.assert_not_called()
+
+    @pytest.mark.parametrize("bad", ["false", "true", 1, 0, 1.0])
+    @pytest.mark.asyncio
+    async def test_patch_rejects_non_boolean_archived(self, auth_adapter, bad):
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"session_id": "sess-1"}
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.patch(
+                "/api/sessions/sess-1",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={"archived": bad},
+            )
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["error"]["code"] == "invalid_field_type"
+        mock_db.set_session_archived.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_patch_unpinned_and_unarchived(self, auth_adapter):
+        """Unpin/unarchive is the exact desktop toggle path — False values
+        must reach the DB (a truthiness check would silently drop them)."""
+        state = {"session_id": "sess-1", "pinned": True, "archived": True}
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = state
+        mock_db.set_session_pinned.side_effect = lambda sid, val: state.__setitem__(
+            "pinned", val
+        )
+        mock_db.set_session_archived.side_effect = lambda sid, val: state.__setitem__(
+            "archived", val
+        )
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.patch(
+                "/api/sessions/sess-1",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={"pinned": False, "archived": False},
+            )
+            body = await resp.json()
+        assert resp.status == 200
+        mock_db.set_session_pinned.assert_called_once_with("sess-1", False)
+        mock_db.set_session_archived.assert_called_once_with("sess-1", False)
+        assert body["session"]["pinned"] is False
+        assert body["session"]["archived"] is False
 
 

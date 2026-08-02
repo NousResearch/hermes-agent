@@ -1,5 +1,6 @@
 """Focused tests for API server session-control endpoints."""
 
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -606,5 +607,82 @@ async def test_require_model_lock_hard_fails_when_global_default_would_be_used(a
             body = await resp.json()
             assert body["error"]["code"] in {"model_lock_unavailable", "invalid_model_lock", "missing_model"}
     mock_run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_backfills_out_of_page_pinned_row(adapter, session_db):
+    """A pinned conversation aging past the LIMIT page must still surface
+    (list_sessions_rich include_pinned back-fill), or the desktop Pinned
+    section silently empties as new sessions push it off the page."""
+    t0 = time.time()
+    for i in range(5):
+        session_db.create_session(f"page-{i}", "api_server")
+        session_db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (t0 - (5 - i) * 1000, f"page-{i}"),
+        )
+    session_db._conn.commit()
+    # Pin the oldest row (page-0), which a limit=2 page ordered by last
+    # active would otherwise exclude entirely.
+    session_db.set_session_pinned("page-0", True)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/sessions?limit=2")
+        assert resp.status == 200, await resp.text()
+        data = await resp.json()
+    ids = [s["id"] for s in data["data"]]
+    assert len(ids) >= 3, ids
+    assert "page-0" in ids
+    pinned = next(s for s in data["data"] if s["id"] == "page-0")
+    assert pinned["pinned"] is True
+
+
+@pytest.mark.asyncio
+async def test_patch_pinned_archived_round_trips_through_real_db(adapter, session_db):
+    """PATCH true then false against a real SessionDB: the SQLite row stores
+    0/1, so the response must coerce back to booleans or the desktop
+    `typeof row.pinned === 'boolean'` guard rejects the server state."""
+    session_db.create_session("roundtrip", "api_server")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(
+            "/api/sessions/roundtrip",
+            json={"pinned": True, "archived": True},
+        )
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["session"]["pinned"] is True
+        assert body["session"]["archived"] is True
+
+        resp = await cli.patch(
+            "/api/sessions/roundtrip",
+            json={"pinned": False, "archived": False},
+        )
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["session"]["pinned"] is False
+        assert body["session"]["archived"] is False
+
+    row = session_db.get_session("roundtrip")
+    assert row["pinned"] == 0
+    assert row["archived"] == 0
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_non_boolean_against_real_db(adapter, session_db):
+    session_db.create_session("badtype", "api_server")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(
+            "/api/sessions/badtype",
+            json={"pinned": "false"},
+        )
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+        assert body["error"]["code"] == "invalid_field_type"
+    row = session_db.get_session("badtype")
+    assert row["pinned"] == 0
 
 

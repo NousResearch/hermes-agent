@@ -795,7 +795,7 @@ class CredentialPool:
         device_code-sourced entries; env/API-key-sourced entries have no
         auth.json shadow to sync from.
         """
-        if self.provider != "openai-codex" or entry.source != "device_code":
+        if self.provider != "openai-codex" or entry.source not in ("device_code", "manual:device_code"):
             return entry
         try:
             with _auth_store_lock():

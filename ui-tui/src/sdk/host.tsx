@@ -69,9 +69,31 @@ export function launchWidget(id: string, arg = ''): null | string {
   return null
 }
 
-/** Close the MODAL app. Ambient apps dismiss via their launch toggle, so a
- *  modal's Esc can't collaterally clear the dock. */
-export const closeWidget = () => patchOverlayState({ widget: null })
+/** Close widgets.
+ *  - no id: close the MODAL app only (Esc path; ambient stays docked)
+ *  - with id: dismiss that app from the modal slot and/or ambient dock */
+export function closeWidget(id?: string): void {
+  if (!id) {
+    patchOverlayState({ widget: null })
+
+    return
+  }
+
+  const overlay = $overlayState.get()
+  const patch: { ambient?: ActiveWidget[]; widget?: null } = {}
+
+  if (overlay.widget?.appId === id) {
+    patch.widget = null
+  }
+
+  if (overlay.ambient.some(active => active.appId === id)) {
+    patch.ambient = withoutApp(overlay.ambient, id)
+  }
+
+  if (patch.widget !== undefined || patch.ambient !== undefined) {
+    patchOverlayState(patch)
+  }
+}
 
 /** Programmatic, TYPED launch — bypasses string parsing. Apps use this to
  *  stack each other (the host swaps the active modal app). */

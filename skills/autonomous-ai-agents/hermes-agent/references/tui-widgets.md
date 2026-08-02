@@ -25,13 +25,38 @@ widgets.
 1. Use `write_file` to create `~/.hermes/tui-widgets/<name>.mjs` (see
    `templates/clock.mjs` for a complete working widget).
 2. If the TUI is running it hot-loads the file within ~a second (the
-   widgets directory is watched); `/widgets-reload` forces a rescan.
+   widgets directory is watched); `/widgets reload` forces a full rescan
+   (`/widgets-reload` still works as an alias).
 3. The widget's id becomes its slash command automatically (`/<id>`), with
    its `help` in the `/` completion popover. No other registration exists.
 4. Auto-open (no command needed): end `register(sdk)` with
    `sdk.openWidget(app, app.init(''))` — the widget docks itself the moment
    the file loads. Only do this when the user asked for it; note it re-docks
-   on every `/widgets-reload`.
+   on every `/widgets reload`.
+
+### Managing widgets (`/widgets`)
+
+```
+/widgets                      # short usage
+/widgets list                 # id, open/loaded, source file (or built-in)
+/widgets reload               # rescan $HERMES_HOME/tui-widgets (all files)
+/widgets reload <id|file>     # hot-reload one file
+/widgets load /path/to.mjs    # load from outside the widgets dir
+/widgets unload <id>          # unregister + dismiss from dock
+/widgets update [id]          # signal refresh bus (see onWidgetRefresh)
+```
+
+Aliases: `ls`→list, `rl`→reload, `rm`→unload, `up`→update. `/widgets-reload`
+routes to full `reload`.
+
+For forced data refresh without re-import, subscribe in `register(sdk)`:
+
+```js
+sdk.onWidgetRefresh((id) => {
+  if (id && id !== 'my-app') return
+  // re-fetch and sdk.updateWidget(app, ...)
+})
+```
 
 ## Quick Reference
 
@@ -52,7 +77,8 @@ export default function register(sdk) {
 }
 ```
 
-`sdk` contents: `defineWidgetApp`, `openWidget`, `updateWidget`, `isCtrl`,
+`sdk` contents: `defineWidgetApp`, `openWidget`, `updateWidget`,
+`onWidgetRefresh`, `requestWidgetRefresh`, `isCtrl`,
 `React`, `h` (createElement — no JSX in .mjs), components `Box`, `Text`,
 `Dialog`, `Overlay`, `WidgetGrid`, `GridAreas`, and loaders `Shimmer`,
 `ShimmerRows`, `useShimmerPhase` — use `ShimmerRows` for loading phases
@@ -131,7 +157,7 @@ Contract essentials:
 
 ## Verification
 
-Run `/widgets-reload` — the transcript line must list the file under
+Run `/widgets reload` — the transcript line must list the file under
 `loaded:`. Then `/<id>`: an ambient widget appears docked right, above the
 status bar, while the composer keeps accepting input; `/<id>` again removes
-it.
+it. `/widgets list` should show the id as `loaded` (or `open` while docked).

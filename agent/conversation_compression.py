@@ -2682,6 +2682,13 @@ def compress_context(
             reset_file_dedup(task_id)
         except Exception:
             pass
+        # Same for the skill_view repeat-view dedup: a post-compression
+        # re-view must return the full skill content again.
+        try:
+            from tools.skills_tool import reset_skill_view_dedup
+            reset_skill_view_dedup(task_id)
+        except Exception:
+            pass
 
         logger.info(
             "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",

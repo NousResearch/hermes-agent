@@ -6804,11 +6804,9 @@ class AIAgent:
         cached = getattr(self, "_thinking_pad_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        result = (
-            self._needs_deepseek_tool_reasoning()
-            or self._needs_kimi_tool_reasoning()
-            or self._needs_mimo_tool_reasoning()
-        )
+        from agent.agent_runtime_helpers import needs_thinking_reasoning_pad
+
+        result = needs_thinking_reasoning_pad(self.provider, self.model, self.base_url)
         self._thinking_pad_cache = (key, result)
         return result
 

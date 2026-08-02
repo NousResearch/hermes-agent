@@ -3566,6 +3566,90 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     )
 
 
+def needs_thinking_reasoning_pad(
+    provider: Optional[str],
+    model: Optional[str],
+    base_url: Optional[str],
+) -> bool:
+    """Standalone provider-direction check for auxiliary paths.
+
+    Returns True when the target endpoint enforces ``reasoning_content``
+    echo-back on assistant messages (DeepSeek V4 thinking, Kimi / Moonshot
+    thinking, Xiaomi MiMo thinking). Auxiliary callers (context compression,
+    session search, MoA advisors) bypass the main agent loop's per-turn
+    ``copy_reasoning_content_for_api`` and therefore must pad replayed
+    assistant history themselves or the provider returns HTTP 400 on replay.
+
+    This is the stateless twin of ``AIAgent._needs_thinking_reasoning_pad``
+    (which caches on the agent instance). Rule table owner:
+    ``agent.message_sanitization.reasoning_echo_family``.
+    """
+    from agent.message_sanitization import needs_reasoning_echo
+
+    return needs_reasoning_echo(provider, model, base_url)
+
+
+def ensure_reasoning_content_on_messages(
+    messages: list,
+    provider: Optional[str],
+    model: Optional[str],
+    base_url: Optional[str],
+) -> list:
+    """Return a *new* message list with ``reasoning_content`` padded for echo-back providers.
+
+    Providers that enforce ``reasoning_content`` echo-back (DeepSeek V4
+    thinking, Kimi / Moonshot thinking, Xiaomi MiMo) reject any assistant
+    message replayed without the field — HTTP 400 ("The reasoning_content in
+    the thinking mode must be passed back to the API"). Auxiliary paths
+    (``call_llm`` / ``async_call_llm``) replay stored history and hit this on
+    the first turn after a session with a require-side provider.
+
+    This helper is the auxiliary-side equivalent of the main loop's
+    ``copy_reasoning_content_for_api`` / ``reapply_reasoning_echo``. It does
+    NOT mutate *messages* in place — every assistant dict is shallow-copied
+    before the pad is added, and the returned list is a fresh list. This
+    matters because ``call_llm`` reuses the same *messages* list across
+    same-provider retries and cross-provider fallbacks: mutating it would
+    leak a DeepSeek pad into a strict OpenAI/Mistral fallback request and
+    trigger the exact 422 the pad was meant to prevent (refs #45655).
+
+    For strict/indifferent providers the input list is returned unchanged
+    (still a new list object — same identity is NOT guaranteed) so callers
+    can always assign the return value to their request-local messages
+    without worrying about the provider direction.
+
+    Args:
+        messages: Chat messages list (never mutated).
+        provider: Provider label for the *target* request.
+        model: Model id for the *target* request.
+        base_url: Effective base_url for the *target* request.
+
+    Returns:
+        A new list. Assistant dicts that needed a pad are shallow-copied
+        with ``reasoning_content`` set to ``" "`` (single space — DeepSeek
+        V4 Pro rejects the empty string); all other dicts are shared by
+        reference with the input.
+    """
+    if not needs_thinking_reasoning_pad(provider, model, base_url):
+        return list(messages)
+
+    padded: list = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            padded.append(msg)
+            continue
+        # Already carries a non-empty reasoning_content — leave as-is.
+        existing = msg.get("reasoning_content")
+        if isinstance(existing, str) and existing:
+            padded.append(msg)
+            continue
+        # Shallow-copy before mutating so the caller's dict is untouched.
+        new_msg = dict(msg)
+        new_msg["reasoning_content"] = " "
+        padded.append(new_msg)
+    return padded
+
+
 def _iter_httpx_pool_objects(http_client: Any):
     """Yield httpcore pool objects reachable from an httpx client.
 
@@ -3970,6 +4054,8 @@ __all__ = [
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
     "copy_reasoning_content_for_api",
+    "needs_thinking_reasoning_pad",
+    "ensure_reasoning_content_on_messages",
     "cleanup_dead_connections",
     "extract_api_error_context",
     "apply_pending_steer_to_tool_results",

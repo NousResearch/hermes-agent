@@ -7936,6 +7936,21 @@ def _build_call_kwargs(
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
 
+    # Pad reasoning_content for echo-back providers (DeepSeek V4 thinking,
+    # Kimi/Moonshot thinking, Xiaomi MiMo). Auxiliary paths bypass the main
+    # agent loop's copy_reasoning_content_for_api, so a replayed assistant
+    # turn without the field is rejected with HTTP 400. This produces a NEW
+    # list assigned to the request-local kwargs["messages"] — the caller's
+    # shared ``messages`` list is never mutated, so a same-provider retry or
+    # a cross-provider fallback that re-enters _build_call_kwargs with a
+    # different provider direction rebuilds its own pad (or no pad) from the
+    # untouched original. Refs #15250, #45655.
+    from agent.agent_runtime_helpers import ensure_reasoning_content_on_messages
+
+    kwargs["messages"] = ensure_reasoning_content_on_messages(
+        kwargs["messages"], provider, model, effective_base
+    )
+
     return kwargs
 
 

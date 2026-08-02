@@ -4,6 +4,9 @@ The skill is prose-only (no scripts), so these tests pin the contributed
 SKILL.md to the hardline authoring standards in AGENTS.md: frontmatter shape,
 the 60-char description budget, the modern section order, and wrapper-only
 pytest invocations.
+
+Stdlib + pytest only, per the skill-test rule in AGENTS.md, so the frontmatter
+is read by the narrow parser below instead of PyYAML.
 """
 from __future__ import annotations
 
@@ -11,7 +14,6 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
 
 SKILL_DIR = (
     Path(__file__).resolve().parents[2]
@@ -33,6 +35,59 @@ REQUIRED_SECTIONS = [
 ]
 
 
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+def _parse_value(raw: str, lineno: int) -> str | list[str]:
+    value = raw.strip()
+    if value in (">", "|", ">-", "|-", ">+", "|+"):
+        raise AssertionError(
+            f"line {lineno}: folded/literal blocks are not allowed in skill frontmatter"
+        )
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        return [_unquote(part.strip()) for part in inner.split(",")] if inner else []
+    return _unquote(value)
+
+
+def _parse_frontmatter(block: str) -> dict:
+    """Parse the fixed frontmatter subset: scalars, inline lists, nested maps.
+
+    Deliberately narrow. Anything outside the supported subset raises rather
+    than silently mis-parsing, so a malformed SKILL.md fails loudly here
+    instead of quietly passing the standards assertions below.
+    """
+    root: dict = {}
+    stack: list[tuple[int, dict]] = [(-1, root)]
+
+    for lineno, line in enumerate(block.splitlines(), start=1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        stripped = line.lstrip(" ")
+        indent = len(line) - len(stripped)
+        if stripped.startswith("- "):
+            raise AssertionError(f"line {lineno}: block sequences unsupported, use [a, b]")
+        if ":" not in stripped:
+            raise AssertionError(f"line {lineno}: unparsable frontmatter line {line!r}")
+
+        key, _, raw = stripped.partition(":")
+        while len(stack) > 1 and indent <= stack[-1][0]:
+            stack.pop()
+        parent = stack[-1][1]
+
+        if raw.strip():
+            parent[key.strip()] = _parse_value(raw, lineno)
+        else:
+            child: dict = {}
+            parent[key.strip()] = child
+            stack.append((indent, child))
+
+    return root
+
+
 @pytest.fixture(scope="module")
 def skill_text() -> str:
     return (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
@@ -42,7 +97,7 @@ def skill_text() -> str:
 def frontmatter(skill_text: str) -> dict:
     m = re.search(r"^---\n(.*?)\n---", skill_text, re.DOTALL)
     assert m, "SKILL.md missing YAML frontmatter"
-    return yaml.safe_load(m.group(1))
+    return _parse_frontmatter(m.group(1))
 
 
 def test_skill_md_present() -> None:

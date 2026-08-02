@@ -446,6 +446,95 @@ def looks_like_gateway_command_line(command: str | None) -> bool:
     return _gateway_command_subcommand(command) == "run"
 
 
+def looks_like_desktop_serve_command_line(command: str | None) -> bool:
+    """Return True for the Desktop backend: ``hermes serve`` / ``-m hermes_cli.main serve``.
+
+    The desktop app hosts the messaging runtime via ``hermes serve`` rather than
+    ``gateway run``. Update-time gateway cold-start must treat that as "already
+    served" so it does not spawn a competing ``gateway run`` daemon (#76129).
+    """
+    if not command:
+        return False
+
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
+    if not tokens:
+        return False
+
+    joined = " ".join(tokens)
+    has_entry = (
+        "hermes_cli.main" in joined
+        or "hermes_cli/main.py" in joined
+        or any(t.rsplit("/", 1)[-1] in ("hermes", "hermes.exe") for t in tokens)
+    )
+    if not has_entry:
+        return False
+
+    filtered: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in ("--profile", "-p"):
+            skip_next = True
+            continue
+        if token.startswith("--profile=") or token.startswith("-p="):
+            continue
+        filtered.append(token)
+
+    # Top-level subcommand after the entrypoint, not nested under ``gateway``.
+    for i, token in enumerate(filtered):
+        if token in ("hermes", "hermes.exe") or token.endswith("hermes_cli/main.py") or token == "hermes_cli.main":
+            # Walk forward past ``-m`` companions already lowercased into the
+            # joined string; the next non-flag token is the subcommand.
+            for j in range(i + 1, len(filtered)):
+                cand = filtered[j]
+                if cand in ("-m", "python", "python.exe", "pythonw", "pythonw.exe"):
+                    continue
+                if cand.endswith("hermes_cli/main.py") or cand == "hermes_cli.main":
+                    continue
+                if cand.startswith("-"):
+                    continue
+                return cand == "serve"
+            return False
+        if token == "-m" and i + 1 < len(filtered):
+            mod = filtered[i + 1]
+            if mod in ("hermes_cli.main", "hermes_cli/main.py") or mod.endswith("hermes_cli/main.py"):
+                for j in range(i + 2, len(filtered)):
+                    cand = filtered[j]
+                    if cand.startswith("-"):
+                        continue
+                    return cand == "serve"
+    return False
+
+
+def desktop_serve_is_running() -> bool:
+    """Best-effort scan for a live Desktop ``hermes serve`` backend process."""
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return False
+
+    try:
+        for proc in psutil.process_iter(["cmdline"]):
+            try:
+                parts = proc.info.get("cmdline") or []
+            except Exception:
+                continue
+            if not parts:
+                continue
+            cmdline = " ".join(str(p) for p in parts)
+            if looks_like_desktop_serve_command_line(cmdline):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def looks_like_gateway_runtime_command_line(command: str | None) -> bool:
     """Return True for command lines that can host the gateway runtime.
 

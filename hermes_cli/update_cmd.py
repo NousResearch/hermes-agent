@@ -3093,6 +3093,24 @@ def _pause_windows_gateways_for_update() -> dict | None:
         # gateways that were running when the update began. Cold-start one after
         # the update so an installed gateway is actually up post-update. Users
         # who run gateway-less (no autostart entry) get nothing forced on them.
+        #
+        # Exception: Hermes Desktop already hosts the runtime via
+        # ``hermes serve``. Spawning a competing ``gateway run`` after every
+        # update races ports/state and piles up daemons (#76129). Treat serve
+        # as "already covered" and skip the cold-start plan.
+        try:
+            from gateway.status import desktop_serve_is_running
+
+            if desktop_serve_is_running():
+                logger.debug(
+                    "Skipping Windows gateway cold-start plan: desktop serve is live"
+                )
+                return None
+        except Exception as exc:
+            logger.debug(
+                "Could not check desktop serve liveness before update: %s",
+                exc,
+            )
         try:
             from hermes_cli import gateway_windows
 
@@ -3237,6 +3255,22 @@ def _cold_start_windows_gateway_after_update() -> None:
     except Exception as exc:
         logger.debug("Could not re-check gateway liveness before cold-start: %s", exc)
         return
+
+    # Desktop ``hermes serve`` already owns the runtime. Never cold-start a
+    # standalone gateway alongside it (#76129).
+    try:
+        from gateway.status import desktop_serve_is_running
+
+        if desktop_serve_is_running():
+            logger.debug(
+                "Skipping Windows gateway cold-start: desktop serve is live"
+            )
+            return
+    except Exception as exc:
+        logger.debug(
+            "Could not re-check desktop serve liveness before cold-start: %s",
+            exc,
+        )
 
     try:
         pid = gateway_windows._spawn_detached()

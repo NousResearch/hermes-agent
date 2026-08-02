@@ -230,6 +230,42 @@ class TestRateLimiting:
         )
 
 
+def test_concurrent_sync_calls_are_serialized(tmp_files):
+    first_upload_entered = threading.Event()
+    release_first_upload = threading.Event()
+    overlapping_upload = threading.Event()
+    call_count = 0
+    call_count_lock = threading.Lock()
+
+    def blocking_upload(host_path, remote_path):
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+            current_call = call_count
+        if current_call == 1:
+            first_upload_entered.set()
+            assert release_first_upload.wait(timeout=5)
+        else:
+            overlapping_upload.set()
+
+    mgr = _make_manager(tmp_files, upload=blocking_upload)
+    first = threading.Thread(target=mgr.sync, kwargs={"force": True})
+    second = threading.Thread(target=mgr.sync, kwargs={"force": True})
+
+    first.start()
+    assert first_upload_entered.wait(timeout=2)
+    second.start()
+    try:
+        assert not overlapping_upload.wait(timeout=2)
+    finally:
+        release_first_upload.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+
+
 class TestEdgeCases:
     def test_empty_file_list(self):
         upload = MagicMock()

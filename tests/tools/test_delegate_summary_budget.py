@@ -9,6 +9,7 @@ full summaries verbatim into the parent.
 
 import os
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,6 +26,7 @@ class _FakeParent:
     def __init__(self, context_length, used_tokens, max_tokens):
         self.context_compressor = _FakeCompressor(context_length, max_tokens)
         self.session_prompt_tokens = used_tokens
+        self._current_task_id: str | None = None
 
 
 def test_small_summaries_pass_through_untouched():
@@ -84,6 +86,32 @@ def test_docker_spill_path_points_to_the_mounted_cache(monkeypatch, tmp_path):
     host_files = list((hermes_home / "cache" / "delegation").glob("subagent-summary-*.txt"))
     assert len(host_files) == 1
     assert host_files[0].read_text(encoding="utf-8") == big
+
+
+def test_ssh_spill_path_is_synced_to_the_remote_cache(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    sync_calls = []
+    env = SimpleNamespace(
+        _remote_home="/home/remote",
+        _sync_manager=SimpleNamespace(
+            sync=lambda *, force=False: sync_calls.append(force)
+        ),
+    )
+    monkeypatch.setattr("tools.terminal_tool.get_active_env", lambda task_id: env)
+    parent = _FakeParent(131_000, 120_000, 8_000)
+    parent._current_task_id = "parent-task"
+    results = [
+        {"task_index": 0, "summary": "X" * 30_000, "status": "completed"}
+    ]
+
+    dt._apply_summary_budget(results, parent)
+
+    assert results[0]["summary_full_path"].startswith(
+        "/home/remote/.hermes/cache/delegation/"
+    )
+    assert sync_calls == [True]
 
 
 def test_empty_results_is_noop():

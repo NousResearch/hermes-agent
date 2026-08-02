@@ -25,7 +25,7 @@ import os
 import posixpath
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from hermes_cli.config import cfg_get
 
 try:  # pragma: no cover - exercised via the fail-closed test below
@@ -402,6 +402,11 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("images", "images"),
 ]
 
+# Delegation artifacts are created after an agent may already have opened its
+# Docker sandbox.  Pre-create this one mount source during sandbox assembly so
+# later summary/transcript writes appear through the existing read-only bind.
+_EAGER_CACHE_DIRS = {"cache/delegation"}
+
 
 def get_cache_directory_mounts(
     container_base: str = "/root/.hermes",
@@ -417,6 +422,15 @@ def get_cache_directory_mounts(
     mounts: List[Dict[str, str]] = []
     for new_subpath, old_name in _CACHE_DIRS:
         host_dir = get_hermes_dir(new_subpath, old_name)
+        if new_subpath in _EAGER_CACHE_DIRS:
+            try:
+                host_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "credential_files: could not prepare cache mount %s: %s",
+                    host_dir,
+                    exc,
+                )
         if host_dir.is_dir():
             # Always map to the *new* container layout regardless of host layout.
             container_path = f"{container_base.rstrip('/')}/{new_subpath}"
@@ -478,21 +492,62 @@ def from_agent_visible_cache_path(
 def to_agent_visible_cache_path(
     host_path: str,
     container_base: str = "/root/.hermes",
+    task_id: Optional[str] = None,
 ) -> str:
-    """Translate a host cache path to its mounted path inside the sandbox.
+    """Translate a host cache path to its path inside the active backend.
 
     Returns the input unchanged if it is not under any auto-mounted cache
-    directory, or if the active terminal backend does not require path
-    translation (only Docker for now).
+    directory, or if the active terminal backend does not require translation.
+    File-sync backends need *task_id* so their active environment can provide
+    the remote home and receive the newly-created artifact before its path is
+    advertised.
     """
-    # Only Docker backend requires translation at this time.  Other backends
-    # (Modal, Daytona, Vercel) use different mount semantics and will be
-    # addressed separately if needed.  Backend is identified by TERMINAL_ENV
-    # (same env var tools/terminal_tool.py reads in _get_environment_config).
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+    backend = os.environ.get("TERMINAL_ENV", "local")
+    env = None
+    overrides: Dict[str, Any] = {}
+    if task_id:
+        try:
+            from tools.terminal_tool import get_active_env, resolve_task_overrides
+
+            env = get_active_env(task_id)
+            overrides = resolve_task_overrides(task_id)
+        except Exception:
+            logger.debug("Could not resolve terminal context for cache path", exc_info=True)
+
+    override_backend = overrides.get("env_type")
+    if isinstance(override_backend, str) and override_backend.strip():
+        backend = override_backend.strip().lower()
+
+    sync_manager = getattr(env, "_sync_manager", None) if env is not None else None
+    remote_home = getattr(env, "_remote_home", None) if env is not None else None
+    env_name = type(env).__name__.lower() if env is not None else ""
+
+    if sync_manager is not None:
+        effective_base = (
+            posixpath.join(str(remote_home), ".hermes")
+            if remote_home
+            else container_base
+        )
+    elif backend == "docker" or "docker" in env_name:
+        effective_base = container_base
+    elif env is None and backend in {
+        "ssh",
+        "modal",
+        "daytona",
+        "vercel_sandbox",
+    }:
+        # The remote home is not known until the backend connects. File tools
+        # expand this tilde inside the backend, after its initial file sync.
+        effective_base = "~/.hermes"
+    else:
         return host_path
 
-    mapped = map_cache_path_to_container(host_path, container_base=container_base)
+    mapped = map_cache_path_to_container(host_path, container_base=effective_base)
+    if mapped is not None and sync_manager is not None:
+        try:
+            sync_manager.sync(force=True)
+        except Exception:
+            logger.debug("Could not sync newly-created cache artifact", exc_info=True)
     return mapped if mapped is not None else host_path
 
 

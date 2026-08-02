@@ -64,6 +64,33 @@ def _unicode_normalize(text: str) -> str:
     return text
 
 
+def is_already_applied(content: str, old_string: str, new_string: str) -> bool:
+    """Return True when the requested edit is already present in the file.
+
+    Production trajectory mining shows the most common patch failure is a
+    re-send of an edit that already landed (old_string == new_string, or
+    old_string gone while new_string is present) — the model's intent is
+    "make the file contain this text", and it already does. Callers use
+    this to convert those errors into an explicit success-shaped no-op so
+    the model moves on instead of re-reading and re-patching.
+
+    Deliberately conservative:
+    - new_string must be non-trivial (>= 8 chars stripped) — a tiny target
+      matching by coincidence must not mask a genuine typo'd edit;
+    - new_string must appear EXACTLY in the content (no fuzzy matching —
+      approximate presence is not proof the edit landed);
+    - when old_string differs from new_string, old_string must be GONE
+      (still-present old text means the edit is at best half-applied).
+    """
+    if not new_string or len(new_string.strip()) < 8:
+        return False
+    if new_string not in content:
+        return False
+    if old_string == new_string:
+        return True
+    return old_string not in content
+
+
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                             replace_all: bool = False) -> Tuple[str, int, Optional[str], Optional[str]]:
     """

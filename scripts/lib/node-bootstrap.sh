@@ -408,6 +408,13 @@ ensure_node() {
         if _nb_have_modern_node; then
             _nb_ok "Node $(node --version) found (Hermes-managed)"
             HERMES_NODE_AVAILABLE=true
+            # A tree from an older install still carries that Node major's
+            # bundled npm, and the upgrade in _nb_install_bundled_node is
+            # best-effort — one offline install leaves an at-target tree
+            # stranded below engines.npm forever, since heal only fires for a
+            # *broken* tree. Mirrors Update-ManagedNpm's reuse-path call in
+            # install.ps1. No-ops on a probe when the npm is already in range.
+            _nb_ensure_bundled_npm_range || true
             return 0
         fi
     fi

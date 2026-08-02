@@ -74,6 +74,8 @@ export class JsonRpcGatewayClient {
   private state: ConnectionState = 'idle'
   /** Shared in-flight connect so concurrent callers await the same handshake. */
   private connectPromise: Promise<void> | null = null
+  /** Cancels the active handshake when close() interrupts a dial. */
+  private cancelConnect: (() => void) | null = null
   private readonly eventHandlers = new Map<string, Set<(event: GatewayEvent) => void>>()
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<Omit<GatewayClientOptions, 'socketFactory'>> &
@@ -155,7 +157,7 @@ export class JsonRpcGatewayClient {
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
     })
 
-    this.connectPromise = new Promise<void>((resolve, reject) => {
+    const connectPromise = new Promise<void>((resolve, reject) => {
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -200,6 +202,10 @@ export class JsonRpcGatewayClient {
         })
       }
 
+      this.cancelConnect = () => {
+        finish(() => reject(new Error(this.options.closedErrorMessage)))
+      }
+
       socket.addEventListener('open', onOpen, { once: true })
       socket.addEventListener('error', onError, { once: true })
 
@@ -224,14 +230,23 @@ export class JsonRpcGatewayClient {
         }, this.options.connectTimeoutMs)
       }
     }).finally(() => {
-      this.connectPromise = null
-    })
+      if (this.connectPromise === connectPromise) {
+        this.connectPromise = null
+      }
 
-    await this.connectPromise
+      this.cancelConnect = null
+    })
+    this.connectPromise = connectPromise
+
+    await connectPromise
   }
 
   close(): void {
     const socket = this.socket
+
+    this.cancelConnect?.()
+    this.cancelConnect = null
+    this.connectPromise = null
 
     if (!socket) {
       return

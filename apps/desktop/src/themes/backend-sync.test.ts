@@ -91,6 +91,26 @@ describe('ingestBackendSkin', () => {
     expect($pendingSkinApply.get()).toBe('default')
   })
 
+  it('lets the provider resolve and keep default (not retired → nous)', async () => {
+    // skinPref / normalizeSkin must accept `default` once the backend registers
+    // it; RETIRED_SKINS no longer includes default (#76743 review).
+    const { skinPref } = await import('./context')
+    const { resolveTheme } = await import('./user-themes')
+
+    ingestBackendSkin(
+      {
+        name: 'default',
+        description: 'Classic Hermes — gold and kawaii',
+        colors: { background: '#1a1a2e', ui_accent: '#FFBF00', banner_text: '#FFF8DC' }
+      },
+      { apply: false }
+    )
+
+    expect(resolveTheme('default')?.name).toBe('default')
+    skinPref.assign('work', 'default')
+    expect(skinPref.resolve('work')).toBe('default')
+  })
+
   it('does not apply default on the connect-time seed', () => {
     ingestBackendSkin(skin('default'), { apply: false })
 

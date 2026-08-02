@@ -25,6 +25,6 @@ def test_download_media_url_blocks_redirect_to_metadata():
     session.get = MagicMock(return_value=redirect_resp)
     adapter._session = session
 
-    with patch("tools.url_safety.is_safe_url", side_effect=lambda u: u == public):
+    with patch("tools.url_safety.async_is_safe_url", new=AsyncMock(side_effect=lambda u: u == public)):
         with pytest.raises(ValueError, match="blocked unsafe"):
             asyncio.run(adapter._download_media_url(public))

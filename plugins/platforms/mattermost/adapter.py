@@ -596,11 +596,11 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         from urllib.parse import urljoin
 
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import async_is_safe_url
 
         current_url = url
         for _redirect_count in range(_MAX_MEDIA_REDIRECTS + 1):
-            if not is_safe_url(current_url):
+            if not await async_is_safe_url(current_url):
                 raise ValueError(f"blocked unsafe URL: {current_url[:80]}")
 
             async with self._session.get(

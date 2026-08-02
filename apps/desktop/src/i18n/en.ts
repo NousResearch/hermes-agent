@@ -1480,9 +1480,56 @@ export const en: Translations = {
       WHATSAPP_ALLOWED_USERS: {
         label: 'Allowed WhatsApp users',
         help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
-      }
+      },
+      EMAIL_ADDRESS: { label: 'Mailbox address', help: 'The address Hermes receives and replies from.' },
+      EMAIL_PASSWORD: { label: 'App password', help: 'Use a provider app password instead of your account password.' },
+      EMAIL_IMAP_HOST: { label: 'Incoming mail server', help: 'IMAP host, for example imap.gmail.com.' },
+      EMAIL_SMTP_HOST: { label: 'Outgoing mail server', help: 'SMTP host, for example smtp.gmail.com.' },
+      EMAIL_IMAP_PORT: { label: 'IMAP port' },
+      EMAIL_SMTP_PORT: { label: 'SMTP port' },
+      EMAIL_IMAP_SECURITY: { label: 'IMAP security' },
+      EMAIL_SMTP_SECURITY: { label: 'SMTP security' },
+      EMAIL_HOME_ADDRESS: { label: 'Default delivery address' }
     },
-    platformIntro: {}
+    platformIntro: {},
+    emailPolicy: {
+      title: 'Automatic reply policy',
+      description: 'Decide which messages may reach the agent before any reply is generated or sent.',
+      categoriesTitle: 'Message categories',
+      categoriesDescription:
+        'Category filtering uses approximate heuristic regexes. Disabling a category does not guarantee its messages will never reach the Agent; only local regex matches are blocked first.',
+      allowCategory: 'Allow automatic replies',
+      promotions: 'Promotions',
+      newsletters: 'Newsletters and digests',
+      transactions: 'Orders and payments',
+      security: 'Security and verification',
+      social: 'Social notifications',
+      calendar: 'Calendar notices',
+      reports: 'Recurring reports',
+      keywordsTitle: 'Keyword rules',
+      keywordsDescription:
+        'Manual keyword groups use local literal matching and are not added to the Agent prompt.',
+      neverReply: 'Never reply',
+      neverReplyDescription: 'Matching messages are always blocked, even when another rule asks for a reply.',
+      mustReply: 'Must reply',
+      mustReplyDescription: 'Matching messages are sent to the agent and require a response.',
+      keywordPlaceholder: 'One keyword group per line',
+      keywordSyntax: 'Use + when every term must match. Separate lines are alternatives.',
+      clearKeywords: 'Clear keyword rules',
+      keywordConflictTitle: 'Conflicting keyword rule',
+      keywordConflictDescription: group =>
+        `"${group}" cannot be both must-reply and never-reply. Remove it from one list.`,
+      skipPatternsTitle: 'Skip regular expressions',
+      skipPatternsDescription: 'Matching messages stop before the Agent is called.',
+      skipPatternsPlaceholder: 'One regular expression per line',
+      skipPatternsSyntax: 'Patterns are case-insensitive and match the subject plus body.',
+      clearSkipPatterns: 'Clear skip regular expressions',
+      decisionTitle: 'Agent decision',
+      strictDecision: 'Require a structured reply decision',
+      strictDecisionDescription: 'Only send when the model returns valid structured output with need_response: true.',
+      priorityLabel: 'Decision order',
+      priorityText: 'Never reply → Must reply → Category filter → Agent decision'
+    }
   },
 
   webhooks: {

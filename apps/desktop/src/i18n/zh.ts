@@ -1650,6 +1650,16 @@ export const zh: Translations = {
       WHATSAPP_ENABLED: { label: '启用 WhatsApp 桥接', help: '由下方开关自动设置。除非确知需要，否则请勿改动。' },
       WHATSAPP_MODE: { label: '桥接模式' },
       WHATSAPP_ALLOWED_USERS: { label: '允许的 WhatsApp 用户', help: '推荐。逗号分隔的电话号码或 WhatsApp ID。' }
+      ,
+      EMAIL_ADDRESS: { label: '邮箱地址', help: 'Hermes 用于收信和回复的地址。' },
+      EMAIL_PASSWORD: { label: '应用专用密码', help: '请使用邮箱服务商生成的应用专用密码，而不是账户密码。' },
+      EMAIL_IMAP_HOST: { label: '收件服务器', help: 'IMAP 主机，例如 imap.gmail.com。' },
+      EMAIL_SMTP_HOST: { label: '发件服务器', help: 'SMTP 主机，例如 smtp.gmail.com。' },
+      EMAIL_IMAP_PORT: { label: 'IMAP 端口' },
+      EMAIL_SMTP_PORT: { label: 'SMTP 端口' },
+      EMAIL_IMAP_SECURITY: { label: 'IMAP 安全方式' },
+      EMAIL_SMTP_SECURITY: { label: 'SMTP 安全方式' },
+      EMAIL_HOME_ADDRESS: { label: '默认投递地址' }
     },
     platformIntro: {
       telegram:
@@ -1676,6 +1686,41 @@ export const zh: Translations = {
       api_server:
         '把 Hermes 暴露为兼容 OpenAI 的 API。设置一个鉴权密钥，然后把 Open WebUI / LobeChat 等指向 host:port。',
       webhook: '运行一个 HTTP 服务器，供其他工具 (GitHub、GitLab、自定义应用)POST。用 secret 验证签名。'
+    },
+    emailPolicy: {
+      title: '自动回复策略',
+      description: '在生成或发送任何回复之前，先决定哪些邮件可以进入 Agent。',
+      categoriesTitle: '邮件类别过滤',
+      categoriesDescription: '分类过滤采用近似的启发式正则。关闭某类邮件不保证其内容绝不进入大模型；只有本地正则命中时才会提前拦截。',
+      allowCategory: '允许自动回复',
+      promotions: '推广与营销',
+      newsletters: 'Newsletter 与摘要',
+      transactions: '订单与付款',
+      security: '安全与验证码',
+      social: '社交通知',
+      calendar: '日历通知',
+      reports: '定期报告',
+      keywordsTitle: '关键词规则',
+      keywordsDescription: '手动关键词仅在本地做字面匹配，不会加入 Agent 提示词。',
+      neverReply: '绝不回复',
+      neverReplyDescription: '命中后始终拦截，即使其他规则要求回复。',
+      mustReply: '必须回复',
+      mustReplyDescription: '命中后交给 Agent，并要求生成回复。',
+      keywordPlaceholder: '每行输入一个关键词组',
+      keywordSyntax: '用 + 表示组内所有词必须同时命中；不同行之间为任选命中。',
+      clearKeywords: '清空关键词规则',
+      keywordConflictTitle: '关键词规则冲突',
+      keywordConflictDescription: group => `“${group}”不能同时设为必须回复和绝不回复，请从其中一侧移除。`,
+      skipPatternsTitle: '跳过正则表达式',
+      skipPatternsDescription: '命中后不会调用 Agent。',
+      skipPatternsPlaceholder: '每行输入一条正则表达式',
+      skipPatternsSyntax: '忽略大小写，匹配邮件主题和正文。',
+      clearSkipPatterns: '清空跳过正则表达式',
+      decisionTitle: 'Agent 判定',
+      strictDecision: '要求结构化回复判定',
+      strictDecisionDescription: '只有模型返回有效结构且 need_response: true 时，才允许发送。',
+      priorityLabel: '判定顺序',
+      priorityText: '绝不回复 → 必须回复 → 分类过滤 → Agent 判定'
     }
   },
 

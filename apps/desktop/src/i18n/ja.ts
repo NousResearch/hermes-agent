@@ -1383,9 +1383,56 @@ export const ja = defineLocale({
       WHATSAPP_ALLOWED_USERS: {
         label: '許可する WhatsApp ユーザー',
         help: '推奨。カンマ区切りの電話番号または WhatsApp ID。'
-      }
+      },
+      EMAIL_ADDRESS: { label: 'メールアドレス', help: 'Hermes が受信と返信に使用するアドレスです。' },
+      EMAIL_PASSWORD: { label: 'アプリパスワード', help: 'アカウントのパスワードではなく、プロバイダーのアプリパスワードを使用します。' },
+      EMAIL_IMAP_HOST: { label: '受信メールサーバー', help: 'IMAP ホスト（例: imap.gmail.com）。' },
+      EMAIL_SMTP_HOST: { label: '送信メールサーバー', help: 'SMTP ホスト（例: smtp.gmail.com）。' },
+      EMAIL_IMAP_PORT: { label: 'IMAP ポート' },
+      EMAIL_SMTP_PORT: { label: 'SMTP ポート' },
+      EMAIL_IMAP_SECURITY: { label: 'IMAP セキュリティ' },
+      EMAIL_SMTP_SECURITY: { label: 'SMTP セキュリティ' },
+      EMAIL_HOME_ADDRESS: { label: '既定の配信先' }
     },
-    platformIntro: {}
+    platformIntro: {},
+    emailPolicy: {
+      title: '自動返信ポリシー',
+      description: '返信を生成・送信する前に、どのメールを Agent に渡すか決定します。',
+      categoriesTitle: 'メール分類',
+      categoriesDescription:
+        'カテゴリ判定は近似的なヒューリスティック正規表現です。カテゴリを無効にしても内容が Agent に届かない保証はなく、ローカルで一致した場合のみ事前に遮断されます。',
+      allowCategory: '自動返信を許可',
+      promotions: 'プロモーション',
+      newsletters: 'ニュースレターとダイジェスト',
+      transactions: '注文と支払い',
+      security: 'セキュリティと認証',
+      social: 'ソーシャル通知',
+      calendar: 'カレンダー通知',
+      reports: '定期レポート',
+      keywordsTitle: 'キーワードルール',
+      keywordsDescription:
+        '手動キーワードグループはローカルでのみ文字列一致し、Agent のプロンプトには追加されません。',
+      neverReply: '返信しない',
+      neverReplyDescription: '一致したメールは、他のルールが返信を要求しても常にブロックします。',
+      mustReply: '必ず返信',
+      mustReplyDescription: '一致したメールを Agent に渡し、返信を必須にします。',
+      keywordPlaceholder: '1 行につき 1 グループ',
+      keywordSyntax: '+ はすべての語への一致を表し、行同士はいずれかへの一致です。',
+      clearKeywords: 'キーワードルールを消去',
+      keywordConflictTitle: 'キーワードルールの競合',
+      keywordConflictDescription: group =>
+        `「${group}」を「必ず返信」と「返信しない」の両方に設定することはできません。片方から削除してください。`,
+      skipPatternsTitle: 'スキップ正規表現',
+      skipPatternsDescription: '一致したメールは Agent を呼び出す前に停止します。',
+      skipPatternsPlaceholder: '1 行につき 1 つの正規表現',
+      skipPatternsSyntax: '大文字と小文字を区別せず、件名と本文に一致します。',
+      clearSkipPatterns: 'スキップ正規表現を消去',
+      decisionTitle: 'Agent の判断',
+      strictDecision: '構造化された返信判断を必須にする',
+      strictDecisionDescription: '有効な構造で need_response: true が返された場合のみ送信します。',
+      priorityLabel: '判断順序',
+      priorityText: '返信しない → 必ず返信 → 分類フィルター → Agent の判断'
+    }
   },
 
   profiles: {

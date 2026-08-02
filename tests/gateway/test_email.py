@@ -18,9 +18,15 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from unittest.mock import patch, MagicMock, AsyncMock, ANY
+from unittest.mock import patch, MagicMock, AsyncMock, ANY, call
 
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import (
+    MessageEvent,
+    MessageType,
+    SendResult,
+    _INBOUND_EVENT_ID_METADATA_KEY,
+)
+from gateway.session import build_session_key
 
 
 class TestConfigEnvOverrides(unittest.TestCase):
@@ -113,6 +119,98 @@ class TestExtractAttachments(unittest.TestCase):
         msg = MIMEText("No attachments here.", "plain", "utf-8")
         result = _extract_attachments(msg)
         self.assertEqual(result, [])
+
+
+class TestEmailReplyPolicy(unittest.TestCase):
+    """Deterministic category, keyword-group, and model-output filtering."""
+
+    def test_promotions_are_skipped_by_default(self):
+        from plugins.platforms.email.adapter import _should_skip_email
+
+        self.assertTrue(
+            _should_skip_email("限时优惠", "Save 20% with this promo code")
+        )
+
+    def test_category_can_be_opted_into_auto_reply(self):
+        from plugins.platforms.email.adapter import _should_skip_email
+
+        self.assertFalse(
+            _should_skip_email(
+                "限时优惠",
+                "Save 20% with this promo code",
+                category_auto_reply={"promotions": True},
+                custom_skip_patterns="",
+            )
+        )
+
+    def test_keyword_groups_require_every_term(self):
+        from plugins.platforms.email.adapter import _matching_keyword_group
+
+        rules = "紧急;invoice+overdue"
+        self.assertEqual(
+            _matching_keyword_group("The invoice is overdue", rules),
+            ("invoice", "overdue"),
+        )
+        self.assertIsNone(_matching_keyword_group("New invoice attached", rules))
+
+    def test_invalid_custom_regex_is_ignored(self):
+        from plugins.platforms.email.adapter import _should_skip_email
+
+        self.assertFalse(
+            _should_skip_email(
+                "Hello",
+                "A normal question",
+                category_auto_reply={},
+                custom_skip_patterns="[invalid",
+            )
+        )
+
+    @patch.dict(os.environ, {"EMAIL_SKIP_PATTERNS": "^ordinary question$"})
+    def test_skip_patterns_environment_variable_cannot_change_policy(self):
+        """Reply filtering is config.yaml-only; .env remains credentials-only."""
+        from plugins.platforms.email.adapter import _should_skip_email
+
+        self.assertFalse(
+            _should_skip_email(
+                "ordinary question",
+                "",
+                category_auto_reply={},
+            )
+        )
+
+    def test_structured_json_false_is_parsed(self):
+        from plugins.platforms.email.adapter import _parse_agent_reply
+
+        decision, body = _parse_agent_reply(
+            '{"need_response": false, "response": ""}',
+            require_structured=True,
+        )
+        self.assertFalse(decision)
+        self.assertEqual(body, "")
+
+    def test_common_prefix_variants_are_parsed(self):
+        from plugins.platforms.email.adapter import _parse_agent_reply
+
+        for content in (
+            "need-response = FALSE\n",
+            "Should reply: no\n",
+            "NO_REPLY\n",
+            "无需回复\n",
+        ):
+            with self.subTest(content=content):
+                decision, _ = _parse_agent_reply(
+                    content, require_structured=True
+                )
+                self.assertFalse(decision)
+
+    def test_strict_mode_rejects_unstructured_output(self):
+        from plugins.platforms.email.adapter import _parse_agent_reply
+
+        decision, body = _parse_agent_reply(
+            "This is an ordinary answer.", require_structured=True
+        )
+        self.assertIsNone(decision)
+        self.assertEqual(body, "")
 
 
 class TestDispatchMessage(unittest.TestCase):
@@ -232,7 +330,93 @@ class TestDispatchMessage(unittest.TestCase):
         asyncio.run(adapter._dispatch_message(msg_data))
         self.assertEqual(len(captured_events), 1)
         self.assertNotIn("[Subject:", captured_events[0].text)
-        self.assertEqual(captured_events[0].text, "Thanks for the help!")
+        self.assertIn("Thanks for the help!", captured_events[0].text)
+
+    def test_no_reply_keyword_bypasses_agent(self):
+        import asyncio
+
+        adapter = self._make_adapter()
+        adapter._no_reply_keywords = "internal notice;do+not+reply"
+        adapter.handle_message = MagicMock()
+        msg_data = {
+            "uid": b"4",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Internal notice",
+            "message_id": "<msg4@test.com>",
+            "in_reply_to": "",
+            "body": "For your information",
+            "attachments": [],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        adapter.handle_message.assert_not_called()
+
+    def test_disabled_category_policy_is_given_to_model_after_regex_miss(self):
+        import asyncio
+
+        adapter = self._make_adapter()
+        adapter._no_reply_keywords = "无需处理;for+your+records"
+        adapter._category_auto_reply = {
+            category: category != "promotions"
+            for category in adapter._category_auto_reply
+        }
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        msg_data = {
+            "uid": b"43",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Keep this on file",
+            "message_id": "<msg43@test.com>",
+            "in_reply_to": "",
+            "body": "Please archive this update.",
+            "attachments": [],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        self.assertEqual(len(captured_events), 1)
+        self.assertIn("Auto-reply is disabled for these message categories", captured_events[0].text)
+        self.assertIn('"promotions": "promotional, advertising', captured_events[0].text)
+        self.assertNotIn("无需处理", captured_events[0].text)
+        self.assertNotIn("for+your+records", captured_events[0].text)
+        self.assertIn("heuristic regular expressions", captured_events[0].text)
+
+    def test_force_reply_keyword_overrides_category_filter(self):
+        import asyncio
+
+        adapter = self._make_adapter()
+        adapter._force_reply_keywords = "VIP+offer"
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        msg_data = {
+            "uid": b"44",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "VIP promotional offer",
+            "message_id": "<msg44@test.com>",
+            "in_reply_to": "",
+            "body": "A special VIP offer for you",
+            "attachments": [],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        self.assertEqual(len(captured_events), 1)
+        event_id = "<hermes-imap-44@test.com>"
+        self.assertTrue(adapter._reply_context[event_id]["force_reply"])
+        self.assertEqual(captured_events[0].message_id, event_id)
+        self.assertIn("requires a reply", captured_events[0].text)
 
 
     def test_image_attachment_sets_photo_type(self):
@@ -364,7 +548,7 @@ class TestThreadContext(unittest.TestCase):
     def test_reply_uses_re_prefix(self):
         """Reply subject should have Re: prefix."""
         adapter = self._make_adapter()
-        adapter._thread_context["user@test.com"] = {
+        reply_context = {
             "subject": "Project question",
             "message_id": "<original@test.com>",
         }
@@ -373,7 +557,12 @@ class TestThreadContext(unittest.TestCase):
             mock_server = MagicMock()
             mock_smtp.return_value = mock_server
 
-            adapter._send_email("user@test.com", "Here is the answer.", None)
+            adapter._send_email(
+                "user@test.com",
+                "Here is the answer.",
+                "<original@test.com>",
+                reply_context,
+            )
 
             # Check the sent message
             send_call = mock_server.send_message.call_args[0][0]
@@ -447,6 +636,443 @@ class TestSendMethods(unittest.TestCase):
         self.assertEqual(info["subject"], "Test")
 
 
+class TestStructuredReplySend(unittest.TestCase):
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        with patch.dict(
+            os.environ,
+            {
+                "EMAIL_ADDRESS": "hermes@test.com",
+                "EMAIL_PASSWORD": "secret",
+                "EMAIL_IMAP_HOST": "imap.test.com",
+                "EMAIL_SMTP_HOST": "smtp.test.com",
+            },
+        ):
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_false_decision_never_reaches_smtp(self):
+        import asyncio
+
+        adapter = self._make_adapter()
+        adapter._reply_context["<m@test.com>"] = {
+            "uid": b"12",
+            "force_reply": False,
+        }
+        adapter._send_email = MagicMock()
+        adapter._mark_replied_unread = MagicMock()
+
+        result = asyncio.run(
+            adapter.send(
+                "user@test.com",
+                '{"need_response": false, "response": ""}',
+                reply_to="<m@test.com>",
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "skipped-no-response-needed")
+        self.assertTrue(result.suppress_follow_up_delivery)
+        adapter._send_email.assert_not_called()
+        adapter._mark_replied_unread.assert_not_called()
+
+    def test_no_reply_decision_blocks_follow_up_attachment(self):
+        """A rejected automatic reply cannot leak its file after text suppression."""
+        import asyncio
+        import tempfile
+
+        adapter = self._make_adapter()
+        event_id = "<m@test.com>"
+        adapter._reply_context[event_id] = {"uid": b"12", "force_reply": False}
+        adapter._send_email = MagicMock()
+
+        text_result = asyncio.run(
+            adapter.send(
+                "user@test.com",
+                '{"need_response": false, "response": ""}',
+                reply_to=event_id,
+            )
+        )
+        self.assertTrue(text_result.suppress_follow_up_delivery)
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as document:
+            document.write(b"do not send")
+            document_path = document.name
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                attachment_result = asyncio.run(
+                    adapter.send_document(
+                        "user@test.com",
+                        document_path,
+                        metadata={_INBOUND_EVENT_ID_METADATA_KEY: event_id},
+                    )
+                )
+        finally:
+            os.unlink(document_path)
+
+        self.assertTrue(attachment_result.success)
+        self.assertTrue(attachment_result.suppress_follow_up_delivery)
+        mock_smtp.assert_not_called()
+
+    def test_gateway_skips_media_after_no_reply_decision(self):
+        """The final delivery pipeline cannot send a rejected reply's file."""
+        import asyncio
+        import tempfile
+
+        adapter = self._make_adapter()
+        event_id = "<hermes-imap-12@test.com>"
+        adapter._reply_context[event_id] = {"uid": b"12", "force_reply": False}
+        source = adapter.build_source(chat_id="user@test.com", chat_type="dm")
+        event = MessageEvent(
+            text="please send the report",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=event_id,
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as document, \
+                tempfile.NamedTemporaryFile(suffix=".png", delete=False) as image:
+            document.write(b"private report")
+            document_path = document.name
+            image.write(b"private image")
+            image_path = image.name
+        try:
+            adapter.set_message_handler(
+                lambda _event: asyncio.sleep(
+                    0,
+                    result=(
+                        '{"need_response": false, "response": ""}\n'
+                        f"MEDIA:{document_path}\nMEDIA:{image_path}"
+                    ),
+                )
+            )
+            with patch(
+                "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+                (os.path.dirname(document_path),),
+            ), patch("smtplib.SMTP") as mock_smtp:
+                asyncio.run(
+                    adapter._process_message_background(
+                        event, build_session_key(source)
+                    )
+                )
+        finally:
+            os.unlink(document_path)
+            os.unlink(image_path)
+
+        self.assertFalse(adapter._reply_context[event_id]["reply_delivery_allowed"])
+        mock_smtp.assert_not_called()
+
+    def test_true_json_sends_only_response_body(self):
+        import asyncio
+
+        adapter = self._make_adapter()
+        adapter._reply_context["<m@test.com>"] = {"uid": b"12", "force_reply": False}
+        adapter._send_email = MagicMock(return_value="<reply@test.com>")
+        adapter._mark_replied_unread = MagicMock()
+
+        result = asyncio.run(
+            adapter.send(
+                "user@test.com",
+                '{"need_response": true, "response": "The answer."}',
+                reply_to="<m@test.com>",
+            )
+        )
+
+        self.assertTrue(result.success)
+        adapter._send_email.assert_called_once_with(
+            "user@test.com", "The answer.", "<m@test.com>", ANY
+        )
+        adapter._mark_replied_unread.assert_called_once_with(b"12")
+
+    def test_invalid_strict_output_is_blocked(self):
+        import asyncio
+
+        adapter = self._make_adapter()
+        adapter._reply_context["<m@test.com>"] = {"uid": b"12", "force_reply": False}
+        adapter._send_email = MagicMock()
+
+        result = asyncio.run(adapter.send("user@test.com", "ordinary answer", reply_to="<m@test.com>"))
+
+        self.assertEqual(result.message_id, "skipped-invalid-response-format")
+        adapter._send_email.assert_not_called()
+
+    def test_true_decision_with_empty_body_is_blocked(self):
+        import asyncio
+
+        adapter = self._make_adapter()
+        adapter._reply_context["<m@test.com>"] = {"uid": b"12", "force_reply": False}
+        adapter._send_email = MagicMock()
+
+        result = asyncio.run(
+            adapter.send(
+                "user@test.com",
+                '{"need_response": true, "response": ""}',
+                reply_to="<m@test.com>",
+            )
+        )
+
+        self.assertEqual(result.message_id, "skipped-empty-response")
+        adapter._send_email.assert_not_called()
+
+    def test_force_rule_overrides_false_model_decision(self):
+        import asyncio
+
+        adapter = self._make_adapter()
+        adapter._reply_context["<m@test.com>"] = {
+            "uid": b"13",
+            "force_reply": True,
+        }
+        adapter._send_email = MagicMock(return_value="<forced@test.com>")
+        adapter._mark_replied_unread = MagicMock()
+
+        result = asyncio.run(
+            adapter.send(
+                "user@test.com",
+                '{"need_response": false, "response": ""}',
+                reply_to="<m@test.com>",
+            )
+        )
+
+        self.assertTrue(result.success)
+        adapter._send_email.assert_called_once_with(
+            "user@test.com", "Your email has been received.", "<m@test.com>", ANY
+        )
+
+    def test_generic_delivery_is_not_interpreted_as_an_agent_reply(self):
+        import asyncio
+
+        adapter = self._make_adapter()
+        adapter._send_email = MagicMock(return_value="<delivery@test.com>")
+
+        result = asyncio.run(adapter.send("user@test.com", "ordinary delivery"))
+
+        self.assertTrue(result.success)
+        adapter._send_email.assert_called_once_with(
+            "user@test.com", "ordinary delivery", None, None
+        )
+
+    def test_generic_attachment_ignores_sender_thread_cache(self):
+        """Scheduled and notification attachments are never replies by sender."""
+        import asyncio
+        import tempfile
+
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Earlier inbound email",
+            "message_id": "<earlier@test.com>",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as document:
+            document.write(b"ordinary delivery")
+            document_path = document.name
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                result = asyncio.run(
+                    adapter.send_document("user@test.com", document_path)
+                )
+        finally:
+            os.unlink(document_path)
+
+        self.assertTrue(result.success)
+        sent = mock_smtp.return_value.send_message.call_args.args[0]
+        self.assertEqual(sent["Subject"], "Hermes Agent")
+        self.assertIsNone(sent["In-Reply-To"])
+        self.assertIsNone(sent["Auto-Submitted"])
+
+    def test_reply_marker_is_persisted_before_restoring_unread(self):
+        adapter = self._make_adapter()
+        imap = MagicMock()
+        imap.uid.return_value = ("OK", [])
+
+        with patch("imaplib.IMAP4_SSL", return_value=imap):
+            adapter._mark_replied_unread(b"12")
+
+        self.assertEqual(
+            imap.uid.call_args_list[0].args,
+            ("store", b"12", "+FLAGS.SILENT", r"(\Answered)"),
+        )
+        self.assertEqual(
+            imap.uid.call_args_list[1].args,
+            ("store", b"12", "-FLAGS.SILENT", r"(\Seen)"),
+        )
+
+    def test_automatic_reply_sets_loop_prevention_header(self):
+        """Inbound-event replies advertise RFC 3834 auto-generation."""
+        adapter = self._make_adapter()
+        context = {"subject": "Question", "message_id": "<original@test.com>"}
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            server = MagicMock()
+            mock_smtp.return_value = server
+            adapter._send_email("user@test.com", "Answer", "<event@test.com>", context)
+
+        sent = server.send_message.call_args.args[0]
+        self.assertEqual(sent["Auto-Submitted"], "auto-replied")
+
+    def test_attachment_uses_its_inbound_event_context(self):
+        """Attachment replies retain subject, headers, and IMAP state per event."""
+        import asyncio
+        import tempfile
+
+        adapter = self._make_adapter()
+        first_event = "<hermes-imap-41@test.com>"
+        second_event = "<hermes-imap-42@test.com>"
+        adapter._reply_context[first_event] = {
+            "subject": "First question",
+            "message_id": "<first@test.com>",
+            "uid": b"41",
+            "reply_delivery_allowed": True,
+        }
+        adapter._reply_context[second_event] = {
+            "subject": "Second question",
+            "message_id": "<second@test.com>",
+            "uid": b"42",
+            "reply_delivery_allowed": True,
+        }
+        adapter._mark_replied_unread = MagicMock()
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as document:
+            document.write(b"attachment")
+            document_path = document.name
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                first_result = asyncio.run(
+                    adapter.send_document(
+                        "same-sender@test.com",
+                        document_path,
+                        metadata={_INBOUND_EVENT_ID_METADATA_KEY: first_event},
+                    )
+                )
+                second_result = asyncio.run(
+                    adapter.send_document(
+                        "same-sender@test.com",
+                        document_path,
+                        metadata={_INBOUND_EVENT_ID_METADATA_KEY: second_event},
+                    )
+                )
+        finally:
+            os.unlink(document_path)
+
+        self.assertTrue(first_result.success)
+        self.assertTrue(second_result.success)
+        first_sent, second_sent = [
+            call.args[0] for call in mock_smtp.return_value.send_message.call_args_list
+        ]
+        self.assertEqual(first_sent["Subject"], "Re: First question")
+        self.assertEqual(first_sent["In-Reply-To"], "<first@test.com>")
+        self.assertEqual(first_sent["Auto-Submitted"], "auto-replied")
+        self.assertEqual(second_sent["Subject"], "Re: Second question")
+        self.assertEqual(second_sent["In-Reply-To"], "<second@test.com>")
+        self.assertEqual(second_sent["Auto-Submitted"], "auto-replied")
+        self.assertEqual(
+            adapter._mark_replied_unread.call_args_list,
+            [call(b"41"), call(b"42")],
+        )
+
+    def test_image_attachments_use_their_inbound_event_context(self):
+        """The native image batch follows the same reply policy and headers."""
+        import asyncio
+        import tempfile
+
+        adapter = self._make_adapter()
+        event_id = "<hermes-imap-51@test.com>"
+        adapter._reply_context[event_id] = {
+            "subject": "Image question",
+            "message_id": "<image@test.com>",
+            "uid": b"51",
+            "reply_delivery_allowed": True,
+        }
+        adapter._mark_replied_unread = MagicMock()
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as image:
+            image.write(b"image")
+            image_path = image.name
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                asyncio.run(
+                    adapter.send_multiple_images(
+                        "user@test.com",
+                        [(f"file://{image_path}", "")],
+                        metadata={_INBOUND_EVENT_ID_METADATA_KEY: event_id},
+                    )
+                )
+        finally:
+            os.unlink(image_path)
+
+        sent = mock_smtp.return_value.send_message.call_args.args[0]
+        self.assertEqual(sent["Subject"], "Re: Image question")
+        self.assertEqual(sent["In-Reply-To"], "<image@test.com>")
+        self.assertEqual(sent["Auto-Submitted"], "auto-replied")
+        adapter._mark_replied_unread.assert_called_once_with(b"51")
+
+    def test_generic_delivery_has_no_auto_submitted_header(self):
+        """Cron and notification email remains ordinary outbound mail."""
+        adapter = self._make_adapter()
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            server = MagicMock()
+            mock_smtp.return_value = server
+            adapter._send_email("user@test.com", "Notice")
+
+        sent = server.send_message.call_args.args[0]
+        self.assertIsNone(sent["Auto-Submitted"])
+
+    def test_duplicate_external_message_ids_keep_reply_contexts_isolated(self):
+        """Mailbox UIDs, not attacker-controlled Message-IDs, own reply state."""
+        import asyncio
+
+        adapter = self._make_adapter()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        shared = "<reused@example.test>"
+        with patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "true"}, clear=False):
+            for uid, sender, subject in (
+                (b"41", "first@test.com", "First question"),
+                (b"42", "second@test.com", "Second question"),
+            ):
+                asyncio.run(adapter._dispatch_message({
+                    "uid": uid,
+                    "sender_addr": sender,
+                    "sender_name": sender,
+                    "subject": subject,
+                    "message_id": shared,
+                    "in_reply_to": "",
+                    "body": "Please reply",
+                    "attachments": [],
+                    "date": "",
+                }))
+
+        self.assertEqual(
+            {event.message_id for event in events},
+            {"<hermes-imap-41@test.com>", "<hermes-imap-42@test.com>"},
+        )
+        self.assertEqual(len(adapter._reply_context), 2)
+        adapter._send_email = MagicMock(side_effect=["<first-reply>", "<second-reply>"])
+        adapter._mark_replied_unread = MagicMock()
+
+        asyncio.run(adapter.send(
+            "first@test.com",
+            '{"need_response": true, "response": "First answer"}',
+            reply_to=events[0].message_id,
+        ))
+        asyncio.run(adapter.send(
+            "second@test.com",
+            '{"need_response": true, "response": "Second answer"}',
+            reply_to=events[1].message_id,
+        ))
+
+        self.assertEqual(adapter._send_email.call_args_list[0].args[3]["subject"], "First question")
+        self.assertEqual(adapter._send_email.call_args_list[1].args[3]["subject"], "Second question")
+        self.assertEqual(
+            adapter._mark_replied_unread.call_args_list,
+            [call(b"41"), call(b"42")],
+        )
+
+
 class TestConnectDisconnect(unittest.TestCase):
     """Test IMAP/SMTP connection lifecycle."""
 
@@ -485,6 +1111,33 @@ class TestConnectDisconnect(unittest.TestCase):
             adapter._running = False
             if adapter._poll_task:
                 adapter._poll_task.cancel()
+
+    def test_connect_requires_pinned_authserv_for_authenticated_allowlist(self):
+        """A valid allowlist cannot silently become unusable at first delivery."""
+        import asyncio
+
+        adapter = self._make_adapter()
+        with patch.dict(os.environ, {"EMAIL_ALLOWED_USERS": "user@test.com"}, clear=False):
+            result = asyncio.run(adapter.connect())
+
+        self.assertFalse(result)
+        self.assertTrue(adapter.has_fatal_error)
+        self.assertEqual(adapter.fatal_error_code, "email_authserv_id_required")
+
+    def test_connect_locks_mailbox_identity_and_disconnect_releases_it(self):
+        """Profiles sharing one mailbox must not concurrently poll/reply."""
+        import asyncio
+
+        adapter = self._make_adapter()
+        adapter._acquire_platform_lock = MagicMock(return_value=False)
+        self.assertFalse(asyncio.run(adapter.connect()))
+        adapter._acquire_platform_lock.assert_called_once_with(
+            "email", "imap.test.com:hermes@test.com", "email mailbox"
+        )
+
+        adapter._release_platform_lock = MagicMock()
+        asyncio.run(adapter.disconnect())
+        adapter._release_platform_lock.assert_called_once_with()
 
 
 class TestFetchNewMessages(unittest.TestCase):
@@ -530,6 +1183,26 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
         self.assertIn(b"3", adapter._seen_uids)
+
+    def test_fetch_skips_automated_headers_regardless_of_spelling(self):
+        """RFC field names are case-insensitive, including loop-prevention headers."""
+        adapter = self._make_adapter()
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "sender@test.com"
+        raw_email["Subject"] = "Automated"
+        raw_email["auto-submitted"] = "auto-replied"
+
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = lambda command, *args: (
+            ("OK", [b"9"])
+            if command == "search"
+            else ("OK", [(b"9", raw_email.as_bytes())])
+            if command == "fetch"
+            else ("NO", [])
+        )
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            self.assertEqual(adapter._fetch_new_messages(), [])
 
 
 class TestPollLoop(unittest.TestCase):
@@ -678,8 +1351,8 @@ class TestImapConnectionCleanup(unittest.TestCase):
         "EMAIL_IMAP_PORT": "993",
         "EMAIL_SMTP_HOST": "smtp.test.com",
     }, clear=False)
-    def test_imap_logout_called_on_uid_fetch_failure(self):
-        """IMAP logout() must be called even when uid fetch raises."""
+    def test_imap_shutdown_called_on_uid_fetch_failure(self):
+        """IMAP shutdown() must be called even when uid fetch raises."""
         adapter = self._make_adapter()
         mock_imap = MagicMock()
 
@@ -696,7 +1369,7 @@ class TestImapConnectionCleanup(unittest.TestCase):
             results = adapter._fetch_new_messages()
 
         self.assertEqual(results, [])
-        mock_imap.logout.assert_called_once()
+        mock_imap.shutdown.assert_called_once()
 
 
 class TestImapIdExtensionForNetEase(unittest.TestCase):
@@ -870,6 +1543,7 @@ class TestSenderAuthentication(unittest.TestCase):
         ok, reason = self._verify(
             "Admin <admin@example.com>",
             ["mx.google.com; dmarc=pass header.from=example.com; spf=pass"],
+            authserv_id="mx.google.com",
         )
         self.assertTrue(ok, reason)
 
@@ -878,6 +1552,7 @@ class TestSenderAuthentication(unittest.TestCase):
         ok, reason = self._verify(
             "admin@example.com",
             ["mx.google.com; dkim=pass header.d=example.com"],
+            authserv_id="mx.google.com",
         )
         self.assertTrue(ok, reason)
 
@@ -886,8 +1561,27 @@ class TestSenderAuthentication(unittest.TestCase):
         ok, reason = self._verify(
             "admin@example.com",
             ["mx.google.com; spf=pass smtp.mailfrom=bounce@evil.com"],
+            authserv_id="mx.google.com",
         )
         self.assertFalse(ok, reason)
+
+    def test_authserv_id_requires_exact_host_match(self):
+        """A sender-controlled subdomain cannot impersonate the receiver."""
+        for untrusted in ("evil.mx.ourserver.com", "ourserver.com"):
+            ok, reason = self._verify(
+                "admin@example.com",
+                [f"{untrusted}; dmarc=pass header.from=example.com"],
+                authserv_id="mx.ourserver.com",
+            )
+            self.assertFalse(ok, reason)
+
+    def test_missing_authserv_id_fails_closed(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dmarc=pass header.from=example.com"],
+        )
+        self.assertFalse(ok)
+        self.assertIn("authserv-id is required", reason)
 
 
     def test_injected_header_below_trusted_does_not_authenticate(self):
@@ -905,6 +1599,19 @@ class TestSenderAuthentication(unittest.TestCase):
             authserv_id="mx.ourserver.com",
         )
         self.assertFalse(ok, reason)
+
+    def test_untrusted_topmost_header_cannot_defer_to_a_lower_forged_header(self):
+        """A lower matching authserv-id is sender controlled and never trusted."""
+        ok, reason = self._verify(
+            "admin@example.com",
+            [
+                "mx.other-server.example; dmarc=fail header.from=example.com",
+                "mx.ourserver.com; dmarc=pass header.from=example.com",
+            ],
+            authserv_id="mx.ourserver.com",
+        )
+        self.assertFalse(ok, reason)
+        self.assertIn("topmost", reason)
 
 
 if __name__ == "__main__":

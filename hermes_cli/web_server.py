@@ -1289,6 +1289,7 @@ from hermes_cli.web_models import (  # noqa: F401
     MemoryProviderConfigUpdate,
     MemoryProviderSetupRequest,
     CustomEndpointUpdate,
+    EmailAutoReplyPolicyUpdate,
     MessagingPlatformUpdate,
     TelegramOnboardingStart,
     TelegramOnboardingApply,
@@ -3852,6 +3853,197 @@ def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> Non
                 status_code=400,
                 detail="Slack allowed user IDs must be comma-separated member IDs like U01ABC2DEF3.",
             )
+
+
+def _normalized_email_keyword_groups(raw: str) -> set[tuple[str, ...]]:
+    """Return semantic keyword groups for cross-list conflict detection."""
+    groups: set[tuple[str, ...]] = set()
+    for raw_group in re.split(r"[\n;]+", raw or ""):
+        terms = {
+            term.strip().casefold()
+            for term in re.split(r"\s*(?:\+|&&)\s*", raw_group)
+            if term.strip()
+        }
+        if terms:
+            groups.add(tuple(sorted(terms)))
+    return groups
+
+
+def _serialize_email_keyword_groups(raw: str) -> str:
+    """Store one logical keyword group per semicolon-delimited .env value."""
+    return ";".join(
+        group.strip()
+        for group in re.split(r"[\r\n;]+", raw or "")
+        if group.strip()
+    )
+
+
+_EMAIL_AUTO_REPLY_POLICY_KEYS = (
+    "auto_reply_promotions",
+    "auto_reply_newsletters",
+    "auto_reply_transactions",
+    "auto_reply_security",
+    "auto_reply_social",
+    "auto_reply_calendar",
+    "auto_reply_reports",
+    "force_reply_keywords",
+    "no_reply_keywords",
+    "skip_patterns",
+    "require_structured_response",
+)
+_EMAIL_POLICY_BOOLEAN_KEYS = {
+    key
+    for key in _EMAIL_AUTO_REPLY_POLICY_KEYS
+    if key.startswith("auto_reply_") or key == "require_structured_response"
+}
+
+_EMAIL_POLICY_FIELD_INFO = {
+    key: {
+        "description": {
+            "force_reply_keywords": "Must-reply keyword groups; separate alternatives with semicolons and required terms with +.",
+            "no_reply_keywords": "Never-reply keyword groups; these take precedence over must-reply rules.",
+            "skip_patterns": "Skip automatic replies when the subject or body matches one regular expression per line.",
+            "require_structured_response": "Require a valid need_response decision before sending an automatic reply.",
+        }.get(key, "Allow this email category to reach the automatic-reply agent."),
+        "prompt": {
+            "force_reply_keywords": "Must-reply keyword groups",
+            "no_reply_keywords": "No-reply keyword groups",
+            "skip_patterns": "Skip regular expressions",
+            "require_structured_response": "Require structured reply decisions",
+        }.get(key, f"Auto-reply to {key.removeprefix('auto_reply_').replace('_', ' ')}"),
+        "input_type": (
+            "textarea"
+            if key in {"force_reply_keywords", "no_reply_keywords", "skip_patterns"}
+            else "boolean"
+        ),
+        "default_value": "true" if key == "require_structured_response" else "false",
+        "expose_value": key in {"force_reply_keywords", "no_reply_keywords", "skip_patterns"},
+    }
+    for key in _EMAIL_AUTO_REPLY_POLICY_KEYS
+}
+
+
+def _email_platform_config(config: dict) -> dict[str, Any]:
+    platforms = config.get("platforms") if isinstance(config, dict) else None
+    email_config = platforms.get("email") if isinstance(platforms, dict) else None
+    return email_config if isinstance(email_config, dict) else {}
+
+
+def _email_auto_reply_policy_config(config: dict) -> dict[str, Any]:
+    """Return the platform-specific config block consumed by EmailAdapter."""
+    extra = _email_platform_config(config).get("extra")
+    return extra if isinstance(extra, dict) else {}
+
+
+def _email_auto_reply_policy(config: dict) -> dict[str, Any]:
+    """Return the config.yaml-backed email reply policy."""
+    policy_config = _email_auto_reply_policy_config(config)
+    return {
+        key: policy_config.get(
+            key,
+            True if key == "require_structured_response" else False,
+        )
+        if key in _EMAIL_POLICY_BOOLEAN_KEYS
+        else str(policy_config.get(key, "") or "")
+        for key in _EMAIL_AUTO_REPLY_POLICY_KEYS
+    }
+
+
+def _email_auto_reply_policy_response(config: dict) -> dict[str, Any]:
+    """Expose policy metadata only through the dedicated policy endpoint."""
+    policy_config = _email_auto_reply_policy_config(config)
+    policy = _email_auto_reply_policy(config)
+    fields = [
+        {
+            "key": key,
+            "required": False,
+            "is_set": key in policy_config,
+            "redacted_value": None,
+            "current_value": str(policy[key]).lower()
+            if key in _EMAIL_POLICY_BOOLEAN_KEYS
+            else policy[key],
+            **_EMAIL_POLICY_FIELD_INFO[key],
+        }
+        for key in _EMAIL_AUTO_REPLY_POLICY_KEYS
+    ]
+    return {"policy": policy, "fields": fields}
+
+
+def _validate_email_auto_reply_policy(
+    current: dict[str, Any], values: dict[str, Any], clear: list[str]
+) -> None:
+    """Validate the config-shaped API and keyword conflict invariant."""
+    unknown = (set(values) | set(clear)) - set(_EMAIL_AUTO_REPLY_POLICY_KEYS)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown email auto-reply policy field(s): {', '.join(sorted(unknown))}",
+        )
+
+    overlap = set(values) & set(clear)
+    if overlap:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "An email auto-reply policy field cannot be set and cleared in "
+                f"the same request: {', '.join(sorted(overlap))}"
+            ),
+        )
+
+    normalized_values: dict[str, Any] = {}
+    for key, value in values.items():
+        if key in _EMAIL_POLICY_BOOLEAN_KEYS:
+            if not isinstance(value, bool):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{key} must be a boolean",
+                )
+            normalized_values[key] = value
+        elif not isinstance(value, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{key} must be a string",
+            )
+        else:
+            if key == "skip_patterns":
+                for pattern in (
+                    part.strip()
+                    for part in value.splitlines()
+                    if part.strip()
+                ):
+                    try:
+                        re.compile(pattern, re.IGNORECASE)
+                    except re.error as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invalid skip_patterns regular expression {pattern!r}: {exc}",
+                        ) from exc
+                normalized_values[key] = value
+            else:
+                normalized_values[key] = _serialize_email_keyword_groups(value)
+
+    def effective(key: str) -> str:
+        if key in normalized_values:
+            return str(normalized_values[key]).strip()
+        if key in clear:
+            return ""
+        return str(current.get(key, "") or "").strip()
+
+    force_groups = _normalized_email_keyword_groups(
+        effective("force_reply_keywords")
+    )
+    deny_groups = _normalized_email_keyword_groups(effective("no_reply_keywords"))
+    conflicts = force_groups & deny_groups
+    if conflicts:
+        rendered = "; ".join("+".join(group) for group in sorted(conflicts))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A keyword group cannot be both must-reply and never-reply. "
+                f"Remove it from one list: {rendered}"
+            ),
+        )
+
 
 
 def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Popen, bool]:
@@ -8069,7 +8261,11 @@ def _catalog_lookup(platform_id: str) -> dict[str, Any] | None:
 
 
 def _messaging_env_info(key: str) -> dict[str, Any]:
-    info = OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
+    info = (
+        OPTIONAL_ENV_VARS.get(key)
+        or _MESSAGING_ENV_FALLBACKS.get(key)
+        or {}
+    )
     return {
         "description": info.get("description", ""),
         "prompt": info.get("prompt", key),
@@ -8077,6 +8273,9 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
         "url": info.get("url"),
         "is_password": info.get("password", False),
         "advanced": info.get("advanced", False),
+        "input_type": info.get("input_type", "password" if info.get("password") else "text"),
+        "default_value": str(info.get("default_value", "")),
+        "expose_value": bool(info.get("expose_value", False)),
     }
 
 
@@ -8127,20 +8326,26 @@ def _messaging_platform_payload(
     )
     gateway_running = liveness.running
     env_vars = []
-
     for key in entry["env_vars"]:
         # When profile-scoped, judge only the profile's own .env — the
         # dashboard process's os.environ carries the ROOT install's .env
         # (loaded at startup) and would falsely report the root credentials
         # as the profile's.
         value = env_on_disk.get(key) or ("" if scoped else os.getenv(key, ""))
+        info = _messaging_env_info(key)
+        current_value = ""
+        if info["input_type"] == "boolean":
+            current_value = value if value else info["default_value"]
+        elif info["expose_value"]:
+            current_value = value
         env_vars.append(
             {
                 "key": key,
                 "required": key in entry["required_env"],
                 "is_set": bool(value),
                 "redacted_value": redact_key(value) if value else None,
-                **_messaging_env_info(key),
+                "current_value": current_value,
+                **info,
             }
         )
 
@@ -9151,6 +9356,59 @@ async def get_messaging_platforms(profile: Optional[str] = None):
                 for entry in _messaging_platform_catalog()
             ]
         }
+
+
+@app.get("/api/messaging/platforms/email/auto-reply-policy")
+async def get_email_auto_reply_policy(profile: Optional[str] = None):
+    """Read the profile-scoped, config.yaml-backed email reply policy."""
+    with _profile_scope(profile):
+        return _email_auto_reply_policy_response(load_config())
+
+
+@app.put("/api/messaging/platforms/email/auto-reply-policy")
+async def update_email_auto_reply_policy(
+    body: EmailAutoReplyPolicyUpdate, profile: Optional[str] = None
+):
+    """Update only email reply policy keys, preserving other email config."""
+    with _profile_scope(body.profile or profile):
+        config = load_config()
+        platforms_config = config.setdefault("platforms", {})
+        if not isinstance(platforms_config, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="platforms must be a mapping",
+            )
+        email_config = platforms_config.setdefault("email", {})
+        if not isinstance(email_config, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="platforms.email must be a mapping",
+            )
+        policy_config = email_config.setdefault("extra", {})
+        if not isinstance(policy_config, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="platforms.email.extra must be a mapping",
+            )
+        _validate_email_auto_reply_policy(policy_config, body.values, body.clear)
+        for key in body.clear:
+            policy_config.pop(key, None)
+        for key, value in body.values.items():
+            policy_config[key] = (
+                value
+                if key in _EMAIL_POLICY_BOOLEAN_KEYS or key == "skip_patterns"
+                else _serialize_email_keyword_groups(value)
+            )
+        save_config(config)
+        result = _email_auto_reply_policy_response(config)
+
+    _log.info(
+        "Email auto-reply policy updated: profile=%s fields=%s cleared=%s",
+        body.profile or profile or "current",
+        sorted(body.values),
+        sorted(body.clear),
+    )
+    return {"ok": True, **result}
 
 
 def _multiplex_port_binding_conflict(

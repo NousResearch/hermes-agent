@@ -883,6 +883,19 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getEmailAutoReplyPolicy: () =>
+    fetchJSON<EmailAutoReplyPolicyResponse>(
+      "/api/messaging/platforms/email/auto-reply-policy",
+    ),
+  updateEmailAutoReplyPolicy: (body: EmailAutoReplyPolicyUpdate) =>
+    fetchJSON<{ ok: boolean } & EmailAutoReplyPolicyResponse>(
+      "/api/messaging/platforms/email/auto-reply-policy",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   testMessagingPlatform: (id: string) =>
     fetchJSON<MessagingPlatformTestResult>(
       `/api/messaging/platforms/${encodeURIComponent(id)}/test`,
@@ -1553,6 +1566,9 @@ export interface MessagingPlatformEnvVar {
   url: string | null;
   is_password: boolean;
   advanced: boolean;
+  input_type: "text" | "password" | "boolean" | "textarea";
+  default_value: string;
+  current_value: string;
 }
 
 export interface MessagingPlatform {
@@ -1590,6 +1606,30 @@ export interface MessagingPlatformUpdate {
   enabled?: boolean;
   env?: Record<string, string>;
   clear_env?: string[];
+}
+
+export interface EmailAutoReplyPolicy {
+  auto_reply_calendar: boolean;
+  auto_reply_newsletters: boolean;
+  auto_reply_promotions: boolean;
+  auto_reply_reports: boolean;
+  auto_reply_security: boolean;
+  auto_reply_social: boolean;
+  auto_reply_transactions: boolean;
+  force_reply_keywords: string;
+  no_reply_keywords: string;
+  skip_patterns: string;
+  require_structured_response: boolean;
+}
+
+export interface EmailAutoReplyPolicyUpdate {
+  clear?: string[];
+  values?: Partial<EmailAutoReplyPolicy>;
+}
+
+export interface EmailAutoReplyPolicyResponse {
+  fields: MessagingPlatformEnvVar[];
+  policy: EmailAutoReplyPolicy;
 }
 
 export interface MessagingPlatformTestResult {

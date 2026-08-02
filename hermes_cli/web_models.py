@@ -71,6 +71,14 @@ class MessagingPlatformUpdate(BaseModel):
     profile: Optional[str] = None
 
 
+class EmailAutoReplyPolicyUpdate(BaseModel):
+    """Profile-scoped, config.yaml-only email auto-reply policy update."""
+
+    values: Dict[str, Any] = {}
+    clear: List[str] = []
+    profile: Optional[str] = None
+
+
 class TelegramOnboardingStart(BaseModel):
     bot_name: Optional[str] = None
 
@@ -706,4 +714,3 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
-

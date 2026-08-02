@@ -767,6 +767,28 @@ class TestWebServerEndpoints:
         assert "GATEWAY_PROXY_URL" not in managed
         assert "GATEWAY_PROXY_URL" in _MESSAGING_KEYS_PAGE_KEYS
 
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("SLACK_BOT_TOKEN", "xoxb-valid-bot-token"),
+            ("SLACK_APP_TOKEN", "xapp-valid-app-token"),
+        ],
+    )
+    def test_slack_token_update_does_not_run_allowed_users_validation(
+        self, key, value
+    ):
+        """Valid Slack tokens must not depend on allowed-user parser state."""
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {key: value}},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "platform": "slack"}
+        assert load_env()[key] == value
+
 
 
     def test_model_set_maps_unknown_vendor_to_aggregator(self, monkeypatch):
@@ -893,6 +915,204 @@ class TestWebServerEndpoints:
             platform_registry.unregister("pseudofake")
             Platform._value2member_map_.pop("pseudofake", None)
             Platform._member_map_.pop("PSEUDOFAKE", None)
+
+    def test_email_reply_policy_fields_have_dashboard_controls(self):
+        resp = self.client.get("/api/messaging/platforms/email/auto-reply-policy")
+        assert resp.status_code == 200
+        fields = {field["key"]: field for field in resp.json()["fields"]}
+
+        assert fields["auto_reply_promotions"]["input_type"] == "boolean"
+        assert fields["auto_reply_promotions"]["current_value"] == "false"
+        assert fields["force_reply_keywords"]["input_type"] == "textarea"
+        assert fields["no_reply_keywords"]["input_type"] == "textarea"
+        assert fields["skip_patterns"]["input_type"] == "textarea"
+        assert (
+            fields["require_structured_response"]["current_value"] == "true"
+        )
+
+        platform = self.client.get("/api/messaging/platforms").json()["platforms"]
+        email = next(row for row in platform if row["id"] == "email")
+        assert "auto_reply_promotions" not in {
+            field["key"] for field in email["env_vars"]
+        }
+
+    def test_email_reply_keywords_round_trip_unicode(self):
+        must_reply_input = "紧急+发票\n\n请尽快回复"
+        no_reply_input = "推广\r\n验证码"
+        must_reply = "紧急+发票;请尽快回复"
+        no_reply = "推广;验证码"
+
+        saved = self.client.put(
+            "/api/messaging/platforms/email/auto-reply-policy",
+            json={
+                "values": {
+                    "force_reply_keywords": must_reply_input,
+                    "no_reply_keywords": no_reply_input,
+                }
+            },
+        )
+        assert saved.status_code == 200
+
+        resp = self.client.get("/api/messaging/platforms/email/auto-reply-policy")
+        assert resp.status_code == 200
+        fields = {field["key"]: field for field in resp.json()["fields"]}
+        assert fields["force_reply_keywords"]["current_value"] == must_reply
+        assert fields["no_reply_keywords"]["current_value"] == no_reply
+        policy = resp.json()["policy"]
+        assert policy["force_reply_keywords"] == must_reply
+        assert policy["no_reply_keywords"] == no_reply
+
+    def test_email_reply_skip_patterns_round_trip_and_validate_regex(self):
+        patterns = "^out of office$\n^ref-[0-9]{1,3}$"
+        saved = self.client.put(
+            "/api/messaging/platforms/email/auto-reply-policy",
+            json={"values": {"skip_patterns": patterns}},
+        )
+
+        assert saved.status_code == 200
+        assert saved.json()["policy"]["skip_patterns"] == patterns
+
+        rejected = self.client.put(
+            "/api/messaging/platforms/email/auto-reply-policy",
+            json={"values": {"skip_patterns": "["}},
+        )
+        assert rejected.status_code == 400
+        assert "Invalid skip_patterns" in rejected.json()["detail"]
+
+    def test_email_reply_keywords_reject_semantic_cross_list_duplicates(self):
+        saved = self.client.put(
+            "/api/messaging/platforms/email/auto-reply-policy",
+            json={
+                "values": {
+                    "force_reply_keywords": "Invoice + Overdue;urgent",
+                },
+                "clear": ["no_reply_keywords"],
+            },
+        )
+        assert saved.status_code == 200
+
+        rejected = self.client.put(
+            "/api/messaging/platforms/email/auto-reply-policy",
+            json={
+                "values": {
+                    "no_reply_keywords": " overdue && invoice ",
+                }
+            },
+        )
+        assert rejected.status_code == 400
+        assert "cannot be both" in rejected.json()["detail"]
+
+        resp = self.client.get("/api/messaging/platforms/email/auto-reply-policy")
+        fields = {field["key"]: field for field in resp.json()["fields"]}
+        assert fields["force_reply_keywords"]["current_value"] == (
+            "Invoice + Overdue;urgent"
+        )
+        assert fields["no_reply_keywords"]["current_value"] == ""
+
+    def test_email_reply_policy_rejects_conflicting_set_and_clear(self):
+        rejected = self.client.put(
+            "/api/messaging/platforms/email/auto-reply-policy",
+            json={
+                "values": {"force_reply_keywords": "urgent"},
+                "clear": ["force_reply_keywords"],
+            },
+        )
+
+        assert rejected.status_code == 400
+        assert "cannot be set and cleared" in rejected.json()["detail"]
+
+    def test_email_reply_policy_is_profile_scoped(self, monkeypatch):
+        from hermes_cli import profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+        created = self.client.post("/api/profiles", json={"name": "email-policy"})
+        assert created.status_code == 200
+
+        default_saved = self.client.put(
+            "/api/messaging/platforms/email/auto-reply-policy",
+            json={"values": {"auto_reply_promotions": True}},
+        )
+        profile_saved = self.client.put(
+            "/api/messaging/platforms/email/auto-reply-policy?profile=email-policy",
+            json={"values": {"auto_reply_newsletters": True}},
+        )
+
+        assert default_saved.status_code == 200
+        assert profile_saved.status_code == 200
+        default_policy = self.client.get(
+            "/api/messaging/platforms/email/auto-reply-policy"
+        ).json()["policy"]
+        profile_policy = self.client.get(
+            "/api/messaging/platforms/email/auto-reply-policy?profile=email-policy"
+        ).json()["policy"]
+        assert default_policy["auto_reply_promotions"] is True
+        assert default_policy["auto_reply_newsletters"] is False
+        assert profile_policy["auto_reply_promotions"] is False
+        assert profile_policy["auto_reply_newsletters"] is True
+
+    def test_email_reply_policy_preserves_other_email_config_and_never_writes_env(self):
+        from hermes_cli.config import load_config, load_env, save_config
+
+        config = load_config()
+        config.setdefault("platforms", {})["email"] = {
+            "skip_attachments": True,
+            "extra": {"force_reply_keywords": "existing"},
+        }
+        save_config(config)
+
+        saved = self.client.put(
+            "/api/messaging/platforms/email/auto-reply-policy",
+            json={
+                "values": {"auto_reply_promotions": True},
+                "clear": ["force_reply_keywords"],
+            },
+        )
+
+        assert saved.status_code == 200
+        email = load_config()["platforms"]["email"]
+        assert email["skip_attachments"] is True
+        assert email["extra"]["auto_reply_promotions"] is True
+        assert "force_reply_keywords" not in email["extra"]
+        assert "auto_reply_promotions" not in load_env()
+
+    def test_email_reply_policy_reaches_gateway_adapter(self):
+        from gateway.config import Platform, load_gateway_config
+        from plugins.platforms.email.adapter import EmailAdapter, _should_skip_email
+
+        skip_patterns = "^out of office$\n^ref-[0-9]{1,3}$"
+
+        saved = self.client.put(
+            "/api/messaging/platforms/email/auto-reply-policy",
+            json={
+                "values": {
+                    "auto_reply_promotions": True,
+                    "force_reply_keywords": "紧急+发票",
+                    "skip_patterns": skip_patterns,
+                }
+            },
+        )
+        assert saved.status_code == 200
+
+        gateway_config = load_gateway_config()
+        adapter = EmailAdapter(gateway_config.platforms[Platform.EMAIL])
+
+        assert adapter._category_auto_reply["promotions"] is True
+        assert adapter._force_reply_keywords == "紧急+发票"
+        assert adapter._custom_skip_patterns == skip_patterns
+        assert _should_skip_email(
+            "ref-123",
+            "",
+            category_auto_reply=adapter._category_auto_reply,
+            custom_skip_patterns=adapter._custom_skip_patterns,
+        )
+    def test_generic_messaging_update_rejects_email_policy_fields(self):
+        rejected = self.client.put(
+            "/api/messaging/platforms/email",
+            json={"env": {"auto_reply_promotions": "true"}},
+        )
+
+        assert rejected.status_code == 400
+        assert "not configurable" in rejected.json()["detail"]
 
 
 
@@ -3639,5 +3859,3 @@ class TestDashboardComponentHealth:
         assert self.ws.DASHBOARD_HEALTH.selftest_status == "failing"
         assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
         assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
-
-

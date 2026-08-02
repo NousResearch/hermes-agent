@@ -93,7 +93,7 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 
 On startup, the adapter:
 1. Tests IMAP and SMTP connections
-2. Marks all existing inbox messages as "seen" (only processes new emails)
+2. Seeds its in-memory UID cache from messages already marked as seen
 3. Starts polling for new messages
 
 ---
@@ -112,6 +112,38 @@ The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval 
 - **HTML-only emails** have tags stripped for plain text extraction
 - **Self-messages** are filtered out to prevent reply loops
 - **Automated/noreply senders** are silently ignored — `noreply@`, `mailer-daemon@`, `bounce@`, `no-reply@`, and emails with `Auto-Submitted`, `Precedence: bulk`, or `List-Unsubscribe` headers
+
+### Auto-reply Policy
+
+Email uses fast local rules before invoking the model:
+
+1. A matching no-reply keyword group suppresses the message.
+2. A matching must-reply keyword group forces it through and requires a reply.
+3. Promotions, newsletters, transaction notices, security notices, social notifications, calendar notices, and recurring reports are detected with heuristic regular expressions and suppressed unless their category switch is enabled.
+4. Unmatched messages reach the model. Categories whose switches are off are included as operator policy context so the model can catch semantic category matches missed by heuristic regexes. User-authored keyword groups remain local and are not added to the model prompt. The model must return a structured `need_response` decision; false or malformed strict-mode output is blocked before SMTP.
+
+Category detection is approximate. Disabling a category does not guarantee that its messages will never reach the model: a regex match is suppressed before the model, but wording outside the built-in patterns can be missed. Treat category switches as a low-cost pre-filter, not a complete semantic classifier.
+
+Configure these rules from **Dashboard → Channels → Email → Configure**, or in `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    extra:
+      # Required when EMAIL_ALLOWED_USERS or GATEWAY_ALLOWED_USERS is set
+      # and sender authentication remains enabled (the default).
+      authserv_id: mx.your-mail-host.example
+      # Set false only when your receiving server does not stamp
+      # Authentication-Results and you accept that From: can be spoofed.
+      require_authenticated_sender: true
+      auto_reply_promotions: false
+      auto_reply_newsletters: false
+      force_reply_keywords: urgent;invoice+overdue
+      no_reply_keywords: for your information;do+not+reply
+      require_structured_response: true
+```
+
+No-reply rules win if the same message matches both lists. Matching is case-insensitive and checks the combined subject and body.
 
 ### Sending Replies
 

@@ -201,7 +201,10 @@ export interface CustomEndpointValidationResponse {
 
 export interface MessagingEnvVarInfo {
   advanced: boolean
+  current_value?: string
+  default_value?: string
   description: string
+  input_type?: 'boolean' | 'password' | 'text' | 'textarea'
   is_password: boolean
   is_set: boolean
   key: string
@@ -257,6 +260,30 @@ export interface MessagingPlatformUpdate {
   clear_env?: string[]
   enabled?: boolean
   env?: Record<string, string>
+}
+
+export interface EmailAutoReplyPolicy {
+  auto_reply_calendar: boolean
+  auto_reply_newsletters: boolean
+  auto_reply_promotions: boolean
+  auto_reply_reports: boolean
+  auto_reply_security: boolean
+  auto_reply_social: boolean
+  auto_reply_transactions: boolean
+  force_reply_keywords: string
+  no_reply_keywords: string
+  skip_patterns: string
+  require_structured_response: boolean
+}
+
+export interface EmailAutoReplyPolicyUpdate {
+  clear?: string[]
+  values?: Partial<EmailAutoReplyPolicy>
+}
+
+export interface EmailAutoReplyPolicyResponse {
+  fields: MessagingEnvVarInfo[]
+  policy: EmailAutoReplyPolicy
 }
 
 export interface MessagingPlatformTestResponse {

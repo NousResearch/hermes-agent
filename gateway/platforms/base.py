@@ -45,6 +45,9 @@ _AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+# Reserved for adapter-local state that must follow every final artifact of
+# one inbound event. Adapters must never expose this value to remote APIs.
+_INBOUND_EVENT_ID_METADATA_KEY = "_hermes_inbound_event_id"
 
 
 def _platform_name(platform) -> str:
@@ -2230,6 +2233,10 @@ class SendResult:
     # ``None`` (unset / not classified).  Producers should set this via
     # :func:`classify_send_error`.
     error_kind: Optional[str] = None
+    # A successful text send may deliberately represent a policy decision not
+    # to reply. The final-delivery pipeline must then skip all artifacts from
+    # the same model turn instead of sending attachments without their text.
+    suppress_follow_up_delivery: bool = False
 
 
 # Machine-readable send-failure categories.  Kept platform-neutral so every
@@ -5924,6 +5931,10 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _inbound_event_id = str(getattr(event, "message_id", "") or "")
+                if self.platform == Platform.EMAIL and _inbound_event_id:
+                    _final_thread_metadata[_INBOUND_EVENT_ID_METADATA_KEY] = _inbound_event_id
+                _suppress_follow_up_delivery = False
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -6070,6 +6081,9 @@ class BasePlatformAdapter(ABC):
                         metadata=_final_thread_metadata,
                     )
                     _record_delivery(result)
+                    _suppress_follow_up_delivery = bool(
+                        getattr(result, "suppress_follow_up_delivery", False)
+                    )
                     if _obligation_id is not None:
                         try:
                             from gateway.delivery_ledger import (
@@ -6105,6 +6119,17 @@ class BasePlatformAdapter(ABC):
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
+
+                if _suppress_follow_up_delivery:
+                    logger.info(
+                        "[%s] Skipping %d artifact(s) after adapter policy "
+                        "suppressed the text reply",
+                        self.name,
+                        len(images) + len(media_files) + len(local_files),
+                    )
+                    images = []
+                    media_files = []
+                    local_files = []
 
                 # Send extracted images as native attachments
                 if images:

@@ -13,17 +13,19 @@ import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import {
   approvePairing,
+  getEmailAutoReplyPolicy,
   getMessagingPlatforms,
   getPairing,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
   type PairingUser,
   revokePairing,
+  updateEmailAutoReplyPolicy,
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
-import { ExternalLink, Save, Trash2 } from '@/lib/icons'
+import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
@@ -75,9 +77,49 @@ function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
 const trimEdits = (edits: Record<string, string>): Record<string, string> =>
   Object.fromEntries(
     Object.entries(edits)
-      .map(([k, v]) => [k, v.trim()])
+      .map(([k, v]) => [
+        k,
+        k === 'force_reply_keywords' || k === 'no_reply_keywords'
+          ? v
+              .split(/\r?\n/)
+              .map(group => group.trim())
+              .filter(Boolean)
+              .join(';')
+          : v.trim()
+      ])
       .filter(([, v]) => v)
   )
+
+function normalizedKeywordGroups(raw: string): Map<string, string> {
+  const groups = new Map<string, string>()
+
+  for (const rawGroup of raw.split(/[\n;]+/)) {
+    const terms = rawGroup
+      .split(/\s*(?:\+|&&)\s*/)
+      .map(term => term.trim().toLocaleLowerCase())
+      .filter(Boolean)
+      .sort()
+
+    if (terms.length > 0) {
+      groups.set(terms.join('\u0000'), terms.join('+'))
+    }
+  }
+
+  return groups
+}
+
+function replyKeywordConflict(forceReply: string, neverReply: string): string | null {
+  const forceGroups = normalizedKeywordGroups(forceReply)
+  const denyGroups = normalizedKeywordGroups(neverReply)
+
+  for (const [key, label] of forceGroups) {
+    if (denyGroups.has(key)) {
+      return label
+    }
+  }
+
+  return null
+}
 
 /** Stable row identity: a user id is only unique within its platform. */
 const pairingKey = (user: PairingUser) => `${user.platform}:${user.user_id}`
@@ -110,6 +152,29 @@ const FIELD_COPY: Record<string, { advanced?: boolean }> = {
   WHATSAPP_ENABLED: { advanced: true },
   WHATSAPP_MODE: { advanced: true }
 }
+
+const EMAIL_CATEGORY_FIELDS = [
+  ['auto_reply_promotions', 'promotions'],
+  ['auto_reply_newsletters', 'newsletters'],
+  ['auto_reply_transactions', 'transactions'],
+  ['auto_reply_security', 'security'],
+  ['auto_reply_social', 'social'],
+  ['auto_reply_calendar', 'calendar'],
+  ['auto_reply_reports', 'reports']
+] as const
+
+const EMAIL_POLICY_KEYS = new Set([
+  ...EMAIL_CATEGORY_FIELDS.map(([key]) => key),
+  'force_reply_keywords',
+  'no_reply_keywords',
+  'skip_patterns',
+  'require_structured_response'
+])
+
+const EMAIL_POLICY_BOOLEAN_KEYS = new Set([
+  ...EMAIL_CATEGORY_FIELDS.map(([key]) => key),
+  'require_structured_response'
+])
 
 function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   const copy = FIELD_COPY[field.key] || {}
@@ -151,8 +216,22 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       }
 
       try {
-        const result = await getMessagingPlatforms()
-        setPlatforms(result.platforms)
+        const [result, policyResult] = await Promise.all([
+          getMessagingPlatforms(),
+          getEmailAutoReplyPolicy().catch(() => null)
+        ])
+
+        const policyFields = policyResult?.fields ?? []
+        setPlatforms(
+          result.platforms.map(platform =>
+            platform.id !== 'email'
+              ? platform
+              : {
+                  ...platform,
+                  env_vars: [...platform.env_vars, ...policyFields]
+                }
+          )
+        )
       } catch (err) {
         if (!silent) {
           notifyError(err, m.loadFailed)
@@ -302,16 +381,72 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }
 
   async function handleSave(platform: MessagingPlatformInfo) {
-    const env = trimEdits(edits[platform.id] || {})
+    const platformEdits = edits[platform.id] || {}
 
-    if (Object.keys(env).length === 0) {
+    if (platform.id === 'email') {
+      const effectiveValue = (key: string) => {
+        if (Object.hasOwn(platformEdits, key)) {
+          return platformEdits[key]
+        }
+
+        const field = platform.env_vars.find(candidate => candidate.key === key)
+
+        return field?.current_value || field?.default_value || ''
+      }
+
+      const conflict = replyKeywordConflict(
+        effectiveValue('force_reply_keywords'),
+        effectiveValue('no_reply_keywords')
+      )
+
+      if (conflict) {
+        notifyError(new Error(m.emailPolicy.keywordConflictDescription(conflict)), m.emailPolicy.keywordConflictTitle)
+
+        return
+      }
+    }
+
+    const envEdits = Object.fromEntries(
+      Object.entries(platformEdits).filter(([key]) => !EMAIL_POLICY_KEYS.has(key))
+    )
+
+    const env = trimEdits(envEdits)
+
+    const policyEntries =
+      platform.id === 'email'
+        ? Object.entries(platformEdits).filter(([key]) => EMAIL_POLICY_KEYS.has(key))
+        : []
+
+    const policyValues = Object.fromEntries(
+      policyEntries
+        .filter(([, value]) => value.trim())
+        .map(([key, value]) => [
+          key,
+          EMAIL_POLICY_BOOLEAN_KEYS.has(key)
+            ? value.trim().toLowerCase() === 'true'
+            : trimEdits({ [key]: value })[key]
+        ])
+    )
+
+    const policyClear = policyEntries
+      .filter(([, value]) => !value.trim())
+      .map(([key]) => key)
+
+    if (Object.keys(env).length === 0 && Object.keys(policyValues).length === 0 && policyClear.length === 0) {
       return
     }
 
     setSaving(`env:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { env })
+      await Promise.all([
+        Object.keys(env).length > 0
+          ? updateMessagingPlatform(platform.id, { env })
+          : Promise.resolve(),
+        Object.keys(policyValues).length > 0 || policyClear.length > 0
+          ? updateEmailAutoReplyPolicy({ values: policyValues, clear: policyClear })
+          : Promise.resolve()
+      ])
       setEdits(current => ({ ...current, [platform.id]: {} }))
       await refreshPlatforms()
       notify({
@@ -331,7 +466,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`clear:${key}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { clear_env: [key] })
+      if (platform.id === 'email' && EMAIL_POLICY_KEYS.has(key)) {
+        await updateEmailAutoReplyPolicy({ clear: [key] })
+      } else {
+        await updateMessagingPlatform(platform.id, { clear_env: [key] })
+      }
+
       setEdits(current => ({
         ...current,
         [platform.id]: {
@@ -554,9 +694,12 @@ function PlatformDetail({
   const m = t.messaging
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const requiredFields = platform.env_vars.filter(field => field.required)
-  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
-  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
+  const connectionFields =
+    platform.id === 'email' ? platform.env_vars.filter(field => !EMAIL_POLICY_KEYS.has(field.key)) : platform.env_vars
+
+  const requiredFields = connectionFields.filter(field => field.required)
+  const optionalFields = connectionFields.filter(field => !field.required && !fieldCopy(field, m).advanced)
+  const advancedFields = connectionFields.filter(field => !field.required && fieldCopy(field, m).advanced)
   const hiddenCount = advancedFields.length
 
   return (
@@ -738,7 +881,236 @@ function PlatformDetail({
           )}
         </section>
       )}
+
+      {platform.id === 'email' && (
+        <EmailReplyPolicy
+          edits={edits}
+          fields={platform.env_vars}
+          onClear={onClear}
+          onEdit={onEdit}
+          saving={saving}
+        />
+      )}
     </>
+  )
+}
+
+function EmailReplyPolicy({
+  edits,
+  fields,
+  onClear,
+  onEdit,
+  saving
+}: {
+  edits: Record<string, string>
+  fields: MessagingEnvVarInfo[]
+  onClear: (key: string) => void
+  onEdit: (key: string, value: string) => void
+  saving: string | null
+}) {
+  const { t } = useI18n()
+  const copy = t.messaging.emailPolicy
+  const fieldMap = new Map(fields.map(field => [field.key, field]))
+
+  const valueFor = (field: MessagingEnvVarInfo) =>
+    Object.hasOwn(edits, field.key) ? edits[field.key] : field.current_value || field.default_value || ''
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-border/80 bg-muted/15">
+      <div className="border-b border-border/70 bg-muted/25 px-4 py-3">
+        <SectionTitle>{copy.title}</SectionTitle>
+        <p className="mt-1 max-w-2xl text-xs leading-5 text-(--ui-text-tertiary)">{copy.description}</p>
+      </div>
+
+      <div className="space-y-5 p-4">
+        <div>
+          <h5 className="text-xs font-medium text-foreground">{copy.categoriesTitle}</h5>
+          <div
+            className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-800 dark:text-amber-200"
+            role="note"
+          >
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            <p>{copy.categoriesDescription}</p>
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {EMAIL_CATEGORY_FIELDS.map(([key, labelKey]) => {
+              const field = fieldMap.get(key)
+
+              if (!field) {
+                return null
+              }
+
+              const checked = valueFor(field).toLowerCase() === 'true'
+
+              return (
+                <label
+                  className="flex min-h-14 cursor-pointer items-center justify-between gap-3 rounded-md border border-border/70 bg-background/50 px-3 py-2 transition-colors hover:border-border"
+                  htmlFor={`messaging-policy-${key}`}
+                  key={key}
+                >
+                  <span>
+                    <span className="block text-xs font-medium text-foreground">{copy[labelKey]}</span>
+                    <span className="mt-0.5 block text-[0.68rem] text-(--ui-text-tertiary)">
+                      {copy.allowCategory}
+                    </span>
+                  </span>
+                  <Switch
+                    checked={checked}
+                    id={`messaging-policy-${key}`}
+                    onCheckedChange={next => onEdit(key, next ? 'true' : 'false')}
+                    size="xs"
+                  />
+                </label>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="border-t border-border/70 pt-5">
+          <h5 className="text-xs font-medium text-foreground">{copy.keywordsTitle}</h5>
+          <p className="mt-1 text-xs leading-5 text-(--ui-text-tertiary)">{copy.keywordsDescription}</p>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            {[
+              {
+                key: 'no_reply_keywords',
+                title: copy.neverReply,
+                description: copy.neverReplyDescription,
+                tone: 'border-destructive/30 bg-destructive/5'
+              },
+              {
+                key: 'force_reply_keywords',
+                title: copy.mustReply,
+                description: copy.mustReplyDescription,
+                tone: 'border-primary/30 bg-primary/5'
+              }
+            ].map(rule => {
+              const field = fieldMap.get(rule.key)
+
+              if (!field) {
+                return null
+              }
+
+              const value = valueFor(field).replace(/;/g, '\n')
+
+              return (
+                <div className={cn('rounded-md border p-3', rule.tone)} key={rule.key}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <label className="text-xs font-medium text-foreground" htmlFor={`messaging-policy-${rule.key}`}>
+                        {rule.title}
+                      </label>
+                      <p className="mt-1 text-[0.68rem] leading-4 text-(--ui-text-tertiary)">
+                        {rule.description}
+                      </p>
+                    </div>
+                    {field.is_set && (
+                      <Button
+                        aria-label={copy.clearKeywords}
+                        disabled={saving === `clear:${rule.key}`}
+                        onClick={() => onClear(rule.key)}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    )}
+                  </div>
+                  <textarea
+                    className="mt-3 min-h-28 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-xs leading-5 outline-none transition-shadow focus:border-primary focus:ring-2 focus:ring-primary/15"
+                    id={`messaging-policy-${rule.key}`}
+                    onChange={event => onEdit(rule.key, event.target.value)}
+                    placeholder={copy.keywordPlaceholder}
+                    value={value}
+                  />
+                  <p className="mt-1.5 text-[0.66rem] leading-4 text-(--ui-text-tertiary)">{copy.keywordSyntax}</p>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        {(() => {
+          const field = fieldMap.get('skip_patterns')
+
+          if (!field) {
+            return null
+          }
+
+          return (
+            <div className="border-t border-border/70 pt-5">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <label className="text-xs font-medium text-foreground" htmlFor={`messaging-policy-${field.key}`}>
+                    {copy.skipPatternsTitle}
+                  </label>
+                  <p className="mt-1 text-[0.68rem] leading-4 text-(--ui-text-tertiary)">
+                    {copy.skipPatternsDescription}
+                  </p>
+                </div>
+                {field.is_set && (
+                  <Button
+                    aria-label={copy.clearSkipPatterns}
+                    disabled={saving === `clear:${field.key}`}
+                    onClick={() => onClear(field.key)}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                )}
+              </div>
+              <textarea
+                className="mt-3 min-h-28 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-xs leading-5 outline-none transition-shadow focus:border-primary focus:ring-2 focus:ring-primary/15"
+                id={`messaging-policy-${field.key}`}
+                onChange={event => onEdit(field.key, event.target.value)}
+                placeholder={copy.skipPatternsPlaceholder}
+                value={valueFor(field)}
+              />
+              <p className="mt-1.5 text-[0.66rem] leading-4 text-(--ui-text-tertiary)">
+                {copy.skipPatternsSyntax}
+              </p>
+            </div>
+          )
+        })()}
+
+        {(() => {
+          const field = fieldMap.get('require_structured_response')
+
+          if (!field) {
+            return null
+          }
+
+          const checked = valueFor(field).toLowerCase() === 'true'
+
+          return (
+            <div className="border-t border-border/70 pt-5">
+              <h5 className="text-xs font-medium text-foreground">{copy.decisionTitle}</h5>
+              <label
+                className="mt-3 flex cursor-pointer items-start justify-between gap-4 rounded-md border border-border/70 bg-background/50 px-3 py-3"
+                htmlFor={`messaging-policy-${field.key}`}
+              >
+                <span>
+                  <span className="block text-xs font-medium text-foreground">{copy.strictDecision}</span>
+                  <span className="mt-1 block text-[0.68rem] leading-4 text-(--ui-text-tertiary)">
+                    {copy.strictDecisionDescription}
+                  </span>
+                </span>
+                <Switch
+                  checked={checked}
+                  id={`messaging-policy-${field.key}`}
+                  onCheckedChange={next => onEdit(field.key, next ? 'true' : 'false')}
+                  size="xs"
+                />
+              </label>
+              <div className="mt-3 border-l-2 border-primary/60 bg-primary/5 px-3 py-2 text-xs leading-5">
+                <span className="font-medium text-foreground">{copy.priorityLabel}: </span>
+                <span className="text-(--ui-text-tertiary)">{copy.priorityText}</span>
+              </div>
+            </div>
+          )
+        })()}
+      </div>
+    </section>
   )
 }
 

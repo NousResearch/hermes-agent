@@ -822,7 +822,12 @@ def _normalize_openviking_url(url: str) -> str:
             )
             return _DEFAULT_ENDPOINT
     except Exception as exc:
-        logger.debug("OpenViking always-blocked endpoint check skipped: %s", exc)
+        logger.warning(
+            "OpenViking always-blocked endpoint check failed; "
+            "falling back to the default local endpoint: %s",
+            exc,
+        )
+        return _DEFAULT_ENDPOINT
 
     return candidate
 
@@ -950,8 +955,9 @@ def _resolve_connection_settings(provider_config: Optional[dict] = None) -> dict
     user_env = _env_value("OPENVIKING_USER")
     agent_env = _env_value("OPENVIKING_AGENT")
 
+    endpoint = _first_nonempty(endpoint_env, ovcli_values.get("endpoint"), default=_DEFAULT_ENDPOINT)
     return {
-        "endpoint": _first_nonempty(endpoint_env, ovcli_values.get("endpoint"), default=_DEFAULT_ENDPOINT),
+        "endpoint": _normalize_openviking_url(endpoint),
         "api_key": api_key_env if api_key_env is not None else ovcli_values.get("api_key", ""),
         "account": account_env if account_env is not None else ovcli_values.get("account", ""),
         "user": user_env if user_env is not None else ovcli_values.get("user", ""),

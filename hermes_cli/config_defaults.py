@@ -2535,6 +2535,16 @@ DEFAULT_CONFIG = {
     #         table_formatting skill instead of emitting a Markdown table.
     "platform_hints": {},
 
+    # Plugin system settings. ``enabled`` / ``disabled`` are written by
+    # ``hermes plugins enable|disable`` and intentionally omitted here so an
+    # empty default does not clobber a user's allow-list on merge.
+    "plugins": {
+        # Wall-clock cap (seconds) for a single in-process Python plugin hook
+        # callback. Shell hooks keep their own per-entry ``timeout``. Set to 0
+        # to disable the cap (sync call on the agent thread). Capped at 600.
+        "hook_callback_timeout": 30,
+    },
+
     # Shell-script hooks — declarative bridge that invokes shell scripts
     # on plugin-hook events (pre_tool_call, post_tool_call, pre_llm_call,
     # subagent_stop, etc.).  Each entry maps an event name to a list of

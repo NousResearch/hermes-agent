@@ -2749,8 +2749,10 @@ def _(rid, params: dict) -> dict:
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-    if should_interrupt and hasattr(session["agent"], "interrupt"):
-        session["agent"].interrupt()
+    if should_interrupt:
+        from agent.interrupt_compat import request_hard_interrupt
+
+        request_hard_interrupt(session["agent"])
     if not run_thread_alive:
         with session["history_lock"]:
             if session.get("running"):

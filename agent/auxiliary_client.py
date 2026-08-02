@@ -228,30 +228,134 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
 # part-way, compression falls back to a static "summary unavailable" marker
 # and the real handoff is lost (#23975). A thread-local flag lets such a
 # task mark its in-flight LLM call as interrupt-protected; the Codex
-# Responses stream's cancellation check honors it. TIMEOUTS still fire
+# Responses stream's cancellation check honors it. An explicit host cancel
+# (CLI Ctrl+C or /stop) may install a cancel check that overrides protection;
+# ordinary incoming-message interrupts remain protected. TIMEOUTS still fire
 # (a hung call must die), and all OTHER aux tasks (vision, web_extract,
 # title_generation, …) remain freely interruptible.
 _aux_interrupt_protection = threading.local()
+
+
+class AuxiliaryExplicitCancellation(BaseException):
+    """Frozen signal that an auxiliary attempt was explicitly hard-cancelled.
+
+    This deliberately follows ``asyncio.CancelledError`` and inherits directly
+    from ``BaseException``: provider retry/fallback code catches ``Exception``
+    broadly and must never reinterpret an explicit host stop as a transport
+    failure. ``cause`` is immutable class data so downstream compression code
+    does not re-query a mutable host Event after the transport has unwound.
+    """
+
+    cause = "explicit_host_cancel"
+
+    def __init__(self) -> None:
+        super().__init__("auxiliary request explicitly cancelled by host")
 
 
 def _aux_interrupt_protected() -> bool:
     return bool(getattr(_aux_interrupt_protection, "active", False))
 
 
+def _aux_interrupt_cancel_requested() -> bool:
+    """Return whether an explicit host cancel overrides aux protection."""
+    event = getattr(_aux_interrupt_protection, "cancel_event", None)
+    if event is not None:
+        try:
+            return bool(event.is_set())
+        except Exception:
+            logger.debug("aux interrupt cancel event check failed", exc_info=True)
+            return False
+    check = getattr(_aux_interrupt_protection, "cancel_check", None)
+    if not callable(check):
+        return False
+    try:
+        return bool(check())
+    except Exception:
+        logger.debug("aux interrupt cancel check failed", exc_info=True)
+        return False
+
+
 @contextlib.contextmanager
-def aux_interrupt_protection(active: bool = True):
+def aux_interrupt_protection(
+    active: bool = True,
+    cancel_check=None,
+    cancel_event=None,
+):
     """Mark the current thread's auxiliary LLM call as interrupt-protected.
 
     Used by atomic aux tasks (compression) so a mid-flight gateway interrupt
     doesn't abort the call and trigger a degraded fallback. Re-entrant-safe:
-    restores the previous value on exit.
+    restores the previous value on exit. ``cancel_check`` lets the host retain
+    an explicit hard-cancel path; ``cancel_event`` is preferred when the host
+    already owns an Event. Nested protection scopes inherit both values.
     """
     prev = getattr(_aux_interrupt_protection, "active", False)
+    prev_cancel_check = getattr(_aux_interrupt_protection, "cancel_check", None)
+    prev_cancel_event = getattr(_aux_interrupt_protection, "cancel_event", None)
     _aux_interrupt_protection.active = active
+    if callable(cancel_check):
+        _aux_interrupt_protection.cancel_check = cancel_check
+    if cancel_event is not None and callable(getattr(cancel_event, "is_set", None)):
+        _aux_interrupt_protection.cancel_event = cancel_event
     try:
         yield
     finally:
         _aux_interrupt_protection.active = prev
+        _aux_interrupt_protection.cancel_check = prev_cancel_check
+        _aux_interrupt_protection.cancel_event = prev_cancel_event
+
+
+def _capture_aux_cancel_check() -> Optional[Callable[[], Any]]:
+    """Capture the current explicit-cancel source on the owning request thread."""
+    event = getattr(_aux_interrupt_protection, "cancel_event", None)
+    is_set = getattr(event, "is_set", None)
+    if callable(is_set):
+        return is_set
+    check = getattr(_aux_interrupt_protection, "cancel_check", None)
+    if callable(check):
+        # Preserve callable identity so attempt-local decision objects retain
+        # methods such as begin_timeout_cleanup() when captured by adapters.
+        return check
+    return None
+
+
+def _captured_aux_cancel_requested(cancel_check: Callable[[], Any]) -> bool:
+    """Read a request-thread cancellation source without leaking its failures."""
+    try:
+        return bool(cancel_check())
+    except Exception:
+        logger.debug("captured aux cancel check failed", exc_info=True)
+        return False
+
+
+class _AuxiliaryCancellationDecision:
+    """Atomically choose explicit cancellation or provider timeout per attempt."""
+
+    def __init__(self, source_cancel_check: Callable[[], Any]) -> None:
+        self._source_cancel_check = source_cancel_check
+        self._lock = threading.Lock()
+        self._outcome = "active"
+
+    def __call__(self) -> bool:
+        with self._lock:
+            if self._outcome == "cancelled":
+                return True
+            if self._outcome == "timed_out":
+                return False
+            if _captured_aux_cancel_requested(self._source_cancel_check):
+                self._outcome = "cancelled"
+                return True
+            return False
+
+    def begin_timeout_cleanup(self) -> bool:
+        """Return whether timeout won and destructive cleanup is permitted."""
+        with self._lock:
+            if self._outcome == "active":
+                if _captured_aux_cancel_requested(self._source_cancel_check):
+                    self._outcome = "cancelled"
+                else:
+                    self._outcome = "timed_out"
+            return self._outcome == "timed_out"
 
 
 # ── Forward-progress hook for streamed auxiliary calls ───────────────────
@@ -296,6 +400,75 @@ def aux_progress_hook(hook):
         yield
     finally:
         _aux_progress.hook = prev
+
+
+def _run_protected_sync_provider_call(
+    callback: Callable[[dict[str, Any]], Any],
+    kwargs: dict[str, Any],
+) -> Any:
+    """Run one protected provider callback in an attempt-isolated daemon.
+
+    A hard cancel must release the compression-owning thread promptly, but
+    auxiliary clients are process-shared and cannot safely be closed or evicted
+    to wake one request.  Only protected calls with a captured hard-cancel source
+    use this seam.  Their provider callback (including stream aggregation) runs
+    in a daemon worker while the owner polls cancellation.  On cancel the owner
+    unwinds immediately; the worker is left to finish under the provider timeout
+    already present in ``kwargs``.  It owns no transcript or compressor commit
+    state and never holds the session lock.
+
+    Ordinary auxiliary calls, and protected calls without a cancellation source,
+    retain the historical direct synchronous path with no extra thread.
+    """
+    source_cancel_check = _capture_aux_cancel_check()
+    if not _aux_interrupt_protected() or not callable(source_cancel_check):
+        return callback(kwargs)
+
+    # Freeze one linearized outcome for this isolated attempt. The host Event is
+    # reused and cleared on a later turn, while the Codex timeout Timer may race
+    # owner polling. Both paths must decide under the same attempt-local lock.
+    cancel_check = _AuxiliaryCancellationDecision(source_cancel_check)
+
+    if cancel_check():
+        raise AuxiliaryExplicitCancellation()
+
+    progress_hook = getattr(_aux_progress, "hook", None)
+    provider_context = contextvars.copy_context()
+    done = threading.Event()
+    outcome: dict[str, Any] = {}
+
+    def _provider_worker() -> None:
+        try:
+            with aux_progress_hook(progress_hook), aux_interrupt_protection(
+                cancel_check=cancel_check
+            ):
+                outcome["result"] = callback(kwargs)
+        except BaseException as exc:
+            outcome["exception"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(
+        target=provider_context.run,
+        args=(_provider_worker,),
+        name="hermes-protected-aux-provider",
+        daemon=True,
+    ).start()
+
+    while True:
+        # Cancellation is checked before and after every completion wait so it
+        # wins whenever result publication and the host Event become visible in
+        # the same polling interval.
+        if _captured_aux_cancel_requested(cancel_check):
+            raise AuxiliaryExplicitCancellation()
+        if not done.wait(0.02):
+            continue
+        if _captured_aux_cancel_requested(cancel_check):
+            raise AuxiliaryExplicitCancellation()
+        exception = outcome.get("exception")
+        if exception is not None:
+            raise exception
+        return outcome.get("result")
 
 
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
@@ -1155,12 +1328,53 @@ class _CodexCompletionsAdapter:
         deadline = time.monotonic() + float(total_timeout) if total_timeout else None
         timed_out = threading.Event()
         timeout_timer: Optional[threading.Timer] = None
+        # A protected provider call may outlive its owning compression attempt:
+        # the owner returns promptly on hard cancellation while this adapter is
+        # still blocked in the SDK stream on its isolated worker. Timer threads
+        # do not inherit this worker's thread-local protection state, so freeze
+        # the hard-cancel source here, before creating the timer.
+        protected_cancel_check = (
+            _capture_aux_cancel_check() if _aux_interrupt_protected() else None
+        )
+        attempt_stream_lock = threading.Lock()
+        attempt_stream: List[Any] = []
 
         def _timeout_message() -> str:
             return f"Codex auxiliary Responses stream exceeded {float(total_timeout):.1f}s total timeout"
 
         def _close_client_on_timeout() -> None:
+            begin_timeout_cleanup = getattr(
+                protected_cancel_check, "begin_timeout_cleanup", None
+            )
+            if callable(begin_timeout_cleanup):
+                timeout_won = bool(begin_timeout_cleanup())
+            else:
+                timeout_won = not (
+                    callable(protected_cancel_check)
+                    and _captured_aux_cancel_requested(protected_cancel_check)
+                )
+            # Publish transport timeout only after the attempt-local decision is
+            # fixed, so owner polling cannot observe completion in between.
             timed_out.set()
+            if not timeout_won:
+                # The request owner already hard-cancelled this attempt. The
+                # OpenAI client is process-shared, so closing/evicting it here
+                # would disrupt unrelated sessions. Wake only this attempt's
+                # event stream when responses.create() returned one in time;
+                # otherwise rely on the bounded SDK/provider timeout.
+                with attempt_stream_lock:
+                    stream = attempt_stream[0] if attempt_stream else None
+                close_stream = getattr(stream, "close", None)
+                if callable(close_stream):
+                    try:
+                        close_stream()
+                    except Exception:
+                        logger.debug(
+                            "Codex auxiliary: cancelled attempt stream close "
+                            "during timeout failed",
+                            exc_info=True,
+                        )
+                return
             close = getattr(self._client, "close", None)
             if callable(close):
                 try:
@@ -1187,11 +1401,14 @@ class _CodexCompletionsAdapter:
                 from tools.interrupt import is_interrupted
                 # Honor interrupt protection for atomic aux tasks (compression):
                 # a mid-flight gateway interrupt must NOT abort the summary call
-                # and trigger a degraded fallback marker (#23975). Timeouts above
-                # still fire; other aux tasks remain interruptible.
+                # and trigger a degraded fallback marker (#23975). Explicit host
+                # cancellation has its own frozen exception; timeouts above still
+                # fire and other aux tasks remain interruptible.
+                if _aux_interrupt_cancel_requested():
+                    raise AuxiliaryExplicitCancellation()
                 if is_interrupted() and not _aux_interrupt_protected():
                     raise InterruptedError("Codex auxiliary Responses stream interrupted")
-            except InterruptedError:
+            except (InterruptedError, AuxiliaryExplicitCancellation):
                 raise
             except Exception:
                 # Interrupt state is a best-effort UX hook; never make it a
@@ -1230,6 +1447,25 @@ class _CodexCompletionsAdapter:
                 _check_cancelled()
 
             event_stream = self._client.responses.create(**stream_kwargs)
+            with attempt_stream_lock:
+                attempt_stream.append(event_stream)
+            # The timer can fire while responses.create() is blocked. If the
+            # cancelled attempt had no stream to close at that instant, close it
+            # now that it is safely attempt-owned; never touch the shared client.
+            if (
+                timed_out.is_set()
+                and callable(protected_cancel_check)
+                and _captured_aux_cancel_requested(protected_cancel_check)
+            ):
+                close_fn = getattr(event_stream, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        logger.debug(
+                            "Codex auxiliary: late cancelled attempt stream close failed",
+                            exc_info=True,
+                        )
             try:
                 # Some Codex-compatible hosts accept ``stream=True`` but return
                 # a completed Responses object instead of an SSE iterator. Do
@@ -1251,6 +1487,8 @@ class _CodexCompletionsAdapter:
                         close_fn()
                     except Exception:
                         pass
+                with attempt_stream_lock:
+                    attempt_stream.clear()
 
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
@@ -2672,14 +2910,17 @@ def _relay_sync_completion(
 ) -> Any:
     callback = create or (lambda request: client.chat.completions.create(**request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    # Protected compression calls isolate only the provider callback and stream
+    # aggregation.  The owning thread remains free to unwind its lease/DB
+    # transaction on hard cancel without touching the process-shared client.
     if route is None:
-        return callback(kwargs)
+        return _run_protected_sync_provider_call(callback, kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
 
     return relay_llm.execute_current(
         kwargs,
-        callback,
+        lambda request: _run_protected_sync_provider_call(callback, request),
         name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model),
         metadata=metadata,

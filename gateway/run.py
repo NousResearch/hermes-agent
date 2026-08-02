@@ -59,6 +59,7 @@ from agent.conversation_compression import (
 )
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
+from agent.interrupt_compat import request_hard_interrupt
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -9044,7 +9045,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if agent is _AGENT_PENDING_SENTINEL:
                 continue
             try:
-                agent.interrupt(reason)
+                request_hard_interrupt(agent, reason)
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
@@ -22289,7 +22290,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _process_task_id = ""
         _process_baseline = None
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            running_agent.interrupt(interrupt_reason)
+            request_hard_interrupt(running_agent, interrupt_reason)
             _process_task_id = getattr(
                 running_agent, "_gateway_turn_process_task_id", ""
             )
@@ -24529,8 +24530,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 # Interrupt the agent if it's still running so the thread
                 # pool worker is freed.
-                if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
-                    _timed_out_agent.interrupt(_INTERRUPT_REASON_TIMEOUT)
+                if _timed_out_agent:
+                    request_hard_interrupt(_timed_out_agent, _INTERRUPT_REASON_TIMEOUT)
 
                 _timeout_mins = int(_agent_timeout // 60) or 1
 

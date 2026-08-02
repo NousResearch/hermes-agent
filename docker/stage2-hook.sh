@@ -288,8 +288,10 @@ fi
 # Always reset ownership of $HERMES_HOME/cron on every boot for the same
 # docker-exec/root-write reason as profiles/. The cron scheduler state
 # (jobs.json) must stay readable by the unprivileged hermes runtime even
-# after root-context maintenance commands or scheduler writes.
-if [ -d "$HERMES_HOME/cron" ]; then
+# after root-context maintenance commands or scheduler writes. Skip the
+# recursive walk when the tree is already owned correctly (same warm-boot
+# gate as profiles/).
+if [ -d "$HERMES_HOME/cron" ] && tree_has_non_hermes_owner "$HERMES_HOME/cron"; then
     chown_hermes_tree "$HERMES_HOME/cron"
 fi
 
@@ -315,13 +317,14 @@ fi
 # silently leaving the approved user unauthorized (#10270). The targeted
 # data-volume chown above only runs when the top-level $HERMES_HOME is
 # mis-owned, so warm boots skip it — this block makes a container restart
-# self-heal. Tiny directory (a handful of small JSON files), so the cost
-# is negligible.
-if [ -d "$HERMES_HOME/platforms/pairing" ]; then
+# self-heal. Tiny directory (a handful of small JSON files), so even the
+# ownership pre-scan is negligible; gated for consistency with profiles/
+# and cron/.
+if [ -d "$HERMES_HOME/platforms/pairing" ] && tree_has_non_hermes_owner "$HERMES_HOME/platforms/pairing"; then
     chown_hermes_tree "$HERMES_HOME/platforms/pairing"
 fi
 # Legacy location (pre-consolidated layout).
-if [ -d "$HERMES_HOME/pairing" ]; then
+if [ -d "$HERMES_HOME/pairing" ] && tree_has_non_hermes_owner "$HERMES_HOME/pairing"; then
     chown_hermes_tree "$HERMES_HOME/pairing"
 fi
 

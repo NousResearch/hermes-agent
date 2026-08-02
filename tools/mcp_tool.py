@@ -213,6 +213,13 @@ _MCP_MESSAGE_HANDLER_SUPPORTED = False
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
 # HTTP transport path even on older-but-supported SDK versions.
 LATEST_PROTOCOL_VERSION = "2025-03-26"
+# The newest revision reachable through `ClientSession.initialize()`, which is
+# NOT the newest revision the SDK knows about: from 2026-07-28 onward the
+# handshake is replaced by a per-request envelope, so `initialize()` keeps
+# sending `LATEST_HANDSHAKE_VERSION`. Seeding the MCP-Protocol-Version header
+# from LATEST_PROTOCOL_VERSION would advertise a revision the body does not
+# speak. Defaults to the handshake fallback for SDKs predating the split.
+LATEST_HANDSHAKE_VERSION = LATEST_PROTOCOL_VERSION
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -244,6 +251,12 @@ try:
         from mcp.types import LATEST_PROTOCOL_VERSION
     except ImportError:
         logger.debug("mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
+    try:
+        from mcp.client.session import LATEST_HANDSHAKE_VERSION
+    except ImportError:
+        # Pre-2.x SDKs make no distinction: the newest revision IS the newest
+        # handshake revision, so the header and the body agree either way.
+        LATEST_HANDSHAKE_VERSION = LATEST_PROTOCOL_VERSION
     # SSE transport client (for MCP servers using SSE transport instead of Streamable HTTP)
     try:
         from mcp.client.sse import sse_client
@@ -2878,8 +2891,16 @@ class MCPServerTask:
         # initialize request and reject session-less POSTs otherwise.
         # Seed it as a client-level default, but treat user overrides as
         # case-insensitive so conventional casing is preserved.
+        #
+        # Seeded from the HANDSHAKE version, not the latest one: this transport
+        # connects via `ClientSession.initialize()`, which sends
+        # LATEST_HANDSHAKE_VERSION (2025-11-25) in the body. Advertising
+        # 2026-07-28 in the header routes the request onto the server's
+        # per-request-envelope ladder, which then rejects the legacy body for
+        # missing its required `params._meta` envelope keys. The header has to
+        # agree with what the body actually speaks.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
-            headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
+            headers["mcp-protocol-version"] = LATEST_HANDSHAKE_VERSION
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
         client_cert = _resolve_client_cert(self.name, config)

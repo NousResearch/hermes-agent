@@ -8,7 +8,7 @@
   "type": "module",
   "main": "dist/electron-main.mjs",
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": ">=22.22.0"
   },
   "scripts": {
     "clean": "npm run clean:e2e && npm run clean:renderer && npm run clean:electron",

@@ -1504,7 +1504,7 @@ def kill_gateway_processes(
     return killed
 
 
-def _reap_unsupervised_gateway_orphans() -> bool:
+def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool:
     """Kill no-supervisor gateway orphans the pidfile/runtime record can't see.
 
     On WSL/no-systemd hosts the manual restart fallback runs the gateway
@@ -1517,6 +1517,10 @@ def _reap_unsupervised_gateway_orphans() -> bool:
     running gateway — gating on ``supports_systemd_services()`` keeps the
     orphan-aware scan from killing live management processes there.
 
+    Args:
+        extra_exclude: Additional PIDs to skip (e.g. a PID already killed by
+            the caller so the sweep doesn't send a redundant SIGTERM/SIGKILL).
+
     Returns True if at least one orphan was reaped.
     """
     try:
@@ -1528,6 +1532,8 @@ def _reap_unsupervised_gateway_orphans() -> bool:
     from gateway.status import _pid_exists, write_planned_stop_marker
 
     own = {os.getpid()}
+    if extra_exclude:
+        own |= extra_exclude
     try:
         # find_gateway_pids() includes no-supervisor `gateway restart` runtimes
         # for the current profile when no systemd supervisor is present.
@@ -1628,11 +1634,13 @@ def stop_profile_gateway() -> bool:
         remove_pid_file()
 
     # Also reap any orphans from prior restarts whose PIDs were overwritten
-    # in the pid file before they exited (#75936).
+    # in the pid file before they exited (#75936).  Exclude the PID we just
+    # killed so the sweep doesn't double-kill a process that's still tearing
+    # down — _reap_unsupervised_gateway_orphans already excludes our own PID.
     try:
-        _reap_unsupervised_gateway_orphans()
-    except Exception:
-        pass
+        _reap_unsupervised_gateway_orphans(extra_exclude={pid} if pid else None)
+    except Exception as exc:
+        logger.debug("orphan reap after stop_profile_gateway failed: %s", exc)
 
     return True
 

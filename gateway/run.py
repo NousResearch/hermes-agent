@@ -16747,7 +16747,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 _hyg_commit_fence.try_cancel_before_commit()
                                             )
                                             if _cancelled is None:
-                                                await asyncio.sleep(0.001)
+                                                # Round-2 #5: transient
+                                                # lock-setup windows ride
+                                                # write patience for seconds;
+                                                # 25ms keeps sub-tick latency
+                                                # without 1kHz spin.
+                                                await asyncio.sleep(0.025)
                                         if not _cancelled:
                                             # The worker crossed the commit boundary just
                                             # before the timeout. The fence poll waited for

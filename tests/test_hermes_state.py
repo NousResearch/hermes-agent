@@ -134,6 +134,52 @@ class TestConnectionLifecycle:
             "fts-read-only"
         ]
 
+    def test_failed_read_only_open_does_not_leak_tracked_connection(
+        self, tmp_path
+    ):
+        """A malformed store makes the RO FTS probe raise DatabaseError.
+        The connection must be closed on that failure path: a leaked tracked
+        connection blocks _backup_db_file's raw-copy for the process
+        lifetime, so the writable heal that follows would repair WITHOUT its
+        forensic backup."""
+        import sqlite3
+
+        from hermes_cli.sqlite_safe_read import has_live_connection
+
+        db_path = tmp_path / "state.db"
+        writable = SessionDB(db_path=db_path)
+        writable.create_session("s1", source="cli")
+        writable.append_message("s1", role="user", content="leak probe")
+        writable.close()
+
+        # Corrupt sqlite_master: duplicate messages_fts definition. Any
+        # statement on a fresh connection then raises "malformed database
+        # schema" (DatabaseError, not the OperationalError the probe eats).
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.execute("PRAGMA writable_schema=ON")
+        row = conn.execute(
+            "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master "
+            "WHERE name='messages_fts'"
+        ).fetchone()
+        assert row is not None
+        conn.execute(
+            "INSERT INTO sqlite_master (type,name,tbl_name,rootpage,sql) "
+            "VALUES (?,?,?,?,?)",
+            row,
+        )
+        conn.execute("PRAGMA writable_schema=OFF")
+        conn.close()
+
+        with pytest.raises(sqlite3.DatabaseError):
+            SessionDB(db_path=db_path, read_only=True)
+
+        assert has_live_connection(db_path) is False
+
+        # The writable heal must still take its forensic backup.
+        healed = SessionDB(db_path=db_path, read_only=False)
+        healed.close()
+        assert list(tmp_path.glob("*malformed-backup*"))
+
 
 # =========================================================================
 # Session lifecycle

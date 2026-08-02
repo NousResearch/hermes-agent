@@ -195,9 +195,14 @@ VALID_HOOKS: Set[str] = {
     #    "retryable": bool, "should_compress": bool,
     #    "should_rotate_credential": bool, "should_fallback": bool,
     #    "message": str, "error_context": dict}      # all optional
-    # First valid result (registration order) wins. Invalid dicts and
-    # unknown reasons are skipped; exceptions are isolated — a broken
-    # plugin can never break error classification.
+    # Dispatch is run-all-then-pick-first: every registered callback runs
+    # with its failures isolated (an early answer never stops later
+    # callbacks), then the first valid result in registration order wins —
+    # on conflict the first-registered plugin is the tie-break. Invalid
+    # dicts and unknown reasons are skipped; a broken plugin can never
+    # break error classification. Cold path: fires only on API failure.
+    # Privacy: error_message/error_body may carry an unredacted provider
+    # error dump.
     "classify_api_error",
     "on_session_start",
     "on_session_end",
@@ -5813,12 +5818,18 @@ def get_plugin_error_classification(
     its built-in pipeline, so a provider plugin can both add classifications
     the core patterns miss and correct ones they get wrong for its provider.
 
-    A callback returns ``None`` to pass, or a dict with a required
+    A callback returns ``None`` to decline, or a dict with a required
     ``"reason"`` (a :class:`agent.error_classifier.FailoverReason` member or
-    its string name) plus optional recovery-hint overrides. The first result
-    carrying a valid reason wins — mirroring
+    its string name) plus optional recovery-hint overrides. Dispatch is
+    run-all-then-pick-first: ``invoke_hook`` runs every registered callback
+    with failures isolated, then the first result carrying a valid reason
+    wins in registration order — mirroring
     :func:`get_pre_tool_call_block_message`, invalid or irrelevant returns
     are silently ignored so a misbehaving plugin degrades to a no-op.
+
+    Privacy: ``error_message`` and ``error_body`` may carry an unredacted
+    provider error dump; callbacks must not log or forward them without
+    redaction.
 
     Returns a sanitized dict (``reason`` coerced to ``FailoverReason``, hint
     fields coerced to ``bool``) or ``None`` when no plugin claimed the error.

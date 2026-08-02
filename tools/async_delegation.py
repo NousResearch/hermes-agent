@@ -76,6 +76,16 @@ _records: Dict[str, Dict[str, Any]] = {}
 _DEFAULT_MAX_ASYNC_CHILDREN = 3
 # How many completed records to retain for status queries before pruning.
 _MAX_RETAINED_COMPLETED = 50
+# Parent-facing controls use a bounded, in-memory live snapshot only.
+_MAX_OWNER_LIVE_SNAPSHOTS = 20
+_MAX_OWNER_LIVE_CURSOR = 10_000
+_MAX_OWNER_GOAL_CHARS = 160
+_MAX_OWNER_ROLE_CHARS = 80
+_MAX_DELEGATION_ID_CHARS = 128
+_MAX_STEER_MESSAGE_CHARS = 4000
+_MAX_STEER_MESSAGES = 20
+_MAX_STEER_TOTAL_CHARS = 12000
+_NATIVE_DELEGATION_ID_LENGTH = len("deleg_") + 8
 _DURABLE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 _MAX_DURABLE_PENDING = 1000
 # A pending completion whose delivery keeps failing is retried across claim
@@ -621,6 +631,34 @@ def _current_origin_session_id() -> str:
         return ""
 
 
+def _current_control_owner(session_id: Optional[str] = None) -> Optional[tuple[str, str]]:
+    """Return a canonical profile plus a proven compression-only session root."""
+    try:
+        from agent.relay_runtime import current_profile_key
+        from gateway.session_context import get_session_env
+        from hermes_state import SessionDB
+
+        profile = current_profile_key()
+        if session_id is None:
+            session_id = get_session_env("HERMES_SESSION_ID", "")
+    except Exception:
+        return None
+    if not isinstance(profile, str) or not isinstance(session_id, str):
+        return None
+    profile, session_id = profile.strip(), session_id.strip()
+    if not profile or not session_id:
+        return None
+    try:
+        db = SessionDB(get_hermes_home() / "state.db", read_only=True)
+        try:
+            root = db.get_compression_lineage_root(session_id)
+        finally:
+            db.close()
+    except Exception:
+        return None
+    return (profile, root) if root else None
+
+
 def dispatch_async_delegation(
     *,
     goal: str,
@@ -634,6 +672,7 @@ def dispatch_async_delegation(
     origin_ui_session_id: str = "",
     origin_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
+    steer_fn: Optional[Callable[[str], bool]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     progress_fn: Optional[Callable[[], tuple]] = None,
 ) -> Dict[str, Any]:
@@ -680,6 +719,7 @@ def dispatch_async_delegation(
         ``{"status": "rejected", "error": ...}`` when at capacity.
     """
     delegation_id = _new_delegation_id()
+    owner = _current_control_owner(parent_session_id) if isinstance(parent_session_id, str) and parent_session_id.strip() else None
     dispatched_at = time.time()
     record: Dict[str, Any] = {
         "delegation_id": delegation_id,
@@ -692,10 +732,13 @@ def dispatch_async_delegation(
         "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
+        "owner_profile": owner[0] if owner else "",
+        "owner_session_id": owner[1] if owner else "",
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "steer_fn": steer_fn,
         "progress_fn": progress_fn,
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None,
@@ -793,6 +836,7 @@ def _begin_finalization(
         record["completed_at"] = time.time()
         interrupt_fn = record.get("interrupt_fn")
         record["interrupt_fn"] = None  # drop the closure; child is done
+        record["steer_fn"] = None  # controls are only valid while live
         record["progress_fn"] = None  # stop stale-monitor sampling
         event_record = dict(record)
 
@@ -889,6 +933,7 @@ def dispatch_async_delegation_batch(
     origin_ui_session_id: str = "",
     origin_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
+    steer_fn: Optional[Callable[[str], bool]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None,
@@ -914,6 +959,9 @@ def dispatch_async_delegation_batch(
     capacity.
     """
     delegation_id = delegation_id or _new_delegation_id()
+    if not _is_native_delegation_id(delegation_id):
+        return {"status": "rejected", "error": "Invalid async delegation id"}
+    owner = _current_control_owner(parent_session_id) if isinstance(parent_session_id, str) and parent_session_id.strip() else None
     dispatched_at = time.time()
     n = len(goals)
     # A combined goal label for status listings / the completion header.
@@ -932,10 +980,13 @@ def dispatch_async_delegation_batch(
         "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
+        "owner_profile": owner[0] if owner else "",
+        "owner_session_id": owner[1] if owner else "",
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "steer_fn": steer_fn,
         "is_batch": True,
         "progress_fn": progress_fn,
         "_progress_token": None,
@@ -1182,15 +1233,8 @@ def _stale_monitor_loop() -> None:
             )
             with _records_lock:
                 record = _records.get(delegation_id)
-                fn = record.get("interrupt_fn") if record else None
-            if callable(fn):
-                try:
-                    fn()
-                except Exception as exc:
-                    logger.debug(
-                        "Async delegation %s stall interrupt failed: %s",
-                        delegation_id, exc,
-                    )
+            if record is not None:
+                _interrupt_live_record(record, "stale_monitor")
         for delegation_id in expired:
             _finalize_stalled(delegation_id)
         if not any_monitorable:
@@ -1296,6 +1340,222 @@ def _children_activity_from_token(token: Any, now: float) -> Optional[List]:
     return out
 
 
+def _owned_live_record_locked(owner: tuple[str, str], delegation_id: str) -> Optional[Dict[str, Any]]:
+    record = _records.get(delegation_id)
+    if (
+        record is None
+        or record.get("owner_profile") != owner[0]
+        or record.get("owner_session_id") != owner[1]
+        or record.get("status") not in ("running", "stalling")
+    ):
+        return None
+    return record
+
+
+def _control_lock_locked(record: Dict[str, Any]) -> threading.Lock:
+    """Return this record's control mutex while the registry lock is held."""
+    lock = record.get("_control_lock")
+    if not hasattr(lock, "acquire") or not hasattr(lock, "release"):
+        lock = threading.Lock()
+        record["_control_lock"] = lock
+    return lock
+
+
+def _safe_control_text(value: Any, limit: int) -> str:
+    return value[:limit] if isinstance(value, str) else ""
+
+
+def _is_native_delegation_id(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) != _NATIVE_DELEGATION_ID_LENGTH:
+        return False
+    suffix = value.removeprefix("deleg_")
+    return len(suffix) == 8 and all(char in "0123456789abcdef" for char in suffix)
+
+
+def list_owned_async_delegations(
+    owner_session_id: Optional[str] = None,
+    cursor: int = 0,
+) -> Dict[str, Any]:
+    """Return one bounded, non-authorizing chooser page for the current owner."""
+    if (
+        isinstance(cursor, bool)
+        or not isinstance(cursor, int)
+        or not 0 <= cursor <= _MAX_OWNER_LIVE_CURSOR
+    ):
+        return {
+            "delegations": [],
+            "total_live": 0,
+            "truncated": False,
+            "next_cursor": None,
+        }
+    owner = _current_control_owner(owner_session_id)
+    if owner is None:
+        return {
+            "delegations": [],
+            "total_live": 0,
+            "truncated": False,
+            "next_cursor": None,
+        }
+    with _records_lock:
+        items = [
+            {
+                "delegation_id": delegation_id,
+                "status": record["status"],
+                "is_batch": bool(record.get("is_batch")),
+                "dispatched_at": record.get("dispatched_at"),
+                "goal": _safe_control_text(record.get("goal"), _MAX_OWNER_GOAL_CHARS),
+                "role": _safe_control_text(record.get("role"), _MAX_OWNER_ROLE_CHARS),
+            }
+            for delegation_id, record in _records.items()
+            if (
+                _is_native_delegation_id(delegation_id)
+                and _owned_live_record_locked(owner, delegation_id) is record
+            )
+        ]
+    items.sort(
+        key=lambda item: (item["dispatched_at"] or 0, item["delegation_id"]),
+        reverse=True,
+    )
+    total_live = len(items)
+    page = items[cursor: cursor + _MAX_OWNER_LIVE_SNAPSHOTS]
+    next_cursor = cursor + len(page)
+    return {
+        "delegations": page,
+        "total_live": total_live,
+        "truncated": next_cursor < total_live,
+        "next_cursor": next_cursor if next_cursor < total_live else None,
+    }
+
+
+def cancel_owned_async_delegation(
+    delegation_id: str,
+    owner_session_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """Issue one cooperative interrupt request for the current owner."""
+    if not _is_native_delegation_id(delegation_id):
+        return {"status": "not_found"}
+    owner = _current_control_owner(owner_session_id)
+    if owner is None:
+        return {"status": "not_found"}
+    with _records_lock:
+        record = _owned_live_record_locked(owner, delegation_id)
+        if record is None:
+            return {"status": "not_found"}
+        control_lock = _control_lock_locked(record)
+    if not control_lock.acquire(blocking=False):
+        return {"status": "pending"}
+    try:
+        with _records_lock:
+            if _owned_live_record_locked(owner, delegation_id) is not record:
+                return {"status": "not_found"}
+            state = record.get("_cancel_state")
+            if state == "accepted":
+                return {"status": "accepted"}
+            if state in ("indeterminate", "error"):
+                return {"status": "indeterminate"}
+            if state == "requesting":
+                return {"status": "pending"}
+            callback = record.get("interrupt_fn")
+            if not callable(callback):
+                return {"status": "rejected"}
+            record["_cancel_state"] = "requesting"
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 - issuance may have taken effect
+            logger.debug(
+                "Async delegation %s cancel callback failed",
+                delegation_id,
+                exc_info=True,
+            )
+            with _records_lock:
+                if _owned_live_record_locked(owner, delegation_id) is not record:
+                    return {"status": "not_found"}
+                record["_cancel_state"] = "indeterminate"
+            return {"status": "indeterminate"}
+        with _records_lock:
+            if _owned_live_record_locked(owner, delegation_id) is not record:
+                return {"status": "not_found"}
+            record["_cancel_state"] = "accepted"
+        return {"status": "accepted"}
+    finally:
+        control_lock.release()
+
+
+def steer_owned_async_delegation(
+    delegation_id: str,
+    message: str,
+    owner_session_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """Offer bounded guidance to one live delegation owned by this runtime."""
+    if (
+        not isinstance(message, str)
+        or not message.strip()
+        or len(message) > _MAX_STEER_MESSAGE_CHARS
+    ):
+        return {"status": "rejected"}
+    if not _is_native_delegation_id(delegation_id):
+        return {"status": "not_found"}
+    owner = _current_control_owner(owner_session_id)
+    if owner is None:
+        return {"status": "not_found"}
+    with _records_lock:
+        record = _owned_live_record_locked(owner, delegation_id)
+        if record is None:
+            return {"status": "not_found"}
+        control_lock = _control_lock_locked(record)
+    if not control_lock.acquire(blocking=False):
+        return {"status": "pending"}
+    try:
+        with _records_lock:
+            if _owned_live_record_locked(owner, delegation_id) is not record:
+                return {"status": "not_found"}
+            if record.get("_cancel_state") in (
+                "requesting",
+                "accepted",
+                "indeterminate",
+                "error",
+            ):
+                return {"status": "rejected"}
+            used_count = int(record.get("_steer_message_count", 0))
+            used_chars = int(record.get("_steer_character_count", 0))
+            if (
+                used_count >= _MAX_STEER_MESSAGES
+                or used_chars + len(message) > _MAX_STEER_TOTAL_CHARS
+            ):
+                return {"status": "rejected"}
+            callback = record.get("steer_fn")
+            if not callable(callback):
+                return {"status": "rejected"}
+        try:
+            accepted = bool(callback(message))
+        except Exception:  # noqa: BLE001 - child callback boundary
+            logger.debug(
+                "Async delegation %s steer callback failed",
+                delegation_id,
+                exc_info=True,
+            )
+            accepted = None
+        with _records_lock:
+            if _owned_live_record_locked(owner, delegation_id) is not record:
+                return {"status": "not_found"}
+            if record.get("_cancel_state") in (
+                "requesting",
+                "accepted",
+                "indeterminate",
+                "error",
+            ):
+                return {"status": "rejected"}
+            if accepted is None:
+                return {"status": "error"}
+            if not accepted:
+                return {"status": "rejected"}
+            record["_steer_message_count"] = used_count + 1
+            record["_steer_character_count"] = used_chars + len(message)
+        return {"status": "accepted"}
+    finally:
+        control_lock.release()
+
+
 def list_async_delegations() -> List[Dict[str, Any]]:
     """Snapshot of async delegations (running + recently completed).
 
@@ -1319,7 +1579,9 @@ def list_async_delegations() -> List[Dict[str, Any]]:
             item = {
                 k: v
                 for k, v in r.items()
-                if k not in {"interrupt_fn", "progress_fn"}
+                if k not in {
+                    "interrupt_fn", "steer_fn", "progress_fn", "owner_profile", "owner_session_id"
+                }
                 and not k.startswith("_")
             }
             status = r.get("status")
@@ -1358,6 +1620,41 @@ def list_async_delegations() -> List[Dict[str, Any]]:
     return items
 
 
+def _interrupt_live_record(record: Dict[str, Any], source: str) -> bool:
+    """Issue one lifecycle interrupt while superseding concurrent steering."""
+    with _records_lock:
+        delegation_id = record.get("delegation_id")
+        if (
+            not isinstance(delegation_id, str)
+            or _records.get(delegation_id) is not record
+            or record.get("status") not in ("running", "stalling")
+        ):
+            return False
+        if record.get("_cancel_state") in (
+            "requesting",
+            "accepted",
+            "indeterminate",
+            "error",
+        ):
+            return False
+        callback = record.get("interrupt_fn")
+        if not callable(callback):
+            return False
+        record["_cancel_state"] = "requesting"
+    try:
+        callback()
+    except Exception as exc:
+        with _records_lock:
+            if _records.get(delegation_id) is record:
+                record["_cancel_state"] = "indeterminate"
+        logger.debug("%s: %s interrupt failed: %s", source, delegation_id, exc)
+        return False
+    with _records_lock:
+        if _records.get(delegation_id) is record:
+            record["_cancel_state"] = "accepted"
+    return True
+
+
 def interrupt_all(reason: str = "shutdown") -> int:
     """Signal every running async delegation to stop. Returns how many.
 
@@ -1372,16 +1669,8 @@ def interrupt_all(reason: str = "shutdown") -> int:
             if r.get("status") in ("running", "stalling")
         ]
     for r in targets:
-        fn = r.get("interrupt_fn")
-        if callable(fn):
-            try:
-                fn()
-                count += 1
-            except Exception as exc:
-                logger.debug(
-                    "interrupt_all: %s interrupt failed: %s",
-                    r.get("delegation_id"), exc,
-                )
+        if _interrupt_live_record(r, "interrupt_all"):
+            count += 1
     if count:
         logger.info("Interrupted %d async delegation(s) (%s)", count, reason)
     return count
@@ -1425,16 +1714,8 @@ def interrupt_for_session(
             )
         ]
     for r in targets:
-        fn = r.get("interrupt_fn")
-        if callable(fn):
-            try:
-                fn()
-                count += 1
-            except Exception as exc:
-                logger.debug(
-                    "interrupt_for_session: %s interrupt failed: %s",
-                    r.get("delegation_id"), exc,
-                )
+        if _interrupt_live_record(r, "interrupt_for_session"):
+            count += 1
     if count:
         logger.info(
             "Interrupted %d async delegation(s) for ending session (%s)",

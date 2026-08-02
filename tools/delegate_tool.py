@@ -2177,11 +2177,11 @@ def _run_single_child(
             from agent.delegation_context import delegated_child_context
 
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
-                    user_message=goal,
-                    task_id=child_task_id,
-                    stream_callback=_relay_child_text,
-                )
+                (_lifecycle := _kwargs.get("_child_lifecycle", lambda _: None))(True)
+                try:
+                    return child.run_conversation(user_message=goal, task_id=child_task_id, stream_callback=_relay_child_text)
+                finally:
+                    _lifecycle(False)
 
         _child_context = contextvars.copy_context()
         _child_future = _timeout_executor.submit(
@@ -2974,6 +2974,18 @@ def delegate_task(
             child._live_transcript_path = str(_writer.path)
         children.append((i, t, child))
 
+    _active_batch_children: Dict[int, List[Any]] = {i: [child, "queued"] for i, _, child in children}
+    _active_batch_lock = threading.Lock()
+
+    def _run_active_child(i, task, child):
+        def _lifecycle(running):
+            with _active_batch_lock:
+                _active_batch_children[i][1] = "running" if running else "done"
+        try:
+            return _run_single_child(i, task["goal"], child, parent_agent, _child_lifecycle=_lifecycle)
+        finally:
+            _lifecycle(False)
+
     def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
         fire subagent_stop hooks + cost rollup, and return the combined result
@@ -2987,7 +2999,7 @@ def delegate_task(
         if n_tasks == 1:
             # Single task -- run directly (no thread pool overhead)
             _i, _t, child = children[0]
-            result = _run_single_child(_i, _t["goal"], child, parent_agent)
+            result = _run_active_child(_i, _t, child)
             results.append(result)
         else:
             # Batch -- run in parallel with per-task progress lines
@@ -3004,11 +3016,10 @@ def delegate_task(
                     child_context = contextvars.copy_context()
                     future = executor.submit(
                         child_context.run,
-                        _run_single_child,
-                        task_index=i,
-                        goal=t["goal"],
-                        child=child,
-                        parent_agent=parent_agent,
+                        _run_active_child,
+                        i,
+                        t,
+                        child,
                     )
                     futures[future] = i
 
@@ -3273,14 +3284,57 @@ def delegate_task(
             return _execute_and_aggregate(honor_parent_interrupt=False)
 
         def _batch_interrupt():
-            for _c in _child_agents:
+            failures, targets = [], []
+            with _active_batch_lock:
+                for index, (_c, state) in _active_batch_children.items():
+                    if state not in ("queued", "running", "steering"):
+                        continue
+                    _active_batch_children[index][1] = "interrupting"
+                    targets.append((index, _c, state))
+            for _index, _c, _state in targets:
                 try:
-                    if hasattr(_c, "interrupt"):
+                    if callable(getattr(_c, "interrupt", None)):
                         _c.interrupt("Async delegation cancelled")
                     elif hasattr(_c, "_interrupt_requested"):
                         _c._interrupt_requested = True
+                    else:
+                        raise RuntimeError("child has no supported interrupt")
+                except Exception as exc:
+                    failures.append((_index, exc))
+            failed_indexes = {index for index, _exc in failures}
+            with _active_batch_lock:
+                for index, _c, state in targets:
+                    if _active_batch_children[index][1] == "interrupting":
+                        _active_batch_children[index][1] = (
+                            state if index in failed_indexes else "interrupt_requested"
+                        )
+            if not targets or failures:
+                raise RuntimeError(
+                    f"{len(failures)} of {len(targets)} async child interrupt(s) failed"
+                ) from (failures[0][1] if failures else None)
+
+        def _batch_steer(message):
+            targets = []
+            with _active_batch_lock:
+                for index, (_c, state) in _active_batch_children.items():
+                    if state != "running":
+                        continue
+                    _active_batch_children[index][1] = "steering"
+                    targets.append((index, _c))
+            accepted_indexes = set()
+            for _index, _c in targets:
+                try:
+                    if _c.steer(message):
+                        accepted_indexes.add(_index)
                 except Exception:
-                    pass
+                    logger.debug("Async delegation child steer failed", exc_info=True)
+            committed = False
+            with _active_batch_lock:
+                for index, _c in targets:
+                    if _active_batch_children[index][1] == "steering":
+                        _active_batch_children[index][1] = "running"
+                        committed = index in accepted_indexes or committed
+            return committed
 
         def _batch_progress():
             # Progress token for the async registry's stale monitor: the
@@ -3329,6 +3383,7 @@ def delegate_task(
             parent_session_id=_parent_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
+            steer_fn=_batch_steer,
             max_async_children=_get_max_async_children(),
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.
@@ -3911,6 +3966,53 @@ DELEGATE_TASK_SCHEMA = {
     },
 }
 
+DELEGATE_CONTROL_SCHEMA = {
+    "name": "delegate_control",
+    "description": "List, cancel, or steer only your own running delegated subagents.",
+    "parameters": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["action"],
+        "properties": {
+            "action": {"type": "string", "enum": ["list", "cancel", "steer"]},
+            "id": {"type": "string", "maxLength": 128},
+            "message": {"type": "string"},
+            "cursor": {"type": "integer", "minimum": 0, "maximum": 10_000},
+        },
+    },
+}
+
+
+def delegate_control(args: dict, session_id: Optional[str] = None, **_kw) -> str:
+    """Control live delegations using only dispatcher-provided ownership."""
+    if not isinstance(session_id, str) or not session_id.strip():
+        return json.dumps({"status": "rejected"})
+    args = args if isinstance(args, dict) else {}
+    action, delegation_id = args.get("action"), args.get("id")
+    from tools import async_delegation as _async
+    if action == "list":
+        cursor = args.get("cursor", 0)
+        if (
+            isinstance(cursor, bool)
+            or not isinstance(cursor, int)
+            or not 0 <= cursor <= 10_000
+        ):
+            result = {"status": "rejected"}
+        else:
+            result = {
+                "status": "ok",
+                **_async.list_owned_async_delegations(session_id, cursor),
+            }
+    elif not isinstance(delegation_id, str) or not delegation_id.strip():
+        result = {"status": "rejected"}
+    elif action == "cancel":
+        result = _async.cancel_owned_async_delegation(delegation_id, session_id)
+    elif action == "steer" and isinstance(args.get("message"), str):
+        result = _async.steer_owned_async_delegation(delegation_id, args["message"], session_id)
+    else:
+        result = {"status": "rejected"}
+    return json.dumps(result)
+
 
 # --- Registry ---
 from tools.registry import registry, tool_error
@@ -3954,6 +4056,15 @@ def _strip_model_hidden_task_fields(tasks: Any) -> Any:
         stripped_tasks.append(stripped)
     return stripped_tasks if changed else tasks
 
+
+registry.register(
+    name="delegate_control",
+    toolset="delegation",
+    schema=DELEGATE_CONTROL_SCHEMA,
+    handler=delegate_control,
+    check_fn=check_delegate_requirements,
+    emoji="🔀",
+)
 
 registry.register(
     name="delegate_task",

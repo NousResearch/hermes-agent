@@ -10,6 +10,24 @@ The `delegate_task` tool spawns child AIAgent instances with isolated context, i
 
 Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
 
+## Control Live Delegations
+
+With the `delegation` capability active, `delegate_control` is a deferred tool: it is discoverable through normal tool search, not always loaded in the core tool set.
+
+```python
+delegate_control(action="list", cursor=0)
+delegate_control(action="cancel", id="deleg_...")
+delegate_control(action="steer", id="deleg_...", message="...")
+```
+
+Use only the full native delegation ID returned by delegation—never an internal subagent ID. Access is scoped to the exact canonical profile namespace and the durable compression-only parent-session lineage; branches, delegate/tool sessions, foreign, missing, and terminal IDs are all opaque `not_found`.
+
+- **List** returns a bounded, live-only allowlisted chooser page with each full delegation ID, status, batch flag, dispatch time, and bounded goal/role previews. Its `total_live`, `truncated`, and `next_cursor` metadata lets a parent page through older live work; a cursor only discovers IDs and never grants authority. It neither claims nor mutates records, and never duplicates terminal completion delivery.
+- **Cancel** requests cooperative cancellation, not a hard kill. It is `accepted` idempotently after issuance and `pending` while any control callback is in flight. If a callback raises after issuing work, it is `indeterminate` and will not be blindly retried.
+- **Steer** is bounded per message and cumulatively, and is best-effort at the child's next safe/tool boundary. For a batch it is offered only to active children and is `accepted` when at least one child accepts. Session or global shutdown supersedes an overlapping steer so lifecycle cancellation cannot leave a child orphaned.
+
+Terminal results still arrive through normal completion delivery: there is no result history or retrieval API. Native control callbacks are in memory and do not survive a process restart.
+
 ## Single Task
 
 ```python

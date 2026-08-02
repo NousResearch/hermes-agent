@@ -90,6 +90,11 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+from hermes_cli.runtime_outcomes import (
+    RuntimeOutcome,
+    outcome_for_launcher_exception,
+    outcome_for_worker_exit,
+)
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -6833,13 +6838,17 @@ class DispatchResult:
     """Tasks skipped by the respawn guard, as ``(task_id, reason)`` pairs.
 
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
-    ``"recent_success"`` (completed run within guard window),
-    ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    ``"rate_limit_cooldown"`` / ``"launcher_transport_cooldown"``
+    (bounded transient retry delay), ``"recent_success"`` (completed run
+    within guard window), ``"active_pr"`` (GitHub PR URL in a recent
+    comment)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    runtime_outcomes: list[dict[str, Any]] = field(default_factory=list)
+    """Typed runtime outcomes observed during this dispatch pass."""
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
@@ -6925,6 +6934,12 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     except Exception:
         pass
     return ("unknown", None)
+
+
+def worker_exit_outcome(pid: int) -> RuntimeOutcome:
+    """Return the typed runtime outcome for a recently reaped worker."""
+    kind, code = _classify_worker_exit(pid)
+    return outcome_for_worker_exit(kind, code)
 
 
 def reap_worker_zombies() -> "list[int]":
@@ -7545,6 +7560,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
+    runtime_outcomes: list[dict[str, Any]] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
@@ -7577,8 +7593,15 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
 
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
+            runtime_outcome = worker_exit_outcome(pid)
             rate_limited_exit = False
             if kind == "clean_exit":
+                # A clean subprocess exit while the task is still running is
+                # not successful task completion: the worker violated the
+                # Kanban terminal-outcome protocol.
+                runtime_outcome = RuntimeOutcome.code_failure(
+                    reason="worker exited cleanly without terminal outcome"
+                )
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
                 # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the
@@ -7639,6 +7662,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
+            event_payload["runtime_outcome"] = runtime_outcome.to_dict()
+
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
@@ -7691,6 +7716,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (row["id"], pid, row["claim_lock"],
                          protocol_violation, error_text)
                     )
+                runtime_outcomes.append({
+                    "task_id": row["id"],
+                    **runtime_outcome.to_dict(),
+                })
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the task transitions ready → blocked with a ``gave_up`` event
     # on top of the event we already emitted).
@@ -7782,6 +7811,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Same side-channel for rate-limited requeues — these did NOT count a
     # failure and are NOT crashes, so they stay out of the ``crashed`` return.
     detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_runtime_outcomes = runtime_outcomes  # type: ignore[attr-defined]
     return crashed
 
 
@@ -7790,7 +7820,7 @@ def _record_task_failure(
     task_id: str,
     error: str,
     *,
-    outcome: str,
+    outcome: str | RuntimeOutcome,
     failure_limit: int = None,
     force_trip: bool = False,
     release_claim: bool = False,
@@ -7842,6 +7872,42 @@ def _record_task_failure(
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
+    typed_outcome = RuntimeOutcome.from_value(outcome)
+    if not typed_outcome.counts_against_failure_budget:
+        # Provider, transport, and temporary worker outcomes are operational
+        # events, not failures of the task. They may release a claim and close
+        # the run, but must never increment either breaker budget.
+        with write_txn(conn):
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            if release_claim:
+                conn.execute(
+                    "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL "
+                    "WHERE id = ? AND status = 'running'",
+                    (task_id,),
+                )
+            run_id = None
+            if end_run:
+                run_id = _end_run(
+                    conn,
+                    task_id,
+                    outcome=typed_outcome.kind,
+                    status=typed_outcome.kind,
+                    error=error[:500],
+                    metadata=typed_outcome.to_dict(),
+                )
+            _append_event(
+                conn,
+                task_id,
+                typed_outcome.kind,
+                {"error": error[:500], **typed_outcome.to_dict()},
+                run_id=run_id,
+            )
+        return False
     blocked = False
     with write_txn(conn):
         row = conn.execute(
@@ -7894,7 +7960,7 @@ def _record_task_failure(
                     error=error[:500],
                     metadata={
                         "failures": failures,
-                        "trigger_outcome": outcome,
+                        "trigger_outcome": typed_outcome.kind,
                         "effective_limit": effective_limit,
                         "limit_source": limit_source,
                     },
@@ -7904,7 +7970,7 @@ def _record_task_failure(
                 "effective_limit": effective_limit,
                 "limit_source": limit_source,
                 "error": error[:500],
-                "trigger_outcome": outcome,
+                "trigger_outcome": typed_outcome.kind,
             }
             if event_payload_extra:
                 payload.update(event_payload_extra)
@@ -7935,13 +8001,17 @@ def _record_task_failure(
                 # Spawn path: close the open run with outcome.
                 run_id = _end_run(
                     conn, task_id,
-                    outcome=outcome, status=outcome,
+                    outcome=typed_outcome.kind, status=typed_outcome.kind,
                     error=error[:500],
                     metadata={"failures": failures},
                 )
                 _append_event(
-                    conn, task_id, outcome,
-                    {"error": error[:500], "failures": failures},
+                    conn, task_id, typed_outcome.kind,
+                    {
+                        "error": error[:500],
+                        "failures": failures,
+                        "kind": typed_outcome.kind,
+                    },
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
@@ -8018,17 +8088,16 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     Checks in priority order:
 
-    ``"rate_limit_cooldown"``
-        The task's most recent run ended with the ``rate_limited`` outcome
-        (a worker bailed on a provider quota wall via the EX_TEMPFAIL
-        sentinel) within ``_resolve_rate_limit_cooldown_seconds()``. The
-        quota almost certainly hasn't reset yet, so defer the respawn until
-        the cooldown elapses — then allow a cheap probe. This is checked
-        BEFORE ``blocker_auth`` because the rate-limit requeue stamps a
-        quota-flavored ``last_failure_error`` that would otherwise match the
-        auth-blocker regex and park the task forever (the rate-limit path
-        never increments ``consecutive_failures``, so the breaker can't free
-        it). Once the cooldown elapses the task falls through and respawns.
+    ``"rate_limit_cooldown"`` / ``"launcher_transport_cooldown"``
+        The task's most recent run ended with a transient provider quota or
+        launcher transport outcome within
+        ``_resolve_rate_limit_cooldown_seconds()``. The upstream service may
+        still be unavailable, so defer the respawn until the cooldown elapses
+        — then allow a cheap probe. This is checked BEFORE ``blocker_auth``
+        because transient requeues can stamp errors that match the auth-
+        blocker regex and park the task forever (these paths never increment
+        ``consecutive_failures``, so the breaker cannot free them). Once the
+        cooldown elapses the task falls through and respawns.
 
     ``"blocker_auth"``
         The task's last failure error matches a quota / authentication
@@ -8083,23 +8152,25 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if (
-        latest_run is not None
-        and latest_run["outcome"] == "rate_limited"
-    ):
+    latest_outcome = latest_run["outcome"] if latest_run is not None else None
+    if latest_outcome in {"rate_limited", "launcher_transport_failure"}:
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, and skip the
-            # blocker_auth regex so the stamped rate-limit text doesn't
+            # blocker_auth regex so the stamped transient error doesn't
             # re-trap the task.
             return None
-        ended_at = latest_run["ended_at"]
+        ended_at = latest_run["ended_at"] if latest_run is not None else None
         if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
-            return "rate_limit_cooldown"
+            return (
+                "launcher_transport_cooldown"
+                if latest_outcome == "launcher_transport_failure"
+                else "rate_limit_cooldown"
+            )
         # Cooldown elapsed — allow the respawn. Return early so the
-        # blocker_auth check below doesn't catch the rate-limit text we
+        # blocker_auth check below doesn't catch the transient text we
         # stamped on the task; this path intentionally retries forever
-        # (cheaply, spaced by the cooldown) until quota returns or a real
-        # crash/completion supersedes it.
+        # (cheaply, spaced by the cooldown) until the upstream service
+        # returns or a real crash/completion supersedes it.
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
@@ -8339,6 +8410,11 @@ def _dispatch_once_locked(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
+    _crash_runtime_outcomes = getattr(
+        detect_crashed_workers, "_last_runtime_outcomes", []
+    )
+    if _crash_runtime_outcomes:
+        result.runtime_outcomes.extend(_crash_runtime_outcomes)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
@@ -8538,9 +8614,17 @@ def _dispatch_once_locked(
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
-            auto = _record_spawn_failure(
+            runtime_outcome = outcome_for_launcher_exception(exc)
+            result.runtime_outcomes.append({
+                "task_id": claimed.id,
+                **runtime_outcome.to_dict(),
+            })
+            auto = _record_task_failure(
                 conn, claimed.id, f"workspace: {exc}",
+                outcome=runtime_outcome,
                 failure_limit=failure_limit,
+                release_claim=True,
+                end_run=True,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -8583,9 +8667,19 @@ def _dispatch_once_locked(
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
         except Exception as exc:
-            auto = _record_spawn_failure(
-                conn, claimed.id, str(exc),
+            runtime_outcome = outcome_for_launcher_exception(exc)
+            result.runtime_outcomes.append({
+                "task_id": claimed.id,
+                **runtime_outcome.to_dict(),
+            })
+            auto = _record_task_failure(
+                conn,
+                claimed.id,
+                str(exc),
+                outcome=runtime_outcome,
                 failure_limit=failure_limit,
+                release_claim=True,
+                end_run=True,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -8630,9 +8724,17 @@ def _dispatch_once_locked(
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
-            auto = _record_spawn_failure(
+            runtime_outcome = outcome_for_launcher_exception(exc)
+            result.runtime_outcomes.append({
+                "task_id": claimed.id,
+                **runtime_outcome.to_dict(),
+            })
+            auto = _record_task_failure(
                 conn, claimed.id, f"workspace: {exc}",
+                outcome=runtime_outcome,
                 failure_limit=failure_limit,
+                release_claim=True,
+                end_run=True,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -8664,9 +8766,17 @@ def _dispatch_once_locked(
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
-            auto = _record_spawn_failure(
+            runtime_outcome = outcome_for_launcher_exception(exc)
+            result.runtime_outcomes.append({
+                "task_id": claimed.id,
+                **runtime_outcome.to_dict(),
+            })
+            auto = _record_task_failure(
                 conn, claimed.id, str(exc),
+                outcome=runtime_outcome,
                 failure_limit=failure_limit,
+                release_claim=True,
+                end_run=True,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)

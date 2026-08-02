@@ -97,6 +97,60 @@ class TestJudgeGoal:
         assert reason == "achieved"
 
 
+class TestKanbanGoalLoopTransportFailure:
+    def test_transport_failure_defers_without_consuming_budget_or_blocking(self):
+        from hermes_cli import goals
+
+        run_turn_calls = []
+        block_calls = []
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=("continue", "judge transport unavailable", False, None, True),
+        ):
+            result = goals.run_kanban_goal_loop(
+                task_id="transport-task",
+                goal_text="finish the task",
+                run_turn=lambda prompt: run_turn_calls.append(prompt),
+                task_status_fn=lambda: "running",
+                block_fn=lambda reason: block_calls.append(reason),
+                max_turns=1,
+                first_response="first response",
+            )
+
+        assert result["outcome"] == "deferred_transient"
+        assert result["turns_used"] == 1
+        assert result["runtime_outcome"].kind == "judge_transport_failure"
+        assert result["runtime_outcome"].is_transient
+        assert run_turn_calls == []
+        assert block_calls == []
+
+    def test_parse_failure_remains_budget_blocking(self):
+        from hermes_cli import goals
+
+        block_calls = []
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=("continue", "ambiguous judge output", True, None, False),
+        ):
+            result = goals.run_kanban_goal_loop(
+                task_id="parse-task",
+                goal_text="finish the task",
+                run_turn=lambda prompt: "unexpected continuation",
+                task_status_fn=lambda: "running",
+                block_fn=lambda reason: block_calls.append(reason),
+                max_turns=1,
+                first_response="first response",
+            )
+
+        assert result["outcome"] == "blocked_budget"
+        assert result["turns_used"] == 1
+        assert len(block_calls) == 1
+
+
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager lifecycle + persistence
 # ──────────────────────────────────────────────────────────────────────

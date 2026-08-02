@@ -201,3 +201,121 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
     assert ("claim", "cli", True) in calls
     assert ("run", "hello", []) in calls
     assert calls[-1] == ("finalize", "quiet-session")
+
+
+def test_quiet_kanban_goal_loop_defers_transport_failure_without_blocking(monkeypatch):
+    task = SimpleNamespace(
+        title="finish the task",
+        body="",
+        goal_max_turns=1,
+        status="running",
+    )
+    calls = []
+
+    class FakeConnection:
+        def close(self):
+            pass
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "quiet-transport-task")
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: FakeConnection())
+    monkeypatch.setattr("hermes_cli.kanban_db.get_task", lambda _conn, _task_id: task)
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db.block_task",
+        lambda _conn, _task_id, *, reason: calls.append(("block", reason)),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.goals.judge_goal",
+        lambda *_args, **_kwargs: (
+            "continue",
+            "launcher transport unavailable",
+            False,
+            None,
+            True,
+        ),
+    )
+
+    def run_conversation(**_kwargs):
+        calls.append("run_turn")
+        return {"final_response": "unexpected continuation"}
+
+    fake_cli = SimpleNamespace(
+        agent=SimpleNamespace(
+            session_id="quiet-session",
+            run_conversation=run_conversation,
+        ),
+        conversation_history=[],
+        session_id="quiet-session",
+    )
+
+    outcome = cli._run_kanban_goal_loop_q(fake_cli, "first response")
+
+    assert outcome.kind == "judge_transport_failure"
+    assert outcome.is_transient
+    assert "run_turn" not in calls
+    assert not any(call[0] == "block" for call in calls if isinstance(call, tuple))
+
+
+def test_quiet_kanban_goal_transport_failure_exits_tempfail(monkeypatch):
+    calls = []
+
+    from hermes_cli.runtime_outcomes import RuntimeOutcome
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.provider = "test-provider"
+            self.model = "test-model"
+            self.session_id = "quiet-session"
+            self.conversation_history = []
+            self._active_agent_route_signature = "same-route"
+            self.agent = SimpleNamespace(
+                session_id="quiet-session",
+                platform="cli",
+                quiet_mode=False,
+                suppress_status_output=False,
+                stream_delta_callback=object(),
+                tool_gen_callback=object(),
+                run_conversation=lambda **_kwargs: {
+                    "final_response": "first response",
+                },
+            )
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            calls.append(("claim", surface, stderr))
+            return True
+
+        def _ensure_runtime_credentials(self):
+            return True
+
+        def _resolve_turn_agent_config(self, effective_query):
+            return {
+                "signature": "same-route",
+                "model": None,
+                "runtime": None,
+                "request_overrides": None,
+            }
+
+        def _init_agent(self, **kwargs):
+            return True
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "quiet-transport-task")
+    monkeypatch.setenv("HERMES_KANBAN_GOAL_MODE", "1")
+    monkeypatch.setattr(cli, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_kanban_goal_loop_q",
+        lambda *_args: RuntimeOutcome(
+            "judge_transport_failure", True, False, "judge unavailable", "goal_judge"
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(query="hello", quiet=True, toolsets="terminal")
+
+    assert exc_info.value.code == 75
+    assert calls[-1] == ("finalize", "quiet-session")

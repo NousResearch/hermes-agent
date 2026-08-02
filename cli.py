@@ -54,6 +54,7 @@ from hermes_cli.fallback_config import get_fallback_chain
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 from hermes_cli.cli_billing_mixin import CLIBillingMixin
+from hermes_cli.runtime_outcomes import RuntimeOutcome
 
 # prompt_toolkit for fixed input area TUI
 from prompt_toolkit.history import FileHistory
@@ -17772,7 +17773,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 # Main Entry Point
 # ============================================================================
 
-def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
+def _run_kanban_goal_loop_q(
+    cli: "HermesCLI", first_response: str
+) -> Optional[RuntimeOutcome]:
     """Drive a kanban goal_mode worker through the Ralph-style goal loop.
 
     Called from the quiet single-query path AFTER the worker's first turn,
@@ -17850,7 +17853,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
             except Exception:
                 pass
 
-    _run_loop(
+    decision = _run_loop(
         task_id=task_id,
         goal_text=goal_text,
         run_turn=_run_turn,
@@ -17860,6 +17863,8 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         first_response=first_response or "",
         log=lambda m: logger.info("%s", m),
     )
+    runtime_outcome = decision.get("runtime_outcome")
+    return runtime_outcome if getattr(runtime_outcome, "is_transient", False) else None
 
 
 def main(
@@ -18320,9 +18325,10 @@ def main(
                         # out (→ sticky block). Gated on the env vars the
                         # dispatcher sets in `_default_spawn`; a no-op for every
                         # normal worker and every non-kanban `-q` run.
+                        _goal_runtime_outcome = None
                         if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
                             try:
-                                _run_kanban_goal_loop_q(cli, response)
+                                _goal_runtime_outcome = _run_kanban_goal_loop_q(cli, response)
                             except Exception as _goal_exc:
                                 logger.debug("kanban goal loop failed: %s", _goal_exc)
 
@@ -18354,6 +18360,17 @@ def main(
                                     _exit_code = _RL_CODE
                                 except Exception:
                                     _exit_code = 1
+                        if (
+                            os.environ.get("HERMES_KANBAN_TASK")
+                            and getattr(_goal_runtime_outcome, "is_transient", False)
+                        ):
+                            try:
+                                from hermes_cli.kanban_db import (
+                                    KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
+                                )
+                                _exit_code = _RL_CODE
+                            except Exception:
+                                pass
                         sys.exit(_exit_code)
 
                 # Exit with error code if credentials or agent init fails

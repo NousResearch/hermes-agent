@@ -1694,8 +1694,10 @@ def run_kanban_goal_loop(
     (reason: str -> None).
 
     Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
-    outcome is one of ``"completed_by_worker"``, ``"blocked_budget"``,
-    ``"blocked_by_worker"``, or ``"stopped"``.
+    outcome is one of ``"completed_by_worker"``, ``"blocked_budget"`,
+    ``"blocked_by_worker"`, ``"deferred_transient"`, or ``"stopped"``.
+    Transient deferrals also carry a typed ``RuntimeOutcome`` under
+    ``"runtime_outcome"`` for the worker/dispatcher boundary.
     """
 
     def _log(msg: str) -> None:
@@ -1738,6 +1740,26 @@ def run_kanban_goal_loop(
         # via kanban_complete / kanban_block, not by parking), so a WAIT
         # verdict is treated as CONTINUE here.
         verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        if _transport_failed:
+            from hermes_cli.runtime_outcomes import RuntimeOutcome
+
+            runtime_outcome = RuntimeOutcome(
+                "judge_transport_failure",
+                True,
+                False,
+                reason,
+                "goal_judge",
+            )
+            _log(
+                f"kanban goal loop: judge transport failed; deferring task "
+                f"{task_id} without spending another turn ({_truncate(reason, 120)})"
+            )
+            return {
+                "outcome": "deferred_transient",
+                "turns_used": turns_used,
+                "reason": reason,
+                "runtime_outcome": runtime_outcome,
+            }
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")

@@ -47,6 +47,27 @@ function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   return appended ? { ...message, parts } : message
 }
 
+/** Reasoning / tool-call parts that the gateway inflight dump cannot express. */
+function hasStructuralParts(message: ChatMessage): boolean {
+  return message.parts.some(part => part.type === 'reasoning' || part.type === 'tool-call')
+}
+
+/**
+ * True when `next` is a pure forward extension of the previous *answer* text.
+ * Empty previous answer never accepts a dump as an extension — that is how the
+ * mid-turn inflight flat dump used to sandwich structured rows (#76444).
+ */
+export function isStrictAnswerTextExtension(next: string, previous: string): boolean {
+  const n = next.trim()
+  const p = previous.trim()
+
+  if (!p || !n) {
+    return false
+  }
+
+  return n.startsWith(p)
+}
+
 /**
  * Carry structural parts an authoritative row cannot express.
  *
@@ -273,11 +294,33 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // for structural carry-over. Attachment refs and image re-appending stay on
     // the strict equality path — they reconcile a SETTLED row, and a growing
     // row is by definition not settled.
+    //
+    // Structured local assistant + text-only live projection (gateway inflight
+    // dump) at the same ordinal is still the same turn even when answer text is
+    // still empty — without this the dump would drop structure and reappear as
+    // a plain-text sandwich (#76444).
     const sameTurn =
-      sameText || (nextText.length > 0 && previousTrimmed.length > 0 && nextText.startsWith(previousTrimmed))
+      sameText ||
+      (nextText.length > 0 && previousTrimmed.length > 0 && isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
+      (message.role === 'assistant' &&
+        previous.role === 'assistant' &&
+        hasStructuralParts(previous) &&
+        !hasStructuralParts(message))
 
     if (sameTurn) {
       preserved = preserveStructuralParts(preserved, previous)
+
+      // Never replace structured answer text with a non-extending flat dump.
+      if (
+        message.role === 'assistant' &&
+        hasStructuralParts(previous) &&
+        !hasStructuralParts(message) &&
+        !isStrictAnswerTextExtension(nextText, previousVisibleText)
+      ) {
+        const nonText = preserved.parts.filter(part => part.type !== 'text')
+        const priorAnswer = previous.parts.filter(part => part.type === 'text')
+        preserved = { ...preserved, parts: [...nonText, ...priorAnswer] }
+      }
     }
 
     if (
@@ -646,14 +689,27 @@ export function appendLiveSessionProjection(
 
   // Keep a pending assistant boundary even before the first delta when a
   // queued user turn follows it. This preserves the two distinct turns.
+  //
+  // When the transcript already holds a structured mid-turn assistant row
+  // (reasoning / tool-call parts from the live stream or journal), do NOT
+  // append a pure-text projection of `inflight.assistant` — that flat dump
+  // re-renders thinking as answer text and sandwiches the structured parts
+  // (#76444). Errors still force a projection so the failure is visible.
+  const lastAssistant = [...messages].reverse().find(message => message.role === 'assistant')
+  const turnAlreadyStructured = Boolean(lastAssistant && hasStructuralParts(lastAssistant))
+
   if (inflightAssistant || inflightStreaming || inflightError || (inflightUser && queuedUser)) {
-    projected.push({
-      id: `assistant-stream-${sessionId}`,
-      role: 'assistant',
-      parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
-      pending: inflightStreaming,
-      ...(inflightError ? { error: inflightError } : {})
-    })
+    if (turnAlreadyStructured && !inflightError) {
+      // Structure is authoritative; skip the text-only dump row.
+    } else {
+      projected.push({
+        id: `assistant-stream-${sessionId}`,
+        role: 'assistant',
+        parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
+        pending: inflightStreaming,
+        ...(inflightError ? { error: inflightError } : {})
+      })
+    }
   }
 
   if (queuedUser) {

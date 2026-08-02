@@ -1120,4 +1120,41 @@ describe('appendLiveSessionProjection', () => {
 
     expect(appendLiveSessionProjection(stored, { session_id: 'runtime-1' })).toBe(stored)
   })
+
+  it('does not sandwich a structured mid-turn row with the inflight flat dump (#76444)', () => {
+    const stored: ChatMessage[] = [
+      msg('stored-user', 'user', 'do the work'),
+      {
+        id: 'live-assistant',
+        role: 'assistant',
+        pending: true,
+        parts: [
+          { type: 'reasoning', text: 'thinking about tools' },
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'terminal', args: {} },
+          { type: 'text', text: 'partial' }
+        ]
+      }
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'do the work',
+        // Flat dump includes thinking chatter + tool narration — longer than
+        // the answer text alone, which is how the sandwich used to grow.
+        assistant: 'thinking about tools\nRan terminal\npartial and more dump',
+        streaming: true
+      }
+    })
+
+    const assistants = restored.filter(message => message.role === 'assistant')
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0].id).toBe('live-assistant')
+    expect(assistants[0].parts.some(part => part.type === 'reasoning')).toBe(true)
+    expect(assistants[0].parts.some(part => part.type === 'tool-call')).toBe(true)
+    // Answer text stays the structured row's text, not the dump.
+    expect(assistants[0].parts.filter(part => part.type === 'text').map(part => ('text' in part ? part.text : ''))).toEqual([
+      'partial'
+    ])
+  })
 })

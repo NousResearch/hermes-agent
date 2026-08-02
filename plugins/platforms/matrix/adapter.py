@@ -874,6 +874,20 @@ def _pre_sanitize_matrix_markdown(text: str) -> str:
     return result
 
 
+def _startup_env_secret(name: str) -> str:
+    """Read a Matrix credential at adapter-startup time, scope-aware.
+
+    Slack pattern (#59739): a scoped read honors the installed profile's
+    secret scope verdict (scoped miss ⇒ empty, no borrowing the process
+    env); only an UNSCOPED read under multiplex (default-profile startup
+    loop) falls back to ``os.environ``, which is that profile's own value.
+    """
+    try:
+        return (get_secret(name) or "").strip()
+    except UnscopedSecretError:
+        return os.getenv(name, "").strip()
+
+
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used.
 
@@ -885,8 +899,8 @@ def check_matrix_requirements() -> bool:
     forever and broke E2EE connect with ``No module named 'asyncpg'``
     (#31116).  Rebinds module-level type globals on success.
     """
-    token = os.getenv("MATRIX_ACCESS_TOKEN", "")
-    password = os.getenv("MATRIX_PASSWORD", "")
+    token = _startup_env_secret("MATRIX_ACCESS_TOKEN")
+    password = _startup_env_secret("MATRIX_PASSWORD")
     homeserver = os.getenv("MATRIX_HOMESERVER", "")
 
     if not token and not password:
@@ -1013,12 +1027,14 @@ class MatrixAdapter(BasePlatformAdapter):
         self._homeserver: str = (
             config.extra.get("homeserver", "") or os.getenv("MATRIX_HOMESERVER", "")
         ).rstrip("/")
-        self._access_token: str = config.token or os.getenv("MATRIX_ACCESS_TOKEN", "")
+        self._access_token: str = config.token or _startup_env_secret(
+            "MATRIX_ACCESS_TOKEN"
+        )
         self._user_id: str = config.extra.get("user_id", "") or os.getenv(
             "MATRIX_USER_ID", ""
         )
-        self._password: str = config.extra.get("password", "") or os.getenv(
-            "MATRIX_PASSWORD", ""
+        self._password: str = config.extra.get("password", "") or _startup_env_secret(
+            "MATRIX_PASSWORD"
         )
         self._e2ee_mode: str = _resolve_e2ee_mode(config.extra)
         self._encryption: bool = self._e2ee_mode != "off"
@@ -4801,7 +4817,10 @@ async def _standalone_send(
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         homeserver = (extra.get("homeserver") or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
-        token = token or os.getenv("MATRIX_ACCESS_TOKEN", "")
+        # In-turn read: standalone sends run inside an installed secret
+        # scope, so honor get_secret's verdict directly (no env fallback on
+        # a scoped miss).
+        token = token or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
         if not homeserver or not token:
             return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}
         txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"

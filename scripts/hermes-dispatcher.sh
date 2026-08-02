@@ -9,8 +9,8 @@ set -euo pipefail
 declare -A PROFILE_MAP
 PROFILE_MAP[default]="/home/kensei/repos/KenseiAgent/.venv/bin/hermes"
 PROFILE_MAP[kensei]="/home/kensei/repos/KenseiAgent/.venv/bin/hermes"
-PROFILE_MAP[moss]="/home/kensei/repos/hermes-agent-upstream/.venv/bin/hermes"
-PROFILE_MAP[upstream]="/home/kensei/repos/hermes-agent-upstream/.venv/bin/hermes"
+PROFILE_MAP[moss]="/home/kensei/repos/hermes-agent-vanilla/.venv/bin/hermes"
+PROFILE_MAP[upstream]="/home/kensei/repos/hermes-agent-vanilla/.venv/bin/hermes"
 
 # Detect active profile
 PROFILE="${HERMES_PROFILE:-}"

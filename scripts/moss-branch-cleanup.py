@@ -21,7 +21,7 @@ import subprocess, json, sys, os, re
 from pathlib import Path
 from datetime import datetime, timedelta
 
-REPO = Path(os.environ.get("MOSS_BRANCH_REPO", "/home/kensei/repos/hermes-agent-upstream"))
+REPO = Path(os.environ.get("MOSS_BRANCH_REPO", "/home/kensei/repos/hermes-agent-vanilla"))
 DAYS_STALE = 14
 DRY_RUN = os.environ.get("MOSS_BRANCH_DRY_RUN", "") == "1"
 

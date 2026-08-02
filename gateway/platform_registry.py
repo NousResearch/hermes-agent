@@ -245,6 +245,50 @@ class PlatformRegistry:
             return
         self._deferred[name] = loader
 
+    def snapshot_registration(
+        self,
+        name: str,
+    ) -> tuple[Optional[PlatformEntry], Optional[Callable[[], None]]]:
+        """Return the concrete and deferred state for *name* without resolving it.
+
+        This host-facing snapshot lets the plugin ledger restore a deferred
+        platform loader that a concrete registration displaced, without
+        importing the displaced adapter as a side effect of taking the
+        snapshot.
+        """
+        return self._entries.get(name), self._deferred.get(name)
+
+    def restore_registration(
+        self,
+        name: str,
+        current: tuple[Optional[PlatformEntry], Optional[Callable[[], None]]],
+        previous: tuple[Optional[PlatformEntry], Optional[Callable[[], None]]],
+    ) -> bool:
+        """Restore a platform registration if its full state is still current.
+
+        The identity checks protect a later registration from being removed
+        while still allowing an unloaded override to reveal the registration
+        it displaced.  Both concrete entries and deferred loaders are part of
+        the state because bundled platform plugins load lazily.
+        """
+        current_state = self.snapshot_registration(name)
+        if (
+            current_state[0] is not current[0]
+            or current_state[1] is not current[1]
+        ):
+            return False
+
+        entry, loader = previous
+        if entry is None:
+            self._entries.pop(name, None)
+        else:
+            self._entries[name] = entry
+        if loader is None:
+            self._deferred.pop(name, None)
+        else:
+            self._deferred[name] = loader
+        return True
+
     def _resolve(self, name: str) -> None:
         """Run the deferred loader for *name* if one is pending."""
         loader = self._deferred.pop(name, None)

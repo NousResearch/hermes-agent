@@ -807,6 +807,42 @@ class LoadedPlugin:
     deferred: bool = False
 
 
+@dataclass
+class PluginRegistration:
+    """One host-owned registration made while loading a plugin.
+
+    Plugins only receive the context registration APIs; the manager owns the
+    matching cleanup operation.  Keeping that inverse operation beside the
+    registration lets a force reload unwind global registries in reverse
+    order, including an override that needs to restore the entry it replaced.
+    """
+
+    kind: str
+    key: str
+    release: Callable[[], None]
+    plugin_key: str = ""
+    _disposed: bool = field(default=False, init=False, repr=False)
+    _on_dispose: Optional[Callable[["PluginRegistration"], None]] = field(
+        default=None, init=False, repr=False
+    )
+
+    @property
+    def active(self) -> bool:
+        """Whether this handle still owns an active registration."""
+        return not self._disposed
+
+    def dispose(self) -> None:
+        """Release this registration once; repeated disposal is harmless."""
+        if self._disposed:
+            return
+        self._disposed = True
+        try:
+            self.release()
+        finally:
+            if self._on_dispose is not None:
+                self._on_dispose(self)
+
+
 # ---------------------------------------------------------------------------
 # PluginContext  – handed to each plugin's ``register()`` function
 # ---------------------------------------------------------------------------
@@ -1115,6 +1151,17 @@ class PluginContext:
             self._state = PluginState(self.plugin_id, self.manifest.skill_namespace)
         return self._state
 
+    def _track(
+        self,
+        kind: str,
+        key: str,
+        release: Callable[[], None],
+    ) -> PluginRegistration:
+        """Record host-owned cleanup for a successful registration."""
+        return self._manager._track_registration(
+            self.manifest, kind, key, release
+        )
+
     # -- host-owned LLM access ----------------------------------------------
 
     @property
@@ -1205,7 +1252,7 @@ class PluginContext:
         description: str = "",
         emoji: str = "",
         override: bool = False,
-    ) -> None:
+    ) -> Optional[PluginRegistration]:
         """Register a tool in the global registry **and** track it as plugin-provided.
 
         Pass ``override=True`` to replace an existing built-in tool with the
@@ -1232,6 +1279,7 @@ class PluginContext:
 
         from tools.registry import registry
 
+        previous = registry.get_entry(name)
         registry.register(
             name=name,
             toolset=toolset,
@@ -1244,11 +1292,21 @@ class PluginContext:
             emoji=emoji,
             override=override,
         )
-        self._manager._plugin_tool_names.add(name)
+        registered = registry.get_entry(name)
+        if registered is not None and registered.handler is handler:
+            self._manager._plugin_tool_names.add(name)
+            def _release_tool() -> None:
+                registry.restore_registration(name, registered, previous)
+                self._manager._remove_tool_name_if_unowned(name)
+
+            handle = self._track("tool", name, _release_tool)
+        else:
+            handle = None
         logger.debug(
             "Plugin %s registered tool: %s%s",
             self.manifest.name, name, " (override)" if override else "",
         )
+        return handle
 
     # -- capability probing (#64228) -----------------------------------------
 
@@ -1391,21 +1449,31 @@ class PluginContext:
         setup_fn: Callable,
         handler_fn: Callable | None = None,
         description: str = "",
-    ) -> None:
+    ) -> PluginRegistration:
         """Register a CLI subcommand (e.g. ``hermes honcho ...``).
 
         The *setup_fn* receives an argparse subparser and should add any
         arguments/sub-subparsers.  If *handler_fn* is provided it is set
         as the default dispatch function via ``set_defaults(func=...)``."""
-        self._manager._cli_commands[name] = {
+        previous = self._manager._cli_commands.get(name)
+        entry = {
             "name": name,
             "help": help,
             "description": description,
             "setup_fn": setup_fn,
             "handler_fn": handler_fn,
             "plugin": self.manifest.name,
+            "plugin_key": self.manifest.key or self.manifest.name,
         }
+        self._manager._cli_commands[name] = entry
+        handle = self._track(
+            "cli_command", name,
+            lambda: self._manager._restore_mapping(
+                self._manager._cli_commands, name, entry, previous
+            ),
+        )
         logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
+        return handle
 
     # -- slash command registration -------------------------------------------
 
@@ -1415,7 +1483,7 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
-    ) -> None:
+    ) -> Optional[PluginRegistration]:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
         The handler signature is ``fn(raw_args: str) -> str | None``.
@@ -1455,13 +1523,23 @@ class PluginContext:
         except Exception:
             pass  # If commands module isn't available, skip the check
 
-        self._manager._plugin_commands[clean] = {
+        previous = self._manager._plugin_commands.get(clean)
+        entry = {
             "handler": handler,
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
+            "plugin_key": self.manifest.key or self.manifest.name,
             "args_hint": (args_hint or "").strip(),
         }
+        self._manager._plugin_commands[clean] = entry
+        handle = self._track(
+            "command", clean,
+            lambda: self._manager._restore_mapping(
+                self._manager._plugin_commands, clean, entry, previous
+            ),
+        )
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
+        return handle
 
     # -- tool dispatch -------------------------------------------------------
 
@@ -1496,7 +1574,7 @@ class PluginContext:
 
     # -- context engine registration -----------------------------------------
 
-    def register_context_engine(self, engine) -> None:
+    def register_context_engine(self, engine) -> Optional[PluginRegistration]:
         """Register a context engine to replace the built-in ContextCompressor.
 
         Only one context engine plugin is allowed. If a second plugin tries
@@ -1520,11 +1598,19 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = self._manager._context_engine
         self._manager._context_engine = engine
+        handle = self._track(
+            "context_engine", engine.name,
+            lambda: self._manager._restore_value(
+                "_context_engine", engine, previous
+            ),
+        )
         logger.info(
             "Plugin '%s' registered context engine: %s",
             self.manifest.name, engine.name,
         )
+        return handle
 
     # -- context reference registration -------------------------------------
 
@@ -1564,7 +1650,7 @@ class PluginContext:
 
     # -- image gen provider registration ------------------------------------
 
-    def register_image_gen_provider(self, provider) -> None:
+    def register_image_gen_provider(self, provider) -> Optional[PluginRegistration]:
         """Register an image generation backend.
 
         ``provider`` must be an instance of
@@ -1574,7 +1660,11 @@ class PluginContext:
         tool calls.
         """
         from agent.image_gen_provider import ImageGenProvider
-        from agent.image_gen_registry import register_provider
+        from agent.image_gen_registry import (
+            get_provider,
+            register_provider,
+            restore_registration,
+        )
 
         if not isinstance(provider, ImageGenProvider):
             logger.warning(
@@ -1583,15 +1673,24 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = get_provider(provider.name)
         register_provider(provider)
+        registered = get_provider(provider.name)
+        if registered is not provider:
+            return None
+        handle = self._track(
+            "image_gen_provider", provider.name,
+            lambda: restore_registration(provider.name, provider, previous),
+        )
         logger.info(
             "Plugin '%s' registered image_gen provider: %s",
             self.manifest.name, provider.name,
         )
+        return handle
 
     # -- dashboard auth provider registration --------------------------------
 
-    def register_dashboard_auth_provider(self, provider) -> None:
+    def register_dashboard_auth_provider(self, provider) -> Optional[PluginRegistration]:
         """Register a dashboard authentication provider.
 
         ``provider`` must be an instance of
@@ -1605,8 +1704,11 @@ class PluginContext:
         ``register_image_gen_provider``.
         """
         from hermes_cli.dashboard_auth import (
-            DashboardAuthProvider, register_provider,
+            DashboardAuthProvider,
+            get_provider,
+            register_provider,
         )
+        from hermes_cli.dashboard_auth.registry import restore_registration
 
         if not isinstance(provider, DashboardAuthProvider):
             logger.warning(
@@ -1615,6 +1717,7 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = get_provider(provider.name)
         try:
             register_provider(provider)
         except (TypeError, ValueError) as e:
@@ -1624,14 +1727,22 @@ class PluginContext:
                 self.manifest.name, getattr(provider, "name", "?"), e,
             )
             return
+        registered = get_provider(provider.name)
+        if registered is not provider:
+            return None
+        handle = self._track(
+            "dashboard_auth_provider", provider.name,
+            lambda: restore_registration(provider.name, provider, previous),
+        )
         logger.info(
             "Plugin '%s' registered dashboard-auth provider: %s (%s)",
             self.manifest.name, provider.name, provider.display_name,
         )
+        return handle
 
     # -- video gen provider registration -------------------------------------
 
-    def register_video_gen_provider(self, provider) -> None:
+    def register_video_gen_provider(self, provider) -> Optional[PluginRegistration]:
         """Register a video generation backend.
 
         ``provider`` must be an instance of
@@ -1641,7 +1752,11 @@ class PluginContext:
         tool calls.
         """
         from agent.video_gen_provider import VideoGenProvider
-        from agent.video_gen_registry import register_provider as _register_video_provider
+        from agent.video_gen_registry import (
+            get_provider,
+            register_provider as _register_video_provider,
+            restore_registration,
+        )
 
         if not isinstance(provider, VideoGenProvider):
             logger.warning(
@@ -1650,15 +1765,24 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = get_provider(provider.name)
         _register_video_provider(provider)
+        registered = get_provider(provider.name)
+        if registered is not provider:
+            return None
+        handle = self._track(
+            "video_gen_provider", provider.name,
+            lambda: restore_registration(provider.name, provider, previous),
+        )
         logger.info(
             "Plugin '%s' registered video_gen provider: %s",
             self.manifest.name, provider.name,
         )
+        return handle
 
     # -- web search/extract provider registration ----------------------------
 
-    def register_web_search_provider(self, provider) -> None:
+    def register_web_search_provider(self, provider) -> Optional[PluginRegistration]:
         """Register a web search/extract backend.
 
         ``provider`` must be an instance of
@@ -1669,7 +1793,11 @@ class PluginContext:
         tool calls.
         """
         from agent.web_search_provider import WebSearchProvider
-        from agent.web_search_registry import register_provider as _register_web_provider
+        from agent.web_search_registry import (
+            get_provider,
+            register_provider as _register_web_provider,
+            restore_registration,
+        )
 
         if not isinstance(provider, WebSearchProvider):
             logger.warning(
@@ -1678,15 +1806,24 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = get_provider(provider.name)
         _register_web_provider(provider)
+        registered = get_provider(provider.name)
+        if registered is not provider:
+            return None
+        handle = self._track(
+            "web_search_provider", provider.name,
+            lambda: restore_registration(provider.name, provider, previous),
+        )
         logger.info(
             "Plugin '%s' registered web provider: %s",
             self.manifest.name, provider.name,
         )
+        return handle
 
     # -- browser provider registration ---------------------------------------
 
-    def register_browser_provider(self, provider) -> None:
+    def register_browser_provider(self, provider) -> Optional[PluginRegistration]:
         """Register a cloud browser backend.
 
         ``provider`` must be an instance of
@@ -1701,7 +1838,11 @@ class PluginContext:
         consults the registry built up by these calls.
         """
         from agent.browser_provider import BrowserProvider
-        from agent.browser_registry import register_provider as _register_browser_provider
+        from agent.browser_registry import (
+            get_provider,
+            register_provider as _register_browser_provider,
+            restore_registration,
+        )
 
         if not isinstance(provider, BrowserProvider):
             logger.warning(
@@ -1710,15 +1851,24 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = get_provider(provider.name)
         _register_browser_provider(provider)
+        registered = get_provider(provider.name)
+        if registered is not provider:
+            return None
+        handle = self._track(
+            "browser_provider", provider.name,
+            lambda: restore_registration(provider.name, provider, previous),
+        )
         logger.info(
             "Plugin '%s' registered browser provider: %s",
             self.manifest.name, provider.name,
         )
+        return handle
 
     # -- secret source registration -------------------------------------------
 
-    def register_secret_source(self, source) -> None:
+    def register_secret_source(self, source) -> Optional[PluginRegistration]:
         """Register an external secret-manager backend.
 
         ``source`` must be an instance of
@@ -1745,7 +1895,11 @@ class PluginContext:
         See the base-module docstring for the full contract.
         """
         from agent.secret_sources.base import SecretSource
-        from agent.secret_sources.registry import register_source
+        from agent.secret_sources.registry import (
+            get_source,
+            register_source,
+            restore_registration,
+        )
 
         if not isinstance(source, SecretSource):
             logger.warning(
@@ -1754,15 +1908,25 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = get_source(source.name)
         if register_source(source):
+            registered = get_source(source.name)
+            if registered is not source:
+                return None
+            handle = self._track(
+                "secret_source", source.name,
+                lambda: restore_registration(source.name, source, previous),
+            )
             logger.info(
                 "Plugin '%s' registered secret source: %s",
                 self.manifest.name, source.name,
             )
+            return handle
+        return None
 
     # -- TTS provider registration -------------------------------------------
 
-    def register_tts_provider(self, provider) -> None:
+    def register_tts_provider(self, provider) -> Optional[PluginRegistration]:
         """Register a text-to-speech backend.
 
         ``provider`` must be an instance of
@@ -1783,7 +1947,11 @@ class PluginContext:
         replacing it — see issue #30398 for the full design rationale.
         """
         from agent.tts_provider import TTSProvider
-        from agent.tts_registry import register_provider as _register_tts_provider
+        from agent.tts_registry import (
+            get_provider,
+            register_provider as _register_tts_provider,
+            restore_registration,
+        )
 
         if not isinstance(provider, TTSProvider):
             logger.warning(
@@ -1792,15 +1960,24 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = get_provider(provider.name)
         _register_tts_provider(provider)
+        registered = get_provider(provider.name)
+        if registered is not provider:
+            return None
+        handle = self._track(
+            "tts_provider", provider.name,
+            lambda: restore_registration(provider.name, provider, previous),
+        )
         logger.info(
             "Plugin '%s' registered TTS provider: %s",
             self.manifest.name, provider.name,
         )
+        return handle
 
     # -- transcription (STT) provider registration ---------------------------
 
-    def register_transcription_provider(self, provider) -> None:
+    def register_transcription_provider(self, provider) -> Optional[PluginRegistration]:
         """Register a speech-to-text backend.
 
         ``provider`` must be an instance of
@@ -1827,7 +2004,11 @@ class PluginContext:
         backends).
         """
         from agent.transcription_provider import TranscriptionProvider
-        from agent.transcription_registry import register_provider as _register_stt_provider
+        from agent.transcription_registry import (
+            get_provider,
+            register_provider as _register_stt_provider,
+            restore_registration,
+        )
 
         if not isinstance(provider, TranscriptionProvider):
             logger.warning(
@@ -1836,11 +2017,20 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = get_provider(provider.name)
         _register_stt_provider(provider)
+        registered = get_provider(provider.name)
+        if registered is not provider:
+            return None
+        handle = self._track(
+            "transcription_provider", provider.name,
+            lambda: restore_registration(provider.name, provider, previous),
+        )
         logger.info(
             "Plugin '%s' registered transcription provider: %s",
             self.manifest.name, provider.name,
         )
+        return handle
 
     # -- platform adapter registration ---------------------------------------
 
@@ -1854,7 +2044,7 @@ class PluginContext:
         required_env: list | None = None,
         install_hint: str = "",
         **entry_kwargs: Any,
-    ) -> None:
+    ) -> Optional[PluginRegistration]:
         """Register a gateway platform adapter.
 
         The adapter_factory receives a ``PlatformConfig`` and returns a
@@ -1898,13 +2088,34 @@ class PluginContext:
             source="plugin",
             **entry_kwargs,
         )
+        previous = platform_registry.snapshot_registration(name)
         platform_registry.register(entry)
+        current = platform_registry.snapshot_registration(name)
+        if current[0] is not entry or current[1] is not None:
+            return None
         self._manager._plugin_platform_names.add(name)
+        handle = self._track(
+            "platform", name,
+            lambda: self._release_platform_registration(
+                platform_registry, name, current, previous
+            ),
+        )
         logger.debug(
             "Plugin %s registered platform: %s",
             self.manifest.name,
             name,
         )
+        return handle
+
+    def _release_platform_registration(
+        self,
+        platform_registry,
+        name: str,
+        current,
+        previous,
+    ) -> None:
+        platform_registry.restore_registration(name, current, previous)
+        self._manager._remove_platform_name_if_unowned(name)
 
     # -- slack action handler registration ----------------------------------
 
@@ -1912,7 +2123,7 @@ class PluginContext:
         self,
         action_id: Any,
         callback: Callable,
-    ) -> None:
+    ) -> PluginRegistration:
         """Register a Slack Block Kit action handler from a plugin.
 
         Hermes' Slack adapter wires registered handlers into its
@@ -1955,14 +2166,21 @@ class PluginContext:
                 f"Plugin '{self.manifest.name}' tried to register a Slack "
                 f"action handler with an empty action_id."
             )
-        self._manager._slack_action_handlers.append(
-            (action_id, callback, self.manifest.name)
+        entry = (action_id, callback, self.manifest.name)
+        self._manager._slack_action_handlers.append(entry)
+        handle = self._track(
+            "slack_action_handler",
+            repr(action_id),
+            lambda: self._manager._remove_identity(
+                self._manager._slack_action_handlers, entry
+            ),
         )
         logger.debug(
             "Plugin %s registered Slack action handler: %s",
             self.manifest.name,
             action_id,
         )
+        return handle
 
     # -- hook registration --------------------------------------------------
 
@@ -1975,7 +2193,7 @@ class PluginContext:
         display_name: str,
         description: str,
         defaults: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> PluginRegistration:
         """Register a plugin-defined auxiliary LLM task.
 
         Auxiliary tasks are LLM-backed side jobs (vision analysis, web extraction,
@@ -2077,13 +2295,22 @@ class PluginContext:
             "description": description,
             "defaults": merged_defaults,
             "plugin": owner_id,
+            "plugin_key": owner_id,
         }
+        entry = self._manager._aux_tasks[key]
+        handle = self._track(
+            "auxiliary_task", key,
+            lambda: self._manager._restore_mapping(
+                self._manager._aux_tasks, key, entry, existing
+            ),
+        )
         logger.debug(
             "Plugin %s registered auxiliary task: %s (%s)",
             self.manifest.name,
             key,
             display_name,
         )
+        return handle
 
     # -- redaction pattern registration --------------------------------------
 
@@ -2129,7 +2356,7 @@ class PluginContext:
         )
         return count
 
-    def register_hook(self, hook_name: str, callback: Callable) -> None:
+    def register_hook(self, hook_name: str, callback: Callable) -> PluginRegistration:
         """Register a lifecycle hook callback.
 
         Unknown hook names produce a warning but are still stored so
@@ -2143,8 +2370,16 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
-        self._manager._hooks.setdefault(hook_name, []).append(callback)
+        callbacks = self._manager._hooks.setdefault(hook_name, [])
+        callbacks.append(callback)
+        handle = self._track(
+            "hook", hook_name,
+            lambda: self._manager._remove_callback(
+                self._manager._hooks, hook_name, callback
+            ),
+        )
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
+        return handle
 
     def register_system_prompt_section(
         self,
@@ -2274,7 +2509,7 @@ class PluginContext:
 
     # -- middleware registration -------------------------------------------
 
-    def register_middleware(self, kind: str, callback: Callable) -> None:
+    def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register a behavior-changing middleware callback.
 
         Middleware is separate from observer hooks: request middleware may
@@ -2290,8 +2525,16 @@ class PluginContext:
                 kind,
                 ", ".join(sorted(VALID_MIDDLEWARE)),
             )
-        self._manager._middleware.setdefault(kind, []).append(callback)
+        callbacks = self._manager._middleware.setdefault(kind, [])
+        callbacks.append(callback)
+        handle = self._track(
+            "middleware", kind,
+            lambda: self._manager._remove_callback(
+                self._manager._middleware, kind, callback
+            ),
+        )
         logger.debug("Plugin %s registered middleware: %s", self.manifest.name, kind)
+        return handle
 
     # -- skill registration -------------------------------------------------
 
@@ -2301,7 +2544,7 @@ class PluginContext:
         path: Path,
         description: str = "",
         frontmatter: Optional[Mapping[str, Any]] = None,
-    ) -> None:
+    ) -> PluginRegistration:
         """Register a read-only skill provided by this plugin.
 
         The skill becomes resolvable as ``'<plugin_name>:<name>'`` via
@@ -2333,17 +2576,27 @@ class PluginContext:
         qualified = f"{namespace}:{name}"
         if self.manifest.portable and qualified in self._manager._plugin_skills:
             raise ValueError(f"Plugin skill '{qualified}' is already registered")
-        self._manager._plugin_skills[qualified] = {
+        previous = self._manager._plugin_skills.get(qualified)
+        entry = {
             "path": path,
             "plugin": namespace,
+            "plugin_key": self.manifest.key or self.manifest.name,
             "bare_name": name,
             "description": description,
             "frontmatter": dict(frontmatter or {}),
         }
+        self._manager._plugin_skills[qualified] = entry
+        handle = self._track(
+            "skill", qualified,
+            lambda: self._manager._restore_mapping(
+                self._manager._plugin_skills, qualified, entry, previous
+            ),
+        )
         logger.debug(
             "Plugin %s registered skill: %s",
             self.manifest.name, qualified,
         )
+        return handle
 
 
 # ---------------------------------------------------------------------------
@@ -2396,6 +2649,227 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Registration handles are kept both per plugin (ownership lookup) and
+        # globally (reverse-order teardown for overrides spanning plugins).
+        self._ownership_ledger: Dict[str, List[PluginRegistration]] = {}
+        self._registration_order: List[PluginRegistration] = []
+
+    # -----------------------------------------------------------------------
+    # Registration ledger internals
+    # -----------------------------------------------------------------------
+
+    def _track_registration(
+        self,
+        manifest: PluginManifest,
+        kind: str,
+        key: str,
+        release: Callable[[], None],
+    ) -> PluginRegistration:
+        """Record one successful registration under its canonical plugin key."""
+        plugin_key = manifest.key or manifest.name
+        registration = PluginRegistration(
+            kind=kind,
+            key=key,
+            release=release,
+            plugin_key=plugin_key,
+        )
+        registration._on_dispose = lambda disposed: self._forget_registrations(
+            [disposed]
+        )
+        self._ownership_ledger.setdefault(plugin_key, []).append(registration)
+        self._registration_order.append(registration)
+        return registration
+
+    @staticmethod
+    def _remove_identity(values: list, target: Any) -> bool:
+        """Remove the last exact object match from a registration list."""
+        for index in range(len(values) - 1, -1, -1):
+            if values[index] is target:
+                del values[index]
+                return True
+        return False
+
+    def _remove_callback(
+        self,
+        mapping: Dict[str, List[Callable]],
+        key: str,
+        callback: Callable,
+    ) -> None:
+        callbacks = mapping.get(key)
+        if callbacks is None:
+            return
+        self._remove_identity(callbacks, callback)
+        if not callbacks:
+            mapping.pop(key, None)
+
+    @staticmethod
+    def _restore_mapping(
+        mapping: Dict[str, dict],
+        key: str,
+        current: dict,
+        previous: Optional[dict],
+    ) -> bool:
+        """Restore a manager-local mapping only when *current* is still present."""
+        if mapping.get(key) is not current:
+            return False
+        if previous is None:
+            mapping.pop(key, None)
+        else:
+            mapping[key] = previous
+        return True
+
+    def _restore_value(
+        self,
+        attribute: str,
+        current: Any,
+        previous: Any,
+    ) -> bool:
+        """Restore a manager-local value only when *current* is still active."""
+        if getattr(self, attribute) is not current:
+            return False
+        setattr(self, attribute, previous)
+        return True
+
+    def _remove_tool_name_if_unowned(self, name: str) -> None:
+        if not any(
+            registration.active
+            and registration.kind == "tool"
+            and registration.key == name
+            for registration in self._registration_order
+        ):
+            self._plugin_tool_names.discard(name)
+
+    def _remove_platform_name_if_unowned(self, name: str) -> None:
+        if not any(
+            registration.active
+            and registration.kind == "platform"
+            and registration.key == name
+            for registration in self._registration_order
+        ):
+            self._plugin_platform_names.discard(name)
+
+    def _forget_registrations(
+        self,
+        registrations: List[PluginRegistration],
+    ) -> None:
+        if not registrations:
+            return
+        registration_ids = {id(registration) for registration in registrations}
+        self._registration_order = [
+            registration
+            for registration in self._registration_order
+            if id(registration) not in registration_ids
+        ]
+        for plugin_key, owned in list(self._ownership_ledger.items()):
+            remaining = [
+                registration
+                for registration in owned
+                if id(registration) not in registration_ids
+            ]
+            if remaining:
+                self._ownership_ledger[plugin_key] = remaining
+            else:
+                self._ownership_ledger.pop(plugin_key, None)
+
+    def _dispose_registrations(
+        self,
+        registrations: List[PluginRegistration],
+    ) -> None:
+        """Dispose registrations in reverse acquisition order, best effort."""
+        for registration in reversed(registrations):
+            try:
+                registration.dispose()
+            except Exception as exc:  # pragma: no cover - defensive cleanup
+                logger.warning(
+                    "Failed to unload plugin registration %s/%s: %s",
+                    registration.plugin_key,
+                    registration.key,
+                    exc,
+                    exc_info=_PLUGINS_DEBUG,
+                )
+
+    @staticmethod
+    def _resolve_plugin_key(
+        plugin: Union[str, PluginManifest, LoadedPlugin],
+    ) -> str:
+        if isinstance(plugin, LoadedPlugin):
+            return plugin.manifest.key or plugin.manifest.name
+        if isinstance(plugin, PluginManifest):
+            return plugin.key or plugin.name
+        return str(plugin)
+
+    def unload(
+        self,
+        plugin: Union[str, PluginManifest, LoadedPlugin, None] = None,
+    ) -> bool:
+        """Unload one plugin or all plugins owned by this manager.
+
+        Every registration made through :class:`PluginContext` is disposed in
+        reverse acquisition order.  Registry inverses are conditional on the
+        exact object still being current, so a later registration is never
+        removed accidentally.  ``plugin=None`` is the lifecycle operation
+        used by force rediscovery; lifecycle callbacks and supervised tasks
+        are intentionally left for the follow-up slice of #64229.
+
+        Returns ``True`` when at least one plugin or registration was found.
+        """
+        unload_all = plugin is None
+        if unload_all:
+            target_keys = set(self._ownership_ledger) | set(self._plugins)
+            registrations = list(self._registration_order)
+        else:
+            requested = self._resolve_plugin_key(plugin)
+            exact = {
+                requested,
+            } if requested in self._ownership_ledger or requested in self._plugins else set()
+            if exact:
+                target_keys = exact
+            else:
+                target_keys = {
+                    key
+                    for key, loaded in self._plugins.items()
+                    if loaded.manifest.name == requested
+                }
+                target_keys.update(
+                    key
+                    for key in self._ownership_ledger
+                    if key == requested
+                )
+            registrations = [
+                registration
+                for registration in self._registration_order
+                if registration.plugin_key in target_keys
+            ]
+
+        found = bool(target_keys or registrations)
+        self._dispose_registrations(registrations)
+        self._forget_registrations(registrations)
+
+        if unload_all:
+            # The handles are authoritative for global registries, while the
+            # manager-local containers are also reset to clear legacy/manual
+            # state that predates the ledger.
+            self._ownership_ledger.clear()
+            self._plugins.clear()
+            self._hooks.clear()
+            self._middleware.clear()
+            self._plugin_tool_names.clear()
+            self._plugin_platform_names.clear()
+            self._cli_commands.clear()
+            self._plugin_commands.clear()
+            self._plugin_skills.clear()
+            self._portable_mcp_servers.clear()
+            self._aux_tasks.clear()
+            self._system_prompt_sections.clear()
+            self._approval_transports.clear()
+            self._slack_action_handlers.clear()
+            self._context_engine = None
+            self._discovered = False
+        else:
+            for key in target_keys:
+                self._plugins.pop(key, None)
+
+        return found
 
     # -----------------------------------------------------------------------
     # Public
@@ -2436,34 +2910,15 @@ class PluginManager:
         """
         if self._discovered and not force:
             return
+        if force:
+            # The ledger owns teardown.  Clearing manager-local containers by
+            # itself leaves process-global tools/platforms/providers installed.
+            self.unload()
         if env_var_enabled("HERMES_SAFE_MODE"):
             logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
             self._discovered = True
             return
-        if force:
-            # Remove concrete and deferred platform registrations before
-            # clearing ownership metadata. Otherwise disabled plugins (or a
-            # profile switch in a long-lived process) leak their parser or
-            # send handler into the next discovery pass.
-            from gateway.platform_registry import platform_registry
 
-            for platform_name in tuple(self._plugin_platform_names):
-                platform_registry.unregister(platform_name)
-            self._plugins.clear()
-            self._hooks.clear()
-            self._middleware.clear()
-            self._plugin_tool_names.clear()
-            self._plugin_platform_names.clear()
-            self._cli_commands.clear()
-            self._plugin_commands.clear()
-            self._system_prompt_sections.clear()
-            self._plugin_skills.clear()
-            self._portable_mcp_servers.clear()
-            self._aux_tasks.clear()
-            self._approval_transports.clear()
-            self._reset_event_bus()
-            self._slack_action_handlers.clear()
-            self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
         # raises so a failed scan is NOT cached as "discovered with an empty
@@ -3107,7 +3562,22 @@ class PluginManager:
         try:
             from gateway.platform_registry import platform_registry
 
+            previous = platform_registry.snapshot_registration(platform_name)
             platform_registry.register_deferred(platform_name, _loader)
+            current = platform_registry.snapshot_registration(platform_name)
+            if current[0] is None and current[1] is _loader:
+                self._plugin_platform_names.add(platform_name)
+                self._track_registration(
+                    manifest,
+                    "platform",
+                    platform_name,
+                    lambda: self._release_deferred_platform(
+                        platform_registry,
+                        platform_name,
+                        current,
+                        previous,
+                    ),
+                )
             logger.debug(
                 "Registered deferred platform loader: %s (plugin=%s)",
                 platform_name,
@@ -3190,6 +3660,16 @@ class PluginManager:
         ):
             logger.warning("Plugin %s config: %s", plugin_id, warning)
 
+    def _release_deferred_platform(
+        self,
+        platform_registry,
+        name: str,
+        current,
+        previous,
+    ) -> None:
+        platform_registry.restore_registration(name, current, previous)
+        self._remove_platform_name_if_unowned(name)
+
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
         loaded = LoadedPlugin(manifest=manifest)
@@ -3209,6 +3689,8 @@ class PluginManager:
             f"{_NS_PARENT}.{_slug}",
             PluginContext(manifest, self)._tool_override_allowed(""),
         )
+        registration_start = len(self._registration_order)
+        plugin_key = manifest.key or manifest.name
         try:
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
@@ -3224,38 +3706,31 @@ class PluginManager:
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
             else:
                 ctx = PluginContext(manifest, self)
-                # Snapshot registry state BEFORE register() so each registry's
-                # attribution counts only what THIS plugin actually added.
-                # The previous approach diffed names against all already-loaded
-                # plugins, which mis-credited a plugin that registered a hook /
-                # middleware / tool name an earlier plugin had already used:
-                # the shared name was attributed to the first plugin only, so
-                # later plugins under-reported in `hermes plugins list`.
-                _tools_before = set(self._plugin_tool_names)
-                _hook_counts_before = {
-                    h: len(cbs) for h, cbs in self._hooks.items()
-                }
-                _mw_counts_before = {
-                    kind: len(cbs) for kind, cbs in self._middleware.items()
-                }
                 register_fn(ctx)
+                registrations = [
+                    registration
+                    for registration in self._registration_order[registration_start:]
+                    if registration.plugin_key == plugin_key and registration.active
+                ]
                 loaded.tools_registered = [
-                    t for t in self._plugin_tool_names
-                    if t not in _tools_before
+                    registration.key
+                    for registration in registrations
+                    if registration.kind == "tool"
                 ]
                 loaded.hooks_registered = [
-                    h
-                    for h, cbs in self._hooks.items()
-                    if len(cbs) > _hook_counts_before.get(h, 0)
+                    registration.key
+                    for registration in registrations
+                    if registration.kind == "hook"
                 ]
                 loaded.middleware_registered = [
-                    kind
-                    for kind, cbs in self._middleware.items()
-                    if len(cbs) > _mw_counts_before.get(kind, 0)
+                    registration.key
+                    for registration in registrations
+                    if registration.kind == "middleware"
                 ]
                 loaded.commands_registered = [
-                    c for c in self._plugin_commands
-                    if self._plugin_commands[c].get("plugin") == manifest.name
+                    registration.key
+                    for registration in registrations
+                    if registration.kind == "command"
                 ]
                 loaded.enabled = True
                 logger.debug(
@@ -3266,11 +3741,24 @@ class PluginManager:
                     len(loaded.commands_registered),
                     sum(
                         1 for c in self._cli_commands
-                        if self._cli_commands[c].get("plugin") == manifest.name
+                        if any(
+                            registration.active
+                            and registration.plugin_key == plugin_key
+                            and registration.kind == "cli_command"
+                            and registration.key == c
+                            for registration in registrations
+                        )
                     ),
                 )
 
         except Exception as exc:
+            owned = [
+                registration
+                for registration in self._registration_order
+                if registration.plugin_key == plugin_key
+            ]
+            self._dispose_registrations(owned)
+            self._forget_registrations(owned)
             loaded.error = str(exc)
             # register() may have subscribed before raising. Remove those
             # owner-tagged entries so a failed/unloaded plugin cannot leave a
@@ -4043,6 +4531,18 @@ def get_portable_mcp_server_names_nowait() -> "set[str]":
                 return set(names)
     discover_plugins()
     return set(manager.get_portable_mcp_servers())
+
+
+def unload_plugins(
+    plugin: Union[str, PluginManifest, LoadedPlugin, None] = None,
+) -> bool:
+    """Unload one plugin or all plugins from the process-global manager.
+
+    Wait for background discovery first so teardown cannot race an in-flight
+    registration sweep introduced by the warm-start discovery path.
+    """
+    _join_background_discovery()
+    return get_plugin_manager().unload(plugin)
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:

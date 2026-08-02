@@ -156,6 +156,22 @@ def get_source(name: str) -> Optional[SecretSource]:
     return _SOURCES.get(name)
 
 
+def restore_registration(
+    name: str,
+    current: SecretSource,
+    previous: Optional[SecretSource],
+) -> bool:
+    """Restore a host-owned source registration if it is still current."""
+    _ensure_builtin_sources()
+    if _SOURCES.get(name) is not current:
+        return False
+    if previous is None:
+        _SOURCES.pop(name, None)
+    else:
+        _SOURCES[name] = previous
+    return True
+
+
 def list_sources() -> List[SecretSource]:
     _ensure_builtin_sources()
     return list(_SOURCES.values())

@@ -90,6 +90,22 @@ def get_provider(name: str) -> Optional[WebSearchProvider]:
         return _providers.get(name.strip())
 
 
+def restore_registration(
+    name: str,
+    current: WebSearchProvider,
+    previous: Optional[WebSearchProvider],
+) -> bool:
+    """Restore a plugin registration only when *current* is still installed."""
+    with _lock:
+        if _providers.get(name) is not current:
+            return False
+        if previous is None:
+            _providers.pop(name, None)
+        else:
+            _providers[name] = previous
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Active-provider resolution
 # ---------------------------------------------------------------------------

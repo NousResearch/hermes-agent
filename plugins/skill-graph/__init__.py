@@ -1931,6 +1931,41 @@ def register(ctx):
     except Exception:
         logger.exception("skill-graph: failed to patch skill_view")
 
+    # ── Monkey-patch _find_skill to fall back to skill-graph ──
+    # When skill_graph_mode is on, the agent may receive injected candidates
+    # for skills that live in graph source_dirs (e.g. PS repo) but not in the
+    # local skills/ dir that _find_skill scans. Without this patch, skill_manage
+    # (patch/edit/write_file/delete) fails with "not found in active profile"
+    # for any graph-managed skill.
+    #
+    # Patch strategy: try the original _find_skill first (local skills take
+    # precedence). On miss, delegate to the graph's _find_skill_path, which
+    # scans all configured source_dirs. Read-only skills (hermes bundled,
+    # hermes-agent live install) are allowed to resolve — patch/edit operate
+    # on their physical path and the file system permissions handle protection.
+    try:
+        import tools.skill_manager_tool as _smt
+        _orig_find_skill = _smt._find_skill
+
+        def _patched_find_skill(name: str):
+            result = _orig_find_skill(name)
+            if result is not None:
+                return result
+            # Graph fallback: resolve physical path from the graph's index
+            graph_path = _find_skill_path(name)
+            if graph_path is not None:
+                logger.info(
+                    "skill-graph: _find_skill graph fallback resolved '%s' → %s",
+                    name, graph_path,
+                )
+                return {"path": graph_path.parent}
+            return None
+
+        _smt._find_skill = _patched_find_skill
+        logger.info("skill-graph: patched _find_skill with graph fallback")
+    except Exception:
+        logger.exception("skill-graph: failed to patch _find_skill")
+
     logger.info(
         "skill-graph plugin registered: tools=skill_graph_search+skill_load+skill_graph_config, "
         "cmd=/skill-graph, hooks=on_session_start+post_tool_call+pre_tool_call"

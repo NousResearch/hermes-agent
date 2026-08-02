@@ -1064,7 +1064,9 @@ def _reap_idle_sessions() -> None:
 
         trim_memory(reason="idle reaper periodic trim")
     except Exception as exc:
-        logger.warning(
+        # debug, not warning — persistent failure would repeat every reaper
+        # scan (300s) forever; sibling failure branches log at debug.
+        logger.debug(
             "idle reaper memory trim failed: %s: %s", type(exc).__name__, exc
         )
 

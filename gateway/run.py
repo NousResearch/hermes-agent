@@ -25436,7 +25436,11 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
 
                 trim_memory(reason="messaging gateway housekeeping")
             except Exception as exc:
-                logger.warning(
+                # debug, not warning: sibling housekeeping branches all log
+                # failures at debug, and a persistent failure (e.g. broken
+                # import after a partial update) would otherwise warn every
+                # 60s forever.
+                logger.debug(
                     "gateway housekeeping memory trim failed: %s: %s",
                     type(exc).__name__,
                     exc,

@@ -14186,7 +14186,7 @@ def test_reap_idle_sessions_logs_trim_failure(monkeypatch, caplog):
     monkeypatch.setattr(mem_trim, "trim_memory", lambda **_kw: (_ for _ in ()).throw(RuntimeError("boom")))
     server._sessions.clear()
     try:
-        with caplog.at_level("WARNING", logger="tui_gateway.server"):
+        with caplog.at_level("DEBUG", logger="tui_gateway.server"):
             server._reap_idle_sessions()
         assert "idle reaper memory trim failed: RuntimeError: boom" in caplog.text
     finally:
@@ -15610,6 +15610,12 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch):
         frame = inspect.currentframe()
         assert frame is not None and frame.f_back is not None
         caller_locals = frame.f_back.f_locals
+        # Loud, not vacuous: if the production locals are ever renamed, fail
+        # the test instead of silently reading None and "passing".
+        assert "history" in caller_locals and "run_kwargs" in caller_locals, (
+            "expected locals not found in _run_prompt_submit's finally frame — "
+            "renamed? update this test"
+        )
         observed["history"] = caller_locals.get("history")
         observed["run_kwargs"] = caller_locals.get("run_kwargs")
 

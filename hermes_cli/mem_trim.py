@@ -37,9 +37,14 @@ def _config_settings() -> tuple[bool, float, int, float]:
     log_every_n: Any = _DEFAULT_LOG_EVERY_N
     info_log_min_delta_mb: Any = _DEFAULT_INFO_LOG_MIN_DELTA_MB
     try:
-        from hermes_cli.config import load_config
+        # Read-only access: settings are only .get()ed and coerced, never
+        # mutated — use the no-deepcopy variant. This runs on EVERY trim
+        # attempt (before the cooldown check), and generating a full-config
+        # deepcopy per attempt is exactly the allocator garbage this module
+        # exists to release.
+        from hermes_cli.config import load_config_readonly
 
-        config = load_config() or {}
+        config = load_config_readonly() or {}
         context = config.get("context") if isinstance(config, dict) else None
         settings = context.get("memory_trim") if isinstance(context, dict) else None
         if isinstance(settings, dict):

@@ -3093,6 +3093,25 @@ def _pause_windows_gateways_for_update() -> dict | None:
         # gateways that were running when the update began. Cold-start one after
         # the update so an installed gateway is actually up post-update. Users
         # who run gateway-less (no autostart entry) get nothing forced on them.
+        #
+        # Exception: Hermes Desktop already hosts the runtime via
+        # ``hermes serve`` from *this* install. Spawning a competing
+        # ``gateway run`` after every update races ports/state and piles up
+        # daemons (#76129). Only this-install serve suppresses cold-start —
+        # a serve from another checkout must not block a legitimate messaging
+        # gateway autostart for this tree (#76745 review).
+        try:
+            if _this_install_desktop_serve_is_running():
+                logger.debug(
+                    "Skipping Windows gateway cold-start plan: "
+                    "this-install desktop serve is live"
+                )
+                return None
+        except Exception as exc:
+            logger.debug(
+                "Could not check desktop serve liveness before update: %s",
+                exc,
+            )
         try:
             from hermes_cli import gateway_windows
 
@@ -3204,6 +3223,25 @@ def _pause_windows_gateways_for_update() -> dict | None:
         "unmapped": unmapped,
     }
 
+def _this_install_desktop_serve_is_running() -> bool:
+    """Return True when *this* checkout's venv hosts a live ``hermes serve``.
+
+    Uses the same install-scoped process scan as the venv-holder detector so a
+    Desktop backend from another Hermes install cannot suppress gateway
+    cold-start for this tree. Off-Windows the holder scan is empty, so this
+    is a no-op outside the Windows update path.
+    """
+    try:
+        from gateway.status import looks_like_desktop_serve_command_line
+    except Exception:
+        return False
+
+    for _pid, _name, cmdline in _detect_venv_python_processes():
+        if looks_like_desktop_serve_command_line(cmdline):
+            return True
+    return False
+
+
 def _cold_start_windows_gateway_after_update() -> None:
     """Start a fresh detached gateway after update when one is installed but down.
 
@@ -3237,6 +3275,21 @@ def _cold_start_windows_gateway_after_update() -> None:
     except Exception as exc:
         logger.debug("Could not re-check gateway liveness before cold-start: %s", exc)
         return
+
+    # This-install Desktop ``hermes serve`` already owns the runtime. Never
+    # cold-start a standalone gateway alongside it (#76129 / #76745).
+    try:
+        if _this_install_desktop_serve_is_running():
+            logger.debug(
+                "Skipping Windows gateway cold-start: "
+                "this-install desktop serve is live"
+            )
+            return
+    except Exception as exc:
+        logger.debug(
+            "Could not re-check desktop serve liveness before cold-start: %s",
+            exc,
+        )
 
     try:
         pid = gateway_windows._spawn_detached()

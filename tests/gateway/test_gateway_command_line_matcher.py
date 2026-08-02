@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from gateway.status import (
+    looks_like_desktop_serve_command_line as matches_serve,
     looks_like_gateway_command_line as matches,
     looks_like_gateway_runtime_command_line as matches_runtime,
 )
@@ -58,3 +59,31 @@ def test_accepts_real_gateway_run(cmd):
     assert matches(cmd) is True
 
 
+
+
+SERVE_ACCEPT = [
+    "python -m hermes_cli.main serve --host 127.0.0.1 --port 0",
+    r"C:\Users\me\hermes\venv\Scripts\python.exe -m hermes_cli.main serve --host 127.0.0.1",
+    "hermes serve --host 127.0.0.1 --port 0",
+    "python -m hermes_cli.main --profile work serve --host 127.0.0.1",
+    r'"C:\Program Files\Py\python.exe" -m hermes_cli.main serve --host 127.0.0.1',
+]
+
+SERVE_REJECT = [
+    "python -m hermes_cli.main gateway run",
+    "python -m hermes_cli.main gateway serve",  # not a top-level serve
+    "python -m hermes_cli.main dashboard",
+    "python -m some_other_serve",
+    "",
+    None,
+]
+
+
+@pytest.mark.parametrize("cmd", SERVE_ACCEPT)
+def test_accepts_desktop_serve(cmd):
+    assert matches_serve(cmd) is True
+
+
+@pytest.mark.parametrize("cmd", SERVE_REJECT)
+def test_rejects_non_desktop_serve(cmd):
+    assert matches_serve(cmd) is False

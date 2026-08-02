@@ -643,6 +643,23 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily", "restart.sh")
 
+    @pytest.mark.parametrize("source_verb", [".", "source"])
+    def test_sourced_script_is_scanned(self, tmp_path, source_verb):
+        """Both spellings of sourcing must be followed.
+
+        `.` and `source` are synonyms in bash, so a script that hides the
+        command one level down via `. helper.sh` has to be scanned the same
+        way `source helper.sh` is — otherwise the cheapest possible bypass is
+        a single character.
+        """
+        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        helper = tmp_path / "helper.sh"
+        helper.write_text("launchctl kickstart -k gui/501/ai.hermes.gateway\n")
+        entry = tmp_path / "entry.sh"
+        entry.write_text(f"#!/bin/bash\n{source_verb} {helper}\n")
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("daily ops job", str(entry))
+
 
 # ---------------------------------------------------------------------------
 # Defense 2 (chokepoint): cron.jobs.create_job blocks the AGENT model-tool path

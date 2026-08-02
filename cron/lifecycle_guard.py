@@ -188,7 +188,12 @@ def _iter_referenced_shell_scripts(
         if index is None:
             continue
         executable = segment[index]
-        executable_name = Path(executable).name
+        # `Path(".").name` is the empty string, so deriving the name alone
+        # would make the `.` branch below unreachable and let POSIX
+        # dot-sourcing (`. helper.sh`) skip the scan entirely while its
+        # `source helper.sh` synonym is followed. Fall back to the raw token
+        # whenever `Path().name` yields nothing.
+        executable_name = Path(executable).name or executable
 
         if executable_name in {".", "source"}:
             if len(segment) > index + 1:

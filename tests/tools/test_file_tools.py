@@ -920,3 +920,77 @@ class TestNotFoundCache:
         assert _check_not_found_cache("read", "/tmp/ttl-test", tid) is None
         with ft._read_tracker_lock:
             assert ("read", "/tmp/ttl-test") not in _read_tracker[tid].get("not_found", {})
+
+    def test_out_of_band_creation_defeats_cached_miss(self, tmp_path):
+        """CRITICAL staleness contract: a file created AFTER a cached miss —
+        by a terminal command or any external process, NOT write_file_tool —
+        must be served for real on the next read. The agent pattern
+        'check for file → create it → read it' breaks otherwise."""
+        from tools.file_tools import (
+            _check_not_found_cache,
+            _record_not_found,
+            _read_tracker,
+        )
+
+        tid = "neg-cache-oob-read"
+        _read_tracker.pop(tid, None)
+        target = tmp_path / "created-later.txt"
+
+        _record_not_found("read", str(target), tid, '{"error":"File not found: x"}')
+        assert _check_not_found_cache("read", str(target), tid) is not None
+
+        # Out-of-band creation: plain filesystem write, no tool hook fires.
+        target.write_text("real content\n")
+
+        # The cached miss must NOT be served once the path exists…
+        assert _check_not_found_cache("read", str(target), tid) is None, (
+            "stale 'File not found' served after the file was created "
+            "out-of-band — the existence guard regressed"
+        )
+        # …and the entry is evicted, not just skipped.
+        with __import__("tools.file_tools", fromlist=["x"])._read_tracker_lock:
+            assert ("read", str(target)) not in _read_tracker[tid].get("not_found", {})
+
+    def test_out_of_band_creation_defeats_cached_search_miss(self, tmp_path):
+        """Same contract for search roots: creating a file under a
+        previously-missing directory must defeat the cached 'Path not found'."""
+        from tools.file_tools import (
+            _check_not_found_cache,
+            _record_not_found,
+            _read_tracker,
+        )
+
+        tid = "neg-cache-oob-search"
+        _read_tracker.pop(tid, None)
+        missing_dir = tmp_path / "later-dir"
+
+        _record_not_found("search", str(missing_dir), tid, '{"error":"Path not found: x"}')
+        assert _check_not_found_cache("search", str(missing_dir), tid) is not None
+
+        missing_dir.mkdir()
+        (missing_dir / "x.txt").write_text("hi\n")
+
+        assert _check_not_found_cache("search", str(missing_dir), tid) is None, (
+            "stale 'Path not found' served after the directory was created"
+        )
+
+    def test_notify_other_tool_call_clears_not_found(self):
+        """Belt-and-suspenders: any non-read tool (terminal etc.) invalidates
+        the task's negative cache via the dispatcher's notify hook."""
+        from tools.file_tools import (
+            _check_not_found_cache,
+            _record_not_found,
+            _read_tracker,
+            notify_other_tool_call,
+        )
+
+        tid = "neg-cache-notify"
+        _read_tracker.pop(tid, None)
+        _record_not_found("read", "/tmp/never-exists-notify", tid, '{"error":"x"}')
+        assert _check_not_found_cache("read", "/tmp/never-exists-notify", tid) is not None
+
+        notify_other_tool_call(tid)
+
+        assert _check_not_found_cache("read", "/tmp/never-exists-notify", tid) is None, (
+            "notify_other_tool_call must clear cached misses"
+        )

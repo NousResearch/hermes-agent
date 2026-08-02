@@ -954,6 +954,7 @@ def _check_not_found_cache(op: str, resolved_str: str, task_id: str) -> str | No
 
     Eviction: TTL or write_file/patch on the path (see invalidate_for_path).
     """
+    import os as _os
     import time
     with _read_tracker_lock:
         task_data = _read_tracker.get(task_id)
@@ -967,6 +968,15 @@ def _check_not_found_cache(op: str, resolved_str: str, task_id: str) -> str | No
             return None
         ts, cached_json = entry
         if time.monotonic() - ts > _NOT_FOUND_TTL_SECONDS:
+            nf.pop((op, resolved_str), None)
+            return None
+        # Existence guard: the path may have been created since we cached
+        # the miss — by a terminal command, another agent, or any external
+        # process (write_file/patch invalidate explicitly, but they're not
+        # the only writers). The agent pattern "check file → create it →
+        # read it" is common; serving a stale miss for up to the TTL breaks
+        # it. One stat is ~free next to the subprocess walk we're skipping.
+        if _os.path.exists(resolved_str):
             nf.pop((op, resolved_str), None)
             return None
         return cached_json
@@ -1342,7 +1352,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # If we already discovered this path doesn't exist (within TTL),
         # return the cached error without spawning the subprocess +
         # similar-files walk. Cleared by write_file/patch on the same path.
-        resolved_str_for_neg = str(_resolve_path_for_task(path, task_id))
+        resolved_str_for_neg = str(_resolved)
         cached_not_found = _check_not_found_cache("read", resolved_str_for_neg, task_id)
         if cached_not_found is not None:
             return cached_not_found
@@ -1413,11 +1423,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # ── Populate negative-result cache on not-found ───────────────
         # _suggest_similar_files returns ReadResult(error="File not found: ..").
         # Cache the JSON we'd return so a retry skips the parent-dir walk.
+        # Deliberately NO early return: on upstream, error results flow
+        # through the tracking block below (consecutive-loop detection,
+        # dedup bookkeeping via the resolved path) and the normal exit —
+        # short-circuiting here changes that behavior (and broke a real
+        # test interaction). Serving from the cache (above) is the
+        # optimization; recording must stay side-effect-identical.
         _err = result_dict.get("error") or ""
         if isinstance(_err, str) and _err.startswith("File not found:"):
             _not_found_json = json.dumps(result_dict, ensure_ascii=False)
             _record_not_found("read", resolved_str_for_neg, task_id, _not_found_json)
-            return _not_found_json
 
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are
@@ -1594,6 +1609,15 @@ def notify_other_tool_call(task_id: str = "default"):
             # progress, so clear per-key dedup hit counters too.
             if "dedup_hits" in task_data:
                 task_data["dedup_hits"].clear()
+            # Any other tool (terminal, delegate, ...) may have created a
+            # previously-missing path — a cached miss is no longer
+            # trustworthy. The serve-side existence guard in
+            # _check_not_found_cache already covers this, but clearing
+            # here keeps the cache honest and covers exotic cases the
+            # stat can't (e.g. permission flips).
+            nf = task_data.get("not_found")
+            if nf:
+                nf.clear()
 
 
 def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
@@ -2085,12 +2109,13 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "token, cache, or secret-bearing environment files."
             )
 
-        # Populate negative cache when search root was missing.
+        # Populate negative cache when search root was missing. No early
+        # return — same rationale as the read path: error results keep
+        # flowing through the consecutive-search bookkeeping below.
         _search_err = result_dict.get("error") or ""
         if isinstance(_search_err, str) and _search_err.startswith("Path not found:"):
             _search_nf_json = json.dumps(result_dict, ensure_ascii=False)
             _record_not_found("search", resolved_search_path, task_id, _search_nf_json)
-            return _search_nf_json
 
         if count >= 3:
             result_dict["_warning"] = (

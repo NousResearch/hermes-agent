@@ -12736,6 +12736,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await self.async_session_store.mark_resume_pending(
                         _sk,
                         "restart_timeout" if self._restart_requested else "shutdown_timeout",
+                        source=self._get_cached_session_source(_sk),
                     )
                     _pre_drain_keys.append(_sk)
                 except Exception as _e:
@@ -12813,7 +12814,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _agent is _AGENT_PENDING_SENTINEL:
                         continue
                     try:
-                        await self.async_session_store.mark_resume_pending(_sk, _resume_reason)
+                        await self.async_session_store.mark_resume_pending(
+                            _sk,
+                            _resume_reason,
+                            source=self._get_cached_session_source(_sk),
+                        )
                     except Exception as _e:
                         logger.debug(
                             "mark_resume_pending failed for %s: %s",

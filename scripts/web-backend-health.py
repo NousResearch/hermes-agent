@@ -18,6 +18,8 @@ import subprocess
 import json
 import sys
 import os
+import urllib.error
+import urllib.request
 from datetime import datetime
 
 # P13 isolation: HERMES_HOME is env-overridable so a disposable run never
@@ -32,68 +34,59 @@ HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
 _DRY_RUN = "--dry-run" in sys.argv
 
 
+def _http_probe(url, timeout):
+    """Return HTTP status/body/error with a bounded, non-root probe."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = response.read(1_000_000).decode("utf-8", errors="replace")
+            return response.status, body, ""
+    except urllib.error.HTTPError as exc:
+        body = exc.read(1_000_000).decode("utf-8", errors="replace")
+        return exc.code, body, str(exc)
+    except Exception as exc:
+        return None, "", str(exc)
+
+
 def check_searxng():
-    """Check SearXNG container + API."""
+    """Check the SearXNG JSON API without inspecting a container."""
     if _DRY_RUN:
         return True, "dry-run: probes skipped"
-    # Container status
-    r = subprocess.run(
-        ['sudo', 'docker', 'inspect', 'searxng', '--format', '{{.State.Status}}'],
-        capture_output=True, text=True, timeout=5
+    status, body, error = _http_probe(
+        "http://127.0.0.1:8082/search?q=health+check&format=json", timeout=5
     )
-    if r.returncode != 0 or 'running' not in r.stdout:
-        return False, "container down"
-    
-    # API check
-    r2 = subprocess.run(
-        ['curl', '-sL', '--max-time', '5',
-         'http://127.0.0.1:8082/search?q=health+check&format=json'],
-        capture_output=True, text=True, timeout=10
-    )
-    if r2.returncode != 0 or not r2.stdout:
-        return False, "API not responding"
+    if status != 200:
+        return False, f"API status {status}" if status is not None else (error or "API not responding")
     try:
-        d = json.loads(r2.stdout)
-        n = len(d.get('results', []))
+        n = len(json.loads(body).get("results", []))
         if n == 0:
             return False, "0 results returned"
         return True, f"{n} results"
-    except:
+    except Exception:
         return False, "invalid JSON response"
 
 
 def check_groktoCrawl():
-    """Check GroktoCrawl agent container + scrape endpoint."""
+    """Check GroktoCrawl health and scrape status without Docker."""
     if _DRY_RUN:
         return True, "dry-run: probes skipped"
-    # Container status
-    r = subprocess.run(
-        ['sudo', 'docker', 'inspect', 'groktocrawl-agent-svc-1', '--format', '{{.State.Status}}'],
-        capture_output=True, text=True, timeout=5
-    )
-    if r.returncode != 0 or 'running' not in r.stdout:
-        return False, "container down"
-    
-    # Health endpoint
-    r2 = subprocess.run(
-        ['curl', '-sL', '--max-time', '10', 'http://localhost:8090/health'],
-        capture_output=True, text=True, timeout=15
-    )
-    if r2.returncode != 0 or not r2.stdout:
-        return False, "health endpoint not responding"
+    status_code, body, error = _http_probe("http://127.0.0.1:8090/health", timeout=10)
+    if status_code != 200 or not body:
+        detail = f"health status {status_code}" if status_code is not None else (error or "health endpoint not responding")
+        return False, detail
     try:
-        h = json.loads(r2.stdout)
-        status = h.get('status', 'unknown')
-        checks = h.get('checks', {})
-        down_services = [k for k, v in checks.items() if v.get('status') == 'down' and k not in ('searxng',)]
-        # SearXNG health check inside GroktoCrawl hits /healthz which returns 404
-        # This is cosmetic — search still works via the SearXNG search API
+        h = json.loads(body)
+        status = h.get("status", "unknown")
+        checks = h.get("checks", {})
+        down_services = [
+            k for k, v in checks.items()
+            if isinstance(v, dict) and v.get("status") == "down" and k not in ("searxng",)
+        ]
         if down_services:
             return False, f"degraded: {','.join(down_services)}"
-        if status == 'down' and not down_services:
+        if status == "down" and not down_services:
             return True, "healthy (searxng health check cosmetic 404, search works)"
         return True, f"healthy ({status})"
-    except:
+    except Exception:
         return False, "invalid health JSON"
 
 

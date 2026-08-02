@@ -81,3 +81,41 @@ def test_dry_run_main_exits_0_without_alert(monkeypatch, fake_home):
     with pytest.raises(SystemExit) as exc:
         mod.main()
     assert exc.value.code == 0
+
+
+def test_live_checks_use_http_not_docker(monkeypatch, fake_home):
+    """Live probes must not require root-only Docker access."""
+    mod = _load_module(monkeypatch, fake_home)
+    calls = []
+
+    class Response:
+        def __init__(self, body):
+            self.status = 200
+            self._body = body
+
+        def read(self, _limit=-1):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_urlopen(url, timeout):
+        assert timeout <= 10
+        if ":8082/" in url:
+            return Response(b'{"results": [{"title": "ok"}]}')
+        return Response(b'{"status": "ok", "checks": {}}')
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        assert cmd[0] != "sudo"
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    assert mod.check_searxng() == (True, "1 results")
+    assert mod.check_groktoCrawl() == (True, "healthy (ok)")
+    assert mod.check_ddgs() == (True, "working")
+    assert len(calls) == 1

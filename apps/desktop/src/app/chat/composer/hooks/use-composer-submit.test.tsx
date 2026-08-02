@@ -192,7 +192,13 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
 
   const parkClarify = (sessionId: string) => {
     $clarifyRequests.set({
-      [sessionId]: { requestId: `req-${sessionId}`, question: 'which one?', choices: ['a', 'b'], sessionId }
+      [sessionId]: {
+        requestId: `req-${sessionId}`,
+        question: 'which one?',
+        choices: ['a', 'b'],
+        multiSelect: false,
+        sessionId
+      }
     })
     $gateway.set({ request: gatewayRequest } as unknown as ReturnType<typeof $gateway.get>)
   }

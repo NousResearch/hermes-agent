@@ -71,13 +71,14 @@ function liveClarifyProps(choices = ['staging', 'production']): ToolCallMessageP
   }
 }
 
-function renderLiveClarify() {
+function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = {}) {
   const request = vi.fn().mockResolvedValue({ ok: true })
 
   $activeSessionId.set('session-1')
   $gateway.set({ request } as never)
   setClarifyRequest({
     choices: ['staging', 'production'],
+    multiSelect,
     question: 'Which deployment target?',
     requestId: 'request-1',
     sessionId: 'session-1'
@@ -86,6 +87,57 @@ function renderLiveClarify() {
 
   return request
 }
+
+describe('ClarifyTool choice selection', () => {
+  it('selects independently, deselects and submits multi-select choices as a JSON array', async () => {
+    const request = renderLiveClarify({ multiSelect: true })
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const production = screen.getByRole('button', { name: /production/ })
+
+    fireEvent.click(staging)
+    fireEvent.click(production)
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(staging)
+    expect(staging.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(staging)
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: JSON.stringify(['production', 'staging']),
+        request_id: 'request-1'
+      })
+    })
+  })
+
+  it('keeps single-select replacement and plain-string submission', async () => {
+    const request = renderLiveClarify()
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const production = screen.getByRole('button', { name: /production/ })
+
+    fireEvent.click(staging)
+    fireEvent.click(production)
+
+    expect(staging.getAttribute('aria-pressed')).toBe('false')
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'production',
+        request_id: 'request-1'
+      })
+    })
+  })
+})
 
 describe('readClarifyResult', () => {
   it('reads question + user_response from the tool JSON payload', () => {
@@ -315,6 +367,7 @@ describe('ClarifyTool pending marker', () => {
     $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
     setClarifyRequest({
       choices: null,
+      multiSelect: false,
       question: 'Anything else?',
       requestId: 'request-1',
       sessionId: 'session-1'

@@ -880,7 +880,7 @@ class TestConvertMessages:
 
         assert system == "You are helpful."
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        assert result[0]["content"] == [{"type": "text", "text": "(empty)"}]
         assert result[1]["role"] == "assistant"
         assert any(
             m["role"] == "assistant" and "Context compaction summary" in str(m["content"])
@@ -1670,3 +1670,190 @@ class TestReplayAllBlankFallback:
         result = self._convert(msg)
         texts = [b for b in result["content"] if b.get("type") == "text"]
         assert texts == [{"type": "text", "text": "(empty)"}]
+
+
+def _find_blank_text_blocks(messages):
+    """Recursively scan a converted Anthropic message list (including
+    nested tool_result content) for any text block whose text is empty or
+    whitespace-only. Returns a list of (message_index, role, location,
+    block_index) tuples for every violation found -- empty means the
+    payload is safe to send to Anthropic."""
+    violations = []
+    for m_idx, msg in enumerate(messages):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for b_idx, blk in enumerate(content):
+            if not isinstance(blk, dict):
+                continue
+            if blk.get("type") == "text" and not (
+                isinstance(blk.get("text"), str) and blk["text"].strip()
+            ):
+                violations.append((m_idx, msg.get("role"), "content", b_idx))
+            if blk.get("type") == "tool_result" and isinstance(blk.get("content"), list):
+                for ib_idx, iblk in enumerate(blk["content"]):
+                    if (
+                        isinstance(iblk, dict)
+                        and iblk.get("type") == "text"
+                        and not (isinstance(iblk.get("text"), str) and iblk["text"].strip())
+                    ):
+                        violations.append((m_idx, msg.get("role"), "tool_result", ib_idx))
+    return violations
+
+
+class TestFinalPayloadHasNoBlankTextBlocks:
+    """End-to-end regression tests on the true final payload boundary:
+    ``convert_messages_to_anthropic`` -- the last transform before
+    ``build_anthropic_kwargs`` hands ``messages`` to the Anthropic SDK.
+
+    Covers the blank-content shapes enumerated for the "text content
+    blocks must contain non-whitespace text" HTTP 400 class, verifying the
+    final built payload never contains a blank text block while tool_use,
+    tool_result, and image content are preserved.
+    """
+
+    def test_user_message_empty_string_content(self):
+        messages = [{"role": "user", "content": ""}]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assert result[0]["content"] == "(empty message)"
+
+    def test_user_message_whitespace_only_string_content(self):
+        messages = [{"role": "user", "content": "   "}]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assert result[0]["content"] == "(empty message)"
+
+    def test_user_message_blank_list_content(self):
+        messages = [{"role": "user", "content": [{"type": "text", "text": ""}]}]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assert result[0]["content"] == [{"type": "text", "text": "(empty message)"}]
+
+    def test_user_message_mixed_blank_and_valid_text_blocks(self):
+        """A blank text block sitting alongside a non-blank one must be
+        dropped individually -- not left in place (the all-or-nothing bug)
+        and not used as an excuse to nuke the valid sibling block."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "real question"},
+                    {"type": "text", "text": "   "},
+                ],
+            }
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assert result[0]["content"] == [{"type": "text", "text": "real question"}]
+
+    def test_mixed_blank_text_plus_valid_tool_block_preserved(self):
+        """Blank text next to a valid non-text block (tool_result) must
+        drop only the blank text and keep the tool block intact."""
+        messages = [
+            {"role": "user", "content": "call a tool"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {"name": "web_search", "arguments": '{"query": "x"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result text"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assistant_msg = next(m for m in result if m["role"] == "assistant")
+        tool_use_blocks = [b for b in assistant_msg["content"] if b.get("type") == "tool_use"]
+        assert len(tool_use_blocks) == 1
+        tool_result_msg = next(
+            m
+            for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
+        assert tool_result_msg is not None
+
+    def test_assistant_tool_call_message_with_blank_content(self):
+        """OpenAI-wire-shaped assistant turn: content is a blank string,
+        tool_calls carries the real payload. Must not surface a blank text
+        block, and the tool_use block must survive untouched."""
+        messages = [
+            {"role": "user", "content": "do it"},
+            {
+                "role": "assistant",
+                "content": "   ",
+                "tool_calls": [
+                    {
+                        "id": "call_2",
+                        "function": {"name": "web_search", "arguments": '{"query": "y"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_2", "content": "ok"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assistant_msg = next(m for m in result if m["role"] == "assistant")
+        assert assistant_msg["content"] == [
+            {"type": "tool_use", "id": "call_2", "name": "web_search", "input": {"query": "y"}}
+        ]
+
+    def test_leading_synthesized_user_turn_is_non_blank(self):
+        """_ensure_leading_user_turn's synthesized filler must itself be
+        non-whitespace -- regression for the literal " " placeholder bug."""
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "[Context compaction summary] earlier work"},
+            {"role": "user", "content": "continue"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assert result[0]["content"] == [{"type": "text", "text": "(empty)"}]
+
+    def test_blank_text_nested_in_tool_result_content_is_dropped(self):
+        """A blank text part nested inside a tool_result's own multimodal
+        content list (e.g. alongside an image) must be scrubbed without
+        losing the image."""
+        messages = [
+            {"role": "user", "content": "screenshot please"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_3",
+                        "function": {"name": "screenshot", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_3",
+                "content": [
+                    {"type": "text", "text": "   "},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AAAA"},
+                    },
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        tool_result_msg = next(
+            m
+            for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
+        tool_result_block = next(
+            b for b in tool_result_msg["content"] if b.get("type") == "tool_result"
+        )
+        image_blocks = [b for b in tool_result_block["content"] if b.get("type") == "image"]
+        assert len(image_blocks) == 1

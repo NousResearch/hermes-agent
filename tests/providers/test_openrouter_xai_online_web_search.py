@@ -119,3 +119,15 @@ class TestBuildKwargs:
             base_url=OPENROUTER_BASE,
         )
         assert _tool_names(kw.get("tools")) == ["web_search", "web_extract"]
+
+    def test_online_request_with_only_web_search_omits_tools_key(self, transport):
+        # web_search is the sole tool: dropping it must omit the ``tools`` key
+        # entirely, never forward an empty ``tools: []`` (which xAI rejects).
+        kw = transport.build_kwargs(
+            model="x-ai/grok-4.5:online",
+            messages=_messages(),
+            tools=[_fn_tool("web_search")],
+            provider_profile=get_provider_profile("openrouter"),
+            base_url=OPENROUTER_BASE,
+        )
+        assert "tools" not in kw

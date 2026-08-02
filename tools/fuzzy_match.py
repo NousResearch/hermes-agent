@@ -968,6 +968,20 @@ def _map_normalized_positions(original: str, normalized: str,
     return original_matches
 
 
+def _visualize_whitespace(line: str) -> str:
+    """Render leading whitespace visibly (→ = tab, · = space).
+
+    Only the leading run is visualized — interior spacing is rarely the
+    culprit and full visualization makes lines unreadable.
+    """
+    i = 0
+    prefix = []
+    while i < len(line) and line[i] in (" ", "\t"):
+        prefix.append("→" if line[i] == "\t" else "·")
+        i += 1
+    return "".join(prefix) + line[i:]
+
+
 def find_closest_lines(old_string: str, content: str, context_lines: int = 2, max_results: int = 3) -> str:
     """Find lines in content most similar to old_string for "did you mean?" feedback.
 
@@ -1027,7 +1041,23 @@ def find_closest_lines(old_string: str, content: str, context_lines: int = 2, ma
     if not parts:
         return ""
 
-    return "\n---\n".join(parts)
+    result = "\n---\n".join(parts)
+
+    # Whitespace diagnosis (pattern from crush's diagnoseMismatch): when the
+    # best candidate line matches the anchor after stripping but differs in
+    # raw text, the failure is whitespace-shaped. Show BOTH lines with
+    # leading whitespace made visible so the model can copy the file's
+    # exact indentation instead of guessing again.
+    best_line = content_lines[top[0][1]]
+    if best_line.strip() == anchor and best_line != old_lines[0]:
+        result += (
+            "\n\nWhitespace difference detected (→ = tab, · = space):\n"
+            f"  file has: {_visualize_whitespace(best_line)}\n"
+            f"  you sent: {_visualize_whitespace(old_lines[0])}\n"
+            "Use the exact whitespace shown in 'file has'."
+        )
+
+    return result
 
 
 def format_no_match_hint(error: Optional[str], match_count: int,

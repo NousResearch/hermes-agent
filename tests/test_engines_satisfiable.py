@@ -19,6 +19,7 @@ declare and the toolchain that has to satisfy it.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -116,9 +117,17 @@ class TestEnginesAreSatisfiable:
         else:  # pragma: no cover - install.sh always defines it
             pytest.fail("install.sh does not define NODE_VERSION")
 
-        assert _satisfies_range(f"{managed_major}.0.0", node_range), (
+        # install.sh fetches latest-v{major}.x, not {major}.0.0, so compare on
+        # the major: the newest release of that line must be able to clear the
+        # floor. A floor in a HIGHER major than we provision can never be met.
+        floor_majors = [
+            int(m.group(1))
+            for m in re.finditer(r">=\s*v?(\d+)", node_range)
+        ]
+        assert floor_majors, f"cannot read a floor out of {node_range!r}"
+        assert managed_major >= min(floor_majors), (
             f"engines.node is {node_range!r} but install.sh provisions Node "
-            f"{managed_major}. The runtime we ship must satisfy the floor we "
+            f"{managed_major}.x. The runtime we ship must satisfy the floor we "
             "declare, or the install we just performed cannot install deps."
         )
 
@@ -131,9 +140,10 @@ class TestEnginesAreSatisfiable:
         """
         desktop = json.loads((REPO_ROOT / "apps" / "desktop" / "package.json").read_text())
         node_range = desktop["engines"]["node"]
-        # Vite 8's own floor. If this ever legitimately rises, the assertion
+        # The tightest floor any dependency actually declares (react-router
+        # 8.3.0 -> >=22.22.0). If this legitimately rises, the assertion
         # documents the reason for the bump rather than blocking it.
-        assert _satisfies_range("22.12.0", node_range), (
+        assert _satisfies_range("22.22.0", node_range), (
             f"apps/desktop engines.node is {node_range!r}, which rejects Node "
             "22.12 — stricter than Vite requires. A desktop floor above the "
             "build toolchain's own floor replaces working user toolchains for "

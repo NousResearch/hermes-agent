@@ -408,7 +408,24 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
-        self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
+        # Prefer config.extra, then the documented WHATSAPP_ALLOWED_USERS env
+        # (setup wizard / pairing mirror). Select by key *presence* so an
+        # explicit empty allow_from: [] stays authoritative and does not fall
+        # through to a lower-precedence env grant. Track which source won so
+        # live DM checks preserve that precedence.
+        if "allow_from" in config.extra:
+            self._dm_allowlist_source = "config"
+            allow_raw = config.extra.get("allow_from")
+        elif "allowFrom" in config.extra:
+            self._dm_allowlist_source = "config"
+            allow_raw = config.extra.get("allowFrom")
+        elif os.getenv("WHATSAPP_ALLOWED_USERS"):
+            self._dm_allowlist_source = "WHATSAPP_ALLOWED_USERS"
+            allow_raw = os.getenv("WHATSAPP_ALLOWED_USERS")
+        else:
+            self._dm_allowlist_source = None
+            allow_raw = None
+        self._allow_from = self._coerce_allow_list(allow_raw)
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
         read_receipts = config.extra.get("send_read_receipts", False)

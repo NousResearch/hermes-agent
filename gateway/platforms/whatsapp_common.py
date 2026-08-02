@@ -134,6 +134,28 @@ class WhatsAppBehaviorMixin:
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _live_dm_allow_from(self) -> set[str]:
+        """Allowlist currently enforced for DM intake / strict DM auth.
+
+        Source precedence matches construction: explicit config wins over any
+        env carrier. When the adapter was seeded from an env var, re-read that
+        same key so pairing approve/revoke takes effect without restart
+        (including an empty value while the key is still present). When the key
+        is absent — sole-entry revoke calls ``remove_env_value`` — treat the
+        allowlist as empty instead of falling back to the construction-time
+        snapshot. Config-seeded adapters keep the in-memory snapshot, which
+        pairing revoke purges in place — a lower-precedence or stale env value
+        must not broaden access.
+        """
+        source = getattr(self, "_dm_allowlist_source", None)
+        if isinstance(source, str) and source != "config":
+            if source in os.environ:
+                return self._coerce_allow_list(os.environ.get(source, ""))
+            # Key removed (e.g. sole-entry pairing revoke) — do not revive the
+            # stale construction snapshot.
+            return set()
+        return set(self._allow_from or ())
+
     # ------------------------------------------------------------------ JID helpers
     @staticmethod
     def _normalize_whatsapp_id(value: Optional[str]) -> str:
@@ -214,7 +236,7 @@ class WhatsAppBehaviorMixin:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(sender_id, self._allow_from)
+            return self._matches_whatsapp_allowlist(sender_id, self._live_dm_allow_from())
         if self._dm_policy == "open":
             return self._open_dm_opted_in()
         return False
@@ -227,7 +249,7 @@ class WhatsAppBehaviorMixin:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(principal, self._allow_from)
+            return self._matches_whatsapp_allowlist(principal, self._live_dm_allow_from())
         if self._dm_policy == "pairing":
             return True
         if self._dm_policy == "open":

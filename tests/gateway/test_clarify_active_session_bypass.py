@@ -16,8 +16,8 @@ from gateway.session import SessionSource, build_session_key
 
 
 class _ClarifyBypassAdapter(BasePlatformAdapter):
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(PlatformConfig(enabled=True, token="test"), platform)
 
     async def connect(self):
         return True
@@ -43,6 +43,21 @@ def _event(text="custom answer"):
             user_id="user1",
         ),
         message_id="msg1",
+    )
+
+
+def _buzz_thread_event(text="same-thread answer"):
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform("buzz"),
+            chat_id="buzz-channel",
+            chat_type="group",
+            user_id="buzz-user",
+            thread_id="original-root",
+        ),
+        message_id="reply-event",
     )
 
 
@@ -79,6 +94,40 @@ async def test_active_session_routes_typed_choice_clarify_reply_to_runner_not_bu
     )
     adapter._active_sessions[session_key] = asyncio.Event()
     cm.register("clarify-1", session_key, "Pick one", ["A", "B"])
+
+    await adapter.handle_message(event)
+
+    adapter._message_handler.assert_awaited_once_with(event)
+    adapter._busy_session_handler.assert_not_awaited()
+    assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_active_session_routes_same_thread_buzz_clarify_reply_to_runner():
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _ClarifyBypassAdapter(Platform("buzz"))
+    adapter._message_handler = AsyncMock(return_value="")
+    adapter._busy_session_handler = AsyncMock(return_value=True)
+    event = _buzz_thread_event()
+    session_key = build_session_key(
+        event.source,
+        group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+        thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+    )
+    adapter._active_sessions[session_key] = asyncio.Event()
+    cm.register(
+        "clarify-buzz",
+        session_key,
+        "Answer in this thread",
+        None,
+        route_scope={
+            "platform": "buzz",
+            "chat_id": "buzz-channel",
+            "thread_id": "original-root",
+        },
+    )
 
     await adapter.handle_message(event)
 

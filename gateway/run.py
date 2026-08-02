@@ -4864,6 +4864,12 @@ class TurnRunner:
                 question=question,
                 choices=list(choices) if choices else None,
                 multi_select=bool(multi_select),
+                route_scope=_clarify_mod.build_route_scope(
+                    platform=ctx.source.platform,
+                    chat_id=ctx.source.chat_id,
+                    thread_id=ctx.source.thread_id,
+                    message_id=ctx.event_message_id,
+                ),
             )
 
             # Pause typing — like approval, we don't want a "thinking..."
@@ -14456,8 +14462,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _clarify_mod = None
         try:
             from tools import clarify_gateway as _clarify_mod
+            _clarify_route_scope = _clarify_mod.build_route_scope(
+                platform=source.platform,
+                chat_id=source.chat_id,
+                thread_id=source.thread_id,
+                message_id=event.message_id,
+            )
             _pending_clarify = _clarify_mod.get_pending_for_session(
-                _quick_key, include_choice_prompts=True,
+                _quick_key,
+                include_choice_prompts=True,
+                route_scope=_clarify_route_scope,
             )
         except Exception:
             _pending_clarify = None
@@ -14478,7 +14492,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # with an empty response.
             if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
                 _resolved = _clarify_mod.resolve_text_response_for_session(
-                    _quick_key, _raw_clarify_reply,
+                    _quick_key,
+                    _raw_clarify_reply,
+                    route_scope=_clarify_route_scope,
                 )
                 if _resolved:
                     logger.info(

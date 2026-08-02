@@ -72,6 +72,21 @@ def _event(text):
     )
 
 
+def _buzz_event(text, *, message_id, thread_id=None):
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform("buzz"),
+            chat_id="buzz-channel",
+            chat_type="group",
+            user_id="buzz-user",
+            thread_id=thread_id,
+        ),
+        message_id=message_id,
+    )
+
+
 def _clear_clarify_state():
     from tools import clarify_gateway as cm
 
@@ -150,6 +165,78 @@ async def test_prose_still_accepted_after_other_flips_text_capture():
     assert entry is not None
     assert entry.event.is_set()
     assert entry.response == "a carousel actually"
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_buzz_top_level_post_does_not_answer_clarify_from_another_thread():
+    """A new Buzz root must not resume a clarify owned by another thread."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register(
+        "cl-buzz",
+        SESSION_KEY,
+        "What should I do next?",
+        None,
+        route_scope={
+            "platform": "buzz",
+            "chat_id": "buzz-channel",
+            "thread_id": "original-root",
+        },
+    )
+    assert entry.awaiting_text is True
+
+    unrelated = _buzz_event(
+        "Why did that appear in the channel?",
+        message_id="new-top-level-root",
+    )
+    with pytest.raises(_FellThroughIntercept):
+        await _dispatch(runner, unrelated)
+
+    with cm._lock:
+        entry = cm._entries.get("cl-buzz")
+    assert entry is not None
+    assert not entry.event.is_set()
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_buzz_same_thread_reply_resolves_pending_clarify():
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    cm.register(
+        "cl-buzz-same-thread",
+        SESSION_KEY,
+        "What should I do next?",
+        None,
+        route_scope={
+            "platform": "buzz",
+            "chat_id": "buzz-channel",
+            "thread_id": "original-root",
+        },
+    )
+
+    result = await _dispatch(
+        runner,
+        _buzz_event(
+            "Continue with the audit",
+            message_id="reply-event",
+            thread_id="original-root",
+        ),
+    )
+
+    assert result == ""
+    with cm._lock:
+        entry = cm._entries.get("cl-buzz-same-thread")
+    assert entry is not None
+    assert entry.event.is_set()
+    assert entry.response == "Continue with the audit"
     _clear_clarify_state()
 
 

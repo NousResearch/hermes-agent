@@ -101,6 +101,15 @@ gateway:
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
 
+### Threads and interactive prompts
+
+Pending interactive questions are scoped to the Buzz thread where Hermes sent
+them. A reply in that thread can answer the pending prompt, while an unrelated
+top-level channel post starts its own conversation instead of being consumed as
+the answer to an older clarification. Hermes can still share conversation
+history across Buzz threads; only the pending interaction and its delivery route
+are thread-scoped.
+
 ## Access control
 
 By default the allow-list is empty, which means every community member who mentions the agent gets a response only if `BUZZ_ALLOW_ALL_USERS=true`; otherwise restrict access by listing npubs or hex pubkeys in `BUZZ_ALLOWED_USERS` (or `allowed_users` in config.yaml). Community membership itself is enforced by the relay — only members can post.

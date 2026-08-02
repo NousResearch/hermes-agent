@@ -460,3 +460,58 @@ def test_session_stall_timeout_in_default_config():
     timeout = DEFAULT_CONFIG["agent"]["session_stall_timeout"]
     assert isinstance(timeout, (int, float))
     assert timeout > 0  # enabled by default; 0 would disable the watchdog
+
+
+class _NeverResolvingAdapter:
+    """Adapter whose send() hangs forever (wedged transport)."""
+
+    def __init__(self):
+        self._pending_messages = {}
+        self.send_attempts = 0
+
+    async def send(self, chat_id, content, metadata=None):
+        self.send_attempts += 1
+        await asyncio.Event().wait()  # never resolves
+
+
+@pytest.mark.asyncio
+async def test_check_session_stalls_bounds_wedged_send(monkeypatch):
+    """Round-2 #2: a never-resolving adapter.send must not wedge the watcher.
+
+    The bounded send times out, does NOT latch (retry next tick), the pass
+    completes so the watcher keeps ticking, and a healthy sibling candidate
+    still receives its notification in the same pass.
+    """
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(
+        gateway_run, "_STALL_NOTIFY_SEND_TIMEOUT_SECONDS", 0.1
+    )
+    wedged = _NeverResolvingAdapter()
+    healthy = _FakeAdapter()
+    runner = _runner_for_stall(wedged)
+    runner.adapters = {"wedged": wedged, "healthy": healthy}
+
+    wedged_key = "agent:main:telegram:dm:wedged"
+    healthy_key = "agent:main:discord:dm:healthy"
+    wedged._pending_messages[wedged_key] = _pending_event(chat_id="chat-w")
+    healthy._pending_messages[healthy_key] = _pending_event(chat_id="chat-h")
+    runner._running_agents[wedged_key] = _FakeAgent(time.time() - 120)
+    runner._running_agents[healthy_key] = _FakeAgent(time.time() - 120)
+
+    # Pass must complete despite the wedged transport (bounded by wait_for).
+    sent = await asyncio.wait_for(runner._check_session_stalls(60), timeout=5)
+
+    # Healthy sibling was notified in the SAME pass.
+    assert sent == 1
+    assert len(healthy.sent) == 1
+    assert healthy_key in runner._session_stall_notified
+    # Wedged session: send attempted, timed out, NOT latched.
+    assert wedged.send_attempts == 1
+    assert wedged_key not in runner._session_stall_notified
+
+    # Watcher ticks again: the wedged candidate is retried next pass.
+    sent2 = await asyncio.wait_for(runner._check_session_stalls(60), timeout=5)
+    assert sent2 == 0  # healthy already latched; wedged timed out again
+    assert wedged.send_attempts == 2
+    assert wedged_key not in runner._session_stall_notified

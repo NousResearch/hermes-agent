@@ -76,6 +76,10 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 # wall deadlines plus readiness; other platforms retain the 30s isolation bound.
 _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+# Round-2 #2: upper bound on a single stall-notify adapter.send so a wedged
+# transport cannot block the session-stall watcher pass (notify-only path;
+# on timeout the latch stays clear and the next tick retries).
+_STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
@@ -12023,11 +12027,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source is not None and hasattr(self, "_thread_metadata_for_source")
                     else None
                 )
-                result = await adapter.send(
-                    str(chat_id),
-                    format_session_stall_notification(idle_seconds),
-                    metadata=metadata,
-                )
+                # Round-2 #2: bound the send. A wedged adapter transport
+                # (network hang, dead websocket) must not block the whole
+                # watcher pass — sibling candidates in this loop would never
+                # be evaluated and the watcher itself would stop ticking.
+                try:
+                    result = await asyncio.wait_for(
+                        adapter.send(
+                            str(chat_id),
+                            format_session_stall_notification(idle_seconds),
+                            metadata=metadata,
+                        ),
+                        timeout=_STALL_NOTIFY_SEND_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Session stall notify send timed out after %.0fs "
+                        "for %s; will retry next tick",
+                        _STALL_NOTIFY_SEND_TIMEOUT_SECONDS,
+                        session_key,
+                    )
+                    continue  # do not latch; retry next tick
                 # Adapters often return SendResult(success=False) instead of raising.
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(

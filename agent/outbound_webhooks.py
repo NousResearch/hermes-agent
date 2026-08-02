@@ -66,6 +66,7 @@ Headers::
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import hmac
 import json
@@ -476,6 +477,12 @@ def _ensure_worker() -> None:
             target=_worker_loop, name="outbound-webhooks", daemon=True,
         )
         _worker.start()
+        # The worker is a daemon thread, so a short-lived process (a `-q`
+        # CLI run, a cron session) can exit right after enqueuing the
+        # final events — silently dropping on_session_end, the headline
+        # use case.  Drain the queue at interpreter shutdown, bounded so
+        # a dead endpoint can only delay exit, never hang it.
+        atexit.register(flush, timeout=5.0)
 
 
 def _worker_loop() -> None:

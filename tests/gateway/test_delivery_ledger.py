@@ -196,6 +196,28 @@ class TestGatewayRedeliverySweep:
         assert sent["content"].startswith(dl.RECOVERED_MARKER)
         assert sent["content"].endswith("the final answer")
 
+    @pytest.mark.parametrize(
+        ("send_success", "ledger_method"),
+        [(True, "mark_delivered"), (False, "mark_failed")],
+    )
+    @pytest.mark.asyncio
+    async def test_slow_state_update_does_not_block_event_loop(
+        self, send_success, ledger_method
+    ):
+        import asyncio
+
+        _record()
+        _orphan("ob-1")
+        runner = self._runner(self._adapter(success=send_success))
+        slow_update, event_loop_witness, blocked_event_loop = _blocking_probe()
+
+        with patch.object(dl, ledger_method, side_effect=slow_update):
+            await asyncio.gather(
+                runner._redeliver_pending_obligations(), event_loop_witness()
+            )
+
+        assert blocked_event_loop == []
+
 
 class TestAttemptsOnlySpentOnRealSends:
     """``attempts`` is the redelivery budget — it must buy a send.
@@ -256,28 +278,6 @@ class TestUnconnectedPlatformKeepsItsBudget:
         runner.session_store = None
         runner._async_session_store = _store
         return runner
-
-    @pytest.mark.parametrize(
-        ("send_success", "ledger_method"),
-        [(True, "mark_delivered"), (False, "mark_failed")],
-    )
-    @pytest.mark.asyncio
-    async def test_slow_state_update_does_not_block_event_loop(
-        self, send_success, ledger_method
-    ):
-        import asyncio
-
-        _record()
-        _orphan("ob-1")
-        runner = self._runner(self._adapter(success=send_success))
-        slow_update, event_loop_witness, blocked_event_loop = _blocking_probe()
-
-        with patch.object(dl, ledger_method, side_effect=slow_update):
-            await asyncio.gather(
-                runner._redeliver_pending_obligations(), event_loop_witness()
-            )
-
-        assert blocked_event_loop == []
 
     @pytest.mark.asyncio
     async def test_row_survives_boots_where_its_platform_is_down(self):

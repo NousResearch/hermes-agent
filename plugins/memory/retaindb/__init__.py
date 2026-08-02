@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 from agent.memory_provider import MemoryProvider
 from agent.secret_scope import get_secret
@@ -333,9 +333,31 @@ class _Client:
         import requests
         token = self.api_key.replace("Bearer ", "").strip()
         url = f"{self.base_url}/v1/files/{quote(file_id, safe='')}/content"
-        resp = requests.get(url, headers={"Authorization": f"Bearer {token}", "x-sdk-runtime": "hermes-plugin"}, timeout=30, allow_redirects=True)
-        resp.raise_for_status()
-        return resp.content
+        headers = {"Authorization": f"Bearer {token}", "x-sdk-runtime": "hermes-plugin"}
+        # Follow redirects manually so every Location is subject to the same
+        # metadata/SSRF floor as the configured base URL.
+        for _ in range(10):
+            resp = requests.get(url, headers=headers, timeout=30, allow_redirects=False)
+            if not resp.is_redirect:
+                resp.raise_for_status()
+                return resp.content
+
+            location = resp.headers.get("Location")
+            resp.close()
+            if not location:
+                raise RuntimeError("RetainDB file response redirected without a Location header")
+            url = urljoin(url, location)
+            try:
+                from tools.url_safety import is_always_blocked_url
+
+                if is_always_blocked_url(url):
+                    raise RuntimeError("RetainDB redirect target is always blocked")
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                raise RuntimeError("RetainDB redirect safety check failed") from exc
+
+        raise RuntimeError("RetainDB file response exceeded the redirect limit")
 
     def ingest_file(self, file_id: str, user_id: str | None = None, agent_id: str | None = None) -> dict:
         body: dict = {}

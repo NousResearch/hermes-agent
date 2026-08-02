@@ -213,6 +213,62 @@ class TestNodeToolRunnable:
 
         assert find_node_executable("npm") is None
 
+    def test_outdated_managed_node_heals_to_target_major(self, tmp_path, monkeypatch):
+        """A healthy managed tree below the target major upgrades on next resolve."""
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        old_node = self._stub(managed_bin, "node", "#!/bin/sh\necho 'v22.20.0'\nexit 0\n")
+        heal_called = {"value": False}
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+
+        def _heal():
+            heal_called["value"] = True
+            old_node.write_text("#!/bin/sh\necho 'v26.5.1'\nexit 0\n")
+            old_node.chmod(0o755)
+            return True
+
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", _heal)
+
+        resolved = hermes_constants.find_hermes_node_executable("node")
+        assert heal_called["value"] is True
+        assert resolved == str(old_node)
+
+    def test_outdated_managed_node_survives_failed_heal(self, tmp_path, monkeypatch):
+        """Offline heal failure keeps serving the old tree — old Node beats no Node."""
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        old_node = self._stub(managed_bin, "node", "#!/bin/sh\necho 'v22.20.0'\nexit 0\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", lambda: False)
+
+        assert hermes_constants.find_hermes_node_executable("node") == str(old_node)
+
+    def test_target_major_managed_node_does_not_heal(self, tmp_path, monkeypatch):
+        """A tree already at the target major never triggers the heal."""
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        node = self._stub(managed_bin, "node", "#!/bin/sh\necho 'v26.5.1'\nexit 0\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+
+        def _heal():
+            raise AssertionError("heal must not run for an up-to-date tree")
+
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", _heal)
+
+        assert hermes_constants.find_hermes_node_executable("node") == str(node)
+
 
 
 class TestIsContainer:

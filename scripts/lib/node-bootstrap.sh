@@ -255,6 +255,24 @@ _nb_managed_tool_broken() {
     return 1
 }
 
+# The managed node runs but is below HERMES_NODE_TARGET_MAJOR — an old tree
+# from a previous install (e.g. 22). Outdated heals the same way broken does,
+# so existing users get upgraded on the next heal probe, not just on a full
+# installer re-run. Mirrors _managed_node_tree_outdated() in
+# hermes_constants.py.
+_nb_managed_node_outdated() {
+    local probe ver major
+    for probe in "$HERMES_HOME/node/bin/node" "$HERMES_HOME/node/node"; do
+        [ -x "$probe" ] || continue
+        ver="$("$probe" --version 2>/dev/null)" || return 1
+        major="${ver#v}"; major="${major%%.*}"
+        case "$major" in ''|*[!0-9]*) return 1 ;; esac
+        [ "$major" -lt "$HERMES_NODE_TARGET_MAJOR" ] && return 0
+        return 1
+    done
+    return 1
+}
+
 _nb_managed_node_needs_heal() {
     local tool
     for tool in node npm npx; do
@@ -262,7 +280,7 @@ _nb_managed_node_needs_heal() {
             return 0
         fi
     done
-    return 1
+    _nb_managed_node_outdated
 }
 
 # Redownload the pinned nodejs.org tarball when a managed tree exists but

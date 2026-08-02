@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { hiddenPaneProps } from '@/components/pane-shell/pane-visibility'
+import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { I18nProvider } from '@/i18n'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
@@ -851,7 +852,16 @@ describe('ClarifyTool visible-card scoping', () => {
   const FOREGROUND_SESSION = 'session-foreground'
   const BACKGROUND_REQUEST = 'request-background'
   const FOREGROUND_REQUEST = 'request-foreground'
+  const ZONE_A_SESSION = 'session-zone-a'
+  const ZONE_B_SESSION = 'session-zone-b'
+  const ZONE_A_REQUEST = 'request-zone-a'
+  const ZONE_B_REQUEST = 'request-zone-b'
   const QUESTION = 'Which deployment target?'
+
+  afterEach(() => {
+    $activeTreeGroup.set(null)
+    $hoveredTreeGroup.set(null)
+  })
 
   /** Minimal per-session view — the pending card only reads `$runtimeId`. */
   function tileView(sessionId: string): SessionView {
@@ -930,5 +940,72 @@ describe('ClarifyTool visible-card scoping', () => {
     // composer, matching what `clarifyCardOwnsKey` reports with no visible card.
     expect(fireEvent.keyDown(window, { key: 'Enter' })).toBe(true)
     expect(request).not.toHaveBeenCalled()
+  })
+
+  /** A card in its own split zone — unlike `backgroundCard` this one IS on
+   *  screen, so a split renders two cards that both clear the hidden-pane
+   *  filter and only the zone ladder can tell apart. */
+  function zoneCard(zone: string, sessionId: string) {
+    return (
+      <div data-tree-group={zone}>
+        <SessionViewProvider value={tileView(sessionId)}>
+          <ClarifyTool {...pendingCardProps(`clarify-${zone}`)} />
+        </SessionViewProvider>
+      </div>
+    )
+  }
+
+  /** Both zones visible, zone-a first in document order. */
+  function renderSplit() {
+    const request = vi.fn().mockResolvedValue({ ok: true })
+
+    $gateway.set({ request } as never)
+    parkClarify(ZONE_A_REQUEST, ZONE_A_SESSION)
+    parkClarify(ZONE_B_REQUEST, ZONE_B_SESSION)
+
+    renderClarify(
+      <>
+        {zoneCard('zone-a', ZONE_A_SESSION)}
+        {zoneCard('zone-b', ZONE_B_SESSION)}
+      </>
+    )
+
+    return request
+  }
+
+  it('answers the later-in-document card when its zone is the focused one', async () => {
+    const request = renderSplit()
+
+    $activeTreeGroup.set('zone-b')
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(1)
+    })
+
+    // Both cards are visible and both hold a live window listener, so this is
+    // the case document order gets wrong: it would answer zone-a's question.
+    expect(request).toHaveBeenCalledWith('clarify.respond', {
+      answer: 'staging',
+      request_id: ZONE_B_REQUEST
+    })
+  })
+
+  it('answers the other visible card once the focus moves to its zone', async () => {
+    const request = renderSplit()
+
+    $activeTreeGroup.set('zone-a')
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(1)
+    })
+
+    // The direct pin for "the other visible card then cannot receive its
+    // shortcut": neither zone may be permanently starved of its own keys.
+    expect(request).toHaveBeenCalledWith('clarify.respond', {
+      answer: 'staging',
+      request_id: ZONE_A_REQUEST
+    })
   })
 })

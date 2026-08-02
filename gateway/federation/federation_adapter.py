@@ -35,6 +35,7 @@ from gateway.federation.federation_protocol import (
 from gateway.federation.federation_connection import FederationConnectionManager
 from gateway.federation.federation_consensus import FederationConsensus
 from gateway.federation.federation_relay import TaskExecutorRelay
+from gateway.federation.federation_discovery import FederationMDNS
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,8 @@ class FederationAdapter:
         # Phase 3: Consensus + Relay
         self._consensus: Optional[FederationConsensus] = None
         self._relay: Optional[TaskExecutorRelay] = None
+        # Phase 5: mDNS Discovery
+        self._mdns: Optional[FederationMDNS] = None
 
         # Register default task handlers
         self._register_default_handlers()
@@ -156,6 +159,16 @@ class FederationAdapter:
         )
         await self._relay.start()
 
+        # Phase 5: Start mDNS discovery for auto mode
+        if self.config.mode == "auto":
+            self._mdns = FederationMDNS(
+                device_id=self.device_id,
+                ws_port=self.config.ws_port,
+                on_discover=self._on_mdns_discover,
+                on_forget=self._on_mdns_forget,
+            )
+            await self._mdns.start()
+
         # Announce ourselves
         await self._conn_manager.send(
             FedMessage.peer_join(
@@ -175,6 +188,8 @@ class FederationAdapter:
     async def stop(self) -> None:
         """Stop the federation adapter."""
         self._running = False
+        if self._mdns:
+            await self._mdns.stop()
         if self._relay:
             await self._relay.stop()
         if self._conn_manager:
@@ -321,6 +336,28 @@ class FederationAdapter:
     def _on_peer_leave(self, device_id: str) -> None:
         """Called when a peer leaves."""
         logger.info("Federation: peer left — %s", device_id)
+
+    def _on_mdns_discover(self, peer) -> None:
+        """Handle mDNS discovery of a new peer."""
+        logger.info(
+            "Federation: mDNS discovered %s (%s) at %s",
+            peer.device_id, peer.hostname, peer.ws_url,
+        )
+        # Register with connection manager
+        if self._conn_manager:
+            from gateway.federation.federation_protocol import PeerInfo
+            info = PeerInfo(
+                device_id=peer.device_id,
+                hostname=peer.hostname,
+                ws_url=peer.ws_url,
+            )
+            self._conn_manager.register_peer(info)
+
+    def _on_mdns_forget(self, device_id: str) -> None:
+        """Handle mDNS peer forget — peer has gone silent."""
+        logger.info("Federation: mDNS forgot peer — %s", device_id)
+        if self._conn_manager:
+            self._conn_manager.unregister_peer(device_id, reason="mdns timeout")
 
     def _handle_task_submit(self, msg: FedMessage) -> None:
         """Handle incoming task submission."""

@@ -25,6 +25,7 @@ from gateway.federation.federation_protocol import (
 )
 from gateway.federation.federation_consensus import FederationConsensus
 from gateway.federation.federation_relay import TaskExecutorRelay, TaskCheckpoint, TaskExecutionState
+from gateway.federation.federation_discovery import FederationMDNS, DiscoveredPeer
 
 __all__ = [
     "FedMessage",
@@ -34,4 +35,6 @@ __all__ = [
     "TaskExecutorRelay",
     "TaskCheckpoint",
     "TaskExecutionState",
+    "FederationMDNS",
+    "DiscoveredPeer",
 ]

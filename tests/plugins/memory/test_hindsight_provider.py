@@ -29,6 +29,7 @@ from plugins.memory.hindsight import (
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
+    _fmt_memory,
 )
 
 
@@ -217,6 +218,39 @@ def test_normalize_retain_tags_accepts_csv_and_dedupes():
         "agent:fakeassistantname",
         "source_system:hermes-agent",
     ]
+
+
+# ---------------------------------------------------------------------------
+# _fmt_memory tests
+# ---------------------------------------------------------------------------
+
+
+class TestFmtMemory:
+    def test_uses_mentioned_at_when_present(self):
+        r = SimpleNamespace(
+            text="memory", mentioned_at="2026-07-20T08:30:00Z", occurred_start="2026-07-19T00:00:00Z"
+        )
+        assert _fmt_memory(r) == "[2026-07-20] memory"
+
+    def test_falls_back_to_occurred_start(self):
+        r = SimpleNamespace(
+            text="memory", mentioned_at=None, occurred_start="2026-06-15T12:00:00Z"
+        )
+        assert _fmt_memory(r) == "[2026-06-15] memory"
+
+    def test_bare_text_when_no_timestamp(self):
+        r = SimpleNamespace(text="memory", mentioned_at=None, occurred_start=None)
+        assert _fmt_memory(r) == "memory"
+
+    def test_truncates_timestamp_to_date_only(self):
+        r = SimpleNamespace(
+            text="memory", mentioned_at="2026-07-20T08:30:00.123456Z", occurred_start=None
+        )
+        assert _fmt_memory(r) == "[2026-07-20] memory"
+
+    def test_missing_attributes_do_not_raise(self):
+        r = SimpleNamespace(text="memory")
+        assert _fmt_memory(r) == "memory"
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +481,36 @@ class TestToolHandlers:
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
 
+    def test_recall_prefixes_freshness_timestamp(self, provider):
+        """_fmt_memory must prepend [YYYY-MM-DD] from mentioned_at, fall back
+        to occurred_start, and leave bare memories untouched."""
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(
+                    text="Old memory",
+                    mentioned_at="2026-07-20T08:30:00Z",
+                    occurred_start=None,
+                ),
+                SimpleNamespace(
+                    text="Event memory",
+                    mentioned_at=None,
+                    occurred_start="2026-06-15T12:00:00Z",
+                ),
+                SimpleNamespace(
+                    text="No timestamp memory",
+                    mentioned_at=None,
+                    occurred_start=None,
+                ),
+            ]
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "old"}
+        ))
+        lines = result["result"].split("\n")
+        assert "[2026-07-20] Old memory" in lines[0]
+        assert "[2026-06-15] Event memory" in lines[1]
+        assert lines[2] == "3. No timestamp memory"
+
 
     def test_reflect_success(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -500,6 +564,28 @@ class TestPrefetch:
         p.queue_prefetch("test")
         # Should not start a thread
         assert p._prefetch_thread is None
+
+    def test_prefetch_prefixes_freshness_timestamp(self, provider):
+        """Auto-prefetch injection must apply the same _fmt_memory timestamp
+        prefixing as the explicit recall tool."""
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(
+                    text="Prefetched old memory",
+                    mentioned_at="2026-07-18T09:00:00Z",
+                    occurred_start=None,
+                ),
+                SimpleNamespace(
+                    text="Prefetched bare memory",
+                    mentioned_at=None,
+                    occurred_start=None,
+                ),
+            ]
+        )
+        provider.queue_prefetch("old")
+        provider._prefetch_thread.join(timeout=5.0)
+        assert "[2026-07-18] Prefetched old memory" in provider._prefetch_result
+        assert "Prefetched bare memory" in provider._prefetch_result
 
 
 # ---------------------------------------------------------------------------

@@ -732,7 +732,7 @@ For standing guidance that should shape the built-in missing-evidence nudge, use
 
 ### `classify_api_error`
 
-Fires **once per failed API call**, at the top of `agent/error_classifier.classify_api_error()` — BEFORE the built-in classification pipeline. Provider plugins use it to own their provider's error quirks (a vendor-specific 404 that should fast-fallback, a misleading status code) without core patches.
+Fires **once per failed API call**, at the top of `agent/error_classifier.classify_api_error()` — BEFORE the built-in classification pipeline. Cold path: it never fires on a successful call. Provider plugins use it to own their provider's error quirks (a vendor-specific 404 that should fast-fallback, a misleading status code) without core patches.
 
 This hook is **behavior-changing**: the returned classification drives retry, compression, credential-rotation, and fallback routing for the failed call.
 
@@ -772,7 +772,9 @@ return {
 }
 ```
 
-Return `None` (or nothing) to pass the error to the built-in pipeline. The first valid result in registration order wins; invalid dicts and unknown reasons are skipped; exceptions are isolated so a broken plugin can never break error classification.
+Return `None` (or nothing) to decline and defer to the built-in pipeline. Dispatch is **run-all-then-pick-first**: every registered callback runs on each failed call (an earlier answer never stops later callbacks), each callback's failure is isolated, and the first valid result **in registration order** wins — if two plugins can both answer, the first-registered one is the tie-break. Invalid dicts and unknown reasons are skipped, so a broken plugin can never break error classification.
+
+**Privacy:** `error_message` and `error_body` may carry an unredacted provider error dump. Do not log or forward them from a callback without redaction.
 
 **Python plugins only.** Shell hooks cannot register for this event: the shell response parser has no channel for the classification directive, so a shell registration is refused at config parse with a warning rather than being silently ignored.
 

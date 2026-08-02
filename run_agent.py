@@ -7094,6 +7094,7 @@ class AIAgent:
         ``force=False``.
         """
         from agent.conversation_compression import (
+            CompressionCommitFence,
             compress_context,
             resolve_context_compression_timeouts,
             run_compress_context_with_progress_timeout,
@@ -7122,6 +7123,22 @@ class AIAgent:
             root = self._conversation_root_id()
             if root:
                 token = set_conversation_context(root)
+        # Every AIAgent compression has a fence, including ordinary in-turn and
+        # manual paths. hard_interrupt() uses this exact instance to serialize
+        # cancel admission against begin_commit().
+        active_fence = commit_fence or CompressionCommitFence()
+        # A single agent can receive overlapping automatic/manual entrypoints.
+        # Serialize fence publication so a waiter cannot replace the fence of
+        # the attempt currently generating/committing a summary.
+        fence_registration_lock = vars(self).setdefault(
+            "_compression_commit_fence_lock", threading.RLock()
+        )
+        with fence_registration_lock:
+            missing_fence = object()
+            previous_fence = vars(self).get(
+                "_active_compression_commit_fence", missing_fence
+            )
+            self._active_compression_commit_fence = active_fence
         try:
             def _run(fence=None, target_messages=None):
                 return compress_context(
@@ -7140,11 +7157,11 @@ class AIAgent:
             # Callers that already own a progress-aware wait (gateway session
             # hygiene) pass commit_fence and must not be double-wrapped.
             if commit_fence is not None:
-                return _run(commit_fence)
+                return _run(active_fence)
 
             idle_timeout, total_ceiling = resolve_context_compression_timeouts()
             if idle_timeout <= 0:
-                return _run(None)
+                return _run(active_fence)
 
             def _snapshot_worker(fence=None):
                 # #76354 review F3: the pooled worker must NEVER share the
@@ -7259,6 +7276,7 @@ class AIAgent:
                 total_ceiling_seconds=total_ceiling,
                 on_timeout=_on_timeout,
                 on_commit_overrun=_on_commit_overrun,
+                fence=active_fence,
             )
             # compress_context ran on a daemon pool worker thread; the session
             # id rotation updated hermes_logging._session_context (a
@@ -7288,6 +7306,11 @@ class AIAgent:
                 )
             return result
         finally:
+            with fence_registration_lock:
+                if previous_fence is missing_fence:
+                    vars(self).pop("_active_compression_commit_fence", None)
+                else:
+                    self._active_compression_commit_fence = previous_fence
             # Restore whatever the caller had, so a compaction never leaks its
             # tag into the surrounding scope.
             if token is not None:

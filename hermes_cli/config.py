@@ -3721,23 +3721,48 @@ def invalidate_env_cache() -> None:
 
 
 def _sanitize_env_lines(lines: list) -> list:
-    """Normalize .env line endings without changing assignment semantics.
+    """Normalize safe .env formatting without changing value semantics.
 
-    Content after the first ``=`` is opaque value data. A known variable name
-    embedded in that value must never be reinterpreted as another assignment;
-    concatenated assignments are ambiguous and therefore remain on one line.
+    A quoted dotenv value may span physical lines. Every byte inside that
+    binding — including whitespace and ``#`` markers — is value content, so a
+    per-line ``strip()`` would corrupt it (#76571). Use python-dotenv's pinned
+    parser only to discover binding boundaries: preserve multiline bindings,
+    keep the existing normalization for ordinary physical lines, and fail
+    closed by leaving the whole file untouched if any binding is malformed.
+
+    Content after the first ``=`` remains opaque value data. A known variable
+    name embedded in that value must never be reinterpreted as another
+    assignment; concatenated assignments remain on one line.
     """
+    from io import StringIO
+
+    from dotenv.parser import parse_stream
+
+    bindings = list(parse_stream(StringIO("".join(lines))))
+    if any(binding.error for binding in bindings):
+        return list(lines)
+
     sanitized: list[str] = []
-    for line in lines:
-        raw = line.rstrip("\r\n")
-        stripped = raw.strip()
+    for binding in bindings:
+        physical_lines = binding.original.string.splitlines(keepends=True)
+        is_multiline_value = binding.key is not None and len(physical_lines) > 1
 
-        # Preserve blank lines and comments
-        if not stripped or stripped.startswith("#"):
-            sanitized.append(raw + "\n")
-            continue
+        for line in physical_lines:
+            raw = line.rstrip("\r\n")
+            stripped = raw.strip()
 
-        sanitized.append(stripped + "\n")
+            # A multiline binding is an indivisible value-bearing unit. Only
+            # normalize its physical line endings; preserve all other bytes.
+            if is_multiline_value:
+                sanitized.append(raw + "\n")
+                continue
+
+            # Preserve blank lines and comments.
+            if not stripped or stripped.startswith("#"):
+                sanitized.append(raw + "\n")
+                continue
+
+            sanitized.append(stripped + "\n")
 
     return sanitized
 

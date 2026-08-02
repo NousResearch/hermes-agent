@@ -464,10 +464,63 @@ class TestSanitizeEnvLines:
         result = _sanitize_env_lines(lines)
         assert result == lines, f"GLM_* lines were corrupted by suffix collision: {result}"
 
+    def test_multiline_quoted_value_is_preserved_while_sibling_is_normalized(self):
+        lines = [
+            "  MULTI='opening  \n",
+            "  continuation # value content  \n",
+            "closing'  # comment\n",
+            "  SINGLE=value  \n",
+        ]
 
+        assert _sanitize_env_lines(lines) == [
+            "  MULTI='opening  \n",
+            "  continuation # value content  \n",
+            "closing'  # comment\n",
+            "SINGLE=value\n",
+        ]
 
+    def test_double_quoted_multiline_value_with_escaped_quote_is_preserved(self):
+        lines = [
+            '  MULTI="opening  \n',
+            '  escaped \\" quote # value content  \n',
+            'closing"  # comment\n',
+        ]
 
+        assert _sanitize_env_lines(lines) == lines
 
+    def test_unclosed_quote_leaves_entire_file_untouched(self):
+        lines = [
+            "  BROKEN='opening  \n",
+            "  continuation # ambiguous  \n",
+            "  SINGLE=value  \n",
+        ]
+
+        assert _sanitize_env_lines(lines) == lines
+
+    def test_sanitize_env_file_preserves_multiline_dotenv_value(self, tmp_path):
+        from dotenv import dotenv_values
+
+        env_file = tmp_path / ".env"
+        original = (
+            "  MULTI='opening  \n"
+            "  continuation # value content  \n"
+            "closing'  # comment\n"
+            "  SINGLE=value  \n"
+        )
+        env_file.write_text(original, encoding="utf-8")
+        expected_value = dotenv_values(env_file, interpolate=False)["MULTI"]
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            fixes = sanitize_env_file()
+
+        assert fixes == 1
+        assert dotenv_values(env_file, interpolate=False)["MULTI"] == expected_value
+        assert env_file.read_text(encoding="utf-8") == (
+            "  MULTI='opening  \n"
+            "  continuation # value content  \n"
+            "closing'  # comment\n"
+            "SINGLE=value\n"
+        )
 
     def test_sanitize_env_file_does_not_rewrite_value_semantics(self, tmp_path):
         env_file = tmp_path / ".env"

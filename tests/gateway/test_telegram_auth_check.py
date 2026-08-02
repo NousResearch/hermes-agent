@@ -427,3 +427,62 @@ async def test_unmentioned_group_location_from_removed_user_not_observed():
     await adapter._handle_location_message(update, SimpleNamespace())
 
     assert observed == []
+
+
+@pytest.mark.asyncio
+async def test_allow_all_false_unknown_dm_reaches_real_runner_pairing(monkeypatch, tmp_path):
+    """Real-runner regression: with only ``GATEWAY_ALLOW_ALL_USERS=false`` set, an
+    unknown Telegram DM must reach ``GatewayRunner``'s unauthorized-DM branch and
+    actually generate + deliver a pairing code (#68794).
+
+    The focused adapter-prefilter tests above prove the intake filter treats a
+    literal ``false`` toggle as "not configured" and lets the DM through. This
+    exercises the downstream path the prefilter hands off to: the runner's own
+    ``_is_user_authorized`` must likewise reject the unknown user under a falsey
+    global toggle, so ``_handle_message`` falls into the pairing branch that
+    calls ``pairing_store.generate_code`` and sends the code via the adapter.
+    """
+    from gateway.config import GatewayConfig
+    from gateway.platforms.base import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    import gateway.run as gateway_run
+
+    for key in _ALL_AUTH_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    # Only an explicit falsey global toggle — no allowlist of any kind.
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "false")
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    generated = []
+    original_generate = runner.pairing_store.generate_code
+
+    def tracking_generate(*args, **kwargs):
+        code = original_generate(*args, **kwargs)
+        generated.append((args, code))
+        return code
+
+    runner.pairing_store.generate_code = tracking_generate
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="111",
+        chat_type="dm",
+        user_id="111",
+        user_name="stranger",
+    )
+    event = MessageEvent(text="hi", source=source, internal=False)
+
+    await runner._handle_message(event)
+
+    # The unknown DM must have driven the real pairing branch, not been dropped.
+    assert generated, "unknown DM under GATEWAY_ALLOW_ALL_USERS=false should generate a pairing code"
+    assert adapter.send.await_count == 1
+    sent_text = adapter.send.await_args.args[1]
+    assert "pairing code" in sent_text.lower()

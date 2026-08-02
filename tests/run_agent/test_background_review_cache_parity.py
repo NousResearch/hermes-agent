@@ -33,6 +33,9 @@ def _make_agent_stub(agent_cls):
         "PARENT-SYSTEM-PROMPT-BYTES — must be inherited verbatim "
         "for prefix-cache parity"
     )
+    agent.ephemeral_system_prompt = (
+        "WebUI session context:\n- Pinned per-request gateway context"
+    )
     import datetime as _dt
     agent.session_start = _dt.datetime(2026, 1, 1, 12, 0, 0)
     agent._MEMORY_REVIEW_PROMPT = "review memory"
@@ -88,6 +91,7 @@ def _make_recorder_class(captured=None, record_on_run=()):
             self.suppress_status_output = None
             self.session_start = None
             self.session_id = None
+            self.ephemeral_system_prompt = kwargs.get("ephemeral_system_prompt")
 
         def run_conversation(self, *args, **kwargs):
             if captured is not None:
@@ -150,6 +154,44 @@ def test_review_fork_inherits_parent_cached_system_prompt():
         f"Got {captured['written_prompt']!r}, expected {parent_prompt!r}. "
         "This breaks Anthropic/OpenRouter prefix-cache parity (#25322)."
     )
+
+
+def test_review_fork_inherits_parent_ephemeral_system_prompt():
+    """The fork must send the parent's complete effective system prompt.
+
+    Gateway session context is appended through ``ephemeral_system_prompt`` at
+    API-call time, outside ``_cached_system_prompt``.  Copying only the cached
+    base therefore makes every background review diverge at the gateway block
+    and miss the parent's warm prefix cache.
+    """
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    captured = {}
+    _Recorder = _make_recorder_class(
+        captured,
+        record_on_run=("_cached_system_prompt", "ephemeral_system_prompt"),
+    )
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    parent_effective = (
+        getattr(agent, "_cached_system_prompt")
+        + "\n\n"
+        + getattr(agent, "ephemeral_system_prompt")
+    ).strip()
+    fork_effective = (
+        captured["_cached_system_prompt"]
+        + "\n\n"
+        + captured["ephemeral_system_prompt"]
+    ).strip()
+    assert fork_effective == parent_effective
 
 
 def test_review_fork_pins_session_start_and_session_id():

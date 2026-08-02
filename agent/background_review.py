@@ -745,6 +745,13 @@ def _run_review_in_thread(
             # _cached_system_prompt below.
             if not _routed:
                 _fork_kwargs["reasoning_config"] = getattr(agent, "reasoning_config", None)
+                # Gateway session context is appended to the parent's cached
+                # system prompt at API-call time through this field.  Preserve
+                # it on same-model forks so the complete effective system
+                # prompt remains byte-identical and can reuse the warm prefix.
+                _fork_kwargs["ephemeral_system_prompt"] = getattr(
+                    agent, "ephemeral_system_prompt", None
+                )
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
                 max_iterations=16,

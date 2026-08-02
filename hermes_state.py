@@ -188,7 +188,6 @@ def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
     )
 
 
-
 def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     """Delegate-subagent ids to cascade-delete with *parent_ids*.
 

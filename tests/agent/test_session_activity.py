@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 from agent.session_activity import (
+    ACTIVITY_DESCRIPTION_MAX,
     ActivityProvenance,
     bound_activity_description,
     build_activity_snapshot,
@@ -12,9 +13,9 @@ from agent.session_activity import (
 
 
 def test_bound_activity_description_truncates():
-    long = "x" * 200
+    long = "x" * (ACTIVITY_DESCRIPTION_MAX + 80)
     out = bound_activity_description(long)
-    assert len(out) == 120
+    assert len(out) == ACTIVITY_DESCRIPTION_MAX
     assert out.endswith("…")
 
 

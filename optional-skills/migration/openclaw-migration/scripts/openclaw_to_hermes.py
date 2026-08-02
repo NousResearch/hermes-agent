@@ -439,6 +439,17 @@ def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
             if exc.errno not in (errno.EXDEV, errno.EBUSY):
                 raise
             shutil.copyfile(tmp_path, target)
+            try:
+                shutil.copystat(tmp_path, target)
+            except OSError:
+                pass
+            # fsync the copied target so the durability claim holds on the
+            # cross-device path too (mirrors utils.atomic_replace).
+            target_fd = os.open(target, os.O_RDONLY)
+            try:
+                os.fsync(target_fd)
+            finally:
+                os.close(target_fd)
             os.unlink(tmp_path)
     except BaseException:
         try:

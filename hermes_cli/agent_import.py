@@ -47,7 +47,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from utils import atomic_write_text
+from utils import atomic_write_text, atomic_yaml_write
 
 logger = logging.getLogger(__name__)
 
@@ -107,19 +107,9 @@ class ConfigReadError(RuntimeError):
 def load_yaml_file(path: Path) -> Dict[str, Any]:
     """Load a YAML mapping, distinguishing "absent" from "unreadable".
 
-    Every caller of this function reads ``config.yaml``, merges a section into
-    it, and writes the whole mapping straight back over the original.  So
-    collapsing a present-but-unreadable file to ``{}`` is destructive: a YAML
-    syntax error, a permission problem, or a broken mount would make the
-    importer replace every setting the user had with only the one or two keys
-    it merged — and still report the item as ``imported``.
-
-    This is the same invariant ``hermes_cli.config`` enforces for its own
-    writers via ``require_readable_config_before_write`` / ``atomic_config_write``
-    ("``read_raw_config()`` returns ``{}`` for BOTH an absent file and an
-    unreadable-but-present file"), and that ``set_config_value`` gained for
-    YAML syntax errors.  This module has its own private helper pair and so
-    was never covered by either.
+    Callers read ``config.yaml``, merge a section in, and write the whole
+    mapping back — so collapsing a present-but-unreadable file to ``{}``
+    would replace every existing setting with just the merged keys.
 
     - Absent, or present but empty  -> ``{}``; first-time creation still works.
     - Present but unreadable, unparseable, or not a mapping -> raise
@@ -158,24 +148,17 @@ def load_yaml_file(path: Path) -> Dict[str, Any]:
 
 
 def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
-    """Write ``data`` as YAML via temp file + fsync + atomic rename.
+    """Write ``data`` as YAML atomically (temp file + fsync + rename).
 
     Only ever reached after :func:`load_yaml_file` has successfully read the
     same path, so the mapping being written is the real file's content plus
     the merged section — never a silently-empty stand-in.
 
-    ``atomic_write_text`` (already used by this module for the memory store)
-    means an interrupted import cannot leave a truncated ``config.yaml``
-    behind, and a symlinked config stays a symlink.  It creates the parent
-    directory itself.
+    ``atomic_yaml_write`` keeps a symlinked config a symlink, creates the
+    parent directory, and preserves the previous file's mode/owner (a
+    ``0o600``-secured config stays ``0o600``).
     """
-    import yaml
-
-    atomic_write_text(
-        path,
-        yaml.safe_dump(data, default_flow_style=False, sort_keys=False,
-                       allow_unicode=True),
-    )
+    atomic_yaml_write(path, data)
 
 
 # ---------------------------------------------------------------------------

@@ -43,11 +43,16 @@ class MessageType(str, Enum):
     TASK_CANCEL = "task_cancel"    # Task cancelled by submitter
     TASK_HEARTBEAT = "task_heartbeat"  # Task executor still alive
 
-    # ── Collaboration layer (future) ────────────────────────────────
+    # ── Collaboration layer ─────────────────────────────────────────
     MEMORY_SYNC = "memory_sync"    # Memory entry synced
     SKILL_SYNC = "skill_sync"      # Skill update synced
     SEARCH_QUERY = "search_query"  # Distributed search request
     SEARCH_RESULT = "search_result"  # Distributed search response
+
+    # ── Federation services ─────────────────────────────────────────
+    CRON_SYNC = "cron_sync"        # Cron job synced
+    CRON_HEARTBEAT = "cron_heartbeat"  # Cron leader still active
+    CRON_HANDOFF = "cron_handoff"  # Cron leader transfer
 
     # ── Compute pool layer ──────────────────────────────────────────
     COMPUTE_REQUEST = "compute_request"  # Distributed compute chunk

@@ -38,6 +38,7 @@ from gateway.federation.federation_relay import TaskExecutorRelay
 from gateway.federation.federation_discovery import FederationMDNS
 from gateway.federation.federation_collaboration import FederationMemorySync, FederationDistributedSearch
 from gateway.federation.federation_compute_pool import FederationComputePool
+from gateway.federation.federation_cron_relay import FederationCronRelay, FederationSkillSync
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,9 @@ class FederationAdapter:
         self._distributed_search: Optional[FederationDistributedSearch] = None
         # Phase 8: Compute Pool
         self._compute_pool: Optional[FederationComputePool] = None
+        # Phase 9: Cron Relay + Skill Sync
+        self._cron_relay: Optional[FederationCronRelay] = None
+        self._skill_sync: Optional[FederationSkillSync] = None
 
         # Register default message handlers
         self._register_default_handlers()
@@ -113,6 +117,8 @@ class FederationAdapter:
         self._task_handlers[MessageType.SEARCH_RESULT.value] = self._handle_search_result
         self._task_handlers[MessageType.COMPUTE_REQUEST.value] = self._handle_compute_request
         self._task_handlers[MessageType.COMPUTE_RESPONSE.value] = self._handle_compute_response
+        self._task_handlers[MessageType.CRON_SYNC.value] = self._handle_cron_sync
+        self._task_handlers[MessageType.SKILL_SYNC.value] = self._handle_skill_sync
 
     # ----------------------------------------------------------------
     # Lifecycle
@@ -204,6 +210,19 @@ class FederationAdapter:
         )
         await self._compute_pool.start()
 
+        # Phase 9: Start cron relay + skill sync
+        self._cron_relay = FederationCronRelay(
+            device_id=self.device_id,
+            adapter=self,
+        )
+        await self._cron_relay.start()
+
+        self._skill_sync = FederationSkillSync(
+            device_id=self.device_id,
+            adapter=self,
+        )
+        await self._skill_sync.start()
+
         # Announce ourselves
         await self._conn_manager.send(
             FedMessage.peer_join(
@@ -231,6 +250,10 @@ class FederationAdapter:
             await self._distributed_search.stop()
         if self._compute_pool:
             await self._compute_pool.stop()
+        if self._cron_relay:
+            await self._cron_relay.stop()
+        if self._skill_sync:
+            await self._skill_sync.stop()
         if self._relay:
             await self._relay.stop()
         if self._conn_manager:
@@ -719,6 +742,54 @@ class FederationAdapter:
     def get_compute_pool(self):
         """Get compute pool instance."""
         return self._compute_pool
+
+
+
+    def _handle_cron_sync(self, msg: FedMessage) -> None:
+        """Handle CRON_SYNC from peer."""
+        if self._cron_relay:
+            self._cron_relay.handle_cron_sync(msg)
+
+    def _handle_skill_sync(self, msg: FedMessage) -> None:
+        """Handle SKILL_SYNC from peer."""
+        if self._skill_sync:
+            self._skill_sync.handle_skill_sync(msg)
+
+    async def sync_cron_job(self, job_id: str, name: str, schedule: str) -> bool:
+        """Sync a cron job to all peers."""
+        if not self._cron_relay:
+            return False
+        from gateway.federation.federation_cron_relay import CronJobInfo
+        job = CronJobInfo(
+            job_id=job_id, name=name, schedule=schedule,
+            leader_device=self.device_id,
+        )
+        await self._cron_relay.sync_job(job)
+        return True
+
+    async def release_cron_job(self, job_id: str) -> bool:
+        """Release leadership of a cron job."""
+        if not self._cron_relay:
+            return False
+        await self._cron_relay.release_leadership(job_id)
+        return True
+
+    def get_cron_jobs(self) -> list:
+        """Get all known cron jobs."""
+        if not self._cron_relay:
+            return []
+        return self._cron_relay.get_all_jobs()
+
+    async def sync_skill(self, name: str, content: str, category: str = "") -> bool:
+        """Sync a skill to all peers."""
+        if not self._skill_sync:
+            return False
+        await self._skill_sync.sync_skill(name, content, category)
+        return True
+
+    def get_skill_sync(self):
+        """Get skill sync instance."""
+        return self._skill_sync
 
 
     def _get_local_ip(self) -> str:

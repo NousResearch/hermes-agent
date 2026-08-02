@@ -52,7 +52,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, Iterator, Optional
 from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -3418,8 +3418,251 @@ def stream_tts_to_speaker(
         queue_timeout = 0.5
         _spoken_sentences: list[str] = []  # track spoken sentences to skip duplicates
 
+        # --- Per-sentence prefetch pipeline ---
+        # Every sentence gets its own streamer.stream() call the moment it's
+        # complete. A background prefetch thread fires the HTTP request
+        # immediately, buffering PCM chunks into a per-segment queue. The
+        # single playback worker drains these queues in FIFO order. This
+        # means sentence N+1's HTTP request fires WHILE sentence N is still
+        # playing, so by the time the worker reaches it, audio is already
+        # arriving — no inter-sentence gap.
+        _audio_queue: queue.Queue[Optional[queue.Queue[Optional[bytes]]]] = queue.Queue()
+        _playback_done = threading.Event()
+        _prefetch_threads: list[threading.Thread] = []
+        # Limit concurrent prefetch threads so a long reply with many sentences
+        # doesn't spawn an unbounded number of HTTP connections / RAM buffers.
+        # The playback worker drains segments in FIFO order, so capping
+        # in-flight prefetches to 3 still keeps sentence N+1's audio warm
+        # while N plays, without letting a 100-sentence reply reserve 100
+        # threads + 100 unbounded queues up front.
+        _prefetch_sem = threading.Semaphore(3)
+        # Bound each per-sentence chunk queue so a slow playback worker
+        # can't let a fast prefetch thread buffer an entire sentence's
+        # audio in RAM.  ~64 chunks ≈ 64 KB of int16 PCM at 2 bytes/frame
+        # — enough headroom for smooth playback without unbounded growth.
+        _CHUNK_QUEUE_MAX = 64
+
+        def _consume_to_queue(
+            audio_iter: Iterator[bytes],
+            chunk_queue: "queue.Queue[Optional[bytes]]",
+        ) -> None:
+            """Consume a generator into a thread-safe queue.
+
+            Fires the HTTP request immediately (the generator's first
+            iteration triggers it) and buffers every chunk so the playback
+            worker can drain without waiting for synthesis.
+            """
+            try:
+                for chunk in audio_iter:
+                    if stop_event.is_set():
+                        logger.info(
+                            "TTS CUT: prefetch cancelled (stop_event set "
+                            "mid-sentence) — partial audio only"
+                        )
+                        break
+                    chunk_queue.put(chunk, timeout=30.0)
+            except Exception as exc:
+                logger.warning(
+                    "TTS CUT: streaming TTS prefetch failed mid-sentence "
+                    "(partial audio only): %s",
+                    exc,
+                )
+            finally:
+                chunk_queue.put(None)  # sentinel: no more chunks
+                _prefetch_sem.release()  # free a prefetch slot
+
+        def _reinit_output_stream():
+            """Close the broken PortAudio stream and try to create a fresh one.
+
+            Returns the new stream on success, ``None`` on failure.  Updates
+            the enclosing ``output_stream`` so the finally block in
+            ``stream_tts_to_speaker`` closes the *current* stream, not the
+            stale broken one.
+            """
+            nonlocal output_stream
+            if output_stream is not None:
+                try:
+                    output_stream.stop()
+                    output_stream.close()
+                except Exception:
+                    pass
+            try:
+                sd = _import_sounddevice()
+                new_stream = sd.OutputStream(
+                    samplerate=streamer.sample_rate,
+                    channels=streamer.channels,
+                    dtype="int16",
+                )
+                new_stream.start()
+                output_stream = new_stream
+                logger.info(
+                    "TTS: PortAudio output stream reinitialized after error"
+                )
+                return new_stream
+            except Exception as exc:
+                logger.warning(
+                    "TTS: PortAudio stream reinit failed: %s", exc
+                )
+                output_stream = None
+                return None
+
+        def _playback_worker() -> None:
+            """Single consumer: play audio segments from the queue in order.
+
+            When PortAudio raises a transient error (e.g. PaErrorCode -9986
+            on macOS device state changes), the worker attempts to
+            reinitialize the output stream (up to ``_max_reinit`` times).
+            If reinit fails it falls back to temp-file playback for the
+            remaining sentences instead of dropping them silently.
+            """
+            assert streamer is not None
+            if output_stream is not None:
+                import numpy as _np
+                _max_reinit = 3
+                _reinit_count = 0
+                _current_stream = output_stream
+                while True:
+                    chunk_queue = _audio_queue.get()
+                    if chunk_queue is None:
+                        break
+                    if stop_event.is_set():
+                        continue
+                    # If the stream died and reinit is exhausted, fall back
+                    # to temp-file playback for all remaining sentences.
+                    if _current_stream is None:
+                        _chunks = []
+                        while True:
+                            chunk = chunk_queue.get()
+                            if chunk is None:
+                                break
+                            _chunks.append(chunk)
+                        _play_via_tempfile(
+                            iter(_chunks), stop_event, streamer.sample_rate
+                        )
+                        continue
+                    _pcm_leftover = b""
+                    while True:
+                        chunk = chunk_queue.get()
+                        if chunk is None:
+                            break
+                        if stop_event.is_set():
+                            break
+                        _buf = _pcm_leftover + chunk
+                        _aligned_len = len(_buf) - (len(_buf) % 2)
+                        if _aligned_len >= 2:
+                            try:
+                                _current_stream.write(
+                                    _np.frombuffer(
+                                        _buf[:_aligned_len], dtype="<i2"
+                                    ).reshape(-1, 1)
+                                )
+                            except Exception as write_exc:
+                                # PortAudio/Core Audio can raise transient
+                                # errors (e.g. PaErrorCode -9986 "Internal
+                                # PortAudio error" on macOS device state
+                                # changes or buffer underruns).  Try to
+                                # reinit the stream so remaining sentences
+                                # survive; if reinit is exhausted, fall
+                                # back to temp-file playback.
+                                logger.warning(
+                                    "PortAudio write failed, attempting "
+                                    "stream reinit: %s",
+                                    write_exc,
+                                )
+                                if _reinit_count < _max_reinit:
+                                    _reinit_count += 1
+                                    _current_stream = _reinit_output_stream()
+                                    if _current_stream is not None:
+                                        # Reinit succeeded — re-attempt
+                                        # the failed write on the fresh
+                                        # stream instead of skipping the
+                                        # chunk.  The old `continue` jumped
+                                        # back to chunk_queue.get(), losing
+                                        # the chunk that triggered the
+                                        # error — audible as a missing
+                                        # syllable mid-sentence.
+                                        try:
+                                            _current_stream.write(
+                                                _np.frombuffer(
+                                                    _buf[:_aligned_len],
+                                                    dtype="<i2",
+                                                ).reshape(-1, 1)
+                                            )
+                                        except Exception:
+                                            # Fresh stream also rejected
+                                            # the write — don't loop;
+                                            # fall through to the next
+                                            # chunk so we don't hang.
+                                            pass
+                                        continue
+                                else:
+                                    logger.warning(
+                                        "TTS: PortAudio reinit exhausted "
+                                        "after %d attempts, falling back "
+                                        "to tempfile for remaining "
+                                        "sentences",
+                                        _max_reinit,
+                                    )
+                                    _current_stream = None
+                                break
+                        _pcm_leftover = (
+                            _buf[_aligned_len:] if _aligned_len < len(_buf) else b""
+                        )
+            else:
+                while True:
+                    chunk_queue = _audio_queue.get()
+                    if chunk_queue is None:
+                        break
+                    if stop_event.is_set():
+                        continue
+                    # Materialize the prefetched chunks for the temp-file path.
+                    _chunks = []
+                    while True:
+                        chunk = chunk_queue.get()
+                        if chunk is None:
+                            break
+                        _chunks.append(chunk)
+                    _play_via_tempfile(
+                        iter(_chunks), stop_event, streamer.sample_rate
+                    )
+            _playback_done.set()
+
+        def _enqueue_audio(text_to_speak: str) -> None:
+            """Synthesize *text_to_speak* and start prefetching immediately.
+
+            A background thread begins consuming the generator (firing the
+            HTTP request) the moment this is called, buffering PCM chunks
+            into a per-segment queue. The queue is placed on the audio
+            queue for ordered playback by the worker thread.
+            """
+            assert streamer is not None
+            try:
+                audio_iter = streamer.stream(text_to_speak)
+            except Exception as exc:
+                logger.warning("Streaming TTS synthesis failed: %s", exc)
+                return
+            # Block until a prefetch slot is free — caps concurrent
+            # in-flight synthesis threads so a long reply doesn't
+            # reserve one thread + one queue per sentence up front.
+            _prefetch_sem.acquire()
+            chunk_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=_CHUNK_QUEUE_MAX)
+            _audio_queue.put(chunk_queue)
+            t = threading.Thread(
+                target=_consume_to_queue,
+                args=(audio_iter, chunk_queue),
+                daemon=True,
+            )
+            _prefetch_threads.append(t)
+            t.start()
+
+        # Start the single playback worker (only when we have a streamer).
+        _worker_thread: Optional[threading.Thread] = None
+        if streamer is not None:
+            _worker_thread = threading.Thread(target=_playback_worker, daemon=True)
+            _worker_thread.start()
+
         def _speak_sentence(sentence: str):
-            """Display sentence and optionally generate + play audio."""
+            """Display sentence and route to the appropriate audio path."""
             if stop_event.is_set():
                 return
             cleaned = _strip_markdown_for_tts(sentence).strip()
@@ -3441,33 +3684,10 @@ def stream_tts_to_speaker(
             # Truncate very long sentences to the provider's per-request cap.
             if stream_max_len and len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
-            try:
-                audio_iter = streamer.stream(cleaned)
-                if output_stream is not None:
-                    import numpy as _np
-
-                    # Flag real speaker output for the duration of this
-                    # sentence so ambient cues (thinking sound) stay quiet.
-                    # Fail-open: stubbed/partial voice_mode modules (tests)
-                    # must never break sentence playback.
-                    try:
-                        from tools.voice_mode import mark_audio_output_active
-                    except Exception:
-                        def mark_audio_output_active(_active):
-                            return None
-                    mark_audio_output_active(True)
-                    try:
-                        for chunk in audio_iter:
-                            if stop_event.is_set():
-                                break
-                            output_stream.write(_np.frombuffer(chunk, dtype=_np.int16).reshape(-1, 1))
-                    finally:
-                        mark_audio_output_active(False)
-                else:
-                    # No audio device: buffer chunks to a temp WAV and play it.
-                    _play_via_tempfile(audio_iter, stop_event, streamer.sample_rate)
-            except Exception as exc:
-                logger.warning("Streaming TTS sentence failed: %s", exc)
+            # Every sentence gets its own prefetch thread — the HTTP request
+            # fires the moment the sentence boundary is detected, so audio for
+            # sentence N+1 is already buffering while sentence N plays.
+            _enqueue_audio(cleaned)
 
         def _speak_via_sync(cleaned: str):
             """Synthesize one sentence via the proven sync tool, then block on
@@ -3493,8 +3713,15 @@ def stream_tts_to_speaker(
                         pass
 
         def _play_via_tempfile(audio_iter, stop_evt, sample_rate=24000):
-            """Write PCM chunks to a temp WAV file and play it."""
-            tmp = None
+            """Write PCM chunks to a temp WAV file and play it.
+
+            Applies int16 (2-byte) frame alignment before writing: streaming
+            providers can yield chunks on arbitrary byte boundaries, and
+            ``wave.writeframes`` fed a half-sample at a chunk boundary would
+            produce a corrupted click.  Leftover bytes are carried into the
+            next chunk so every frame written is whole — same carry logic as
+            the live playback path.
+            """
             tmp_path = None
             try:
                 import wave
@@ -3504,10 +3731,21 @@ def stream_tts_to_speaker(
                     wf.setnchannels(1)
                     wf.setsampwidth(2)  # 16-bit
                     wf.setframerate(sample_rate)
+                    pcm_leftover = b""
                     for chunk in audio_iter:
                         if stop_evt.is_set():
                             break
-                        wf.writeframes(chunk)
+                        buf = pcm_leftover + chunk
+                        aligned_len = len(buf) - (len(buf) % 2)
+                        if aligned_len >= 2:
+                            wf.writeframes(buf[:aligned_len])
+                        pcm_leftover = (
+                            buf[aligned_len:] if aligned_len < len(buf) else b""
+                        )
+                    # Flush any trailing byte as silence (can't write half a
+                    # sample, but a single leftover byte is inaudible).
+                    if pcm_leftover:
+                        wf.writeframes(b"\x00")
                 # wave.open() given a file object flushes but does NOT close it
                 # (it only closes files it opened itself, by name), so the OS
                 # handle to tmp stays open.  On Windows an open write handle
@@ -3557,6 +3795,30 @@ def stream_tts_to_speaker(
                 text_queue.get_nowait()
             except queue.Empty:
                 break
+
+        # Signal the playback worker that no more audio is coming, then wait
+        # for it to finish playing everything in the queue. This ensures
+        # continuous voice mode doesn't start the next turn while audio is
+        # still playing.
+        #
+        # The timeout must be generous: a 1 000-character response is ~70 s
+        # of audio at 15 chars/s.  The old 30-second timeout was too short
+        # for anything beyond a few sentences — the join would expire
+        # mid-playback, the finally block would close the output stream
+        # out from under the still-running worker, and the worker's next
+        # write would hit PortAudio -9986 on the closed stream.  300 s
+        # gives even the longest responses room to finish; the sentinel
+        # on the audio queue is the real exit signal, the timeout is just
+        # a safety net against a wedged worker.
+        if streamer is not None and _worker_thread is not None:
+            _audio_queue.put(None)
+            _worker_thread.join(timeout=300.0)
+
+        # Join prefetch threads so in-flight HTTP requests complete before
+        # the pipeline exits (prevents orphaned connections on rapid turn
+        # changes).
+        for t in _prefetch_threads:
+            t.join(timeout=10.0)
 
         # output_stream is closed in the finally block below
 

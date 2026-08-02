@@ -2311,13 +2311,38 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     """Validate and convert a user message to anthropic format."""
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
-        if not converted_blocks or all(
-            (b.get("text") or "").strip() == ""
-            for b in converted_blocks
-            if isinstance(b, dict) and b.get("type") == "text"
-        ):
-            converted_blocks = [{"type": "text", "text": "(empty message)"}]
-        return {"role": "user", "content": converted_blocks}
+        # Drop individual blank/whitespace-only text blocks rather than an
+        # all-or-nothing check on the whole list. The prior all() check was
+        # vacuously true whenever there were zero text-type blocks (e.g. an
+        # image-only list), which nuked valid non-text blocks (images,
+        # documents) it never looked at — and, the opposite failure, left a
+        # blank text block sitting next to a *valid* text block untouched
+        # (all() is False as soon as one text block is non-blank), which is
+        # exactly the payload shape Anthropic 400s on: "text content blocks
+        # must contain non-whitespace text". Mirrors the per-block filtering
+        # already used for assistant content.
+        kept_blocks: List[Dict[str, Any]] = []
+        dropped_cache_control = None
+        for blk in converted_blocks:
+            if (
+                isinstance(blk, dict)
+                and blk.get("type") == "text"
+                and not (isinstance(blk.get("text"), str) and blk["text"].strip())
+            ):
+                if isinstance(blk.get("cache_control"), dict):
+                    dropped_cache_control = blk["cache_control"]
+                continue
+            kept_blocks.append(blk)
+        if not kept_blocks:
+            placeholder: Dict[str, Any] = {"type": "text", "text": "(empty message)"}
+            if dropped_cache_control is not None:
+                placeholder["cache_control"] = dropped_cache_control
+            kept_blocks = [placeholder]
+        elif dropped_cache_control is not None:
+            _apply_assistant_cache_control_to_last_cacheable_block(
+                kept_blocks, dropped_cache_control
+            )
+        return {"role": "user", "content": kept_blocks}
     else:
         if not content or (isinstance(content, str) and not content.strip()):
             content = "(empty message)"
@@ -2620,9 +2645,114 @@ def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
     Mirror the Bedrock Converse adapter, which unconditionally prepends a
     minimal user turn when the first message is not user
     (convert_messages_to_converse).
+
+    The inserted text block must be non-whitespace: Anthropic separately
+    rejects any text content block whose text is empty or whitespace-only
+    ("text content blocks must contain non-whitespace text"), so a single
+    space here traded the "leading assistant turn" 400 for that one (#69512
+    class). Uses the same placeholder as every other synthesized filler
+    block in this module for consistency.
     """
     if result and result[0].get("role") != "user":
-        result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
+        result.insert(
+            0, {"role": "user", "content": [{"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}]}
+        )
+
+
+def _fix_blank_text_blocks_in_list(
+    blocks: List[Any],
+    *,
+    placeholder_text: str,
+    msg_index: int,
+    role: Any,
+    location: str,
+) -> List[Any]:
+    """Drop blank/whitespace-only text blocks from ``blocks``, in place logic.
+
+    Non-text blocks (tool_use, tool_result, image, document, thinking, …)
+    and the relative order of everything else are left untouched. A
+    cache_control marker riding on a dropped block is relocated onto the
+    last surviving text/tool_use block so a breakpoint is never silently
+    lost. If nothing survives, a single non-blank placeholder text block
+    takes the dropped blocks' place (carrying the relocated cache_control,
+    if any) so the message never has empty content.
+
+    Returns a new list; does not mutate ``blocks``.
+    """
+    kept: List[Any] = []
+    relocated_cache_control = None
+    for block_index, blk in enumerate(blocks):
+        if (
+            isinstance(blk, dict)
+            and blk.get("type") == "text"
+            and not (isinstance(blk.get("text"), str) and blk["text"].strip())
+        ):
+            if isinstance(blk.get("cache_control"), dict):
+                relocated_cache_control = blk["cache_control"]
+            logger.warning(
+                "Pre-call sanitizer: dropped blank text content block "
+                "(message_index=%d role=%s location=%s block_index=%d "
+                "block_type=text)",
+                msg_index,
+                role,
+                location,
+                block_index,
+            )
+            continue
+        kept.append(blk)
+    if not kept:
+        placeholder: Dict[str, Any] = {"type": "text", "text": placeholder_text}
+        if relocated_cache_control is not None:
+            placeholder["cache_control"] = relocated_cache_control
+        kept.append(placeholder)
+    elif relocated_cache_control is not None:
+        _apply_assistant_cache_control_to_last_cacheable_block(kept, relocated_cache_control)
+    return kept
+
+
+def _scrub_blank_text_blocks(result: List[Dict[str, Any]]) -> None:
+    """Final provider-boundary guard against blank Anthropic text blocks.
+
+    Anthropic rejects any text content block whose ``text`` is empty or
+    whitespace-only with HTTP 400 ("text content blocks must contain
+    non-whitespace text"). ``_convert_assistant_message``,
+    ``_convert_user_message`` and ``_ensure_leading_user_turn`` already
+    avoid emitting these for the paths that build them, but this pass runs
+    last — after every other transform in ``convert_messages_to_anthropic``
+    — so a blank block from any current or future producer (including one
+    nested inside a ``tool_result``'s own content list) never reaches the
+    wire. Diagnostics are structural only: message index, role, content
+    location, block index/type. Never logs message text, tool arguments,
+    tokens, or credentials. Mutates ``result`` in place.
+    """
+    for msg_index, msg in enumerate(result):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        if not isinstance(content, list) or not content:
+            continue
+        placeholder_text = _EMPTY_TEXT_PLACEHOLDER if role == "assistant" else "(empty message)"
+        new_content = _fix_blank_text_blocks_in_list(
+            content,
+            placeholder_text=placeholder_text,
+            msg_index=msg_index,
+            role=role,
+            location="content",
+        )
+        for blk in new_content:
+            if not isinstance(blk, dict) or blk.get("type") != "tool_result":
+                continue
+            inner = blk.get("content")
+            if isinstance(inner, list) and inner:
+                blk["content"] = _fix_blank_text_blocks_in_list(
+                    inner,
+                    placeholder_text="(no output)",
+                    msg_index=msg_index,
+                    role=role,
+                    location="tool_result",
+                )
+        msg["content"] = new_content
 
 
 def convert_messages_to_anthropic(
@@ -2686,6 +2816,7 @@ def convert_messages_to_anthropic(
     _ensure_leading_user_turn(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
+    _scrub_blank_text_blocks(result)
 
     return system, result
 

@@ -85,18 +85,60 @@ def check_groktoCrawl():
         return False, "invalid health JSON"
 
 
+_DDGS_PROBE = r'''import json
+try:
+    from ddgs import DDGS
+    with DDGS(timeout=10) as client:
+        results = list(client.text("Hermes Agent", max_results=1))
+    if results:
+        print(json.dumps({"ok": True, "count": len(results)}))
+    else:
+        print(json.dumps({"ok": False, "kind": "empty", "message": "search returned no results"}))
+except ModuleNotFoundError as exc:
+    print(json.dumps({"ok": False, "kind": "missing_dependency", "message": str(exc)}))
+except Exception as exc:
+    print(json.dumps({"ok": False, "kind": "search_error", "message": str(exc)}))
+'''
+
+
 def check_ddgs():
-    """Check DDGS is importable and functional."""
+    """Check DDGS through a bounded subprocess and return safe diagnostics."""
     if _DRY_RUN:
         return True, "dry-run: probes skipped"
-    r = subprocess.run(
-        ['python3', '-c',
-         'from ddgs import DDGS; ddgs=DDGS(); r=list(ddgs.text("test", max_results=1)); exit(0 if len(r)>0 else 1)'],
-        capture_output=True, text=True, timeout=15
-    )
-    if r.returncode == 0:
-        return True, "working"
-    return False, f"import or search failed: {r.stderr[:80]}"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _DDGS_PROBE],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "search timed out after 15s"
+    except OSError as exc:
+        return False, f"probe could not start: {type(exc).__name__}: {exc}"
+
+    output = result.stdout.strip()
+    try:
+        envelope = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        stderr = " ".join(result.stderr.strip().splitlines())
+        detail = stderr or output or f"worker exited {result.returncode} without output"
+        return False, f"probe protocol error: {detail[:500]}"
+
+    if envelope.get("ok"):
+        return True, f"working ({envelope.get('count', 0)} result)"
+
+    kind = envelope.get("kind", "unknown_error")
+    message = str(envelope.get("message") or "no detail")
+    if kind == "missing_dependency":
+        return False, (
+            "dependency unavailable: ddgs is not installed in "
+            f"{sys.executable}; install with `{sys.executable} -m pip install ddgs`"
+        )
+    if kind == "empty":
+        return False, message
+    return False, f"search error: {message[:500]}"
 
 
 def main():

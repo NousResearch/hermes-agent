@@ -25,7 +25,8 @@ import smtplib
 import socket
 
 # Profile-scoped secret reader for multiplexing support (PR #50094)
-from agent.secret_scope import get_secret as _get_secret
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
 import ssl
 import uuid
 from email.header import decode_header
@@ -46,9 +47,50 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
-from utils import env_int, env_bool
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+def _get_esecret(name: str, default: str = "") -> str:
+    """Scope-aware ``EMAIL_*`` read with the default-profile startup fallback.
+
+    Secondary profiles run under ``_profile_runtime_scope`` — the scope is
+    authoritative and a scoped miss returns ``default`` (no cross-profile
+    borrow). The DEFAULT profile's adapter constructs and sends *unscoped*
+    under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash its email path; there ``os.environ``
+    is that profile's own value, so fall back to it. Same pattern as the
+    Slack ``SLACK_APP_TOKEN`` read (#59739) and the WhatsApp
+    ``_get_wsecret`` fix (5438e9c629).
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
+# Backwards-compatible alias for the name used by the original #59076 hunks.
+_get_secret = _get_esecret
+
+
+def _esecret_int(name: str, default: int) -> int:
+    """Scope-aware integer read (``env_int`` variant of ``_get_esecret``)."""
+    raw = str(_get_esecret(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
+def _esecret_bool(name: str, default: bool = False) -> bool:
+    """Scope-aware boolean read (``env_bool`` variant of ``_get_esecret``)."""
+    return is_truthy_value(_get_esecret(name, ""), default=default)
+
+
 # Automated sender patterns — emails from these are silently ignored
 _NOREPLY_PATTERNS = (
     "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
@@ -440,10 +482,10 @@ class EmailAdapter(BasePlatformAdapter):
         self._address = (_get_secret("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
-        self._imap_port = env_int("EMAIL_IMAP_PORT", 993)
+        self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
         self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
-        self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
-        self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
+        self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
+        self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -467,7 +509,7 @@ class EmailAdapter(BasePlatformAdapter):
         # gate below is skipped.
         if "require_authenticated_sender" in extra:
             self._require_authenticated_sender = bool(extra["require_authenticated_sender"])
-        elif env_bool("EMAIL_TRUST_FROM_HEADER", False):
+        elif _esecret_bool("EMAIL_TRUST_FROM_HEADER", False):
             self._require_authenticated_sender = False
         else:
             self._require_authenticated_sender = True

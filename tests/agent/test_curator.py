@@ -525,40 +525,45 @@ def test_curator_does_not_instruct_model_to_pin():
 
 
 
-def test_curator_prompt_covers_every_read_before_write_guarded_action():
-    """The review prompt must name every action the read-before-write guard
-    protects.
+def test_review_prompt_tells_reviewer_to_read_before_writing(curator_env, monkeypatch):
+    """The prompt actually delivered to the reviewer must name every action
+    the read-before-write guard protects.
 
-    ``_background_review_read_before_write_guard`` refuses a write when the
-    target was not loaded via ``skill_view`` in the same review turn. The
-    curator's forked reviewer only knows to do that if the prompt says so —
-    a guard the prompt never mentions is a silently jammed write channel,
-    not a safety net. This test fails if a new guarded action is added to
-    ``skill_manager_tool`` without teaching the prompt about it.
+    ``_background_review_read_before_write_guard`` refuses a background-review
+    write whose target was not loaded via ``skill_view`` in the same turn —
+    edit, patch, write_file over an existing file, and remove_file. The forked
+    reviewer only performs that read if the prompt tells it to, so a guard the
+    prompt never mentions is a silently jammed write channel rather than a
+    safety net: the run completes, writes nothing, and reads like a pass that
+    found nothing to consolidate.
+
+    The guard's runtime behavior is covered in
+    ``tests/tools/test_skill_manager_tool.py``; this asserts the instruction
+    survives prompt assembly and reaches the model.
     """
-    import inspect
-    import re
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
 
-    from agent.curator import CURATOR_REVIEW_PROMPT
-    from tools import skill_manager_tool
+    captured = {}
+    def _stub(prompt):
+        captured["prompt"] = prompt
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
 
-    known_actions = {
-        "create", "edit", "patch", "write_file", "remove_file", "delete",
-    }
-    source = inspect.getsource(skill_manager_tool)
-    guarded = set()
-    for call in source.split("_background_review_read_before_write_guard(")[1:]:
-        guarded |= known_actions.intersection(re.findall(r'"([^"]+)"', call[:200]))
+    c.run_curator_review(synchronous=True, consolidate=True)
 
-    assert guarded, "no guarded actions found — did the guard get renamed?"
-
-    prompt = CURATOR_REVIEW_PROMPT
+    prompt = captured["prompt"]
     assert "skill_view" in prompt
-    missing = [a for a in sorted(guarded) if f"action={a}" not in prompt]
-    assert not missing, (
-        "read-before-write guards these actions but the curator prompt never "
-        f"tells the reviewer to read first for: {missing}"
-    )
+    for action in ("edit", "patch", "write_file", "remove_file"):
+        assert f"action={action}" in prompt, (
+            "the delivered prompt never tells the reviewer to call skill_view "
+            f"before skill_manage action={action}, which the read-before-write "
+            "guard refuses without it"
+        )
 
 
 def test_cli_pin_refuses_bundled_skill(curator_env, capsys):

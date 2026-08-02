@@ -473,6 +473,7 @@ class TestSessionLifecycle:
             results = db.search_messages("大别山")
             assert len(results) == 1
             # Note: search_messages strips 'content' from results; use 'snippet'.
+            assert "content" not in results[0]
             assert "大别山" in results[0]["snippet"]
         finally:
             db.close()
@@ -739,6 +740,8 @@ class TestFTS5Search:
         # At least one result should mention docker
         snippets = [r.get("snippet", "") for r in results]
         assert any("docker" in s.lower() or "Docker" in s for s in snippets)
+        # Results never carry full content; snippet + metadata only.
+        assert all("content" not in r for r in results)
 
 
 

@@ -1240,10 +1240,14 @@ def test_hard_interrupt_aborts_compression_and_unblocks_session_writes(tmp_path:
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
     original_messages = copy.deepcopy(messages)
 
-    def _cancelled_compress(*_args, **_kwargs):
+    def _cancelled_compress(current, *_args, **_kwargs):
         agent._hard_interrupt_requested.set()
         assert aux._aux_interrupt_cancel_requested() is True
-        messages[0]["content"] = "must be rolled back"
+        # F3 isolation: the engine only ever sees the pooled snapshot, so an
+        # in-place mutation lands on ``current`` (the worker's copy), never on
+        # the caller's live list. The rollback contract is that the RETURNED
+        # transcript equals the pre-compression one.
+        current[0]["content"] = "must be rolled back"
         raise aux.AuxiliaryExplicitCancellation()
 
     agent.context_compressor.compress.side_effect = _cancelled_compress

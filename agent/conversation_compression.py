@@ -536,7 +536,12 @@ class CompressionCommitFence:
     def begin_commit(self, cancel_event: Any = None) -> bool:
         """Atomically admit commit unless a hard cancellation already won."""
         self._lock.acquire()
-        if self._cancelled or self._admission_revoked:
+        if (
+            self._cancelled
+            or self._admission_revoked
+            or (cancel_event is not None and bool(cancel_event.is_set()))
+        ):
+            self._cancelled = True
             self._lock.release()
             return False
         self._commit_started = True
@@ -781,6 +786,7 @@ def run_compress_context_with_progress_timeout(
     total_ceiling_seconds: float,
     on_timeout: Optional[Callable[[float, float, float], None]] = None,
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
+    fence: Optional[CompressionCommitFence] = None,
 ) -> Tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware timeout.
 
@@ -823,7 +829,7 @@ def run_compress_context_with_progress_timeout(
             return system_prompt_fallback()
         return system_prompt_fallback
 
-    fence = CompressionCommitFence()
+    fence = fence if fence is not None else CompressionCommitFence()
     ceiling = max(float(total_ceiling_seconds), float(idle_timeout_seconds))
     idle = float(idle_timeout_seconds)
     # Sync mirror of gateway session-hygiene's run_in_executor(None, ...) +
@@ -2761,6 +2767,10 @@ def compress_context(
                 )
             except Exception:
                 pass
+        # Incoming-message interrupts and active-turn redirects must not tear an
+        # atomic summary in half (#23975). Explicit stop surfaces set a separate
+        # Event atomically; never infer cause from the racy message fields.
+        _hard_cancel_event = getattr(agent, "_hard_interrupt_requested", None)
         try:
             # F6: never start expensive summary work for an already-cancelled
             # fence (a stale queued job admitted after host departure).
@@ -2772,14 +2782,72 @@ def compress_context(
                 )
                 compressed = messages
             else:
-                with aux_progress_hook(_progress_hook):
+                with aux_progress_hook(_progress_hook), aux_interrupt_protection(
+                    cancel_event=_hard_cancel_event
+                ):
                     compressed = compress_fn(messages, **compress_kwargs)
+                    # Freeze a hard stop that arrived after the final provider
+                    # attempt unwound but before this transaction can rotate
+                    # session state.
+                    if (
+                        _hard_cancel_event is not None
+                        and _hard_cancel_event.is_set()
+                    ):
+                        raise AuxiliaryExplicitCancellation()
         finally:
             if commit_fence is not None:
                 try:
                     agent.context_compressor._compression_cancelled_check = None
                 except Exception:
                     pass
+    except AuxiliaryExplicitCancellation:
+        try:
+            _restore_compressor_attempt_state(
+                agent.context_compressor,
+                _compressor_attempt_snapshot,
+                durable_cooldown_authoritative=_durable_cooldown_authoritative,
+                durable_cooldown_state=_durable_cooldown_state,
+            )
+        except BaseException as _rollback_exc:
+            # Compensation failure must surface, but it must not strand the
+            # session lease or retain an in-memory transcript mutation.
+            if (
+                messages_before_compression is not None
+                and messages != messages_before_compression
+            ):
+                messages[:] = copy.deepcopy(messages_before_compression)
+            if _activity_heartbeat is not None:
+                _activity_heartbeat.stop("context compression rollback failed")
+                _activity_heartbeat = None
+            _release_lock()
+            _emit_compression_attempt_telemetry(
+                agent,
+                started_at=_attempt_started_at,
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class=f"rollback:{type(_rollback_exc).__name__}",
+            )
+            raise
+        if (
+            messages_before_compression is not None
+            and messages != messages_before_compression
+        ):
+            messages[:] = copy.deepcopy(messages_before_compression)
+        if _activity_heartbeat is not None:
+            _activity_heartbeat.stop("context compression cancelled")
+            _activity_heartbeat = None
+        _release_lock()
+        _emit_compression_attempt_telemetry(
+            agent,
+            started_at=_attempt_started_at,
+            commit_status="aborted",
+            split_status="aborted",
+            failure_class="explicit_interrupt",
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        return messages, _existing_sp
     except BaseException as _compress_exc:
         # ANY exception after lock acquisition — memory hook, capability
         # inspection, engine lookup, or compress() — must release the lock so

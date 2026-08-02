@@ -8730,6 +8730,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key, exc_info=True,
             )
 
+        # A Buzz channel can share one conversational session across several
+        # threads. If this message belongs to a different route than the
+        # pending clarify, do not redirect its text into the blocked run. Wake
+        # that run with an internal cancellation response and let the base
+        # adapter queue this event as a separate routed follow-up turn.
+        try:
+            from tools import clarify_gateway as _clarify_mod
+
+            _clarify_route_scope = _clarify_mod.build_route_scope(
+                platform=event.source.platform,
+                chat_id=event.source.chat_id,
+                thread_id=event.source.thread_id,
+                message_id=event.message_id,
+            )
+            if _clarify_mod.resolve_pending_outside_route(
+                session_key,
+                _clarify_route_scope,
+                "[The user continued in a different conversation route. "
+                "Do not treat that message as this clarification's answer. "
+                "End this turn without a substantive reply.]",
+            ):
+                logger.info(
+                    "Released pending clarify for cross-route Buzz follow-up: "
+                    "session=%s route=%s",
+                    session_key,
+                    _clarify_route_scope,
+                )
+                return False
+        except Exception:
+            logger.warning(
+                "Cross-route clarify release failed for session %s; "
+                "falling through to busy handling",
+                session_key,
+                exc_info=True,
+            )
+
         # Normal busy case (agent actively running a task)
         adapter = self._adapter_for_source(event.source)
         if not adapter:

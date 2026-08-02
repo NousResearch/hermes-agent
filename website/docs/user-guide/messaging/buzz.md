@@ -105,10 +105,10 @@ gateway:
 
 Pending interactive questions are scoped to the Buzz thread where Hermes sent
 them. A reply in that thread can answer the pending prompt, while an unrelated
-top-level channel post starts its own conversation instead of being consumed as
-the answer to an older clarification. Hermes can still share conversation
-history across Buzz threads; only the pending interaction and its delivery route
-are thread-scoped.
+top-level channel post cancels the old pending interaction and is queued as its
+own routed turn instead of being consumed as the clarification answer. Hermes
+can still share conversation history across Buzz threads; only the pending
+interaction and its delivery route are thread-scoped.
 
 ## Access control
 

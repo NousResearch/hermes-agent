@@ -243,6 +243,22 @@ class TestMentionGating:
         await self._poll_with(adapter, _event("e1", content="hey @Chip can you help?", created_at=10))
         assert len(adapter._dispatched) == 1
 
+    @pytest.mark.asyncio
+    async def test_reply_root_propagates_to_dispatched_thread_id(self, adapter):
+        root_id = "f" * 64
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "e1",
+                CHANNEL,
+                content="@Chip same-thread answer",
+                created_at=10,
+                reply_to=root_id,
+            ),
+        )
+
+        assert adapter._dispatched[0]["thread_id"] == root_id
+
 
     @pytest.mark.asyncio
     async def test_allowlist_blocks_unauthorized(self, adapter):

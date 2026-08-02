@@ -248,6 +248,36 @@ def get_pending_for_session(
         return None
 
 
+def resolve_pending_outside_route(
+    session_key: str,
+    route_scope: Optional[Dict[str, str]],
+    response: str,
+) -> bool:
+    """Resolve a scoped clarify when the user continues on another route.
+
+    The unrelated message is not used as the clarify answer. The supplied
+    internal response only releases the blocked turn so the adapter can queue
+    the new routed event as its own follow-up turn.
+    """
+    normalized_route_scope = _normalize_route_scope(route_scope)
+    if normalized_route_scope is None:
+        return False
+    with _lock:
+        ids = _session_index.get(session_key) or []
+        for cid in ids:
+            entry = _entries.get(cid)
+            if (
+                entry is None
+                or entry.route_scope is None
+                or entry.route_scope == normalized_route_scope
+            ):
+                continue
+            entry.response = str(response)
+            entry.event.set()
+            return True
+    return False
+
+
 def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
     """Map typed choice replies to canonical choice text, otherwise keep or reject custom text.
 

@@ -98,6 +98,56 @@ def _make_adapter(platform_val="telegram"):
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
+    @pytest.mark.asyncio
+    async def test_buzz_other_route_releases_clarify_without_redirecting_text(self):
+        from tools import clarify_gateway as cm
+
+        cm._entries.clear()
+        cm._session_index.clear()
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter("buzz")
+        source = SessionSource(
+            platform=Platform("buzz"),
+            chat_id="buzz-channel",
+            chat_type="group",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="unrelated new root",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="new-root",
+        )
+        session_key = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent.redirect = MagicMock(return_value=True)
+        runner._running_agents[session_key] = agent
+        entry = cm.register(
+            "clarify-old-root",
+            session_key,
+            "Answer in the old thread",
+            None,
+            route_scope={
+                "platform": "buzz",
+                "chat_id": "buzz-channel",
+                "thread_id": "old-root",
+            },
+        )
+
+        handled = await runner._handle_active_session_busy_message(event, session_key)
+
+        assert handled is False
+        assert entry.event.is_set()
+        assert "different conversation route" in (entry.response or "")
+        agent.redirect.assert_not_called()
+        adapter._send_with_retry.assert_not_awaited()
+        cm._entries.clear()
+        cm._session_index.clear()
+
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):

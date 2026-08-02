@@ -5226,6 +5226,49 @@ class DiscordAdapter(BasePlatformAdapter):
             return content
         return convert_table_to_bullets(content)
 
+    @staticmethod
+    def _clean_embed_json(block: str) -> str:
+        """Strip common LLM-generation artifacts from an embed JSON block:
+        (1/2)-style segment markers and trailing commas (both outside
+        strings). Returns the cleaned JSON text."""
+        out = []
+        in_str = False
+        esc = False
+        i = 0
+        n = len(block)
+        while i < n:
+            ch = block[i]
+            if in_str:
+                out.append(ch)
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                i += 1
+                continue
+            if ch == '"':
+                in_str = True
+                out.append(ch)
+                i += 1
+                continue
+            if ch == "(":
+                m = re.match(r"\(\d+/\d+\)", block[i:])
+                if m:
+                    i += len(m.group(0))
+                    continue
+            if ch == ",":
+                j = i + 1
+                while j < n and block[j] in " \t\n\r":
+                    j += 1
+                if j < n and block[j] in "}]":
+                    i += 1  # drop trailing comma
+                    continue
+            out.append(ch)
+            i += 1
+        return "".join(out)
+
     def _extract_embed(self, content: str):
         """If content contains [EMBED]...[/EMBED] (JSON), build a discord.Embed.
 
@@ -5238,7 +5281,7 @@ class DiscordAdapter(BasePlatformAdapter):
             start = content.index("[EMBED]")
             end = content.index("[/EMBED]", start)
             block = content[start + 7:end].strip()
-            data = json.loads(block, strict=False)  # allow literal newlines inside strings
+            data = json.loads(self._clean_embed_json(block), strict=False)  # tolerate LLM artifacts + literal newlines
             emb = discord.Embed() if discord is not None else None
             if emb is None:
                 return content, None

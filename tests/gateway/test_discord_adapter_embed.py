@@ -69,6 +69,26 @@ class TestExtractEmbed:
         assert emb is None
         assert rest == content
 
+    def test_llm_artifacts_are_tolerated(self):
+        """(1/2)-style segment markers and trailing commas written by the
+        generating model must not break the parse (regression: a cron report
+        arrived as raw text because the JSON contained '}, (1/2)')."""
+        a = _bare_adapter()
+        content = (
+            '[EMBED]\n{"title": "T", "fields": ['
+            '{"name": "A", "value": "1", "inline": true}, (1/2)\n'
+            '{"name": "B", "value": "2", "inline": true},'
+            ']}\n[/EMBED]'
+        )
+        rest, emb = a._extract_embed(content)
+        assert emb is not None
+        assert len(emb.fields) == 2
+
+    def test_clean_embed_json_preserves_strings(self):
+        a = _bare_adapter()
+        cleaned = a._clean_embed_json('{"desc": "keep ,} and (1/2) here", "x": [1, 2,],}')
+        assert cleaned == '{"desc": "keep ,} and (1/2) here", "x": [1, 2]}'
+
     def test_literal_newlines_accepted(self):
         a = _bare_adapter()
         content = '[EMBED]\n{"title": "T", "description": "line1\nline2"}\n[/EMBED]'

@@ -1286,11 +1286,16 @@ def aggregate_moa_context(
     agg_runtime = _slot_runtime(aggregator)
     # Pin the live agent disable onto synthesis decoration so mid-session
     # config flips cannot re-enable markers on this path alone (#76085).
+    # Same not-None guard as _run_reference: stamping None would be a no-op
+    # (present-None falls through to the config fallback anyway).
     agg_cache_runtime = agg_runtime
-    if agent is not None:
+    _agg_cache_disabled = (
+        getattr(agent, "_cache_disabled", None) if agent is not None else None
+    )
+    if _agg_cache_disabled is not None:
         agg_cache_runtime = {
             **agg_runtime,
-            "_cache_disabled": getattr(agent, "_cache_disabled", None),
+            "_cache_disabled": _agg_cache_disabled,
         }
     try:
         # Same cache_control decoration as _run_reference's advisor calls

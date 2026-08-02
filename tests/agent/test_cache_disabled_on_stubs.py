@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-
 def _has_cache_control(obj) -> bool:
     if isinstance(obj, dict):
         if "cache_control" in obj:
@@ -43,6 +42,19 @@ class TestPromptCachingDisabledFromConfig:
                 return_value={"prompt_caching": {"cache_ttl": ttl}},
             ):
                 assert prompt_caching_disabled_from_config() is False, ttl
+
+    def test_shared_predicate_matches_agent_init_semantics(self):
+        """agent_init and the stub paths must share one disable predicate.
+
+        Unknown values keep caching enabled (default TTL), exactly like the
+        historical inline detection in agent_init (#76085 drift guard).
+        """
+        from agent.agent_runtime_helpers import cache_ttl_means_disabled
+
+        for ttl in (False, None, "off", "false", "disabled", "no", "none", "OFF"):
+            assert cache_ttl_means_disabled(ttl) is True, ttl
+        for ttl in ("5m", "1h", "2h", 5, True, "weird"):
+            assert cache_ttl_means_disabled(ttl) is False, ttl
 
 
 class TestPlanCacheSectionsHonorsDisable:
@@ -366,4 +378,5 @@ class TestAdvisorRuntimeDisable:
                 },
             )
         assert not _has_cache_control(out)
-        assert out == messages or not _has_cache_control(out)
+        # Inputs must not be mutated.
+        assert not _has_cache_control(messages)

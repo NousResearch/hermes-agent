@@ -37,7 +37,26 @@ import os
 import re
 from typing import Any, Dict, Optional
 
-from agent.secret_scope import get_secret as _get_wsecret
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_wsecret(name, default=None):
+    """Scope-aware WHATSAPP_* read with the default-profile startup fallback.
+
+    Secondary profiles run under ``_profile_runtime_scope`` -- the scope is
+    authoritative and a scoped miss returns ``default`` (no cross-profile
+    borrow). The DEFAULT profile's adapter constructs and sends *unscoped*
+    under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash its WhatsApp path; there ``os.environ``
+    is that profile's own value, so fall back to it. Same pattern as the
+    Slack ``SLACK_APP_TOKEN`` read (#59739).
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
 
 logger = logging.getLogger(__name__)
 

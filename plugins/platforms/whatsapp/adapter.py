@@ -43,8 +43,16 @@ def _wenv(name: str, default: str = "") -> str:
     ``get_secret`` honors the active ``_profile_runtime_scope`` so secondary
     profiles see their own credentials.
     """
-    from agent.secret_scope import get_secret
-    val = get_secret(name)
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        val = get_secret(name)
+    except UnscopedSecretError:
+        # DEFAULT profile's adapter constructs/connects outside any
+        # _profile_runtime_scope under multiplexing; os.environ is that
+        # profile's own value there. Same pattern as Slack SLACK_APP_TOKEN
+        # (#59739) and the Matrix recovery key. A *scoped* miss still
+        # returns the default (no cross-profile borrow).
+        val = os.getenv(name)
     return val if val is not None else default
 
 logger = logging.getLogger(__name__)
@@ -683,7 +691,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # (which reads process.env.WHATSAPP_MODE etc.) sees the profile's
             # own configuration instead of falling back to self-chat defaults.
             _profile_wa_mode = _wenv("WHATSAPP_MODE", "self-chat")
-            if _profile_wa_mode != "self-chat" or _profile_wa_mode:
+            if _profile_wa_mode:
                 bridge_env["WHATSAPP_MODE"] = _profile_wa_mode
             for _key in (
                 "WHATSAPP_ALLOWED_USERS", "WHATSAPP_ALLOW_FROM",
@@ -691,6 +699,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_GROUP_ALLOW_FROM",
                 "WHATSAPP_REQUIRE_MENTION", "WHATSAPP_MENTION_PATTERNS",
                 "WHATSAPP_FREE_RESPONSE_CHATS",
+                # Full set bridge.js consumes -- without these a secondary
+                # profile's bridge silently reverts to defaults for debug,
+                # forwarding, prefixes, and send pacing.
+                "WHATSAPP_DEBUG", "WHATSAPP_FORWARD_OWNER_MESSAGES",
+                "WHATSAPP_REPLY_PREFIX", "WHATSAPP_MAX_MESSAGE_LENGTH",
+                "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
             ):
                 _v = _wenv(_key)
                 if _v:

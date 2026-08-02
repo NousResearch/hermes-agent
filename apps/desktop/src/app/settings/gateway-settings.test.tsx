@@ -1,6 +1,6 @@
 import { GatewayReauthRequiredError } from '@hermes/shared'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deferred } from '@/test/deferred'
 
@@ -25,6 +25,14 @@ vi.mock('./connections-registry', async importOriginal => ({
   ...(await importOriginal<any>()),
   ConnectionsRegistrySection: () => null
 }))
+
+// Radix Select calls scrollIntoView / pointer-capture APIs jsdom lacks.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.releasePointerCapture = vi.fn()
+})
+
 const getConnectionConfig = vi.fn()
 const saveConnectionConfig = vi.fn()
 
@@ -527,5 +535,35 @@ describe('GatewaySettings', () => {
       expect(window.hermesDesktop!.cloud!.agentSignIn).toHaveBeenCalledWith(saved.url)
       registry.value = null
     })
+  })
+
+  it('focuses the custom SSH host input on the first "Custom" selection', async () => {
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'ssh',
+      sshHost: '',
+      sshUser: '',
+      sshPort: 22,
+      sshKeyPath: '',
+      sshRemoteHermesPath: '',
+      sshRemoteProfile: ''
+    })
+    const sshConfigHosts = vi.fn().mockResolvedValue({ hosts: ['github.com'] })
+    Object.assign(window.hermesDesktop, { sshConfigHosts })
+
+    render(<GatewaySettings />)
+
+    // With ~/.ssh/config aliases available the host field is a dropdown.
+    const trigger = await screen.findByRole('combobox')
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('option', { name: 'Custom (enter manually)…' }))
+
+    // The dropdown is swapped for a free-text input that must be focused and
+    // immediately typeable on the FIRST selection (no round-trip through
+    // another option) — Radix's deferred focus restoration must not steal it.
+    const hostRow = screen.getByText('Host').closest('.grid') as HTMLElement
+    const input = within(hostRow).getByRole('textbox') as HTMLInputElement
+
+    await waitFor(() => expect(document.activeElement).toBe(input))
   })
 })

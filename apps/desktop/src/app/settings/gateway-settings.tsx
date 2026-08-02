@@ -271,6 +271,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
   const [lastTest, setLastTest] = useState<null | string>(null)
   const [sshHostSuggestions, setSshHostSuggestions] = useState<string[]>([])
   const [sshCustomHost, setSshCustomHost] = useState(false)
+  const sshHostInputRef = useRef<HTMLInputElement>(null)
   const sshResolveSeq = useRef(0)
   const sshTestSeq = useRef(0)
   const saveSeq = useRef(0)
@@ -511,6 +512,23 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
 
     return () => void (cancelled = true)
   }, [state.mode])
+
+  // Radix Select restores focus to its trigger when the popover closes. That
+  // restoration runs after `onValueChange` has swapped the Select out for the
+  // custom-host Input, so it races with the Input's `autoFocus` and steals
+  // focus from the freshly mounted field (the trigger is already unmounted, so
+  // focus lands on <body>). Re-focus on the next frame, once the Select's
+  // deferred focus restoration has settled, so the first "Custom" selection
+  // yields a field that immediately accepts typing.
+  useEffect(() => {
+    if (!sshCustomHost) {
+      return
+    }
+
+    const frame = requestAnimationFrame(() => sshHostInputRef.current?.focus())
+
+    return () => cancelAnimationFrame(frame)
+  }, [sshCustomHost])
 
   // eslint-disable-next-line no-restricted-syntax -- monotonic request-sequence counters, not an atom mirror
   useEffect(() => {
@@ -1320,7 +1338,14 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
               action={
                 <Select
                   onValueChange={selectHost}
-                  value={sshHostSuggestions.includes(state.sshHost) ? state.sshHost : SSH_HOST_CUSTOM}
+                  // Only report an actual host here. Leaving the value at the
+                  // empty string shows the placeholder; using SSH_HOST_CUSTOM
+                  // while the dropdown is still rendered would make the FIRST
+                  // "Custom" click a no-op (Radix suppresses onValueChange when
+                  // a controlled value doesn't change), so the custom-host
+                  // input would never mount without a round-trip through
+                  // another option.
+                  value={sshHostSuggestions.includes(state.sshHost) ? state.sshHost : ''}
                 >
                   <SelectTrigger className={cn('h-8', CONTROL_TEXT)}>
                     <SelectValue placeholder={g.sshHostPick} />
@@ -1356,6 +1381,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
                     void resolveSshHost(state.sshHost)
                   }}
                   onChange={event => setState(current => selectSshHost(current, event.target.value))}
+                  ref={sshHostInputRef}
                   value={state.sshHost}
                 />
               }

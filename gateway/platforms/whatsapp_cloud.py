@@ -423,8 +423,13 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Outbound HTTP client. Tighter keepalive matches other platform
         # adapters so idle CLOSE_WAIT drains promptly (#18451).
         from gateway.platforms._http_client_limits import platform_httpx_limits
+        from tools.url_safety import create_ssrf_safe_async_client
 
-        self._http_client = httpx.AsyncClient(
+        # SSRF-safe client: resolves and validates the target IP at TCP
+        # connect time, so a Graph response (or MITM) that points at
+        # loopback / link-local / cloud-metadata cannot be dialed even if
+        # DNS rebinds between the preflight check and the connect (#70352).
+        self._http_client = create_ssrf_safe_async_client(
             timeout=30.0, limits=platform_httpx_limits()
         )
 
@@ -1340,9 +1345,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Graph returns a signed temporary URL. Treat it as untrusted for
         # host-side fetches: a compromised Graph response (or MITM) must not
         # be allowed to point Hermes at loopback / cloud-metadata targets.
-        from tools.url_safety import is_safe_url
+        # Preflight uses the async variant so the blocking DNS work runs off
+        # the event loop; the client itself re-validates at connect time.
+        from tools.url_safety import async_is_safe_url
 
-        if not is_safe_url(str(temp_url)):
+        if not await async_is_safe_url(str(temp_url)):
             logger.warning(
                 "[whatsapp_cloud] refusing unsafe Graph media URL for id=%s",
                 media_id,

@@ -35,6 +35,24 @@ def _whatsapp_open_optin(monkeypatch):
     monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_url_safety(monkeypatch):
+    """Keep the media-download tests resolver-free.
+
+    ``_download_media_to_cache`` preflights the Graph temp URL with
+    ``tools.url_safety.async_is_safe_url``, which would otherwise perform a
+    real DNS lookup for ``lookaside.fbsbx.com``. Stub the predicate to a
+    deterministic allow so unit tests stay hermetic; tests that assert the
+    refusal path patch it to ``False`` inside their own body.
+    """
+    import tools.url_safety as _url_safety
+
+    async def _always_safe(url: str) -> bool:  # pragma: no cover - trivial
+        return True
+
+    monkeypatch.setattr(_url_safety, "async_is_safe_url", _always_safe)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1356,6 +1374,77 @@ class TestDownloadMedia:
         assert local_path.endswith(expected_ext), (
             f"mime {mime!r} should map to {expected_ext} but got {local_path}"
         )
+
+    @pytest.mark.asyncio
+    async def test_unsafe_graph_url_is_refused_without_byte_fetch(
+        self, tmp_path, monkeypatch
+    ):
+        """A Graph temp URL rejected by the safety predicate is never fetched.
+
+        Resolver-free: the predicate is stubbed, so this asserts the adapter's
+        control flow rather than DNS behaviour.
+        """
+        import tools.url_safety as _url_safety
+        from gateway.platforms import whatsapp_cloud as wac
+
+        checked: list[str] = []
+
+        async def _always_unsafe(url: str) -> bool:
+            checked.append(url)
+            return False
+
+        monkeypatch.setattr(_url_safety, "async_is_safe_url", _always_unsafe)
+
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        meta_resp = MagicMock(status_code=200)
+        meta_resp.json = MagicMock(return_value={
+            "url": "http://169.254.169.254/latest/meta-data/",
+            "mime_type": "image/jpeg",
+        })
+        blob_resp = MagicMock(status_code=200, content=b"secret")
+        adapter._http_client.get = AsyncMock(side_effect=[meta_resp, blob_resp])
+
+        with _patch.object(wac, "_INBOUND_MEDIA_CACHE", tmp_path):
+            local_path, mime = await adapter._download_media_to_cache("media_bad")
+
+        assert local_path is None and mime is None
+        assert checked == ["http://169.254.169.254/latest/meta-data/"]
+        # Only the metadata call happened — no byte fetch of the unsafe URL.
+        assert adapter._http_client.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_safe_graph_url_byte_fetch_disables_redirects(self, tmp_path):
+        """The allowed path still fetches bytes with redirects disabled."""
+        from gateway.platforms import whatsapp_cloud as wac
+
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        meta_resp = MagicMock(status_code=200)
+        meta_resp.json = MagicMock(return_value={
+            "url": "https://lookaside.fbsbx.com/whatsapp/m/ok",
+            "mime_type": "image/jpeg",
+        })
+        blob_resp = MagicMock(status_code=200, content=b"\xff\xd8\xff\xe0ok")
+        adapter._http_client.get = AsyncMock(side_effect=[meta_resp, blob_resp])
+
+        with _patch.object(wac, "_INBOUND_MEDIA_CACHE", tmp_path):
+            local_path, _ = await adapter._download_media_to_cache("media_ok")
+
+        assert local_path is not None
+        blob_call = adapter._http_client.get.await_args_list[-1]
+        assert blob_call.args[0] == "https://lookaside.fbsbx.com/whatsapp/m/ok"
+        assert blob_call.kwargs["follow_redirects"] is False
+
+    def test_adapter_uses_ssrf_safe_client_factory(self):
+        """connect() builds the shared client via the SSRF-safe factory."""
+        import inspect
+
+        from gateway.platforms import whatsapp_cloud as wac
+
+        src = inspect.getsource(wac.WhatsAppCloudAdapter.connect)
+        assert "create_ssrf_safe_async_client" in src
+        assert "httpx.AsyncClient(" not in src
 
 
 class TestInboundMediaDispatch:

@@ -40,6 +40,7 @@ from gateway.federation.federation_collaboration import FederationMemorySync, Fe
 from gateway.federation.federation_compute_pool import FederationComputePool
 from gateway.federation.federation_cron_relay import FederationCronRelay, FederationSkillSync
 from gateway.federation.federation_cluster import FederationLeaderElection, FederationConfigSync
+from gateway.federation.federation_api import FederationAPI, FederationAPIConfig
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ class FederationAdapter:
         # Phase 10: Cluster Management
         self._leader_election: Optional[FederationLeaderElection] = None
         self._config_sync: Optional[FederationConfigSync] = None
+        self._api: Optional[FederationAPI] = None
 
         # Register default message handlers
         self._register_default_handlers()
@@ -246,6 +248,17 @@ class FederationAdapter:
         )
         await self._config_sync.start()
 
+        # Phase 11: Start HTTP API
+        self._api = FederationAPI(
+            adapter=self,
+            config=FederationAPIConfig(
+                enabled=True,
+                port=self._federation_config.api_port if hasattr(self._federation_config, 'api_port') else 18766,
+            ),
+            hermes_version=self._get_hermes_version(),
+        )
+        await self._api.start()
+
         # Announce ourselves
         await self._conn_manager.send(
             FedMessage.peer_join(
@@ -281,6 +294,8 @@ class FederationAdapter:
             await self._leader_election.stop()
         if self._config_sync:
             await self._config_sync.stop()
+        if self._api:
+            await self._api.stop()
         if self._relay:
             await self._relay.stop()
         if self._conn_manager:
@@ -899,10 +914,30 @@ class FederationAdapter:
         """Get leader election instance."""
         return self._leader_election
 
+    def get_api(self):
+        """Get federation API instance."""
+        return self._api
+
+    def get_peers_dict(self) -> dict:
+        """Get peers dictionary for API responses."""
+        return getattr(self, '_peers', {})
+
+    def get_relay(self):
+        """Get task relay instance for API."""
+        return self._relay
+
     def get_config_sync(self):
         """Get config sync instance."""
         return self._config_sync
 
+
+    def _get_hermes_version(self) -> str:
+        """Get current Hermes version."""
+        try:
+            import importlib.metadata
+            return importlib.metadata.version("hermes-agent")
+        except Exception:
+            return "unknown"
 
     def _get_local_ip(self) -> str:
         """Get local IP address for advertising."""

@@ -9,6 +9,7 @@ reports exactly what was skipped and why.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -413,20 +414,32 @@ def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
     an interrupted migration cannot leave a truncated config.yaml behind.
 
     Inlined rather than importing ``utils.atomic_write_text``: this script is
-    standalone and runs with only the stdlib on its path.
+    standalone and runs with only the stdlib on its path.  The symlink and
+    cross-device handling mirrors ``utils.atomic_replace``: a plain
+    ``os.replace`` onto a symlinked config.yaml would replace the *link* with a
+    regular file, silently detaching managed deployments that symlink
+    ``~/.hermes/config.yaml`` into a dotfiles repo or profile package.
     """
     if yaml is None:
         raise RuntimeError("PyYAML is required to update Hermes config.yaml")
     ensure_parent(path)
+    target = os.path.realpath(str(path)) if os.path.islink(str(path)) else str(path)
     fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=".tmp_", suffix=".yaml"
+        dir=os.path.dirname(target) or ".", prefix=".tmp_", suffix=".yaml"
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(yaml.safe_dump(data, sort_keys=False, allow_unicode=False))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
+        try:
+            os.replace(tmp_path, target)
+        except OSError as exc:
+            # Cross-device or bind-mount deployments cannot rename into place.
+            if exc.errno not in (errno.EXDEV, errno.EBUSY):
+                raise
+            shutil.copyfile(tmp_path, target)
+            os.unlink(tmp_path)
     except BaseException:
         try:
             os.unlink(tmp_path)

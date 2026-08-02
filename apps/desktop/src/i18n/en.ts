@@ -822,6 +822,8 @@ export const en: Translations = {
       defaultsFailed: 'Failed to save model defaults',
       auxiliaryTitle: 'Auxiliary models',
       resetAllToMain: 'Reset all to main',
+      staleAuxWarning: (count, names, provider) =>
+        `${count} auxiliary task${count !== 1 ? 's' : ''} still run${count === 1 ? 's' : ''} on ${names} from ${provider} instead of the main model`,
       auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
       setToMain: 'Set to main',
       change: 'Change',
@@ -2936,6 +2938,23 @@ export const en: Translations = {
       systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
       failed: error => `Handoff failed: ${error}`,
       timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
+    }
+  },
+
+  uninstall: {
+    dangerZone: 'Danger Zone',
+    checking: 'Checking installation…',
+    confirmTitle: 'Uninstall Hermes',
+    confirmBody: (consequence) => `This will remove ${consequence}. You can reinstall it later.`,
+    uninstalling: 'Uninstalling…',
+    yesUninstall: 'Yes, uninstall',
+    cancel: 'Cancel',
+    uninstallHermes: 'Uninstall Hermes',
+    uninstallDescription: 'Remove Hermes from this computer.',
+    options: {
+      gui: { title: 'GUI only', description: 'Remove the desktop app only.', consequence: 'the desktop application' },
+      lite: { title: 'Lite version (keep data)', description: 'Remove the app but keep your data.', consequence: 'the application (data kept)' },
+      full: { title: 'Full uninstall', description: 'Remove everything including all data.', consequence: 'Hermes and all associated data' }
     }
   },
 

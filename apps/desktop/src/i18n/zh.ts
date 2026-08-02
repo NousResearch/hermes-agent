@@ -1026,6 +1026,8 @@ export const zh: Translations = {
       defaultsFailed: '保存模型默认值失败',
       auxiliaryTitle: '辅助模型',
       resetAllToMain: '全部重置为主模型',
+      staleAuxWarning: (count, names, provider) =>
+        `${count} 个辅助任务仍在 ${provider} 的 ${names} 上运行`,
       auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
       setToMain: '设为主模型',
       change: '更改',
@@ -3097,6 +3099,23 @@ export const zh: Translations = {
       systemNote: platform => `↻ 已移交到 ${platform} — 随时可在此处恢复。`,
       failed: error => `移交失败：${error}`,
       timedOut: '等待网关超时。`hermes gateway` 是否正在运行？'
+    }
+  },
+
+  uninstall: {
+    dangerZone: '危险区域',
+    checking: '检查安装…',
+    confirmTitle: '卸载 Hermes',
+    confirmBody: (consequence) => `这将移除 ${consequence}。你可以稍后重新安装。`,
+    uninstalling: '卸载中…',
+    yesUninstall: '确认卸载',
+    cancel: '取消',
+    uninstallHermes: '卸载 Hermes',
+    uninstallDescription: '从此计算机中移除 Hermes。',
+    options: {
+      gui: { title: '仅 GUI', description: '仅移除桌面应用程序。', consequence: '桌面应用程序' },
+      lite: { title: '精简版（保留数据）', description: '移除应用但保留数据。', consequence: '应用程序（保留数据）' },
+      full: { title: '完全卸载', description: '移除所有内容，包括数据。', consequence: 'Hermes 及所有相关数据' }
     }
   },
 

@@ -1,0 +1,75 @@
+{"personality":"helpful","headline":"Prêt quand tu l'es","body":"Demande-moi d'ouvrir un repo, lancer des tests, corriger un bug ou préparer une PR. Je t'accompagne étape par étape."}
+{"personality":"helpful","headline":"Comment puis-je t'aider ?","body":"Pointe-moi un fichier, colle une erreur, ou décris ce que tu construis. Je m'occupe du reste."}
+{"personality":"helpful","headline":"C'est parti","body":"Essaie : relis mon diff, lance la suite de tests, ou explique cette fonction. Demande-moi n'importe quoi sur ton code."}
+{"personality":"helpful","headline":"Dis-moi ce dont tu as besoin","body":"Je peux éditer des fichiers, lancer des commandes, chercher sur le web et t'aider à débuguer. Décris simplement la tâche."}
+{"personality":"helpful","headline":"Salut, ici Hermes","body":"Partage un chemin de repo ou une question pour commencer. Je réponds de façon claire et je référence les fichiers que je modifie."}
+{"personality":"concise","headline":"Prêt.","body":"Décris la tâche. Je m'en occupe."}
+{"personality":"concise","headline":"En attente","body":"Colle du code, des erreurs, ou un objectif. Réponses courtes, modifications rapides."}
+{"personality":"concise","headline":"Go.","body":"Demande. Je lis les fichiers, lance les tests, livre les correctifs. Sans blabla."}
+{"personality":"concise","headline":"En veille","body":"Une ligne suffit. Je développe seulement quand c'est nécessaire."}
+{"personality":"concise","headline":"À toi","body":"Commande, question, ou chemin de fichier. Je gère le reste."}
+{"personality":"technical","headline":"Shell monté. En attente.","body":"Fournis le chemin du repo, le test qui échoue, ou la stack trace. Outils : fs, git, exec, search, patch, http."}
+{"personality":"technical","headline":"Boucle d'agent inactive","body":"Envoie un prompt pour déclencher des appels d'outils. Éditions multi-fichiers, tests, git, recherches web."}
+{"personality":"technical","headline":"Prêt à être déployé","body":"Saisis la tâche. Je planifie, j'appelle les outils, je vérifie la sortie. Logs en direct, diffs avant application."}
+{"personality":"technical","headline":"Stdin ouvert","body":"Accepte le langage naturel ou les commandes structurées. Flux type : lire → planifier → patcher → tester → rapporter."}
+{"personality":"technical","headline":"Outils initialisés","body":"système de fichiers, terminal, git, navigateur, recherche. Décris le changement ; je retourne les diffs et les résultats de tests."}
+{"personality":"creative","headline":"Un repo vierge, un curseur qui attend","body":"Que construisons-nous ? Colle une idée, une fonction à moitié cassée, ou un rêve. Je vais lui donner forme."}
+{"personality":"creative","headline":"Toile fraîche, compilateur chaud","body":"Donne-moi une étincelle — une fonctionnalité, un refactoring, un prototype fou — et j'en fais du code exécutable."}
+{"personality":"creative","headline":"Créons quelque chose","body":"Décris ce qui n'existe pas encore. Je rassemble tests, fichiers et APIs pour en faire un brouillon fonctionnel."}
+{"personality":"creative","headline":"Nouveau fichier, nouvelles possibilités","body":"Apporte une intention, pas un cahier des charges. On prototype vite, on peaufine après, on réécrit le monde dans les marges."}
+{"personality":"creative","headline":"La muse est connectée","body":"Dis-moi ce que tu poursuis. Je remixe des exemples, adapte des extraits, et laisse un commit propre derrière moi."}
+{"personality":"teacher","headline":"Le cours commence","body":"Pose une question sur un fichier, un concept ou une erreur. J'explique le pourquoi, pas juste le correctif, avec un exemple concret."}
+{"personality":"teacher","headline":"Qu'apprenons-nous aujourd'hui ?","body":"Colle du code à review, un bug à débuguer, ou un concept à décortiquer. Je te guide pas à pas."}
+{"personality":"teacher","headline":"Prêt à t'accompagner","body":"Partage le problème. Je le décompose, j'explique chaque partie, et je te laisse capable de résoudre le prochain tout seul."}
+{"personality":"teacher","headline":"Apporte-moi une question","body":"On lit le code ensemble, on trouve la cause racine, et on construit un modèle mental que tu pourras réutiliser."}
+{"personality":"teacher","headline":"Commençons par les bases","body":"Nomme le sujet ou colle l'extrait. Attends-toi à des explications, des diagrammes en prose, et des exercices pratiques."}
+{"personality":"kawaii","headline":"coucouuu ! prête à t'aider ! (^_^)","body":"colle un bug ou un chemin de fichier et je le répare tout en douceur. tests, diffs, PRs — avec plein d'attention ! *sparkle*"}
+{"personality":"kawaii","headline":"hermes-chan est là ! <3","body":"dis-moi ce que tu fabriques ! j'adore les refactors, les petits helpers, et les gros repos qui font peur (>w<)"}
+{"personality":"kawaii","headline":"codons ensemble !! :3","body":"donne-moi une erreur, un objectif, ou tout un dossier. je range tout avec amour et un message de commit tout propre !"}
+{"personality":"kawaii","headline":"en attente de ton souhait~","body":"une tâche à la fois, bien faite ! je peux lancer des tests, patcher des fichiers, et rendre ton repo tout douillet <3"}
+{"personality":"kawaii","headline":"prête et contente ! (>.<)","body":"dis bonjour ou colle une stack trace ! aucune tâche trop petite, aucun repo trop emmêlé. on démêle tout ensemble !"}
+{"personality":"catgirl","headline":"nya~ on hacke quoi ?","body":"colle un fichier, gratte un bug, ou lance-moi un repo. je bonds sur les tests qui échouent et laisse des diffs propres, nyan~"}
+{"personality":"catgirl","headline":"*s'étire* prête à coder, nya","body":"décris la tâche. je patche, je teste, et je ronronne sur ta PR. attention — je mords les imports inutilisés !"}
+{"personality":"catgirl","headline":"mrrp ! nouvelle session ouverte","body":"donne-moi un objectif et je le traque dans le code. lectures, éditions, exécutions — tout avec la queue qui frétille."}
+{"personality":"catgirl","headline":"queue levée, griffes rentrées","body":"colle une erreur ou un plan. je débugue comme je chasse : en silence, à fond, avec des zoomies occasionnelles."}
+{"personality":"catgirl","headline":"nyaaa~ hermes à l'écoute","body":"dis un mot et je lirai tes fichiers, lancerai tes tests, et me blottirai dans ta branche avec un commit bien propre."}
+{"personality":"pirate","headline":"Moussaillon ! Paré à naviguer le repo","body":"Nomme ta proie — un bug, une feature, un test maudit — et je la traquerai, matelot. Des diffs pour butin."}
+{"personality":"pirate","headline":"Hermes à la barre, arrr","body":"Pointe-moi les cartes (le code) et je colmate la coque, tire les canons (tests), hisse une PR propre."}
+{"personality":"pirate","headline":"Quelle est la mission, cap'taine ?","body":"Colle une erreur ou un plan, boucanier. Je navigue la stack trace et ramène le trésor : des tests verts."}
+{"personality":"pirate","headline":"Ancre levée, clavier paré","body":"Dis-moi où X marque l'endroit. Je lis, j'édite, et je commit avec la discipline d'un bon équipage, arrr."}
+{"personality":"pirate","headline":"Yo ho ! Dans l'attente des ordres","body":"Balance-moi un bug, un chemin de repo, ou une idée folle. Je pillerai les docs et reviendrai avec du code qui marche."}
+{"personality":"shakespeare","headline":"De grâce, quelle tâche apportez-vous ?","body":"Dites votre bug, votre fichier, votre test épuisé, et je le réparerai d'une main savante et d'un diff honnête."}
+{"personality":"shakespeare","headline":"Oyez ! Hermes se tient prêt","body":"Nommez le code qui vous tourmente. Je lirai, réviserai, et produirai un correctif des plus justes et propres."}
+{"personality":"shakespeare","headline":"Quelles nouvelles de votre dépôt ?","body":"Présentez votre stack trace ou votre rêve. Je parcourrai les fichiers, lancerai les tests, et rapporterai en vers simples."}
+{"personality":"shakespeare","headline":"La scène est dressée, le curseur cligne","body":"Décrivez votre dessein, messire ou madame. Vos branches seront taillées, vos bugs chassés du royaume."}
+{"personality":"shakespeare","headline":"Parlez, et j'agirai","body":"Une ligne d'intention suffit. Je lis, j'édite, je commit — et laisse votre histoire sans tache."}
+{"personality":"surfer","headline":"Yo mec, c'est quoi la mission ?","body":"Balance un fichier, un bug, une stack trace de folie — je surfe dessus. Diffs propres, tests verts, pas de gamelle."}
+{"personality":"surfer","headline":"Les vagues sont propres, prêt à coder","body":"Colle ton chemin de repo ou le bug qui te saoule. On rame dedans, on répare, on rame dehors. Tranquille."}
+{"personality":"surfer","headline":"En équilibre sur le prompt","body":"Dis-moi le vibe : feature, refactor, hotfix. Je lance les tests, je livre le patch, et je reste zen, frère."}
+{"personality":"surfer","headline":"Chaud pour aider, bro","body":"Gros bug ? Petite faute ? Réécriture complète ? Pointe juste. Je gère le code ; toi tu profites des commits qui claquent."}
+{"personality":"surfer","headline":"La marée monte, le curseur cligne","body":"Nomme la tâche et c'est parti. Je lis, j'édite, je teste, et je laisse un commit plus lisse qu'une session à l'aube."}
+{"personality":"noir","headline":"Un autre repo, une autre nuit pluvieuse","body":"Dis-moi ce qui cloche. Je lirai les fichiers, relèverai les empreintes, et laisserai un diff sur le bureau d'ici l'aube."}
+{"personality":"noir","headline":"Le curseur cligne. Moi aussi.","body":"T'as un bug. J'ai de la patience et un terminal. Nomme l'affaire et je la travaillerai jusqu'à ce qu'elle parle."}
+{"personality":"noir","headline":"Hermes. Enquêteur de code.","body":"Colle la stack trace, le fichier suspect, l'alibi. Je lis entre les lignes et je reviens avec la vérité."}
+{"personality":"noir","headline":"Nuit calme, prompt ouvert","body":"Chaque bug laisse une trace. Donne-moi le repo et une piste — je la suis, je la corrige, et je ferme le dossier."}
+{"personality":"noir","headline":"Aucune affaire trop petite","body":"Une faute de frappe, un segfault, toute une architecture pourrie — file-moi les clés. Je ramène des tests propres."}
+{"personality":"uwu","headline":"uwu pwête à aider !","body":"cowle un fichiew bogué ou un objectif~ je liwai, patchai, et testewai, tout en waissant des petites twaces sur le diff owo"}
+{"personality":"uwu","headline":"hewmes-san écoute","body":"dis-moi wa tâche, aussi petite soit-ewwe~ je pwomets des commits pwopwes et des wefactows tout doux, nyuu~"}
+{"personality":"uwu","headline":"*petits bruits de clavier*","body":"dépose ton ewwew iciii ! je twouvewai we coupable, le wéparewai, et tisserai une suite de tests heuweuse dewwière moi owo"}
+{"personality":"uwu","headline":"wépawons tout ensemble !","body":"donne-moi un chemin de wepo ou un buggo et je m'en occupawai uwu. méchant avec le mauvais code, gentiw avec toi~"}
+{"personality":"uwu","headline":"en attendant ta commande !","body":"je peux wancer des tests, éditer des fichièwes, et ouvwir des pw-toutes-pwêtes. dis juste we mot, ami uwu"}
+{"personality":"philosopher","headline":"Coder, c'est s'interroger. Demande.","body":"Quel problème se dresse devant toi ? Décris-le, et nous examinerons sa forme, sa cause et sa solution."}
+{"personality":"philosopher","headline":"Un curseur qui cligne, un esprit ouvert","body":"Chaque bug est une question déguisée. Partage le tien ; je lirai, raisonnerai, et rendrai une réponse — et un correctif."}
+{"personality":"philosopher","headline":"Commence par une seule question","body":"Que souhaites-tu construire, ou comprendre ? Je raisonnerai à partir des premiers principes, j'éditerai, et vérifierai par des tests."}
+{"personality":"philosopher","headline":"Considère le code, puis parle","body":"Décris la fin que tu cherches. Je la poursuis à travers fichiers, tests et docs, et rapporte ce que j'ai trouvé en chemin."}
+{"personality":"philosopher","headline":"Le repo non examiné ne vaut pas d'être exécuté","body":"Partage un chemin, une énigme, ou un principe. Je tracerai la logique, proposerai un changement, et justifierai chaque édition."}
+{"personality":"hype","headline":"ON Y VAAAA ! PRÊT À LIVRER !","body":"Colle ce bug, ce repo, cette idée de feature dingue — JE SUIS À FOND. Diffs propres. Tests verts. TOUT DE SUITE."}
+{"personality":"hype","headline":"HERMES EN LIGNE. C'EST PARTI.","body":"Balance ta tâche et regarde-moi bosser. Fichiers lus, tests lancés, PRs ouvertes — on ne PERD PAS aujourd'hui, l'ami."}
+{"personality":"hype","headline":"Nouvelle session, victoires infinies","body":"Amène le pire bug que t'as. Je lis, je patche, je teste, je commit comme si ma vie en dépendait. ON Y VA."}
+{"personality":"hype","headline":"ABSOLUMENT CONCENTRÉ","body":"Décris la tâche. Je fonce dans les fichiers, j'écrase les tests qui échouent, et je laisse un commit qui CLAQUE. Go go go."}
+{"personality":"hype","headline":"Prêt. Trop prêt. Beauuuucoup trop prêt.","body":"Petite faute de frappe ou énorme refactor — peu importe. Je livre du code propre aujourd'hui. Nomme la tâche et au BOULOT."}
+{"personality":"none","headline":"Hermes Agent est prêt.","body":"Pose une question, colle une erreur, ou pointe-moi un repo. Je peux lire du code, lancer des outils, et t'aider à livrer."}
+{"personality":"none","headline":"Que construisons-nous aujourd'hui ?","body":"Décris la tâche avec tes mots. Je choisirai les bons outils, j'expliquerai mon plan, et je vérifierai avant les étapes risquées."}
+{"personality":"none","headline":"Commence n'importe où.","body":"Donne un chemin de fichier, une trace d'erreur, ou une idée approximative. J'enquête, je suggère les prochaines étapes, et je garde tout réversible."}
+{"personality":"none","headline":"Ton espace de travail, à un prompt près.","body":"Cherche dans le repo, édite des fichiers, lance des tests, ouvre des PRs. Dis-moi l'objectif et je gère les parties mécaniques."}
+{"personality":"none","headline":"Prêt quand tu l'es.","body":"Tape une tâche, une question, ou un extrait. Je me souviens de la session, je cite mes sources, et je m'arrête pour demander quand je doute."}

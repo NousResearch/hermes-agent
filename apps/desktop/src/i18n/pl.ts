@@ -1,8 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import type { Translations } from './types'
+import { defineLocale } from './define-locale'
 
-export const pl: Translations = {
+export const pl = defineLocale({
   common: {
     apply: 'Zastosuj',
     back: 'Wstecz',
@@ -185,7 +185,6 @@ export const pl: Translations = {
     search: 'Szukaj',
     searchTitle: 'Wyszukaj sesje, widoki i działania',
     swapSidebarSides: 'Zamień paski boczne stronami',
-    swapSidebarSidesTitle: 'Zamień stronami listę sesji i przeglądarkę plików',
     hideRightSidebar: 'Ukryj prawy pasek boczny',
     showRightSidebar: 'Pokaż prawy pasek boczny',
     muteHaptics: 'Wyłącz haptykę',
@@ -801,8 +800,7 @@ export const pl: Translations = {
       saving: 'Zapisywanie…'
     },
     envActions: {
-      actionsFor: label => `Działania dla ${label}`,
-      credentialActions: 'Działania dotyczące danych logowania',
+      actions: 'Działania dotyczące danych logowania',
       docs: 'Dokumentacja',
       hideValue: 'Ukryj wartość',
       revealValue: 'Ujawnij wartość',
@@ -1403,7 +1401,7 @@ export const pl: Translations = {
       installed: 'Zainstalowana',
       generatedTag: 'Wygenerowana',
       adoptFailed: 'Nie udało się adoptować tej maskotki.',
-      toggleFailed: 'Nie udało się zmienić stanu maskotki.',
+      toggleFailed: enabled => `Nie udało się ${enabled ? 'włączyć' : 'wyłączyć'} maskotki.`,
       noneAvailable: 'Brak dostępnych maskotek — wybierz jedną poniżej, aby ją zainstalować.'
     },
     generatePet: {
@@ -1719,9 +1717,9 @@ export const pl: Translations = {
     showAllProfiles: 'Pokaż wszystkie profile',
     switchToProfile: name => `Przełącz się na profil „${name}”`,
     manageProfiles: 'Zarządzaj profilami…',
-    actionsFor: name => `Działania dla profilu ${name}`,
+    actions: 'Działania',
     color: 'Kolor…',
-    colorFor: name => `Kolor profilu ${name}`,
+    colorFor: 'Kolor',
     setColor: color => `Ustaw kolor ${color}`,
     autoColor: 'Automatyczny',
     noProfiles: 'Brak profili.',
@@ -1856,7 +1854,6 @@ export const pl: Translations = {
     showRuns: 'Pokaż uruchomienia',
     hideRuns: 'Ukryj uruchomienia',
     runHistory: 'Historia uruchomień',
-    actionsFor: title => `Działania dla ${title}`,
     actionsTitle: 'Działania zadania cron',
     resume: 'Wznów zadanie cron',
     pause: 'Wstrzymaj zadanie cron',
@@ -1979,7 +1976,6 @@ export const pl: Translations = {
     allPinned: 'Wszystkie sesje są przypięte. Odepnij czat, aby pojawił się w ostatnich sesjach.',
     shiftClickHint: 'Kliknij czat, przytrzymując klawisz Shift, aby go przypiąć',
     noWorkspace: 'Brak obszaru roboczego',
-    noProject: 'Brak projektu',
     projectEmpty: 'Nie ma jeszcze sesji',
     noSessions: 'Nie ma jeszcze sesji',
     projects: {
@@ -2061,7 +2057,6 @@ export const pl: Translations = {
       archive: 'Archiwizuj',
       newWindow: 'Nowe okno',
       copyIdFailed: 'Nie można skopiować identyfikatora sesji',
-      actionsFor: title => `Działania dla ${title}`,
       sessionActions: 'Działania dotyczące sesji',
       sessionRunning: 'Sesja jest w toku',
       needsInput: 'Wymaga Twojej reakcji',
@@ -2532,8 +2527,7 @@ export const pl: Translations = {
       noModels: 'Nie znaleziono żadnych modeli',
       editModels: 'Edytuj modele…',
       refreshModels: 'Odśwież modele',
-      fast: 'Szybki',
-      medium: 'Średni'
+      fast: 'Szybki'
     },
     modelOptions: {
       noOptions: 'Brak opcji dla tego modelu',
@@ -2611,7 +2605,6 @@ export const pl: Translations = {
       starmap: 'Graf pamięci',
       openStarmap: 'Otwórz graf pamięci',
       turnRunning: 'W toku',
-      currentTurnElapsed: 'Czas bieżącej odpowiedzi',
       contextUsage: 'Użycie kontekstu',
       contextUsagePanel: {
         categories: {
@@ -2630,9 +2623,7 @@ export const pl: Translations = {
         title: 'Użycie kontekstu',
         tokenSummary: (used, max) => `${used} / ${max} tokenów`
       },
-      openContextUsage: 'Otwórz zestawienie użycia kontekstu',
       session: 'Sesja',
-      runtimeSessionElapsed: 'Czas sesji środowiska wykonawczego',
       yoloOn:
         'YOLO wł. — automatyczne zatwierdzanie niebezpiecznych poleceń. Kliknij, aby wyłączyć. Shift + kliknięcie przełącza to globalnie.',
       yoloOff:
@@ -2799,12 +2790,6 @@ export const pl: Translations = {
     closeOthers: 'Zamknij pozostałe',
     closeToRight: 'Zamknij karty po prawej',
     closeAll: 'Zamknij wszystkie',
-    split: dir => `Podziel ${dir}`,
-    move: dir => `Przenieś ${dir}`,
-    dirUp: 'w górę',
-    dirDown: 'w dół',
-    dirLeft: 'w lewo',
-    dirRight: 'w prawo',
     pluginDisabled: pluginId => `Wtyczka „${pluginId}” jest wyłączona`,
     pluginDisabledBody: 'Włącz ją ponownie w Ustawienia → Wtyczki, aby przywrócić panel.',
     missingPane: paneId => `brakujący panel: ${paneId}`,
@@ -2905,7 +2890,6 @@ export const pl: Translations = {
         'Ten prompt nie oczekuje już na odpowiedź. Wybierz opcję, aby utworzyć z niej wersję roboczą kolejnej wiadomości.'
     },
     tool: {
-      code: 'Kod',
       copyCode: 'Skopiuj kod',
       renderingImage: 'Renderowanie obrazu',
       copyOutput: 'Skopiuj dane wyjściowe',
@@ -3115,7 +3099,7 @@ export const pl: Translations = {
     sidebar: {
       title: 'Pasek boczny',
       description: 'Wyświetla mobilny pasek boczny.',
-      toggle: 'Przełącz pasek boczny'
+      toggle: open => `${open ? 'Pokaż' : 'Ukryj'} pasek boczny`
     }
   },
   billingBlock: {
@@ -3191,4 +3175,4 @@ export const pl: Translations = {
       github_comment: 'Komentarz GitHub'
     }
   }
-}
+})

@@ -323,6 +323,26 @@ describe('ClarifyTool keyboard navigation', () => {
     })
   })
 
+  it('stages a highlighted multi-select choice with Enter and submits it with Continue', async () => {
+    const request = renderLiveClarify({ multiSelect: true })
+    const production = screen.getByRole('button', { name: /production/ })
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+    expect(request).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: JSON.stringify(['production']),
+        request_id: 'request-1'
+      })
+    })
+  })
+
   it('focuses Other when its number is pressed and leaves typing keys alone', () => {
     renderLiveClarify()
 

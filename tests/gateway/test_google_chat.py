@@ -1567,8 +1567,13 @@ class TestAuthorizationEmailMatch:
         from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
         from gateway.session import SessionSource
+        from hermes_cli.plugins import discover_plugins
 
         monkeypatch.setenv("GOOGLE_CHAT_ALLOWED_USERS", "alice@example.com")
+        # Plugin platforms become available during the normal gateway startup
+        # discovery pass.  This unit test constructs GatewayRunner directly,
+        # so perform that lifecycle step explicitly before testing auth.
+        discover_plugins()
         cfg = GatewayConfig()
         runner = GatewayRunner(cfg)
         runner.pairing_store = MagicMock()
@@ -1738,5 +1743,4 @@ class TestGoogleChatStandaloneSend:
         assert url == "https://chat.googleapis.com/v1/spaces/AAAA-BBBB/messages"
         assert kwargs["headers"]["Authorization"] == "Bearer the-token"
         assert kwargs["json"] == {"text": "hello cron"}
-
 

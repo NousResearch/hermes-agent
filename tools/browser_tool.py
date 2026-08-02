@@ -69,6 +69,7 @@ from hermes_constants import (
     agent_browser_runnable,
     get_hermes_home,
     get_hermes_home_override,
+    hermes_home_key,
 )
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -165,6 +166,16 @@ from agent.browser_provider import BrowserProvider as CloudBrowserProvider  # no
 from agent.browser_registry import (  # noqa: F401  (test-patchable surface)
     get_provider as _registry_get_browser_provider,
 )
+try:
+    from agent.browser_registry import (
+        registry_generation as _browser_registry_generation,
+    )
+except ImportError:
+    # A few isolated compatibility tests intentionally install a minimal
+    # ``agent.browser_registry`` stub exposing only ``get_provider``. Those
+    # harnesses have no mutable registry, so a constant generation is exact.
+    def _browser_registry_generation(*, scope=None):
+        return (0, 0)
 from plugins.browser.browserbase.provider import (  # noqa: F401  (legacy import surface)
     BrowserbaseBrowserProvider as BrowserbaseProvider,
 )
@@ -683,6 +694,11 @@ _DEFAULT_PROVIDER_REGISTRY: Dict[str, type] = dict(_PROVIDER_REGISTRY)
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
+_cached_cloud_provider_scope: Optional[str] = None
+_cached_cloud_providers: Dict[
+    tuple[str, tuple[int, int]], Optional[CloudBrowserProvider]
+] = {}
+_cloud_provider_cache_lock = threading.RLock()
 _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
@@ -738,6 +754,46 @@ def _ensure_browser_plugins_loaded() -> None:
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
+    """Return the provider cached for the active Hermes profile."""
+    global _cached_cloud_provider, _cloud_provider_resolved
+    global _cached_cloud_provider_scope
+
+    scope = hermes_home_key()
+    with _cloud_provider_cache_lock:
+        # Tests and legacy reset paths clear the boolean. Treat that as a full
+        # reset even if a previous scoped resolution remains mirrored here.
+        if not _cloud_provider_resolved:
+            _cached_cloud_provider_scope = None
+            _cached_cloud_providers.clear()
+        while True:
+            before_generation = _browser_registry_generation(scope=scope)
+            cache_key = (scope, before_generation)
+            if cache_key in _cached_cloud_providers:
+                _cached_cloud_provider = _cached_cloud_providers[cache_key]
+                _cloud_provider_resolved = True
+                _cached_cloud_provider_scope = scope
+                return _cached_cloud_provider
+
+            _cached_cloud_provider = None
+            _cloud_provider_resolved = False
+            resolved = _resolve_cloud_provider_uncached()
+            after_generation = _browser_registry_generation(scope=scope)
+            if before_generation != after_generation:
+                # A force reload replaced/unloaded this profile's provider
+                # while resolution was in progress. Discard the stale result
+                # and resolve against the new registry generation.
+                continue
+            if _cloud_provider_resolved:
+                _cached_cloud_provider_scope = scope
+                for stale_key in [
+                    key for key in _cached_cloud_providers if key[0] == scope
+                ]:
+                    _cached_cloud_providers.pop(stale_key, None)
+                _cached_cloud_providers[cache_key] = resolved
+            return resolved
+
+
+def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
     """Return the configured cloud browser provider, or None for local mode.
 
     Reads ``config["browser"]["cloud_provider"]`` once and caches the result
@@ -755,8 +811,6 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     ``_is_legacy_provider_registry_overridden``.
     """
     global _cached_cloud_provider, _cloud_provider_resolved
-    if _cloud_provider_resolved:
-        return _cached_cloud_provider
 
     resolved: Optional[CloudBrowserProvider] = None
     try:

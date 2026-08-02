@@ -2732,8 +2732,8 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
 
 # ─── Token Estimation ────────────────────────────────────────────────────────
 
-# Module-level cache so discovery + tokenization runs at most once per process.
-_tool_token_cache: Optional[Dict[str, int]] = None
+# Profile-keyed cache so one process can serve distinct plugin tool catalogs.
+_tool_token_cache: Optional[Dict[tuple[str, int], Dict[str, int]]] = None
 
 
 def _estimate_tool_tokens() -> Dict[str, int]:
@@ -2746,25 +2746,33 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     Returns an empty dict when tiktoken or the registry is unavailable.
     """
     global _tool_token_cache
-    if _tool_token_cache is not None:
-        return _tool_token_cache
+    from hermes_constants import hermes_home_key
+
+    scope = hermes_home_key()
+
+    try:
+        # Trigger full tool discovery (imports all tool modules).
+        import model_tools  # noqa: F401
+        from tools.registry import registry
+        cache_key = (scope, registry._generation)
+    except Exception:
+        logger.debug("Tool registry unavailable; skipping token estimation")
+        cache_key = (scope, -1)
+        _tool_token_cache = _tool_token_cache or {}
+        _tool_token_cache[cache_key] = {}
+        return _tool_token_cache[cache_key]
+
+    if _tool_token_cache is not None and cache_key in _tool_token_cache:
+        return _tool_token_cache[cache_key]
 
     try:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
     except Exception:
         logger.debug("tiktoken unavailable; skipping tool token estimation")
-        _tool_token_cache = {}
-        return _tool_token_cache
-
-    try:
-        # Trigger full tool discovery (imports all tool modules).
-        import model_tools  # noqa: F401
-        from tools.registry import registry
-    except Exception:
-        logger.debug("Tool registry unavailable; skipping token estimation")
-        _tool_token_cache = {}
-        return _tool_token_cache
+        _tool_token_cache = _tool_token_cache or {}
+        _tool_token_cache[cache_key] = {}
+        return _tool_token_cache[cache_key]
 
     counts: Dict[str, int] = {}
     for name in registry.get_all_tool_names():
@@ -2774,8 +2782,9 @@ def _estimate_tool_tokens() -> Dict[str, int]:
             # {"type": "function", "function": <schema>}
             text = _json.dumps({"type": "function", "function": schema})
             counts[name] = len(enc.encode(text))
-    _tool_token_cache = counts
-    return _tool_token_cache
+    _tool_token_cache = _tool_token_cache or {}
+    _tool_token_cache[cache_key] = counts
+    return counts
 
 
 def _prompt_toolset_checklist(

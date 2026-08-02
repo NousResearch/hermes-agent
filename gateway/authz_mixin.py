@@ -564,6 +564,7 @@ class GatewayAuthorizationMixin:
         if source.platform not in platform_env_map:
             try:
                 from gateway.platform_registry import platform_registry
+
                 entry = platform_registry.get(source.platform.value)
                 if entry:
                     if entry.allowed_users_env:

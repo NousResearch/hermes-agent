@@ -139,6 +139,18 @@ def get_hermes_home() -> Path:
     return _hermes_home_from_env()
 
 
+def hermes_home_key(path: str | Path | None = None) -> str:
+    """Return a stable key for a Hermes home/profile directory.
+
+    Runtime registries use this key to isolate plugin-owned entries while
+    keeping built-in registrations process-global.  ``strict=False`` preserves
+    useful behavior for profiles whose directories have not been created yet.
+    """
+    candidate = Path(path) if path is not None else get_hermes_home()
+    resolved = candidate.expanduser().resolve(strict=False)
+    return os.path.normcase(str(resolved))
+
+
 def get_process_hermes_home() -> Path:
     """Return the Hermes home for the running process, ignoring task overrides.
 

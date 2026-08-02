@@ -3,7 +3,7 @@ A2A protocol helpers — Agent Card construction, JSON-RPC framing, task store,
 and disk-backed conversation persistence.
 
 Wire shape follows A2A Protocol v1.0 (JSON-RPC 2.0 binding over HTTP):
-  - Agent Card served at GET /.well-known/agent.json (and agent-card.json)
+  - Agent Card served at GET /.well-known/agent-card.json (canonical v1.0; legacy agent.json also answers)
   - Tasks via POST {jsonrpc:"2.0", method:"message/send", params:{...}}
   - Streaming via ``message/stream`` → SSE; events are StreamResponse objects
     discriminated by member presence (``statusUpdate`` / ``artifactUpdate``),

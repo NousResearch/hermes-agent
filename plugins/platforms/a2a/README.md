@@ -43,7 +43,9 @@ The agent gets five tools:
 ## Inbound — be callable
 
 When the `a2a` platform is enabled, Hermes serves a v1.0 Agent Card at
-`http://<host>:<port>/.well-known/agent.json` and accepts JSON-RPC
+`http://<host>:<port>/.well-known/agent-card.json` (the legacy
+`/.well-known/agent.json` path is also answered for pre-1.0 clients) and
+accepts JSON-RPC
 `message/send`, `message/stream` (SSE), `tasks/get|list|cancel|subscribe`,
 and push notification configs (inline or via
 `tasks/pushNotificationConfig/create`). Incoming tasks are injected into your

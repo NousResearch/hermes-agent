@@ -24,6 +24,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
+import { visibleClarifyCard } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import {
   bareChoice,
@@ -433,6 +434,9 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
   const [activeIndex, setActiveIndex] = useState(0)
   const [otherFocused, setOtherFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  // Identity for the visible-card check below — this is the element carrying
+  // `data-clarify-choices`, i.e. the one `visibleClarifyCard()` resolves.
+  const formRef = useRef<HTMLFormElement | null>(null)
 
   // Race: tool.start fires a tick before clarify.request, so request_id
   // arrives slightly after the tool block mounts. Hold the whole panel on a
@@ -586,7 +590,8 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
   // confirms the current answer (or acts on the highlighted row). Stands down
   // whenever a focusable control (a field, a choice button, the action bar) is
   // focused, so it never eats keystrokes meant for the composer, the Other box,
-  // or a button the user tabbed to.
+  // or a button the user tabbed to — and whenever this card is not the visible
+  // one, since the binding is window-wide but the answer is session-specific.
   useEffect(() => {
     if (!ready || !hasChoices || submitting) {
       return
@@ -594,6 +599,17 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
 
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) {
+        return
+      }
+
+      // Not the visible card ⇒ not our keystroke. Inactive tabs stay MOUNTED,
+      // so every parked clarify keeps a live `window` listener; without this the
+      // card that acts is whichever mounted first, and answering the question in
+      // front of you silently answers a background session's question instead —
+      // resuming an agent turn the user never saw. Same resolver the composer's
+      // `clarifyCardOwnsKey` yields to, so the two cannot disagree about which
+      // card is live.
+      if (visibleClarifyCard() !== formRef.current) {
         return
       }
 
@@ -692,6 +708,7 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
       className="my-1.5 grid gap-4"
       data-clarify-choices={hasChoices ? choices.length : undefined}
       onSubmit={handleSubmit}
+      ref={formRef}
     >
       <ClarifyShell className="grid gap-2">
         <div className="flex items-start gap-2">

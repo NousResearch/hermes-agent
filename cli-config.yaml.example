@@ -1639,9 +1639,9 @@ updates:
 #     project_id: ""                       # UUID of the BSM project to sync
 #     server_url: ""                       # "" = US Cloud; EU/self-hosted URL otherwise
 #     cache_ttl_seconds: 300               # 0 disables fresh caching
-#     encrypted_cache:                     # optional encrypted stale fallback
-#       enabled: false
-#       max_stale_seconds: 0               # 0 disables stale fallback
+#     encrypted_cache:                     # encrypted-only disk cache (enabled by default)
+#       enabled: true
+#       max_stale_seconds: 0               # 0 disables stale fallback; set >0 for offline resilience
 #     override_existing: true              # BSM values win over existing env
 #     auto_install: true                   # lazy-download bws into ~/.hermes/bin
 #

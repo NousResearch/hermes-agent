@@ -106,7 +106,7 @@ secrets:
     server_url: ""
     cache_ttl_seconds: 300
     encrypted_cache:
-      enabled: false
+      enabled: true
       max_stale_seconds: 0
     override_existing: true
     auto_install: true
@@ -119,8 +119,8 @@ secrets:
 | `project_id` | `""` | UUID of the project to sync from. |
 | `server_url` | `""` | Bitwarden region or self-hosted endpoint. Empty = `bws` default (US Cloud, `https://vault.bitwarden.com`). Set to `https://vault.bitwarden.eu` for EU Cloud, or your own URL for self-hosted. Plumbed into the `bws` subprocess as `BWS_SERVER_URL`. |
 | `cache_ttl_seconds` | `300` | How long an in-process or disk fetch result is reused. Set to `0` to disable fresh-cache reuse. |
-| `encrypted_cache.enabled` | `false` | Store the last successful fetch in an AES-GCM encrypted cache at `~/.hermes/cache/bws_cache.enc.json`. |
-| `encrypted_cache.max_stale_seconds` | `0` | When encrypted caching is enabled, allow that cache to be used only after network/timeout failures, up to this age. Authentication failures never use stale secrets. A successful encrypted write removes the legacy plaintext `cache/bws_cache.json`. |
+| `encrypted_cache.enabled` | `true` | Encrypted-only disk cache (AES-GCM) at `~/.hermes/cache/bws_cache.enc.json`. Enabled by default: secret values are never persisted as plaintext. Set to `false` for memory-only mode (no disk persistence). |
+| `encrypted_cache.max_stale_seconds` | `0` | On network/timeout failures, use the last-good encrypted cache for up to this many seconds. Auth failures never fall back. Set to a positive value for offline-startup resilience. A successful encrypted write removes the legacy plaintext `cache/bws_cache.json`. |
 | `override_existing` | `true` | When true, Bitwarden values overwrite anything already in env (so rotation in the web app actually takes effect). Flip to `false` if you want `.env` / shell exports to win locally. |
 | `auto_install` | `true` | When true, `bws` is auto-downloaded into `~/.hermes/bin/` on first use. |
 

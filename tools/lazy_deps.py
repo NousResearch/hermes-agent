@@ -732,7 +732,18 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         uv_env["VIRTUAL_ENV"] = str(venv_root)
 
         # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
-        uv_bin = shutil.which("uv")
+        # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare
+        # which() misses the uv Hermes installed and falls through to the
+        # slower pip tier. Deliberately a lookup and not ensure_uv(): this runs
+        # mid-turn to install an optional dependency, and downloading uv +
+        # migrating the Python runtime as a side effect of that is a far bigger
+        # action than the caller asked for. Tier 2 pip covers the no-uv case.
+        try:
+            from hermes_cli.managed_uv import resolve_uv
+
+            uv_bin = resolve_uv() or shutil.which("uv")
+        except Exception:
+            uv_bin = shutil.which("uv")
         if uv_bin:
             try:
                 r = subprocess.run(

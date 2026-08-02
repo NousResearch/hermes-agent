@@ -402,15 +402,20 @@ class SessionSearchMixin:
     def _reset_fts_index_to_empty(self, conn) -> None:
         """Delete every indexed row from the v23 external-content tables.
 
-        FTS5 supports a no-WHERE DELETE on external-content tables as an
-        efficient drop-all. The backfill chunk worker replays its whole
-        selected id range with no anti-join, so a replay from zero is only
-        safe once the index is known empty — this is how a partially indexed
-        DB gets there.
+        Uses the FTS5 ``'delete-all'`` special command — the documented O(1)
+        truncate for external-content tables. A plain no-WHERE ``DELETE`` is
+        O(rows) on external-content FTS5 (each row's delete tokens are
+        regenerated from the content table; measured ~12µs/row, minutes on a
+        large index, while holding the write lock) and corrupts the index if
+        indexed rows have diverged from ``messages`` — precisely the broken-
+        bookkeeping shape this repair path handles. The backfill chunk worker
+        replays its whole selected id range with no anti-join, so a replay
+        from zero is only safe once the index is known empty — this is how a
+        partially indexed DB gets there.
         """
         for tbl in ("messages_fts", "messages_fts_trigram"):
             try:
-                conn.execute(f"DELETE FROM {tbl}")
+                conn.execute(f"INSERT INTO {tbl}({tbl}) VALUES('delete-all')")
             except sqlite3.OperationalError:
                 pass  # table absent — already an empty surface
 

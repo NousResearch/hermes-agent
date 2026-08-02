@@ -200,6 +200,18 @@ def trim_memory(
         )
         if not force and _last_trim_monotonic and now - _last_trim_monotonic < cooldown:
             return False
+        # Even forced trims honor a short floor: AIAgent.close() forces a trim,
+        # and delegate batches close N child subagents back-to-back in the SAME
+        # process — without a floor that stacks N+1 uncooled full gc.collect()
+        # passes (50-500ms each in a large gateway process). 5s coalesces the
+        # burst while keeping the parent's final close-trim effective.
+        _FORCE_FLOOR_SECONDS = 5.0
+        if (
+            force
+            and _last_trim_monotonic
+            and now - _last_trim_monotonic < _FORCE_FLOOR_SECONDS
+        ):
+            return False
         # Record the attempt before calling into libc so repeated failures do not
         # turn every turn boundary into an expensive full collection.
         _last_trim_monotonic = now

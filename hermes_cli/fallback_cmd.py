@@ -24,6 +24,9 @@ from typing import Any, Dict, List, Optional
 from hermes_cli.fallback_config import get_fallback_chain
 
 
+_MISSING_ACTIVE_PROVIDER = object()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -76,28 +79,25 @@ def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]
 
 
 def _snapshot_auth_active_provider() -> Any:
-    """Return the current ``active_provider`` in auth.json, or a sentinel if unavailable."""
-    try:
-        from hermes_cli.auth import _load_auth_store
+    """Return the current ``active_provider`` in auth.json."""
+    from hermes_cli.auth import _auth_store_lock, _load_auth_store
+
+    with _auth_store_lock():
         store = _load_auth_store()
-        return store.get("active_provider")
-    except Exception:
-        return None
+        return store.get("active_provider", _MISSING_ACTIVE_PROVIDER)
 
 
 def _restore_auth_active_provider(value: Any) -> None:
     """Write back a previously snapshotted ``active_provider`` value."""
-    try:
-        from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
-        with _auth_store_lock():
-            store = _load_auth_store()
+    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+
+    with _auth_store_lock():
+        store = _load_auth_store()
+        if value is _MISSING_ACTIVE_PROVIDER:
+            store.pop("active_provider", None)
+        else:
             store["active_provider"] = value
-            _save_auth_store(store)
-    except Exception:
-        # Best-effort — if auth.json can't be restored, the user's primary
-        # provider may have been deactivated by the picker.  They can re-run
-        # `hermes model` to fix it.  Don't fail the fallback add.
-        pass
+        _save_auth_store(store)
 
 
 # ---------------------------------------------------------------------------
@@ -164,21 +164,28 @@ def cmd_fallback_add(args) -> None:
 
     try:
         select_provider_and_model(args=args)
-    except SystemExit:
-        # Some provider flows exit on auth failure — restore state and re-raise.
-        _restore_model_cfg(model_before)
-        _restore_auth_active_provider(active_provider_before)
+        # Read the post-picker state before restoring the temporary primary.
+        after_cfg = load_config()
+        model_after = after_cfg.get("model")
+        new_entry = _extract_fallback_from_model_cfg(model_after)
+    except BaseException as picker_error:
+        # Provider flows can raise SystemExit, and post-picker reads can fail;
+        # every error after the snapshot must still restore both route stores.
+        try:
+            _restore_primary_route(model_before, active_provider_before)
+        except Exception as restore_error:
+            picker_error.add_note(
+                "Could not fully restore the primary route after fallback "
+                f"selection failed: {restore_error}"
+            )
         raise
 
-    # Read the post-picker state to see what the user selected.
-    after_cfg = load_config()
-    model_after = after_cfg.get("model")
+    # From here onward, no identity/import/append failure can strand the
+    # temporary picker route as primary.
+    _restore_primary_route(model_before, active_provider_before)
 
-    new_entry = _extract_fallback_from_model_cfg(model_after)
     if not new_entry:
-        # Picker didn't complete (user cancelled or flow bailed).  Nothing to do.
-        _restore_model_cfg(model_before)
-        _restore_auth_active_provider(active_provider_before)
+        # Picker didn't complete (user cancelled or flow bailed). Nothing to do.
         print()
         print("  No fallback added.")
         return
@@ -204,20 +211,13 @@ def cmd_fallback_add(args) -> None:
         ),
         new_ident,
     ):
-        _restore_model_cfg(model_before)
-        _restore_auth_active_provider(active_provider_before)
         print()
         print(f"  Selected model matches the current primary ({_format_entry(new_entry)}).")
         print("  A provider cannot be a fallback for itself — no change.")
         return
 
-    # Reload the config with the primary restored, then append the new entry
-    # to ``fallback_providers``.  We deliberately re-load (rather than mutating
-    # ``after_cfg``) because the picker may have touched other top-level keys
-    # (custom_providers, providers credentials) that we want to keep.
-    _restore_model_cfg(model_before)
-    _restore_auth_active_provider(active_provider_before)
-
+    # Reload after primary restoration, then append the selected entry to
+    # ``fallback_providers``. Picker-created providers and credentials remain.
     final_cfg = load_config()
     chain = _read_chain(final_cfg)
 
@@ -257,6 +257,22 @@ def _restore_model_cfg(model_before: Any) -> None:
     else:
         cfg["model"] = copy.deepcopy(model_before)
     save_config(cfg)
+
+
+def _restore_primary_route(model_before: Any, active_provider_before: Any) -> None:
+    """Attempt both halves of temporary picker-route restoration."""
+    errors: list[BaseException] = []
+    try:
+        _restore_model_cfg(model_before)
+    except BaseException as exc:
+        errors.append(exc)
+    try:
+        _restore_auth_active_provider(active_provider_before)
+    except BaseException as exc:
+        errors.append(exc)
+    if errors:
+        details = "; ".join(str(exc) for exc in errors)
+        raise RuntimeError(f"Could not fully restore the primary route: {details}") from errors[0]
 
 
 def cmd_fallback_remove(args) -> None:  # noqa: ARG001

@@ -305,6 +305,22 @@ def _ssrf_safe_http_get(
         return client.get(url, headers=headers, params=params)
 
 
+def _normalized_origin(url: str) -> Optional[Tuple[str, str, int]]:
+    """Return scheme, normalized hostname, and effective port for a URL."""
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.lower()
+    hostname = parsed.hostname
+    if not scheme or not hostname:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = {"http": 80, "https": 443}.get(scheme, -1)
+    return scheme, hostname.rstrip(".").lower(), port
+
+
 def _guarded_http_get(
     url: str,
     *,
@@ -318,13 +334,12 @@ def _guarded_http_get(
     cross-origin redirect hop, ``Authorization`` is stripped so a token
     cannot ride a safe CDN Location (salvage of open #63920 GitHub paths).
     """
-    from urllib.parse import urlparse
-
     from tools.url_safety import SSRFConnectionBlocked
 
     current_url = url
     current_headers = dict(headers) if headers else None
     current_params = params
+    initial_origin = _normalized_origin(url)
 
     for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
         if not is_safe_url(current_url):
@@ -356,9 +371,7 @@ def _guarded_http_get(
             if not location:
                 return None
             next_url = urljoin(current_url, location)
-            if current_headers and urlparse(next_url).netloc != urlparse(
-                current_url
-            ).netloc:
+            if current_headers and _normalized_origin(next_url) != initial_origin:
                 current_headers = {
                     k: v
                     for k, v in current_headers.items()

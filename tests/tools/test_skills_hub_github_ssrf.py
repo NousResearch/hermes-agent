@@ -49,6 +49,29 @@ class TestGuardedHttpGetAuthStrip:
         assert "Authorization" not in seen[1]["headers"]
         assert seen[1]["headers"]["Accept"] == "application/vnd.github.v3+json"
 
+    def test_strips_authorization_on_https_to_http_downgrade(self):
+        from tools.skills_hub import _guarded_http_get
+
+        seen = []
+
+        def fake_ssrf_get(url, *, timeout=20, headers=None, params=None):
+            seen.append((url, dict(headers or {})))
+            if len(seen) == 1:
+                return _resp(302, location="http://api.github.com/blob")
+            return _resp(200, json_data={"ok": True})
+
+        with patch("tools.skills_hub.is_safe_url", return_value=True), patch(
+            "tools.skills_hub.check_website_access", return_value=None
+        ), patch("tools.skills_hub._ssrf_safe_http_get", side_effect=fake_ssrf_get):
+            response = _guarded_http_get(
+                "https://api.github.com/repos/org/repo",
+                headers={"Authorization": "token ghp_secret"},
+            )
+
+        assert response is not None
+        assert "Authorization" in seen[0][1]
+        assert "Authorization" not in seen[1][1]
+
     def test_blocks_private_redirect_target(self):
         from tools.skills_hub import _guarded_http_get
 

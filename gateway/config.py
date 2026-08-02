@@ -718,6 +718,29 @@ DEFAULT_STREAMING_CURSOR: str = " ▉"
 
 
 @dataclass
+class FederationConfig:
+    """P2P federation heartbeat configuration (#76660)."""
+
+    enabled: bool = False
+    # Shared SQLite database path (iCloud Drive default on macOS).
+    db_path: Optional[str] = None
+    # Seconds without heartbeat before peer is considered offline.
+    offline_threshold_s: int = 30
+    # Seconds between heartbeat cycles.
+    heartbeat_interval_s: int = 60
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FederationConfig":
+        data = _coerce_dict(data)
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), False),
+            db_path=data.get("db_path"),
+            offline_threshold_s=int(data.get("offline_threshold_s", 30)),
+            heartbeat_interval_s=int(data.get("heartbeat_interval_s", 60)),
+        )
+
+
+@dataclass
 class StreamingConfig:
     """Configuration for real-time token streaming to messaging platforms."""
     enabled: bool = False
@@ -954,6 +977,9 @@ class GatewayConfig:
     # different profiles. See gateway/profile_routing.py. Each entry is a
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
+
+    # P2P federation: multi-device heartbeat + offline task relay (#76660).
+    federation: FederationConfig = field(default_factory=FederationConfig)
 
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
@@ -1214,6 +1240,7 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=profile_routes,
+            federation=FederationConfig.from_dict(data.get("federation", {})),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:

@@ -11557,6 +11557,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to start gateway loop heartbeat", exc_info=True)
 
+        # P2P federation heartbeat (#76660): background task that reports
+        # this device's liveness to the shared federation database, detects
+        # offline peers, and atomically claims their pending tasks.
+        try:
+            from gateway.federation_heartbeat import federation_heartbeat_loop
+            _fed_cfg = getattr(self.config, "federation", None)
+            if _fed_cfg and _fed_cfg.enabled:
+                _fed_task = asyncio.create_task(
+                    federation_heartbeat_loop(_fed_cfg)
+                )
+                _bg = getattr(self, "_background_tasks", None)
+                if _bg is not None:
+                    _bg.add(_fed_task)
+                    _fed_task.add_done_callback(_bg.discard)
+                logger.info(
+                    "Federation heartbeat started (device=%s, interval=%ds)",
+                    _fed_cfg.resolve_db_path() or "(default)",
+                    _fed_cfg.heartbeat_interval_s,
+                )
+        except Exception:
+            logger.debug("Failed to start federation heartbeat", exc_info=True)
+
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:

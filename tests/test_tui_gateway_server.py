@@ -14204,8 +14204,8 @@ def test_session_close_rpc_claims_then_tears_down(monkeypatch):
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        server, "_close_session_by_id",
-        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+        server, "_teardown_popped_session",
+        lambda session, *, end_reason: bool(seen.append((session["_sid"], end_reason))) or True,
     )
     # Detached session "b" would schedule a real grace-reap threading.Timer that
     # outlives the test; grace=0 short-circuits it so no thread lingers.
@@ -14217,7 +14217,42 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     try:
         server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
         assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
+        assert "a" not in server._sessions  # claimed/popped
         assert server._sessions["b"]["transport"] is server._detached_ws_transport  # re-pointed
+    finally:
+        server._sessions.clear()
+
+
+def test_close_sessions_for_transport_skips_session_reattached_mid_teardown(monkeypatch):
+    """Regression for the disconnect/reconnect race: if session.resume rebinds
+    a session onto a new (live) transport between the ownership snapshot and
+    this function's per-session claim, the old transport's teardown must not
+    close it or stomp its transport back to the detached sentinel."""
+    seen = []
+    monkeypatch.setattr(
+        server, "_teardown_popped_session",
+        lambda session, *, end_reason: bool(seen.append((session["_sid"], end_reason))) or True,
+    )
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    old_transport = object()
+    new_transport = object()
+    server._sessions.clear()
+    # "reattached" simulates session.resume's warm-reuse winning the race and
+    # rebinding the transport (under _session_resume_lock) before this
+    # function's snapshot is acted on.
+    server._sessions["reattached"] = {"transport": new_transport, "close_on_disconnect": True}
+    server._sessions["detached-reattached"] = {
+        "transport": new_transport, "close_on_disconnect": False,
+    }
+    try:
+        reaped, detached = server._close_sessions_for_transport(
+            old_transport, end_reason="ws_disconnect"
+        )
+        assert reaped == 0 and detached == 0
+        assert seen == []
+        assert "reattached" in server._sessions  # not closed
+        assert server._sessions["reattached"]["transport"] is new_transport
+        assert server._sessions["detached-reattached"]["transport"] is new_transport  # untouched
     finally:
         server._sessions.clear()
 

@@ -74,19 +74,32 @@ describe('ingestBackendSkin', () => {
     expect($pendingSkinApply.get()).toBeNull()
   })
 
-  it('never registers default in the backend store (desktop keeps its own palette)', () => {
-    ingestBackendSkin(skin('default'), { apply: true })
+  it('registers the classic default skin so Appearance can select gold/navy (#76579)', () => {
+    ingestBackendSkin(
+      {
+        name: 'default',
+        description: 'Classic Hermes — gold and kawaii',
+        colors: { background: '#1a1a2e', ui_accent: '#FFBF00', banner_text: '#FFF8DC' }
+      },
+      { apply: true }
+    )
 
-    expect($backendThemes.get().default).toBeUndefined()
+    const registered = $backendThemes.get().default
+    expect(registered?.name).toBe('default')
+    expect(registered?.label).toBe('Classic Hermes')
+    expect(registered?.description).toContain('gold')
+    expect($pendingSkinApply.get()).toBe('default')
   })
 
   it('does not apply default on the connect-time seed', () => {
     ingestBackendSkin(skin('default'), { apply: false })
 
     expect($pendingSkinApply.get()).toBeNull()
+    // Seed still registers the palette so the theme grid can show it.
+    expect($backendThemes.get().default?.name).toBe('default')
   })
 
-  it('applies a runtime switch back to default (repaints the desktop to its own default)', () => {
+  it('applies a runtime switch back to default (classic gold palette)', () => {
     ingestBackendSkin(skin('neon'), { apply: false }) // gateway.ready seed on some skin
     ingestBackendSkin(skin('default'), { apply: true }) // Hermes switched back to default
 

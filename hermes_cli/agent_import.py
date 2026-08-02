@@ -95,26 +95,86 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+class ConfigReadError(RuntimeError):
+    """An existing config file is present but cannot be read or parsed.
+
+    Signals that a read-modify-write round trip must be abandoned: the caller
+    has no idea what the file holds, so writing a merged result back would
+    replace real settings with only the keys it merged.
+    """
+
+
 def load_yaml_file(path: Path) -> Dict[str, Any]:
+    """Load a YAML mapping, distinguishing "absent" from "unreadable".
+
+    Every caller of this function reads ``config.yaml``, merges a section into
+    it, and writes the whole mapping straight back over the original.  So
+    collapsing a present-but-unreadable file to ``{}`` is destructive: a YAML
+    syntax error, a permission problem, or a broken mount would make the
+    importer replace every setting the user had with only the one or two keys
+    it merged — and still report the item as ``imported``.
+
+    This is the same invariant ``hermes_cli.config`` enforces for its own
+    writers via ``require_readable_config_before_write`` / ``atomic_config_write``
+    ("``read_raw_config()`` returns ``{}`` for BOTH an absent file and an
+    unreadable-but-present file"), and that ``set_config_value`` gained for
+    YAML syntax errors.  This module has its own private helper pair and so
+    was never covered by either.
+
+    - Absent, or present but empty  -> ``{}``; first-time creation still works.
+    - Present but unreadable, unparseable, or not a mapping -> raise
+      :class:`ConfigReadError` so the caller refuses and leaves the file
+      byte-identical.
+    """
     import yaml
 
     if not path.exists():
         return {}
     try:
-        data = yaml.safe_load(read_text(path))
-    except Exception:
+        raw = read_text(path)
+    except OSError as exc:
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: the existing file cannot be read "
+            f"({exc}). Fix the file permissions or move it aside first."
+        ) from exc
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: the existing file is not valid YAML "
+            f"({exc}). Fix it with `hermes config edit` (or move it aside), then "
+            f"re-run the import."
+        ) from exc
+    # An empty file parses to None — a legitimate state with nothing to lose.
+    if data is None:
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: expected the existing file to hold a "
+            f"YAML mapping but found {type(data).__name__}. Fix it with "
+            f"`hermes config edit` (or move it aside), then re-run the import."
+        )
+    return data
 
 
 def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
+    """Write ``data`` as YAML via temp file + fsync + atomic rename.
+
+    Only ever reached after :func:`load_yaml_file` has successfully read the
+    same path, so the mapping being written is the real file's content plus
+    the merged section — never a silently-empty stand-in.
+
+    ``atomic_write_text`` (already used by this module for the memory store)
+    means an interrupted import cannot leave a truncated ``config.yaml``
+    behind, and a symlinked config stays a symlink.  It creates the parent
+    directory itself.
+    """
     import yaml
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    atomic_write_text(
+        path,
         yaml.safe_dump(data, default_flow_style=False, sort_keys=False,
                        allow_unicode=True),
-        encoding="utf-8",
     )
 
 
@@ -381,6 +441,25 @@ class AgentImporter:
             item.update(details)
         self.items.append(item)
 
+    def load_target_config(self, kind: str, source, destination: Path
+                           ) -> Optional[Dict[str, Any]]:
+        """Read the destination config.yaml, or record a refusal and return None.
+
+        The single chokepoint for the three importers that read config.yaml,
+        merge a section into it and write it back.  When the existing file is
+        present but unreadable there is nothing safe to merge into, so the
+        item is recorded as an ``error`` and the file is left untouched —
+        rather than being replaced by the merged section alone.
+
+        Deliberately runs in dry-run too: ``--dry-run`` must report the
+        refusal, not preview an ``imported`` that would destroy the config.
+        """
+        try:
+            return load_yaml_file(destination)
+        except ConfigReadError as exc:
+            self.record(kind, source, destination, "error", str(exc))
+            return None
+
     def build_report(self) -> Dict[str, Any]:
         summary = {"imported": 0, "skipped": 0, "conflict": 0, "error": 0}
         for item in self.items:
@@ -598,7 +677,10 @@ class AgentImporter:
                         unmapped_rules=skipped_rules)
             return
 
-        config = load_yaml_file(destination)
+        config = self.load_target_config(
+            "command-allowlist", "settings.json permissions.allow", destination)
+        if config is None:
+            return
         current = config.get("command_allowlist", [])
         if not isinstance(current, list):
             current = []
@@ -643,7 +725,10 @@ class AgentImporter:
                         "No Bash(...) deny rules to import")
             return
 
-        config = load_yaml_file(destination)
+        config = self.load_target_config(
+            "command-denylist", "settings.json permissions.deny", destination)
+        if config is None:
+            return
         approvals = config.get("approvals")
         if not isinstance(approvals, dict):
             approvals = {}
@@ -675,7 +760,9 @@ class AgentImporter:
                         "No MCP servers found")
             return
 
-        config = load_yaml_file(destination)
+        config = self.load_target_config(kind, None, destination)
+        if config is None:
+            return
         existing = config.get("mcp_servers")
         if not isinstance(existing, dict):
             existing = {}

@@ -7,6 +7,7 @@ import { pathToFileURL } from 'url'
 import { Box, Text } from '@hermes/ink'
 import * as React from 'react'
 
+import { getUiState } from '../app/uiStore.js'
 import { Accordion } from '../components/accordion.js'
 import { Shimmer, ShimmerRows, useShimmerPhase } from '../components/loaders.js'
 import { Dialog, Overlay } from '../components/overlay.js'
@@ -14,7 +15,7 @@ import { GridAreas, WidgetGrid } from '../components/widgetGrid.js'
 import { gauge, hbars, sparkline, sparkRows } from '../lib/charts.js'
 import { recordParentLifecycle } from '../lib/parentLog.js'
 
-import { openWidget, updateWidget } from './host.js'
+import { openWidget, softUpdateWidget, updateWidget } from './host.js'
 import { defineWidgetApp, listWidgetApps, removeWidgetApp } from './registry.js'
 import { isCtrl } from './types.js'
 
@@ -50,6 +51,8 @@ export const widgetSdk = {
   hbars,
   isCtrl,
   openWidget,
+  refreshMs: () => getUiState().widgetRefreshMs,
+  softUpdateWidget,
   sparkRows,
   sparkline,
   updateWidget,

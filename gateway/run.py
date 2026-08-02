@@ -17685,6 +17685,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # of a bot token. Including its secret keeps multiplexed profiles
             # from spawning competing sidecars for the same account and port.
             "_project_secret",
+            # Feishu/Lark authenticates with an app_id/app_secret pair rather
+            # than a single token (one active WebSocket connection per app).
+            # app_id is stable, log-safe, and already used as the adapter's
+            # _app_lock_identity, so including it lets the multiplex guard
+            # refuse cloned profiles competing for the same Feishu app.
+            "_app_id",
         ):
             val = getattr(adapter, attr, None)
             if isinstance(val, str) and val.strip():

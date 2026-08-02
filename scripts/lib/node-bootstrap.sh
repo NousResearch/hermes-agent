@@ -18,13 +18,13 @@
 #   if [ "$HERMES_NODE_AVAILABLE" = true ]; then ...; fi
 #
 # Env inputs (set before sourcing to override defaults):
-#   HERMES_NODE_MIN_VERSION   (default: 20)   — accepted on PATH
-#   HERMES_NODE_TARGET_MAJOR  (default: 22)   — installed when we install
+#   HERMES_NODE_MIN_VERSION   (default: 26)   — accepted on PATH
+#   HERMES_NODE_TARGET_MAJOR  (default: 26)   — installed when we install
 #   HERMES_HOME               (default: $HOME/.hermes)
 # ============================================================================
 
-HERMES_NODE_MIN_VERSION="${HERMES_NODE_MIN_VERSION:-20}"
-HERMES_NODE_TARGET_MAJOR="${HERMES_NODE_TARGET_MAJOR:-22}"
+HERMES_NODE_MIN_VERSION="${HERMES_NODE_MIN_VERSION:-26}"
+HERMES_NODE_TARGET_MAJOR="${HERMES_NODE_TARGET_MAJOR:-26}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_NODE_AVAILABLE=false
 
@@ -74,6 +74,93 @@ _nb_node_major() {
     local v
     v=$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
+}
+
+# The npm range the checkout's root package.json demands. Read from the
+# manifest rather than duplicated here so the two can never drift; falls back
+# to the current floor when the manifest is unreadable (vendored copy of this
+# script, stripped install tree).
+_nb_npm_range() {
+    if [ -n "${HERMES_NPM_TARGET_RANGE:-}" ]; then
+        printf '%s\n' "$HERMES_NPM_TARGET_RANGE"
+        return 0
+    fi
+    local repo_root manifest range
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
+    manifest="$repo_root/package.json"
+    if [ -r "$manifest" ]; then
+        # sed, not node: this runs before a usable node is guaranteed.
+        range=$(sed -n '/"engines"/,/}/p' "$manifest" \
+            | sed -n 's/.*"npm"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+            | head -1)
+        if [ -n "$range" ]; then
+            printf '%s\n' "$range"
+            return 0
+        fi
+    fi
+    printf '>=12.0.0\n'
+}
+
+# Upgrade the managed tree's bundled npm into the checkout's engines.npm range.
+#
+# The nodejs.org tarball ships whatever npm that Node major bundles — Node
+# 26.5.1 bundles npm 11.17.0, one minor below our own `engines.npm` floor of
+# >=12. With `engine-strict=true` in the repo .npmrc that is fatal, not a
+# warning, so a brand-new install died at the first `npm ci` with EBADENGINE.
+# The Python side recovers through hermes_cli/npm_engine.py; the installer path
+# had no such rung, so provision the right npm here instead of reacting later.
+#
+# Three details are load-bearing, all mirroring upgrade_managed_npm():
+#   - a temp cwd, so the checkout's own .npmrc (engine-strict, min-release-age)
+#     does not gate the very upgrade meant to satisfy it;
+#   - npm_config_min_release_age=0, which also neutralises a user ~/.npmrc;
+#   - an explicit --prefix at the managed tree, because
+#     _nb_configure_npm_prefix wrote prefix=~/.local into its etc/npmrc, and
+#     without the override this installs a second npm elsewhere while the
+#     managed tree stays stale.
+#
+# Best-effort: a failure here leaves a working Node with an old npm, which is
+# strictly better than no Node at all, and npm_engine.py still covers the
+# EBADENGINE that follows.
+_nb_ensure_bundled_npm_range() {
+    local npm_bin="$HERMES_HOME/node/bin/npm"
+    [ -x "$npm_bin" ] || return 0
+
+    local range have want
+    range="$(_nb_npm_range)"
+    [ -n "$range" ] || return 0
+
+    # Skip the network round-trip when the bundled npm already satisfies the
+    # range. Only the ">=N" shape we actually author is checked; anything more
+    # exotic falls through to letting npm itself decide.
+    if [[ "$range" =~ ^\>=([0-9]+) ]]; then
+        want="${BASH_REMATCH[1]}"
+        have=$("$npm_bin" --version 2>/dev/null | cut -d. -f1)
+        if [[ "$have" =~ ^[0-9]+$ ]] && [ "$have" -ge "$want" ]; then
+            return 0
+        fi
+    fi
+
+    _nb_log "Upgrading bundled npm to satisfy $range..."
+    local tmp_cwd
+    tmp_cwd=$(mktemp -d)
+    if (
+        cd "$tmp_cwd" || exit 1
+        CI=1 npm_config_min_release_age=0 \
+            "$npm_bin" install --global \
+                --prefix "$HERMES_HOME/node" \
+                "npm@$range" \
+                --no-fund --no-audit --progress=false >/dev/null 2>&1
+    ); then
+        rm -rf "$tmp_cwd"
+        _nb_ok "npm $("$npm_bin" --version 2>/dev/null) installed"
+        return 0
+    fi
+
+    rm -rf "$tmp_cwd"
+    _nb_warn "Could not upgrade bundled npm to $range — \`npm ci\` may fail with EBADENGINE."
+    _nb_warn "Fix manually: npm install -g --prefix \"$HERMES_HOME/node\" npm@\"$range\""
+    return 1
 }
 
 _nb_have_modern_node() {
@@ -232,6 +319,9 @@ _nb_install_bundled_node() {
 
     _nb_have_modern_node || return 1
     _nb_ok "Node $(node --version) installed to $HERMES_HOME/node/"
+    # The tarball's bundled npm is usually below the repo's engines.npm floor.
+    # Best-effort: an old npm still beats no Node.
+    _nb_ensure_bundled_npm_range || true
     return 0
 }
 
@@ -255,6 +345,24 @@ _nb_managed_tool_broken() {
     return 1
 }
 
+# The managed node runs but is below HERMES_NODE_TARGET_MAJOR — an old tree
+# from a previous install (e.g. 22). Outdated heals the same way broken does,
+# so existing users get upgraded on the next heal probe, not just on a full
+# installer re-run. Mirrors _managed_node_tree_outdated() in
+# hermes_constants.py.
+_nb_managed_node_outdated() {
+    local probe ver major
+    for probe in "$HERMES_HOME/node/bin/node" "$HERMES_HOME/node/node"; do
+        [ -x "$probe" ] || continue
+        ver="$("$probe" --version 2>/dev/null)" || return 1
+        major="${ver#v}"; major="${major%%.*}"
+        case "$major" in ''|*[!0-9]*) return 1 ;; esac
+        [ "$major" -lt "$HERMES_NODE_TARGET_MAJOR" ] && return 0
+        return 1
+    done
+    return 1
+}
+
 _nb_managed_node_needs_heal() {
     local tool
     for tool in node npm npx; do
@@ -262,7 +370,7 @@ _nb_managed_node_needs_heal() {
             return 0
         fi
     done
-    return 1
+    _nb_managed_node_outdated
 }
 
 # Redownload the pinned nodejs.org tarball when a managed tree exists but
@@ -300,6 +408,13 @@ ensure_node() {
         if _nb_have_modern_node; then
             _nb_ok "Node $(node --version) found (Hermes-managed)"
             HERMES_NODE_AVAILABLE=true
+            # A tree from an older install still carries that Node major's
+            # bundled npm, and the upgrade in _nb_install_bundled_node is
+            # best-effort — one offline install leaves an at-target tree
+            # stranded below engines.npm forever, since heal only fires for a
+            # *broken* tree. Mirrors Update-ManagedNpm's reuse-path call in
+            # install.ps1. No-ops on a probe when the npm is already in range.
+            _nb_ensure_bundled_npm_range || true
             return 0
         fi
     fi

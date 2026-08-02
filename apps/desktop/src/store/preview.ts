@@ -35,7 +35,7 @@ export interface PreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'text'
+  previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   /** Runtime-only target that cannot be restored from persisted state. */
@@ -92,20 +92,49 @@ function isPreviewTab(value: unknown): value is PreviewTab {
   return typeof r.id === 'string' && (r.id.startsWith('file:') || r.id.startsWith('url:')) && isPreviewTarget(r.target)
 }
 
+function isPdfFileTarget(target: PreviewTarget): boolean {
+  if (target.kind !== 'file') {
+    return false
+  }
+
+  if (target.mimeType?.toLowerCase() === 'application/pdf') {
+    return true
+  }
+
+  if ([target.path, target.source].some(value => (value ? /\.pdf$/i.test(value) : false))) {
+    return true
+  }
+
+  try {
+    return /\.pdf$/i.test(new URL(target.url).pathname)
+  } catch {
+    return false
+  }
+}
+
+/** Upgrade tabs persisted by builds that classified PDFs as generic binary.
+ * Without this restore-time migration, an already-open PDF keeps taking the
+ * obsolete raw-binary path after Desktop itself has been upgraded. */
+export function decodePreviewTabs(raw: string): PreviewTab[] {
+  const parsed = JSON.parse(raw) as unknown
+  const tabs = (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab =>
+    isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
+      ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
+      : tab
+  )
+
+  // One Browser: rekey restored URL tabs onto the singleton id (rows written
+  // before the id existed carried one id per address) and keep only the
+  // LAST — the most recently opened page is the one the browser shows.
+  const lastUrl = tabs.findLast(tab => tab.target.kind === 'url')
+
+  return tabs
+    .filter(tab => tab.target.kind !== 'url' || tab === lastUrl)
+    .map(tab => (tab.target.kind === 'url' ? { ...tab, id: previewTabId(tab.target) } : tab))
+}
+
 export const $previewTabs = persistentAtom<PreviewTab[]>(TABS_STORAGE_KEY, [], {
-  decode: raw => {
-    const parsed = JSON.parse(raw) as unknown
-    const tabs = Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []
-
-    // One Browser: rekey restored URL tabs onto the singleton id (rows written
-    // before the id existed carried one id per address) and keep only the
-    // LAST — the most recently opened page is the one the browser shows.
-    const lastUrl = tabs.findLast(tab => tab.target.kind === 'url')
-
-    return tabs
-      .filter(tab => tab.target.kind !== 'url' || tab === lastUrl)
-      .map(tab => (tab.target.kind === 'url' ? { ...tab, id: previewTabId(tab.target) } : tab))
-  },
+  decode: decodePreviewTabs,
   // Inline bytes are not restorable. Strip them from images, and skip remote
   // HTML and artifact tabs that cannot render without their in-memory payload.
   encode: tabs =>

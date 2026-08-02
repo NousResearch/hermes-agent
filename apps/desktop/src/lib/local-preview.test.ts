@@ -168,3 +168,32 @@ describe('remote HTML previews', () => {
     expect(openPreviewInBrowser).not.toHaveBeenCalled()
   })
 })
+
+describe('PDF previews', () => {
+  it('classifies PDF files as PDF previews', () => {
+    expect(localPreviewTarget('/tmp/spec.pdf')).toMatchObject({
+      path: '/tmp/spec.pdf',
+      previewKind: 'pdf'
+    })
+  })
+
+  it('keeps ordinary text files on the source-preview path', () => {
+    expect(localPreviewTarget('/tmp/spec.md')).toMatchObject({
+      language: 'markdown',
+      previewKind: 'text'
+    })
+  })
+
+  it('does not UTF-8-enrich remote PDFs before loading their bytes', async () => {
+    vi.clearAllMocks()
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async () => null)
+    } as never
+
+    await expect(normalizeOrLocalPreviewTarget('/remote/spec.pdf')).resolves.toMatchObject({
+      path: '/remote/spec.pdf',
+      previewKind: 'pdf'
+    })
+    expect(readDesktopFileDataUrl).not.toHaveBeenCalled()
+  })
+})

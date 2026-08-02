@@ -1092,8 +1092,45 @@ class TestNousDeviceAuthTimeoutMessage:
         assert f"{DEFAULT_NOUS_PORTAL_URL.rstrip('/')}/login" in msg
 
 
+def test_poll_for_token_timeout_raises_actionable_message():
+    """The poll deadline must raise the CAPTCHA-aware guidance at the SOURCE,
+    so both the CLI login and the dashboard poller (web_server._nous_poller,
+    which surfaces str(e) to the UI) inherit it."""
+    import httpx
+    import pytest
+
+    import hermes_cli.auth as auth_mod
+
+    class _PendingClient:
+        def post(self, url, data=None):
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                400,
+                json={"error": "authorization_pending"},
+                request=request,
+            )
+
+    from typing import cast
+
+    with pytest.raises(TimeoutError) as excinfo:
+        auth_mod._poll_for_token(
+            client=cast(httpx.Client, _PendingClient()),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            device_code="device",
+            expires_in=1,
+            poll_interval=1,
+        )
+
+    msg = str(excinfo.value)
+    assert "CAPTCHA" in msg
+    assert "hermes portal" in msg
+    assert "https://portal.nousresearch.com/login" in msg
+
+
 def test_nous_device_code_login_timeout_raises_actionable_message(monkeypatch):
-    """Poll timeout must surface the CAPTCHA-aware guidance, not a bare line."""
+    """Poll timeout must surface the CAPTCHA-aware guidance through the CLI
+    login flow (propagates unchanged from _poll_for_token)."""
     import pytest
 
     import hermes_cli.auth as auth_mod
@@ -1115,7 +1152,11 @@ def test_nous_device_code_login_timeout_raises_actionable_message(monkeypatch):
     )
 
     def _timeout(**kwargs):
-        raise TimeoutError("Timed out waiting for device authorization")
+        raise TimeoutError(
+            auth_mod._nous_device_auth_timeout_message(
+                kwargs.get("portal_base_url", "")
+            )
+        )
 
     monkeypatch.setattr(auth_mod, "_poll_for_token", _timeout)
     monkeypatch.setattr(auth_mod.webbrowser, "open", lambda url: True)

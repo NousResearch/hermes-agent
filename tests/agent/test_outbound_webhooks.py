@@ -56,12 +56,24 @@ class _CapturingHandler(BaseHTTPRequestHandler):
         self.server.captured.append(  # type: ignore[attr-defined]
             {
                 "path": self.path,
+                "method": "POST",
                 "headers": dict(self.headers),
                 "body": body,
             }
         )
         status = getattr(self.server, "respond_status", 200)
         self.send_response(status)
+        location = getattr(self.server, "respond_location", None)
+        if location:
+            self.send_header("Location", location)
+        self.end_headers()
+
+    def do_GET(self):  # noqa: N802 — records redirect follow-ups
+        self.server.captured.append(  # type: ignore[attr-defined]
+            {"path": self.path, "method": "GET", "headers": dict(self.headers),
+             "body": b""}
+        )
+        self.send_response(200)
         self.end_headers()
 
     def log_message(self, format, *args):  # noqa: A002 — http.server naming
@@ -275,6 +287,7 @@ class TestPayload:
                 "status": "ok",
                 "duration_ms": 42,
             },
+            "did_1234",
         )
         payload = json.loads(body)
         assert payload["hook_event_name"] == "post_tool_call"
@@ -283,12 +296,12 @@ class TestPayload:
         assert payload["session_id"] == "sess_1"
         assert payload["extra"]["status"] == "ok"
         assert payload["extra"]["duration_ms"] == 42
-        assert payload["delivery_id"]
+        assert payload["delivery_id"] == "did_1234"
         assert payload["timestamp"].endswith("Z")
 
     def test_unserialisable_values_stringified(self):
         body = outbound_webhooks._serialize_payload(
-            "on_session_end", {"weird": object()}
+            "on_session_end", {"weird": object()}, "did_1"
         )
         payload = json.loads(body)
         assert isinstance(payload["extra"]["weird"], str)
@@ -418,10 +431,56 @@ class TestDelivery:
             url=_url(http_server), events=["on_session_end"],
         )
         delivery = outbound_webhooks._build_delivery(
-            "on_session_end", target, b"{}",
+            "on_session_end", target, b"{}", "did_4xx",
         )
         outbound_webhooks._deliver(delivery)
         assert len(http_server.captured) == 1
+
+    def test_5xx_retried_once(self, http_server):
+        http_server.respond_status = 500
+        target = outbound_webhooks.WebhookTarget(
+            url=_url(http_server), events=["on_session_end"],
+        )
+        delivery = outbound_webhooks._build_delivery(
+            "on_session_end", target, b"{}", "did_5xx",
+        )
+        outbound_webhooks._deliver(delivery)
+        assert len(http_server.captured) == outbound_webhooks.MAX_DELIVERY_ATTEMPTS
+
+    def test_redirect_not_followed(self, http_server):
+        """3xx must be treated as failure — urllib's default handler would
+        convert a 302'd POST into a body-less GET at the redirect target."""
+        http_server.respond_status = 302
+        http_server.respond_location = _url(http_server, "/redirected")
+        target = outbound_webhooks.WebhookTarget(
+            url=_url(http_server), events=["on_session_end"],
+        )
+        delivery = outbound_webhooks._build_delivery(
+            "on_session_end", target, b"{}", "did_3xx",
+        )
+        outbound_webhooks._deliver(delivery)
+        # One POST hit the server (the redirect response), nothing followed
+        # (no GET to /redirected), no retry (misconfiguration, not transient).
+        assert [c["method"] for c in http_server.captured] == ["POST"]
+        assert http_server.captured[0]["path"] == "/hook"
+
+    def test_delivery_id_matches_header_and_body(self, http_server):
+        """The X-Hermes-Delivery header and the signed body's delivery_id
+        must be the same value, or receiver-side dedupe breaks."""
+        cfg = _cfg(
+            {"url": _url(http_server), "events": ["on_session_end"],
+             "secret": "s"}
+        )
+        outbound_webhooks.register_from_config(cfg)
+
+        from hermes_cli.plugins import get_plugin_manager
+
+        get_plugin_manager().invoke_hook("on_session_end", session_id="s1")
+        assert outbound_webhooks.flush()
+
+        req = http_server.captured[0]
+        payload = json.loads(req["body"])
+        assert payload["delivery_id"] == req["headers"]["X-Hermes-Delivery"]
 
     def test_connection_error_does_not_raise(self):
         target = outbound_webhooks.WebhookTarget(
@@ -431,7 +490,7 @@ class TestDelivery:
             timeout=1,
         )
         delivery = outbound_webhooks._build_delivery(
-            "on_session_end", target, b"{}",
+            "on_session_end", target, b"{}", "did_conn",
         )
         # Must swallow the failure (logged), never raise into the agent loop.
         outbound_webhooks._deliver(delivery)

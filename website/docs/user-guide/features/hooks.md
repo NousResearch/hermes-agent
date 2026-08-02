@@ -1566,7 +1566,7 @@ Headers:
 |--------|-------|
 | `Content-Type` | `application/json` |
 | `X-Hermes-Event` | The hook event name |
-| `X-Hermes-Delivery` | Unique id per delivery (for idempotency on the receiver) |
+| `X-Hermes-Delivery` | Unique id per delivery — same value as `delivery_id` in the body |
 | `X-Hermes-Signature-256` | `sha256=<hex>` — HMAC-SHA256 of the raw body, GitHub-style; only present when a secret is configured |
 
 Verify the signature exactly as you would a GitHub webhook:
@@ -1579,11 +1579,17 @@ def verify(body: bytes, header: str, secret: str) -> bool:
     return hmac.compare_digest(expected, header)
 ```
 
+Because `delivery_id` and `timestamp` live **inside the signed body**, a verified receiver also gets replay protection for free:
+
+- **Dedupe** on `delivery_id` (or the matching `X-Hermes-Delivery` header) — remember recently seen ids and skip duplicates. Hermes retries failed deliveries once, so the same id can legitimately arrive twice.
+- **Reject stale events** by checking `timestamp` against your clock with a tolerance window (5 minutes is the common default). An attacker replaying a captured request can't forge a fresh timestamp without the secret.
+
 ### Delivery semantics
 
 - **Fire-and-forget, off the hot path.** Events are serialized and queued instantly; a single background thread performs the HTTP POSTs. A slow or dead endpoint can never stall a tool call or an agent turn.
 - **Notify-only.** Unlike shell hooks, outbound webhooks cannot block tool calls or inject context — the response body is ignored. They observe, never steer.
 - **Bounded retries.** Connection errors and 5xx responses are retried once with backoff; 4xx responses are not retried (the receiver said the request itself is wrong). Failures are logged and dropped — delivery is best-effort, not guaranteed.
+- **Redirects are never followed.** A 3xx response is treated as a misconfiguration and logged — following a redirected POST would silently drop the signed payload. Point the `url` at the final endpoint.
 - **Bounded queue.** If the queue backs up (dead endpoint, event storm), new events are dropped with a warning rather than consuming unbounded memory.
 - **No consent prompt.** Outbound targets execute no code on your machine — they receive data at a URL you configured. `HERMES_SAFE_MODE=1` still skips registration, same as plugins and shell hooks. Note that payloads include tool inputs and event metadata, so only point targets at endpoints you trust, and prefer `https://`.
 

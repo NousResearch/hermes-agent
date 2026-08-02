@@ -6945,6 +6945,7 @@ def call_llm(
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
     latency_info: Optional[Dict[str, int]] = None,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     queue_started_at = time.monotonic()
@@ -6973,6 +6974,7 @@ def call_llm(
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
                 stream=stream, stream_options=stream_options, route_info=route_info,
+                route_callback=route_callback,
             )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -7078,6 +7080,7 @@ def _call_llm_impl(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
@@ -7092,6 +7095,23 @@ def _call_llm_impl(
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
+    # Report the route ACTUALLY used on the wire (after auto-detection,
+    # fallback chains, and client construction) so callers that need to
+    # attribute a failure point at the real endpoint, not the pre-resolution
+    # guess from _resolve_task_provider_model (#72636). The base_url is
+    # query-stripped so credentials some proxies carry as ?key=... are not
+    # leaked into user-facing diagnostics; the callback also re-strips
+    # defensively in case a future caller bypasses this path.
+    if route_callback is not None:
+        try:
+            _clean_base, _dropped_q = _extract_url_query_params(req.base_info or req.resolved_base_url)
+            route_callback(
+                request_provider or "auto",
+                kwargs.get("model"),
+                _clean_base,
+            )
+        except Exception:
+            logger.debug("route_callback error in call_llm", exc_info=True)
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and
     # the fallback chain (they assume a complete response); the caller owns reassembly/fallback.
     if stream:

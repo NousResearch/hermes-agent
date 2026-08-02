@@ -336,6 +336,32 @@ def _build_provider_env_blocklist() -> frozenset:
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
+
+def _build_terminal_passthrough_eligible() -> frozenset[str]:
+    """Return trusted bundled-plugin vars eligible for explicit passthrough.
+
+    These names deliberately remain in ``_HERMES_PROVIDER_ENV_BLOCKLIST`` so
+    they are stripped by default. The metadata only lets
+    :mod:`tools.env_passthrough` honor an explicit user/runtime opt-in for the
+    named variable; it does not expose anything on its own. Platform plugin
+    manifests are bundled executable-code peers, unlike untrusted skill
+    frontmatter, so allowing them to define this narrow eligibility does not
+    create a new trust boundary.
+    """
+    try:
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        return frozenset(
+            name
+            for name, metadata in OPTIONAL_ENV_VARS.items()
+            if metadata.get("terminal_passthrough") is True
+        )
+    except ImportError:
+        return frozenset()
+
+
+_HERMES_TERMINAL_PASSTHROUGH_ELIGIBLE = _build_terminal_passthrough_eligible()
+
 # Active-virtualenv markers that must NOT leak into terminal subprocesses.
 # The gateway runs inside its own venv, so its process environment carries
 # VIRTUAL_ENV (and possibly CONDA_PREFIX). If those leak into commands the
@@ -453,10 +479,25 @@ def _inject_session_context_env(env: dict) -> None:
             env.pop(var_name, None)
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter Hermes-managed secrets from a subprocess environment."""
+def _sanitize_subprocess_env(
+    base_env: Mapping[str, str] | None,
+    extra_env: Mapping[str, str] | None = None,
+    *,
+    terminal_passthrough: bool = False,
+) -> dict:
+    """Filter Hermes-managed secrets from a subprocess environment.
+
+    ``terminal_passthrough`` is reserved for terminal foreground/background
+    execution. It permits only protected vars explicitly approved by both a
+    trusted bundled plugin manifest and the operator's config.
+    """
     try:
-        from tools.env_passthrough import is_env_passthrough as _is_passthrough
+        if terminal_passthrough:
+            from tools.env_passthrough import (
+                is_terminal_env_passthrough as _is_passthrough,
+            )
+        else:
+            from tools.env_passthrough import is_env_passthrough as _is_passthrough
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
 
@@ -1219,7 +1260,9 @@ def _path_env_key(run_env: dict) -> str | None:
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
-        from tools.env_passthrough import is_env_passthrough as _is_passthrough
+        from tools.env_passthrough import (
+            is_terminal_env_passthrough as _is_passthrough,
+        )
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
 

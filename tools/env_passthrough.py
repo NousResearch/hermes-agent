@@ -43,6 +43,7 @@ def _get_allowed() -> set[str]:
 
 # Cache for the config-based allowlist (loaded once per process).
 _config_passthrough: frozenset[str] | None = None
+_terminal_config_passthrough: frozenset[str] | None = None
 
 
 def _is_hermes_provider_credential(name: str) -> bool:
@@ -170,6 +171,44 @@ def is_env_passthrough(var_name: str) -> bool:
     if var_name in _get_allowed():
         return True
     return var_name in _load_config_passthrough()
+
+
+def _load_terminal_config_passthrough() -> frozenset[str]:
+    """Load protected vars explicitly approved for terminal use only.
+
+    This path is not skill-facing. It accepts only exact names marked by a
+    trusted bundled platform manifest and explicitly listed by the operator
+    under ``terminal.env_passthrough``. Values remain unavailable to
+    execute_code and other generic sandbox subprocesses.
+    """
+    global _terminal_config_passthrough
+    if _terminal_config_passthrough is not None:
+        return _terminal_config_passthrough
+
+    result: set[str] = set()
+    try:
+        from hermes_cli.config import read_raw_config
+        from tools.environments.local import _HERMES_TERMINAL_PASSTHROUGH_ELIGIBLE
+
+        cfg = read_raw_config()
+        passthrough = cfg_get(cfg, "terminal", "env_passthrough")
+        if isinstance(passthrough, list):
+            requested = {
+                item.strip()
+                for item in passthrough
+                if isinstance(item, str) and item.strip()
+            }
+            result = requested & set(_HERMES_TERMINAL_PASSTHROUGH_ELIGIBLE)
+    except Exception as e:
+        logger.debug("Could not read terminal-only env passthrough: %s", e)
+
+    _terminal_config_passthrough = frozenset(result)
+    return _terminal_config_passthrough
+
+
+def is_terminal_env_passthrough(var_name: str) -> bool:
+    """Return whether *var_name* may reach terminal-spawned processes."""
+    return is_env_passthrough(var_name) or var_name in _load_terminal_config_passthrough()
 
 
 def get_all_passthrough() -> frozenset[str]:

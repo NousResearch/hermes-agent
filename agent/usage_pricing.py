@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
+from urllib.parse import urlparse
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
 from utils import base_url_host_matches
@@ -971,6 +972,53 @@ for _alias, _canonical in {
 del _alias, _canonical
 
 
+# These Bedrock SKUs are region-priced, so they cannot safely share a generic
+# provider/model row.  Keep only prices published by AWS and return ``unknown``
+# for a supported region without a verified snapshot rather than silently
+# estimating at another region's rate.
+_BEDROCK_REGIONAL_PRICING: Dict[tuple[str, str], PricingEntry] = {
+    # Kimi K2.5 — AWS lists $0.60/$3.00 per 1M tokens in the three US regions.
+    **{
+        (region, "moonshotai.kimi-k2.5"): PricingEntry(
+            input_cost_per_million=Decimal("0.60"),
+            output_cost_per_million=Decimal("3.00"),
+            source="official_docs_snapshot",
+            source_url="https://aws.amazon.com/bedrock/pricing/",
+            pricing_version="bedrock-moonshot-pricing-2026-08",
+        )
+        for region in ("us-east-1", "us-east-2", "us-west-2")
+    },
+    # AWS lists these regions at $0.72/$3.60 per 1M tokens.
+    **{
+        (region, "moonshotai.kimi-k2.5"): PricingEntry(
+            input_cost_per_million=Decimal("0.72"),
+            output_cost_per_million=Decimal("3.60"),
+            source="official_docs_snapshot",
+            source_url="https://aws.amazon.com/bedrock/pricing/",
+            pricing_version="bedrock-moonshot-pricing-2026-08",
+        )
+        for region in (
+            "ap-northeast-1",
+            "ap-south-1",
+            "ap-southeast-3",
+            "eu-north-1",
+            "sa-east-1",
+        )
+    },
+    # Sydney's local list price, including the reporter's Mantle route.
+    (
+        "ap-southeast-2",
+        "moonshotai.kimi-k2.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.6180"),
+        output_cost_per_million=Decimal("3.0900"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-moonshot-pricing-2026-08",
+    ),
+}
+
+
 def _to_decimal(value: Any) -> Optional[Decimal]:
     if value is None:
         return None
@@ -985,6 +1033,15 @@ def _to_int(value: Any) -> int:
         return int(value or 0)
     except Exception:
         return 0
+
+
+def _is_bedrock_mantle_endpoint(base_url: str) -> bool:
+    """Return whether ``base_url`` is an AWS Bedrock Mantle endpoint."""
+    try:
+        hostname = (urlparse(base_url).hostname or "").lower()
+    except (TypeError, ValueError):
+        return False
+    return bool(re.fullmatch(r"bedrock-mantle\.[a-z0-9-]+\.api\.aws", hostname))
 
 
 def resolve_billing_route(
@@ -1007,6 +1064,8 @@ def resolve_billing_route(
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name == "nous" or base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):
         return BillingRoute(provider="nous", model=model, base_url=base_url or _NOUS_DEFAULT_BASE_URL, billing_mode="official_models_api")
+    if provider_name == "bedrock" or _is_bedrock_mantle_endpoint(base_url or ""):
+        return BillingRoute(provider="bedrock", model=model, base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "anthropic":
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     # "openai-api" is the picker/registry slug for direct api.openai.com; it
@@ -1095,8 +1154,27 @@ def _normalize_anthropic_model_name(model: str) -> str:
     return name
 
 
+def _bedrock_region_from_base_url(base_url: str) -> Optional[str]:
+    """Extract the region from a Bedrock Runtime or Mantle endpoint."""
+    try:
+        hostname = urlparse(base_url).hostname or ""
+    except (TypeError, ValueError):
+        return None
+    match = re.search(
+        r"(?:^|\.)bedrock-(?:runtime(?:-fips)?|mantle)\.([a-z0-9-]+)\.",
+        hostname,
+    )
+    return match.group(1) if match else None
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
+    if route.provider == "bedrock":
+        region = _bedrock_region_from_base_url(route.base_url)
+        if region:
+            entry = _BEDROCK_REGIONAL_PRICING.get((region, model))
+            if entry:
+                return entry
     # Direct lookup first
     entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
     if entry:

@@ -754,6 +754,12 @@ _CONTENT_POLICY_RECOVERY_HINT = (
 # _MSG_TOKENS_CACHE idiom in agent/model_metadata.py.
 _CANON_ARGS_CACHE: Dict[str, str] = {}
 _CANON_ARGS_CACHE_MAX = 4096
+# Count bound alone doesn't bound MEMORY: write_file/patch argument strings
+# run 100KB+, so 4096 entries could pin ~800MB in a long-lived gateway
+# process. The byte budget keeps the memo effective for the common case
+# (args ~0.5-2KB) while bounding the worst case.
+_CANON_ARGS_CACHE_MAX_BYTES = 32 * 1024 * 1024
+_canon_args_cache_bytes = 0
 
 
 def _canonicalize_tool_call_arguments(arg_str: str) -> str:
@@ -762,6 +768,7 @@ def _canonicalize_tool_call_arguments(arg_str: str) -> str:
     Raises whatever ``json.loads`` raises on malformed input; the caller
     falls back to ``_repair_tool_call_arguments``, exactly as before.
     """
+    global _canon_args_cache_bytes
     cached = _CANON_ARGS_CACHE.get(arg_str)
     if cached is not None:
         return cached
@@ -769,9 +776,15 @@ def _canonicalize_tool_call_arguments(arg_str: str) -> str:
         json.loads(arg_str), separators=(",", ":"), sort_keys=True,
     )
     _CANON_ARGS_CACHE[arg_str] = canonical
-    while len(_CANON_ARGS_CACHE) > _CANON_ARGS_CACHE_MAX:
+    _canon_args_cache_bytes += len(arg_str) + len(canonical)
+    while len(_CANON_ARGS_CACHE) > _CANON_ARGS_CACHE_MAX or (
+        _canon_args_cache_bytes > _CANON_ARGS_CACHE_MAX_BYTES
+        and len(_CANON_ARGS_CACHE) > 1
+    ):
         try:
-            _CANON_ARGS_CACHE.pop(next(iter(_CANON_ARGS_CACHE)))
+            evicted_key = next(iter(_CANON_ARGS_CACHE))
+            evicted_val = _CANON_ARGS_CACHE.pop(evicted_key)
+            _canon_args_cache_bytes -= len(evicted_key) + len(evicted_val)
         except (StopIteration, KeyError, RuntimeError):
             break
     return canonical

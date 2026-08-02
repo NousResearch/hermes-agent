@@ -39,11 +39,30 @@ def _clear_canon_cache():
     # setup on the pre-fix tree, so sabotage runs record real test FAILURES
     # (AttributeError inside each test body) instead of collection errors.
     cache = getattr(cl, "_CANON_ARGS_CACHE", None)
-    if cache is not None:
-        cache.clear()
+
+    def _reset():
+        if cache is not None:
+            cache.clear()
+        if hasattr(cl, "_canon_args_cache_bytes"):
+            cl._canon_args_cache_bytes = 0
+
+    _reset()
     yield
-    if cache is not None:
-        cache.clear()
+    _reset()
+
+
+def test_cache_bounded_by_bytes():
+    """Large argument strings (write_file contents run 100KB+) must not pin
+    unbounded memory: the byte budget evicts before the count bound."""
+    big = json.dumps({"path": "/tmp/big.py", "content": "y" * 200_000})
+    for i in range(300):  # 300 x ~400KB (key+value) >> 32MB budget
+        cl._canonicalize_tool_call_arguments(
+            big[:-1] + f',"n":{i}}}'
+        )
+    assert cl._canon_args_cache_bytes <= cl._CANON_ARGS_CACHE_MAX_BYTES, (
+        f"cache holds {cl._canon_args_cache_bytes} bytes — byte budget "
+        "regressed; large tool-call args pin unbounded memory again")
+    assert len(cl._CANON_ARGS_CACHE) >= 1  # still memoizes something
 
 
 def build_history(n_tool_calls, arg_bytes=2048):

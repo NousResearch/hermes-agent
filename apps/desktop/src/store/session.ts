@@ -527,6 +527,12 @@ export const $currentCwd = atom(getRememberedWorkspaceCwd())
 // would collapse the workspace panes and drop file-tree state on every switch,
 // so the path stays put and is simply marked as not-yet-owned.
 export const $workspaceCwdOwner = atom<null | string>(null)
+
+// Terminal execution backend (local | docker | ssh | ...) mirrored from the
+// gateway (session.info). Drives attachment upload decisions: container
+// backends have their own filesystem, so a dropped host path must be uploaded
+// as bytes and staged into a bind-mounted cache dir (#76577).
+export const $terminalBackend = atom('')
 export const $newChatWorkspaceTarget = atom<NewChatWorkspaceTarget>(undefined)
 export const $newChatWorkspaceTargetGeneration = atom(0)
 export const $currentBranch = atom('')
@@ -647,6 +653,8 @@ export const setCurrentCwd = (next: Updater<string>) => {
   updateAtom($currentCwd, next)
   persistString(workspaceCwdKey(), $currentCwd.get().trim() || null)
 }
+
+export const setTerminalBackend = (next: Updater<string>) => updateAtom($terminalBackend, next)
 
 export const setCurrentCwdTransient = (next: Updater<string>) => updateAtom($currentCwd, next)
 

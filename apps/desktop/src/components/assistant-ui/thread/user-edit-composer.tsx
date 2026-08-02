@@ -74,7 +74,7 @@ import { Loader2Icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
-import { $connection } from '@/store/session'
+import { $connection, $terminalBackend } from '@/store/session'
 import { notifyThreadEditClose } from '@/store/thread-scroll'
 
 interface UserEditComposerProps {
@@ -427,7 +427,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         try {
           const uploaded = await uploadComposerAttachment(
             { detail: path, id: attachmentId(kind, path), kind, label: pathLabel(path), path },
-            { backendCwd: cwd, remote, requestGateway, sessionId }
+            { backendCwd: cwd, remote, requestGateway, sessionId, terminalBackend: $terminalBackend.get() }
           )
 
           const ref = attachmentDisplayText(uploaded)

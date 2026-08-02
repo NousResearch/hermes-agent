@@ -16,6 +16,7 @@ import {
   $currentUsage,
   $messages,
   $sessions,
+  $terminalBackend,
   $turnStartedAt,
   setCurrentUsage,
   setMessages,
@@ -2533,6 +2534,56 @@ describe('usePromptActions file attachment sync', () => {
     })
     expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
     expect(uploaded.path).toBe('/root/tmp/photo.jpg')
+  })
+
+  it('uploads file bytes when the terminal backend is a container (docker)', async () => {
+    // Container backends have their own filesystem: the host drop path would
+    // dangle inside the sandbox, so the bytes must cross via file.attach's
+    // data_url pipeline and be staged into a bind-mounted cache dir (#76577).
+    $connection.set({ mode: 'local' } as never)
+    $terminalBackend.set('docker')
+    const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          path: '/root/.hermes/attachments/report.txt',
+          ref_text: '@file:/root/.hermes/attachments/report.txt',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('summarize', { attachments: [fileAttachment()] })).toBe(true)
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/alice/Downloads/report.txt')
+    expect(calls[0]).toEqual({
+      method: 'file.attach',
+      params: {
+        data_url: 'data:text/plain;base64,aGVsbG8=',
+        name: 'report.txt',
+        path: '/Users/alice/Downloads/report.txt',
+        session_id: RUNTIME_SESSION_ID
+      }
+    })
+
+    // Don't leak the container-backend state into later tests.
+    $terminalBackend.set('')
   })
 
   it('passes a path-less @file: ref straight through (no path = nothing to upload)', async () => {

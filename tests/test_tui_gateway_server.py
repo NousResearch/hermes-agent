@@ -8048,15 +8048,20 @@ def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
 
 
 def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp_path):
-    """Remote case: client path doesn't exist on gateway → decode data_url bytes."""
+    """Remote case: client path doesn't exist on gateway → decode data_url bytes.
+
+    Staged into the session home's ``attachments/`` dir (bind-mounted into
+    container backends) rather than the workspace (#76577).
+    """
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    home = tmp_path / "home"
     fake_cli = types.ModuleType("cli")
     fake_cli._detect_file_drop = lambda raw: None
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: None
 
-    server._sessions["sid"] = _session(cwd=str(workspace))
+    server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(home))
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
     try:
@@ -8073,11 +8078,11 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
             }
         )
 
-        stored = workspace / ".hermes" / "desktop-attachments" / "report.txt"
+        stored = home / "attachments" / "report.txt"
         assert resp["result"]["attached"] is True
         assert resp["result"]["uploaded"] is True
         assert resp["result"]["path"] == str(stored)
-        assert resp["result"]["ref_text"] == "@file:.hermes/desktop-attachments/report.txt"
+        assert resp["result"]["ref_text"] == f"@file:{stored}"
         assert stored.read_text(encoding="utf-8") == "hello world"
     finally:
         server._sessions.pop("sid", None)
@@ -8087,6 +8092,7 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
     """Local case: gateway can see the file but it's outside the workspace → copy in."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    home = tmp_path / "home"
     source = tmp_path / "outside.txt"
     source.write_text("outside workspace", encoding="utf-8")
     fake_cli = types.ModuleType("cli")
@@ -8094,7 +8100,7 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: source
 
-    server._sessions["sid"] = _session(cwd=str(workspace))
+    server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(home))
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
     try:
@@ -8106,10 +8112,10 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
             }
         )
 
-        stored = workspace / ".hermes" / "desktop-attachments" / "outside.txt"
+        stored = home / "attachments" / "outside.txt"
         assert resp["result"]["attached"] is True
         assert resp["result"]["uploaded"] is True
-        assert resp["result"]["ref_text"] == "@file:.hermes/desktop-attachments/outside.txt"
+        assert resp["result"]["ref_text"] == f"@file:{stored}"
         assert stored.read_text(encoding="utf-8") == "outside workspace"
     finally:
         server._sessions.pop("sid", None)
@@ -8141,8 +8147,10 @@ def test_file_attach_uses_in_workspace_file_without_copying(monkeypatch, tmp_pat
         assert resp["result"]["attached"] is True
         assert resp["result"]["uploaded"] is False
         assert resp["result"]["ref_text"] == "@file:data/exam.csv"
-        # No copy: nothing staged under desktop-attachments.
+        # No copy: nothing staged under desktop-attachments or the home
+        # attachments dir.
         assert not (workspace / ".hermes" / "desktop-attachments").exists()
+        assert not (tmp_path / "home" / "attachments").exists()
     finally:
         server._sessions.pop("sid", None)
 
@@ -8183,7 +8191,7 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: None
 
-    server._sessions["sid"] = _session(cwd=str(workspace))
+    server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(tmp_path / "home"))
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
     try:
@@ -8199,8 +8207,10 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
             }
         )
 
+        stored = tmp_path / "home" / "attachments" / "my exam schedule.csv"
         assert resp["result"]["attached"] is True
-        assert resp["result"]["ref_text"] == "@file:`.hermes/desktop-attachments/my exam schedule.csv`"
+        assert resp["result"]["ref_text"] == f"@file:`{stored}`"
+        assert stored.read_text(encoding="utf-8") == "a,b\n"
     finally:
         server._sessions.pop("sid", None)
 

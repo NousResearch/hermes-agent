@@ -27,6 +27,7 @@ import {
   $connection,
   $currentCwd,
   $messages,
+  $terminalBackend,
   setActiveSessionId,
   setAwaitingResponse,
   setBusy,
@@ -80,11 +81,29 @@ interface HandoffResult {
 const WINDOWS_ABSOLUTE_PATH_RE = /^(?:[A-Za-z]:[\\/]|\\\\)/
 const POSIX_ABSOLUTE_PATH_RE = /^\/(?!\/)/
 
+// Terminal backends whose execution environment has its own filesystem
+// (docker/ssh/singularity/modal/...) cannot see the desktop's host paths —
+// they must be crossed as bytes, like remote attachments. Mirrors the
+// container_backend set in tools/terminal_tool.py::_get_env_config.
+const CONTAINER_TERMINAL_BACKENDS = new Set([
+  'docker',
+  'ssh',
+  'singularity',
+  'modal',
+  'daytona',
+  'vercel_sandbox'
+])
+
 // `mode: local` means the gateway was launched locally, not necessarily that
 // Electron and the gateway share a filesystem. Windows Desktop can front a
 // WSL/Docker backend whose cwd is POSIX, so a Windows host path must cross the
-// boundary as bytes just like a remote attachment.
-function attachmentPathNeedsUpload(path: string, backendCwd?: null | string): boolean {
+// boundary as bytes just like a remote attachment. Container terminal backends
+// (docker, ssh, ...) always need bytes: the sandbox has its own filesystem and
+// the host path would dangle inside it (#76577).
+function attachmentPathNeedsUpload(path: string, backendCwd?: null | string, terminalBackend?: string): boolean {
+  if (CONTAINER_TERMINAL_BACKENDS.has((terminalBackend || '').trim().toLowerCase())) {
+    return true
+  }
   return WINDOWS_ABSOLUTE_PATH_RE.test(path.trim()) && POSIX_ABSOLUTE_PATH_RE.test(backendCwd?.trim() || '')
 }
 
@@ -107,12 +126,13 @@ export async function uploadComposerAttachment(
     storedSessionId?: null | string
     /** Called when the attach recovered onto a fresh live id. */
     onSessionRecovered?: (sessionId: string) => void
+    terminalBackend?: string
   }
 ): Promise<ComposerAttachment> {
-  const { backendCwd, remote, requestGateway, storedSessionId, onSessionRecovered } = opts
+  const { backendCwd, remote, requestGateway, storedSessionId, onSessionRecovered, terminalBackend } = opts
   const path = attachment.path ?? ''
   const label = attachment.label || pathLabel(path)
-  const uploadBytes = remote || attachmentPathNeedsUpload(path, backendCwd)
+  const uploadBytes = remote || attachmentPathNeedsUpload(path, backendCwd, terminalBackend)
 
   // Read bytes/paths ONCE, outside the retry. Only the session-scoped RPC is
   // replayed on recovery — re-reading a multi-MB file to retry a dead session
@@ -364,7 +384,8 @@ export function usePromptActions({
             requestGateway,
             sessionId: liveSessionId,
             storedSessionId,
-            onSessionRecovered
+            onSessionRecovered,
+            terminalBackend: $terminalBackend.get()
           })
 
           // Update-only: never resurrect a chip the user removed mid-upload.
@@ -409,7 +430,8 @@ export function usePromptActions({
             backendCwd: $currentCwd.get(),
             remote,
             requestGateway,
-            sessionId
+            sessionId,
+            terminalBackend: $terminalBackend.get()
           })
         )
       } catch (err) {

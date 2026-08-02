@@ -400,6 +400,11 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     # reach uploads inside sandbox containers (#69575). No legacy alias exists,
     # so both tuple slots are ``images``.
     ("images", "images"),
+    # Desktop non-image file attachments (tui_gateway ``file.attach`` staging)
+    # land in the flat top-level ``attachments/`` dir. Mount it so the agent's
+    # file tools can read dropped binaries (zip/pdf/...) from inside sandbox
+    # containers instead of dangling host paths (#76577).
+    ("attachments", "attachments"),
 ]
 
 

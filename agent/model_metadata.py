@@ -972,6 +972,25 @@ def _extract_first_int(payload: Dict[str, Any], keys: tuple[str, ...]) -> Option
     return None
 
 
+def _extract_flat_context_length(payload: Dict[str, Any]) -> Optional[int]:
+    """Read a context WINDOW from the top level of a model-describe payload.
+
+    Same key vocabulary as :func:`_extract_context_length` (the module's single
+    source of truth for what counts as a context window), but WITHOUT the
+    nested-dict walk — for callers that hold a specific model object and must
+    not pick up a same-named key from an unrelated nested section.
+
+    Critically, ``max_tokens`` is NOT in ``_CONTEXT_LENGTH_KEYS``: it lives in
+    ``_MAX_COMPLETION_KEYS`` because on an OpenAI-compatible ``/v1/models``
+    passthrough it is the max *output* tokens, not the context window.
+    """
+    for key in _CONTEXT_LENGTH_KEYS:
+        coerced = _coerce_reasonable_int(payload.get(key))
+        if coerced is not None:
+            return coerced
+    return None
+
+
 def _extract_context_length(payload: Dict[str, Any]) -> Optional[int]:
     return _extract_first_int(payload, _CONTEXT_LENGTH_KEYS)
 
@@ -1975,10 +1994,17 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             resp = client.get(f"{server_url}/v1/models/{model}")
             if resp.status_code == 200:
                 data = resp.json()
-                # vLLM returns max_model_len
-                ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
-                if ctx and isinstance(ctx, (int, float)):
-                    return int(ctx)
+                # Context-WINDOW keys only. `max_tokens` is deliberately NOT
+                # consulted: on an OpenAI-compatible /v1/models/{id} passthrough
+                # (LiteLLM, an Anthropic-compat shim, a cloud proxy) it is the
+                # max *output* tokens — e.g. 128000 for a 1M-context model — so
+                # reading it here collapses the window to the output cap and
+                # triggers premature auto-compaction. `_CONTEXT_LENGTH_KEYS` is
+                # the module's single source of truth for this distinction and
+                # already places `max_tokens` in `_MAX_COMPLETION_KEYS` instead.
+                ctx = _extract_flat_context_length(data)
+                if ctx is not None:
+                    return ctx
 
             # Try /v1/models and find the model in the list.
             # Use _model_id_matches to handle "publisher/slug" vs bare "slug".
@@ -1988,9 +2014,12 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                 models_list = data.get("data", [])
                 for m in models_list:
                     if _model_id_matches(m.get("id", ""), model):
-                        ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
-                        if ctx and isinstance(ctx, (int, float)):
-                            return int(ctx)
+                        # Context-WINDOW keys only — sibling of the
+                        # /v1/models/{id} path above; see that comment for why
+                        # `max_tokens` must not be read as a context window.
+                        ctx = _extract_flat_context_length(m)
+                        if ctx is not None:
+                            return ctx
     except Exception:
         pass
 

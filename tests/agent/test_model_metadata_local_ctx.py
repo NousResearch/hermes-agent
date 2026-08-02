@@ -130,6 +130,94 @@ class TestQueryLocalContextLengthVllm:
 
         assert result == 32768
 
+    def test_detail_branch_reads_context_window_not_output_cap(self):
+        """A payload carrying BOTH a context window and an output cap must
+        resolve to the context window.
+
+        An OpenAI-compatible ``/v1/models/{id}`` passthrough (LiteLLM, an
+        Anthropic-compat shim, a cloud proxy) returns ``max_input_tokens`` —
+        the context window — alongside ``max_tokens``, the max *output*
+        tokens.  Reading ``max_tokens`` collapses a 1M-context model to its
+        128K output cap and drives premature auto-compaction.
+
+        Contract asserted: when a describe payload contains both classes of
+        key, the resolver returns the ``_CONTEXT_LENGTH_KEYS`` value, never
+        the ``_MAX_COMPLETION_KEYS`` one.
+        """
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(200, {
+            "type": "model",
+            "id": "some-model",
+            "max_input_tokens": 1000000,   # context window
+            "max_tokens": 128000,          # max OUTPUT tokens — not a window
+        })
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.return_value = detail_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("some-model", "http://localhost:8000/v1")
+
+        assert result == 1000000, (
+            f"must resolve the context window, not the output cap; got {result}"
+        )
+
+    def test_list_branch_reads_context_window_not_output_cap(self):
+        """Same contract on the sibling ``/v1/models`` LIST branch.
+
+        Both probe branches must share one definition of "context window";
+        fixing only the detail branch would leave the identical bug reachable
+        whenever the per-model describe endpoint 404s.
+        """
+        from agent.model_metadata import _query_local_context_length
+
+        detail_miss = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {"data": [
+            {"id": "some-model", "max_input_tokens": 1000000, "max_tokens": 128000},
+        ]})
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        # first GET is /v1/models/{model} (miss), second is /v1/models (list)
+        client_mock.get.side_effect = [detail_miss, list_resp]
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("some-model", "http://localhost:8000/v1")
+
+        assert result == 1000000, (
+            f"list branch must resolve the context window, not the output cap; got {result}"
+        )
+
+    def test_probe_agrees_with_the_module_key_vocabulary(self):
+        """Invariant: the probe's notion of a context window is the module's.
+
+        ``_CONTEXT_LENGTH_KEYS`` / ``_MAX_COMPLETION_KEYS`` are the single
+        source of truth for this distinction.  Asserting the relation (rather
+        than a frozen key list) keeps the guard correct as the vocabulary
+        grows, and fails if a probe branch ever re-hardcodes its own keys.
+        """
+        from agent import model_metadata as mm
+
+        assert "max_tokens" in mm._MAX_COMPLETION_KEYS
+        assert "max_tokens" not in mm._CONTEXT_LENGTH_KEYS
+        # No key may be classified as both a window and an output cap.
+        assert not (set(mm._CONTEXT_LENGTH_KEYS) & set(mm._MAX_COMPLETION_KEYS))
+
+        # Every context key the module recognises is honoured by the flat
+        # reader the probe branches use, and no completion key ever is.
+        for key in mm._CONTEXT_LENGTH_KEYS:
+            assert mm._extract_flat_context_length({key: 123456}) == 123456, key
+        for key in mm._MAX_COMPLETION_KEYS:
+            assert mm._extract_flat_context_length({key: 123456}) is None, key
+
 
 class TestQueryLocalContextLengthModelsList:
     """_query_local_context_length: falls back to /v1/models list."""

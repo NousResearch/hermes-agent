@@ -41,14 +41,14 @@ RUN apt-get -o Acquire::Retries=3 update && \
     make install
 
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
-# Node 22 LTS source stage. Debian trixie's bundled nodejs is pinned to 20.x
+# Node 26 source stage. Debian trixie's bundled nodejs is pinned to 20.x
 # which reached EOL in April 2026 — we copy node + npm + corepack from the
-# upstream node:22 image instead so we can stay on a supported LTS without
-# waiting for Debian 14 (forky, ~mid-2027).  Bookworm-based slim image used
-# so the produced binary links against glibc 2.36, which runs cleanly on
-# our Debian 13 (trixie, glibc 2.41) runtime.  Bumping to a new Node major
-# is a one-line ARG change; see #4977.
-FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
+# upstream node:26 image instead (Hermes pins its toolchain to Node 26
+# everywhere).  Bookworm-based slim image used so the produced binary links
+# against glibc 2.36, which runs cleanly on our Debian 13 (trixie, glibc
+# 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
+# #4977.
+FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
 FROM debian:13.4
 
 # Disable Python stdout buffering to ensure logs are printed immediately.

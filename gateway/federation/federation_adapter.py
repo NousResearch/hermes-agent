@@ -37,6 +37,7 @@ from gateway.federation.federation_consensus import FederationConsensus
 from gateway.federation.federation_relay import TaskExecutorRelay
 from gateway.federation.federation_discovery import FederationMDNS
 from gateway.federation.federation_collaboration import FederationMemorySync, FederationDistributedSearch
+from gateway.federation.federation_compute_pool import FederationComputePool
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,8 @@ class FederationAdapter:
         # Phase 7: Collaboration
         self._memory_sync: Optional[FederationMemorySync] = None
         self._distributed_search: Optional[FederationDistributedSearch] = None
+        # Phase 8: Compute Pool
+        self._compute_pool: Optional[FederationComputePool] = None
 
         # Register default message handlers
         self._register_default_handlers()
@@ -108,6 +111,8 @@ class FederationAdapter:
         self._task_handlers[MessageType.MEMORY_SYNC.value] = self._handle_memory_sync
         self._task_handlers[MessageType.SEARCH_QUERY.value] = self._handle_search_query
         self._task_handlers[MessageType.SEARCH_RESULT.value] = self._handle_search_result
+        self._task_handlers[MessageType.COMPUTE_REQUEST.value] = self._handle_compute_request
+        self._task_handlers[MessageType.COMPUTE_RESPONSE.value] = self._handle_compute_response
 
     # ----------------------------------------------------------------
     # Lifecycle
@@ -192,6 +197,13 @@ class FederationAdapter:
         )
         await self._distributed_search.start()
 
+        # Phase 8: Start compute pool
+        self._compute_pool = FederationComputePool(
+            device_id=self.device_id,
+            adapter=self,
+        )
+        await self._compute_pool.start()
+
         # Announce ourselves
         await self._conn_manager.send(
             FedMessage.peer_join(
@@ -217,6 +229,8 @@ class FederationAdapter:
             await self._memory_sync.stop()
         if self._distributed_search:
             await self._distributed_search.stop()
+        if self._compute_pool:
+            await self._compute_pool.stop()
         if self._relay:
             await self._relay.stop()
         if self._conn_manager:
@@ -651,6 +665,60 @@ class FederationAdapter:
     def get_distributed_search(self):
         """Get distributed search instance."""
         return self._distributed_search
+
+
+
+    def _handle_compute_request(self, msg: FedMessage) -> None:
+        """Handle COMPUTE_REQUEST from peer."""
+        if self._compute_pool:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._compute_pool.handle_compute_request(msg))
+            except RuntimeError:
+                pass
+
+    def _handle_compute_response(self, msg: FedMessage) -> None:
+        """Handle COMPUTE_RESPONSE from peer."""
+        if self._compute_pool:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._compute_pool.handle_compute_response(msg))
+            except RuntimeError:
+                pass
+
+    async def distribute_compute(
+        self,
+        task_type: str,
+        items: list,
+        chunk_size: int = 10,
+        handler_name: Optional[str] = None,
+    ) -> dict:
+        """Distribute computation across federation peers."""
+        if not self._compute_pool:
+            return {"error": "compute pool not initialized"}
+        result = await self._compute_pool.distribute(task_type, items, chunk_size, handler_name)
+        return {
+            "task_id": result.task_id,
+            "total_chunks": result.total_chunks,
+            "successful_chunks": result.successful_chunks,
+            "failed_chunks": result.failed_chunks,
+            "success_rate": result.success_rate,
+            "duration_ms": result.duration_ms,
+            "data": result.aggregated_data,
+        }
+
+    def register_compute_handler(self, name: str, handler: Callable) -> None:
+        """Register a compute handler."""
+        if self._compute_pool:
+            self._compute_pool.register_handler(name, handler)
+
+    def get_compute_pool(self):
+        """Get compute pool instance."""
+        return self._compute_pool
 
 
     def _get_local_ip(self) -> str:

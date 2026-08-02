@@ -49,6 +49,10 @@ class MessageType(str, Enum):
     SEARCH_QUERY = "search_query"  # Distributed search request
     SEARCH_RESULT = "search_result"  # Distributed search response
 
+    # ── Compute pool layer ──────────────────────────────────────────
+    COMPUTE_REQUEST = "compute_request"  # Distributed compute chunk
+    COMPUTE_RESPONSE = "compute_response"  # Chunk execution result
+
 
 @dataclass
 class PeerInfo:

@@ -418,6 +418,16 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   }, [pendingAnswer, respond])
 
   const activateActive = useCallback(() => {
+    const choice = choices[activeIndex]
+
+    // Multi-select Enter toggles the highlighted choice. The user confirms the
+    // staged set explicitly with Continue so this path never submits a scalar.
+    if (multiSelect && choice) {
+      selectChoice(choice, activeIndex)
+
+      return
+    }
+
     // A staged answer (picked choice or typed text) wins — confirm it.
     if (pendingAnswer) {
       submitAnswer()
@@ -427,8 +437,6 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
     // Otherwise act on the highlighted row: a choice responds immediately, and
     // the trailing "Other" row focuses the free-text field.
-    const choice = choices[activeIndex]
-
     if (choice) {
       void respond(choice)
 
@@ -436,7 +444,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     }
 
     textareaRef.current?.focus()
-  }, [activeIndex, choices, pendingAnswer, respond, submitAnswer])
+  }, [activeIndex, choices, multiSelect, pendingAnswer, respond, selectChoice, submitAnswer])
 
   const handleTextareaKey = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {

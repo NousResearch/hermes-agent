@@ -33,6 +33,8 @@ from gateway.federation.federation_protocol import (
     PeerInfo,
 )
 from gateway.federation.federation_connection import FederationConnectionManager
+from gateway.federation.federation_consensus import FederationConsensus
+from gateway.federation.federation_relay import TaskExecutorRelay
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,10 @@ class FederationAdapter:
         self._task_handlers: Dict[str, Callable] = {}
         self._task_state: Dict[str, dict] = {}  # task_id -> state
 
+        # Phase 3: Consensus + Relay
+        self._consensus: Optional[FederationConsensus] = None
+        self._relay: Optional[TaskExecutorRelay] = None
+
         # Register default task handlers
         self._register_default_handlers()
 
@@ -86,8 +92,12 @@ class FederationAdapter:
         self._task_handlers[MessageType.TASK_PROGRESS.value] = self._handle_task_progress
         self._task_handlers[MessageType.TASK_RESULT.value] = self._handle_task_result
         self._task_handlers[MessageType.TASK_HEARTBEAT.value] = self._handle_task_heartbeat
+        self._task_handlers[MessageType.TASK_CLAIM_ACK.value] = self._handle_claim_ack
+        self._task_handlers[MessageType.TASK_CLAIM_NACK.value] = self._handle_claim_nack
         self._task_handlers[MessageType.PEER_JOIN.value] = self._handle_peer_join
         self._task_handlers[MessageType.PEER_LEAVE.value] = self._handle_peer_leave
+        self._task_handlers[MessageType.PEER_PING.value] = self._handle_peer_ping
+        self._task_handlers[MessageType.PEER_PONG.value] = self._handle_peer_pong
 
     # ----------------------------------------------------------------
     # Lifecycle
@@ -130,6 +140,22 @@ class FederationAdapter:
 
         await self._conn_manager.start(listen=(self.config.mode != "shared_db"))
 
+        # Phase 3: Initialize consensus + relay
+        peer_count = self._conn_manager.get_online_count() + 1  # +1 for self
+        self._consensus = FederationConsensus(
+            device_id=self.device_id,
+            total_peers=peer_count,
+            vote_timeout=5.0,
+        )
+        self._relay = TaskExecutorRelay(
+            device_id=self.device_id,
+            adapter=self,
+            consensus=self._consensus,
+            progress_interval=10.0,
+            checkpoint_interval=30.0,
+        )
+        await self._relay.start()
+
         # Announce ourselves
         await self._conn_manager.send(
             FedMessage.peer_join(
@@ -149,6 +175,8 @@ class FederationAdapter:
     async def stop(self) -> None:
         """Stop the federation adapter."""
         self._running = False
+        if self._relay:
+            await self._relay.stop()
         if self._conn_manager:
             await self._conn_manager.stop()
         logger.info("Federation: adapter stopped")
@@ -389,6 +417,102 @@ class FederationAdapter:
             self._conn_manager.unregister_peer(
                 device_id, msg.payload.get("reason", "offline"),
             )
+
+    def _handle_claim_ack(self, msg: FedMessage) -> None:
+        """Handle task claim ACK vote."""
+        if self._consensus:
+            self._consensus.handle_vote_response(msg)
+
+    def _handle_claim_nack(self, msg: FedMessage) -> None:
+        """Handle task claim NACK vote."""
+        if self._consensus:
+            self._consensus.handle_vote_response(msg)
+
+    def _handle_peer_ping(self, msg: FedMessage) -> None:
+        """Handle peer liveness probe — respond with pong."""
+        pong = FedMessage(
+            msg_type=MessageType.PEER_PONG.value,
+            sender_id=self.device_id,
+            target_id=msg.sender_id,
+            payload={"timestamp": time.time()},
+        )
+        if self._conn_manager:
+            asyncio.create_task(self._conn_manager.send(pong))
+
+    def _handle_peer_pong(self, msg: FedMessage) -> None:
+        """Handle peer liveness response — update last_seen."""
+        device_id = msg.sender_id
+        info = self._conn_manager.get_peer(device_id) if self._conn_manager else None
+        if info:
+            info.last_seen = msg.payload.get("timestamp", time.time())
+
+    # ----------------------------------------------------------------
+    # Phase 3: Claim & Execute (consensus + relay)
+    # ----------------------------------------------------------------
+
+    async def claim_and_execute(
+        self,
+        task_id: str,
+        title: str = "",
+        description: str = "",
+        priority: int = 3,
+        context_snapshot: Optional[dict] = None,
+        handler: Optional[Callable] = None,
+    ) -> Optional[dict]:
+        """Claim a task via consensus and execute it locally.
+
+        This is the core relay mechanism — combines:
+        1. Raft-lite consensus claim
+        2. Task execution with progress streaming
+        3. Checkpoint/relay support
+
+        Returns the task result dict, or None if claim failed.
+        """
+        if not self._relay:
+            logger.warning("Federation: relay not initialized")
+            return None
+
+        state = await self._relay.claim_and_execute(
+            task_id=task_id,
+            title=title,
+            description=description,
+            priority=priority,
+            context_snapshot=context_snapshot,
+            handler=handler,
+        )
+
+        if state.status == "completed":
+            return state.result_data
+        else:
+            logger.warning(
+                "Federation: task %s ended with status=%s: %s",
+                task_id, state.status, state.error_info,
+            )
+            return None
+
+    async def handoff_task(
+        self,
+        task_id: str,
+        reason: str = "device going offline",
+    ) -> bool:
+        """Hand off a running task to another device.
+
+        Use this when going offline or under resource pressure.
+        The task will be re-broadcasted for another peer to claim.
+        """
+        if not self._relay:
+            return False
+
+        state = await self._relay.handoff_task(task_id, reason)
+        return state is not None
+
+    def get_relay(self) -> Optional[TaskExecutorRelay]:
+        """Get the task executor relay instance."""
+        return self._relay
+
+    def get_consensus(self) -> Optional[FederationConsensus]:
+        """Get the consensus instance."""
+        return self._consensus
 
     # ----------------------------------------------------------------
     # Helpers

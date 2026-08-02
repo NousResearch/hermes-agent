@@ -8,7 +8,9 @@ Architecture:
     - ``federation_discovery.py``: Peer discovery (manual config + mDNS)
     - ``federation_connection.py``: WebSocket connection management
     - ``federation_adapter.py``: PlatformAdapter integrating with GatewayRunner
-    - ``federation_heartbeat.py``: Legacy shared-db mode (preserved for backward compat)
+    - ``federation_consensus.py``: Raft-lite consensus for atomic task claiming
+    - ``federation_relay.py``: Task execution with checkpoint/relay support
+    - ``federation_heartbeat.py``: Unified heartbeat (shared_db + lan modes)
 
 Modes:
     - ``shared_db``: File-synced SQLite (v1, 2-3 devices, ~60s latency)
@@ -21,3 +23,15 @@ from gateway.federation.federation_protocol import (
     MessageType,
     PeerInfo,
 )
+from gateway.federation.federation_consensus import FederationConsensus
+from gateway.federation.federation_relay import TaskExecutorRelay, TaskCheckpoint, TaskExecutionState
+
+__all__ = [
+    "FedMessage",
+    "MessageType",
+    "PeerInfo",
+    "FederationConsensus",
+    "TaskExecutorRelay",
+    "TaskCheckpoint",
+    "TaskExecutionState",
+]

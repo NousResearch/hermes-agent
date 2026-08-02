@@ -649,6 +649,38 @@ class TestPrefetchServerRetainVisibility:
         assert order == ["recall"], "prefetch should recall after the timeout"
         assert elapsed < 3.0, "prefetch must not block well past the drain budget"
 
+    def test_timed_out_ops_are_dropped_not_repolled(self, provider_with_config):
+        """Ops unresolved at deadline must be EVICTED so a permanently failing
+        status endpoint can't make every later prefetch re-burn the full
+        timeout on a growing pending set (unbounded session-wide degradation
+        + reply-path join penalty)."""
+        p = provider_with_config(prefetch_retain_drain_timeout=0.3)
+        p._client = self._client_with_ops(["pending"])  # never completes
+        p._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(results=[SimpleNamespace(text="m")])
+        )
+
+        p.sync_turn("hello", "world")
+        p._retain_queue.join()
+        assert p._pending_retain_ops, "op should be tracked before the wait"
+
+        # First prefetch burns the budget and must DROP the wedged op.
+        p.queue_prefetch("q1")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        assert p._pending_retain_ops == set(), (
+            "unresolved ops must be evicted at deadline, not retained"
+        )
+
+        # A later prefetch with nothing pending must be near-instant.
+        start = time.monotonic()
+        p.queue_prefetch("q2")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        assert time.monotonic() - start < 0.25, (
+            "second prefetch re-polled dropped ops — eviction regressed"
+        )
+
     def test_operation_notfound_treated_as_complete(self, provider):
         """A NotFound (completed+evicted) op is treated as done, not pending."""
         from hindsight_client_api.exceptions import NotFoundException

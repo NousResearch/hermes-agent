@@ -5318,11 +5318,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         session_id: str,
         cwd: str,
-        git_branch: str = None,
-        git_repo_root: str = None,
+        git_branch: Optional[str] = None,
+        git_repo_root: Optional[str] = None,
         replace_git_meta: bool = False,
-    ) -> None:
-        """Persist the session working directory when a frontend knows it.
+    ) -> Optional[int]:
+        """Persist the authoritative cwd and claim a Git metadata generation.
 
         ``git_branch`` records the git branch checked out in ``cwd`` at the time
         the session started/resumed. The sidebar groups main-checkout sessions
@@ -5340,27 +5340,100 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         MOVE (re-homing a session into another project) must overwrite the old
         repo identity even when the new cwd resolves to none — keeping the stale
         root would leave the session grouped under the project it just left.
+
+        Every call increments ``git_metadata_generation`` in the same write
+        transaction. Async Git probes must publish through
+        :meth:`publish_session_git_metadata` with the returned generation, so
+        an older worker cannot overwrite a newer cwd claim even after an
+        A -> B -> A transition or from another process sharing this database.
+        Metadata from a different cwd is cleared atomically with the move.
         """
         if not session_id or not cwd:
-            return
+            return None
 
         branch = (git_branch or "").strip()
         repo_root = (git_repo_root or "").strip()
 
-        sets = ["cwd = ?"]
-        params: List[Any] = [cwd]
-        if branch or replace_git_meta:
+        def _do(conn):
+            current = conn.execute(
+                "SELECT cwd FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if current is None:
+                return None
+
+            current_cwd = current["cwd"] if isinstance(current, sqlite3.Row) else current[0]
+            sets = [
+                "cwd = ?",
+                "git_metadata_generation = COALESCE(git_metadata_generation, 0) + 1",
+            ]
+            params: List[Any] = [cwd]
+            if current_cwd != cwd or replace_git_meta:
+                sets.extend(("git_branch = ?", "git_repo_root = ?"))
+                params.extend((branch or None, repo_root or None))
+            elif branch:
+                sets.append("git_branch = ?")
+                params.append(branch)
+            if repo_root and current_cwd == cwd and not replace_git_meta:
+                sets.append("git_repo_root = ?")
+                params.append(repo_root)
+            params.append(session_id)
+            conn.execute(
+                f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?", params
+            )
+            row = conn.execute(
+                "SELECT git_metadata_generation FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            value = row["git_metadata_generation"] if isinstance(row, sqlite3.Row) else row[0]
+            return int(value)
+
+        return self._execute_write(_do)
+
+    def publish_session_git_metadata(
+        self,
+        session_id: str,
+        cwd: str,
+        generation: int,
+        git_branch: Optional[str] = None,
+        git_repo_root: Optional[str] = None,
+    ) -> bool:
+        """Publish async Git enrichment only while its cwd claim is current."""
+        if (
+            not session_id
+            or not cwd
+            or isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 1
+        ):
+            return False
+
+        branch = (git_branch or "").strip()
+        repo_root = (git_repo_root or "").strip()
+        if not branch and not repo_root:
+            return False
+
+        sets: List[str] = []
+        params: List[Any] = []
+        if branch:
             sets.append("git_branch = ?")
-            params.append(branch or None)
-        if repo_root or replace_git_meta:
+            params.append(branch)
+        if repo_root:
             sets.append("git_repo_root = ?")
-            params.append(repo_root or None)
-        params.append(session_id)
+            params.append(repo_root)
+        params.extend((session_id, cwd, generation))
 
         def _do(conn):
-            conn.execute(f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?", params)
+            cursor = conn.execute(
+                f"UPDATE sessions SET {', '.join(sets)} "
+                "WHERE id = ? AND cwd = ? "
+                "AND git_metadata_generation = ?",
+                params,
+            )
+            return cursor.rowcount == 1
 
-        self._execute_write(_do)
+        return bool(self._execute_write(_do))
 
     def backfill_repo_roots(self, cwd_to_root: Dict[str, str]) -> None:
         """Persist resolved git repo roots for cwds that don't have one yet.
@@ -7872,7 +7945,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # declarative reconciliation are included automatically instead of
     # silently dropping out of list rows.
     _SESSION_COMPACT_EXCLUDED = frozenset(
-        {"system_prompt", "system_prompt_hash"}
+        {"system_prompt", "system_prompt_hash", "git_metadata_generation"}
     )
     _session_compact_cols_sql: Optional[str] = None
 

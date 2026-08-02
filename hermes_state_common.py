@@ -216,7 +216,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -285,6 +285,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cwd TEXT,
     git_branch TEXT,
     git_repo_root TEXT,
+    git_metadata_generation INTEGER NOT NULL DEFAULT 0,
     billing_provider TEXT,
     billing_base_url TEXT,
     billing_mode TEXT,

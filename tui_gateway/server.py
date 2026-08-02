@@ -2723,13 +2723,7 @@ def _display_session_cwd(session: dict | None) -> str:
     healed = _heal_dead_cwd(cwd)
     if healed and healed != cwd and session is not None:
         session["cwd"] = healed
-        try:
-            with _session_db(session) as db:
-                if db is not None:
-                    db.update_session_cwd(session.get("session_key", ""), healed)
-        except Exception:
-            logger.debug("failed to persist healed session cwd", exc_info=True)
-        _persist_session_git_meta(session, healed)
+        _persist_session_cwd_and_schedule_git_meta(session, healed)
 
     return healed
 
@@ -2812,14 +2806,7 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     session["cwd_from_settle"] = True
     _register_session_cwd(session)
 
-    with _session_db(session) as db:
-        if db is not None:
-            try:
-                db.update_session_cwd(session.get("session_key", ""), resolved)
-            except Exception:
-                logger.debug("failed to persist settled session cwd", exc_info=True)
-
-    _persist_session_git_meta(session, resolved)
+    _persist_session_cwd_and_schedule_git_meta(session, resolved)
     return True
 
 
@@ -3092,7 +3079,7 @@ def _session_db(session: dict):
                 db.close()
 
 
-def _persist_session_git_meta(session: dict, cwd: str) -> None:
+def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
     """Resolve + persist a session's git branch / repo root WITHOUT blocking.
 
     Branch and root come from ``git`` subprocess probes; running them inline on
@@ -3106,7 +3093,13 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
     probe never delays gateway shutdown.
     """
     session_key = session.get("session_key", "")
-    if not session_key or not cwd:
+    if (
+        not session_key
+        or not cwd
+        or isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
+    ):
         return
     # Snapshot the routing fields now; the live session dict may be gone by the
     # time the thread runs. `_session_db` reopens the profile-correct db inside.
@@ -3120,11 +3113,50 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
                 return
             with _session_db(db_session) as db:
                 if db is not None:
-                    db.update_session_cwd(session_key, cwd, branch, root)
+                    db.publish_session_git_metadata(
+                        session_key,
+                        cwd,
+                        generation,
+                        branch,
+                        root,
+                    )
         except Exception:
             logger.debug("failed to persist session git metadata", exc_info=True)
 
     threading.Thread(target=_run, name="git-meta", daemon=True).start()
+
+
+def _persist_session_cwd_and_schedule_git_meta(
+    session: dict,
+    cwd: str,
+    *,
+    db=None,
+) -> int | None:
+    """Claim a DB-backed probe generation, then start Git enrichment."""
+    try:
+        if db is not None:
+            generation = db.update_session_cwd(
+                session.get("session_key", ""), cwd
+            )
+        else:
+            with _session_db(session) as owner_db:
+                if owner_db is None:
+                    return None
+                generation = owner_db.update_session_cwd(
+                    session.get("session_key", ""), cwd
+                )
+    except Exception:
+        logger.debug("failed to persist session cwd", exc_info=True)
+        return None
+
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
+    ):
+        return None
+    _persist_session_git_meta(session, cwd, generation)
+    return generation
 
 
 def _set_session_cwd(session: dict, cwd: str) -> str:
@@ -3142,14 +3174,9 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     # the terminal wandering must not move the workspace again.
     session["cwd_from_settle"] = False
     _register_session_cwd(session)
-    with _session_db(session) as db:
-        if db is not None:
-            try:
-                db.update_session_cwd(session.get("session_key", ""), resolved)
-            except Exception:
-                logger.debug("failed to persist session cwd", exc_info=True)
-    # Branch/repo-root probes are git subprocesses — capture them off the hot path.
-    _persist_session_git_meta(session, resolved)
+    # The synchronous DB write claims ordering authority; Git subprocesses stay
+    # off the hot path and may publish only for that exact generation.
+    _persist_session_cwd_and_schedule_git_meta(session, resolved)
     try:
         from tools.terminal_tool import cleanup_vm
 
@@ -6137,14 +6164,7 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
     session["cwd_from_settle"] = False
     _register_session_cwd(session)
 
-    with _session_db(session) as db:
-        if db is not None:
-            try:
-                db.update_session_cwd(session.get("session_key", ""), resolved)
-            except Exception:
-                logger.debug("failed to persist project workspace cwd", exc_info=True)
-
-    _persist_session_git_meta(session, resolved)
+    _persist_session_cwd_and_schedule_git_meta(session, resolved)
 
     try:
         agent = session.get("agent")
@@ -6949,9 +6969,9 @@ def _init_session(
                 try:
                     _cwd = _sessions[sid]["cwd"]
                     if hasattr(db, "update_session_cwd"):
-                        db.update_session_cwd(key, _cwd)
-                    # git branch/root probes run off the hot path (see _set_session_cwd).
-                    _persist_session_git_meta(_sessions[sid], _cwd)
+                        _persist_session_cwd_and_schedule_git_meta(
+                            _sessions[sid], _cwd, db=db
+                        )
                 except Exception:
                     logger.debug(
                         "failed to persist resumed session cwd", exc_info=True

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tui_gateway import server
+from tui_gateway import compute_host, server
 from tui_gateway.compute_host import ComputeHost, _default_workers
 from tui_gateway.host_supervisor import (
     MUTATOR_ROUTE_TABLE,
@@ -175,6 +175,7 @@ def test_shutdown_drains_in_flight_turn_before_finalizing_sessions(monkeypatch):
 
 
 def test_shutdown_still_finalizes_when_the_drain_deadline_expires(monkeypatch):
+    wait = 1.0
     events: list[str] = []
     _record_finalize(monkeypatch, events)
 
@@ -191,7 +192,7 @@ def test_shutdown_still_finalizes_when_the_drain_deadline_expires(monkeypatch):
 
     try:
         started = time.monotonic()
-        host.shutdown(reason="sigterm", wait=1.0)
+        host.shutdown(reason="sigterm", wait=wait)
         elapsed = time.monotonic() - started
     finally:
         release.set()
@@ -200,4 +201,50 @@ def test_shutdown_still_finalizes_when_the_drain_deadline_expires(monkeypatch):
     # supervisor's SIGKILL lands on the same deadline this budget comes from,
     # so the drain has to stop short and leave the finalize room to run.
     assert events == ["finalize:compute_host_sigterm"]
-    assert elapsed < 1.0
+    assert elapsed < wait
+
+
+def test_shutdown_drain_sleep_never_overshoots_the_reserve(monkeypatch):
+    """The drain's per-tick sleep must be bounded by the time left to it.
+
+    A flat tick overshoots the drain deadline by up to one tick, eating the
+    reserve held back for ``flush_all_sessions``; for a small ``wait`` that is
+    the whole reserve. Asserting on the *requested* sleep totals rather than on
+    wall-clock keeps this deterministic: each sleep is clamped to the remaining
+    time, so the sum can never exceed the drain budget however the scheduler
+    interleaves.
+    """
+    wait = 0.34
+    drain_budget = wait - min(compute_host._FLUSH_RESERVE_SECS, wait / 2.0)
+
+    events: list[str] = []
+    _record_finalize(monkeypatch, events)
+
+    slept: list[float] = []
+    real_sleep = time.sleep
+
+    def _recording_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        real_sleep(seconds)
+
+    monkeypatch.setattr(compute_host.time, "sleep", _recording_sleep)
+
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    release = threading.Event()
+    running = threading.Event()
+
+    def _stuck_turn() -> None:
+        running.set()
+        release.wait(timeout=30.0)
+
+    _register_turn(host, _stuck_turn)
+    assert running.wait(timeout=5.0)
+
+    try:
+        host.shutdown(reason="sigterm", wait=wait)
+    finally:
+        release.set()
+
+    assert events == ["finalize:compute_host_sigterm"]
+    assert slept, "the drain loop should have ticked at least once"
+    assert sum(slept) <= drain_budget + 1e-6

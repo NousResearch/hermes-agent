@@ -81,7 +81,7 @@ Read before adding or editing UI styles. These rules keep the dashboard legible 
 
 ### Fonts
 
-Typography is **opt-in per surface**, not global on layout shells — the app shell and page header keep their original theme/expanded fonts; Mondwest applies only where explicitly set.
+Typography is **opt-in per surface**, not global on layout shells. The class names below are stable dashboard tiers; CSS routes them through `--theme-font-display` / `--theme-font-sans` / `--theme-font-mono` so themes and the font picker can unify the UI without raw custom CSS.
 
 | Tier | Classes | Use for |
 |------|---------|---------|
@@ -93,12 +93,12 @@ Typography is **opt-in per surface**, not global on layout shells — the app sh
 
 - Do **not** put `themedBody` or `themedFont` on `<main>`, `App`, or other layout wrappers — it overrides component-scoped styles.
 - **`Card`** applies `themedBody`; **`CardTitle`** uses `text-display` (uppercase chrome); **`CardDescription`** uses `themedBody`.
+- **`font-mondwest` and `font-expanded` are token-backed tier names, not a mandate to use those literal font files.** They resolve to the active theme's display stack and include locale-aware system fallback.
 - **`NouiTypography`** defaults to `font-sans` unless a font prop is passed.
-- Do **not** use raw `font-sans` or `font-display` (theme sans variable) on new dashboard UI — prefer Mondwest tiers above where brand-appropriate.
+- Do **not** use raw `font-sans` or `font-display` on new dashboard UI — prefer the tier classes above where brand-appropriate.
 
 ### Color tokens
 
 - Prefer **semantic tokens** (`text-text-*`, `bg-card`, `border-border`, `text-foreground`, `text-destructive`, `text-success`, `text-warning`) over raw layer references (`text-midground`, `text-foreground`).
 - `text-muted-foreground` is now wired to `--color-text-secondary`, so existing call sites stay correct, but new code should prefer the semantic name.
 - When you genuinely need a non-token color (icon de-emphasis on a chart, terminal foreground via inline style), keep alpha at `≥ 0.7` for any text.
-

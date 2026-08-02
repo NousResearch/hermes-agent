@@ -2780,9 +2780,9 @@ def _abandon_timed_out_gateway_turn(
         timeout_fired.set()
 
     agent = agent_holder[0] if agent_holder else None
-    if agent is not None and hasattr(agent, "interrupt"):
+    if agent is not None:
         try:
-            agent.interrupt(_INTERRUPT_REASON_TIMEOUT)
+            request_hard_interrupt(agent, _INTERRUPT_REASON_TIMEOUT)
         except Exception:
             logger.debug("Timed-out agent interrupt failed", exc_info=True)
 

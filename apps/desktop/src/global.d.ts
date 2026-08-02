@@ -769,6 +769,8 @@ export interface HermesNotification {
   silent?: boolean
   kind?: string
   sessionId?: string
+  /** Dedupe discriminator for session-less notifications (e.g. plugin id). */
+  tag?: string
   actions?: { id: string; text: string }[]
 }
 

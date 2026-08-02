@@ -168,6 +168,8 @@ interface PluginContext {
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live WebSocket to this plugin's own namespace. Returns a disposer. */
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
+  /** Native OS notification (Electron), attributed to this plugin. */
+  notifyNative: (input: { title: string; body?: string; silent?: boolean }) => void
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
   storage: PluginStorage
 }
@@ -370,6 +372,7 @@ host.state.viewport         // ReadableAtom<{ width, height, narrow }>
 
 host.notify({ kind, message, title?, detail?, action? })  // toast; returns id
 host.notifyError(error, fallbackMessage)                   // toast an error
+ctx.notifyNative({ title, body?, silent? })                // native OS notification
 host.navigate('/route')                    // hash-route navigation
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer
 host.logs(...)                             // tail an app log file
@@ -384,6 +387,14 @@ session lifecycle, tool activity). Listeners are isolated — a throw in your
 listener can't affect app dispatch. Every `host` door is async-safe: a sync throw
 from an internal helper (e.g. no desktop bridge in a plain browser) becomes a
 rejection your `.catch()` sees, never an error-boundary crash.
+
+`ctx.notifyNative` (on the plugin context, so the notification is attributed to
+your plugin) posts a **native OS notification** — the same Electron pipeline the
+app's own approval/turn alerts use. It fires only while the user is away from
+Hermes (backgrounded / unfocused); use `host.notify` for the in-app toast when
+they're looking at the app. Users can silence it per device under Settings ▸
+Notifications ▸ "Plugin notifications", and repeats from the same plugin are
+throttled, so treat it as a signal for genuinely notable events — not a log.
 
 ## Data layer — React Query + nanostores
 
@@ -597,7 +608,7 @@ not treat this pipeline as a trust boundary.
 | Category | Exports |
 |----------|---------|
 | Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginRestOptions`, `Contribution` |
+| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginRestOptions`, `PluginNativeNotificationInput`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |

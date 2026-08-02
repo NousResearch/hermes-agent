@@ -395,6 +395,10 @@ export const en: Translations = {
         credits: {
           label: 'Credit alerts',
           description: 'Credit access is paused or restored.'
+        },
+        plugin: {
+          label: 'Plugin notifications',
+          description: 'A desktop plugin sent a notification while Hermes was in the background.'
         }
       },
       test: 'Send test notification',

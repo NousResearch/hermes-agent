@@ -269,6 +269,10 @@ export const ja = defineLocale({
         credits: {
           label: 'クレジット通知',
           description: 'クレジットの利用が停止または復旧しました。'
+        },
+        plugin: {
+          label: 'プラグイン通知',
+          description: 'Hermes がバックグラウンドの間に、デスクトッププラグインが通知を送信しました。'
         }
       },
       test: 'テスト通知を送信',

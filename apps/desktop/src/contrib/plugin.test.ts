@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+import { dispatchPluginNativeNotification } from '@/store/native-notifications'
 
 import { createPluginContext } from './plugin'
+
+vi.mock('@/store/native-notifications', () => ({ dispatchPluginNativeNotification: vi.fn() }))
 
 describe('createPluginContext.onDispose', () => {
   it('collects arbitrary cleanups so the host runs them on deactivate', () => {
@@ -17,5 +21,13 @@ describe('createPluginContext.onDispose', () => {
     expect(disposers).toHaveLength(1)
     disposers.forEach(dispose => dispose())
     expect(cleaned).toBe(true)
+  })
+})
+
+describe('createPluginContext.notifyNative', () => {
+  it('dispatches a native notification attributed to the plugin', () => {
+    const ctx = createPluginContext('demo')
+    ctx.notifyNative({ body: 'b', title: 't' })
+    expect(dispatchPluginNativeNotification).toHaveBeenCalledWith('demo', { body: 'b', title: 't' })
   })
 })

@@ -15,11 +15,13 @@
 import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
+import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
 
 import { registry } from './registry'
 import type { Contribution } from './types'
 
 export type { PluginRestOptions } from '@/hermes'
+export type { PluginNativeNotificationInput } from '@/store/native-notifications'
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
  *  the host's job, so those fields are off-limits here. */
@@ -54,6 +56,10 @@ export interface PluginContext {
    *  returned. Resolves to a no-op on OAuth remotes — treat it as an
    *  accelerator over your polling, never a replacement. */
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
+  /** Native OS notification (Electron), attributed to this plugin. Gated by
+   *  Settings ▸ Notifications ▸ "Plugin notifications" and fires only while
+   *  the user is away from Hermes — use `host.notify` for the in-app toast. */
+  notifyNative: (input: PluginNativeNotificationInput) => void
   /** Plugin-scoped persistence. */
   storage: PluginStorage
   /** Plugin-scoped i18n: ship + register locale bundles under this plugin,
@@ -115,6 +121,7 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     onDispose: fn => void track(fn),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
+    notifyNative: input => dispatchPluginNativeNotification(pluginId, input),
     storage: createPluginStorage(pluginId),
     i18n: createPluginI18n(pluginId, track)
   }

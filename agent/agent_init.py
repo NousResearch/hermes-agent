@@ -913,6 +913,16 @@ def init_agent(
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
+    # Per-provider reasoning_content echo opt-in (see _reasoning_echo_opt_in).
+    # Read once at init; switch_model / try_activate_fallback / restore
+    # keep it in sync with the active provider.
+    try:
+        from hermes_cli.config import load_config_readonly
+        agent._reasoning_echo_flag = bool(
+            (load_config_readonly().get("model") or {}).get("reasoning_echo")
+        )
+    except Exception:
+        agent._reasoning_echo_flag = False
     agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns

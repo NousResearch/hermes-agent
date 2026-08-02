@@ -58,6 +58,14 @@ class MessageType(str, Enum):
     COMPUTE_REQUEST = "compute_request"  # Distributed compute chunk
     COMPUTE_RESPONSE = "compute_response"  # Chunk execution result
 
+    # ── Cluster management ──────────────────────────────────────────
+    ELECTION = "election"            # Leader election initiated
+    ELECTION_OK = "election_ok"      # Candidate accepts challenge
+    VICTORY = "victory"              # New leader announces itself
+    COORDINATE = "coordinate"        # Leader heartbeat
+    CONFIG_SYNC = "config_sync"      # Config data broadcast
+    CONFIG_ACK = "config_ack"        # Peer acknowledges config update
+
 
 @dataclass
 class PeerInfo:

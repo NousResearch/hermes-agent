@@ -39,6 +39,7 @@ from gateway.federation.federation_discovery import FederationMDNS
 from gateway.federation.federation_collaboration import FederationMemorySync, FederationDistributedSearch
 from gateway.federation.federation_compute_pool import FederationComputePool
 from gateway.federation.federation_cron_relay import FederationCronRelay, FederationSkillSync
+from gateway.federation.federation_cluster import FederationLeaderElection, FederationConfigSync
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,9 @@ class FederationAdapter:
         # Phase 9: Cron Relay + Skill Sync
         self._cron_relay: Optional[FederationCronRelay] = None
         self._skill_sync: Optional[FederationSkillSync] = None
+        # Phase 10: Cluster Management
+        self._leader_election: Optional[FederationLeaderElection] = None
+        self._config_sync: Optional[FederationConfigSync] = None
 
         # Register default message handlers
         self._register_default_handlers()
@@ -119,6 +123,11 @@ class FederationAdapter:
         self._task_handlers[MessageType.COMPUTE_RESPONSE.value] = self._handle_compute_response
         self._task_handlers[MessageType.CRON_SYNC.value] = self._handle_cron_sync
         self._task_handlers[MessageType.SKILL_SYNC.value] = self._handle_skill_sync
+        self._task_handlers[MessageType.ELECTION.value] = self._handle_election
+        self._task_handlers[MessageType.ELECTION_OK.value] = self._handle_election_ok
+        self._task_handlers[MessageType.VICTORY.value] = self._handle_victory
+        self._task_handlers[MessageType.COORDINATE.value] = self._handle_coordinate
+        self._task_handlers[MessageType.CONFIG_SYNC.value] = self._handle_config_sync
 
     # ----------------------------------------------------------------
     # Lifecycle
@@ -223,6 +232,20 @@ class FederationAdapter:
         )
         await self._skill_sync.start()
 
+        # Phase 10: Start cluster management
+        self._leader_election = FederationLeaderElection(
+            device_id=self.device_id,
+            adapter=self,
+            compute_score=self._compute_pool.compute_score if self._compute_pool else 0.0,
+        )
+        await self._leader_election.start()
+
+        self._config_sync = FederationConfigSync(
+            device_id=self.device_id,
+            adapter=self,
+        )
+        await self._config_sync.start()
+
         # Announce ourselves
         await self._conn_manager.send(
             FedMessage.peer_join(
@@ -254,6 +277,10 @@ class FederationAdapter:
             await self._cron_relay.stop()
         if self._skill_sync:
             await self._skill_sync.stop()
+        if self._leader_election:
+            await self._leader_election.stop()
+        if self._config_sync:
+            await self._config_sync.stop()
         if self._relay:
             await self._relay.stop()
         if self._conn_manager:
@@ -790,6 +817,91 @@ class FederationAdapter:
     def get_skill_sync(self):
         """Get skill sync instance."""
         return self._skill_sync
+
+
+
+    def _handle_election(self, msg: FedMessage) -> None:
+        """Handle ELECTION from peer."""
+        if self._leader_election:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._leader_election.handle_election(msg))
+            except RuntimeError:
+                pass
+
+    def _handle_election_ok(self, msg: FedMessage) -> None:
+        """Handle ELECTION_OK from peer."""
+        if self._leader_election:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._leader_election.handle_election_ok(msg))
+            except RuntimeError:
+                pass
+
+    def _handle_victory(self, msg: FedMessage) -> None:
+        """Handle VICTORY from new leader."""
+        if self._leader_election:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._leader_election.handle_victory(msg))
+            except RuntimeError:
+                pass
+
+    def _handle_coordinate(self, msg: FedMessage) -> None:
+        """Handle COORDINATE heartbeat from leader."""
+        if self._leader_election:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._leader_election.handle_coordinate(msg))
+            except RuntimeError:
+                pass
+
+    def _handle_config_sync(self, msg: FedMessage) -> None:
+        """Handle CONFIG_SYNC from leader."""
+        if self._config_sync:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._config_sync.handle_config_sync(msg))
+            except RuntimeError:
+                pass
+
+    async def initiate_leader_election(self) -> str:
+        """Start a leader election."""
+        if not self._leader_election:
+            return ""
+        return await self._leader_election.initiate_election()
+
+    def is_leader(self) -> bool:
+        """Check if this device is the cluster leader."""
+        return self._leader_election.is_leader() if self._leader_election else False
+
+    def get_leader(self) -> str:
+        """Get the current cluster leader."""
+        return self._leader_election.get_leader() if self._leader_election else ""
+
+    async def sync_config_to_peers(self) -> bool:
+        """Sync local config to all federation peers."""
+        if not self._config_sync:
+            return False
+        return await self._config_sync.sync_config()
+
+    def get_leader_election(self):
+        """Get leader election instance."""
+        return self._leader_election
+
+    def get_config_sync(self):
+        """Get config sync instance."""
+        return self._config_sync
 
 
     def _get_local_ip(self) -> str:

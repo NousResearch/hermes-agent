@@ -283,7 +283,8 @@ def is_platform_supported() -> bool:
 def _download_file(url: str, dest: str, timeout: int = 10):
     """Download a URL to a local file."""
     req = urllib.request.Request(url)
-    token = os.getenv("GITHUB_TOKEN")
+    from agent.secret_scope import get_secret
+    token = get_secret("GITHUB_TOKEN")
     if token:
         req.add_header("Authorization", f"token {token}")
     with urllib.request.urlopen(req, timeout=timeout) as resp, open(dest, "wb") as f:

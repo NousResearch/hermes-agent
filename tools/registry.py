@@ -710,6 +710,59 @@ class ToolRegistry:
             self._generation += 1
         logger.debug("Deregistered tool: %s", name)
 
+    def restore_registration(
+        self,
+        name: str,
+        current: ToolEntry,
+        previous: Optional[ToolEntry],
+    ) -> bool:
+        """Restore a host-owned registration if it is still current.
+
+        This is the narrow inverse used by the plugin ownership ledger.  The
+        identity check is deliberate: another plugin (or another
+        ``PluginManager`` in a multi-profile process) may have registered a
+        newer entry under the same name, in which case unloading this entry
+        must leave the newer entry untouched.
+        """
+        with self._lock:
+            if self._tools.get(name) is not current:
+                return False
+
+            if previous is None:
+                self._tools.pop(name, None)
+            else:
+                self._tools[name] = previous
+
+            # Rebuild the affected toolset checks from the surviving entries.
+            # A plugin may have replaced an entry in the same toolset, so
+            # simply leaving the current check_fn behind would retain stale
+            # plugin state after restoration.
+            affected_toolsets = {current.toolset}
+            if previous is not None:
+                affected_toolsets.add(previous.toolset)
+            for toolset in affected_toolsets:
+                surviving = [
+                    entry for entry in self._tools.values()
+                    if entry.toolset == toolset
+                ]
+                check_fn = next(
+                    (entry.check_fn for entry in surviving if entry.check_fn),
+                    None,
+                )
+                if check_fn is None:
+                    self._toolset_checks.pop(toolset, None)
+                else:
+                    self._toolset_checks[toolset] = check_fn
+                if not surviving:
+                    self._toolset_aliases = {
+                        alias: target
+                        for alias, target in self._toolset_aliases.items()
+                        if target != toolset
+                    }
+            self._generation += 1
+        logger.debug("Restored tool registration: %s", name)
+        return True
+
     # ------------------------------------------------------------------
     # Schema retrieval
     # ------------------------------------------------------------------

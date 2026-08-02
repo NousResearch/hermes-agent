@@ -72,6 +72,22 @@ def get_provider(name: str) -> Optional[ImageGenProvider]:
         return _providers.get(name.strip())
 
 
+def restore_registration(
+    name: str,
+    current: ImageGenProvider,
+    previous: Optional[ImageGenProvider],
+) -> bool:
+    """Restore a plugin registration only when *current* is still installed."""
+    with _lock:
+        if _providers.get(name) is not current:
+            return False
+        if previous is None:
+            _providers.pop(name, None)
+        else:
+            _providers[name] = previous
+    return True
+
+
 def get_active_provider() -> Optional[ImageGenProvider]:
     """Resolve the currently-active provider.
 

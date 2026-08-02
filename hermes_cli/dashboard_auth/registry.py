@@ -46,6 +46,22 @@ def get_provider(name: str) -> Optional[DashboardAuthProvider]:
         return _providers.get(name)
 
 
+def restore_registration(
+    name: str,
+    current: DashboardAuthProvider,
+    previous: Optional[DashboardAuthProvider],
+) -> bool:
+    """Restore a host-owned provider registration if it is still current."""
+    with _lock:
+        if _providers.get(name) is not current:
+            return False
+        if previous is None:
+            _providers.pop(name, None)
+        else:
+            _providers[name] = previous
+    return True
+
+
 def list_providers() -> List[DashboardAuthProvider]:
     """All registered providers, in registration order."""
     with _lock:

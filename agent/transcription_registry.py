@@ -118,6 +118,23 @@ def get_provider(name: str) -> Optional[TranscriptionProvider]:
     return _providers.get(name.strip().lower())
 
 
+def restore_registration(
+    name: str,
+    current: TranscriptionProvider,
+    previous: Optional[TranscriptionProvider],
+) -> bool:
+    """Restore a plugin registration only when *current* is still installed."""
+    key = name.strip().lower()
+    with _lock:
+        if _providers.get(key) is not current:
+            return False
+        if previous is None:
+            _providers.pop(key, None)
+        else:
+            _providers[key] = previous
+    return True
+
+
 def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
     with _lock:

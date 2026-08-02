@@ -29,6 +29,7 @@ import {
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
+  selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages
@@ -247,6 +248,47 @@ describe('toBranchMessages', () => {
 
     expect(out.map(b => b.source.id)).toEqual(['u', 'a'])
     expect(out[0]).toMatchObject({ content: 'hi', role: 'user' })
+  })
+})
+
+describe('selectBranchMessages', () => {
+  it('uses the complete authoritative transcript for a whole-chat branch', () => {
+    const local = [msg('summary', 'assistant', 'compact summary'), msg('tail', 'assistant', 'latest answer')]
+
+    const authoritative = [
+      msg('old-user', 'user', 'first question', { rowId: 11 }),
+      msg('old-assistant', 'assistant', 'first answer', { rowId: 12 }),
+      msg('tail-user', 'user', 'latest question', { rowId: 13 }),
+      msg('tail-assistant', 'assistant', 'latest answer', { rowId: 14 })
+    ]
+
+    expect(selectBranchMessages(local, authoritative).map(message => message.content)).toEqual([
+      'first question',
+      'first answer',
+      'latest question',
+      'latest answer'
+    ])
+  })
+
+  it('maps a clicked local bubble to the authoritative row before slicing', () => {
+    const local = [
+      msg('tail-user', 'user', 'latest question', { rowId: 13 }),
+      msg('tail-assistant', 'assistant', 'latest answer', { rowId: 14 })
+    ]
+
+    const authoritative = [
+      msg('old-user', 'user', 'first question', { rowId: 11 }),
+      msg('old-assistant', 'assistant', 'first answer', { rowId: 12 }),
+      msg('tail-user', 'user', 'latest question', { rowId: 13 }),
+      msg('tail-assistant', 'assistant', 'latest answer', { rowId: 14 })
+    ]
+
+    expect(selectBranchMessages(local, authoritative, 'tail-assistant').map(message => message.content)).toEqual([
+      'first question',
+      'first answer',
+      'latest question',
+      'latest answer'
+    ])
   })
 })
 

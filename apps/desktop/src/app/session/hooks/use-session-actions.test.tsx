@@ -1112,19 +1112,30 @@ function BranchHarness({
   navigate = vi.fn(),
   onCurrentReady,
   onReady,
-  requestGateway
+  onRefs,
+  requestGateway,
+  selectedStoredSessionId = null
 }: {
   activeSessionId?: string | null
   navigate?: ReturnType<typeof vi.fn>
   onCurrentReady?: (branchCurrentSession: (messageId?: string) => Promise<boolean>) => void
   onReady: (branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) => void
+  onRefs?: (refs: {
+    activeSessionIdRef: MutableRefObject<string | null>
+    selectedStoredSessionIdRef: MutableRefObject<string | null>
+  }) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  selectedStoredSessionId?: string | null
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+  const activeSessionIdRef = ref<string | null>(activeSessionId)
+  const selectedStoredSessionIdRef = ref<string | null>(selectedStoredSessionId)
+
+  onRefs?.({ activeSessionIdRef, selectedStoredSessionIdRef })
 
   const actions = useSessionActions({
     activeSessionId,
-    activeSessionIdRef: ref<string | null>(activeSessionId),
+    activeSessionIdRef,
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
@@ -1134,8 +1145,8 @@ function BranchHarness({
     requestGateway,
     resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
-    selectedStoredSessionId: null,
-    selectedStoredSessionIdRef: ref<string | null>(null),
+    selectedStoredSessionId,
+    selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
     updateSessionState: () => ({}) as ClientSessionState
@@ -1274,6 +1285,95 @@ describe('branchStoredSession desktop source tagging', () => {
       count: 2
     })
     expect(branchParams).toEqual({ session_id: 'live-parent', count: 2 })
+  })
+
+  it('hydrates the complete persisted display transcript before branching a compacted live chat', async () => {
+    let branchParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.branch') {
+        branchParams = params
+
+        return {
+          session_id: 'branch-runtime',
+          stored_session_id: 'branch-stored',
+          title: 'Branch',
+          message_count: 4,
+          messages: [],
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    setSessions([storedSession({ id: 'stored-parent', message_count: 4 })])
+    setMessages([
+      { id: 'summary', role: 'assistant', parts: [{ type: 'text', text: 'compact summary' }] },
+      { id: 'tail-user', role: 'user', parts: [{ type: 'text', text: 'second question' }] },
+      { id: 'tail-assistant', role: 'assistant', parts: [{ type: 'text', text: 'second answer' }] }
+    ])
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'first question', role: 'user', timestamp: 1 },
+        { content: 'first answer', role: 'assistant', timestamp: 2 },
+        { content: 'second question', role: 'user', timestamp: 3 },
+        { content: 'second answer', role: 'assistant', timestamp: 4 }
+      ],
+      session_id: 'stored-parent'
+    } as never)
+
+    let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="live-parent"
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-parent"
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    await expect(branchCurrentSession!()).resolves.toBe(true)
+
+    expect(getAllSessionMessages).toHaveBeenCalledWith('stored-parent', undefined)
+    expect(branchParams).toEqual({ session_id: 'live-parent' })
+  })
+
+  it('aborts if the active runtime changes while the branch transcript is hydrating', async () => {
+    let refs: {
+      activeSessionIdRef: MutableRefObject<string | null>
+      selectedStoredSessionIdRef: MutableRefObject<string | null>
+    } | null = null
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    setMessages([{ id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question' }] }])
+    vi.mocked(getAllSessionMessages).mockImplementation(async () => {
+      refs!.activeSessionIdRef.current = 'live-other'
+
+      return {
+        messages: [{ content: 'question', role: 'user', timestamp: 1 }],
+        session_id: 'stored-parent'
+      } as never
+    })
+
+    let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="live-parent"
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        onRefs={value => (refs = value)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-parent"
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    await expect(branchCurrentSession!()).resolves.toBe(false)
+    expect(requestGateway).not.toHaveBeenCalledWith('session.branch', expect.anything())
   })
 
   // #67603: right-clicking a session outside the paginated sidebar window is a

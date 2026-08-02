@@ -92,6 +92,7 @@ import {
   resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,
+  selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages,
@@ -1335,7 +1336,8 @@ export function useSessionActions({
       sourceSessionId: null | string,
       parentStoredId: null | string,
       cwd?: string,
-      profile?: null | string
+      profile?: null | string,
+      branchCount?: number
     ): Promise<boolean> => {
       creatingSessionRef.current = true
 
@@ -1353,7 +1355,7 @@ export function useSessionActions({
         const branched = sourceSessionId
           ? await requestGateway<SessionCreateResponse>('session.branch', {
               session_id: sourceSessionId,
-              count: branchMessages.length
+              ...(branchCount !== undefined ? { count: branchCount } : {})
             })
           : await requestGateway<SessionCreateResponse>('session.create', {
               cols: 96,
@@ -1364,8 +1366,12 @@ export function useSessionActions({
               ...(parentStoredId && { parent_session_id: parentStoredId })
             })
 
+        const responseBranchMessages =
+          sourceSessionId && branched.messages?.length ? toBranchMessages(toChatMessages(branched.messages)) : []
+
+        const effectiveBranchMessages = responseBranchMessages.length ? responseBranchMessages : branchMessages
         const routedSessionId = branched.stored_session_id ?? branched.session_id
-        const preview = branchMessages.map(({ content }) => content).find(Boolean) ?? null
+        const preview = effectiveBranchMessages.map(({ content }) => content).find(Boolean) ?? null
         // Draft until submit: nest under the parent at the parent's recency so it
         // doesn't bubble to the top until a real message lands (backend persists
         // + auto-names it then). The selected row survives refreshes (sessionsToKeep).
@@ -1390,7 +1396,7 @@ export function useSessionActions({
           branched.session_id,
           state => ({
             ...state,
-            messages: branchMessages.map(({ source }) => source),
+            messages: effectiveBranchMessages.map(({ source }) => source),
             busy: false,
             awaitingResponse: false
           }),
@@ -1444,15 +1450,52 @@ export function useSessionActions({
         return false
       }
 
+      const startingActiveSessionId = activeSessionIdRef.current
       const messages = $messages.get()
+      const storedSessionId = selectedStoredSessionIdRef.current
+      const startingRouteToken = getRouteToken()
+      const startingCwd = $currentCwd.get().trim()
 
-      const at = messageId
-        ? messages.findIndex(message => message.id === messageId)
-        : messages.findLastIndex(message => message.role === 'assistant' || message.role === 'user')
+      // The live atom may be a compacted model projection. Read the durable
+      // display projection before choosing the branch prefix so a whole-chat
+      // branch does not inherit only the summary/tail. If the backend is
+      // temporarily unavailable, retain the local snapshot and let the branch
+      // RPC make its own authoritative read.
+      let authoritativeMessages: ChatMessage[] | null = null
+      const profile = await resolveSessionProfile(storedSessionId)
 
-      const start = 0
-      const end = at >= 0 ? at + 1 : messages.length
-      const branchMessages = toBranchMessages(messages.slice(start, end))
+      if (storedSessionId) {
+        try {
+          const persisted = await getAllSessionMessages(storedSessionId, profile)
+          const hydrated = toChatMessages(persisted.messages)
+
+          if (hydrated.length) {
+            authoritativeMessages = hydrated
+          }
+        } catch {
+          // The branch RPC has a backend-side display projection fallback.
+        }
+      }
+
+      const drift = sessionContextDrift({
+        startRouteToken: startingRouteToken,
+        nowRouteToken: getRouteToken(),
+        startSelectedStoredId: storedSessionId,
+        nowSelectedStoredId: selectedStoredSessionIdRef.current
+      })
+
+      const runtimeChanged = activeSessionIdRef.current !== startingActiveSessionId
+      const selectionChanged = selectedStoredSessionIdRef.current !== storedSessionId
+
+      if (drift || runtimeChanged || selectionChanged) {
+        console.warn('[branch-drift-abort]', drift ?? 'runtime-or-selection-changed', {
+          phase: 'transcript-hydration'
+        })
+
+        return false
+      }
+
+      const branchMessages = selectBranchMessages(messages, authoritativeMessages, messageId)
 
       if (!branchMessages.length) {
         notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
@@ -1465,17 +1508,16 @@ export function useSessionActions({
       // The open chat's owning profile, NOT the picker's / launch profile —
       // /profile only retargets new chats, so a branch of an existing thread
       // must stay on that thread's backend (cache hit for an open session).
-      const profile = await resolveSessionProfile(selectedStoredSessionIdRef.current)
-
       return forkBranch(
         branchMessages,
-        activeSessionIdRef.current,
-        selectedStoredSessionIdRef.current,
-        $currentCwd.get().trim(),
-        profile
+        startingActiveSessionId,
+        storedSessionId,
+        startingCwd,
+        profile,
+        messageId ? branchMessages.length : undefined
       )
     },
-    [activeSessionIdRef, busyRef, copy, forkBranch, selectedStoredSessionIdRef]
+    [activeSessionIdRef, busyRef, copy, forkBranch, getRouteToken, selectedStoredSessionIdRef]
   )
 
   // Branch any listed session, not just the open one. Reads the target's stored

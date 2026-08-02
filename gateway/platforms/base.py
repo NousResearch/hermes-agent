@@ -161,6 +161,12 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
+    # Routed Hermes profile for shared state.db namespaces (topic bindings
+    # under multiplex / profile_routes). Outbound prune paths must not
+    # assume the transport adapter's static profile stamp.
+    profile = str(getattr(source, "profile", None) or "").strip()
+    if profile:
+        metadata["hermes_profile"] = profile
     return metadata
 
 

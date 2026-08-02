@@ -8571,6 +8571,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
 
+    def _telegram_topic_cooldown_key(self, source: SessionSource) -> Optional[str]:
+        """Cooldown key for topic-mode cooldowns: (profile, chat_id).
+
+        Profiles sharing a Telegram private chat_id under multiplex must not
+        suppress each other's lobby reminders / capability hints (#76423).
+        """
+        chat_id = str(source.chat_id or "")
+        if not chat_id:
+            return None
+        return f"{self._telegram_topic_profile_name(source)}:{chat_id}"
+
     def _should_send_telegram_lobby_reminder(self, source: SessionSource) -> bool:
         """Rate-limit root-DM lobby reminders to one message per cooldown window.
 
@@ -8580,15 +8591,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not hasattr(self, "_telegram_lobby_reminder_ts"):
             self._telegram_lobby_reminder_ts = {}
-        chat_id = str(source.chat_id or "")
-        if not chat_id:
+        key = self._telegram_topic_cooldown_key(source)
+        if not key:
             return True
         import time as _time
         now = _time.monotonic()
-        last = self._telegram_lobby_reminder_ts.get(chat_id, 0.0)
+        last = self._telegram_lobby_reminder_ts.get(key, 0.0)
         if now - last < self._TELEGRAM_LOBBY_REMINDER_COOLDOWN_S:
             return False
-        self._telegram_lobby_reminder_ts[chat_id] = now
+        self._telegram_lobby_reminder_ts[key] = now
         return True
 
     def _telegram_topic_root_lobby_message(self) -> str:
@@ -25724,15 +25735,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not hasattr(self, "_telegram_capability_hint_ts"):
             self._telegram_capability_hint_ts = {}
-        chat_id = str(source.chat_id or "")
-        if not chat_id:
+        key = self._telegram_topic_cooldown_key(source)
+        if not key:
             return True
         import time as _time
         now = _time.monotonic()
-        last = self._telegram_capability_hint_ts.get(chat_id, 0.0)
+        last = self._telegram_capability_hint_ts.get(key, 0.0)
         if now - last < self._TELEGRAM_CAPABILITY_HINT_COOLDOWN_S:
             return False
-        self._telegram_capability_hint_ts[chat_id] = now
+        self._telegram_capability_hint_ts[key] = now
         return True
 
     def _telegram_topic_help_text(self) -> str:
@@ -25784,12 +25795,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as exc:
             logger.exception("Failed to disable Telegram topic mode")
             return f"Failed to disable topic mode: {exc}"
-        # Reset per-chat debounce state so the user doesn't see a stale
-        # cooldown on the next activation.
-        for attr in ("_telegram_lobby_reminder_ts", "_telegram_capability_hint_ts"):
-            store = getattr(self, attr, None)
-            if isinstance(store, dict):
-                store.pop(chat_id, None)
+        # Reset per-profile+chat debounce state so the user doesn't see a
+        # stale cooldown on the next activation (issue #76423).
+        cooldown_key = self._telegram_topic_cooldown_key(source)
+        if cooldown_key:
+            for attr in ("_telegram_lobby_reminder_ts", "_telegram_capability_hint_ts"):
+                store = getattr(self, attr, None)
+                if isinstance(store, dict):
+                    store.pop(cooldown_key, None)
         return (
             "Multi-session topic mode is now OFF for this chat.\n\n"
             "Existing topics in Telegram aren't removed — they'll just stop "
@@ -26264,6 +26277,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata.setdefault("scope_id", str(team_id))
                 if user_id:
                     metadata.setdefault("user_id", str(user_id))
+        # Routed profile for shared state.db namespaces (#76423): the Telegram
+        # prune path needs it because under profile_routes the transport
+        # adapter's stamp is not the profile that wrote the binding.
+        profile = str(getattr(source, "profile", None) or "").strip()
+        if profile and metadata is not None:
+            metadata = dict(metadata)
+            metadata["hermes_profile"] = profile
         return metadata
 
     def _thread_metadata_for_target(

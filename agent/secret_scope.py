@@ -23,6 +23,7 @@ Design rationale lives in ``docs/design/multiplexing-gateway.md`` (Workstream A)
 from __future__ import annotations
 
 import os
+import re
 from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Dict, Mapping, Optional
@@ -177,12 +178,50 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     return val if val is not None else default
 
 
+def _strip_inline_comment(value: str) -> str:
+    """Strip a dotenv-style inline comment from a raw ``.env`` value.
+
+    Mirrors python-dotenv (1.2.2) semantics, verified empirically:
+
+    - Quoted values: scan for the matching close quote
+      (backslash-escape-aware for double quotes, since ``save_env_value``
+      writes ``\\"``/``\\\\`` escapes). Everything through the close quote is
+      kept; a trailing ``# ...`` remainder after it is discarded, so
+      ``KEY="has # inside" # trailing`` yields ``has # inside``. Non-comment
+      trailing junk leaves the value untouched (lenient, unlike dotenv's
+      hard parse error).
+    - Unquoted values: truncate only at a ``#`` PRECEDED BY WHITESPACE, so
+      ``KEY=foo#bar`` keeps ``foo#bar`` while ``KEY=value # comment`` keeps
+      ``value``. A value that *starts* with ``#`` (``KEY=#leading``) is kept.
+    """
+    value = value.strip()
+    if not value:
+        return value
+    quote = value[0]
+    if quote in ("'", '"'):
+        i = 1
+        while i < len(value):
+            ch = value[i]
+            if quote == '"' and ch == "\\":
+                i += 2  # skip the escaped character
+                continue
+            if ch == quote:
+                remainder = value[i + 1:].lstrip()
+                if remainder.startswith("#"):
+                    return value[: i + 1]
+                return value
+            i += 1
+        return value  # unterminated quote: leave as-is
+    return re.split(r"\s+#", value, maxsplit=1)[0].strip()
+
+
 def load_env_file(env_path: Path) -> Dict[str, str]:
     """Parse a ``.env`` file into a plain dict WITHOUT touching ``os.environ``.
 
     Used to load a profile's secrets into an isolated mapping for
     ``set_secret_scope``. Parses the small KEY=VALUE subset Hermes writes
-    itself (``export`` prefix, ``#`` comments, matching quotes with the
+    itself (``export`` prefix, ``#`` comments — full-line and
+    dotenv-compatible inline, matching quotes with the
     writer's ``\\"``/``\\\\`` escapes reversed — the same semantics as
     ``hermes_cli.config._parse_env_value``) but never mutates the process
     environment — that isolation is the whole point.
@@ -217,7 +256,7 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
         key = key.strip()
         if not key:
             continue
-        secrets[key] = _parse_env_value(value)
+        secrets[key] = _parse_env_value(_strip_inline_comment(value))
 
     return secrets
 

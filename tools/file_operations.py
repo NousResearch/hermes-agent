@@ -2478,6 +2478,9 @@ class ShellFileOperations(FileOperations):
         if self._has_command('rg'):
             result = self._search_with_rg(pattern, path, file_glob, limit, offset,
                                           output_mode, context)
+            # rg auto-enables --multiline for \n patterns, so the line-
+            # oriented warning below no longer applies to this engine.
+            return result
         elif self._has_command('grep'):
             result = self._search_with_grep(pattern, path, file_glob, limit, offset,
                                             output_mode, context)
@@ -2506,7 +2509,16 @@ class ShellFileOperations(FileOperations):
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
-        
+
+        # Auto-multiline: a regex `\n` (or a literal newline in the pattern)
+        # cannot match in rg's default line-oriented mode — it used to hard
+        # error ("the literal \"\\n\" is not allowed") and burn a turn. When
+        # the pattern clearly wants to cross lines, enable -U/--multiline
+        # up front and note it in the result.
+        multiline = _pattern_has_regex_newline(pattern)
+        if multiline:
+            cmd_parts.append("--multiline")
+
         # Add context if requested
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
@@ -2556,6 +2568,10 @@ class ShellFileOperations(FileOperations):
 
         # Parse the diagnostic-free payload so error text never becomes a match.
         stdout = payload
+        _ml_note = (
+            "Pattern contains \\n — multiline mode (-U) was enabled automatically "
+            "so the regex can match across line boundaries."
+        ) if multiline else None
         # Parse results based on output mode
         if output_mode == "files_only":
             all_files = [f for f in stdout.strip().split('\n') if f]
@@ -2566,6 +2582,7 @@ class ShellFileOperations(FileOperations):
                 total_count=total,
                 truncated=bool(limit_reason),
                 limit_reason=limit_reason,
+                warning=_ml_note,
             )
         
         elif output_mode == "count":
@@ -2626,6 +2643,7 @@ class ShellFileOperations(FileOperations):
                 total_count=total,
                 truncated=total > offset + limit or bool(limit_reason),
                 limit_reason=limit_reason,
+                warning=_ml_note,
             )
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],

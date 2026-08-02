@@ -851,15 +851,13 @@ def init_agent(
     try:
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
 
+        from agent.agent_runtime_helpers import cache_ttl_means_disabled
+
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
-        elif (
-            _ttl is False
-            or _ttl is None
-            or str(_ttl).lower() in ("off", "false", "disabled", "no", "none")
-        ):
+        elif cache_ttl_means_disabled(_ttl):
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
             agent._cache_ttl = None

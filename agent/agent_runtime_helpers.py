@@ -1857,12 +1857,31 @@ def _direct_native_anthropic_tool_cache_capability(
     )
 
 
+def cache_ttl_means_disabled(ttl: Any) -> bool:
+    """Return True when a ``prompt_caching.cache_ttl`` value means caching off.
+
+    Single source of truth for the disable-synonym detection shared by
+    ``agent_init`` (live-agent ``_cache_disabled`` flag) and the stub policy
+    paths below. Keeping one predicate prevents the two sites from drifting
+    (a synonym added in only one place would recreate #76085).
+
+    Unknown values (e.g. ``"2h"``, integers) are NOT a disable — callers keep
+    caching enabled with the default TTL, matching ``agent_init``.
+    """
+    if ttl in ("5m", "1h"):
+        return False
+    if ttl is False or ttl is None:
+        return True
+    return str(ttl).lower() in ("off", "false", "disabled", "no", "none")
+
+
 def prompt_caching_disabled_from_config() -> bool:
     """Return True when ``prompt_caching.cache_ttl`` is configured as off.
 
-    Mirrors the disable detection in ``agent_init`` so stub-based policy
-    paths (MoA slot decoration, auxiliary fallback replan) honor the same
-    config contract without holding a live ``AIAgent`` (#76085 / #33555).
+    Same disable detection as ``agent_init`` (via ``cache_ttl_means_disabled``)
+    so stub-based policy paths (MoA slot decoration, auxiliary fallback
+    replan) honor the same config contract without holding a live
+    ``AIAgent`` (#76085 / #33555).
     """
     try:
         from hermes_cli.config import load_config_readonly
@@ -1871,11 +1890,7 @@ def prompt_caching_disabled_from_config() -> bool:
         ttl = pc_cfg.get("cache_ttl", "5m")
     except Exception:
         return False
-    if ttl in {"5m", "1h"}:
-        return False
-    if ttl is False or ttl is None:
-        return True
-    return str(ttl).lower() in ("off", "false", "disabled", "no", "none")
+    return cache_ttl_means_disabled(ttl)
 
 
 def blank_cache_policy_stub(cache_disabled: Optional[bool] = None):

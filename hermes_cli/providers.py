@@ -656,15 +656,63 @@ def nous_api_mode(model: str = "") -> str:
     return "chat_completions"
 
 
+def _plugin_profile_api_mode(provider: str, base_url: str = "") -> str:
+    """Return the api_mode a registered ``ProviderProfile`` declares, or "".
+
+    Plugin providers (``plugins/model-providers/<name>/``, bundled or under
+    ``$HERMES_HOME``) declare their wire protocol on
+    ``ProviderProfile.api_mode``, but the declaration has no reader:
+    ``get_provider()`` resolves against models.dev + ``HERMES_OVERLAYS``
+    only, and the ``ProviderProfile → ProviderConfig`` bridge in
+    ``auth.py`` drops the field. So a plugin speaking Anthropic Messages on
+    an endpoint that is not URL-self-describing resolves to
+    ``chat_completions`` and 404s on every request (#53054).
+
+    ``base_url`` gating: the declaration only applies on the provider's own
+    endpoint — no base_url at all, or one equal to the profile's. A user who
+    overrides base_url to a different endpoint has given the stronger signal
+    (e.g. MiniMax's OpenAI-compatible ``/v1`` route, opting out of the
+    profile's default ``/anthropic``), so we defer rather than force the
+    declared mode. Gating approach adopted from @samfoy's #65956.
+
+    Lazy import: provider discovery imports plugin modules, which may import
+    back into ``hermes_cli`` — importing at module load risks a cycle.
+    """
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile((provider or "").strip().lower())
+        if profile is None:
+            return ""
+        declared = str(getattr(profile, "api_mode", "") or "").strip()
+        if declared not in TRANSPORT_TO_API_MODE.values():
+            return ""
+        # ``chat_completions`` is ProviderProfile's default *and* this
+        # function's terminal default, so returning it here would only
+        # short-circuit the tiers below (models.dev lookup, bedrock) without
+        # ever changing the answer. Treat it as "nothing declared".
+        if declared == "chat_completions":
+            return ""
+        if base_url:
+            profile_base = str(getattr(profile, "base_url", "") or "").rstrip("/")
+            if base_url.rstrip("/") != profile_base:
+                return ""
+        return declared
+    except Exception:
+        return ""
+
+
 def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> str:
     """Determine the API mode (wire protocol) for a provider/endpoint.
 
     Resolution order:
       1. Host-mandated mode (special endpoints that only accept one protocol).
       2. Nous Portal dual-wire (model-derived; overlay alone is openai_chat).
-      3. Known provider → transport → TRANSPORT_TO_API_MODE.
-      4. Direct provider checks (bedrock).
-      5. Default: 'chat_completions'.
+      3. Hermes overlay transport (the in-tree declaration for that id).
+      4. Plugin ``ProviderProfile.api_mode`` (on the profile's own endpoint).
+      5. models.dev provider → transport → TRANSPORT_TO_API_MODE.
+      6. Direct provider checks (bedrock).
+      7. Default: 'chat_completions'.
 
     *model* is optional but required for dual-wire providers (Nous) whose
     transport depends on the catalog id, not just the provider/host.
@@ -680,6 +728,20 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
     provider_norm = (provider or "").strip().lower()
     if provider_norm in {"nous", "nous-portal", "nousresearch"}:
         return nous_api_mode(model)
+
+    # In-tree declarations win: an overlay is Hermes' own statement about
+    # this provider's transport.
+    if normalize_provider(provider) in HERMES_OVERLAYS:
+        pdef = get_provider(provider)
+        if pdef is not None:
+            return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
+
+    # A plugin profile's declaration outranks a models.dev-only hit, whose
+    # transport is the generic ``openai_chat`` default (models.dev carries no
+    # transport data) and would otherwise mask the declaration.
+    declared = _plugin_profile_api_mode(provider, base_url)
+    if declared:
+        return declared
 
     pdef = get_provider(provider)
     if pdef is not None:

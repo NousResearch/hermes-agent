@@ -21,7 +21,7 @@ The VPS runs two parallel Hermes installations that share system Python:
 | Profile | Repo | Venv |
 |---|---|---|
 | `default` (Kensei) | `~/repos/KenseiAgent` (custom fork, runtime) | `KenseiAgent/.venv` |
-| `moss`/`upstream` | `~/repos/hermes-agent-upstream` (vanilla upstream, PRs) | `hermes-agent-upstream/.venv` |
+| `moss`/`upstream` | `~/repos/hermes-agent-vanilla` (vanilla upstream, PRs) | `hermes-agent-vanilla/.venv` |
 
 When an agent switches from one to the other without cleaning up, the state corrupts:
 - `pip show hermes-agent` points to the wrong repo
@@ -59,7 +59,7 @@ cd ~/repos/KenseiAgent && git branch --show-current
 
 # 3. Both repos clean?
 cd ~/repos/KenseiAgent && git status --short
-cd ~/repos/hermes-agent-upstream && git status --short
+cd ~/repos/hermes-agent-vanilla && git status --short
 # Both should be clean (or have expected work)
 
 # 4. Profile matches repo?
@@ -113,11 +113,11 @@ Before ANY `git commit`, `git checkout -b`, or `git push`:
 2. `git branch --show-current` — confirms the branch
 3. `git status --short` — confirms the right work is tracked
 
-For upstream work (Mossy): branch from `origin/main`:
+For upstream work (Mossy): branch from `upstream/main`:
 ```bash
-cd ~/repos/hermes-agent-upstream
-git fetch origin
-git checkout -b fix/issue-XXXX origin/main
+cd ~/repos/hermes-agent-vanilla
+git fetch upstream
+git checkout -b fix/issue-XXXX upstream/main
 ```
 
 For Kensei work: branch from local `main`:

@@ -667,7 +667,7 @@ class TestExistingConfigPreserved:
         def boom(*_args, **_kwargs):
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(agent_import, "atomic_write_text", boom)
+        monkeypatch.setattr(agent_import, "atomic_yaml_write", boom)
         with pytest.raises(OSError):
             agent_import.dump_yaml_file(config_path, {"model": "replacement"})
 

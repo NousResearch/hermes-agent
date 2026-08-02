@@ -737,6 +737,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._pending_retain_ops: set[str] = set()
         self._pending_retain_ops_lock = threading.Lock()
         self._retain_ops_bank_id = ""
+        # Seconds between get_operation_status polls while waiting for server-
+        # side retain completion. Each poll is a server round trip, so this is
+        # deliberately coarser than the 0.05s local queue-drain poll: ~20 calls
+        # max over the default 10s budget instead of ~200.
+        self._RETAIN_OP_POLL_INTERVAL_S = 0.5
         # Legacy alias — older tests/callers reference _sync_thread directly.
         # Points at _writer_thread once the writer is running.
         self._sync_thread = None
@@ -1282,6 +1287,21 @@ class HindsightMemoryProvider(MemoryProvider):
         *deadline* is a ``time.monotonic()`` value (None = no bound). Completed
         ops are removed from the pending set as they finish so a later prefetch
         doesn't re-poll them.
+
+        Ops still pending when the deadline expires are DROPPED, not retained:
+        keeping them would make a permanently failing status endpoint (auth
+        error, endless 500s, server that loses ops without a 404) grow the
+        pending set forever and burn the full timeout on EVERY subsequent
+        prefetch — turning "bounded wait per prefetch" into unbounded
+        session-wide degradation (and, via prefetch()'s bounded join on the
+        reply path, a per-turn reply-latency penalty). Dropping trades a
+        possibly-stale recall NOW (identical to prefetch_waits_for_retain=False
+        behavior) for guaranteed liveness; the drop is logged at WARNING once
+        per prefetch so persistent server trouble is visible.
+
+        Status polls are spaced by _RETAIN_OP_POLL_INTERVAL_S (0.5s) — server
+        round trips per op are bounded (~20 over a 10s budget), unlike the
+        cheap 0.05s local queue-drain poll in _wait_for_retains_drained.
         """
         while True:
             with self._pending_retain_ops_lock:
@@ -1293,20 +1313,28 @@ class HindsightMemoryProvider(MemoryProvider):
                 return False
 
             done: set[str] = set()
+            expired = False
             for op_id in pending:
                 if self._shutting_down.is_set():
                     return False
                 if deadline is not None and time.monotonic() >= deadline:
-                    logger.debug(
-                        "Prefetch: server retain visibility timed out after %.1fs "
-                        "(%d op(s) still pending)",
-                        timeout, len(pending) - len(done),
-                    )
-                    with self._pending_retain_ops_lock:
-                        self._pending_retain_ops.difference_update(done)
-                    return False
+                    expired = True
+                    break
                 if self._is_retain_op_complete(bank_id, op_id):
                     done.add(op_id)
+
+            if expired:
+                with self._pending_retain_ops_lock:
+                    self._pending_retain_ops.difference_update(done)
+                    dropped = len(self._pending_retain_ops)
+                    self._pending_retain_ops.clear()
+                logger.warning(
+                    "Prefetch: server retain visibility timed out after %.1fs; "
+                    "dropping %d unresolved op(s) so later prefetches stay "
+                    "bounded (recall may miss the just-completed turn)",
+                    timeout, dropped,
+                )
+                return False
 
             with self._pending_retain_ops_lock:
                 self._pending_retain_ops.difference_update(done)
@@ -1314,8 +1342,17 @@ class HindsightMemoryProvider(MemoryProvider):
             if not still_pending:
                 return True
             if deadline is not None and time.monotonic() >= deadline:
+                with self._pending_retain_ops_lock:
+                    dropped = len(self._pending_retain_ops)
+                    self._pending_retain_ops.clear()
+                logger.warning(
+                    "Prefetch: server retain visibility timed out after %.1fs; "
+                    "dropping %d unresolved op(s) so later prefetches stay "
+                    "bounded (recall may miss the just-completed turn)",
+                    timeout, dropped,
+                )
                 return False
-            time.sleep(0.05)
+            time.sleep(self._RETAIN_OP_POLL_INTERVAL_S)
 
     def _writer_loop(self) -> None:
         """Drain the retain queue serially. Exits on sentinel.

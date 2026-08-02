@@ -36,6 +36,7 @@ from gateway.federation.federation_connection import FederationConnectionManager
 from gateway.federation.federation_consensus import FederationConsensus
 from gateway.federation.federation_relay import TaskExecutorRelay
 from gateway.federation.federation_discovery import FederationMDNS
+from gateway.federation.federation_collaboration import FederationMemorySync, FederationDistributedSearch
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,9 @@ class FederationAdapter:
         self._relay: Optional[TaskExecutorRelay] = None
         # Phase 5: mDNS Discovery
         self._mdns: Optional[FederationMDNS] = None
+        # Phase 7: Collaboration
+        self._memory_sync: Optional[FederationMemorySync] = None
+        self._distributed_search: Optional[FederationDistributedSearch] = None
 
         # Register default message handlers
         self._register_default_handlers()
@@ -101,6 +105,9 @@ class FederationAdapter:
         self._task_handlers[MessageType.PEER_LEAVE.value] = self._handle_peer_leave
         self._task_handlers[MessageType.PEER_PING.value] = self._handle_peer_ping
         self._task_handlers[MessageType.PEER_PONG.value] = self._handle_peer_pong
+        self._task_handlers[MessageType.MEMORY_SYNC.value] = self._handle_memory_sync
+        self._task_handlers[MessageType.SEARCH_QUERY.value] = self._handle_search_query
+        self._task_handlers[MessageType.SEARCH_RESULT.value] = self._handle_search_result
 
     # ----------------------------------------------------------------
     # Lifecycle
@@ -172,6 +179,19 @@ class FederationAdapter:
             )
             await self._mdns.start()
 
+        # Phase 7: Start collaboration layer
+        self._memory_sync = FederationMemorySync(
+            device_id=self.device_id,
+            adapter=self,
+        )
+        await self._memory_sync.start()
+
+        self._distributed_search = FederationDistributedSearch(
+            device_id=self.device_id,
+            adapter=self,
+        )
+        await self._distributed_search.start()
+
         # Announce ourselves
         await self._conn_manager.send(
             FedMessage.peer_join(
@@ -193,6 +213,10 @@ class FederationAdapter:
         self._running = False
         if self._mdns:
             await self._mdns.stop()
+        if self._memory_sync:
+            await self._memory_sync.stop()
+        if self._distributed_search:
+            await self._distributed_search.stop()
         if self._relay:
             await self._relay.stop()
         if self._conn_manager:
@@ -559,6 +583,75 @@ class FederationAdapter:
     # ----------------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------------
+
+
+    def _handle_memory_sync(self, msg: FedMessage) -> None:
+        """Handle MEMORY_SYNC message from peer."""
+        if self._memory_sync:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._memory_sync.handle_memory_sync(msg))
+            except RuntimeError:
+                pass
+
+    def _handle_search_query(self, msg: FedMessage) -> None:
+        """Handle SEARCH_QUERY from peer."""
+        if self._distributed_search:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._distributed_search.handle_search_query(msg))
+            except RuntimeError:
+                pass
+
+    def _handle_search_result(self, msg: FedMessage) -> None:
+        """Handle SEARCH_RESULT from peer."""
+        if self._distributed_search:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._distributed_search.handle_search_result(msg))
+            except RuntimeError:
+                pass
+
+    async def sync_memory(self, node_id: str, content: str, target: str = "memory") -> bool:
+        """Sync a memory entry to all peers."""
+        if not self._memory_sync:
+            return False
+        await self._memory_sync.on_local_memory_change(node_id, content, target)
+        return True
+
+    async def federated_search(
+        self, query: str, limit: int = 10, sort: str = "newest",
+        profile: Optional[str] = None,
+    ) -> list:
+        """Search across all federation peers."""
+        if not self._distributed_search:
+            return []
+        results = await self._distributed_search.search(query, limit, sort, profile)
+        return [
+            {
+                "device_id": r.device_id,
+                "session_id": r.session_id,
+                "title": r.session_title,
+                "snippet": r.snippet,
+                "score": r.score,
+            }
+            for r in results
+        ]
+
+    def get_memory_sync(self):
+        """Get memory sync instance."""
+        return self._memory_sync
+
+    def get_distributed_search(self):
+        """Get distributed search instance."""
+        return self._distributed_search
+
 
     def _get_local_ip(self) -> str:
         """Get local IP address for advertising."""

@@ -460,6 +460,14 @@ _FTS_CJK_TRIGGERS = (
 FTS_CJK_STALE_KEY = "fts_cjk_stale"
 
 
+# Durable breadcrumb for a base/trigram FTS index that was detached from the
+# canonical messages table after runtime corruption. While present, startup
+# must rebuild the complete index before reinstalling sync triggers: rows may
+# have been written while those triggers were absent, so merely recreating
+# them would preserve an unknown index gap.
+FTS_STALE_KEY = "fts_stale"
+
+
 # ── Legacy (v22 / inline-content) FTS DDL ──────────────────────────────
 # Used ONLY to keep an existing pre-v23 install's search working and its
 # triggers repairable UNTIL the user opts into `hermes db optimize`. This is

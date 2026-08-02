@@ -55,6 +55,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     DEFERRED_INDEX_SQL,
     FTS_CJK_STALE_KEY,
     FTS_SQL,
+    FTS_STALE_KEY,
     FTS_STORAGE_VERSION,
     FTS_TRIGRAM_SQL,
     LEGACY_FTS_SQL,
@@ -1875,6 +1876,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # incremental FTS merge cadence (see _merge_fts_incrementally).
         self._fts_usermerge_floor_applied = False
         self._fts_enabled = False
+        self._fts_stale = False
         self._trigram_available = False
         # CJK-bigram index (cjk_unicode61 loadable tokenizer). _fts_cjk_loaded:
         # extension present on the writer connection; _fts_cjk_available: the
@@ -2509,16 +2511,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     continue
                 # Corrupt FTS shadow tables make every write raise the
                 # malformed/corrupt error class through the FTS sync triggers
-                # while the canonical messages table is intact. The gateway
-                # session store has its own retry queue for transcript
-                # appends (#65637 salvage), but cron and CLI writers call
-                # SessionDB directly — without this, their writes hard-fail
-                # until the next process restart triggers the offline repair.
-                # Rebuild the FTS index in place (once per instance) via
-                # rebuild_fts() and retry the failed write immediately.
-                if not self._try_runtime_fts_rebuild(exc):
-                    raise
-                continue
+                # while the canonical messages table is intact. Recover here,
+                # at the shared persistence boundary, so every caller gets the
+                # same guarantee. First try the cheap in-place repair. If that
+                # one-shot path is unavailable or corruption recurs, detach the
+                # derived indexes and retry against the canonical tables.
+                if self._try_runtime_fts_rebuild(exc):
+                    continue
+                if self._enter_fts_fail_open(exc):
+                    continue
+                raise
             except sqlite3.Error as exc:
                 # Catch-all for builds that surface 'no more rows available'
                 # as InterfaceError (a sibling of DatabaseError, not a
@@ -2619,6 +2621,63 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         logger.warning(
             "state.db FTS indexes rebuilt in place (%d); retrying the failed write.",
             rebuilt,
+        )
+        return True
+
+    def _enter_fts_fail_open(self, exc: sqlite3.DatabaseError) -> bool:
+        """Detach corrupt FTS indexes so canonical writes can continue.
+
+        The stale breadcrumb and trigger removal commit atomically. Its
+        ordering is load-bearing: after triggers are absent, new canonical
+        rows create an index gap of unknown extent, so another process must
+        never reinstall the triggers without first rebuilding every row.
+        """
+        if not self._fts_enabled or not self._is_fts_write_corruption_error(exc):
+            return False
+
+        try:
+            with self._lock:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self._conn.execute(
+                        "INSERT INTO state_meta (key, value) VALUES (?, '1') "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (FTS_STALE_KEY,),
+                    )
+                    cjk_triggers_present = self._conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' "
+                        f"AND name IN ({','.join('?' for _ in _FTS_CJK_TRIGGERS)}) "
+                        "LIMIT 1",
+                        _FTS_CJK_TRIGGERS,
+                    ).fetchone()
+                    if cjk_triggers_present:
+                        self._conn.execute(
+                            "INSERT INTO state_meta (key, value) VALUES (?, '1') "
+                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            (FTS_CJK_STALE_KEY,),
+                        )
+                    self._drop_all_fts_triggers(self._conn.cursor())
+                    self._conn.commit()
+                except BaseException:
+                    self._conn.rollback()
+                    raise
+        except sqlite3.Error as detach_exc:
+            logger.error(
+                "Could not detach corrupt FTS indexes; canonical write still "
+                "cannot proceed: %s",
+                detach_exc,
+            )
+            return False
+
+        self._fts_stale = True
+        self._fts_enabled = False
+        self._trigram_available = False
+        self._fts_cjk_available = False
+        logger.error(
+            "state.db FTS indexes remain corrupt (%s); disabled FTS sync and "
+            "retrying the canonical write. Search temporarily uses LIKE until "
+            "a later SessionDB open rebuilds the indexes.",
+            exc,
         )
         return True
 

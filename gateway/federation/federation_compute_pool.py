@@ -273,6 +273,8 @@ class FederationComputePool:
                     chunk_idx += 1
 
         # Execute chunks in parallel
+        # Note: tasks is a local list built synchronously before any await;
+        # no race condition possible (single coroutine, no shared state).
         tasks = []
         for device_id, idx, chunk_data in chunk_assignments:
             chunk_id = f"{task_id}-{idx}"

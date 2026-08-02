@@ -152,15 +152,16 @@ class FederationConnectionManager:
     # Rate limiting
     # ----------------------------------------------------------------
 
-    def _check_rate_limit(self, ip: str) -> bool:
+    async def _check_rate_limit(self, ip: str) -> bool:
         now = time.time()
-        times = self._conn_times.setdefault(ip, [])
-        self._conn_times[ip] = [t for t in times if now - t < 60]
-        if len(self._conn_times[ip]) >= MAX_CONNECTIONS_PER_MINUTE:
-            logger.warning("Federation: rate limit exceeded for IP %s", ip)
-            return False
-        self._conn_times[ip].append(now)
-        return True
+        async with self._conn_times_lock:  # Phase 12: Race condition fix
+            times = self._conn_times.setdefault(ip, [])
+            self._conn_times[ip] = [t for t in times if now - t < 60]
+            if len(self._conn_times[ip]) >= MAX_CONNECTIONS_PER_MINUTE:
+                logger.warning("Federation: rate limit exceeded for IP %s", ip)
+                return False
+            self._conn_times[ip].append(now)
+            return True
 
     # ----------------------------------------------------------------
     # Lifecycle
@@ -296,7 +297,7 @@ class FederationConnectionManager:
                     ip = remote[0] if isinstance(remote, tuple) else str(remote)
 
                 # Rate limit
-                if not self._check_rate_limit(ip):
+                if not await self._check_rate_limit(ip):
                     await ws.close()
                     return
 

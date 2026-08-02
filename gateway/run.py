@@ -11964,7 +11964,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning(
                 "Session stall detected: session=%s idle=%.0fs "
                 "(timeout=%.0fs, ~%d min); pending inbound present "
-                "| last_activity=%s | provenance=%s",
+                "| last_activity=%s | provenance=%s "
+                "(agent.session_stall_timeout)",
                 session_key,
                 idle_seconds,
                 timeout_seconds,

@@ -944,21 +944,15 @@ def _termux_should_prefetch_update_check() -> bool:
 
 
 def _relative_time(ts) -> str:
-    """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
-    if not ts:
-        return "?"
-    delta = _time.time() - ts
-    if delta < 60:
-        return "just now"
-    if delta < 3600:
-        return f"{int(delta / 60)}m ago"
-    if delta < 86400:
-        return f"{int(delta / 3600)}h ago"
-    if delta < 172800:
-        return "yesterday"
-    if delta < 604800:
-        return f"{int(delta / 86400)}d ago"
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    """Format a timestamp as relative time (e.g., '2h ago', 'yesterday').
+
+    Thin wrapper kept for backward compatibility; the implementation lives
+    in :mod:`hermes_cli.timefmt` so lightweight consumers don't have to
+    import the whole CLI surface.
+    """
+    from hermes_cli.timefmt import relative_time
+
+    return relative_time(ts)
 
 
 def _has_any_provider_configured() -> bool:

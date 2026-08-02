@@ -65,9 +65,9 @@ def _format_iso_timestamp(value) -> str:
 
 def _format_relative_ts(ts: float) -> str:
     """Format an epoch timestamp as a short relative age for status output."""
-    from hermes_cli.main import _relative_time
+    from hermes_cli.timefmt import relative_time
 
-    return _relative_time(ts)
+    return relative_time(ts)
 
 
 def _configured_model_label(config: dict) -> str:

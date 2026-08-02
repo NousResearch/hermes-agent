@@ -1914,18 +1914,32 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # FTS capability flags normally come from writable schema
                 # initialisation. Probe existing virtual tables with SELECTs
                 # only so read-only search keeps its FTS and trigram paths.
-                cursor = self._conn.cursor()
-                self._fts_enabled = (
-                    self._fts_table_probe(cursor, "messages_fts") is True
-                )
-                if self._fts_enabled:
-                    self._trigram_available = (
-                        self._fts_table_probe(
-                            cursor,
-                            "messages_fts_trigram",
-                        )
-                        is True
+                # Close the connection on ANY probe failure (e.g. malformed
+                # schema raises DatabaseError, not the OperationalError the
+                # probe handles): the outer except re-raises without cleanup,
+                # and a leaked tracked connection blocks _backup_db_file's
+                # raw-copy for the rest of the process — the writable heal
+                # that follows would then repair WITHOUT its forensic backup.
+                try:
+                    cursor = self._conn.cursor()
+                    self._fts_enabled = (
+                        self._fts_table_probe(cursor, "messages_fts") is True
                     )
+                    if self._fts_enabled:
+                        self._trigram_available = (
+                            self._fts_table_probe(
+                                cursor,
+                                "messages_fts_trigram",
+                            )
+                            is True
+                        )
+                except BaseException:
+                    conn, self._conn = self._conn, None
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    raise
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)

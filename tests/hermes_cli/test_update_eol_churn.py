@@ -59,6 +59,19 @@ def _managed_repo(tmp_path: Path, files: dict[str, bytes]) -> Path:
     for name in files:
         (repo / name).unlink()
     _git(repo, "checkout", "--", ".")
+    # Deterministic dirtiness: whether `git diff` content-checks an entry (and
+    # so sees the CRLF churn) or trusts the stat cache depends on racy-git
+    # detection — entries whose mtime equals the index timestamp get content-
+    # compared, later ones read clean. On a fast runner a large checkout
+    # straddles that boundary nondeterministically (CI flake: 92/661/128 of
+    # 1200 dirty; also blocked #76745). Bump every worktree mtime past the
+    # index write so ALL entries are stat-stale and git must content-compare.
+    import os as _os
+    import time as _time
+
+    bumped = _time.time() + 5
+    for name in files:
+        _os.utime(repo / name, (bumped, bumped))
     return repo
 
 

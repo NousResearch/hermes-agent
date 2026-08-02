@@ -234,6 +234,26 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts[0]).toBe('partial answer continued')
   })
 
+  it('appends a distinct previewed final after a message.start reset instead of overwriting the interim', async () => {
+    await mountStream()
+    await start()
+    await interim('old interim text')
+    // A genuinely new turn begins — message.start resets interimBoundaryPending.
+    // Production ordering: mid-turn compaction-resume events do NOT include
+    // message.start (COMPACTION_RESUME_EVENT_TYPES in gateway-event.ts), and
+    // the TUI gateway emits message.complete BEFORE goal-followup starts
+    // (tui_gateway/server.py), so a previewed final arriving after the reset
+    // is a DISTINCT reply, not a rewrite of the interim. It must append its
+    // own bubble — never overwrite the old one (sweeper review on #76583).
+    await start()
+    await completePreviewed('totally new answer')
+
+    const texts = assistantMessages()
+    expect(texts).toContain('old interim text')
+    expect(texts).toContain('totally new answer')
+    expect(texts).toHaveLength(2)
+  })
+
   it('appends a genuinely different final as its own bubble (two real assistant segments)', async () => {
     await mountStream()
     await start()

@@ -431,6 +431,25 @@ class TestMaybeAutoTitle:
             maybe_auto_title(db, "sess-start-failure", "hello", history)
             assert called.wait(timeout=10), "auto-title retry never ran"
 
+    def test_skips_after_two_repeated_real_exchanges(self, tmp_path):
+        """Repeated user text still represents a separate completed turn."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-repeated-turn", source="cli")
+        db.set_session_title("sess-repeated-turn", "Existing title")
+        history = [
+            {"role": "user", "content": "repeat"},
+            {"role": "assistant", "content": "response 1"},
+            {"role": "user", "content": "repeat"},
+            {"role": "assistant", "content": "response 2"},
+            {"role": "user", "content": "repeat"},
+            {"role": "assistant", "content": "response 3"},
+        ]
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-repeated-turn", "repeat", history)
+            mock_auto.assert_not_called()
+        assert db.get_session_title("sess-repeated-turn") == "Existing title"
+
 
 class TestAutoTitleDuplicateHandling:
     """Duplicate auto-title handling and not-found hardening (#50537)."""

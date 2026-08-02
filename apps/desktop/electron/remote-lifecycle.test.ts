@@ -510,7 +510,10 @@ test('connect() respawns when the requested remote profile differs from the lock
   )
 
   assert.equal(result.reused, false)
-  assert.ok(ssh.calls.some(c => /setsid/.test(c)), 'profile mismatch must spawn a fresh dashboard')
+  assert.ok(
+    ssh.calls.some(c => /setsid/.test(c)),
+    'profile mismatch must spawn a fresh dashboard'
+  )
 })
 
 test('connect() respawns when the lockfile hermesPath differs from the resolved path', async () => {

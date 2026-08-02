@@ -257,7 +257,10 @@ def check_cron_errors() -> dict | None:
     jobs = data.get("jobs", [])
     failed = [j for j in jobs if j.get("enabled") and j.get("last_status") == "error"]
     if failed:
-        lines = [f"`{j.get('name')}` — last_status error" for j in failed[:5]]
+        # The title and body must describe the same authoritative set.  A prior
+        # five-row display cap produced alerts titled "7 cron(s) failed" while
+        # silently omitting two jobs from the body.
+        lines = [f"`{j.get('name')}` — last_status error" for j in failed]
         return {
             "title": f"{len(failed)} cron(s) failed last run",
             "body": "Failed crons:\n" + "\n".join(lines),

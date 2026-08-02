@@ -9,6 +9,7 @@ Verifies:
 - import-safe under a fake HERMES_HOME.
 """
 import importlib.util
+import json
 import os
 import sqlite3
 import sys
@@ -162,3 +163,33 @@ def test_dry_run_main_no_log_write(monkeypatch, fake_home):
     if logboard.exists():
         logs = list(logboard.glob("system-health-*.json"))
         assert logs == [], f"dry-run wrote log files: {logs}"
+
+
+def test_cron_error_body_contains_every_failed_job(monkeypatch, fake_home):
+    """The count in a cron-error alert must match every listed failure."""
+    mod = _load_module(monkeypatch, fake_home)
+    jobs_file = fake_home / "cron" / "jobs.json"
+    jobs_file.parent.mkdir(parents=True)
+    jobs_file.write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {"name": f"failed-{i}", "enabled": True, "last_status": "error"}
+                    for i in range(7)
+                ]
+                + [
+                    {"name": "paused-error", "enabled": False, "last_status": "error"},
+                    {"name": "healthy", "enabled": True, "last_status": "ok"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "JOBS_FILE", jobs_file)
+
+    finding = mod.check_cron_errors()
+
+    assert finding["title"] == "7 cron(s) failed last run"
+    assert finding["body"].count("last_status error") == 7
+    assert "paused-error" not in finding["body"]
+    assert "healthy" not in finding["body"]

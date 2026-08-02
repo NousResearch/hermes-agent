@@ -294,8 +294,9 @@ def iter_hermes_node_dirs(home: Path | None = None) -> list[Path]:
     dirs = [root / "node"]
     bin_dir = root / "node" / "bin"
     # NOTE: keep this ordering in sync with hermesManagedNodePathEntries() in
-    # apps/desktop/electron/main.cjs — the Electron main process is Node and
-    # cannot import this module, so the platform-ordering rule is mirrored there.
+    # apps/desktop/electron/backend-env.ts — the Electron main process is Node
+    # and cannot import this module, so the platform-ordering rule is mirrored
+    # there (once; main.ts imports it rather than keeping its own copy).
     if sys.platform == "win32":
         return dirs + [bin_dir]
     return [bin_dir] + dirs

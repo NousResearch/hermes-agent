@@ -528,6 +528,41 @@ function Ensure-NodeExeOnPath {
     return $true
 }
 
+# Put the Hermes-managed Node dir at the FRONT of the persisted User PATH.
+#
+# Appending is not enough: it leaves a pre-existing system Node ahead of the
+# bundled one in every new shell, so anything launched without a curated
+# environment (a standalone hermes-setup.exe run, a user typing `npm`) silently
+# resolves the wrong Node.  Bundled must win.
+#
+# Move-to-front rather than add-if-missing, because installs made by an older
+# install.ps1 already have this dir in User PATH -- at the tail.  An
+# add-if-missing check sees it present and leaves the broken ordering in place
+# forever, so the very users the ordering bug hurt would never be repaired.
+#
+# Unrelated entries keep their relative order, including empty segments (a
+# trailing ';' is legal and common in a real User PATH; Install-Git's splitting
+# preserves them too, so this must not quietly rewrite them).  Duplicate
+# occurrences of the managed dir collapse into the single leading entry.
+# PowerShell's -ne is case-insensitive for strings, which is the right
+# comparison on Windows.  Persists only when the resulting string differs, so
+# an already-correct PATH costs one registry read and no write.
+function Set-ManagedNodeFirstOnUserPath {
+    param([string]$NodeDir)
+
+    if (-not $NodeDir) { return }
+
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $items = if ($userPath) { @($userPath -split ";") } else { @() }
+
+    $rest = @($items | Where-Object { $_ -ne $NodeDir })
+    $updated = (@($NodeDir) + $rest) -join ";"
+
+    if ($updated -ne $userPath) {
+        [Environment]::SetEnvironmentVariable("Path", $updated, "User")
+    }
+}
+
 # Re-discover uv without re-installing it.  Cross-process stage drivers
 # (the desktop GUI's onboarding wizard, CI step-runners) invoke each stage
 # in a fresh powershell process, so $script:UvCmd set by Install-Uv in a
@@ -1090,6 +1125,7 @@ function Test-Node {
     if ((Test-Path $managedNode) -and (Test-NodeVersionOk (& $managedNode --version))) {
         $version = & $managedNode --version
         $env:Path = "$HermesHome\node;$env:Path"
+        Set-ManagedNodeFirstOnUserPath "$HermesHome\node"
         Write-Success "Node.js $version found (Hermes-managed)"
         $script:HasNode = $true
         return $true
@@ -1132,20 +1168,10 @@ function Test-Node {
 
                 # Persist to User PATH so fresh shells (and future stages
                 # in cross-process driver mode) see it.  Matches the
-                # pattern Install-Git uses for PortableGit.
-                #
-                # PREPEND, don't append.  Appending leaves a pre-existing
-                # system Node ahead of the bundled one in every new shell,
-                # so anything launched without a curated environment (a
-                # standalone hermes-setup.exe run, a user typing `npm`)
-                # silently resolves the wrong Node.  Bundled must win.
-                $nodeDir = "$HermesHome\node"
-                $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-                $userPathItems = if ($userPath) { $userPath -split ";" } else { @() }
-                if ($userPathItems -notcontains $nodeDir) {
-                    $userPathItems = @($nodeDir) + $userPathItems
-                    [Environment]::SetEnvironmentVariable("Path", ($userPathItems -join ";"), "User")
-                }
+                # pattern Install-Git uses for PortableGit.  See
+                # Set-ManagedNodeFirstOnUserPath for why this is a
+                # move-to-front and not an add-if-missing.
+                Set-ManagedNodeFirstOnUserPath "$HermesHome\node"
 
                 $version = & "$HermesHome\node\node.exe" --version
                 Write-Success "Node.js $version installed to $HermesHome\node\ (portable, user-scoped)"

@@ -1938,12 +1938,18 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             env_node = os.environ.get("HERMES_NODE")
             if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
                 return env_node
-        path = shutil.which(bin)
+        # find_node_executable() prefers the managed $HERMES_HOME/node tree,
+        # which is not on PATH — a bare which() would declare "node not found"
+        # and exit on an install whose only Node is the one Hermes installed,
+        # and would pick a system Node over the managed one when both exist.
+        from hermes_constants import find_node_executable
+
+        path = find_node_executable(bin)
         if not path and bin == "node":
             try:
                 from hermes_cli.dep_ensure import ensure_dependency
                 if ensure_dependency("node"):
-                    path = shutil.which("node")
+                    path = find_node_executable("node")
             except Exception:
                 pass
         if not path:

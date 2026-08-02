@@ -1127,6 +1127,34 @@ def _prepend_hermes_bin_dir(existing_path: str) -> str:
     return sep.join([bin_dir, *entries])
 
 
+def _managed_runtime_path_entries() -> list[str]:
+    """Return existing Hermes-managed runtime dirs for the terminal subshell PATH.
+
+    The terminal tool spawns a subshell whose PATH is the agent process's PATH
+    plus ``_SANE_PATH``. Neither carries the runtimes Hermes installs for
+    itself, so on a machine where Hermes provisioned its own toolchain a
+    command the agent runs resolves a system copy instead — or nothing at all:
+
+    - ``$HERMES_HOME/node`` (+ ``/bin``) — installed to satisfy the desktop and
+      browser toolchain. ``tools/browser_tool.py`` already does this for its own
+      subprocesses; the agent's shell deserves the same.
+    - ``$HERMES_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
+      and nothing has ever put that directory on PATH, so an install whose only
+      uv is the managed one looks uv-less to both the agent and the model.
+
+    Resolved per call rather than cached in a module constant because
+    ``get_hermes_home()`` is profile-scoped and a managed tree can appear
+    mid-process (``heal_hermes_managed_node``, a first browser install).
+    """
+    try:
+        from hermes_constants import get_hermes_home, iter_hermes_node_dirs
+
+        candidates = [*iter_hermes_node_dirs(), get_hermes_home() / "bin"]
+        return [str(d) for d in candidates if d.is_dir()]
+    except Exception:
+        return []
+
+
 def _append_missing_sane_path_entries(existing_path: str) -> str:
     """Return a normalised POSIX PATH with missing sane entries appended.
 
@@ -1144,6 +1172,11 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
     - **Duplicates are collapsed** (first occurrence wins), so a caller PATH
       that already contains repeats is not propagated verbatim.
 
+    Hermes-managed runtime dirs are appended alongside the sane entries, not
+    prepended: a tool the user deliberately put on their own PATH still wins,
+    and the managed one only fills the gap where there would otherwise be
+    nothing.
+
     For a well-formed PATH (no empties, no duplicates) the leading segment is
     byte-identical to the input and ordering is preserved; only the missing
     sane entries are appended. On Windows this is a no-op passthrough (the
@@ -1153,6 +1186,9 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
         return existing_path
 
     sane_entries = [entry for entry in _SANE_PATH.split(":") if entry]
+    sane_entries.extend(
+        entry for entry in _managed_runtime_path_entries() if entry not in sane_entries
+    )
     if not existing_path:
         return ":".join(sane_entries)
 

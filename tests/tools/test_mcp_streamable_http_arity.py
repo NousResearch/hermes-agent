@@ -123,3 +123,92 @@ def test_the_session_streams_are_the_first_two_yielded():
     asyncio.run(_drive())
 
     assert passed["args"][:2] == (read, write)
+
+
+def test_the_seeded_protocol_header_matches_the_handshake_the_client_sends():
+    """Header and body must agree about which revision this connection speaks.
+
+    `ClientSession.initialize()` sends `LATEST_HANDSHAKE_VERSION`; from
+    2026-07-28 onward `LATEST_PROTOCOL_VERSION` names a revision that replaced
+    the handshake with a per-request envelope. Seeding the header from the
+    latter advertised a revision the body does not speak, and a conforming
+    server answered `params._meta is missing the required envelope key(s)` --
+    observed against a live MCP endpoint, not hypothesised.
+    """
+    from tools import mcp_tool
+
+    try:
+        from mcp.client.session import LATEST_HANDSHAKE_VERSION as sdk_handshake
+    except ImportError:
+        pytest.skip("SDK predates the handshake/protocol version split")
+
+    assert mcp_tool.LATEST_HANDSHAKE_VERSION == sdk_handshake
+
+
+def test_the_seeded_header_is_the_handshake_version_on_the_wire():
+    """Asserted through the header dict `_run_http` actually builds."""
+    from unittest.mock import patch as _patch
+
+    from tools.mcp_tool import MCPServerTask, LATEST_HANDSHAKE_VERSION
+
+    server = MCPServerTask("remote")
+    seen: dict = {}
+
+    class _CapturingAsyncClient(_DummyAsyncClient):
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+            super().__init__(**kwargs)
+
+    async def _discover_tools(self):
+        self._shutdown_event.set()
+
+    async def _drive():
+        with _patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+             _patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+             _patch_sdk_async_client(_CapturingAsyncClient), \
+             _patch("tools.mcp_tool.streamable_http_client",
+                    return_value=_transport_yielding(MagicMock(), MagicMock())), \
+             _patch("tools.mcp_tool.ClientSession", _DummySession), \
+             _patch.object(MCPServerTask, "_discover_tools", _discover_tools):
+            await server._run_http({"url": "https://example.com/mcp"})
+
+    asyncio.run(_drive())
+
+    headers = {k.lower(): v for k, v in (seen.get("headers") or {}).items()}
+    assert headers.get("mcp-protocol-version") == LATEST_HANDSHAKE_VERSION
+
+
+def test_an_explicit_protocol_header_still_wins():
+    """The override exists so a server needing a specific revision can have it."""
+    from unittest.mock import patch as _patch
+
+    from tools.mcp_tool import MCPServerTask
+
+    server = MCPServerTask("remote")
+    seen: dict = {}
+
+    class _CapturingAsyncClient(_DummyAsyncClient):
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+            super().__init__(**kwargs)
+
+    async def _discover_tools(self):
+        self._shutdown_event.set()
+
+    async def _drive():
+        with _patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+             _patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+             _patch_sdk_async_client(_CapturingAsyncClient), \
+             _patch("tools.mcp_tool.streamable_http_client",
+                    return_value=_transport_yielding(MagicMock(), MagicMock())), \
+             _patch("tools.mcp_tool.ClientSession", _DummySession), \
+             _patch.object(MCPServerTask, "_discover_tools", _discover_tools):
+            await server._run_http({
+                "url": "https://example.com/mcp",
+                "headers": {"MCP-Protocol-Version": "2025-06-18"},
+            })
+
+    asyncio.run(_drive())
+
+    headers = {k.lower(): v for k, v in (seen.get("headers") or {}).items()}
+    assert headers.get("mcp-protocol-version") == "2025-06-18"

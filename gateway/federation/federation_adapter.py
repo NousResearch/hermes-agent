@@ -85,7 +85,7 @@ class FederationAdapter:
         # Phase 5: mDNS Discovery
         self._mdns: Optional[FederationMDNS] = None
 
-        # Register default task handlers
+        # Register default message handlers
         self._register_default_handlers()
 
     def _register_default_handlers(self) -> None:
@@ -125,6 +125,9 @@ class FederationAdapter:
             device_id=self.device_id,
             auth_token=self.config.auth_token,
             ws_port=self.config.ws_port,
+            tls_cert=self.config.tls_cert,
+            tls_key=self.config.tls_key,
+            ip_whitelist=self.config.ip_whitelist,
             on_message=self._on_message,
             on_peer_join=self._on_peer_join,
             on_peer_leave=self._on_peer_leave,
@@ -350,6 +353,8 @@ class FederationAdapter:
                 device_id=peer.device_id,
                 hostname=peer.hostname,
                 ws_url=peer.ws_url,
+                cpu_cores=peer.cpu_cores,
+                memory_gb=peer.memory_gb,
             )
             self._conn_manager.register_peer(info)
 
@@ -573,6 +578,10 @@ def create_federation_adapter(
     device_id: Optional[str] = None,
     ws_port: int = 18765,
     auth_token: Optional[str] = None,
+    require_auth: bool = True,
+    tls_cert: Optional[str] = None,
+    tls_key: Optional[str] = None,
+    ip_whitelist: Optional[List[str]] = None,
     peers: Optional[List[str]] = None,
     db_path: Optional[str] = None,
     offline_threshold_s: int = 30,
@@ -585,6 +594,10 @@ def create_federation_adapter(
         device_id=device_id,
         ws_port=ws_port,
         auth_token=auth_token,
+        require_auth=require_auth,
+        tls_cert=tls_cert,
+        tls_key=tls_key,
+        ip_whitelist=ip_whitelist or [],
         peers=peers or [],
         db_path=db_path,
         offline_threshold_s=offline_threshold_s,

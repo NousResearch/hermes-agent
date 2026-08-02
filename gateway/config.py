@@ -721,20 +721,27 @@ DEFAULT_STREAMING_CURSOR: str = " ▉"
 class FederationConfig:
     """P2P federation configuration (#76660).
 
-    Supports two modes:
+    Supports three modes:
     - ``shared_db``: File-synced SQLite (v1, 2-3 devices, ~60s latency)
-    - ``lan``: WebSocket real-time (v2, N devices, <1s latency)
-    - ``auto``: mDNS discovery + WebSocket (future)
+    - ``lan``: WebSocket real-time with manual peer config (v2, N devices)
+    - ``auto``: mDNS zero-config discovery + WebSocket (v3, plug-and-play)
     """
 
     enabled: bool = False
     mode: str = "shared_db"  # shared_db | lan | auto
     # Device identifier (auto-detect if not set)
     device_id: Optional[str] = None
-    # WebSocket port for lan mode
+    # WebSocket port for lan/auto mode
     ws_port: int = 18765
-    # Auth token for peer verification (optional but recommended)
+    # Auth token for peer verification (required for production)
     auth_token: Optional[str] = None
+    # Require authentication (default True — reject unauthenticated peers)
+    require_auth: bool = True
+    # TLS certificate paths for wss:// (optional, self-signed OK for LAN)
+    tls_cert: Optional[str] = None
+    tls_key: Optional[str] = None
+    # IP whitelist (optional — restrict which IPs can connect)
+    ip_whitelist: List[str] = field(default_factory=list)
     # For 'lan' mode: manually configured peer WebSocket URLs
     peers: List[str] = field(default_factory=list)
     # Shared SQLite database path (shared_db mode, iCloud Drive default on macOS).
@@ -750,12 +757,19 @@ class FederationConfig:
         peers = data.get("peers", [])
         if not isinstance(peers, list):
             peers = []
+        ip_whitelist = data.get("ip_whitelist", [])
+        if not isinstance(ip_whitelist, list):
+            ip_whitelist = []
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             mode=data.get("mode", "shared_db"),
             device_id=data.get("device_id"),
             ws_port=int(data.get("ws_port", 18765)),
             auth_token=data.get("auth_token"),
+            require_auth=_coerce_bool(data.get("require_auth"), True),
+            tls_cert=data.get("tls_cert"),
+            tls_key=data.get("tls_key"),
+            ip_whitelist=ip_whitelist,
             peers=peers,
             db_path=data.get("db_path"),
             offline_threshold_s=int(data.get("offline_threshold_s", 30)),

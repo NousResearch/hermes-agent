@@ -130,7 +130,7 @@ class FedMessage:
         signing_input = f"{self.msg_id}:{self.msg_type}:{self.timestamp}:{payload_str}"
         self.signature = hashlib.sha256(
             f"{signing_input}:{auth_token}".encode()
-        ).hexdigest()[:16]
+        ).hexdigest()  # Full 64-char signature (no truncation)
 
     def verify(self, auth_token: str) -> bool:
         """Verify message signature."""
@@ -140,7 +140,7 @@ class FedMessage:
         signing_input = f"{self.msg_id}:{self.msg_type}:{self.timestamp}:{payload_str}"
         expected = hashlib.sha256(
             f"{signing_input}:{auth_token}".encode()
-        ).hexdigest()[:16]
+        ).hexdigest()
         return expected == self.signature
 
     def is_expired(self, ttl: int = MESSAGE_TTL_SECONDS) -> bool:

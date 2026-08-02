@@ -448,3 +448,38 @@ class TestClaudeSonnet5InCuratedLists:
         assert "claude-sonnet-5" in _PROVIDER_MODELS["anthropic"]
 
 
+
+
+class TestFormatPricePerMtok:
+    """_format_price_per_mtok: sub-cent prices must not collapse to 'free'/'$0.00'."""
+
+    def test_standard_prices_keep_two_decimals(self):
+        from hermes_cli.models import _format_price_per_mtok
+        assert _format_price_per_mtok("0.000003") == "$3.00"
+        assert _format_price_per_mtok("0.00003") == "$30.00"
+        assert _format_price_per_mtok("0.00000015") == "$0.15"
+        assert _format_price_per_mtok("0.00018") == "$180.00"
+
+    def test_zero_is_free(self):
+        from hermes_cli.models import _format_price_per_mtok
+        assert _format_price_per_mtok("0") == "free"
+        assert _format_price_per_mtok("0.0") == "free"
+
+    def test_invalid_is_question_mark(self):
+        from hermes_cli.models import _format_price_per_mtok
+        assert _format_price_per_mtok("garbage") == "?"
+        assert _format_price_per_mtok(None) == "?"
+
+    def test_sub_cent_price_extends_precision(self):
+        from hermes_cli.models import _format_price_per_mtok
+        # DeepSeek V4 Flash 0731 promo cache-hit rate: $0.0018/Mtok.
+        assert _format_price_per_mtok("0.0000000018") == "$0.0018"
+        assert _format_price_per_mtok("0.000000001") == "$0.001"
+        assert _format_price_per_mtok("0.0000000049") == "$0.0049"
+        assert _format_price_per_mtok("0.000000005") == "$0.005"
+        # Tiny but non-zero must never render as free or $0.00.
+        assert _format_price_per_mtok("0.00000000001") == "$0.00001"
+
+    def test_one_cent_boundary_stays_two_decimals(self):
+        from hermes_cli.models import _format_price_per_mtok
+        assert _format_price_per_mtok("0.00000001") == "$0.01"

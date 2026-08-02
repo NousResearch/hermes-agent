@@ -183,7 +183,9 @@ def main():
 
                 trim_memory(reason="slash worker command completion")
             except Exception as exc:
-                logger.warning(
+                # debug, not warning — a persistent failure would repeat on
+                # every slash command forever.
+                logger.debug(
                     "slash worker memory trim failed: %s: %s",
                     type(exc).__name__,
                     exc,

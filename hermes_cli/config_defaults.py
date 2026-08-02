@@ -2861,13 +2861,15 @@ DEFAULT_CONFIG = {
             # Seconds to reuse a fresh disk/memory cache entry before contacting
             # Bitwarden again. 0 disables normal fresh-cache reuse.
             "cache_ttl_seconds": 300,
-            # Optional encrypted last-good fallback for network/timeout outages.
-            # When enabled, successful BWS fetches write AES-GCM encrypted cache
-            # material under ~/.hermes/cache/. If a later startup cannot reach
-            # Bitwarden due to NETWORK/TIMEOUT, Hermes may use this encrypted
-            # cache for up to max_stale_seconds. Auth failures do not fall back.
+            # Encrypted-only disk cache.  Enabled by default: BWS values are
+            # persisted ONLY as AES-GCM ciphertext under ~/.hermes/cache/,
+            # never plaintext.  A legacy plaintext bws_cache.json from an
+            # older Hermes is re-encrypted and removed on first read.
+            # max_stale_seconds: on NETWORK/TIMEOUT failures, use the
+            # last-good encrypted cache for up to this many seconds.  Auth
+            # failures never fall back.
             "encrypted_cache": {
-                "enabled": False,
+                "enabled": True,
                 "max_stale_seconds": 0,
             },
             # When True, BSM values overwrite existing env vars.  Default

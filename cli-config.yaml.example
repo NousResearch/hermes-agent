@@ -818,6 +818,15 @@ agent:
   # the turn (see gateway_timeout). 0 = disable. Default 300.
   # session_stall_timeout: 300
 
+  # Related in-agent compression timeouts (they live under the top-level
+  # compression: block, shown here for discoverability next to the stall
+  # watchdog they complement — a hung compression is a common stall cause):
+  # compression:
+  #   context_timeout_seconds: 120          # inactivity budget for in-agent
+  #                                         # compress_context (0 = disable)
+  #   context_total_ceiling_seconds: 600    # absolute cap on the pre-commit
+  #                                         # wait even while tokens stream
+
   # Graceful drain timeout for gateway stop/restart (seconds).
   # Default 0 = no drain: a restart interrupts in-flight agents immediately,
   # cleans up, and exits. Set a positive value only if you want a grace

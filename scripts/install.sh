@@ -780,22 +780,20 @@ check_git() {
     exit 1
 }
 
-# The desktop build runs Vite ^8, which refuses to start on Node outside
-# `^20.19 || >=22.12` — older Node lacks `node:util.styleText`, so `vite build`
-# crashes with a SyntaxError that surfaces only as the opaque "Build desktop
-# app … exit code 1" install failure. That toolchain floor is the real
-# constraint; do NOT raise it past what a dependency actually demands, or every
-# user on a working Node gets their toolchain replaced for nothing. Returns 0
-# when the given `node --version` string clears the floor; anything below it is
-# replaced with the Hermes-managed Node $NODE_VERSION.
+# The dependency tree's real Node floor is >=22.22.0, set by react-router 8.3.0
+# (`engines.node`), with Vite ^8 next at `^20.19 || >=22.12`. Keep this in sync
+# with the root package.json — a gate looser than the manifest lets an install
+# proceed to a `npm ci` that then dies with EBADENGINE, and a gate stricter than
+# the manifest replaces a working user toolchain for nothing. Returns 0 when the
+# given `node --version` string clears the floor; anything below it is replaced
+# with the Hermes-managed Node $NODE_VERSION.
 node_satisfies_build() {
     local ver="${1#v}"
     local major="${ver%%.*}"
     local minor="${ver#*.}"; minor="${minor%%.*}"
     case "$major" in ''|*[!0-9]*) return 1 ;; esac
     case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
-    if [ "$major" -eq 20 ] && [ "$minor" -ge 19 ]; then return 0; fi
-    if [ "$major" -ge 22 ] && { [ "$major" -gt 22 ] || [ "$minor" -ge 12 ]; }; then return 0; fi
+    if [ "$major" -ge 22 ] && { [ "$major" -gt 22 ] || [ "$minor" -ge 22 ]; }; then return 0; fi
     return 1
 }
 

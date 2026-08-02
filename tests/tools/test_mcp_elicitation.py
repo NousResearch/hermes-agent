@@ -282,3 +282,51 @@ class TestElicitationHandlerContextBridge:
             result = asyncio.run(handler(context=None, params=params))
 
         assert result.action == "decline"
+
+
+class TestRequestedSchemaFieldName:
+    """The requested schema must be read off the *real* SDK model.
+
+    Every other test in this file builds a duck-typed ``SimpleNamespace``
+    stand-in for the params object. That keeps them cheap, but it means none
+    of them can catch the handler reading a field name the SDK model does not
+    actually have -- the stand-in simply has whatever name the test wrote.
+
+    The SDK spells this field ``requestedSchema`` on mcp 1.x and
+    ``requested_schema`` on 2.0 (which renamed model fields to snake_case and
+    kept camelCase only as a serialization alias, which pydantic does not
+    expose to attribute access). Constructing with the camelCase spelling
+    works on both -- 2.0 accepts it as the alias -- so this test pins the
+    behaviour to the real model on whichever SDK is installed.
+    """
+
+    def test_real_sdk_params_schema_reaches_the_consent_description(self):
+        from mcp.types import ElicitRequestFormParams
+
+        params = ElicitRequestFormParams(
+            message="authorize a payment of $0.50",
+            requestedSchema={
+                "type": "object",
+                "properties": {
+                    "card_number": {
+                        "type": "string",
+                        "description": "card to charge",
+                    },
+                },
+            },
+        )
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        captured: dict = {}
+
+        def _capture(*args, **kwargs):
+            captured["description"] = kwargs.get("description") or (
+                args[1] if len(args) > 1 else ""
+            )
+            return "decline"
+
+        with patch("tools.approval.request_elicitation_consent", _capture):
+            asyncio.run(handler(context=None, params=params))
+
+        # An empty schema renders the generic "Approval requested by ..."
+        # fallback, so the field name is what proves the schema was read.
+        assert "card_number" in (captured.get("description") or ""), captured

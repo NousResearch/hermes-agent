@@ -1430,3 +1430,35 @@ def test_async_batch_block_surfaces_resolved_child_toolsets():
     # resolved toolset list, exposing the mismatch to the parent.
     toolset_line = text.split("Toolsets available:")[1].split("\n")[0]
     assert "file" not in toolset_line
+
+
+@pytest.mark.parametrize("status", ["interrupted", "timeout", "error"])
+def test_async_batch_block_surfaces_toolsets_on_synthetic_results(status):
+    """The resolved-toolsets diagnostic must survive the synthetic result entries
+    too (interrupted / timed-out / errored children), not just successful ones —
+    those are exactly the runs where a capability mismatch is most worth seeing.
+    Regression for the per-subagent guarantee gap noted on #63887: fabricated
+    entries used to omit ``toolsets`` so the formatter dropped the line for them.
+    """
+    from tools.process_registry import format_process_notification
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-xyz",
+        "is_batch": True,
+        "goals": ["Patch the config file and verify the change"],
+        "results": [
+            {
+                "task_index": 0,
+                "status": status,
+                "summary": None,
+                "error": "child did not finish",
+                "toolsets": ["todo", "web"],
+            },
+        ],
+        "role": "leaf",
+        "model": "deepseek-v4-flash",
+    }
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "Toolsets available: todo, web" in text

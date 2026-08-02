@@ -577,18 +577,32 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     return None
 
 
-def format_directory_for_display() -> str:
-    """Format the channel directory as a human-readable list for the model."""
-    directory = load_directory()
-    platforms = directory.get("platforms", {})
+def format_directory_for_display(platforms: Optional[Dict[str, Any]] = None) -> str:
+    """Format the channel directory as a human-readable list for the model.
 
-    if not any(platforms.values()):
+    ``platforms`` overrides the on-disk directory when provided (used by
+    ``hermes send --list`` to merge in configured-but-undiscovered
+    platforms). Platforms present with an empty channel list are rendered
+    with a "(no channels discovered yet)" hint instead of being hidden —
+    a configured platform is a valid send target even before discovery.
+    """
+    if platforms is None:
+        directory = load_directory()
+        platforms = directory.get("platforms", {})
+
+    if not platforms:
         return "No messaging platforms connected or no channels discovered yet."
 
     lines = ["Available messaging targets:\n"]
 
     for plat_name, channels in sorted(platforms.items()):
         if not channels:
+            lines.append(f"{plat_name.title()}:")
+            lines.append(
+                f"  (no channels discovered yet — send directly with "
+                f"{plat_name}:<chat_id>, or bare '{plat_name}' for the home channel)"
+            )
+            lines.append("")
             continue
 
         # Group Discord channels by guild

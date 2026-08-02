@@ -337,6 +337,28 @@ def test_whatsapp_live_allowlist_keeps_explicit_config_over_env(monkeypatch):
     assert adapter._is_dm_intake_allowed("15550000003") is False
 
 
+def test_whatsapp_explicit_empty_allow_from_blocks_env_grant(monkeypatch):
+    """allow_from: [] is present config — must not fall through to env grants."""
+    from gateway.config import PlatformConfig
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000002")
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "dm_policy": "allowlist",
+                "allow_from": [],
+            },
+        )
+    )
+
+    assert adapter._dm_allowlist_source == "config"
+    assert adapter._allow_from == set()
+    assert adapter._is_dm_intake_allowed("15550000002") is False
+    assert adapter._is_dm_allowed("15550000002") is False
+
+
 def test_whatsapp_live_allowlist_rereads_env_when_env_seeded(monkeypatch):
     """Env-seeded adapters still pick up pairing allowlist mutations live."""
     from gateway.config import PlatformConfig

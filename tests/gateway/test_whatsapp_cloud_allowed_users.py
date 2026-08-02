@@ -103,6 +103,25 @@ def test_explicit_config_beats_cloud_env_on_live_checks(monkeypatch):
     assert adapter._is_dm_allowed("15550000004") is False
 
 
+def test_explicit_empty_allow_from_blocks_cloud_env_grants(monkeypatch):
+    """allow_from: [] is present config — conflicting cloud env must not authorize."""
+    adapter = _build_adapter(
+        monkeypatch,
+        {
+            "WHATSAPP_CLOUD_ALLOW_FROM": "15550000002",
+            "WHATSAPP_CLOUD_ALLOWED_USERS": "15550000003",
+        },
+        extra={"dm_policy": "allowlist", "allow_from": []},
+    )
+
+    assert adapter._dm_allowlist_source == "config"
+    assert adapter._allow_from == set()
+    assert adapter._is_dm_allowed("15550000002") is False
+    assert adapter._is_dm_allowed("15550000003") is False
+    assert adapter._is_dm_intake_allowed("15550000002") is False
+    assert adapter._is_dm_intake_allowed("15550000003") is False
+
+
 def test_cloud_allowed_users_live_reread_when_env_seeded(monkeypatch):
     adapter = _build_adapter(
         monkeypatch,

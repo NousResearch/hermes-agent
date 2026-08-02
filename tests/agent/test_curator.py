@@ -525,6 +525,42 @@ def test_curator_does_not_instruct_model_to_pin():
 
 
 
+def test_curator_prompt_covers_every_read_before_write_guarded_action():
+    """The review prompt must name every action the read-before-write guard
+    protects.
+
+    ``_background_review_read_before_write_guard`` refuses a write when the
+    target was not loaded via ``skill_view`` in the same review turn. The
+    curator's forked reviewer only knows to do that if the prompt says so —
+    a guard the prompt never mentions is a silently jammed write channel,
+    not a safety net. This test fails if a new guarded action is added to
+    ``skill_manager_tool`` without teaching the prompt about it.
+    """
+    import inspect
+    import re
+
+    from agent.curator import CURATOR_REVIEW_PROMPT
+    from tools import skill_manager_tool
+
+    known_actions = {
+        "create", "edit", "patch", "write_file", "remove_file", "delete",
+    }
+    source = inspect.getsource(skill_manager_tool)
+    guarded = set()
+    for call in source.split("_background_review_read_before_write_guard(")[1:]:
+        guarded |= known_actions.intersection(re.findall(r'"([^"]+)"', call[:200]))
+
+    assert guarded, "no guarded actions found — did the guard get renamed?"
+
+    prompt = CURATOR_REVIEW_PROMPT
+    assert "skill_view" in prompt
+    missing = [a for a in sorted(guarded) if f"action={a}" not in prompt]
+    assert not missing, (
+        "read-before-write guards these actions but the curator prompt never "
+        f"tells the reviewer to read first for: {missing}"
+    )
+
+
 def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
     from hermes_cli import curator as cli
     skills_dir = curator_env["home"] / "skills"

@@ -26,6 +26,7 @@ import {
   createOrOpenPr,
   generateCommitMessage,
   openReview,
+  openReviewForPath,
   pushChanges,
   refreshReview,
   refreshShipInfo,
@@ -49,6 +50,18 @@ vi.mock('./coding-status', () => ({ refreshRepoStatus: vi.fn() }))
 
 function file(path: string, over: Partial<HermesReviewFile> = {}): HermesReviewFile {
   return { path, status: 'modified', staged: false, added: 1, removed: 0, ...over } as HermesReviewFile
+}
+
+function deferred<T>() {
+  let reject!: (reason?: unknown) => void
+  let resolve!: (value: T | PromiseLike<T>) => void
+
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+
+  return { promise, reject, resolve }
 }
 
 type ReviewStub = Record<string, ReturnType<typeof vi.fn>>
@@ -98,6 +111,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.clearAllTimers()
+  vi.useRealTimers()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
@@ -172,6 +187,78 @@ describe('refreshReview', () => {
     expect($reviewIsRepo.get()).toBe(true)
     expect($reviewLoading.get()).toBe(false)
   })
+
+  it('keeps a new repository loading when the previous request rejects during the debounce gap', async () => {
+    vi.useFakeTimers()
+
+    const repoA = deferred<{ files: HermesReviewFile[] }>()
+    const repoB = deferred<{ files: HermesReviewFile[] }>()
+
+    const review = stubReview({
+      list: vi.fn((cwd: string) => (cwd === '/repo-a' ? repoA.promise : repoB.promise))
+    })
+
+    $reviewOpen.set(true)
+    $currentCwd.set('/repo-a')
+
+    const staleRefresh = refreshReview()
+    expect($reviewLoading.get()).toBe(true)
+
+    $currentCwd.set('/repo-b')
+    expect($reviewLoading.get()).toBe(true)
+
+    repoA.reject(new Error('repo A disappeared'))
+    await staleRefresh
+
+    expect($reviewLoading.get()).toBe(true)
+    expect($reviewFiles.get()).toEqual([])
+
+    await vi.advanceTimersByTimeAsync(100)
+    expect(review.list).toHaveBeenLastCalledWith('/repo-b', 'uncommitted', null)
+
+    repoB.resolve({ files: [file('b.ts')] })
+    await vi.runAllTimersAsync()
+    await Promise.resolve()
+
+    expect($reviewFiles.get().map(entry => entry.path)).toEqual(['b.ts'])
+    expect($reviewLoading.get()).toBe(false)
+  })
+
+  it('does not let an older list response clear a newer direct selection', async () => {
+    const pendingList = deferred<{ files: HermesReviewFile[] }>()
+    stubReview({ list: vi.fn(() => pendingList.promise), diff: vi.fn(async () => 'new diff') })
+    $reviewOpen.set(true)
+
+    const staleRefresh = refreshReview()
+    await selectReviewFile(file('b.ts'))
+
+    pendingList.resolve({ files: [file('a.ts')] })
+    await staleRefresh
+
+    expect($reviewSelectedPath.get()).toBe('b.ts')
+    expect($reviewDiff.get()).toBe('new diff')
+  })
+
+  it('does not let an older finally clear a newer in-flight refresh spinner', async () => {
+    const first = deferred<{ files: HermesReviewFile[] }>()
+    const second = deferred<{ files: HermesReviewFile[] }>()
+    let call = 0
+    stubReview({ list: vi.fn(() => (++call === 1 ? first.promise : second.promise)) })
+    $reviewOpen.set(true)
+
+    const staleRefresh = refreshReview()
+    const currentRefresh = refreshReview()
+
+    first.reject(new Error('older request failed'))
+    await staleRefresh
+    expect($reviewLoading.get()).toBe(true)
+
+    second.resolve({ files: [file('current.ts')] })
+    await currentRefresh
+
+    expect($reviewFiles.get().map(entry => entry.path)).toEqual(['current.ts'])
+    expect($reviewLoading.get()).toBe(false)
+  })
 })
 
 describe('$reviewMaxChurn', () => {
@@ -213,6 +300,25 @@ describe('selectReviewFile / clearReviewSelection', () => {
 
     expect($reviewSelectedPath.get()).toBe('a.ts')
     expect($reviewDiff.get()).toBeNull()
+  })
+
+  it('does not let an older same-path diff overwrite a newer selection request', async () => {
+    const first = deferred<string>()
+    const second = deferred<string>()
+    let call = 0
+    stubReview({ diff: vi.fn(() => (++call === 1 ? first.promise : second.promise)) })
+
+    const staleSelection = selectReviewFile(file('a.ts'))
+    const currentSelection = selectReviewFile(file('a.ts'))
+
+    second.resolve('current diff')
+    await currentSelection
+    first.resolve('stale diff')
+    await staleSelection
+
+    expect($reviewSelectedPath.get()).toBe('a.ts')
+    expect($reviewDiff.get()).toBe('current diff')
+    expect($reviewDiffLoading.get()).toBe(false)
   })
 
   it('clears path, diff and loading', () => {
@@ -293,6 +399,27 @@ describe('view state', () => {
 
     expect($reviewScopeCwd.get()).toBe('/tile')
     expect(review.list).not.toHaveBeenCalled()
+  })
+
+  it('keeps openReviewForPath ownership when a debounced refresh was already pending', async () => {
+    vi.useFakeTimers()
+    const directList = deferred<{ files: HermesReviewFile[] }>()
+    const review = stubReview({ list: vi.fn(() => directList.promise), diff: vi.fn(async () => 'target diff') })
+    $reviewOpen.set(true)
+
+    // A repository move arms the debounce before the direct file-open intent.
+    $currentCwd.set('/repo-next')
+    const openTarget = openReviewForPath('/repo-next/target.ts')
+
+    expect(review.list).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(100)
+
+    directList.resolve({ files: [file('target.ts')] })
+    await openTarget
+
+    expect(review.list).toHaveBeenCalledTimes(1)
+    expect($reviewSelectedPath.get()).toBe('target.ts')
+    expect($reviewDiff.get()).toBe('target diff')
   })
 })
 

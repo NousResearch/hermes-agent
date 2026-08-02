@@ -4218,6 +4218,21 @@ class PluginManager:
         of its parent packages (see ``_resolve_module_source``); only
         the first 8192 chars are scanned, mirroring the directory-plugin
         heuristic. Unresolvable or non-Python modules stay ``standalone``.
+
+        Activation contract: this method only decides whether the general
+        manager imports the module — it does not activate anything.
+        Memory and model providers activate through their own systems
+        (``memory.provider`` config via ``plugins/memory`` directory
+        discovery; ``providers/`` lazy directory discovery). Both are
+        directory-based today, so a pip-only provider is recorded for
+        introspection but not activatable until those systems gain
+        entry-point discovery (tracked for memory: #40644). That is not
+        a regression: pre-change such a provider was equally
+        unactivatable — it was merely imported first, at full cost
+        (e.g. fastembed -> onnxruntime), and logged
+        ``no register() function``. Classification removes the cost
+        without changing the activation surface, and is the prerequisite
+        that prevents double-import once entry-point activation lands.
         """
         try:
             module_name = ep.value.split(":", 1)[0].strip()

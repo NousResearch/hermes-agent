@@ -576,6 +576,100 @@ class TestPluginLoading:
         )
         assert entry.module is None
         assert "fakeprovider" not in sys.modules
+        # Routing contract: classification records the manifest but does
+        # not fabricate activation. providers/ discovery is directory-based
+        # today, so a pip-only provider is not activatable via
+        # get_provider_profile() — and it must not leak into sys.modules
+        # through the providers path either (no double import).
+        from providers import get_provider_profile
+
+        assert get_provider_profile("fakeprovider") is None
+        assert "fakeprovider" not in sys.modules
+
+    def test_entrypoint_duplicate_does_not_block_directory_provider_activation(
+        self, tmp_path, monkeypatch
+    ):
+        """The mnemosyne shape: a pip entry point duplicating a same-name
+        directory provider.
+
+        The pip copy is classified ``exclusive`` (recorded, never
+        imported); the directory copy must still activate through
+        memory-provider discovery, exactly once. Classification must not
+        interfere with the real activation path.
+        """
+        from importlib.metadata import EntryPoint
+        from types import SimpleNamespace
+
+        # Same-name pip entry point (the duplicate).
+        ep_dir = tmp_path / "ep_modules"
+        ep_dir.mkdir()
+        (ep_dir / "mempalace_dup.py").write_text(
+            "class MemPalaceProvider:\n"
+            "    pass\n"
+            "def register_memory_provider(name, cls):\n"
+            "    pass\n"
+        )
+        monkeypatch.syspath_prepend(str(ep_dir))
+        ep = EntryPoint(
+            name="mempalace_dup",
+            value="mempalace_dup:register",
+            group=ENTRY_POINTS_GROUP,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.importlib.metadata.entry_points",
+            lambda: SimpleNamespace(
+                select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
+            ),
+        )
+
+        # Same-name directory provider under $HERMES_HOME/plugins/.
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
+        provider_dir = plugins_dir / "mempalace_dup"
+        provider_dir.mkdir(parents=True)
+        (provider_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class MyProvider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return 'mempalace_dup'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        (provider_dir / "plugin.yaml").write_text(
+            "name: mempalace_dup\ndescription: dup\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["mempalace_dup"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir", lambda: plugins_dir
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        # Pip duplicate: classified exclusive, recorded, never imported.
+        entry = mgr._plugins["mempalace_dup"]
+        assert entry.manifest.kind == "exclusive", (
+            f"Expected auto-coerced kind='exclusive', got {entry.manifest.kind}"
+        )
+        assert entry.module is None
+        assert "mempalace_dup" not in sys.modules
+
+        # Directory copy still activates through memory-provider discovery,
+        # exactly once.
+        from plugins.memory import discover_memory_providers, load_memory_provider
+
+        names = [n for n, _, _ in discover_memory_providers()]
+        assert names.count("mempalace_dup") == 1
+        p = load_memory_provider("mempalace_dup")
+        assert p is not None
+        assert p.name == "mempalace_dup"
+        assert p.is_available()
 
     def test_entrypoint_dotted_name_never_imports_parent_package(
         self, tmp_path, monkeypatch

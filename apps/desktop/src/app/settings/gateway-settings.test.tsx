@@ -110,10 +110,12 @@ describe('GatewaySettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save for next restart' }))
 
     await waitFor(() =>
-      expect(saveConnectionConfig).toHaveBeenCalledWith(expect.objectContaining({
-        profile: 'work',
-        sshRemoteProfile: ''
-      }))
+      expect(saveConnectionConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: 'work',
+          sshRemoteProfile: ''
+        })
+      )
     )
   })
 })

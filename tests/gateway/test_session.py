@@ -742,6 +742,90 @@ class TestWhatsAppSessionKeyConsistency:
         assert build_session_key(alice) == build_session_key(bob)
 
 
+    def test_discord_prospective_thread_initiates_and_continues_one_session(self):
+        """Discord auto-thread continuity: a channel-initiating message (no
+        thread_id, but a connector-supplied prospective_thread_id) and the later
+        follow-ups that arrive IN that thread (real thread_id == the prospective
+        id) must resolve to ONE session — "initiate in channel, continue in
+        thread". This is the fix for every-thread-after-the-first never getting
+        an auto-title/rename (staging 2026-08-02)."""
+        # The channel-initiating message: no thread yet, connector says it will
+        # be threaded into thread id "msg-100" (== the message id).
+        initiating = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="cthulhu",
+            prospective_thread_id="msg-100",
+        )
+        # A follow-up that actually arrives inside that thread.
+        follow_up = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="thread",
+            thread_id="msg-100",
+            user_id="cthulhu",
+        )
+        key_init = build_session_key(initiating)
+        key_follow = build_session_key(follow_up)
+        assert key_init.endswith(":msg-100")
+        assert key_init == key_follow
+
+    def test_discord_distinct_prospective_threads_are_distinct_sessions(self):
+        """Two different channel messages each initiate their OWN thread/session,
+        so each gets its own auto-title/rename (the reported bug: only the first
+        thread per channel was ever named)."""
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="cthulhu",
+            prospective_thread_id="msg-100",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="cthulhu",
+            prospective_thread_id="msg-200",
+        )
+        assert build_session_key(first) != build_session_key(second)
+        assert build_session_key(first).endswith(":msg-100")
+        assert build_session_key(second).endswith(":msg-200")
+
+    def test_real_thread_id_wins_over_prospective(self):
+        """A real thread_id always takes precedence over prospective_thread_id
+        (they normally match; if both are somehow set, the real one wins)."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="thread",
+            thread_id="real-thread",
+            prospective_thread_id="ignored",
+            user_id="cthulhu",
+        )
+        assert build_session_key(source).endswith(":real-thread")
+
+    def test_prospective_thread_shares_across_participants(self):
+        """A prospective-thread session is shared across participants, same as a
+        real thread (thread sessions are not per-user by default)."""
+        alice = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="alice",
+            prospective_thread_id="msg-100",
+        )
+        bob = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="bob",
+            prospective_thread_id="msg-100",
+        )
+        assert build_session_key(alice) == build_session_key(bob)
+
+
     def test_non_thread_group_sessions_still_isolated_per_user(self):
         """Regular group messages (no thread_id) remain per-user by default."""
         alice = SessionSource(

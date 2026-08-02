@@ -157,7 +157,7 @@ export function TerminalFontSetting() {
             <span className="mr-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
               {copy.terminalFontPreview}
             </span>
-            <span>  ~/project  git:main  ❯</span>
+            <span> ~/project git:main ❯</span>
           </div>
         </div>
       }

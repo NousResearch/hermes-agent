@@ -201,7 +201,11 @@ import {
   sandboxPreflight
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
-import { resolveStagedUpdaterBinary, spawnUpdaterProcess } from './updater-process'
+import {
+  resolveStagedUpdaterBinary,
+  spawnUpdaterProcess,
+  stagedUpdaterSupportsPrewrittenMarker
+} from './updater-process'
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
@@ -3003,8 +3007,20 @@ async function applyUpdates(opts = {}) {
     // the venv. By writing the marker ourselves the renderer's
     // waitForUpdateToFinish() gate sees a live update and parks instead.
     // The updater overwrites this with its own PID later; same format.
-    if (Number.isInteger(child.pid)) {
+    //
+    // SKIPPED for pre-#74782 staged updaters: those have no self-PID
+    // exclusion, so they read this very marker as a foreign live owner and
+    // abort with "Another Hermes update is already running (PID <itself>)" —
+    // an unbreakable loop, because the update that would replace the stale
+    // binary is the one being refused. Losing the anti-respawn hardening is
+    // strictly better than never updating again, and the updater still writes
+    // its own marker moments later.
+    if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
       writeUpdateMarker(HERMES_HOME, child.pid)
+    } else if (Number.isInteger(child.pid)) {
+      rememberLog(
+        `[updates] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
+      )
     }
 
     rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
@@ -3091,9 +3107,15 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   // Same marker pre-write as applyUpdates — see comment there. The recovery
   // hand-off has the same window where the renderer can respawn a backend
-  // before the updater writes its own marker.
-  if (Number.isInteger(child.pid)) {
+  // before the updater writes its own marker, and the same stale-updater
+  // exclusion: a pre-#74782 binary would refuse its own pre-written claim and
+  // strand the very recovery meant to heal the install.
+  if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
     writeUpdateMarker(HERMES_HOME, child.pid)
+  } else if (Number.isInteger(child.pid)) {
+    rememberLog(
+      `[bootstrap] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
+    )
   }
 
   rememberLog(

@@ -77,6 +77,8 @@ const refreshListeners = new Set<WidgetRefreshListener>()
 const refreshByFile = new Map<string, Set<WidgetRefreshListener>>()
 /** File key whose register() is currently executing (if any). */
 let currentImportFileKey: null | string = null
+/** Listeners collected during the in-flight register(); promoted only on success. */
+let refreshIncoming: null | Set<WidgetRefreshListener> = null
 
 const disposeRefreshForFile = (fileKey: string): void => {
   const owned = refreshByFile.get(fileKey)
@@ -90,6 +92,18 @@ const disposeRefreshForFile = (fileKey: string): void => {
   }
 
   refreshByFile.delete(fileKey)
+}
+
+const disposeRefreshIncoming = (): void => {
+  if (!refreshIncoming) {
+    return
+  }
+
+  for (const listener of refreshIncoming) {
+    refreshListeners.delete(listener)
+  }
+
+  refreshIncoming = null
 }
 
 const enableSource = (fileKey: string, appIds: string[] = []): void => {
@@ -112,20 +126,16 @@ export function onWidgetRefresh(listener: WidgetRefreshListener): () => void {
   refreshListeners.add(listener)
 
   const owner = currentImportFileKey
+  const incoming = refreshIncoming
 
-  if (owner) {
-    let owned = refreshByFile.get(owner)
-
-    if (!owned) {
-      owned = new Set()
-      refreshByFile.set(owner, owned)
-    }
-
-    owned.add(listener)
+  if (incoming) {
+    incoming.add(listener)
   }
 
   return () => {
     refreshListeners.delete(listener)
+    incoming?.delete(listener)
+    refreshIncoming?.delete(listener)
 
     if (owner) {
       refreshByFile.get(owner)?.delete(listener)
@@ -223,9 +233,19 @@ async function importWidgetModule(absPath: string): Promise<{ default?: (sdk: Wi
   }
 }
 
+export interface ImportRegisterOptions {
+  /** Clear unload marks for this source after a successful register (explicit load/reload). */
+  reenable?: boolean
+}
+
 /** Import + register one file. Keeps prior apps docked on successful replace;
  *  restores prior definitions if register() fails after a partial apply. */
-async function importRegister(absPath: string, fileKey: string, result: UserWidgetLoadResult): Promise<void> {
+async function importRegister(
+  absPath: string,
+  fileKey: string,
+  result: UserWidgetLoadResult,
+  options: ImportRegisterOptions = {}
+): Promise<void> {
   const previous = fileApps.get(fileKey) ?? []
   const previousDefs = new Map<string, WidgetApp<never>>()
 
@@ -259,13 +279,12 @@ async function importRegister(absPath: string, fileKey: string, result: UserWidg
     return
   }
 
-  // Drop prior refresh ownership for this source only after the module parsed.
-  disposeRefreshForFile(fileKey)
-
   const registeredIds: string[] = []
   const priorImportOwner = currentImportFileKey
+  const priorIncoming = refreshIncoming
 
   currentImportFileKey = fileKey
+  refreshIncoming = new Set()
 
   try {
     const sdk: WidgetSdk = {
@@ -279,6 +298,10 @@ async function importRegister(absPath: string, fileKey: string, result: UserWidg
 
     mod.default(sdk)
   } catch (error) {
+    disposeRefreshIncoming()
+    refreshIncoming = priorIncoming
+    currentImportFileKey = priorImportOwner
+
     // Roll back any ids this register touched and restore prior definitions.
     for (const id of new Set(registeredIds)) {
       if (previousDefs.has(id)) {
@@ -301,15 +324,27 @@ async function importRegister(absPath: string, fileKey: string, result: UserWidg
     recordParentLifecycle(`user widget ${fileKey} failed to load: ${message}`)
 
     return
-  } finally {
-    currentImportFileKey = priorImportOwner
   }
 
-  // Successful register: re-enable this source and strip disabled flags.
-  enableSource(fileKey, registeredIds)
+  currentImportFileKey = priorImportOwner
+
+  // Successful register: drop prior owned refresh listeners, keep the new set.
+  const incoming = refreshIncoming
+
+  disposeRefreshForFile(fileKey)
+
+  if (incoming && incoming.size) {
+    refreshByFile.set(fileKey, incoming)
+  }
+
+  refreshIncoming = priorIncoming
+
+  // Explicit load/reload clears unload marks only after success.
+  if (options.reenable) {
+    enableSource(fileKey, registeredIds)
+  }
 
   // Drop apps this file no longer defines (id rename / multi-app shrink).
-  // Do not dispose refresh here — new listeners were just bound by register().
   for (const id of previous) {
     if (registeredIds.includes(id) || claimedElsewhere(fileKey, id)) {
       continue
@@ -445,9 +480,8 @@ export async function reloadWidgetFile(target: string, dir = widgetsDir()): Prom
     return emitLoadResult(result)
   }
 
-  // Explicit reload re-enables a previously unloaded source.
-  enableSource(fileKey, fileApps.get(fileKey) ?? [])
-  await importRegister(abs, fileKey, result)
+  // Explicit reload re-enables a previously unloaded source after success.
+  await importRegister(abs, fileKey, result, { reenable: true })
 
   return emitLoadResult(result)
 }
@@ -471,8 +505,7 @@ export async function loadWidgetPath(path: string): Promise<UserWidgetLoadResult
     return emitLoadResult(result)
   }
 
-  enableSource(abs, fileApps.get(abs) ?? [])
-  await importRegister(abs, abs, result)
+  await importRegister(abs, abs, result, { reenable: true })
 
   return emitLoadResult(result)
 }
@@ -528,7 +561,7 @@ export async function loadUserWidgets(dir = widgetsDir()): Promise<UserWidgetLoa
     // No directory: fall through so previously-loaded files still delete-sync.
   }
 
-  for (const [file, ids] of fileApps) {
+  for (const [file, ids] of [...fileApps.entries()]) {
     // External loads use absolute keys and persist until `/widgets unload`.
     if (isAbsolute(file)) {
       continue
@@ -558,6 +591,13 @@ export async function loadUserWidgets(dir = widgetsDir()): Promise<UserWidgetLoa
     }
 
     disabledFiles.delete(file)
+
+    for (const [id, source] of [...disabledAppSource.entries()]) {
+      if (source === file) {
+        disabledAppIds.delete(id)
+        disabledAppSource.delete(id)
+      }
+    }
   }
 
   for (const file of files) {

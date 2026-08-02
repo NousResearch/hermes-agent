@@ -28,6 +28,7 @@ Usage:
 import os
 import re
 import difflib
+import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
@@ -178,6 +179,11 @@ class WriteResult:
     """Result from writing a file."""
     bytes_written: int = 0
     dirs_created: bool = False
+    # True when the on-disk sha256 matched the intended content after the
+    # write (post-write verification). None when the backend couldn't
+    # verify (no sha256sum). A mismatch never reaches the caller as a
+    # flag — it becomes a hard error.
+    verified: Optional[bool] = None
     lint: Optional[Dict[str, Any]] = None
     # Semantic diagnostics from the LSP layer, when applicable.  Kept in
     # its own field (not folded into ``lint``) so the model and any
@@ -1567,6 +1573,33 @@ class ShellFileOperations(FileOperations):
         except ValueError:
             bytes_written = len(content.encode('utf-8'))
 
+        # Post-write content verification (cheap, one shell call): compare
+        # the on-disk sha256 to the intended content's hash. Production
+        # mining shows models re-reading files right after writing them to
+        # confirm persistence (154 verify-reads in a 400k-msg window) —
+        # an explicit verified flag makes that turn unnecessary, and a
+        # mismatch is surfaced as a hard error instead of silent corruption
+        # (mirrors patch_replace's post-write verification).
+        content_verified: Optional[bool] = None
+        try:
+            hash_cmd = f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null"
+            hash_result = self._exec(hash_cmd)
+            if hash_result.exit_code == 0 and hash_result.stdout.strip():
+                disk_sha = hash_result.stdout.strip().split()[0]
+                expected_sha = hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()
+                content_verified = disk_sha == expected_sha
+                if not content_verified:
+                    return WriteResult(
+                        error=(
+                            f"Post-write verification failed for {path}: on-disk "
+                            "content hash differs from the intended write. The "
+                            "write did not persist correctly — re-read the file "
+                            "and retry."
+                        )
+                    )
+        except Exception:
+            content_verified = None
+
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
 
@@ -1587,6 +1620,7 @@ class ShellFileOperations(FileOperations):
         return WriteResult(
             bytes_written=bytes_written,
             dirs_created=dirs_created,
+            verified=content_verified,
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
         )

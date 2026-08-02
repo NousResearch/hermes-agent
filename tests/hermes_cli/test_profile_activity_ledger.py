@@ -116,13 +116,41 @@ def test_feature_flag_defaults_false_and_reads_nested_config(monkeypatch):
     assert pal.is_enabled() is True
 
 
-def test_record_event_if_enabled_is_noop_when_disabled(tmp_path, monkeypatch):
+def test_record_event_if_enabled_noop_when_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_cli import profile_activity_ledger as pal
 
     monkeypatch.setattr(pal, "is_enabled", lambda cfg=None: False)
     assert pal.record_event_if_enabled(source="test", event_type="noop") is None
     assert not pal.ledger_db_path().exists()
+
+
+def test_record_event_if_enabled_normalises_producer_metadata(tmp_path, monkeypatch):
+    """Legacy producer metadata must reach the append-only ledger safely."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli import profile_activity_ledger as pal
+
+    monkeypatch.setattr(pal, "is_enabled", lambda cfg=None: True)
+    event_id = pal.record_event_if_enabled(
+        source="test",
+        event_type="delivery_error",
+        profile="kensei",
+        severity="error",
+        correlation_id="job-123",
+        idempotency_key="event-123",
+        payload={"detail": "offline"},
+    )
+
+    assert event_id == "event-123"
+    events = pal.query_events(event_types=["delivery_error"])
+    assert len(events) == 1
+    assert events[0]["event_id"] == "event-123"
+    assert events[0]["actor_profile"] == "kensei"
+    assert events[0]["payload"] == {
+        "correlation_id": "job-123",
+        "detail": "offline",
+        "severity": "error",
+    }
 
 
 # ── P05 Batch 1: synthetic profile event round-trip tests ────────────────────

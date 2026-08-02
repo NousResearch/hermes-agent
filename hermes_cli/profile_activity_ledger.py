@@ -307,9 +307,16 @@ def record_event_if_enabled(*, cfg: Optional[dict[str, Any]] = None, **kwargs: A
     if profile is not None and kwargs.get("actor_profile") is None:
         kwargs["actor_profile"] = profile
     severity = kwargs.pop("severity", None)
-    if severity is not None:
+    correlation_id = kwargs.pop("correlation_id", None)
+    idempotency_key = kwargs.pop("idempotency_key", None)
+    if idempotency_key is not None:
+        kwargs.setdefault("event_id", idempotency_key)
+    if severity is not None or correlation_id is not None:
         payload = dict(kwargs.get("payload") or {})
-        payload.setdefault("severity", severity)
+        if severity is not None:
+            payload.setdefault("severity", severity)
+        if correlation_id is not None:
+            payload.setdefault("correlation_id", correlation_id)
         kwargs["payload"] = payload
     try:
         return append_event(**kwargs)

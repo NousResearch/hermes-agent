@@ -6081,13 +6081,62 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
         return False
     if normalized in _LOCAL_SERVER_ALIASES:
         return True  # the custom branch applies the /v1 tail only when it still sees the alias
+    # #76602 — two independent lookups, each guarded by its own try/except so a partial
+    # catalog-load failure in either path doesn't suppress the other. A user-defined
+    # ``providers:`` entry keeps its name alongside an explicit base_url so the named-custom
+    # branch resolves the entry's key/transport instead of the anonymous ``custom`` downgrade
+    # (which sends ``no-key-required`` and 401s on auth-required endpoints).
+    if _builtin_provider_present(normalized):
+        return True
+    if _named_custom_provider_present(normalized):
+        return True
+    return False
+
+
+def _builtin_provider_present(name: str) -> bool:
+    """Look up *name* in the built-in provider registry, returning False
+    (not raising) when the catalog fails to load.
+
+    Used by ``_preserve_provider_with_base_url`` so a built-in lookup
+    exception cannot suppress the parallel user-defined provider lookup
+    (#76602).
+    """
     try:
         from hermes_cli.providers import get_provider
-        return get_provider(normalized) is not None
-    except Exception:  # keep provider-backed routes safe when the catalog can't load
-        return normalized in {
-            "anthropic", "copilot", "copilot-acp", "minimax-oauth", "nous", "openai-codex", "qwen-oauth", "xai-oauth",
+
+        return get_provider(name) is not None
+    except Exception:
+        # Keep the high-risk provider-backed routes safe even if provider
+        # catalog loading is unavailable during early import/test paths.
+        return name in {
+            "anthropic",
+            "copilot",
+            "copilot-acp",
+            "minimax-oauth",
+            "nous",
+            "openai-codex",
+            "qwen-oauth",
+            "xai-oauth",
         }
+
+
+def _named_custom_provider_present(name: str) -> bool:
+    """Look up *name* in the user-defined ``providers:`` section of
+    config.yaml, returning False when the config is unavailable or
+    fails to load.
+
+    Used by ``_preserve_provider_with_base_url`` so a user-defined
+    provider remains preserved even when the built-in registry raises
+    (parallel lookup; each side fails independently — #76602).
+    """
+    try:
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+
+        return _get_named_custom_provider(name) is not None
+    except Exception:
+        # Config not loaded yet (early import paths, tests) — fail closed:
+        # never widen True just because the import / load failed.
+        return False
 
 
 def _resolve_task_provider_model(

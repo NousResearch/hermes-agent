@@ -387,7 +387,19 @@ def _slack_tools_loaded() -> bool:
     except Exception:
         pass
 
-    if not (os.environ.get("SLACK_BOT_TOKEN") or "").strip():
+    # Presence check through the profile secret scope: under multiplex the
+    # process env may carry another profile's token (Slack pattern for the
+    # unscoped default-profile path).
+    try:
+        from agent.secret_scope import UnscopedSecretError, get_secret
+
+        try:
+            _slack_token = get_secret("SLACK_BOT_TOKEN") or ""
+        except UnscopedSecretError:
+            _slack_token = os.environ.get("SLACK_BOT_TOKEN") or ""
+    except Exception:
+        _slack_token = os.environ.get("SLACK_BOT_TOKEN") or ""
+    if not _slack_token.strip():
         return False
     try:
         from hermes_cli.config import load_config

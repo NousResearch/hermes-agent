@@ -19,6 +19,16 @@ The contract pinned here: reads borrow from a BOUNDED pool, connections are
 returned and reused, surplus connections are closed rather than dropped, and
 ``close()`` actually closes them from whatever thread it runs on.
 
+Bounded means bounded at PEAK, not merely at rest. Pooling returns behind a
+``maxsize`` LifoQueue while opening unconditionally on a miss still lets a
+burst of N simultaneous readers on a cold pool open N descriptors before
+closing the surplus -- which is the exact shape of the production incident,
+since the burst that exhausts the pool is the burst that exhausts the fd
+table. Peak is held down by a permit acquired before the open and released
+after the close; past the ceiling readers degrade to the locked writer
+connection. Tests that join their workers before counting cannot see any of
+this, so the peak assertions use a barrier.
+
 These assert on the pool/registry counts, never on ``lsof``: SQLite's unix VFS
 parks a closed descriptor on a per-inode reuse list while any connection still
 holds POSIX locks on that inode, so raw descriptor counts lag the real
@@ -58,7 +68,14 @@ def _read(db):
 
 @pytest.mark.requires_wal
 def test_read_pool_is_bounded_across_many_threads(db):
-    """150 short-lived reader threads must not pin 150 connections."""
+    """150 short-lived reader threads must not pin 150 connections.
+
+    NOTE: this measures the pool AT REST -- every worker is joined before the
+    count is taken, so by construction it cannot observe how many connections
+    were open simultaneously. It is a real assertion about accumulation and a
+    non-assertion about peak. See
+    test_peak_live_connections_bounded_under_simultaneous_burst for the peak.
+    """
     maxsize = db._read_pool.maxsize
     assert maxsize > 0, "read pool must be bounded"
 
@@ -225,3 +242,145 @@ def test_fallback_to_locked_writer_when_read_conn_unavailable(db, monkeypatch):
     monkeypatch.setattr(db, "_checkout_read_conn", lambda: None)
     assert db.get_session("s1")["id"] == "s1"
     assert db.search_messages("graphiti", limit=5)
+
+
+@pytest.mark.requires_wal
+def test_peak_live_connections_bounded_under_simultaneous_burst(db):
+    """N readers checked out AT THE SAME INSTANT must not open N connections.
+
+    This is the assertion the join-then-count test above cannot make. A
+    LifoQueue with a maxsize bounds how many connections are RETURNED, not how
+    many are OPEN: with an open-on-miss checkout, 64 readers arriving on a cold
+    pool opened 64 descriptors and only then closed 56 of them on release.
+    Bounded at rest, unbounded at peak -- and EMFILE is a peak-instant
+    condition, so the process could still wedge exactly as it did in
+    production.
+
+    The barrier is the whole point: every worker holds its connection until all
+    of them have checked out, so the count below IS the simultaneous peak
+    rather than a sample of it.
+    """
+    from hermes_state import _READ_POOL_MAX
+
+    n = 64
+    assert n > _READ_POOL_MAX, "burst must exceed the ceiling to test anything"
+
+    ready = threading.Barrier(n + 1)
+    release = threading.Event()
+    checked_out = []
+    fell_back = []
+    lock = threading.Lock()
+
+    def worker():
+        conn = db._checkout_read_conn()
+        with lock:
+            (checked_out if conn is not None else fell_back).append(conn)
+        ready.wait(timeout=30)      # everyone is now holding whatever they got
+        release.wait(timeout=30)
+        if conn is not None:
+            db._close_read_conn(conn)
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+
+    ready.wait(timeout=30)
+    # ---- the instant every worker is simultaneously checked out ----
+    peak_live = _live_count(db.db_path)
+    peak_checked_out = len(checked_out)
+    release.set()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert peak_checked_out <= _READ_POOL_MAX, (
+        f"{peak_checked_out} connections checked out at once; the ceiling is "
+        f"{_READ_POOL_MAX}. Peak is unbounded -- the pool bounds returns, not opens."
+    )
+    # +1 for the writer connection SessionDB always holds.
+    assert peak_live <= _READ_POOL_MAX + 1, (
+        f"{peak_live} live connections at peak, ceiling is {_READ_POOL_MAX} (+1 writer)"
+    )
+    assert fell_back, "with n > ceiling some readers must degrade to the writer path"
+    assert len(checked_out) + len(fell_back) == n, "every worker must be accounted for"
+
+
+@pytest.mark.requires_wal
+def test_exhausted_permits_fall_back_to_the_writer_connection(db):
+    """Past the ceiling the read path degrades, it does not fail or block.
+
+    A reader that cannot get a permit must serve from the locked writer
+    connection. Blocking instead would convert descriptor exhaustion into a
+    stall -- the same outage with a different stack trace.
+    """
+    from hermes_state import _READ_POOL_MAX
+
+    held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
+    assert all(c is not None for c in held), "the first _READ_POOL_MAX must succeed"
+    try:
+        assert db._checkout_read_conn() is None, "ceiling must refuse the next open"
+        with db._read_ctx() as conn:
+            assert conn is db._conn, "must fall back to the shared writer connection"
+            assert conn.execute("SELECT 1").fetchone()[0] == 1, "fallback must work"
+    finally:
+        for c in held:
+            db._close_read_conn(c)
+
+    # Permits come back: the read path recovers once the burst drains.
+    recovered = db._checkout_read_conn()
+    assert recovered is not None, "permits must be released back after close"
+    db._close_read_conn(recovered)
+
+
+@pytest.mark.requires_wal
+def test_permits_are_not_stranded_by_a_failed_open(db, monkeypatch):
+    """A failed open must return its permit, or the ceiling ratchets to zero.
+
+    A permit leaked per failure is not a transient error: it permanently
+    shrinks the read path, so a burst of transient open failures would silently
+    demote every later read to the writer lock for the life of the process.
+    """
+    import sqlite3 as _sqlite3
+
+    import hermes_state as _hs
+    from hermes_state import _READ_POOL_MAX
+
+    def boom(*a, **kw):
+        raise _sqlite3.OperationalError("simulated open failure")
+
+    monkeypatch.setattr(_hs, "_connect_tracked_db", boom)
+    for _ in range(_READ_POOL_MAX * 3):
+        assert db._get_read_conn() is None
+        db._read_open_failed_at = 0.0    # defeat the backoff so every call opens
+    monkeypatch.undo()
+
+    db._read_open_failed_at = 0.0
+    held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
+    try:
+        assert all(c is not None for c in held), (
+            "permits were stranded by failed opens -- the ceiling ratcheted down"
+        )
+    finally:
+        for c in held:
+            if c is not None:
+                db._close_read_conn(c)
+
+
+@pytest.mark.requires_wal
+def test_close_returns_every_permit(db):
+    """close() must release the permits its drained connections held."""
+    from hermes_state import _READ_POOL_MAX
+
+    held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
+    for c in held:
+        db._read_pool.put_nowait(c)
+    assert db._read_pool.qsize() == _READ_POOL_MAX
+
+    db.close()
+    assert db._read_pool.qsize() == 0
+    assert _live_count(db.db_path) == 0
+    # BoundedSemaphore raises on over-release, so draining exactly
+    # _READ_POOL_MAX permits proves close() released neither too few nor too
+    # many.
+    for _ in range(_READ_POOL_MAX):
+        assert db._read_permits.acquire(blocking=False), "close() stranded a permit"
+    assert not db._read_permits.acquire(blocking=False), "close() over-released"

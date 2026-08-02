@@ -719,10 +719,25 @@ DEFAULT_STREAMING_CURSOR: str = " ▉"
 
 @dataclass
 class FederationConfig:
-    """P2P federation heartbeat configuration (#76660)."""
+    """P2P federation configuration (#76660).
+
+    Supports two modes:
+    - ``shared_db``: File-synced SQLite (v1, 2-3 devices, ~60s latency)
+    - ``lan``: WebSocket real-time (v2, N devices, <1s latency)
+    - ``auto``: mDNS discovery + WebSocket (future)
+    """
 
     enabled: bool = False
-    # Shared SQLite database path (iCloud Drive default on macOS).
+    mode: str = "shared_db"  # shared_db | lan | auto
+    # Device identifier (auto-detect if not set)
+    device_id: Optional[str] = None
+    # WebSocket port for lan mode
+    ws_port: int = 18765
+    # Auth token for peer verification (optional but recommended)
+    auth_token: Optional[str] = None
+    # For 'lan' mode: manually configured peer WebSocket URLs
+    peers: List[str] = field(default_factory=list)
+    # Shared SQLite database path (shared_db mode, iCloud Drive default on macOS).
     db_path: Optional[str] = None
     # Seconds without heartbeat before peer is considered offline.
     offline_threshold_s: int = 30
@@ -732,8 +747,16 @@ class FederationConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FederationConfig":
         data = _coerce_dict(data)
+        peers = data.get("peers", [])
+        if not isinstance(peers, list):
+            peers = []
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
+            mode=data.get("mode", "shared_db"),
+            device_id=data.get("device_id"),
+            ws_port=int(data.get("ws_port", 18765)),
+            auth_token=data.get("auth_token"),
+            peers=peers,
             db_path=data.get("db_path"),
             offline_threshold_s=int(data.get("offline_threshold_s", 30)),
             heartbeat_interval_s=int(data.get("heartbeat_interval_s", 60)),

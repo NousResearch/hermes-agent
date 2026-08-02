@@ -11557,27 +11557,52 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to start gateway loop heartbeat", exc_info=True)
 
-        # P2P federation heartbeat (#76660): background task that reports
-        # this device's liveness to the shared federation database, detects
-        # offline peers, and atomically claims their pending tasks.
+        # P2P federation (#76660): multi-device coordination platform.
+        # v2: WebSocket-based real-time communication with peer discovery.
+        # v1: shared_db mode preserved for backward compatibility.
         try:
-            from gateway.federation_heartbeat import federation_heartbeat_loop
+            from gateway.federation.federation_adapter import create_federation_adapter
+            from gateway.federation.federation_heartbeat import federation_heartbeat_loop
+
             _fed_cfg = getattr(self.config, "federation", None)
             if _fed_cfg and _fed_cfg.enabled:
+                # Create the federation adapter
+                self._federation_adapter = create_federation_adapter(
+                    enabled=True,
+                    mode=_fed_cfg.mode,
+                    device_id=_fed_cfg.device_id,
+                    ws_port=_fed_cfg.ws_port,
+                    auth_token=_fed_cfg.auth_token,
+                    peers=_fed_cfg.peers,
+                    db_path=_fed_cfg.db_path,
+                    offline_threshold_s=_fed_cfg.offline_threshold_s,
+                    heartbeat_interval_s=_fed_cfg.heartbeat_interval_s,
+                )
+
+                # Start the adapter (listen + connect to peers)
+                _fed_adapter = self._federation_adapter
+                await _fed_adapter.start()
+
+                # Start the heartbeat loop (handles both modes)
                 _fed_task = asyncio.create_task(
-                    federation_heartbeat_loop(_fed_cfg)
+                    federation_heartbeat_loop(
+                        config=_fed_cfg,
+                        adapter=_fed_adapter,
+                        interval_s=_fed_cfg.heartbeat_interval_s,
+                    )
                 )
                 _bg = getattr(self, "_background_tasks", None)
                 if _bg is not None:
                     _bg.add(_fed_task)
                     _fed_task.add_done_callback(_bg.discard)
+
+                peer_count = _fed_adapter.get_peer_count()
                 logger.info(
-                    "Federation heartbeat started (device=%s, interval=%ds)",
-                    _fed_cfg.resolve_db_path() or "(default)",
-                    _fed_cfg.heartbeat_interval_s,
+                    "Federation started (device=%s, mode=%s, peers=%d)",
+                    _fed_adapter.device_id, _fed_cfg.mode, peer_count,
                 )
         except Exception:
-            logger.debug("Failed to start federation heartbeat", exc_info=True)
+            logger.debug("Failed to start federation", exc_info=True)
 
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)

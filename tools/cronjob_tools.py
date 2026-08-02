@@ -9,12 +9,21 @@ import json
 import logging
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
+
+# Cadence for the heartbeat that keeps the calling agent's inactivity watchdog
+# at bay while a manual `cronjob(action="run")` executes the job synchronously
+# in-process (#76502). Mirrors the 10s cadence used by
+# tools/environments/base.py::touch_activity_if_due and delegate_task's
+# heartbeat — comfortably below the 1800s default HERMES_AGENT_TIMEOUT.
+_CRON_RUN_HEARTBEAT_INTERVAL = 10.0
 
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -608,7 +617,57 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
+        #
+        # A manual `run` executes the job synchronously on the caller's thread,
+        # and a cron job is itself a full agent run that routinely takes
+        # minutes. The calling turn emits no tool activity for that entire
+        # window, so the gateway inactivity watchdog concludes the agent is
+        # hung and kills the parent turn (#76502). Fire a heartbeat into the
+        # caller's activity tracker (the same signal tool progress uses) while
+        # the job runs, so the watchdog sees a working tool instead of a
+        # silent one — mirrors the delegate_task heartbeat pattern. Best-effort:
+        # if no activity callback is registered (direct Python callers, tests),
+        # behavior is unchanged.
+        try:
+            from tools.environments.base import _get_activity_callback
+
+            # Capture on THIS thread: the callback is thread-local (installed
+            # by the tool executor as the calling agent's _touch_activity), so
+            # a freshly spawned thread cannot read it back.
+            activity_cb = _get_activity_callback()
+        except Exception:
+            activity_cb = None
+
+        _heartbeat_stop = threading.Event()
+        _heartbeat_thread = None
+
+        if activity_cb is not None:
+            job_name = str(job.get("name") or job_id)
+
+            def _heartbeat_loop() -> None:
+                started = time.monotonic()
+                while not _heartbeat_stop.wait(_CRON_RUN_HEARTBEAT_INTERVAL):
+                    try:
+                        elapsed = int(time.monotonic() - started)
+                        activity_cb(
+                            f"cronjob: running job '{job_name}' ({elapsed}s elapsed)"
+                        )
+                    except Exception:
+                        return  # never break the job run
+
+            _heartbeat_thread = threading.Thread(
+                target=_heartbeat_loop,
+                daemon=True,
+                name="cronjob-run-heartbeat",
+            )
+            _heartbeat_thread.start()
+
+        try:
+            processed = run_one_job(job)
+        finally:
+            _heartbeat_stop.set()
+            if _heartbeat_thread is not None:
+                _heartbeat_thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
         refreshed = get_job(job_id) or {}
         ok = refreshed.get("last_status") == "ok"
         return {

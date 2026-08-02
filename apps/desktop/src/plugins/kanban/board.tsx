@@ -78,12 +78,7 @@ import {
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
-import {
-  EMPTY_OVERRIDE,
-  ModelOverrideField,
-  overrideCreateFields,
-  type TaskModelOverride
-} from './model-override'
+import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {

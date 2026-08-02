@@ -389,6 +389,48 @@ class TestRuntimeRepair:
         assert not (root / ".hermes-runtime").exists()
         mock_install.assert_not_called()
 
+    def test_stage_candidate_sync_keeps_uv_project_config(self, tmp_path):
+        from hermes_cli.managed_uv import _stage_candidate_venv
+
+        root = tmp_path / "checkout"
+        root.mkdir()
+        (root / "uv.lock").write_text("# lock\n", encoding="utf-8")
+        generation = root / ".hermes-runtime" / "python" / "gen"
+        python = generation / "bin" / "python"
+        python.parent.mkdir(parents=True)
+        python.write_text("py", encoding="utf-8")
+
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((list(argv), kwargs.get("env")))
+            return MagicMock(returncode=0)
+
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
+             patch(
+                 "hermes_cli.managed_uv._smoke_candidate_venv",
+                 return_value=(True, "", None),
+             ), \
+             patch("hermes_cli.managed_uv.platform.system", return_value="Linux"):
+            candidate = _stage_candidate_venv(
+                "uv",
+                project_root=root,
+                generation=generation,
+                python=python,
+            )
+
+        assert candidate is not None
+        assert len(calls) == 2
+        venv_argv, venv_env = calls[0]
+        sync_argv, sync_env = calls[1]
+        assert venv_argv[:2] == ["uv", "venv"]
+        assert "--no-config" in venv_argv
+        assert venv_env.get("UV_NO_CONFIG") == "1"
+        assert sync_argv[:2] == ["uv", "sync"]
+        assert "--locked" in sync_argv
+        assert "--no-config" not in sync_argv
+        assert "UV_NO_CONFIG" not in sync_env
+
     def test_failed_candidate_preserves_live_venv(self, tmp_path):
         from hermes_cli.managed_uv import (
             _acquire_repair_lock,

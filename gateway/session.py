@@ -191,6 +191,18 @@ class SessionSource:
     auto_thread_created: bool = False
     auto_thread_initial_name: Optional[str] = None
 
+    # Discord auto-thread session-continuity signal. Set by the connector on an
+    # inbound CHANNEL message (no thread_id yet) that its auto-thread policy WILL
+    # deliver into a newly-created thread. A Discord thread created from a message
+    # reuses that message's id as the thread id, so the connector knows the id
+    # before the thread exists. The gateway keys the session on this so a
+    # channel message and its thread follow-ups share ONE session: the channel
+    # message INITIATES it (keyed on the prospective thread id), and later
+    # messages arriving in that thread (real thread_id == this value) CONTINUE
+    # it. Without this, every channel message collapses into one parent-channel
+    # session and only the first auto-thread ever gets an auto-title/rename.
+    prospective_thread_id: Optional[str] = None
+
     # Internal, wire-INVISIBLE trust signal: True when this event was delivered
     # to the gateway over the per-instance-authenticated relay WebSocket (the
     # Team Gateway connector). The connector authenticates the gateway's socket
@@ -268,6 +280,8 @@ class SessionSource:
             d["auto_thread_created"] = True
         if self.auto_thread_initial_name:
             d["auto_thread_initial_name"] = self.auto_thread_initial_name
+        if self.prospective_thread_id:
+            d["prospective_thread_id"] = self.prospective_thread_id
         return d
 
     @classmethod
@@ -291,6 +305,7 @@ class SessionSource:
             profile=data.get("profile"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
+            prospective_thread_id=data.get("prospective_thread_id"),
         )
     
 
@@ -1111,20 +1126,37 @@ def build_session_key(
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
-    key_parts = [ns, platform, source.chat_type]
+    # Discord auto-thread continuity: a channel-initiating message carries no
+    # thread_id yet, but the connector tells us the thread its reply WILL be
+    # auto-threaded into (prospective_thread_id == the message id, which becomes
+    # the thread id). Key the session on that so the initiating channel message
+    # and every follow-up that later arrives IN that thread (real thread_id ==
+    # prospective_thread_id) resolve to the SAME session — "initiate in channel,
+    # continue in thread". A real thread_id always wins when present.
+    #
+    # The follow-up arrives with chat_type="thread" while the initiating message
+    # has chat_type="group"/"channel"; normalize the chat_type slot to "thread"
+    # when keying on a prospective id so the two byte-match. (Real-thread events
+    # already carry chat_type="thread", so this only rewrites the initiating
+    # channel message's slot.)
+    effective_thread_id = source.thread_id or source.prospective_thread_id
+    chat_type_slot = source.chat_type
+    if source.prospective_thread_id and not source.thread_id:
+        chat_type_slot = "thread"
+    key_parts = [ns, platform, chat_type_slot]
 
     if slack_scope_id:
         key_parts.append(slack_scope_id)
     if source.chat_id:
         key_parts.append(source.chat_id)
-    if source.thread_id:
-        key_parts.append(source.thread_id)
+    if effective_thread_id:
+        key_parts.append(effective_thread_id)
 
     # In threads, default to shared sessions (all participants see the same
     # conversation).  Per-user isolation only applies when explicitly enabled
     # via thread_sessions_per_user, or when there is no thread (regular group).
     isolate_user = group_sessions_per_user
-    if source.thread_id and not thread_sessions_per_user:
+    if effective_thread_id and not thread_sessions_per_user:
         isolate_user = False
 
     if isolate_user and participant_id:

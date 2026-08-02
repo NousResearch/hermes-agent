@@ -1759,6 +1759,7 @@ export const zhHant = defineLocale({
       '調整或繼續'
     ],
     startVoice: '開始語音對話',
+    openDirective: '開啟',
     queueMessage: '排隊訊息',
     stop: '停止',
     send: '傳送',

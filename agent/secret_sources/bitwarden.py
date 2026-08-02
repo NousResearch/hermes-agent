@@ -390,11 +390,15 @@ def _write_encrypted_disk_cache(
     access_token: str,
     entry: _CachedFetch,
     home_path: Optional[Path] = None,
-) -> None:
+) -> bool:
     """Persist an encrypted last-good cache entry atomically.
 
     Best-effort by design: cache write failure must never block a fresh BWS
     fetch.  The raw BWS access token is not stored; it only derives the AES key.
+
+    Returns True when the encrypted write (and legacy-plaintext removal on
+    success) completed; False when a non-fatal error was swallowed so callers
+    can decide whether to trust the migration.
     """
     path = _encrypted_disk_cache_path(home_path)
     try:
@@ -438,6 +442,7 @@ def _write_encrypted_disk_cache(
                 pass
             except OSError:
                 pass
+            return True
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -445,7 +450,7 @@ def _write_encrypted_disk_cache(
                 pass
             raise
     except Exception:  # noqa: BLE001 — best-effort cache only
-        return
+        return False
 
 
 def _read_encrypted_disk_cache(
@@ -520,15 +525,31 @@ def _migrate_legacy_plaintext_cache(
         legacy = _DISK_CACHE.read(cache_key, max_age_seconds, home_path)
         if legacy is None:
             return None
-        _write_encrypted_disk_cache(
+        if _write_encrypted_disk_cache(
             cache_key=cache_key,
             access_token=access_token,
             entry=legacy,
             home_path=home_path,
-        )
-        return legacy
+        ):
+            return legacy
+        return None
     except Exception:  # noqa: BLE001 — migration must never block startup
         return None
+
+
+def _remove_legacy_plaintext_cache(home_path: Optional[Path] = None) -> None:
+    """Delete the legacy plaintext bws_cache.json if it exists.
+
+    Best-effort: never raises.  Called when encryption is explicitly
+    disabled to ensure a pre-upgrade plaintext cache does not survive
+    the encrypted-only policy.
+    """
+    try:
+        _disk_cache_path(home_path).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
 
 
 def fetch_bitwarden_secrets(
@@ -583,7 +604,9 @@ def fetch_bitwarden_secrets(
         # default) we read the encrypted cache; a legacy plaintext entry
         # from an older Hermes is migrated (re-encrypted + removed) on
         # the way out.  With encryption disabled there is NO disk read at
-        # all — plaintext is never consulted.
+        # all — plaintext is never consulted.  The legacy plaintext file
+        # is still removed so it does not survive the upgrade even when
+        # the user explicitly opted out of disk persistence.
         disk_cached = None
         if encrypted_cache_enabled:
             disk_cached = _read_encrypted_disk_cache(
@@ -599,6 +622,10 @@ def fetch_bitwarden_secrets(
                     max_age_seconds=cache_ttl_seconds,
                     home_path=home_path,
                 )
+        else:
+            # Memory-only mode: the legacy plaintext cache must still be
+            # removed so a pre-upgrade bws_cache.json does not survive.
+            _remove_legacy_plaintext_cache(home_path)
         if disk_cached is not None:
             # Promote into in-process cache so subsequent fetches in the
             # same process skip the disk read too.
@@ -634,6 +661,10 @@ def fetch_bitwarden_secrets(
         kind = _classify_bws_error(str(exc))
         if use_cache and kind in (ErrorKind.NETWORK, ErrorKind.TIMEOUT):
             if not encrypted_cache_enabled:
+                # Memory-only mode: the legacy plaintext cache is never
+                # consulted, but it must still be removed so it does not
+                # survive the upgrade.
+                _remove_legacy_plaintext_cache(home_path)
                 raise
             stale = _read_encrypted_disk_cache(
                 cache_key=cache_key,
@@ -650,11 +681,13 @@ def fetch_bitwarden_secrets(
                 ]
             # A legacy plaintext cache (written by an older Hermes) is
             # migrated — re-encrypted + removed — then served, so the
-            # plaintext file does not survive the upgrade.
+            # plaintext file does not survive the upgrade.  The same
+            # max_stale_seconds bound applies: arbitrarily old plaintext
+            # must not be served when a stale limit is configured.
             stale = _migrate_legacy_plaintext_cache(
                 cache_key=cache_key,
                 access_token=access_token,
-                max_age_seconds=float("inf"),
+                max_age_seconds=encrypted_cache_max_stale_seconds,
                 home_path=home_path,
             )
             if stale is not None:

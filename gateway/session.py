@@ -1476,12 +1476,23 @@ class SessionStore:
         data, generation = self._snapshot_routing_locked()
         self._persist_routing_data(data, generation)
 
+    def _next_routing_generation_locked(self) -> int:
+        """Bump and return the shared routing counter. Caller holds ``_lock``.
+
+        BOTH full snapshots (_snapshot_routing_locked) and single-entry fast
+        saves (_save_entry) MUST allocate from this one counter — the stale-
+        write protection in _persist_routing_data/_save_entry is a total order
+        over serialization times and silently breaks if the two paths ever
+        number themselves independently.
+        """
+        self._routing_generation = getattr(self, "_routing_generation", 0) + 1
+        return self._routing_generation
+
     def _snapshot_routing_locked(self) -> tuple[Dict[str, Any], int]:
         """Capture immutable routing data and a monotonic generation."""
-        self._routing_generation = getattr(self, "_routing_generation", 0) + 1
         return (
             {key: entry.to_dict() for key, entry in self._entries.items()},
-            self._routing_generation,
+            self._next_routing_generation_locked(),
         )
 
     def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
@@ -1623,8 +1634,7 @@ class SessionStore:
             if entry is None:
                 return
             entry_json = json.dumps(entry.to_dict())
-            self._routing_generation = getattr(self, "_routing_generation", 0) + 1
-            revision = self._routing_generation
+            revision = self._next_routing_generation_locked()
         _db = getattr(self, "_db", None)
         saver = getattr(_db, "save_gateway_routing_entry", None) if _db else None
         if callable(saver):

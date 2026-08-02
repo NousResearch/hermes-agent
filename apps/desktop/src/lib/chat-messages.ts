@@ -73,6 +73,7 @@ export type GatewayEventPayload = {
   request_id?: string
   question?: string
   choices?: string[] | null
+  multi_select?: boolean
   // mcp.setup.request (setup_mcp tool — inline MCP consent card)
   server?: string
   action?: string

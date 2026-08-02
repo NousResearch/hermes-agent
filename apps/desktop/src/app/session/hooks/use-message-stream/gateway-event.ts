@@ -957,6 +957,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const question = typeof payload?.question === 'string' ? payload.question : ''
         const rawChoices = payload?.choices
         const choices = normalizeChoices(rawChoices)
+        const multiSelect = payload?.multi_select === true
 
         if (requestId && question) {
           if (rawChoices != null && choices.length === 0) {
@@ -967,6 +968,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             requestId,
             question,
             choices: choices.length > 0 ? choices : null,
+            multiSelect,
             sessionId: sessionId ?? null
           })
 
@@ -978,7 +980,15 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             // choices. Upsert a stable pending clarify tool row from the request
             // itself so the prompt stays answerable; a real tool.start/complete
             // with the same request id merges rather than duplicates.
-            upsertToolCall(sessionId, { args: { choices, question }, name: 'clarify', tool_id: requestId }, 'running')
+            upsertToolCall(
+              sessionId,
+              {
+                args: { choices, ...(multiSelect ? { multi_select: true } : {}), question },
+                name: 'clarify',
+                tool_id: requestId
+              },
+              'running'
+            )
 
             // The transcript only renders the active session, so a background
             // clarify is otherwise invisible (the row just keeps spinning like

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { clearClarifyRequest } from '@/store/clarify'
+import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { onScrollToBottomRequest } from '@/store/thread-scroll'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -121,6 +121,32 @@ describe('clarify.request stream hydration', () => {
     )
 
     expect(scrollToBottom).not.toHaveBeenCalled()
+  })
+
+  it('preserves multi-select through the store and hydrated tool row', async () => {
+    await mountStream()
+
+    clarifyRequest({
+      choices: ['read', 'write'],
+      multi_select: true,
+      question: 'Which permissions?',
+      request_id: 'req-multi'
+    })
+
+    expect($clarifyRequests.get()[SID]?.multiSelect).toBe(true)
+
+    const part = clarifyParts()[0]
+    expect(part?.type).toBe('tool-call')
+
+    if (part?.type !== 'tool-call') {
+      throw new Error('Expected a hydrated clarify tool call')
+    }
+
+    expect(part.args).toMatchObject({
+      choices: ['read', 'write'],
+      multi_select: true,
+      question: 'Which permissions?'
+    })
   })
 
   it('merges with the real tool.start row even though its id differs from the request id', async () => {

@@ -43,7 +43,11 @@ async def test_hermes_provider_forwards_asend_values(tmp_path, monkeypatch):
     ``oauth2.py:505``. With the correct bridge, a 200 response finishes the
     flow cleanly (``StopAsyncIteration``).
     """
-    import httpx
+    # The SDK's httpx flavour (httpx2 on mcp >= 2.0): the provider is an
+    # Auth subclass from that module and its auth_flow only accepts its own
+    # Request/Response types.
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
     from mcp.shared.auth import OAuthClientMetadata, OAuthToken
     from pydantic import AnyUrl
 
@@ -125,7 +129,11 @@ async def test_hermes_provider_forwards_401_triggers_refresh(tmp_path, monkeypat
     bridge, the 401 is routed into the SDK's ``response.status_code == 401``
     branch which begins discovery (yielding a metadata-discovery request).
     """
-    import httpx
+    # The SDK's httpx flavour (httpx2 on mcp >= 2.0): the provider is an
+    # Auth subclass from that module and its auth_flow only accepts its own
+    # Request/Response types.
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
     from pydantic import AnyUrl
 

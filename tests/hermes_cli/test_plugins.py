@@ -1322,22 +1322,30 @@ class TestPluginCommands:
         try:
             manager_a = plugins_mod.get_plugin_manager()
             manager_a.discover_and_load()
+            module_a = manager_a._plugins["stateful-plugin"].module
         finally:
             reset_hermes_home_override(token_a)
 
-        assert "hermes_plugins.stateful_plugin.state" in sys.modules
-        assert sys.modules["hermes_plugins.stateful_plugin.state"].MARKER == "marker-a"
+        assert module_a is not None
+        module_a_state = f"{module_a.__name__}.state"
+        assert module_a_state in sys.modules
+        assert sys.modules[module_a_state].MARKER == "marker-a"
 
         token_b = set_hermes_home_override(str(home_b))
         try:
             manager_b = plugins_mod.get_plugin_manager()
             manager_b.discover_and_load()
+            module_b = manager_b._plugins["stateful-plugin"].module
         finally:
             reset_hermes_home_override(token_b)
 
-        # The submodule cached under sys.modules must now reflect profile
-        # b's code, not a leftover from profile a.
-        assert sys.modules["hermes_plugins.stateful_plugin.state"].MARKER == "marker-b"
+        # Each profile keeps a stable namespace, so concurrent/runtime relative
+        # imports cannot resolve another profile's package or submodules.
+        assert module_b is not None
+        module_b_state = f"{module_b.__name__}.state"
+        assert module_a.__name__ != module_b.__name__
+        assert sys.modules[module_a_state].MARKER == "marker-a"
+        assert sys.modules[module_b_state].MARKER == "marker-b"
         assert (
             manager_b._plugin_skills["stateful-plugin::marker"]["marker"] == "marker-b"
         )

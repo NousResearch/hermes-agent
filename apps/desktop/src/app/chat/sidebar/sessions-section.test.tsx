@@ -3,6 +3,7 @@ import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import type { VirtualSessionListProps } from './virtual-session-list'
 
@@ -30,6 +31,7 @@ const mockVirtualListPropsHistory: VirtualSessionListProps[] = []
 vi.mock('./virtual-session-list', () => ({
   VirtualSessionList: (props: VirtualSessionListProps) => {
     mockVirtualListPropsHistory.push(props)
+
     return <div data-testid="virtual-session-list">Virtual List ({props.rows.length} rows)</div>
   }
 }))

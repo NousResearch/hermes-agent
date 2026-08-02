@@ -444,12 +444,17 @@ def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
             except OSError:
                 pass
             # fsync the copied target so the durability claim holds on the
-            # cross-device path too (mirrors utils.atomic_replace).
-            target_fd = os.open(target, os.O_RDONLY)
+            # cross-device path too (mirrors utils.atomic_replace, including
+            # its swallow — a failed fsync must not report the already-copied
+            # write as failed).
             try:
-                os.fsync(target_fd)
-            finally:
-                os.close(target_fd)
+                target_fd = os.open(target, os.O_RDONLY)
+                try:
+                    os.fsync(target_fd)
+                finally:
+                    os.close(target_fd)
+            except OSError:
+                pass
             os.unlink(tmp_path)
     except BaseException:
         try:

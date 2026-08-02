@@ -2601,7 +2601,11 @@ def _normalize_approval_mode(mode) -> str:
 
 
 def _get_approval_config() -> dict:
-    """Read the approvals config block. Returns a dict with 'mode', 'timeout', etc."""
+    """Read the approvals config block. Returns a dict with 'mode', 'timeout', etc.
+
+    Returns the LIVE config-cache sub-dict (load_config_readonly contract) —
+    callers must not mutate it or any nested structure.
+    """
     try:
         from hermes_cli.config import load_config_readonly
         config = load_config_readonly()

@@ -366,16 +366,21 @@ class SessionSearchMixin:
         never match.
         """
         try:
-            n_msg = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            if int(n_msg) <= 0:
+            has_msg = conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM messages)"
+            ).fetchone()[0]
+            if not has_msg:
                 return False
             # docsize is the authoritative "is this rowid indexed" surface for
-            # external-content FTS5; COUNT(*) on the virtual table itself is
-            # not reliable across SQLite builds.
-            n_fts = conn.execute(
-                "SELECT COUNT(*) FROM messages_fts_docsize"
+            # external-content FTS5; probing the virtual table itself is
+            # not reliable across SQLite builds. EXISTS instead of COUNT(*):
+            # this runs on every writable open via the _init_schema stamp
+            # condition, and COUNT(*) is a full b-tree scan (~100ms on a
+            # 2M-row table) while EXISTS is O(1).
+            has_fts = conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM messages_fts_docsize)"
             ).fetchone()[0]
-            return int(n_fts) == 0
+            return not has_fts
         except sqlite3.OperationalError:
             # Table absent / FTS disabled mid-init — not this failure class.
             return False

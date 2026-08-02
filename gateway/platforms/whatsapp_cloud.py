@@ -255,13 +255,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         # Allowlist: honor the *documented* WHATSAPP_CLOUD_ALLOWED_USERS (the
         # var the setup wizard writes) in addition to WHATSAPP_CLOUD_ALLOW_FROM.
-        # Precedence matches construction forever: explicit config, then legacy
-        # ALLOW_FROM, then ALLOWED_USERS. Track the winning source so live DM
-        # checks do not let a lower-precedence env broaden access.
-        explicit_allow = extra.get("allow_from") or extra.get("allowFrom")
-        if explicit_allow:
+        # Precedence matches construction forever: explicit config (by key
+        # presence, including empty []), then legacy ALLOW_FROM, then
+        # ALLOWED_USERS. Track the winning source so live DM checks do not let
+        # a lower-precedence env broaden access.
+        if "allow_from" in extra:
             self._dm_allowlist_source = "config"
-            allow_raw = explicit_allow
+            allow_raw = extra.get("allow_from")
+        elif "allowFrom" in extra:
+            self._dm_allowlist_source = "config"
+            allow_raw = extra.get("allowFrom")
         elif os.getenv("WHATSAPP_CLOUD_ALLOW_FROM"):
             self._dm_allowlist_source = "WHATSAPP_CLOUD_ALLOW_FROM"
             allow_raw = os.getenv("WHATSAPP_CLOUD_ALLOW_FROM")

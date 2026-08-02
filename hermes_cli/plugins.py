@@ -821,6 +821,25 @@ def resolve_plugin_load_order(
     return ordered
 
 
+def _detect_kind_from_source(source_text: str) -> Optional[str]:
+    """Return the plugin kind implied by source markers, or ``None``.
+
+    Mirrors ``plugins/memory/__init__.py:_is_memory_provider_dir``: a
+    module that registers a memory provider (``register_memory_provider``
+    or ``MemoryProvider``) belongs to the memory-provider discovery
+    system (``exclusive``); a module that registers a model provider
+    (``register_provider`` + ``ProviderProfile``) belongs to the
+    providers discovery (``model-provider``). Applied to both directory
+    plugins and pip entry-point plugins so neither is eagerly imported
+    by the general PluginManager.
+    """
+    if "register_memory_provider" in source_text or "MemoryProvider" in source_text:
+        return "exclusive"
+    if "register_provider" in source_text and "ProviderProfile" in source_text:
+        return "model-provider"
+    return None
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -4060,29 +4079,16 @@ class PluginManager:
                 init_file = plugin_dir / "__init__.py"
                 if init_file.exists():
                     try:
-                        source_text = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
-                        if (
-                            "register_memory_provider" in source_text
-                            or "MemoryProvider" in source_text
-                        ):
-                            kind = "exclusive"
+                        detected = _detect_kind_from_source(
+                            init_file.read_text(
+                                errors="replace", encoding="utf-8"
+                            )[:8192]
+                        )
+                        if detected:
+                            kind = detected
                             logger.debug(
-                                "Plugin %s: detected memory provider, "
-                                "treating as kind='exclusive'",
-                                key,
-                            )
-                        elif (
-                            "register_provider" in source_text
-                            and "ProviderProfile" in source_text
-                        ):
-                            # Model provider plugin (calls register_provider()
-                            # from ``providers`` with a ProviderProfile). Route
-                            # to providers/__init__.py discovery.
-                            kind = "model-provider"
-                            logger.debug(
-                                "Plugin %s: detected model provider, "
-                                "treating as kind='model-provider'",
-                                key,
+                                "Plugin %s: detected %s, treating as kind='%s'",
+                                key, detected, detected,
                             )
                     except Exception:
                         pass
@@ -4121,6 +4127,37 @@ class PluginManager:
     # Entry-point scanning
     # -----------------------------------------------------------------------
 
+    def _classify_entrypoint_kind(self, ep) -> str:
+        """Classify a pip entry-point plugin by scanning its module source.
+
+        The ``kind`` semantics are the same for pip entry points as for
+        directory plugins: memory providers (``exclusive``) and model
+        providers (``model-provider``) have their own discovery systems,
+        so importing them here registers nothing and only pays the
+        module's import cost in every Hermes process (e.g. a pip
+        memory-provider plugin pulling in onnxruntime via fastembed —
+        ~60 MB RSS on startup).
+
+        The module is resolved with ``importlib.util.find_spec`` — no
+        import for top-level module names (for dotted names only the
+        parent package may be imported). Only the first 8192 chars of
+        source are scanned, mirroring the directory-plugin heuristic.
+        Unresolvable or non-Python modules stay ``standalone``.
+        """
+        try:
+            module_name = ep.value.split(":", 1)[0].strip()
+            if not module_name:
+                return "standalone"
+            spec = importlib.util.find_spec(module_name)
+            if spec is None or not spec.origin or not spec.origin.endswith(".py"):
+                return "standalone"
+            source_text = Path(spec.origin).read_text(
+                errors="replace", encoding="utf-8"
+            )[:8192]
+            return _detect_kind_from_source(source_text) or "standalone"
+        except Exception:
+            return "standalone"
+
     def _scan_entry_points(self) -> List[PluginManifest]:
         """Check ``importlib.metadata`` for pip-installed plugins."""
         manifests: List[PluginManifest] = []
@@ -4141,6 +4178,7 @@ class PluginManager:
                     path=ep.value,
                     key=ep.name,
                 )
+                manifest.kind = self._classify_entrypoint_kind(ep)
                 manifests.append(manifest)
         except Exception as exc:
             logger.debug("Entry-point scan failed: %s", exc)

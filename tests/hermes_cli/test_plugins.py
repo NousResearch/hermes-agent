@@ -467,6 +467,116 @@ class TestPluginLoading:
         assert entry.module is None
         assert "exclusive" in (entry.error or "").lower()
 
+    def test_entrypoint_memory_provider_auto_coerced_to_exclusive(
+        self, tmp_path, monkeypatch
+    ):
+        """Pip entry-point memory-provider plugins must NOT be imported by
+        the general PluginManager.
+
+        Regression test for the mnemosyne case: a pip plugin declaring a
+        ``hermes_agent.plugins`` entry point but exposing
+        ``register_memory_provider`` (not ``register()``) used to be
+        eagerly imported in every process, pulling heavy deps (fastembed
+        → onnxruntime, ~60 MB RSS) even though the import registered
+        nothing. Entry-point manifests now get the same source-scan
+        classification as directory plugins: recorded, never imported.
+        Activation stays with plugins/memory discovery via
+        ``memory.provider`` config.
+        """
+        from importlib.metadata import EntryPoint
+        from types import SimpleNamespace
+
+        module_path = tmp_path / "mempalace_ep.py"
+        module_path.write_text(
+            "class MemPalaceProvider:\n"
+            "    pass\n"
+            "def register_memory_provider(name, cls):\n"
+            "    pass\n"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        ep = EntryPoint(
+            name="mempalace_ep",
+            value="mempalace_ep:register",
+            group=ENTRY_POINTS_GROUP,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.importlib.metadata.entry_points",
+            lambda: SimpleNamespace(
+                select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
+            ),
+        )
+
+        # Even if the user explicitly enables it, the loader must treat it
+        # as exclusive and skip the import (the bug: eager import of a
+        # module with no register() function).
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["mempalace_ep"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "mempalace_ep" in mgr._plugins
+        entry = mgr._plugins["mempalace_ep"]
+        assert entry.manifest.kind == "exclusive", (
+            f"Expected auto-coerced kind='exclusive', got {entry.manifest.kind}"
+        )
+        assert not entry.enabled
+        assert entry.module is None
+        assert "exclusive" in (entry.error or "").lower()
+        # The whole point: the module was never imported.
+        assert "mempalace_ep" not in sys.modules
+
+    def test_entrypoint_model_provider_auto_coerced_to_model_provider(
+        self, tmp_path, monkeypatch
+    ):
+        """Pip entry-point model-provider plugins are routed to the
+        providers/ discovery system instead of being imported by the
+        general manager (which would double-instantiate ProviderProfile)."""
+        from importlib.metadata import EntryPoint
+        from types import SimpleNamespace
+
+        module_path = tmp_path / "fakeprovider.py"
+        module_path.write_text(
+            "class ProviderProfile:\n"
+            "    pass\n"
+            "def register_provider(profile):\n"
+            "    pass\n"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        ep = EntryPoint(
+            name="fakeprovider",
+            value="fakeprovider:register",
+            group=ENTRY_POINTS_GROUP,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.importlib.metadata.entry_points",
+            lambda: SimpleNamespace(
+                select=lambda group: [ep] if group == ENTRY_POINTS_GROUP else []
+            ),
+        )
+
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["fakeprovider"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        entry = mgr._plugins["fakeprovider"]
+        assert entry.manifest.kind == "model-provider", (
+            f"Expected auto-coerced kind='model-provider', "
+            f"got {entry.manifest.kind}"
+        )
+        assert entry.module is None
+        assert "fakeprovider" not in sys.modules
+
 
 # ── TestPluginHooks ────────────────────────────────────────────────────────
 

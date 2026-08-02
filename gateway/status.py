@@ -512,29 +512,6 @@ def looks_like_desktop_serve_command_line(command: str | None) -> bool:
     return False
 
 
-def desktop_serve_is_running() -> bool:
-    """Best-effort scan for a live Desktop ``hermes serve`` backend process."""
-    try:
-        import psutil  # type: ignore
-    except Exception:
-        return False
-
-    try:
-        for proc in psutil.process_iter(["cmdline"]):
-            try:
-                parts = proc.info.get("cmdline") or []
-            except Exception:
-                continue
-            if not parts:
-                continue
-            cmdline = " ".join(str(p) for p in parts)
-            if looks_like_desktop_serve_command_line(cmdline):
-                return True
-    except Exception:
-        return False
-    return False
-
-
 def looks_like_gateway_runtime_command_line(command: str | None) -> bool:
     """Return True for command lines that can host the gateway runtime.
 

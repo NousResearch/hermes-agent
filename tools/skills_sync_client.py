@@ -65,6 +65,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from agent.skill_lock import skill_materialize_lock
+
 logger = logging.getLogger(__name__)
 
 # Sync protocol constants
@@ -1572,21 +1574,35 @@ def pull_skills(
 
     opted_in = set(_opted_in_rel_paths())
     updated = []
+    deferred = []
     for path, tree_hash in remote_trees.items():
         # Opt-in gate on pull: only materialize skills the user chose to sync
         # (now including any adopted from the plane manifest above).
         if opted_in and path not in opted_in:
             continue
         dest = _skills_dir() / path
-        materialize_tree(client, tree_hash, dest)
-        updated.append(path)
+        # One skill at a time (see skill_materialize_lock): a pull writes while
+        # fetching, so a whole-pull lock would park agent skill writes behind
+        # the network. A skill another process is mid-write on is left for the
+        # next pull rather than interleaved with that write.
+        with skill_materialize_lock(dest) as acquired:
+            if not acquired:
+                deferred.append(path)
+                continue
+            materialize_tree(client, tree_hash, dest)
+            updated.append(path)
 
-    manifest["head"] = head
-    write_sync_state(manifest)
+    # Only record the new head when the whole tree landed. Recording it after a
+    # partial pull would make the next pull report "already up to date" and the
+    # deferred skills would never be written.
+    if not deferred:
+        manifest["head"] = head
+        write_sync_state(manifest)
     return {
         "ok": True,
         "head": head,
         "updated": sorted(updated),
+        "deferred": sorted(deferred),
         "opt_in_adopted": sorted(reconciled_from_manifest),
     }
 
@@ -1849,32 +1865,43 @@ def pull_org_skills(
     # Skills the user/agent has edited locally and upstream also changed.
     # We do NOT overwrite them — the local work wins until the user resolves.
     conflicted: List[str] = []
+    # Mirror skills another process is mid-write on; retried on the next pull.
+    deferred: List[str] = []
     baseline = _read_org_baseline(org_id)
     for rel_path, tree_hash in sorted(skill_trees.items()):
         dest = dest_root / PurePosixPath(rel_path)
         try:
-            if dest.exists():
-                # Local edits are protected: never clobber work the user or
-                # agent did in place. Skip the update and report it so they
-                # can resolve deliberately (propose the local version, or
-                # discard it and re-pull).
-                if org_skill_is_locally_modified(rel_path, org_id):
-                    prev = baseline.get(rel_path) or {}
-                    # Upstream also moved on => a real conflict the user must
-                    # resolve. Upstream unchanged => their edit simply stands.
-                    if prev.get("tree") != tree_hash:
-                        conflicted.append(rel_path)
+            # replace=True: this path rmtrees and recreates the directory, so
+            # a per-skill lock (held on the old inode) would not exclude a
+            # writer that arrives after the recreate. The local-modification
+            # check is inside the lock too — fingerprinting a directory while
+            # another process writes it would misread the edit.
+            with skill_materialize_lock(dest, replace=True) as acquired:
+                if not acquired:
+                    deferred.append(rel_path)
                     continue
-                import shutil
+                if dest.exists():
+                    # Local edits are protected: never clobber work the user or
+                    # agent did in place. Skip the update and report it so they
+                    # can resolve deliberately (propose the local version, or
+                    # discard it and re-pull).
+                    if org_skill_is_locally_modified(rel_path, org_id):
+                        prev = baseline.get(rel_path) or {}
+                        # Upstream also moved on => a real conflict the user must
+                        # resolve. Upstream unchanged => their edit simply stands.
+                        if prev.get("tree") != tree_hash:
+                            conflicted.append(rel_path)
+                        continue
+                    import shutil
 
-                shutil.rmtree(dest)
-            dest.mkdir(parents=True, exist_ok=True)
-            materialize_tree(client, tree_hash, dest, org_scope=True)
-            baseline[rel_path] = {
-                "fingerprint": _skill_dir_fingerprint(dest),
-                "tree": tree_hash,
-            }
-            updated.append(rel_path)
+                    shutil.rmtree(dest)
+                dest.mkdir(parents=True, exist_ok=True)
+                materialize_tree(client, tree_hash, dest, org_scope=True)
+                baseline[rel_path] = {
+                    "fingerprint": _skill_dir_fingerprint(dest),
+                    "tree": tree_hash,
+                }
+                updated.append(rel_path)
         except Exception as e:
             logger.warning(
                 "skills_sync_client: org skill materialize failed for %s: %s",
@@ -1903,12 +1930,20 @@ def pull_org_skills(
             len(conflicted),
             ", ".join(conflicted),
         )
+    if deferred:
+        logger.info(
+            "skills_sync_client: %d org skill(s) were locked by another Hermes "
+            "process and will be pulled on the next pass: %s",
+            len(deferred),
+            ", ".join(deferred),
+        )
     return {
         "ok": True,
         "org_id": org_id,
         "head": head,
         "updated": updated,
         "conflicted": conflicted,
+        "deferred": deferred,
     }
 
 

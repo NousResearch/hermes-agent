@@ -37,10 +37,12 @@ import logging
 import re
 import shutil
 import contextvars as _ctxvars
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home, display_hermes_home
+from agent.skill_lock import namespace_write_locked
 from utils import atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
@@ -905,6 +907,7 @@ def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> Non
         )
 
 
+@namespace_write_locked
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
     # Validate name
@@ -1156,6 +1159,7 @@ def _patch_skill(
     return result
 
 
+@namespace_write_locked
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
     """Delete a skill.
 
@@ -1438,6 +1442,69 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     )
 
 
+@contextmanager
+def _skill_action_lock(action: str, name: str):
+    """Hold locks from lookup through one skill-manager mutation."""
+    from agent.skill_lock import skill_write_lock, skills_namespace_lock
+
+    if action in {"create", "delete"}:
+        with skills_namespace_lock():
+            yield
+    elif action in {"edit", "patch", "write_file", "remove_file"}:
+        with skills_namespace_lock(exclusive=False):
+            existing = _find_skill(name)
+            if existing is None:
+                yield
+            else:
+                with skill_write_lock(existing["path"]):
+                    yield
+    else:
+        yield
+
+
+def _dispatch_skill_action(
+    action: str, name: str, content: str, category: str, file_path: str,
+    file_content: str, old_string: str, new_string: str, replace_all: bool,
+    absorbed_into: str,
+) -> Dict[str, Any]:
+    if action == "create":
+        if not content:
+            return {
+                "success": False,
+                "error": "content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).",
+            }
+        return _create_skill(name, content, category)
+    if action == "edit":
+        if not content:
+            return {
+                "success": False,
+                "error": "content is required for 'edit'. Provide the full updated SKILL.md text.",
+            }
+        return _edit_skill(name, content)
+    if action == "patch":
+        if not old_string:
+            return {"success": False, "error": "old_string is required for 'patch'. Provide the text to find."}
+        if new_string is None:
+            return {"success": False, "error": "new_string is required for 'patch'. Use empty string to delete matched text."}
+        return _patch_skill(name, old_string, new_string, file_path, replace_all)
+    if action == "delete":
+        return _delete_skill(name, absorbed_into=absorbed_into)
+    if action == "write_file":
+        if not file_path:
+            return {"success": False, "error": "file_path is required for 'write_file'. Example: 'references/api-guide.md'"}
+        if file_content is None:
+            return {"success": False, "error": "file_content is required for 'write_file'."}
+        return _write_file(name, file_path, file_content)
+    if action == "remove_file":
+        if not file_path:
+            return {"success": False, "error": "file_path is required for 'remove_file'."}
+        return _remove_file(name, file_path)
+    return {
+        "success": False,
+        "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file",
+    }
+
+
 def apply_skill_pending(payload: Dict[str, Any]) -> str:
     """Replay a staged skill write, bypassing the gate. Returns the tool result
     JSON string. Called by the /skills approve handler.
@@ -1544,40 +1611,16 @@ def skill_manage(
     if gate_result is not None:
         return gate_result
 
-    if action == "create":
-        if not content:
-            return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
-        result = _create_skill(name, content, category)
-
-    elif action == "edit":
-        if not content:
-            return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
-        result = _edit_skill(name, content)
-
-    elif action == "patch":
-        if not old_string:
-            return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
-        if new_string is None:
-            return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
-        result = _patch_skill(name, old_string, new_string, file_path, replace_all)
-
-    elif action == "delete":
-        result = _delete_skill(name, absorbed_into=absorbed_into)
-
-    elif action == "write_file":
-        if not file_path:
-            return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
-        if file_content is None:
-            return tool_error("file_content is required for 'write_file'.", success=False)
-        result = _write_file(name, file_path, file_content)
-
-    elif action == "remove_file":
-        if not file_path:
-            return tool_error("file_path is required for 'remove_file'.", success=False)
-        result = _remove_file(name, file_path)
-
-    else:
-        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+    try:
+        with _skill_action_lock(action, name):
+            result = _dispatch_skill_action(
+                action, name, content, category, file_path, file_content,
+                old_string, new_string, replace_all, absorbed_into,
+            )
+    except TimeoutError as exc:
+        return tool_error(f"Skill library is busy: {exc}", success=False)
+    except FileNotFoundError as exc:
+        return tool_error(str(exc), success=False)
 
     if result.get("success"):
         try:

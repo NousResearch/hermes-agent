@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
+from agent.skill_lock import SkillLockTimeout, skills_namespace_lock
 from agent.skill_utils import is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
@@ -214,6 +215,26 @@ def _write_manifest(dest: Path, reason: str, archive_path: Path,
 
 
 def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] = None) -> Optional[Path]:
+    """Locked wrapper — see :func:`_snapshot_skills_locked` for the body.
+
+    Exclusive, not shared: a shared lock would exclude structural writers but
+    still allow a per-skill content write to land mid-archive, producing a
+    snapshot of a skill in a half-written state.  A backup that cannot be
+    trusted to be internally consistent is not a backup.
+
+    Contention returns ``None`` like every other skip path, honouring the
+    documented best-effort contract (a backup failure never aborts a curator
+    pass).
+    """
+    try:
+        with skills_namespace_lock():
+            return _snapshot_skills_locked(reason, protect_ids=protect_ids)
+    except SkillLockTimeout as exc:
+        logger.warning("skill library busy; skipping curator snapshot (%s)", exc)
+        return None
+
+
+def _snapshot_skills_locked(reason: str = "manual", *, protect_ids: Optional[Set[str]] = None) -> Optional[Path]:
     """Create a tar.gz snapshot of ``~/.hermes/skills/`` and prune old ones.
 
     Returns the snapshot directory path, or ``None`` if the snapshot was
@@ -569,6 +590,28 @@ def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:
 
 
 def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]]:
+    """Locked wrapper — see :func:`_rollback_locked` for the body.
+
+    The most destructive writer in the tree: it moves every top-level entry
+    out of ``skills/`` and extracts an archive back over it.  The lock must
+    span the whole transaction, staging move included, or a concurrent write
+    lands in a directory that is about to be replaced and is silently lost.
+
+    The nested safety snapshot re-enters the exclusive lock and is short-
+    circuited by the re-entrancy check rather than deadlocking.
+
+    Contention is reported as an ordinary failure tuple; raising a bare
+    TimeoutError out of ``hermes curator rollback`` would be a worse UX than
+    "busy, try again".
+    """
+    try:
+        with skills_namespace_lock():
+            return _rollback_locked(backup_id)
+    except SkillLockTimeout as exc:
+        return (False, f"skill library is busy, rollback not attempted: {exc}", None)
+
+
+def _rollback_locked(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]]:
     """Restore ``~/.hermes/skills/`` from a snapshot.
 
     Strategy:

@@ -1379,7 +1379,7 @@ def do_opt_in(sync: bool = False,
     c.print(f"[bold green]{res['message']}[/]")
 
     if sync:
-        synced = sync_skills(quiet=True)
+        synced = sync_skills(quiet=True, wait=True)
         copied = len(synced.get("copied", []))
         c.print(f"[dim]Re-seeded {copied} bundled skill(s).[/]")
         if invalidate_cache:

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
+from agent.skill_lock import namespace_write_locked
 from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
 
 logger = logging.getLogger(__name__)
@@ -873,6 +874,7 @@ def forget(skill_name: str) -> None:
 # Archive / restore
 # ---------------------------------------------------------------------------
 
+@namespace_write_locked
 def archive_skill(skill_name: str) -> Tuple[bool, str]:
     """Move a curator-eligible skill directory to ~/.hermes/skills/.archive/.
 
@@ -934,6 +936,7 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     return True, f"archived to {dest}"
 
 
+@namespace_write_locked
 def restore_skill(skill_name: str) -> Tuple[bool, str]:
     """Move an archived skill back to ~/.hermes/skills/. Restores to the flat
     top-level layout; original category nesting is NOT reconstructed.

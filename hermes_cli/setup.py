@@ -3406,7 +3406,7 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
         if seed_skills:
             # Make sure no stale opt-out marker blocks the seed, then sync.
             set_bundled_skills_opt_out(False)
-            result = sync_skills(quiet=True)
+            result = sync_skills(quiet=True, wait=True)
             copied = len(result.get("copied", [])) if isinstance(result, dict) else 0
             print_success(f"Seeded {copied} bundled skills.")
         else:

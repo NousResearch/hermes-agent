@@ -47,6 +47,12 @@ for _stream in (sys.stdout, sys.stderr):
             pass
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
+from agent.skill_lock import (
+    SkillLockTimeout,
+    namespace_write_locked,
+    skills_namespace_lock,
+    try_namespace_lock,
+)
 from typing import Dict, List, Optional, Set, Tuple
 from utils import atomic_replace
 
@@ -340,6 +346,9 @@ def _move_to_restore_backup(path: Path, backup_root: Path) -> str:
     return rel.as_posix()
 
 
+# User-initiated repair: wait for the namespace lock rather than
+# deferring, and surface a timeout to the caller as an error.
+@namespace_write_locked
 def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict:
     """Restore one or all official optional skills from repo source.
 
@@ -672,14 +681,57 @@ def _recover_renamed_skill(
     return None
 
 
-def sync_skills(quiet: bool = False) -> dict:
-    """
-    Sync bundled skills into ~/.hermes/skills/ using the manifest.
+def _locked_out_result(quiet: bool) -> dict:
+    """Result shape for a seeding pass that lost the namespace-lock race."""
+    logger.warning(
+        "skills_sync: another Hermes process holds the skill-library lock; "
+        "bundled-skill sync deferred to the next pass"
+    )
+    if not quiet:
+        print("  (skipped — another Hermes process is modifying the skill library)")
+    return {
+        "copied": [], "updated": [], "skipped": 0,
+        "user_modified": [], "cleaned": [], "suppressed": [], "relocated": [],
+        "total_bundled": 0, "optional_provenance_backfilled": [],
+        "shadowed_by_external": [], "skipped_locked": True,
+    }
 
-    Returns:
-        dict with keys: copied (list), updated (list), skipped (int),
-                        user_modified (list), cleaned (list), total_bundled (int)
+
+def sync_skills(quiet: bool = False, *, wait: bool = False) -> dict:
+    """Sync bundled skills into ~/.hermes/skills/ using the manifest.
+
+    Takes the skill namespace lock **exclusively**: the pass is structural
+    throughout — it creates directories, moves a stale copy aside, rmtrees the
+    backup, relocates renamed skills and rewrites the manifest — so it cannot
+    be expressed as a set of independent per-skill writes without upgrading the
+    lock mid-pass, which the protocol forbids (that is a deadlock).
+
+    Contention is resolved by *deferring*, not by waiting: seeding is
+    idempotent and runs on every startup, so losing the race to a long
+    agent-side skill write is harmless, whereas blocking startup on it for up
+    to ``DEFAULT_TIMEOUT`` is not.  Callers can detect the deferral via
+    ``skipped_locked`` in the result.
+
+    ``wait=True`` inverts that for user-initiated runs (``hermes update``,
+    installer, explicit re-seed), where "did nothing, try again later" is the
+    wrong answer to an explicit command: block for the full lock timeout and
+    only report a deferral if the library is still busy after it.
     """
+    if wait:
+        try:
+            with skills_namespace_lock():
+                return _sync_skills_locked(quiet=quiet)
+        except SkillLockTimeout:
+            return _locked_out_result(quiet)
+
+    with try_namespace_lock() as acquired:
+        if not acquired:
+            return _locked_out_result(quiet)
+        return _sync_skills_locked(quiet=quiet)
+
+
+def _sync_skills_locked(quiet: bool = False) -> dict:
+    """Body of :func:`sync_skills`; assumes the exclusive namespace lock."""
     # Opt-out: a profile (named or the default ~/.hermes) that wrote the
     # .no-bundled-skills marker gets zero bundled-skill seeding. Returning the
     # empty-result shape with skipped_opt_out lets callers report "opted out"
@@ -997,6 +1049,9 @@ def _rmtree_writable(path: Path) -> None:
     shutil.rmtree(path, onerror=_on_error)
 
 
+# User-initiated repair (rewrites the manifest, may re-copy a skill
+# directory): structural, so hold the namespace lock exclusively.
+@namespace_write_locked
 def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     """
     Reset a bundled skill's manifest tracking so future syncs work normally.
@@ -1318,6 +1373,9 @@ def is_bundled_skills_opt_out() -> bool:
     return (HERMES_HOME / NO_BUNDLED_SKILLS_MARKER).exists()
 
 
+# Structural: deletes skill directories after a hash comparison. The
+# lock must span compare-then-delete or a concurrent edit is lost.
+@namespace_write_locked
 def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
     """Delete bundled skills that are present, manifest-tracked, AND unmodified.
 

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
+from agent.skill_lock import namespace_write_locked
 from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -3680,6 +3681,7 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     return dest
 
 
+@namespace_write_locked
 def install_from_quarantine(
     quarantine_path: Path,
     skill_name: str,
@@ -3767,6 +3769,7 @@ def install_from_quarantine(
     return install_dir
 
 
+@namespace_write_locked
 def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     """Remove a hub-installed skill. Refuses to remove builtins."""
     lock = HubLockFile()

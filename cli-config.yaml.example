@@ -784,6 +784,15 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # How long a skill write waits for another Hermes process to finish before
+  # giving up and reporting "skill library is busy" (seconds, default 30).
+  # Only matters when several Hermes processes share one profile — the agent,
+  # a `hermes update`, a cron run. Raise it if you see spurious "busy" errors
+  # under heavy concurrency; lower it to fail fast instead of hanging.
+  # Background passes (bundled-skill sync, remote pulls) are unaffected: they
+  # defer and retry rather than wait, so startup is never blocked.
+  # lock_timeout: 30
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

@@ -9381,6 +9381,61 @@ async def _standalone_read_json_limited(resp: Any, limit_bytes: int) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _embed_payload_from_block(block: str) -> Optional[Dict[str, Any]]:
+    """Parse an [EMBED] JSON block into a Discord REST embed payload dict.
+
+    Standalone (non-gateway) sends use the HTTP API directly, so this
+    mirrors ``DiscordAdapter._extract_embed`` without needing discord.py.
+    Returns None when the block isn't valid embed JSON.
+    """
+    try:
+        data = json.loads(DiscordAdapter._clean_embed_json(block), strict=False)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    emb: Dict[str, Any] = {}
+    for key in ("title", "description", "url"):
+        if data.get(key):
+            emb[key] = data[key]
+    if data.get("color"):
+        c = data["color"]
+        emb["color"] = c if isinstance(c, int) else int(str(c).lstrip("#"), 16)
+    if data.get("footer"):
+        f = data["footer"]
+        emb["footer"] = {"text": f} if isinstance(f, str) else {"text": f.get("text", "")}
+    if data.get("thumbnail"):
+        emb["thumbnail"] = {"url": data["thumbnail"]}
+    fields = []
+    for f in data.get("fields", [])[:25]:
+        fields.append({
+            "name": f.get("name", "\u200B"),
+            "value": f.get("value", "\u200B"),
+            "inline": bool(f.get("inline", False)),
+        })
+    if fields:
+        emb["fields"] = fields
+    return emb
+
+
+def _split_embed_from_message(message: str):
+    """Split ``message`` into (text, embed_payload) — the [EMBED] marker is
+    removed and rendered as a native embed; None when no marker present."""
+    if "[EMBED]" not in message:
+        return message, None
+    try:
+        start = message.index("[EMBED]")
+        end = message.index("[/EMBED]", start)
+        block = message[start + 7:end].strip()
+        payload = _embed_payload_from_block(block)
+        if payload is None:
+            return message, None
+        text = (message[:start] + message[end + len("[/EMBED]"):]).strip()
+        return text, payload
+    except Exception:
+        return message, None
+
+
 async def _standalone_send(
     pconfig,
     chat_id: str,
@@ -9426,6 +9481,12 @@ async def _standalone_send(
         media_files = media_files or []
         last_data = None
         warnings = []
+
+        # [EMBED] marker -> native embed payload (standalone path: cron and
+        # send_message tool deliveries never pass through adapter.send()).
+        send_text, embed_payload = _split_embed_from_message(message)
+        if embed_payload is not None:
+            message = send_text
 
         # Thread endpoint: Discord threads are channels; send directly to the thread ID.
         if thread_id:
@@ -9525,7 +9586,7 @@ async def _standalone_send(
                             headers=json_headers,
                             json={
                                 "name": thread_name,
-                                "message": {"content": message},
+                                "message": {"content": message, **({"embeds": [embed_payload]} if embed_payload else {})},
                             },
                             **_req_kw,
                         ) as resp:
@@ -9558,7 +9619,7 @@ async def _standalone_send(
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             # Send text message (skip if empty and media is present)
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+                async with session.post(url, headers=json_headers, json={"content": message, **({"embeds": [embed_payload]} if embed_payload else {})}, **_req_kw) as resp:
                     if resp.status not in {200, 201}:
                         body = await _standalone_read_text_limited(
                             resp,

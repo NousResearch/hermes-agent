@@ -89,6 +89,36 @@ class TestExtractEmbed:
         cleaned = a._clean_embed_json('{"desc": "keep ,} and (1/2) here", "x": [1, 2,],}')
         assert cleaned == '{"desc": "keep ,} and (1/2) here", "x": [1, 2]}'
 
+
+class TestStandaloneEmbedPayload:
+    def test_split_embed_from_message(self):
+        from plugins.platforms.discord.adapter import _split_embed_from_message
+        msg = (
+            "Cronjob Response: X\n-------------\n\n"
+            '[EMBED]\n{"title": "T", "color": "#3fb950", '
+            '"fields": [{"name": "A", "value": "1", "inline": true}]}\n[/EMBED]\n\n'
+            "To stop, send a message."
+        )
+        text, payload = _split_embed_from_message(msg)
+        assert payload is not None
+        assert payload["title"] == "T"
+        assert payload["color"] == 0x3FB950
+        assert len(payload["fields"]) == 1
+        assert "[EMBED]" not in text
+        assert "Cronjob Response" in text and "To stop" in text
+
+    def test_split_no_marker_unchanged(self):
+        from plugins.platforms.discord.adapter import _split_embed_from_message
+        text, payload = _split_embed_from_message("plain message")
+        assert payload is None
+        assert text == "plain message"
+
+    def test_split_bad_json_unchanged(self):
+        from plugins.platforms.discord.adapter import _split_embed_from_message
+        text, payload = _split_embed_from_message("[EMBED]\n{broken\n[/EMBED]")
+        assert payload is None
+        assert "[EMBED]" in text
+
     def test_literal_newlines_accepted(self):
         a = _bare_adapter()
         content = '[EMBED]\n{"title": "T", "description": "line1\nline2"}\n[/EMBED]'

@@ -37,6 +37,60 @@ def _neuter_agent_prewarm_timer(request, monkeypatch):
     yield
 
 
+def test_approval_respond_unknown_choice_resolves_as_deny(monkeypatch):
+    """A choice the approval layer does not know must arrive as an explicit deny."""
+    monkeypatch.setattr(
+        server, "_sess",
+        lambda _params, _rid: ({"session_key": "rpc-session-key"}, None),
+    )
+
+    with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+        response = server._methods["approval.respond"](
+            "approval-1",
+            {"session_id": "rpc-session", "choice": "approve"},
+        )
+
+    assert response["result"] == {"resolved": 1}
+    resolve.assert_called_once_with("rpc-session-key", "deny", resolve_all=False)
+
+
+@pytest.mark.parametrize("bad_all", ["no", "false", "0", 0.1, {}, [1], "true"])
+def test_approval_respond_non_bool_all_does_not_resolve_everything(monkeypatch, bad_all):
+    """Only a literal True may widen one approval into approve-all.
+
+    resolve_gateway_approval consumes resolve_all as a bare truthiness test, so
+    a truthy non-bool off the wire would authorize every queued dangerous
+    command in the session from a single response.
+    """
+    monkeypatch.setattr(
+        server, "_sess",
+        lambda _params, _rid: ({"session_key": "rpc-session-key"}, None),
+    )
+
+    with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+        server._methods["approval.respond"](
+            "approval-1",
+            {"session_id": "rpc-session", "choice": "once", "all": bad_all},
+        )
+
+    assert resolve.call_args.kwargs["resolve_all"] is False
+
+
+def test_approval_respond_all_true_still_resolves_everything(monkeypatch):
+    monkeypatch.setattr(
+        server, "_sess",
+        lambda _params, _rid: ({"session_key": "rpc-session-key"}, None),
+    )
+
+    with patch("tools.approval.resolve_gateway_approval", return_value=3) as resolve:
+        server._methods["approval.respond"](
+            "approval-1",
+            {"session_id": "rpc-session", "choice": "once", "all": True},
+        )
+
+    assert resolve.call_args.kwargs["resolve_all"] is True
+
+
 def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

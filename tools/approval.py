@@ -599,6 +599,42 @@ def _sudo_stdin_block_result(description: str) -> dict:
     }
 
 
+# The only values that mean "the user consented". Anything else — an unknown
+# string, an undocumented alias, None, or a non-string — is not consent.
+APPROVAL_CHOICES = frozenset({"once", "session", "always"})
+# What a client may legitimately send in reply to an approval request:
+# the consent values plus an explicit refusal.
+APPROVAL_RESPONSES = APPROVAL_CHOICES | {"deny"}
+
+
+def _is_approval_choice(choice) -> bool:
+    """Return True only for a canonical approval outcome.
+
+    Type-checks before the membership test: an approval outcome arrives from a
+    prompt, a gateway client, or a platform adapter, so it is not guaranteed to
+    be a string. ``choice in APPROVAL_CHOICES`` alone raises ``TypeError`` on an
+    unhashable value (a dict or list), turning the guard that is supposed to
+    deny into a crash.
+    """
+    return isinstance(choice, str) and choice in APPROVAL_CHOICES
+
+
+def _unrecognized_choice_result(pattern_key: str, description: str,
+                                subject: str = "this action") -> dict:
+    """Build the standard block result for an unrecognized approval outcome."""
+    return {
+        "approved": False,
+        "message": (
+            f"BLOCKED: Approval outcome was not recognized. The user has "
+            f"NOT consented to {subject}. Do NOT retry it."
+        ),
+        "pattern_key": pattern_key,
+        "description": description,
+        "outcome": "unknown",
+        "user_consent": False,
+    }
+
+
 # =========================================================================
 # Dangerous command patterns
 # =========================================================================
@@ -2992,10 +3028,18 @@ def _run_approval_gate(
                         f"do NOT rephrase it, and do NOT attempt the same "
                         f"outcome via a different path.{timeout_addendum}"
                     ),
+                    # Sibling gates already report a structured outcome here;
+                    # without it a caller reading result["outcome"] sees None
+                    # for a gateway denial from this gate but a real value from
+                    # the others.
+                    "outcome": "timeout" if not resolved else "denied",
                     "pattern_key": pattern_key,
                     "description": description,
                     "user_consent": False,
                 }
+
+            if not _is_approval_choice(choice):
+                return _unrecognized_choice_result(pattern_key, description)
 
             if choice == "session":
                 approve_session(session_key, pattern_key)
@@ -3038,6 +3082,9 @@ def _run_approval_gate(
             "pattern_key": pattern_key,
             "description": description,
         }
+
+    if not _is_approval_choice(choice):
+        return _unrecognized_choice_result(pattern_key, description)
 
     if choice == "session":
         approve_session(session_key, pattern_key)
@@ -3723,6 +3770,10 @@ def check_all_command_guards(command: str, env_type: str,
                     "deny_reason": deny_reason,
                 }
 
+            if not _is_approval_choice(choice):
+                return _unrecognized_choice_result(
+                    primary_key, combined_desc, "this command")
+
             # A smart-DENY owner override is always one operation, even if an
             # older client returns "session" or "always". Manual and ESCALATE
             # choices retain their existing persistence semantics.
@@ -3818,6 +3869,10 @@ def check_all_command_guards(command: str, env_type: str,
             "outcome": "denied",
             "user_consent": False,
         }
+
+    if not _is_approval_choice(choice):
+        return _unrecognized_choice_result(
+            primary_key, combined_desc, "this command")
 
     # Smart-DENY owner overrides are one-operation scoped. Preserve existing
     # persistence for manual mode and smart ESCALATE.
@@ -4056,6 +4111,10 @@ def check_execute_code_guard(code: str, env_type: str,
             "deny_reason": deny_reason,
         }
 
+    if not _is_approval_choice(choice):
+        return _unrecognized_choice_result(
+            pattern_key, description, "running this code")
+
     # Never persist a smart-DENY override under the coarse execute_code key;
     # doing so would approve unrelated future scripts. Manual and ESCALATE
     # decisions preserve their existing session/permanent behavior.
@@ -4137,7 +4196,7 @@ def request_elicitation_consent(
         if not decision.get("resolved"):
             return "cancel"
         choice = decision.get("choice")
-        if choice in ("once", "session", "always"):
+        if _is_approval_choice(choice):
             return "accept"
         return "decline"
 
@@ -4156,7 +4215,7 @@ def request_elicitation_consent(
         )
         return "decline"
 
-    if choice in ("once", "session", "always"):
+    if _is_approval_choice(choice):
         return "accept"
     return "decline"
 

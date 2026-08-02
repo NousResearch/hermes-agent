@@ -1397,3 +1397,237 @@ class TestApprovalPromptRedaction:
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+
+
+class TestUnrecognizedApprovalOutcomeFailsClosed:
+    """An approval outcome that is not canonical must never mean consent.
+
+    The approval gate receives its outcome from a prompt, a gateway client, or
+    a platform adapter. A client bug, a stale build, or an undocumented alias
+    can put a value there that the gate does not recognize — and the gate must
+    treat every such value as a denial rather than falling through to approval.
+    """
+
+    # Values a drifted, stale, or buggy caller could realistically supply.
+    UNRECOGNIZED = [
+        "approve",      # undocumented alias (WhatsApp's historical wire value)
+        "yes",
+        "allow",
+        "",
+        "Once",         # right word, wrong case
+        "ALWAYS",
+        "once ",        # trailing whitespace
+        None,           # callback returned nothing
+        42,             # wrong type entirely
+        0,
+        True,           # truthy non-string
+        {"choice": "always"},   # unhashable — must deny, not raise
+        ["always"],
+    ]
+
+    CANONICAL = ["once", "session", "always"]
+
+    @staticmethod
+    def _isolate(monkeypatch):
+        """Force the interactive-CLI branch and firewall persistence.
+
+        'session' and 'always' persist an approval, so without a reset between
+        cases a canonical value would silently approve every case after it —
+        the probe would measure its own side effects instead of the guard.
+        """
+        from tools import approval as mod
+
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setattr(mod, "_get_approval_config", lambda: {"mode": "manual"})
+        monkeypatch.setattr(mod, "save_permanent_allowlist", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+        # Replace rather than clear: monkeypatch restores the originals when
+        # the test unwinds, so cleared approval state cannot leak into a later
+        # test file that shares this module-level state.
+        monkeypatch.setattr(mod, "_permanent_approved", set())
+        monkeypatch.setattr(mod, "_session_approved", {})
+        return mod
+
+    @pytest.mark.parametrize("choice", UNRECOGNIZED)
+    def test_check_dangerous_command_denies_unrecognized(self, monkeypatch, choice):
+        mod = self._isolate(monkeypatch)
+        monkeypatch.setattr(mod, "prompt_dangerous_approval",
+                            lambda *_a, **_k: choice)
+
+        result = mod.check_dangerous_command("rm -rf /tmp/target", "local")
+
+        assert result["approved"] is False
+        assert result["outcome"] == "unknown"
+        assert result["user_consent"] is False
+
+    @pytest.mark.parametrize("choice", UNRECOGNIZED)
+    def test_check_all_command_guards_denies_unrecognized(self, monkeypatch, choice):
+        mod = self._isolate(monkeypatch)
+        monkeypatch.setattr(mod, "prompt_dangerous_approval",
+                            lambda *_a, **_k: choice)
+
+        result = mod.check_all_command_guards("rm -rf /tmp/target", "local")
+
+        assert result["approved"] is False
+        assert result["outcome"] == "unknown"
+        assert result["user_consent"] is False
+
+    @pytest.mark.parametrize("choice", CANONICAL)
+    def test_canonical_choices_still_approve(self, monkeypatch, choice):
+        """The guard must deny only what it does not recognize."""
+        mod = self._isolate(monkeypatch)
+        monkeypatch.setattr(mod, "prompt_dangerous_approval",
+                            lambda *_a, **_k: choice)
+
+        assert mod.check_dangerous_command(
+            "rm -rf /tmp/target", "local")["approved"] is True
+
+        self._isolate(monkeypatch)
+        monkeypatch.setattr(mod, "prompt_dangerous_approval",
+                            lambda *_a, **_k: choice)
+        assert mod.check_all_command_guards(
+            "rm -rf /tmp/target", "local")["approved"] is True
+
+    @pytest.mark.parametrize("choice", [{"choice": "always"}, ["always"], {1, 2}])
+    def test_unhashable_outcome_denies_instead_of_raising(self, monkeypatch, choice):
+        """An unhashable outcome must deny, not raise.
+
+        ``choice in APPROVAL_CHOICES`` alone raises TypeError on a dict or a
+        list, which turns the guard meant to deny into a crash — the caller,
+        not the guard, would then decide what happens.
+        """
+        mod = self._isolate(monkeypatch)
+        monkeypatch.setattr(mod, "prompt_dangerous_approval",
+                            lambda *_a, **_k: choice)
+
+        result = mod.check_dangerous_command("rm -rf /tmp/target", "local")
+
+        assert result["approved"] is False
+        assert result["outcome"] == "unknown"
+
+    def test_is_approval_choice_helper(self):
+        from tools.approval import _is_approval_choice
+
+        for good in ("once", "session", "always"):
+            assert _is_approval_choice(good) is True
+        for bad in ("deny", "approve", "", "Once", None, 1, True,
+                    {"a": 1}, ["once"], object()):
+            assert _is_approval_choice(bad) is False
+
+
+class TestUnrecognizedGatewayOutcomeFailsClosed:
+    """The gateway branches must fail closed too.
+
+    The CLI branch and the gateway branch reach their approve path through
+    different code, so covering one proves nothing about the other. These
+    exercise the three gateway-side decision sites: _run_approval_gate (via
+    check_dangerous_command), check_all_command_guards, and
+    check_execute_code_guard.
+    """
+
+    # None is excluded deliberately: upstream's gateway branch already treats a
+    # None outcome as an explicit denial before this guard is reached, so it is
+    # denied as "denied" rather than "unknown". Covered separately below.
+    UNRECOGNIZED = [
+        "approve", "yes", "", "Once", "ALWAYS", 42, True,
+        {"choice": "always"}, ["always"],
+    ]
+
+    @staticmethod
+    def _isolate(monkeypatch, choice):
+        """Force the gateway branch and inject `choice` as the resolved outcome."""
+        from tools import approval as mod
+
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.setattr(mod, "_get_approval_config", lambda: {"mode": "manual"})
+        monkeypatch.setattr(mod, "save_permanent_allowlist", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+        monkeypatch.setattr(mod, "_permanent_approved", set())
+        monkeypatch.setattr(mod, "_session_approved", {})
+        # A registered notify callback is what selects the gateway branch.
+        monkeypatch.setattr(
+            mod, "_gateway_notify_cbs",
+            {mod.get_current_session_key(): lambda *_a, **_k: True},
+        )
+        monkeypatch.setattr(
+            mod, "_await_gateway_decision",
+            lambda *_a, **_k: {"resolved": True, "choice": choice,
+                               "reason": None, "notify_failed": False},
+        )
+        return mod
+
+    @pytest.mark.parametrize("choice", UNRECOGNIZED)
+    def test_gateway_dangerous_command_denies_unrecognized(self, monkeypatch, choice):
+        mod = self._isolate(monkeypatch, choice)
+
+        result = mod.check_dangerous_command("rm -rf /tmp/target", "local")
+
+        assert result["approved"] is False
+        assert result["outcome"] == "unknown"
+        assert result["user_consent"] is False
+
+    @pytest.mark.parametrize("choice", UNRECOGNIZED)
+    def test_gateway_all_command_guards_denies_unrecognized(self, monkeypatch, choice):
+        mod = self._isolate(monkeypatch, choice)
+
+        result = mod.check_all_command_guards("rm -rf /tmp/target", "local")
+
+        assert result["approved"] is False
+        assert result["outcome"] == "unknown"
+        assert result["user_consent"] is False
+
+    @pytest.mark.parametrize("choice", UNRECOGNIZED)
+    def test_gateway_execute_code_guard_denies_unrecognized(self, monkeypatch, choice):
+        mod = self._isolate(monkeypatch, choice)
+
+        result = mod.check_execute_code_guard(
+            "import os; os.system('rm -rf /tmp/target')", "local")
+
+        assert result["approved"] is False
+        assert result["outcome"] == "unknown"
+        assert result["user_consent"] is False
+
+    @pytest.mark.parametrize("choice", ["once", "session", "always"])
+    def test_gateway_canonical_choices_still_approve(self, monkeypatch, choice):
+        """The gateway guard must deny only what it does not recognize."""
+        mod = self._isolate(monkeypatch, choice)
+        assert mod.check_dangerous_command(
+            "rm -rf /tmp/target", "local")["approved"] is True
+
+        mod = self._isolate(monkeypatch, choice)
+        assert mod.check_all_command_guards(
+            "rm -rf /tmp/target", "local")["approved"] is True
+
+        mod = self._isolate(monkeypatch, choice)
+        assert mod.check_execute_code_guard(
+            "import os; os.system('rm -rf /tmp/target')", "local")["approved"] is True
+
+    @pytest.mark.parametrize("fn_name,args", [
+        ("check_dangerous_command", ("rm -rf /tmp/target", "local")),
+        ("check_all_command_guards", ("rm -rf /tmp/target", "local")),
+        ("check_execute_code_guard",
+         ("import os; os.system('rm -rf /tmp/target')", "local")),
+    ])
+    def test_gateway_none_outcome_is_denied_as_explicit_denial(
+        self, monkeypatch, fn_name, args,
+    ):
+        """A None outcome is a denial, reported as "denied" not "unknown".
+
+        The gateway branch checks for an unresolved/None outcome before the
+        unrecognized-value guard, so it is classified as an explicit denial.
+        Either way it is not consent, which is what matters.
+        """
+        mod = self._isolate(monkeypatch, None)
+
+        result = getattr(mod, fn_name)(*args)
+
+        assert result["approved"] is False
+        assert result["user_consent"] is False
+        assert result["outcome"] in ("denied", "timeout")

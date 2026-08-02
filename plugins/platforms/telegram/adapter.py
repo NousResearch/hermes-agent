@@ -6354,6 +6354,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
+                # Checked after authorization so an unauthorized clicker
+                # cannot use the reply to probe which payloads are valid.
+                from tools.approval import APPROVAL_RESPONSES
+                if choice not in APPROVAL_RESPONSES:
+                    await query.answer(text="Invalid approval data.")
+                    return
+
                 session_key = self._approval_state.pop(approval_id, None)
                 if not session_key:
                     await query.answer(text="This approval has already been resolved.")

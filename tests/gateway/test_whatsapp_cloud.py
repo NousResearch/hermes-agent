@@ -1121,7 +1121,9 @@ class TestDispatchInteractiveReplyApproval:
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        # The "approve" wire value is translated at the edge; only the
+        # canonical vocabulary reaches the approval layer.
+        assert calls == [("sess-app-1", "once")]
         assert "app1" not in adapter._exec_approval_state
         confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
         assert confirm_payload["type"] == "text"
@@ -1204,7 +1206,9 @@ class TestDispatchInteractiveReplyAuthorization:
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        # The "approve" wire value is translated at the edge; only the
+        # canonical vocabulary reaches the approval layer.
+        assert calls == [("sess-app-1", "once")]
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")

@@ -86,6 +86,11 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_API_VERSION = "v20.0"
+
+# Interactive-button payloads predate the approval layer's canonical
+# once/session/always vocabulary. Map the wire value to the canonical one at
+# the edge; buttons already sitting in a user's chat keep working.
+_APPROVAL_WIRE_ALIASES = {"approve": "once"}
 # ``None`` → aiohttp/asyncio ``create_server`` binds one listening socket per
 # address family (IPv4 + IPv6). The old "0.0.0.0" default bound IPv4 ONLY and
 # was unreachable over IPv6-only private networks (e.g. Fly.io 6PN) — same
@@ -1798,7 +1803,15 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             parts = button_id.split(":", 2)
             if len(parts) != 3:
                 return False
-            _, approval_id, choice = parts
+            _, approval_id, raw_choice = parts
+            # The button payload carries "approve"/"deny"; the approval layer's
+            # canonical vocabulary is once/session/always. Validate the wire
+            # value against what this adapter actually emits BEFORE translating,
+            # so the accepted wire vocabulary stays exactly as it was, then
+            # translate so only canonical values cross into the gate.
+            if raw_choice not in ("approve", "deny"):
+                return False
+            choice = _APPROVAL_WIRE_ALIASES.get(raw_choice, raw_choice)
             session_key = self._exec_approval_state.pop(approval_id, None)
             if not session_key:
                 logger.info(
@@ -1806,9 +1819,6 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "(approval_id=%s) — likely stale; falling back to text",
                     approval_id,
                 )
-                return False
-            if choice not in ("approve", "deny"):
-                self._exec_approval_state[approval_id] = session_key
                 return False
             try:
                 from tools.approval import resolve_gateway_approval
@@ -1830,7 +1840,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             try:
                 if count:
                     confirm_text = (
-                        "✅ Approved." if choice == "approve" else "❌ Denied."
+                        "✅ Approved." if choice == "once" else "❌ Denied."
                     )
                 else:
                     confirm_text = (

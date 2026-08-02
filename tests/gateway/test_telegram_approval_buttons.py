@@ -207,6 +207,65 @@ class TestTelegramApprovalCallback:
 
 
     @pytest.mark.asyncio
+    async def test_unrecognized_choice_is_rejected_without_resolving(self):
+        """A payload the approval layer does not know must resolve nothing.
+
+        The approval state must also survive, so a stale or malformed tap
+        cannot consume a pending approval the user still needs to answer.
+        """
+        adapter = _make_adapter()
+        adapter._approval_state[11] = "agent:main:telegram:group:12345:99"
+
+        query = AsyncMock()
+        query.data = "ea:approve:11"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Norbert"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval") as resolve:
+                await adapter._handle_callback_query(update, context)
+
+        resolve.assert_not_called()
+        assert adapter._approval_state[11] == "agent:main:telegram:group:12345:99"
+        assert "invalid approval" in query.answer.call_args.kwargs["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_user_is_rejected_before_choice_validation(self):
+        """Authorization is answered first, so the reply is not a payload oracle."""
+        adapter = _make_adapter()
+        adapter._approval_state[12] = "agent:main:telegram:group:12345:99"
+
+        query = AsyncMock()
+        query.data = "ea:bogus:12"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Mallory"
+        query.from_user.id = "99999"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "12345"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval") as resolve:
+                await adapter._handle_callback_query(update, context)
+
+        resolve.assert_not_called()
+        assert "not authorized" in query.answer.call_args.kwargs["text"].lower()
+
+    @pytest.mark.asyncio
     async def test_resume_typing_after_inline_approval(self):
         """Clicking an inline approval button must un-pause the chat's typing.
 

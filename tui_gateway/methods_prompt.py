@@ -912,13 +912,32 @@ def _(rid, params: dict) -> dict:
     try:
         from tools.approval import resolve_gateway_approval
 
+        # Both fields come off the wire, so neither can be trusted to have the
+        # shape the resolver expects.
+        #
+        # `choice` is forwarded only when it is one the approval layer knows;
+        # anything else becomes an explicit deny rather than an unrecognized
+        # value the gate has to interpret.
+        from tools.approval import APPROVAL_RESPONSES
+
+        raw_choice = params.get("choice", "deny")
+        choice = (
+            raw_choice
+            if isinstance(raw_choice, str) and raw_choice in APPROVAL_RESPONSES
+            else "deny"
+        )
+        # `all` is consumed as a bare truthiness test by the resolver, so any
+        # truthy non-bool ("false", "no", 0.1, [1]) would silently widen a
+        # single approval into approve-everything-queued. Require True.
+        resolve_all = params.get("all", False) is True
+
         return _ok(
             rid,
             {
                 "resolved": resolve_gateway_approval(
                     session["session_key"],
-                    params.get("choice", "deny"),
-                    resolve_all=params.get("all", False),
+                    choice,
+                    resolve_all=resolve_all,
                 )
             },
         )

@@ -126,3 +126,67 @@ class TestHeadersReachBackend:
         self._run(headers={"User-Agent": "ok", "X-Bad": "a\r\nInjected: 1"})
         assert capturing_backend.calls
         assert capturing_backend.calls[0].get("headers") == {"User-Agent": "ok"}
+
+
+class _CapturingFirecrawlClient:
+    """Fake Firecrawl SDK client that records the scrape() kwargs it receives."""
+
+    def __init__(self):
+        self.scrape_calls = []
+
+    def scrape(self, **kwargs):
+        self.scrape_calls.append(kwargs)
+        return {"markdown": "ok", "metadata": {"sourceURL": kwargs["url"], "title": "Ex"}}
+
+
+@pytest.fixture
+def firecrawl_scrape_client(monkeypatch):
+    """Patch the real Firecrawl provider's SDK seam + policy gates.
+
+    Exercises ``FirecrawlWebSearchProvider.extract`` end-to-end down to the
+    ``_get_firecrawl_client().scrape(**scrape_kwargs)`` boundary, so a
+    regression in ``scrape_kwargs`` construction (e.g. dropping ``headers``)
+    is caught — the generic-provider tests above only cover dispatcher
+    plumbing, not this SDK call shape.
+    """
+    from plugins.web.firecrawl import provider as fc_provider
+
+    client = _CapturingFirecrawlClient()
+    monkeypatch.setattr(fc_provider, "_get_firecrawl_client", lambda: client)
+    monkeypatch.setattr(fc_provider, "check_website_access", lambda url: None)
+    monkeypatch.setattr(fc_provider, "is_safe_url", lambda url: True)
+    # Force the keyed SDK path: without credentials the provider now short-
+    # circuits into the keyless failover ring (which never touches the SDK
+    # ``scrape`` seam these tests pin), so disable it here.
+    monkeypatch.setattr(fc_provider, "_use_keyless_ring", lambda: False)
+    return client
+
+
+class TestScrapeSDKBoundary:
+    """Verify the changed Firecrawl SDK boundary, not just the dispatcher."""
+
+    def _extract(self, provider_client, **kwargs):
+        from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
+
+        return asyncio.run(
+            FirecrawlWebSearchProvider().extract(["https://example.com"], **kwargs)
+        )
+
+    def test_scrape_receives_headers_when_supplied(self, firecrawl_scrape_client):
+        self._extract(
+            firecrawl_scrape_client, headers={"User-Agent": "HermesBot/1.0"}
+        )
+        assert firecrawl_scrape_client.scrape_calls, "scrape() was never called"
+        call = firecrawl_scrape_client.scrape_calls[0]
+        assert call.get("headers") == {"User-Agent": "HermesBot/1.0"}
+        assert call["url"] == "https://example.com"
+
+    def test_scrape_omits_headers_when_unset(self, firecrawl_scrape_client):
+        self._extract(firecrawl_scrape_client)
+        assert firecrawl_scrape_client.scrape_calls
+        assert "headers" not in firecrawl_scrape_client.scrape_calls[0]
+
+    def test_scrape_omits_headers_when_empty(self, firecrawl_scrape_client):
+        self._extract(firecrawl_scrape_client, headers={})
+        assert firecrawl_scrape_client.scrape_calls
+        assert "headers" not in firecrawl_scrape_client.scrape_calls[0]

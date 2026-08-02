@@ -539,10 +539,18 @@ class SessionManager:
         # conversation. A durable ``user;user`` violation left in state.db would
         # otherwise re-fire the pre-request defensive repair on every request
         # for the rest of the session (see hermes_state.get_messages_as_conversation).
+        from hermes_state_retention import SessionHistoryUnavailableError
+
         try:
             history = db.get_messages_as_conversation(
                 session_id, repair_alternation=True
             )
+        except SessionHistoryUnavailableError:
+            logger.info(
+                "ACP session %s is metadata-only and cannot be restored",
+                session_id,
+            )
+            return None
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []

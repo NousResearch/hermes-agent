@@ -683,6 +683,24 @@ memory:
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
 # =============================================================================
+# Session Retention
+# =============================================================================
+# Automatic maintenance is opt-in. "delete" preserves the historical direct
+# prune behavior; "layered" compacts tool payloads, then keeps metadata-only
+# rows before deleting them on a later run.
+sessions:
+  auto_prune: false
+  retention_mode: delete       # "delete" or "layered"
+  compact_tool_results_after_days: 7
+  metadata_only_after_days: 30
+  retention_days: 90
+  retention_by_source: {}      # e.g. {cron: {retention_days: 45}}
+  vacuum_after_prune: true
+  vacuum_min_reclaim_mb: 256
+  vacuum_min_reclaim_ratio: 0.20
+  min_interval_hours: 24
+
+# =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================
 # Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are

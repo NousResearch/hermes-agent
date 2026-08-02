@@ -956,6 +956,29 @@ class CLICommandsMixin:
             _cprint("  Already on that session.")
             return
 
+        if session_meta.get("retention_stage") == "metadata_only":
+            _cprint(
+                f"  Session '{target_id}' history expired; metadata was retained."
+            )
+            return
+
+        # Read first, then atomically reopen before mutating the current CLI
+        # session. If retention wins the race, reopen_session refuses and the
+        # caller remains on the original conversation.
+        try:
+            model_history, display_history = self._session_db.get_resume_conversations(
+                target_id
+            )
+            self._session_db.reopen_session(target_id)
+        except Exception as exc:
+            from hermes_state_retention import SessionHistoryUnavailableError
+
+            if isinstance(exc, SessionHistoryUnavailableError):
+                _cprint(f"  {exc}")
+            else:
+                _cprint(f"  Could not resume session '{target_id}': {exc}")
+            return
+
         old_session_id = self.session_id
         # Flush un-persisted messages before ending the old session (#47202).
         if self.agent:
@@ -989,20 +1012,11 @@ class CLICommandsMixin:
         # lineage verbatim, used by _display_resumed_history() so timeline
         # events and ancestor rows render correctly (matching the startup
         # --resume path in _preload_resumed_session).
-        model_history, display_history = self._session_db.get_resume_conversations(
-            target_id
-        )
         restored = [m for m in (model_history or []) if m.get("role") != "session_meta"]
         self.conversation_history = restored
         self._resume_display_history = [
             m for m in (display_history or []) if m.get("role") != "session_meta"
         ]
-
-        # Re-open the target session so it's not marked as ended
-        try:
-            self._session_db.reopen_session(target_id)
-        except Exception:
-            pass
 
         # Sync the agent if already initialised
         if self.agent:

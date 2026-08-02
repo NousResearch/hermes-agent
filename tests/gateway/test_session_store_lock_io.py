@@ -198,6 +198,65 @@ class TestRecoverOutsideLock:
         )
 
 
+class TestSwitchOutsideLock:
+    def test_reopen_session_not_holding_global_routing_lock(self, tmp_path):
+        source = _source()
+        db = _db_with_rows({})
+        store = _make_store(tmp_path, db)
+        key = store._generate_session_key(source)
+        _seed_entry(store, key, "current-session")
+
+        calls_under_lock = []
+
+        def tracked_reopen(_session_id):
+            calls_under_lock.append(store._lock.held)
+
+        db.reopen_session.side_effect = tracked_reopen
+
+        switched = store.switch_session(key, "target-session")
+
+        assert switched is not None
+        assert switched.session_id == "target-session"
+        assert calls_under_lock == [False]
+
+    def test_concurrent_switches_serialize_without_orphaning_first_target(
+        self, tmp_path
+    ):
+        source = _source()
+        db = _db_with_rows({})
+        store = _make_store(tmp_path, db)
+        key = store._generate_session_key(source)
+        _seed_entry(store, key, "current-session")
+        first_reopen_started = threading.Event()
+        release_first = threading.Event()
+
+        def controlled_reopen(session_id):
+            if session_id == "first-target":
+                first_reopen_started.set()
+                assert release_first.wait(timeout=10)
+
+        db.reopen_session.side_effect = controlled_reopen
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(store.switch_session, key, "first-target")
+            assert first_reopen_started.wait(timeout=10)
+            second = pool.submit(store.switch_session, key, "second-target")
+            assert db.reopen_session.call_count == 1
+            release_first.set()
+            assert first.result(timeout=10).session_id == "first-target"
+            assert second.result(timeout=10).session_id == "second-target"
+
+        assert store._entries[key].session_id == "second-target"
+        assert [call.args[0] for call in db.reopen_session.call_args_list] == [
+            "first-target",
+            "second-target",
+        ]
+        assert [call.args[0] for call in db.promote_to_session_reset.call_args_list] == [
+            "current-session",
+            "first-target",
+        ]
+
+
 def test_concurrent_same_key_returns_one_published_session(tmp_path):
     """Concurrent first messages for one routing key must converge on one ID."""
     source = _source()
@@ -252,5 +311,3 @@ def test_auto_reset_does_not_recover_session_being_ended(tmp_path):
         old.session_id, "suspended"
     )
     db.end_session.assert_not_called()
-
-

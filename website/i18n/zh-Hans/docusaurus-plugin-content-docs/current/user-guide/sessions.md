@@ -574,12 +574,14 @@ state.db 后可安全删除。
 
 ## Session 过期与清理
 
-### 自动清理
+### 自动清理与分层保留
 
 - Gateway session 根据配置的重置策略自动重置
 - 重置前，agent 保存即将过期 session 中的记忆和技能
-- 可选自动清理：当 `sessions.auto_prune` 为 `true` 时，在 CLI/gateway 启动时清理早于 `sessions.retention_days`（默认 90）天的已结束 session
-- 实际删除了行的清理操作完成后，`state.db` 会执行 `VACUUM` 以回收磁盘空间（SQLite 在普通 DELETE 后不会缩小文件）
+- 可选自动维护：当 `sessions.auto_prune` 为 `true` 时，CLI/gateway 启动时会运行配置的保留策略
+- `retention_mode: delete` 是兼容默认值，在超过 `retention_days` 后直接清理已结束 session
+- `retention_mode: layered` 会先替换旧工具结果的内容，随后仅保留元数据；只有已由保留策略转为元数据的记录，才会在之后的一次运行中删除
+- 只有可回收空间同时达到绝对值和比例阈值，且磁盘有足够临时重写空间时，才会执行 `VACUUM`
 - 清理最多每 `sessions.min_interval_hours`（默认 24）小时运行一次；上次运行时间戳记录在 `state.db` 内部，因此在同一 `HERMES_HOME` 下的所有 Hermes 进程间共享
 
 默认为**关闭**——session 历史对 `session_search` 召回很有价值，静默删除可能会让用户感到意外。在 `~/.hermes/config.yaml` 中启用：
@@ -587,18 +589,32 @@ state.db 后可安全删除。
 ```yaml
 sessions:
   auto_prune: true          # 选择启用——默认为 false
-  retention_days: 90        # 保留已结束 session 的天数
-  vacuum_after_prune: true  # 清理后回收磁盘空间
+  retention_mode: layered   # delete（默认）或 layered
+  compact_tool_results_after_days: 7
+  metadata_only_after_days: 30
+  retention_days: 90
+  retention_by_source:      # 可选；未指定的值继承全局配置
+    cron:
+      compact_tool_results_after_days: 3
+      metadata_only_after_days: 14
+      retention_days: 45
+  vacuum_after_prune: true
+  vacuum_min_reclaim_mb: 256
+  vacuum_min_reclaim_ratio: 0.20
   min_interval_hours: 24    # 清理间隔不短于此值
 ```
 
-活跃 session 永远不会被自动清理，无论时间多长。
+活跃 session 永远不会被自动清理，无论时间多长。已结束 session 按最后一条消息的时间计算闲置期；压缩 lineage 作为同一个对话处理，并使用当前 tip 的 source。固定的 session 和用户手动归档的 session 不参与分层维护。仅保留元数据的 session 仍可查看元数据，但不能作为空对话恢复。
 
 ### 手动清理
 
 ```bash
 # 清理 90 天前的 session
 hermes sessions prune
+
+# 预览/执行 config.yaml 中的保留策略
+hermes sessions maintain --dry-run
+hermes sessions maintain --yes
 
 # 删除特定 session
 hermes sessions delete <session_id>
@@ -607,6 +623,8 @@ hermes sessions delete <session_id>
 hermes sessions export backup.jsonl
 hermes sessions prune --older-than 30 --yes
 ```
+
+`hermes sessions prune` 保持原有的直接删除语义；需要应用 `config.yaml` 中的 `retention_mode` 和按 source 配置时，请使用 `hermes sessions maintain`。
 
 :::tip
 数据库增长缓慢（典型情况：数百个 session 约 10–15 MB），session 历史为跨历史对话的 `session_search` 召回提供支持，因此自动清理默认关闭。如果你运行繁重的 gateway/cron 工作负载且 `state.db` 明显影响性能（已观察到的故障模式：约 1000 个 session 的 384 MB state.db 导致 FTS5 插入和 `/resume` 列表变慢），则启用它。使用 `hermes sessions prune` 进行一次性清理，无需开启自动清理。

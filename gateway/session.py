@@ -1214,6 +1214,12 @@ class SessionStore:
         self._persisted_routing_generation = 0
         self._inflight_lock = threading.Lock()
         self._inflight_sessions: Dict[str, _SessionFlight] = {}
+        # Serialize routing transitions per key without holding the global
+        # routing lock across SQLite or fsync. A fixed stripe set is bounded
+        # while keeping unrelated chats concurrent in practice.
+        self._route_transition_locks = tuple(
+            threading.RLock() for _ in range(64)
+        )
         # An unscoped pre-migration Slack key can represent at most one
         # workspace. Claim it once per process so simultaneous first messages
         # from two workspaces cannot both revive the same legacy session.
@@ -2199,7 +2205,10 @@ class SessionStore:
             return slot.result
 
         try:
-            result = self._get_or_create_session_impl(source, force_new=force_new)
+            with self._route_transition_lock(session_key):
+                result = self._get_or_create_session_impl(
+                    source, force_new=force_new
+                )
             slot.result = result
             return result
         except BaseException as exc:
@@ -2209,6 +2218,22 @@ class SessionStore:
             slot.event.set()
             with inflight_lock:
                 self._inflight_sessions.pop(session_key, None)
+
+    def _route_transition_lock(self, session_key: str):
+        locks = getattr(self, "_route_transition_locks", None)
+        if not locks:
+            # Compatibility for old test fixtures constructed via __new__.
+            guard = getattr(self, "_inflight_lock", None)
+            if guard is None:
+                guard = threading.Lock()
+                self._inflight_lock = guard
+            with guard:
+                locks = getattr(self, "_route_transition_locks", None)
+                if not locks:
+                    locks = tuple(threading.RLock() for _ in range(64))
+                    self._route_transition_locks = locks
+        digest = hashlib.sha256(session_key.encode("utf-8")).digest()
+        return locks[int.from_bytes(digest[:4], "big") % len(locks)]
 
     def _get_or_create_session_impl(
         self,
@@ -2738,6 +2763,12 @@ class SessionStore:
         return count
 
     def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
+        with self._route_transition_lock(session_key):
+            return self._reset_session_impl(session_key, display_name)
+
+    def _reset_session_impl(
+        self, session_key: str, display_name: Optional[str] = None
+    ) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         db_end_session_id = None
         db_create_kwargs = None
@@ -2814,6 +2845,19 @@ class SessionStore:
         expected_session_id: str,
         target_session_id: str,
     ) -> Optional[SessionEntry]:
+        with self._route_transition_lock(session_key):
+            return self._advance_compression_session_impl(
+                session_key,
+                expected_session_id,
+                target_session_id,
+            )
+
+    def _advance_compression_session_impl(
+        self,
+        session_key: str,
+        expected_session_id: str,
+        target_session_id: str,
+    ) -> Optional[SessionEntry]:
         """CAS-advance one route along an already-verified compression lineage.
 
         Unlike ``switch_session``, this does not end or reopen SQLite rows. The
@@ -2844,7 +2888,15 @@ class SessionStore:
             self._save()
             return entry
 
-    def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
+    def switch_session(
+        self, session_key: str, target_session_id: str
+    ) -> Optional[SessionEntry]:
+        with self._route_transition_lock(session_key):
+            return self._switch_session_impl(session_key, target_session_id)
+
+    def _switch_session_impl(
+        self, session_key: str, target_session_id: str
+    ) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.
 
         Used by ``/resume`` to restore a previously-named session.
@@ -2856,6 +2908,8 @@ class SessionStore:
         db_end_session_id = None
         new_entry = None
 
+        # Phase 1: snapshot the routing decision without doing SQLite or
+        # filesystem I/O under the process-wide routing lock.
         with self._lock:
             self._ensure_loaded_locked()
 
@@ -2867,6 +2921,31 @@ class SessionStore:
             # Don't switch if already on that session
             if old_entry.session_id == target_session_id:
                 return old_entry
+
+            expected_session_id = old_entry.session_id
+
+        # Transactional retention guard outside the global routing lock:
+        # either maintenance committed metadata-only first and this refuses,
+        # or the target becomes active before a retention sweep can select it.
+        if self._db:
+            try:
+                self._db.reopen_session(target_session_id)
+            except Exception as exc:
+                logger.debug("Session DB reopen_session failed: %s", exc)
+                return None
+
+        # Phase 2: compare-and-swap the route. A concurrent /new, /reset, or
+        # /resume wins by changing the expected session id.
+        routing_snapshot = None
+        with self._lock:
+            self._ensure_loaded_locked()
+            old_entry = self._entries.get(session_key)
+            if old_entry is None:
+                return None
+            if old_entry.session_id == target_session_id:
+                return old_entry
+            if old_entry.session_id != expected_session_id:
+                return None
 
             db_end_session_id = old_entry.session_id
 
@@ -2883,7 +2962,10 @@ class SessionStore:
             )
 
             self._entries[session_key] = new_entry
-            self._save()
+            routing_snapshot = self._snapshot_routing_locked()
+
+        if routing_snapshot is not None:
+            self._persist_routing_data(*routing_snapshot)
 
         if self._db and db_end_session_id:
             try:
@@ -2900,10 +2982,6 @@ class SessionStore:
                 logger.debug("Session DB end_session failed: %s", e)
 
         if self._db:
-            try:
-                self._db.reopen_session(target_session_id)
-            except Exception as e:
-                logger.debug("Session DB reopen_session failed: %s", e)
             self._record_gateway_session_peer(
                 target_session_id,
                 session_key,
@@ -3240,6 +3318,8 @@ class SessionStore:
         """
         if not self._db:
             return []
+        from hermes_state_retention import SessionHistoryUnavailableError
+
         try:
             # repair_alternation: this load feeds LIVE REPLAY. A durable
             # user;user wedge (e.g. a turn that persisted no assistant row)
@@ -3248,6 +3328,8 @@ class SessionStore:
             return self._db.get_messages_as_conversation(
                 session_id, repair_alternation=True
             )
+        except SessionHistoryUnavailableError:
+            raise
         except Exception as e:
             logger.debug("Could not load messages from DB: %s", e)
             return []

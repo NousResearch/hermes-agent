@@ -4455,6 +4455,12 @@ class GatewaySlashCommandsMixin:
             # persisted transcript.
             return t("gateway.resume.blocked_not_owner", name=name)
 
+        target_meta = await self._session_db.get_session(target_id)
+        if target_meta and target_meta.get("retention_stage") == "metadata_only":
+            return (
+                f"Session '{target_id}' history expired; metadata was retained."
+            )
+
         # Check if already on that session
         current_entry = await self.async_session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:

@@ -69,6 +69,14 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _PREVIEW_SCAFFOLDED_SQL,
 )
 from hermes_state_portability import SessionPortabilityMixin
+from hermes_state_retention import (
+    ARCHIVE_ORIGIN_AUTO,
+    ARCHIVE_ORIGIN_USER,
+    RETENTION_STAGE_METADATA,
+    SessionHistoryUnavailableError,
+    SessionRetentionMixin,
+    remove_session_artifacts,
+)
 from hermes_state_schema import SessionSchemaMixin
 from hermes_state_search import SessionSearchMixin
 
@@ -1764,7 +1772,12 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
             handle.close()
 
 
-class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin):
+class SessionDB(
+    SessionSearchMixin,
+    SessionSchemaMixin,
+    SessionPortabilityMixin,
+    SessionRetentionMixin,
+):
     """
     SQLite-backed session storage with FTS5 search.
 
@@ -3387,8 +3400,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._execute_write(_do)
 
     def reopen_session(self, session_id: str) -> None:
-        """Clear ended_at/end_reason so a session can be resumed."""
+        """Clear ended_at/end_reason so a session can be resumed.
+
+        Raises :class:`SessionHistoryUnavailableError` after layered retention
+        has intentionally removed the transcript.
+        """
         def _do(conn):
+            if (
+                self._retention_lineage_resume_status(conn, session_id)
+                == RETENTION_STAGE_METADATA
+            ):
+                raise SessionHistoryUnavailableError(session_id)
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
                 (session_id,),
@@ -4901,7 +4923,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             row = cursor.fetchone()
         return row["title"] if row else None
 
-    def set_session_archived(self, session_id: str, archived: bool) -> bool:
+    def set_session_archived(
+        self,
+        session_id: str,
+        archived: bool,
+        *,
+        origin: str = ARCHIVE_ORIGIN_USER,
+    ) -> bool:
         """Archive or unarchive a session.
 
         Archived sessions are hidden from the default session list but keep all
@@ -4909,40 +4937,37 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         chains, archive the whole logical conversation. Desktop lists compression
         roots projected forward to their latest continuation; updating only the
         displayed tip lets the still-unarchived root resurrect it on refresh.
-        Returns True when at least one row was updated.
+        Metadata-only retained sessions cannot be unarchived, because doing so
+        would surface a non-resumable empty conversation. Returns True when at
+        least one row was updated.
         """
         def _do(conn):
+            lineage_ids = self._retention_lineage_ids(conn, session_id)
+            if not lineage_ids:
+                return 0
+            if (
+                not archived
+                and self._retention_lineage_resume_status(conn, session_id)
+                == RETENTION_STAGE_METADATA
+            ):
+                return 0
+            placeholders = ",".join("?" for _ in lineage_ids)
             cursor = conn.execute(
-                """
-                WITH RECURSIVE
-                  ancestors(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT parent.id
-                    FROM ancestors a
-                    JOIN sessions child ON child.id = a.id
-                    JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  descendants(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT child.id
-                    FROM descendants d
-                    JOIN sessions parent ON parent.id = d.id
-                    JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  lineage(id) AS (
-                    SELECT id FROM ancestors
-                    UNION
-                    SELECT id FROM descendants
-                  )
-                UPDATE sessions
-                SET archived = ?
-                WHERE id IN (SELECT id FROM lineage)
+                f"""UPDATE sessions
+                SET archived = ?,
+                    archive_origin = CASE
+                        WHEN ? = ? AND archived = 1 THEN archive_origin
+                        ELSE ?
+                    END
+                WHERE id IN ({placeholders})
                 """,
-                (session_id, session_id, 1 if archived else 0),
+                (
+                    1 if archived else 0,
+                    origin if archived else None,
+                    ARCHIVE_ORIGIN_AUTO,
+                    origin if archived else None,
+                    *lineage_ids,
+                ),
             )
             rowcount = cursor.rowcount
             if rowcount is None or rowcount < 0:
@@ -4964,37 +4989,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         least one row changed.
         """
         def _do(conn):
+            lineage_ids = self._retention_lineage_ids(conn, session_id)
+            if not lineage_ids:
+                return 0
+            placeholders = ",".join("?" for _ in lineage_ids)
             cursor = conn.execute(
-                """
-                WITH RECURSIVE
-                  ancestors(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT parent.id
-                    FROM ancestors a
-                    JOIN sessions child ON child.id = a.id
-                    JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  descendants(id) AS (
-                    SELECT ?
-                    UNION
-                    SELECT child.id
-                    FROM descendants d
-                    JOIN sessions parent ON parent.id = d.id
-                    JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
-                  ),
-                  lineage(id) AS (
-                    SELECT id FROM ancestors
-                    UNION
-                    SELECT id FROM descendants
-                  )
-                UPDATE sessions
+                f"""UPDATE sessions
                 SET pinned = ?
-                WHERE id IN (SELECT id FROM lineage)
+                WHERE id IN ({placeholders})
                 """,
-                (session_id, session_id, 1 if pinned else 0),
+                (1 if pinned else 0, *lineage_ids),
             )
             rowcount = cursor.rowcount
             if rowcount is None or rowcount < 0:
@@ -6499,6 +6503,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_inactive: bool = False,
         repair_alternation: bool = False,
         include_row_ids: bool = False,
+        allow_metadata_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -6515,9 +6520,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         otherwise re-triggers the pre-request defensive repair on every
         single request for the rest of the session's life — the repair
         mutates only the per-request list, never the stored transcript.
-        Inspection/export consumers keep the default and see the transcript
-        verbatim.
+        Metadata-only sessions reject live replay by default. Inspection and
+        export callers may pass ``allow_metadata_only=True`` to receive the
+        expected empty transcript while retaining access to session metadata.
         """
+        if not allow_metadata_only:
+            self.assert_session_history_available(session_id)
         session_ids = [session_id]
         if include_ancestors:
             session_ids = self._session_lineage_root_to_tip(session_id)
@@ -6703,6 +6711,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         halves the resume's DB work versus two separate calls, with byte-identical
         output (see test_get_resume_conversations_matches_separate_reads).
         """
+        self.assert_session_history_available(session_id)
         session_ids = self._session_lineage_root_to_tip(session_id)
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
@@ -7212,28 +7221,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
         """Remove on-disk transcript files for a session.
 
-        Cleans up ``{session_id}.json``, ``{session_id}.jsonl``, and any
-        ``request_dump_{session_id}_*.json`` files left by the gateway.
+        Cleans up ``{session_id}.json``, ``{session_id}.jsonl``, the current
+        ``session_{session_id}.json`` snapshot, and matching request dumps.
         Silently skips files that don't exist and swallows OSError so a
         filesystem hiccup never blocks a DB operation.
         """
-        if sessions_dir is None:
-            return
-        for suffix in (".json", ".jsonl"):
-            p = sessions_dir / f"{session_id}{suffix}"
-            try:
-                p.unlink(missing_ok=True)
-            except OSError:
-                pass
-        # request_dump files use session_id as a prefix component
-        try:
-            for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
-                try:
-                    p.unlink(missing_ok=True)
-                except OSError:
-                    pass
-        except OSError:
-            pass
+        _deleted, warnings = remove_session_artifacts(sessions_dir, session_id)
+        for warning in warnings:
+            logger.warning("%s", warning)
 
     def get_session_delete_targets(self, session_id: str) -> List[str]:
         """Return every session row that :meth:`delete_session` would remove.
@@ -7780,7 +7775,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchall()
         ids = [(r["id"] if isinstance(r, sqlite3.Row) else r[0]) for r in rows]
         for sid in ids:
-            self.set_session_archived(sid, True)
+            self.set_session_archived(sid, True, origin=ARCHIVE_ORIGIN_AUTO)
         return len(ids)
 
     def prune_sessions(
@@ -8549,51 +8544,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           - ``"vacuumed"`` (bool) — true if VACUUM ran
           - ``"error"`` (str, optional) — present only on failure
         """
-        result: Dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
-        try:
-            # Skip if another process/call did maintenance recently.
-            last_raw = self.get_meta("last_auto_prune")
-            now = time.time()
-            if last_raw:
-                try:
-                    last_ts = float(last_raw)
-                    if now - last_ts < min_interval_hours * 3600:
-                        result["skipped"] = True
-                        return result
-                except (TypeError, ValueError):
-                    pass  # corrupt meta; treat as no prior run
-
-            pruned = self.prune_sessions(
-                older_than_days=retention_days,
-                sessions_dir=sessions_dir,
-            )
-            result["pruned"] = pruned
-
-            # Only VACUUM if we actually freed rows — VACUUM on a tight DB
-            # is wasted I/O. Threshold keeps small DBs from paying the cost.
-            if vacuum and pruned > 0:
-                try:
-                    self.vacuum()
-                    result["vacuumed"] = True
-                except Exception as exc:
-                    logger.warning("state.db VACUUM failed: %s", exc)
-
-            # Record the attempt even if pruned == 0, so we don't retry
-            # every startup within the min_interval_hours window.
-            self.set_meta("last_auto_prune", str(now))
-
-            if pruned > 0:
-                logger.info(
-                    "state.db auto-maintenance: pruned %d session(s) inactive for %d days%s",
-                    pruned,
-                    retention_days,
-                    " + VACUUM" if result["vacuumed"] else "",
-                )
-        except Exception as exc:
-            # Maintenance must never block startup. Log and return error marker.
-            logger.warning("state.db auto-maintenance failed: %s", exc)
-            result["error"] = str(exc)
-
+        result = self.maybe_auto_maintain_sessions(
+            {
+                "retention_mode": "delete",
+                "retention_days": retention_days,
+                # This compatibility API historically VACUUMed after any
+                # deletion. Keep that contract here; new config-driven
+                # startup maintenance uses the threshold/headroom gate.
+                "vacuum_after_prune": False,
+            },
+            min_interval_hours=min_interval_hours,
+            sessions_dir=sessions_dir,
+        )
+        if vacuum and result.get("pruned", 0) > 0 and not result.get("error"):
+            try:
+                self.vacuum()
+                result["vacuumed"] = True
+            except Exception as exc:
+                logger.warning("state.db VACUUM failed: %s", exc)
         return result
 
     def maybe_auto_archive(

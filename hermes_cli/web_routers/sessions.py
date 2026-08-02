@@ -673,7 +673,12 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
                 # Title too long, invalid characters, or already in use.
                 raise HTTPException(status_code=400, detail=str(e))
         if body.archived is not None:
-            db.set_session_archived(sid, body.archived)
+            archived_updated = db.set_session_archived(sid, body.archived)
+            if not archived_updated and not body.archived:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Metadata-only session history has expired and cannot be restored.",
+                )
         if body.pinned is not None:
             db.set_session_pinned(sid, body.pinned)
         result = {"ok": True, "title": db.get_session_title(sid) or ""}

@@ -404,9 +404,21 @@ class CLIAgentSetupMixin:
                 resolved_meta = self._session_db.get_session(self.session_id)
                 if resolved_meta:
                     session_meta = resolved_meta
-            restored = self._session_db.get_messages_as_conversation(
-                self.session_id, repair_alternation=True
-            )
+            from hermes_state_retention import SessionHistoryUnavailableError
+
+            try:
+                restored = self._session_db.get_messages_as_conversation(
+                    self.session_id, repair_alternation=True
+                )
+                self._session_db.reopen_session(self.session_id)
+            except SessionHistoryUnavailableError as exc:
+                stream = sys.stderr if _quiet_mode else sys.stdout
+                print(str(exc), file=stream)
+                return False
+            except Exception as exc:
+                stream = sys.stderr if _quiet_mode else sys.stdout
+                print(f"Could not resume session '{self.session_id}': {exc}", file=stream)
+                return False
             if restored:
                 restored = [m for m in restored if m.get("role") != "session_meta"]
                 self.conversation_history = restored
@@ -439,16 +451,7 @@ class CLIAgentSetupMixin:
                     ChatConsole().print(
                         f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]"
                     )
-            # Re-open the session (clear ended_at so it's active again)
-            try:
-                self._session_db._conn.execute(
-                    "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
-                    (self.session_id,),
-                )
-                self._session_db._conn.commit()
-            except Exception:
-                pass
-        
+
         try:
             runtime = runtime_override or {
                 "api_key": self.api_key,

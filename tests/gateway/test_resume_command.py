@@ -234,6 +234,38 @@ class TestHandleResumeCommand:
         assert real_key not in runner._agent_cache
         db.close()
 
+    @pytest.mark.asyncio
+    async def test_metadata_only_session_is_not_switched_in_as_empty(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "expired_session", "telegram", user_id="12345", chat_id="67890"
+        )
+        db.end_session("expired_session", "done")
+        db._conn.execute(
+            """UPDATE sessions
+               SET archived = 1, retention_stage = 'metadata_only',
+                   archive_origin = 'layered_retention'
+               WHERE id = 'expired_session'"""
+        )
+        db._conn.commit()
+        db.create_session(
+            "current_session_001", "telegram", user_id="12345", chat_id="67890"
+        )
+        event = _make_event(text="/resume expired_session")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+
+        result = await runner._handle_resume_command(event)
+
+        assert "history expired" in result
+        runner.session_store.switch_session.assert_not_called()
+        db.close()
+
 
     @pytest.mark.asyncio
     async def test_bare_resume_lists_exact_lane_before_limit(self, tmp_path):
@@ -766,5 +798,4 @@ class TestSameMatrixRoomThreadScoping:
         caller = self._msrc(thread_id="thread-a")
         victim_origin = self._msrc(thread_id="thread-b")
         assert runner._same_matrix_room(caller, victim_origin) is False
-
 

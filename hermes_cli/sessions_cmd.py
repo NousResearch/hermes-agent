@@ -507,7 +507,11 @@ def cmd_sessions(args, sessions_parser=None):
 
             def _render_trace(sid):
                 meta = db.get_session(sid) or {}
-                messages = db.get_messages_as_conversation(sid)
+                messages = (
+                    []
+                    if meta.get("retention_stage") == "metadata_only"
+                    else db.get_messages_as_conversation(sid)
+                )
                 if not messages:
                     return None
                 return build_trace_jsonl(
@@ -793,6 +797,87 @@ def cmd_sessions(args, sessions_parser=None):
             print(f"Deleted session '{resolved_session_id}'.")
         else:
             print(f"Session '{args.session_id}' not found.")
+
+    elif action == "maintain":
+        from hermes_cli.config import load_config
+        from hermes_state_retention import RetentionPolicy
+
+        try:
+            config = load_config().get("sessions") or {}
+            policy = RetentionPolicy.from_config(config)
+        except (TypeError, ValueError) as exc:
+            print(f"Error: invalid session retention config: {exc}")
+            db.close()
+            return 1
+
+        sessions_dir = get_hermes_home() / "sessions"
+        preview = db.apply_retention_policy(
+            policy,
+            source=getattr(args, "source", None),
+            dry_run=True,
+            sessions_dir=sessions_dir,
+            vacuum=not getattr(args, "no_vacuum", False),
+        )
+
+        def _show(report, heading):
+            totals = report.totals
+            print(f"{heading} ({policy.mode} retention):")
+            for source_name, counts in sorted(report.by_source.items()):
+                print(
+                    f"  {source_name}: {counts.compacted_lineages} compact, "
+                    f"{counts.metadata_lineages} metadata-only, "
+                    f"{counts.deleted_lineages} delete"
+                )
+            print(
+                f"  total: {totals.compacted_tool_results} tool result(s), "
+                f"{totals.deleted_message_rows} message row(s), "
+                f"{totals.deleted_session_rows} session row(s)"
+            )
+            vacuum = report.vacuum
+            vacuum_facts = (
+                f"{vacuum.reclaimable_bytes / (1024 * 1024):.1f} MB / "
+                f"{vacuum.reclaimable_ratio:.1%} reclaimable"
+            )
+            if vacuum.free_disk_bytes is not None:
+                vacuum_facts += (
+                    f", {vacuum.free_disk_bytes / (1024 * 1024):.1f} MB free"
+                )
+            if vacuum.required_headroom_bytes is not None:
+                vacuum_facts += (
+                    ", "
+                    f"{vacuum.required_headroom_bytes / (1024 * 1024):.1f} MB "
+                    "headroom required"
+                )
+            print(f"  VACUUM: {vacuum.reason} ({vacuum_facts})")
+            for warning in report.warnings:
+                print(f"  warning: {warning}")
+
+        _show(preview, "Retention preview")
+        changed = (
+            preview.totals.compacted_lineages
+            + preview.totals.metadata_lineages
+            + preview.totals.deleted_lineages
+        )
+        if getattr(args, "dry_run", False) or changed == 0:
+            print("Dry run — nothing changed." if args.dry_run else "Nothing to maintain.")
+            db.close()
+            return 0
+        if not getattr(args, "yes", False) and not _confirm_prompt(
+            f"Apply these {changed} logical-session transition(s)? [y/N] "
+        ):
+            print("Cancelled.")
+            db.close()
+            return 0
+
+        report = db.apply_retention_policy(
+            policy,
+            source=getattr(args, "source", None),
+            sessions_dir=sessions_dir,
+            vacuum=not getattr(args, "no_vacuum", False),
+        )
+        _show(report, "Retention complete")
+        db.close()
+        return 0
 
     elif action in ("prune", "archive"):
         from hermes_cli.session_filters import (

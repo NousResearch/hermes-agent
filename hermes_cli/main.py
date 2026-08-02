@@ -12147,6 +12147,28 @@ def main():
         "bare number of days, or ISO timestamp)",
     )
 
+    sessions_maintain = sessions_subparsers.add_parser(
+        "maintain",
+        help="Apply the configured session retention policy",
+        description=(
+            "Apply sessions.retention_mode from config.yaml. The default "
+            "delete mode keeps historical prune behavior; layered mode "
+            "compacts tool results, then retains metadata before deletion."
+        ),
+    )
+    sessions_maintain.add_argument(
+        "--source", help="Only maintain logical sessions whose current tip has this source"
+    )
+    sessions_maintain.add_argument(
+        "--dry-run", action="store_true", help="Preview exact stage counts without writing"
+    )
+    sessions_maintain.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation"
+    )
+    sessions_maintain.add_argument(
+        "--no-vacuum", action="store_true", help="Skip VACUUM even when reclaim thresholds are met"
+    )
+
     sessions_subparsers.add_parser(
         "optimize",
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",

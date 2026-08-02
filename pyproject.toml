@@ -375,6 +375,7 @@ py-modules = [
   "hermes_bootstrap",
   "hermes_constants",
   "hermes_state",
+  "hermes_state_retention",
   "hermes_state_common",
   "hermes_state_portability",
   "hermes_state_schema",

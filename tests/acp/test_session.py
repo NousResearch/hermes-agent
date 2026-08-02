@@ -241,6 +241,17 @@ class TestPersistence:
         # Should not be found via ACP SessionManager.
         assert manager.get_session("cli-session-123") is None
 
+    def test_metadata_only_acp_session_is_not_restored(self, manager):
+        db = manager._get_db()
+        db.create_session(session_id="expired-acp", source="acp", model="test")
+        db._conn.execute(
+            "UPDATE sessions SET retention_stage = 'metadata_only', archived = 1 "
+            "WHERE id = 'expired-acp'"
+        )
+        db._conn.commit()
+
+        assert manager.get_session("expired-acp") is None
+
     def test_sessions_searchable_via_fts(self, manager):
         """ACP sessions stored in SessionDB are searchable via FTS5."""
         state = manager.create_session()

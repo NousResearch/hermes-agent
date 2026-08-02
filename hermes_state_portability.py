@@ -366,6 +366,8 @@ class SessionPortabilityMixin:
             "cost_source",
             "pricing_version",
             "title",
+            "retention_stage",
+            "archive_origin",
         )
         message_text_fields = (
             "role",
@@ -447,6 +449,26 @@ class SessionPortabilityMixin:
                     clean_session[field] = self._import_text_or_none(
                         clean_session.get(field), field
                     )
+                if clean_session.get("retention_stage") not in {
+                    None,
+                    "tool_results_compacted",
+                    "metadata_only",
+                }:
+                    raise ValueError("retention_stage is not recognized")
+                if clean_session.get("archive_origin") not in {
+                    None,
+                    "user",
+                    "auto_archive",
+                    "layered_retention",
+                }:
+                    raise ValueError("archive_origin is not recognized")
+                if (
+                    clean_session.get("retention_stage") == "metadata_only"
+                    and (messages or not clean_session.get("archived"))
+                ):
+                    raise ValueError(
+                        "metadata-only sessions must be archived and contain no messages"
+                    )
 
                 clean_messages: List[Dict[str, Any]] = []
                 for message_index, message in enumerate(messages):
@@ -524,7 +546,8 @@ class SessionPortabilityMixin:
                            cwd, git_branch, git_repo_root,
                            billing_provider, billing_base_url, billing_mode,
                            estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-                           pricing_version, title, api_call_count, archived
+                           pricing_version, title, api_call_count, archived,
+                           retention_stage, retention_last_active, archive_origin
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
@@ -535,7 +558,8 @@ class SessionPortabilityMixin:
                            :billing_provider, :billing_base_url, :billing_mode,
                            :estimated_cost_usd, :actual_cost_usd, :cost_status,
                            :cost_source, :pricing_version, :title,
-                           :api_call_count, :archived
+                           :api_call_count, :archived,
+                           :retention_stage, :retention_last_active, :archive_origin
                        )""",
                     {
                         "id": session_id,
@@ -576,6 +600,11 @@ class SessionPortabilityMixin:
                         "title": raw.get("title"),
                         "api_call_count": self._int_or_default(raw.get("api_call_count")),
                         "archived": archived,
+                        "retention_stage": raw.get("retention_stage"),
+                        "retention_last_active": self._float_or_none(
+                            raw.get("retention_last_active")
+                        ),
+                        "archive_origin": raw.get("archive_origin"),
                     },
                 )
 

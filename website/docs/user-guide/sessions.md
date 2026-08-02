@@ -709,12 +709,14 @@ Key tables in `state.db`:
 
 ## Session Expiry and Cleanup
 
-### Automatic Cleanup
+### Automatic Cleanup and Layered Retention
 
 - Gateway sessions auto-reset based on the configured reset policy
 - Before reset, the agent saves memories and skills from the expiring session
-- Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
-- After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space (SQLite does not shrink the file on plain DELETE)
+- Opt-in auto-maintenance: when `sessions.auto_prune` is `true`, the configured retention policy runs at CLI/gateway startup
+- `retention_mode: delete` is the compatible default and directly prunes ended sessions after `retention_days`
+- `retention_mode: layered` first replaces old tool-result payloads, later keeps metadata only, and only deletes that retention-managed metadata on a subsequent run
+- `VACUUM` runs only when both the absolute and percentage reclaim thresholds are met and the disk has enough temporary rewrite space
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
 
 Default is **off** — session history is valuable for `session_search` recall, and silently deleting it could surprise users. Enable in `~/.hermes/config.yaml`:
@@ -722,20 +724,38 @@ Default is **off** — session history is valuable for `session_search` recall, 
 ```yaml
 sessions:
   auto_prune: true          # opt in — default is false
-  retention_days: 90        # keep ended sessions active within this window
-  vacuum_after_prune: true  # reclaim disk space after a pruning sweep
+  retention_mode: layered   # delete (default) or layered
+  compact_tool_results_after_days: 7
+  metadata_only_after_days: 30
+  retention_days: 90
+  retention_by_source:      # optional; unspecified values inherit globals
+    cron:
+      compact_tool_results_after_days: 3
+      metadata_only_after_days: 14
+      retention_days: 45
+  vacuum_after_prune: true
+  vacuum_min_reclaim_mb: 256
+  vacuum_min_reclaim_ratio: 0.20
   min_interval_hours: 24    # don't re-run the sweep more often than this
 ```
 
 Active sessions are never auto-pruned, regardless of age. Ended sessions are
 aged from their latest message, so a long-lived conversation used recently is
-not deleted merely because it began before the retention window.
+not deleted merely because it began before the retention window. Compression
+lineages are maintained as one conversation and use the current tip's source.
+Pinned sessions and sessions archived by the user are protected from layered
+maintenance. A metadata-only session remains browsable as metadata but cannot
+be resumed as an empty conversation.
 
 ### Manual Cleanup
 
 ```bash
 # Prune sessions older than 90 days
 hermes sessions prune
+
+# Preview/apply config.yaml's retention policy
+hermes sessions maintain --dry-run
+hermes sessions maintain --yes
 
 # Delete a specific session
 hermes sessions delete <session_id>
@@ -744,6 +764,10 @@ hermes sessions delete <session_id>
 hermes sessions export backup.jsonl
 hermes sessions prune --older-than 30 --yes
 ```
+
+`hermes sessions prune` keeps its existing direct-delete semantics. Use
+`hermes sessions maintain` when you want `retention_mode` and per-source
+thresholds from `config.yaml`.
 
 :::tip
 The database grows slowly (typical: 10-15 MB for hundreds of sessions) and session history powers `session_search` recall across past conversations, so auto-prune ships disabled. Enable it if you're running a heavy gateway/cron workload where `state.db` is meaningfully affecting performance (observed failure mode: 384 MB state.db with ~1000 sessions slowing down FTS5 inserts and `/resume` listing). Use `hermes sessions prune` for one-off cleanup without turning on the automatic sweep.

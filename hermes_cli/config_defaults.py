@@ -2606,9 +2606,17 @@ DEFAULT_CONFIG = {
         # Default false: session history is valuable for search recall, and
         # silently deleting it could surprise users.  Opt in explicitly.
         "auto_prune": False,
+        # Keep the historical direct-delete behavior unless layered retention
+        # is explicitly selected. Layered mode compacts tool payloads first,
+        # then retains metadata before a later run can delete it.
+        "retention_mode": "delete",
         # How many inactive days of ended-session history to keep. Matches
         # the default of ``hermes sessions prune``.
         "retention_days": 90,
+        "compact_tool_results_after_days": 7,
+        "metadata_only_after_days": 30,
+        # Optional source-specific threshold overrides for layered mode.
+        "retention_by_source": {},
         # When true, auto-archive (soft-hide, never delete) sessions that
         # haven't been touched in ``auto_archive_days`` days, once per
         # (roughly) min_interval_hours.  "Touched" is last activity, not
@@ -2622,9 +2630,13 @@ DEFAULT_CONFIG = {
         # reclaim disk space on DELETE — freed pages are just reused on
         # subsequent INSERTs — so without VACUUM the file stays bloated
         # even after pruning.  VACUUM blocks writes for a few seconds per
-        # 100MB, so it only runs at startup, and only when prune deleted
-        # ≥1 session.
+        # 100MB, so config-driven maintenance only runs it at startup when
+        # reclaimable bytes and ratio both cross the thresholds below.
         "vacuum_after_prune": True,
+        # VACUUM only when both thresholds are met and enough temporary disk
+        # headroom exists for SQLite's rewrite.
+        "vacuum_min_reclaim_mb": 256,
+        "vacuum_min_reclaim_ratio": 0.20,
         # Minimum hours between auto-maintenance runs (avoids repeating
         # the sweep on every CLI invocation).  Tracked via state_meta in
         # state.db itself, so it's shared across all processes.

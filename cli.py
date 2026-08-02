@@ -2108,14 +2108,13 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 
 
 def _run_state_db_auto_maintenance(session_db) -> None:
-    """Call ``SessionDB.maybe_auto_prune_and_vacuum`` using current config.
+    """Run ``SessionDB.maybe_auto_maintain_sessions`` using current config.
 
     Reads the ``sessions:`` section from config.yaml via
     :func:`hermes_cli.config.load_config` (the authoritative loader that
     deep-merges DEFAULT_CONFIG, so unmigrated configs still get default
-    values). Honours ``auto_prune`` / ``retention_days`` /
-    ``vacuum_after_prune`` / ``min_interval_hours``, and delegates to the
-    DB. Never raises — maintenance must never block interactive startup.
+    values). Honours the delete/layered retention policy and its maintenance
+    cadence. Never raises — maintenance must never block interactive startup.
     """
     if session_db is None:
         return
@@ -2161,10 +2160,9 @@ def _run_state_db_auto_maintenance(session_db) -> None:
 
         if not cfg.get("auto_prune", False):
             return
-        session_db.maybe_auto_prune_and_vacuum(
-            retention_days=int(cfg.get("retention_days", 90)),
+        session_db.maybe_auto_maintain_sessions(
+            cfg,
             min_interval_hours=int(cfg.get("min_interval_hours", 24)),
-            vacuum=bool(cfg.get("vacuum_after_prune", True)),
             sessions_dir=_hermes_home_maint / "sessions",
         )
     except Exception as exc:

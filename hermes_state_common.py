@@ -102,7 +102,7 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
     )
 
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -186,6 +186,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
+    retention_stage TEXT,
+    retention_last_active REAL,
+    archive_origin TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 

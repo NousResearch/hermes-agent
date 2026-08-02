@@ -223,3 +223,44 @@ def test_skill_patch_off_silent_verbose_shows_diff():
     )
     assert len(verbose) == 1
     assert "demo" in verbose[0] and "→" in verbose[0]
+
+
+def test_background_review_suppresses_foreground_skill_grant(monkeypatch, tmp_path):
+    from agent import skill_utils
+
+    observed = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            observed["init"] = skill_utils.is_skill_read_granted("alpha")
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            observed["run"] = skill_utils.is_skill_read_granted("alpha")
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda: {"alpha"})
+
+    with skill_utils.skill_read_grant_scope(
+        ["alpha"],
+        session_id="foreground",
+        profile="build",
+        requester="local-cli",
+        source="cli",
+        audit_path=tmp_path / "audit.jsonl",
+    ):
+        AIAgent._spawn_background_review(
+            _bare_agent(),
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+        )
+        assert skill_utils.is_skill_read_granted("alpha") is True
+
+    assert observed == {"init": False, "run": False}

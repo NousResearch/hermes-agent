@@ -56,6 +56,95 @@ def _make_mock_parent(depth=0):
     return parent
 
 
+def test_child_agent_construction_does_not_inherit_skill_read_grant(
+    tmp_path, monkeypatch
+):
+    from agent import skill_utils
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "skills:\n  disabled: [private-skill]\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    skill_utils._raw_config_cache_clear()
+    parent = _make_mock_parent()
+
+    def fake_agent(**kwargs):
+        assert skill_utils.is_skill_read_granted("private-skill") is False
+        return MagicMock()
+
+    with skill_utils.skill_read_grant_scope(
+        ["private-skill"],
+        session_id="parent-session",
+        profile="build",
+        requester="local-cli",
+        source="cli",
+        ttl_seconds=60,
+    ):
+        assert skill_utils.is_skill_read_granted("private-skill") is True
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            _build_child_agent(
+                task_index=0,
+                goal="do not inherit",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=5,
+                task_count=1,
+                parent_agent=parent,
+            )
+        assert skill_utils.is_skill_read_granted("private-skill") is True
+
+
+def test_delegate_child_execution_does_not_inherit_skill_read_grant(
+    tmp_path, monkeypatch
+):
+    from agent import skill_utils
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "skills:\n  disabled: [private-skill]\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    skill_utils._raw_config_cache_clear()
+    for child_raises in (False, True):
+        parent = _make_mock_parent()
+        observed = []
+
+        def fake_agent(**kwargs):
+            child = MagicMock()
+
+            def run_conversation(**_run_kwargs):
+                observed.append(skill_utils.is_skill_read_granted("private-skill"))
+                if child_raises:
+                    raise RuntimeError("child failed")
+                return {"final_response": "done", "completed": True, "api_calls": 1}
+
+            child.run_conversation.side_effect = run_conversation
+            return child
+
+        with skill_utils.skill_read_grant_scope(
+            ["private-skill"],
+            session_id=f"parent-session-{child_raises}",
+            profile="build",
+            requester="local-cli",
+            source="cli",
+            ttl_seconds=60,
+        ):
+            with patch("run_agent.AIAgent", side_effect=fake_agent):
+                result = json.loads(
+                    delegate_task(goal="nested child", parent_agent=parent)
+                )
+            assert skill_utils.is_skill_read_granted("private-skill") is True
+
+        assert observed == [False]
+        expected_status = "error" if child_raises else "completed"
+        assert result["results"][0]["status"] == expected_status
+    assert skill_utils.is_skill_read_granted("private-skill") is False
+
+
 class TestDelegateRequirements(unittest.TestCase):
 
     def test_schema_valid(self):

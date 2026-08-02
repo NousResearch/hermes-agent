@@ -752,12 +752,15 @@ def build_preloaded_skills_prompt(
 
     Returns (prompt_text, loaded_skill_names, missing_identifiers).
 
-    Disabled skills are treated the same as missing ones: this loads via a
-    raw identifier straight into ``_load_skill_payload``, bypassing
-    ``get_skill_commands()``'s scan-time disabled filter — mirrors the
-    bundle-invocation gate (#59156). Without this, ``hermes -s <skill>`` or
-    a deployment's ``HERMES_TUI_SKILLS`` env var could force-load a skill an
-    operator disabled via ``skills.disabled``/``skills.platform_disabled``.
+    Disabled skills are treated the same as missing ones unless the active
+    task-scoped read grant authorizes the exact requested selector or resolved
+    skill name. This loads via a raw identifier straight into
+    ``_load_skill_payload``, bypassing ``get_skill_commands()``'s scan-time
+    disabled filter — mirrors the bundle-invocation gate (#59156). Without
+    this gate, ``hermes -s <skill>`` or a deployment's ``HERMES_TUI_SKILLS``
+    env var could force-load a skill an operator disabled via
+    ``skills.disabled``/``skills.platform_disabled``. The scoped exception
+    does not make the skill discoverable or authorize sibling selectors.
     """
     prompt_parts: list[str] = []
     loaded_names: list[str] = []
@@ -784,8 +787,22 @@ def build_preloaded_skills_prompt(
         loaded_skill, skill_dir, skill_name = loaded
 
         if skill_name in disabled_names or identifier in disabled_names:
-            missing.append(identifier)
-            continue
+            # Phase 1A may grant this explicit CLI/Kanban preload without
+            # changing the profile's disabled baseline. Keep this second gate
+            # fail-closed and selector-bound: only the requested identifier or
+            # the loader's resolved name can authorize the already-loaded skill.
+            scoped_grant_allows = False
+            try:
+                from agent.skill_utils import is_skill_read_granted
+
+                scoped_grant_allows = is_skill_read_granted(
+                    identifier
+                ) or is_skill_read_granted(skill_name)
+            except Exception:
+                scoped_grant_allows = False
+            if not scoped_grant_allows:
+                missing.append(identifier)
+                continue
 
         # Track active usage for Curator lifecycle management (#17782)
         try:

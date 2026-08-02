@@ -1499,8 +1499,12 @@ def _build_child_agent(
         child_optional_kwargs["max_tokens"] = child_max_tokens
 
     from agent.delegation_context import delegated_child_context
+    from agent.skill_utils import suppress_skill_read_grants
 
-    with delegated_child_context():
+    # A parent may have a CLI/Kanban-scoped exception to read an otherwise
+    # disabled skill. That privilege belongs to the parent request only and
+    # must not become ambient authority during child construction.
+    with delegated_child_context(), suppress_skill_read_grants():
         child = AIAgent(
             base_url=effective_base_url,
             api_key=effective_api_key,
@@ -1510,7 +1514,6 @@ def _build_child_agent(
             acp_command=effective_acp_command,
             acp_args=effective_acp_args,
             max_iterations=max_iterations,
-
             reasoning_config=child_reasoning,
             prefill_messages=getattr(parent_agent, "prefill_messages", None),
             fallback_model=parent_fallback,
@@ -2175,8 +2178,11 @@ def _run_single_child(
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
+            from agent.skill_utils import suppress_skill_read_grants
 
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            with delegated_child_context(
+                str(getattr(child, "session_id", "") or "")
+            ), suppress_skill_read_grants():
                 return child.run_conversation(
                     user_message=goal,
                     task_id=child_task_id,

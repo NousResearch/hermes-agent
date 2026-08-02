@@ -4,6 +4,7 @@ import threading
 import pytest
 from datetime import datetime, timedelta, timezone
 
+from hermes_cli.reliability_doctor import SmokeValidationError
 from cron.jobs import (
     parse_duration,
     parse_schedule,
@@ -198,6 +199,84 @@ class TestJobCRUD:
         fetched = get_job(job["id"])
         assert fetched is not None
         assert fetched["prompt"] == "Check server status"
+
+    def test_create_job_persists_canonical_smoke(self, tmp_cron_dir):
+        smoke = {
+            "version": 1,
+            "probes": [
+                {"type": "env-present", "name": "GH_TOKEN"},
+                {"type": "command-exists", "name": "gh"},
+            ],
+        }
+
+        job = create_job(prompt="Check server status", schedule="30m", smoke=smoke)
+
+        assert job["smoke"] == smoke
+        assert load_jobs()[0]["smoke"] == job["smoke"]
+
+    def test_create_job_rejects_command_smoke(self, tmp_cron_dir):
+        with pytest.raises(SmokeValidationError, match="unknown_probe_type"):
+            create_job(
+                prompt="Check server status",
+                schedule="30m",
+                smoke={
+                    "version": 1,
+                    "probes": [
+                        {
+                            "type": "command",
+                            "argv": ["true"],
+                            "expected_exit_codes": [0],
+                        }
+                    ],
+                },
+            )
+
+    def test_update_job_replaces_and_clears_smoke(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Check server status",
+            schedule="30m",
+            smoke={"version": 1, "probes": [{"type": "env-present", "name": "GH_TOKEN"}]},
+        )
+
+        updated = update_job(
+            job["id"],
+            {"smoke": {"version": 1, "probes": [{"type": "command-exists", "name": "gh"}]}},
+        )
+        assert updated["smoke"]["probes"] == [{"type": "command-exists", "name": "gh"}]
+
+        cleared = update_job(job["id"], {"smoke": None})
+        assert "smoke" not in cleared
+        assert "smoke" not in load_jobs()[0]
+
+    def test_normalize_job_record_preserves_invalid_hand_edited_smoke_for_doctor(
+        self, tmp_cron_dir
+    ):
+        save_jobs(
+            [
+                {
+                    "id": "abc123",
+                    "name": "Hand Edited",
+                    "prompt": "Run",
+                    "schedule": {"kind": "interval", "minutes": 60},
+                    "schedule_display": "every 60m",
+                    "enabled": True,
+                    "smoke": {"version": 1, "probes": [{"type": "shell", "command": "echo nope"}]},
+                }
+            ]
+        )
+
+        [job] = list_jobs()
+
+        assert job["smoke"] == {
+            "version": 1,
+            "probes": [{"type": "shell", "command": "echo nope"}],
+        }
+
+    def test_legacy_job_without_smoke_is_byte_compatible(self, tmp_cron_dir):
+        job = create_job(prompt="Check server status", schedule="30m")
+
+        assert "smoke" not in job
+        assert "smoke" not in load_jobs()[0]
 
     def test_list_jobs(self, tmp_cron_dir):
         create_job(prompt="Job 1", schedule="every 1h")
@@ -1111,10 +1190,6 @@ class TestJobsJsonUtf8Bom:
 
         loaded = load_jobs()
         assert [j["id"] for j in loaded] == ["plainjob01"]
-
-
-
-
 class TestAdvanceNextRuns:
     """Tests for advance_next_runs() — the batched due-set advance.
 

@@ -246,6 +246,130 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_cronjob_create_accepts_and_returns_smoke_summary(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                name="Server Check",
+                smoke={
+                    "version": 1,
+                    "probes": [
+                        {"type": "env-present", "name": "GH_TOKEN"},
+                        {"type": "command-exists", "name": "gh"},
+                    ],
+                },
+            )
+        )
+
+        assert created["success"] is True
+        assert created["job"]["smoke"] == {
+            "version": 1,
+            "probe_count": 2,
+            "probe_types": ["command-exists", "env-present"],
+        }
+
+    def test_cronjob_update_replaces_smoke(self):
+        created = json.loads(
+            cronjob(action="create", prompt="Run", schedule="every 1h", name="Smoke")
+        )
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                smoke={"version": 1, "probes": [{"type": "command-exists", "name": "gh"}]},
+            )
+        )
+
+        assert updated["success"] is True
+        assert updated["job"]["smoke"]["probe_types"] == ["command-exists"]
+
+    def test_cronjob_update_empty_smoke_clears_metadata(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Run",
+                schedule="every 1h",
+                name="Smoke",
+                smoke={"version": 1, "probes": [{"type": "env-present", "name": "GH_TOKEN"}]},
+            )
+        )
+
+        updated = json.loads(cronjob(action="update", job_id=created["job_id"], smoke={}))
+
+        assert updated["success"] is True
+        assert "smoke" not in updated["job"]
+
+    def test_cronjob_rejects_invalid_smoke_before_create(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Run",
+                schedule="every 1h",
+                smoke={"version": 1, "probes": [{"type": "shell", "command": "echo nope"}]},
+            )
+        )
+
+        assert result["success"] is False
+        assert "smoke" in result["error"].lower()
+
+    def test_cronjob_rejects_command_probe_before_create(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Run",
+                schedule="every 1h",
+                smoke={
+                    "version": 1,
+                    "probes": [
+                        {
+                            "type": "command",
+                            "argv": ["true"],
+                            "expected_exit_codes": [0],
+                        }
+                    ],
+                },
+            )
+        )
+
+        assert result["success"] is False
+        assert "unknown_probe_type" in result["error"]
+
+    def test_cronjob_rejects_command_probe_before_update(self):
+        created = json.loads(
+            cronjob(action="create", prompt="Run", schedule="every 1h", name="Smoke")
+        )
+
+        result = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                smoke={
+                    "version": 1,
+                    "probes": [
+                        {
+                            "type": "command",
+                            "argv": ["true"],
+                            "expected_exit_codes": [0],
+                        }
+                    ],
+                },
+            )
+        )
+
+        assert result["success"] is False
+        assert "unknown_probe_type" in result["error"]
+
+    def test_cronjob_schema_exposes_smoke_object(self):
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+
+        smoke_schema = CRONJOB_SCHEMA["parameters"]["properties"]["smoke"]
+        assert smoke_schema["type"] == "object"
+        assert "Command probes are rejected" in smoke_schema["description"]
+        assert "run_smoke" not in CRONJOB_SCHEMA["parameters"]["properties"]
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

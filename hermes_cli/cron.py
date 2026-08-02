@@ -9,11 +9,18 @@ import json
 import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
+import yaml
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.reliability_doctor import (
+    DiagnosticResult,
+    diagnose_cron,
+    render_diagnostic_text,
+    validate_smoke_spec,
+)
 
 # Gateway-lifecycle command detection lives in ``cron.lifecycle_guard`` so it
 # can be shared across every job-creation path (CLI + the agent's ``cronjob``
@@ -46,6 +53,25 @@ def _cron_api(**kwargs):
     from tools.cronjob_tools import cronjob as cronjob_tool
 
     return json.loads(cronjob_tool(**kwargs))
+
+
+def _load_smoke_file(path: str) -> dict:
+    smoke_path = Path(path).expanduser()
+    raw = smoke_path.read_bytes()
+    if len(raw) > 256 * 1024:
+        raise ValueError("smoke file is larger than 256 KiB")
+    data = yaml.safe_load(raw.decode("utf-8"))
+    return validate_smoke_spec(data)
+
+
+def _run_saved_job_preflight(job_id: str, *, strict: bool) -> int:
+    results = diagnose_cron(job_id)
+    print(render_diagnostic_text(results))
+    failed = any(result.status == "fail" for result in results)
+    if not failed:
+        return 0
+    print("Job saved. Preflight failed.")
+    return 1 if strict else 0
 
 
 def _active_cron_provider_name() -> str:
@@ -338,6 +364,13 @@ def cron_create(args):
     # raises GatewayLifecycleBlocked, the `cronjob` tool wrapper catches it and
     # returns it as result["error"], and the `if not result.get("success")`
     # branch below prints it in red and exits 1 — same UX as before.
+    smoke = None
+    if getattr(args, "smoke_file", None):
+        try:
+            smoke = _load_smoke_file(args.smoke_file)
+        except Exception as e:
+            print(color(f"Failed to load smoke file: {e}", Colors.RED))
+            return 1
     result = _cron_api(
         action="create",
         schedule=args.schedule,
@@ -352,6 +385,7 @@ def cron_create(args):
         model=getattr(args, "model", None),
         provider=getattr(args, "model_provider", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        smoke=smoke,
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -370,7 +404,12 @@ def cron_create(args):
         print(f"  Workdir: {job_data['workdir']}")
     print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
-    return 0
+    if getattr(args, "skip_preflight", False):
+        return 0
+    return _run_saved_job_preflight(
+        result["job_id"],
+        strict=bool(getattr(args, "strict_preflight", False)),
+    )
 
 
 def cron_edit(args):
@@ -386,6 +425,21 @@ def cron_edit(args):
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
         return 1
+    if getattr(args, "smoke_file", None) and getattr(args, "clear_smoke", False):
+        print(color("--smoke-file cannot be used with --clear-smoke", Colors.RED))
+        return 1
+    smoke_update = None
+    smoke_supplied = False
+    if getattr(args, "smoke_file", None):
+        try:
+            smoke_update = _load_smoke_file(args.smoke_file)
+            smoke_supplied = True
+        except Exception as e:
+            print(color(f"Failed to load smoke file: {e}", Colors.RED))
+            return 1
+    elif getattr(args, "clear_smoke", False):
+        smoke_update = {}
+        smoke_supplied = True
 
     existing_skills = list(job.get("skills") or ([] if not job.get("skill") else [job.get("skill")]))
     replacement_skills = _normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None))
@@ -417,6 +471,7 @@ def cron_edit(args):
         model=getattr(args, "model", None),
         provider=getattr(args, "model_provider", None),
         no_agent=getattr(args, "no_agent", None),
+        smoke=smoke_update if smoke_supplied else None,
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -436,7 +491,12 @@ def cron_edit(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
-    return 0
+    if getattr(args, "skip_preflight", False):
+        return 0
+    return _run_saved_job_preflight(
+        updated["job_id"],
+        strict=bool(getattr(args, "strict_preflight", False)),
+    )
 
 
 def _job_action(action: str, job_id: str, success_verb: str) -> int:

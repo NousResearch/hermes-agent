@@ -411,6 +411,38 @@ class TestSkillView:
 
 
 class TestSkillViewSecureSetupOnLoad:
+    def test_metadata_only_never_requests_missing_secrets(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        calls = []
+
+        def fail_secret_callback(var_name, prompt, metadata=None):
+            calls.append((var_name, prompt, metadata))
+            raise AssertionError("metadata-only reads must not request secrets")
+
+        monkeypatch.setattr(
+            skills_tool_module,
+            "_secret_capture_callback",
+            fail_secret_callback,
+            raising=False,
+        )
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "gif-search",
+                frontmatter_extra=(
+                    "required_environment_variables:\n"
+                    "  - name: TENOR_API_KEY\n"
+                    "    prompt: Tenor API key\n"
+                ),
+            )
+            raw = skill_view("gif-search", metadata_only=True)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["frontmatter"]["name"] == "gif-search"
+        assert calls == []
+
     def test_requests_missing_required_env_and_continues(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
         calls = []

@@ -35,6 +35,14 @@ from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
+from hermes_cli.reliability_doctor import (
+    diagnose_all_crons,
+    diagnose_all_skills,
+    diagnose_cron,
+    diagnose_skill,
+    render_diagnostic_json,
+    render_diagnostic_text,
+)
 
 
 _PROVIDER_ENV_HINTS = (
@@ -713,6 +721,9 @@ def run_doctor(args):
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
+
+    if getattr(args, "doctor_target", None):
+        return _run_targeted_doctor(args)
 
     # Handle `hermes doctor --ack <id>` as a fast path. Persist the ack and
     # return without running the rest of the diagnostics — the user has
@@ -2770,8 +2781,46 @@ def run_doctor(args):
         print()
         if not should_fix:
             print(color("  Tip: run 'hermes doctor --fix' to auto-fix what's possible.", Colors.DIM))
+
     else:
         print(color("─" * 60, Colors.GREEN))
         print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))
     
     print()
+
+
+def _run_targeted_doctor(args) -> int:
+    target_type = getattr(args, "doctor_target", None)
+    target = getattr(args, "target", None)
+    all_targets = bool(getattr(args, "all", False))
+    as_json = bool(getattr(args, "json", False))
+    if bool(target) == all_targets:
+        print("Specify exactly one target or --all.")
+        return 2
+
+    if target_type == "skill":
+        results = (
+            diagnose_all_skills() if all_targets else diagnose_skill(target)
+        )
+    elif target_type == "cron":
+        results = (
+            diagnose_all_crons() if all_targets else diagnose_cron(target)
+        )
+    else:
+        print("Unknown doctor target.")
+        return 2
+
+    if as_json:
+        print(render_diagnostic_json(results))
+    else:
+        print(render_diagnostic_text(results))
+
+    flat = []
+    if isinstance(results, dict):
+        for items in results.values():
+            flat.extend(items)
+    else:
+        flat = list(results)
+    if any(item.reason == "cron_ref_ambiguous" for item in flat):
+        return 2
+    return 1 if any(item.status == "fail" for item in flat) else 0

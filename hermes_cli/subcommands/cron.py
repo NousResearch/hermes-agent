@@ -7,9 +7,69 @@ import ``main`` (cycle avoidance).
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
+
+
+class _StoreTrueWithConflicts(argparse.Action):
+    def __init__(self, option_strings, dest, *, conflicts=(), **kwargs):
+        self._conflicts = conflicts
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        for conflict in self._conflicts:
+            if getattr(namespace, conflict, None):
+                parser.error(
+                    f"{option_string} cannot be used with --{conflict.replace('_', '-')}"
+                )
+        setattr(namespace, self.dest, True)
+
+
+class _StoreWithConflicts(argparse.Action):
+    def __init__(self, option_strings, dest, *, conflicts=(), **kwargs):
+        self._conflicts = conflicts
+        super().__init__(option_strings, dest, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        for conflict in self._conflicts:
+            if getattr(namespace, conflict, None):
+                parser.error(
+                    f"{option_string} cannot be used with --{conflict.replace('_', '-')}"
+                )
+        setattr(namespace, self.dest, values)
+
+
+def _add_preflight_flags(parser, *, edit: bool = False) -> None:
+    parser.add_argument(
+        "--smoke-file",
+        action=_StoreWithConflicts,
+        conflicts=("clear_smoke",),
+        help="Read a JSON/YAML smoke declaration and store it with the job.",
+    )
+    if edit:
+        parser.add_argument(
+            "--clear-smoke",
+            action=_StoreTrueWithConflicts,
+            conflicts=("smoke_file",),
+            default=False,
+            help="Remove stored smoke metadata.",
+        )
+    parser.add_argument(
+        "--skip-preflight",
+        action=_StoreTrueWithConflicts,
+        conflicts=("strict_preflight",),
+        default=False,
+        help="Save without running post-save diagnostics.",
+    )
+    parser.add_argument(
+        "--strict-preflight",
+        action=_StoreTrueWithConflicts,
+        conflicts=("skip_preflight",),
+        default=False,
+        help="Return non-zero when post-save diagnostics fail.",
+    )
 
 
 def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
@@ -83,6 +143,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         dest="model_provider",
         help="Inference provider paired with --model (e.g. 'openrouter', 'nous').",
     )
+    _add_preflight_flags(cron_create)
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -160,6 +221,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         dest="model_provider",
         help="Inference provider paired with --model. Pass empty string to clear.",
     )
+    _add_preflight_flags(cron_edit, edit=True)
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

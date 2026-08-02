@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from hermes_cli.subcommands.cron import build_cron_parser
 
 
@@ -25,10 +27,25 @@ def _build():
 
 def test_cron_subactions_present():
     parser = _build()
-    for action in ("list", "create", "edit", "pause", "resume", "run", "remove", "status", "runs", "tick"):
-        ns = parser.parse_args(["cron", action] if action in ("list", "status", "runs", "tick")
-                               else ["cron", action, "jobid"] if action in ("pause", "resume", "run", "remove", "edit")
-                               else ["cron", "create", "30m"])
+    for action in (
+        "list",
+        "create",
+        "edit",
+        "pause",
+        "resume",
+        "run",
+        "remove",
+        "status",
+        "runs",
+        "tick",
+    ):
+        ns = parser.parse_args(
+            ["cron", action]
+            if action in ("list", "status", "runs", "tick")
+            else ["cron", action, "jobid"]
+            if action in ("pause", "resume", "run", "remove", "edit")
+            else ["cron", "create", "30m"]
+        )
         assert ns.command == "cron"
         assert ns.cron_command == action
 
@@ -48,3 +65,53 @@ def test_cron_accept_hooks_flag_on_run_and_tick():
     assert ns.accept_hooks is True
     ns2 = parser.parse_args(["cron", "tick", "--accept-hooks"])
     assert ns2.accept_hooks is True
+
+
+def test_cron_create_accepts_smoke_and_static_preflight_flags():
+    parser = _build()
+
+    ns = parser.parse_args([
+        "cron",
+        "create",
+        "every 1h",
+        "Run",
+        "--smoke-file",
+        "smoke.yaml",
+        "--strict-preflight",
+    ])
+
+    assert ns.smoke_file == "smoke.yaml"
+    assert ns.strict_preflight is True
+    assert ns.skip_preflight is False
+
+
+def test_cron_edit_accepts_clear_smoke():
+    parser = _build()
+
+    ns = parser.parse_args(["cron", "edit", "job", "--clear-smoke"])
+
+    assert ns.clear_smoke is True
+
+
+def test_cron_rejects_conflicting_preflight_flags():
+    parser = _build()
+
+    for argv in (
+        ["cron", "create", "every 1h", "--skip-preflight", "--strict-preflight"],
+        ["cron", "edit", "job", "--smoke-file", "smoke.yaml", "--clear-smoke"],
+    ):
+        try:
+            parser.parse_args(argv)
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:  # pragma: no cover - should be rejected
+            raise AssertionError(f"expected parser rejection for {argv!r}")
+
+
+def test_cron_rejects_removed_preflight_smoke_flag():
+    parser = _build()
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["cron", "create", "every 1h", "--preflight-smoke"])
+
+    assert exc.value.code == 2

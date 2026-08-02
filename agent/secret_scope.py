@@ -106,6 +106,14 @@ _GLOBAL_ENV_EXACT = frozenset({
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",
     # Kanban paths (per-board, not per-profile-secret)
     "HERMES_KANBAN_DB", "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_KANBAN_BOARD",
+    # API-server LISTENER settings — deployment config (Docker compose
+    # ``environment:`` block, systemd ``Environment=``), not profile secrets.
+    # The scoped runner reload (#64674) must keep seeing them or container
+    # deployments silently lose the api_server platform (#69379). NOTE:
+    # API_SERVER_KEY is deliberately NOT here — it IS a credential and stays
+    # profile-scoped.
+    "API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT",
+    "API_SERVER_CORS_ORIGINS",
 })
 _GLOBAL_ENV_PREFIXES = (
     "HERMES_KANBAN_",

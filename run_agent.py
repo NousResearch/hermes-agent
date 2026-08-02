@@ -7277,6 +7277,7 @@ class AIAgent:
                 on_timeout=_on_timeout,
                 on_commit_overrun=_on_commit_overrun,
                 fence=active_fence,
+                telemetry_agent=self,
             )
             # compress_context ran on a daemon pool worker thread; the session
             # id rotation updated hermes_logging._session_context (a

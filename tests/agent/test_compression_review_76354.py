@@ -318,14 +318,49 @@ class TestF6ExecutorSaturation:
                 return ([], "5th")
 
             fifth_msgs = [{"role": "user", "content": "fifth"}]
+            # Round-2 #6: the fail-fast refusal must emit the standard
+            # compression-attempt telemetry with failure_class=pool_saturated.
+            class _TelemetryAgent:
+                session_id = "SATURATED_SESSION"
+                _compression_attempt_id = "sat-attempt"
+
+                class context_compressor:  # noqa: D106 — minimal stub
+                    _last_compression_telemetry = None
+                    _last_summary_fallback_used = False
+                    _last_aux_model_failure_model = None
+
+            import json as _json
+            import logging as _logging
+
+            class _CaptureHandler(_logging.Handler):
+                def __init__(self):
+                    super().__init__()
+                    self.payloads = []
+
+                def emit(self, record):
+                    msg = record.getMessage()
+                    if "compression attempt telemetry" in msg:
+                        self.payloads.append(
+                            _json.loads(msg.split(": ", 1)[1])
+                        )
+
+            capture = _CaptureHandler()
+            _prev_level = cc.logger.level
+            cc.logger.addHandler(capture)
+            cc.logger.setLevel(_logging.DEBUG)
             t0 = time.monotonic()
-            msgs, prompt = run_compress_context_with_progress_timeout(
-                worker=fifth_worker,
-                messages=fifth_msgs,
-                system_prompt_fallback="fifth-fallback",
-                idle_timeout_seconds=5.0,
-                total_ceiling_seconds=5.0,
-            )
+            try:
+                msgs, prompt = run_compress_context_with_progress_timeout(
+                    worker=fifth_worker,
+                    messages=fifth_msgs,
+                    system_prompt_fallback="fifth-fallback",
+                    idle_timeout_seconds=5.0,
+                    total_ceiling_seconds=5.0,
+                    telemetry_agent=_TelemetryAgent(),
+                )
+            finally:
+                cc.logger.removeHandler(capture)
+                cc.logger.setLevel(_prev_level)
             elapsed = time.monotonic() - t0
             # ── Assert while the 4 workers are STILL wedged ───────────────
             assert not release.is_set()
@@ -335,6 +370,16 @@ class TestF6ExecutorSaturation:
             assert msgs is fifth_msgs
             assert prompt == "fifth-fallback"
             assert not fifth_ran.is_set()
+            saturated = [
+                p for p in capture.payloads
+                if p.get("failure_class") == "pool_saturated"
+            ]
+            assert saturated, (
+                "fail-fast admission refusal must emit compression-attempt "
+                "telemetry with failure_class='pool_saturated'"
+            )
+            assert saturated[0]["commit_status"] == "aborted"
+            assert saturated[0]["session_id"] == "SATURATED_SESSION"
         finally:
             release.set()
 

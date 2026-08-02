@@ -819,9 +819,19 @@ def _seed_cron_thread_session(
             except (ValueError, KeyError):
                 platform_enum = None
             if platform_enum is not None:
+                # Discord thread destinations must key on the thread's OWN id
+                # to match how the Discord adapter keys organic in-thread
+                # messages (chat_id == thread_id). Other platforms (Slack,
+                # Telegram) use chat_id == parent_channel for thread messages,
+                # so the parent chat_id is correct for them. See the matching
+                # guard in GatewayRunner._process_handoff.
+                if platform_enum == Platform.DISCORD:
+                    seed_chat_id = str(thread_id)
+                else:
+                    seed_chat_id = str(chat_id)
                 dest_source = SessionSource(
                     platform=platform_enum,
-                    chat_id=str(chat_id),
+                    chat_id=seed_chat_id,
                     chat_name=chat_name,
                     chat_type="thread",
                     user_id="system:cron",

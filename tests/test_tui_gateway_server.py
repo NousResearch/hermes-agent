@@ -8893,6 +8893,58 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
+    """If replace_messages fails during edit/regenerate truncate, do not run the turn.
+
+    Memory-first + fail-open left session['history'] short while state.db kept
+    the old tail. The agent flush then appends the new exchange on top of the
+    'undone' turns — durable zombie history. Write first; on failure leave
+    memory and DB unchanged and return 5008.
+    """
+    original_history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second reply"},
+    ]
+    sess = _session(history=list(original_history))
+    server._sessions["trunc-fail-sid"] = sess
+
+    class _FailDb:
+        def replace_messages(self, session_id, messages):
+            raise OSError("disk full")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FailDb())
+    monkeypatch.setattr(
+        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "trunc-fail-sid",
+                    "text": "edited second",
+                    "truncate_before_user_ordinal": 1,
+                },
+            }
+        )
+        assert "error" in resp
+        assert resp["error"]["code"] == 5008
+        assert "truncat" in resp["error"]["message"].lower() or "persist" in resp["error"]["message"].lower()
+        # Memory left intact — same list contents as before the refused cut.
+        assert sess["history"] == original_history
+        assert sess["history_version"] == 0
+        assert sess.get("running") is not True
+    finally:
+        server._sessions.pop("trunc-fail-sid", None)
+
+
 # ---------------------------------------------------------------------------
 # session.interrupt must only cancel pending prompts owned by the calling
 # session — it must not blast-resolve clarify/sudo/secret prompts on

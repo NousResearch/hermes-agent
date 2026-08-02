@@ -2166,7 +2166,6 @@ class TestKimiTemperatureOmitted:
 
 
 
-
     @pytest.mark.asyncio
     async def test_async_call_omits_temperature(self):
         client = MagicMock()
@@ -2217,6 +2216,30 @@ class TestKimiTemperatureOmitted:
 # ---------------------------------------------------------------------------
 # async_call_llm payment / connection fallback (#7512 bug 2)
 # ---------------------------------------------------------------------------
+
+
+class TestGpt5TemperatureOmitted:
+    """GPT-5 Responses models must not receive a chat temperature override."""
+
+    @pytest.mark.parametrize("model", [
+        "gpt-5",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "openai/gpt-5.6-terra",
+    ])
+    def test_gpt5_models_omit_temperature(self, model):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model=model,
+            messages=[{"role": "user", "content": "Generate a title"}],
+            temperature=0.2,
+            base_url="http://litellm.example/v1",
+        )
+
+        assert "temperature" not in kwargs
 
 
 class TestStaleBaseUrlWarning:

@@ -58,3 +58,61 @@ def test_missing_dir_without_dry_run_exits_nonzero(tmp_path):
     r = _run({"WIKI_SYNC_DIR": str(missing)})
     assert r.returncode == 1
     assert "cannot cd" in r.stderr or "cannot cd" in r.stdout
+
+
+def _git(path: Path, *args: str):
+    return subprocess.run(
+        ["git", "-C", str(path), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_refuses_unexpected_remote_before_any_push(tmp_path):
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    _git(wiki, "init", "-b", "main")
+    _git(wiki, "remote", "add", "origin", str(tmp_path / "checked-out-staging"))
+
+    r = _run({"WIKI_SYNC_DIR": str(wiki), "GH_TOKEN": "fixture-token"})
+
+    assert r.returncode == 1
+    assert "refusing unsafe wiki origin" in r.stdout
+
+
+def test_refuses_diverged_checkpoint_without_mutating_repo(tmp_path):
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    wiki = tmp_path / "wiki"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(seed)], check=True, capture_output=True)
+    _git(seed, "checkout", "-b", "main")
+    _git(seed, "config", "user.email", "fixture@example.test")
+    _git(seed, "config", "user.name", "Fixture")
+    (seed / "base.md").write_text("base\n")
+    _git(seed, "add", "base.md")
+    _git(seed, "commit", "-m", "base")
+    _git(seed, "push", "-u", "origin", "main")
+    subprocess.run(["git", "clone", "--branch", "main", str(remote), str(wiki)], check=True, capture_output=True)
+    _git(wiki, "config", "user.email", "fixture@example.test")
+    _git(wiki, "config", "user.name", "Fixture")
+    (wiki / "local.md").write_text("local\n")
+    _git(wiki, "add", "local.md")
+    _git(wiki, "commit", "-m", "local")
+    (seed / "remote.md").write_text("remote\n")
+    _git(seed, "add", "remote.md")
+    _git(seed, "commit", "-m", "remote")
+    _git(seed, "push", "origin", "main")
+    before = _git(wiki, "rev-parse", "HEAD").stdout.strip()
+
+    r = _run({
+        "WIKI_SYNC_DIR": str(wiki),
+        "WIKI_SYNC_EXPECTED_REMOTE": str(remote),
+        "GH_TOKEN": "fixture-token",
+    })
+
+    assert r.returncode == 1
+    assert "branch diverged" in r.stdout
+    assert _git(wiki, "rev-parse", "HEAD").stdout.strip() == before
+    assert not (wiki / "remote.md").exists()

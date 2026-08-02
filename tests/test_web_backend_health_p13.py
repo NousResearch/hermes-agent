@@ -105,7 +105,7 @@ def test_live_checks_use_http_not_docker(monkeypatch, fake_home):
     def fake_urlopen(url, timeout):
         assert timeout <= 10
         if ":8082/" in url:
-            return Response(b'{"results": [{"title": "ok"}]}')
+            return Response(b'<div class="result">ok</div>')
         return Response(b'{"status": "ok", "checks": {}}')
 
     def fake_run(cmd, **kwargs):
@@ -115,7 +115,19 @@ def test_live_checks_use_http_not_docker(monkeypatch, fake_home):
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    assert mod.check_searxng() == (True, "1 results")
+    assert mod.check_searxng() == (True, "HTML search returned results")
     assert mod.check_groktoCrawl() == (True, "healthy (ok)")
     assert mod.check_ddgs() == (True, "working")
     assert len(calls) == 1
+
+
+def test_degraded_report_is_successful_cron_execution(monkeypatch, fake_home, capsys):
+    """A health alert is output data, not a scheduler execution failure."""
+    mod = _load_module(monkeypatch, fake_home)
+    monkeypatch.setattr(mod, "check_searxng", lambda: (False, "API down"))
+    monkeypatch.setattr(mod, "check_groktoCrawl", lambda: (True, "healthy"))
+    monkeypatch.setattr(mod, "check_ddgs", lambda: (False, "unavailable"))
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 0
+    assert "SearXNG FAIL" in capsys.readouterr().out

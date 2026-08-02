@@ -5825,6 +5825,15 @@ def resolve_nous_access_token(
             if not _is_expiring(state.get("expires_at"), refresh_skew_seconds):
                 if merged_shared:
                     _save_provider_state_to_source(auth_store, "nous", state, state_source_path)
+                # Populate the memo on the valid-token fast path too: the
+                # startup burst usually finds a *valid* token, but each
+                # check_fn call still pays two cross-process file locks and
+                # state reads to reach this return. The token has at least
+                # refresh_skew_seconds (>= 120s) of life here, so a 5s memo
+                # can never serve an expired token.
+                if not insecure and ca_bundle is None:
+                    with _RESOLVE_TOKEN_CACHE_LOCK:
+                        _RESOLVE_TOKEN_CACHE = (time.monotonic(), access_token)
                 return access_token
 
             if not isinstance(refresh_token, str) or not refresh_token:

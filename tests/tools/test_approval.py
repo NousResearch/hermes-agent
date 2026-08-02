@@ -878,6 +878,22 @@ class TestLaunchctlGatewayLifecycle:
         ):
             dangerous, _, _ = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
+    def test_label_built_before_verb_detected(self):
+        """2026-08-02 incident: the label was defined in a shell for-loop
+        BEFORE the `launchctl bootout` call, referenced only via a `$label`
+        variable at the point of the verb. The old sequential regex required
+        "hermes"/"ai.hermes" to appear AFTER the verb and missed this
+        entirely, restarting 4 gateways with zero approval."""
+        cmd = (
+            "uid=$(id -u); for item in 'ai.hermes.gateway-apollo:/a.plist' "
+            "'ai.hermes.gateway:/Users/botuser/Library/LaunchAgents/ai.hermes.gateway.plist'; "
+            "do label=${item%%:*}; plist=${item#*:}; "
+            'launchctl bootout "gui/$uid/$label"; '
+            'launchctl bootstrap "gui/$uid" "$plist"; done'
+        )
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, cmd
+        assert "launchd" in desc.lower()
 
 
 class TestGitDestructiveOps:

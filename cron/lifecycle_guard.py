@@ -171,6 +171,40 @@ def _named_profile_is_current(named: str) -> bool:
     return named.strip().casefold() == current.strip().casefold()
 
 
+# Branch B only catches `launchctl <verb> ... hermes[.-]?gateway` when the
+# label literally appears AFTER the verb in the same `[^\n]*` span, and its
+# verb list is missing `bootout`/`kill`/`disable`/`remove` entirely (2026-08-02
+# incident). `bootout` is the one that actually unloads a job's registration
+# — worse than `stop`/`kickstart`, which just bounce a still-registered job.
+#
+# A shell loop that builds the label from a list defined EARLIER in the same
+# command — `for item in 'ai.hermes.gateway-apollo:...' 'ai.hermes.gateway:...';
+# do label=${item%%:*}; launchctl bootout "gui/$uid/$label"; done` — puts the
+# literal label text in a different `;`-separated segment than the verb, so
+# no amount of same-segment tokenization sees it: the token next to `bootout`
+# is the unexpanded variable `$label`, not the string "hermes.gateway". This
+# incident command evaded Branch B on both counts (missing verb AND order)
+# and unloaded all 4 profiles' launchd jobs with zero approval.
+#
+# Unlike `submit`/`bootstrap` (handled separately, fully label-independent,
+# because a NEW job's label is attacker-chosen), these verbs act on an
+# EXISTING job, so anchoring to the hermes-gateway label is still correct —
+# `test_safe_commands` requires unrelated-label ops (e.g. `launchctl unload
+# ai.hermes.update-checker.plist`) to stay unblocked. The fix is checking
+# "verb anywhere AND label anywhere", not "label right after verb".
+_LAUNCHCTL_LIFECYCLE_VERBS_RE = re.compile(
+    r"(?i)\blaunchctl\s+(?:kickstart|unload|load|stop|restart|bootout|kill|disable|remove)\b"
+)
+_HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
+
+
+def _contains_launchctl_gateway_lifecycle(normalized_text: str) -> bool:
+    """Order-independent companion to Branch B — see comment above."""
+    return bool(_LAUNCHCTL_LIFECYCLE_VERBS_RE.search(normalized_text)) and bool(
+        _HERMES_GATEWAY_LABEL_RE.search(normalized_text)
+    )
+
+
 def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern.
 
@@ -222,7 +256,12 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
         joined = " ".join(segment)
         if joined and _GATEWAY_LIFECYCLE_PATTERN.search(joined):
             return True
-    return False
+    # Order-independent launchctl pass (#77083): a shell loop can build the
+    # gateway label from a variable defined in an earlier `;`-separated
+    # segment (`label=${item%%:*}; launchctl bootout "gui/$uid/$label"`), so
+    # neither the same-span regex nor same-segment tokenization sees verb
+    # and label together. Check "verb anywhere AND label anywhere" instead.
+    return _contains_launchctl_gateway_lifecycle(normalized)
 
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})

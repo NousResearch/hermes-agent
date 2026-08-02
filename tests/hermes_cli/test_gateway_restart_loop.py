@@ -56,6 +56,32 @@ class TestGatewayLifecyclePattern:
     def test_launchctl_submit_bootstrap_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
+    def test_launchctl_bootout_verb_is_caught(self):
+        """`bootout` was missing from Branch B's verb list entirely — the
+        2026-08-02 incident command used exactly this verb (it deregisters
+        the job outright, unlike stop/kickstart) and slipped past both this
+        check and the missing-verb rule in tools/approval.py."""
+        assert _contains_gateway_lifecycle_command(
+            "launchctl bootout gui/501/ai.hermes.gateway"
+        )
+
+    def test_label_defined_before_verb_is_caught(self):
+        """2026-08-02 incident reproduction: the label comes from a shell
+        for-loop list defined BEFORE the launchctl call, in an earlier `;`
+        -separated segment, referenced only via `$label` at the point of the
+        verb. Branch B's `[^\\n]*` sequential match requires the literal
+        label text to appear AFTER the verb IN THE SAME SEGMENT and never
+        sees it — restarted 4 gateways with zero approval."""
+        cmd = (
+            "uid=$(id -u); for item in 'ai.hermes.gateway-apollo:/a.plist' "
+            "'ai.hermes.gateway-cronus:/c.plist' 'ai.hermes.gateway-plutus:/p.plist' "
+            "'ai.hermes.gateway:/Users/botuser/Library/LaunchAgents/ai.hermes.gateway.plist'; "
+            "do label=${item%%:*}; plist=${item#*:}; "
+            'launchctl bootout "gui/$uid/$label"; '
+            'launchctl bootstrap "gui/$uid" "$plist"; done'
+        )
+        assert _contains_gateway_lifecycle_command(cmd)
+
     def test_line_continuation_does_not_bridge_unrelated_lines(self):
         # A backslash-newline is only normalized when it's a real shell
         # continuation. Two genuinely separate lines of a longer prompt

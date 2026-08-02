@@ -2654,6 +2654,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "_anthropic_base_url",
             "_is_anthropic_oauth",
             "_config_context_length",
+            "_reasoning_echo_flag",
         )
     }
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the

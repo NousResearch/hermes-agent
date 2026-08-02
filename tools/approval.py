@@ -665,10 +665,11 @@ DANGEROUS_PATTERNS = [
     (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
     # Windows analogue of `curl … | sh`: `iwr https://x | iex` (Invoke-WebRequest
     # piped to Invoke-Expression) fetches and runs remote code with no local
-    # trace. `curl`/`wget` are PowerShell aliases for Invoke-WebRequest, so a
-    # `curl … | iex` pipeline is the same RCE. A plain `iwr … -OutFile x`
-    # download (no pipe into iex) is not matched.
-    (r'\b(?:iwr|invoke-webrequest|curl|wget)\b.*\|\s*(?:iex|invoke-expression)\b', "pipe remote content to PowerShell (iwr|iex)"),
+    # trace. `curl`/`wget` are PowerShell aliases for Invoke-WebRequest, and
+    # `irm` is the alias for Invoke-RestMethod — Hermes documents `irm … | iex`
+    # as a Windows installer form, so it is the same RCE as `iwr … | iex`. A
+    # plain `iwr … -OutFile x` download (no pipe into iex) is not matched.
+    (r'\b(?:iwr|invoke-webrequest|irm|invoke-restmethod|curl|wget)\b.*\|\s*(?:iex|invoke-expression)\b', "pipe remote content to PowerShell (iwr|iex)"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # Remote content executed via command substitution: eval/source/. $(curl ...)
     # or `wget ...`. Equivalent to piping remote content to a shell.

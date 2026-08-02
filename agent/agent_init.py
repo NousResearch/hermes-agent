@@ -765,6 +765,9 @@ def init_agent(
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
     agent._interrupt_message = None  # Optional message that triggered interrupt
+    # Explicit hard cancellation is separate from redirect/message state. A
+    # thread-safe Event makes the cause atomic for auxiliary stream pollers.
+    agent._hard_interrupt_requested = threading.Event()
     agent._execution_thread_id: int | None = None  # Set at run_conversation() start
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()

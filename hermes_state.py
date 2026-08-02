@@ -3599,6 +3599,92 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             "error": error,
         }
 
+    def get_compression_failure_cooldown_row(
+        self,
+        session_id: str,
+    ) -> Dict[str, Any]:
+        """Return the exact stored cooldown columns without expiry filtering.
+
+        Compression cancellation uses this under its session lease so rollback
+        can preserve an expired row, a partially-null row, or an absent session
+        exactly instead of converting those states through the active-cooldown
+        API.
+        """
+        if not session_id:
+            return {"session_exists": False, "cooldown_until": None, "error": None}
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT compression_failure_cooldown_until, compression_failure_error "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return {"session_exists": False, "cooldown_until": None, "error": None}
+        cooldown_until = (
+            row["compression_failure_cooldown_until"]
+            if isinstance(row, sqlite3.Row)
+            else row[0]
+        )
+        error = (
+            row["compression_failure_error"]
+            if isinstance(row, sqlite3.Row)
+            else row[1]
+        )
+        return {
+            "session_exists": True,
+            "cooldown_until": (
+                float(cooldown_until) if cooldown_until is not None else None
+            ),
+            "error": error,
+        }
+
+    def restore_compression_failure_cooldown_row(
+        self,
+        session_id: str,
+        snapshot: Dict[str, Any],
+    ) -> None:
+        """Restore and verify an exact cooldown-row snapshot.
+
+        Unlike the ordinary record/clear helpers, this transactional rollback
+        API deliberately propagates write and verification failures. A caller
+        must not report cancellation as mutation-free when compensation failed.
+        """
+        expected_exists = bool(snapshot.get("session_exists", False))
+        if not expected_exists:
+            actual = self.get_compression_failure_cooldown_row(session_id)
+            if actual.get("session_exists", False):
+                raise RuntimeError(
+                    "cannot restore absent compression cooldown row: session now exists"
+                )
+            return
+
+        deadline = snapshot.get("cooldown_until")
+        error = snapshot.get("error")
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET compression_failure_cooldown_until = ?, "
+                "compression_failure_error = ? WHERE id = ?",
+                (deadline, error, session_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"compression cooldown rollback session missing: {session_id}"
+                )
+
+        self._execute_write(_do)
+        actual = self.get_compression_failure_cooldown_row(session_id)
+        expected = {
+            "session_exists": True,
+            "cooldown_until": float(deadline) if deadline is not None else None,
+            "error": error,
+        }
+        if actual != expected:
+            raise RuntimeError(
+                f"compression cooldown rollback verification failed: "
+                f"expected={expected!r}, actual={actual!r}"
+            )
+
     def clear_compression_failure_cooldown(self, session_id: str) -> None:
         """Clear any persisted compression-failure cooldown for a session."""
         if not session_id:

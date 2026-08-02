@@ -28,8 +28,10 @@ fixture deterministically produces 2 children; with the lock, exactly 1.
 
 from __future__ import annotations
 
+import copy
 import inspect
 import os
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -40,7 +42,12 @@ import pytest
 from hermes_state import SessionDB
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str):
+def _build_agent_with_db(
+    db: SessionDB,
+    session_id: str,
+    *,
+    stub_compressor: bool = True,
+):
     """Build an AIAgent that's wired to ``db`` and pinned to ``session_id``."""
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
@@ -60,6 +67,9 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     # an LLM call.  Sleep inside compress() so the two threads' rotations
     # actually overlap — without that the OS could happen to serialize them
     # and hide the bug.
+    if not stub_compressor:
+        return agent
+
     compressor = MagicMock()
 
     def _compress_with_overlap(*_a, **_kw):
@@ -871,7 +881,504 @@ def test_lease_refresher_failure_window_is_bounded_by_ttl() -> None:
     )
 
 
+def test_hard_interrupt_aborts_compression_and_unblocks_session_writes(tmp_path: Path) -> None:
+    """Ctrl+C must abort an interrupt-protected summary without leaving the
+    session write-blocked behind its compression lease."""
+    from agent import auxiliary_client as aux
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HARD_INTERRUPT_COMPRESSION_TEST"
+    db.create_session(session_id, source="cli")
+
+    agent = _build_agent_with_db(db, session_id)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    original_messages = copy.deepcopy(messages)
+
+    def _cancelled_compress(*_args, **_kwargs):
+        agent._hard_interrupt_requested.set()
+        assert aux._aux_interrupt_cancel_requested() is True
+        messages[0]["content"] = "must be rolled back"
+        raise aux.AuxiliaryExplicitCancellation()
+
+    agent.context_compressor.compress.side_effect = _cancelled_compress
+
+    compressed, _prompt = agent._compress_context(
+        messages, "sys", approx_tokens=120_000
+    )
+
+    assert compressed == original_messages
+    assert messages == original_messages
+    assert db.get_compression_lock_holder(session_id) is None
+    db.append_message(session_id, "assistant", "writes recovered")
 
 
+def test_late_hard_interrupt_restores_full_compressor_attempt_state_and_retry(
+    tmp_path: Path,
+) -> None:
+    """A stop after provider success but before compress() returns is a true no-op."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "LATE_HARD_INTERRUPT_STATE_TEST"
+    db.create_session(session_id, source="cli")
+    agent = _build_agent_with_db(db, session_id)
+    agent.compression_in_place = True
+    agent._cached_system_prompt = "sys"
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    provider_returned = threading.Event()
+    allow_compress_return = threading.Event()
+    shared_telemetry = {"shared": [1, 2, 3]}
+    state_fields = {
+        "_previous_summary": "old-summary",
+        "_summary_has_user_turn": False,
+        "compression_count": 4,
+        "_last_compression_savings_pct": 37.5,
+        "_ineffective_compression_count": 1,
+        "_anti_thrash_recovery_deadline": 123.0,
+        "_fallback_compression_streak": 1,
+        "_verify_compaction_cleared_threshold": False,
+        "_last_compression_made_progress": False,
+        "_summary_failure_cooldown_until": 456.0,
+        "_cooldown_persist_failed": True,
+        "_last_summary_error": "old-error",
+        "_consecutive_timeout_failures": 2,
+        "_last_summary_dropped_count": 3,
+        "_last_summary_fallback_used": True,
+        "_last_compress_aborted": False,
+        "_last_summary_auth_failure": True,
+        "_last_summary_network_failure": True,
+        "_last_aux_model_failure_error": "old-aux-error",
+        "_last_aux_model_failure_model": "old-aux-model",
+        "_summary_model_fallen_back": True,
+        "summary_model": "old-summary-model",
+        "_last_compression_telemetry": shared_telemetry,
+        "_active_compression_telemetry": shared_telemetry,
+        "_compression_telemetry_seed": {"seed": [3]},
+    }
+    for name, value in state_fields.items():
+        setattr(agent.context_compressor, name, copy.deepcopy(value))
+    restored_shared_telemetry = copy.deepcopy(shared_telemetry)
+    agent.context_compressor._last_compression_telemetry = restored_shared_telemetry
+    agent.context_compressor._active_compression_telemetry = restored_shared_telemetry
+
+    def _provider_succeeded_then_waits(*_args, **_kwargs):
+        for name in state_fields:
+            setattr(agent.context_compressor, name, f"mutated-{name}")
+        provider_returned.set()
+        assert allow_compress_return.wait(timeout=5)
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] cancelled summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _provider_succeeded_then_waits
+    result: dict[str, tuple] = {}
+    worker = threading.Thread(
+        target=lambda: result.setdefault(
+            "value", agent._compress_context(messages, "sys", approx_tokens=120_000)
+        ),
+        daemon=True,
+    )
+    worker.start()
+    assert provider_returned.wait(timeout=2)
+    agent.hard_interrupt("cancel after provider return")
+    allow_compress_return.set()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert result["value"][0] is messages
+    assert {
+        name: copy.deepcopy(getattr(agent.context_compressor, name))
+        for name in state_fields
+    } == state_fields
+    assert (
+        agent.context_compressor._active_compression_telemetry
+        is agent.context_compressor._last_compression_telemetry
+    )
+    assert db.get_compression_lock_holder(session_id) is None
+
+    agent.clear_interrupt()
+    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: [
+        {"role": "user", "content": "[CONTEXT COMPACTION] retry summary"},
+        {"role": "user", "content": "tail"},
+    ]
+    retried, _prompt = agent._compress_context(
+        messages, "sys", approx_tokens=120_000
+    )
+    assert retried is not messages
+    assert retried[0]["content"] == "[CONTEXT COMPACTION] retry summary"
 
 
+def test_force_cancel_restores_newer_durable_cooldown_captured_under_lease(
+    tmp_path: Path,
+) -> None:
+    """A stale forced attempt rolls back to the lease-protected durable row."""
+    from agent.auxiliary_client import AuxiliaryExplicitCancellation
+    from agent.context_compressor import ContextCompressor
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "FORCE_CANCEL_DURABLE_COOLDOWN"
+    db.create_session(session_id, source="cli")
+
+    # B binds first and therefore has no local cooldown. A then persists a
+    # newer cooldown for the same durable session before B acquires its lease.
+    stale_agent = _build_agent_with_db(
+        db, session_id, stub_compressor=False
+    )
+    writer_agent = _build_agent_with_db(
+        db, session_id, stub_compressor=False
+    )
+    stale = stale_agent.context_compressor
+    writer = writer_agent.context_compressor
+    assert isinstance(stale, ContextCompressor)
+    assert isinstance(writer, ContextCompressor)
+    assert stale._summary_failure_cooldown_until == 0.0
+
+    writer._record_compression_failure_cooldown(120.0, "newer durable failure")
+    durable_before = tuple(
+        db._conn.execute(
+            "SELECT compression_failure_cooldown_until, compression_failure_error "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    )
+    assert durable_before[0] is not None
+
+    stale_seed = {"seed": ["truly-pre-attempt"]}
+    stale._compression_telemetry_seed = copy.deepcopy(stale_seed)
+    stale._previous_summary = "pre-attempt-summary"
+    stale_agent._compression_feasibility_checked = True
+    stale_agent.compression_in_place = True
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    real_clear = ContextCompressor._clear_compression_failure_cooldown
+
+    def _clear_then_hard_cancel() -> None:
+        real_clear(stale)
+        stale_agent._hard_interrupt_requested.set()
+        raise AuxiliaryExplicitCancellation()
+
+    # Exercise the built-in force=True mutation point deterministically: force
+    # clears the durable cooldown, then the frozen host cancellation unwinds it.
+    stale._clear_compression_failure_cooldown = _clear_then_hard_cancel
+
+    compressed, _prompt = stale_agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+        force=True,
+    )
+
+    assert compressed is messages
+    durable_after = tuple(
+        db._conn.execute(
+            "SELECT compression_failure_cooldown_until, compression_failure_error "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    )
+    assert durable_after == durable_before
+    assert stale._summary_failure_cooldown_until > time.monotonic()
+    assert stale._last_summary_error == "newer durable failure"
+    assert stale._cooldown_persist_failed is False
+    assert stale._compression_telemetry_seed == stale_seed
+    assert stale._previous_summary == "pre-attempt-summary"
+    assert db.get_compression_lock_holder(session_id) is None
+
+    # A future compressor refresh must still observe the exact row rather than
+    # the cancelled force attempt having permanently cleared it.
+    future_agent = _build_agent_with_db(
+        db, session_id, stub_compressor=False
+    )
+    future = future_agent.context_compressor.get_active_compression_failure_cooldown(
+        refresh=True
+    )
+    assert future is not None
+    assert future["error"] == "newer durable failure"
+
+
+def test_unrelated_interrupted_error_propagates_and_releases_compression_lease(
+    tmp_path: Path,
+) -> None:
+    """A plugin/OS InterruptedError is a failure, not an explicit transaction abort."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "UNRELATED_INTERRUPT_COMPRESSION_TEST"
+    db.create_session(session_id, source="cli")
+
+    agent = _build_agent_with_db(db, session_id)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    def _provider_interrupted(*_args, **_kwargs):
+        messages[0]["content"] = "must be rolled back"
+        raise InterruptedError("provider syscall interrupted")
+
+    agent.context_compressor.compress.side_effect = _provider_interrupted
+
+    with pytest.raises(InterruptedError, match="provider syscall interrupted"):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert db.get_compression_lock_holder(session_id) is None
+    db.append_message(session_id, "assistant", "writes recovered")
+
+
+def test_redirect_interrupt_remains_protected_during_compression(tmp_path: Path) -> None:
+    """Redirects use interrupt_requested=True/message=None; only the atomic
+    hard-cancel event may override summary protection."""
+    from agent import auxiliary_client as aux
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "REDIRECT_COMPRESSION_TEST"
+    db.create_session(session_id, source="cli")
+    agent = _build_agent_with_db(db, session_id)
+    agent._interrupt_requested = True
+    agent._interrupt_message = None
+    agent._pending_redirect = "new correction"
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    def _protected_noop(current, **_kwargs):
+        assert aux._aux_interrupt_cancel_requested() is False
+        return copy.deepcopy(current)
+
+    agent.context_compressor.compress.side_effect = _protected_noop
+
+    compressed, _prompt = agent._compress_context(
+        messages, "sys", approx_tokens=120_000
+    )
+
+    assert compressed == messages
+    assert db.get_compression_lock_holder(session_id) is None
+
+
+def test_hard_cancel_between_compress_return_and_commit_begin_wins_atomically(
+    tmp_path: Path,
+) -> None:
+    """The hard-stop admission and commit admission share one fence lock."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HARD_CANCEL_COMMIT_RACE"
+    db.create_session(session_id, source="tui")
+    agent = _build_agent_with_db(db, session_id)
+    agent.compression_in_place = True
+    agent._cached_system_prompt = "sys"
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    before_commit = threading.Event()
+    allow_commit_check = threading.Event()
+
+    class _CommitBarrierList(list):
+        def __eq__(self, other):
+            before_commit.set()
+            assert allow_commit_check.wait(timeout=5)
+            return super().__eq__(other)
+
+    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: _CommitBarrierList(
+        [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+    )
+    archive_spy = MagicMock(wraps=db.archive_and_compact)
+    db.archive_and_compact = archive_spy
+    result: dict[str, tuple] = {}
+    worker = threading.Thread(
+        target=lambda: result.setdefault(
+            "value", agent._compress_context(messages, "sys", approx_tokens=120_000)
+        ),
+        daemon=True,
+    )
+    worker.start()
+    assert before_commit.wait(timeout=2)
+
+    agent.hard_interrupt("cancel before commit admission")
+    allow_commit_check.set()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert result["value"][0] is messages
+    archive_spy.assert_not_called()
+    assert db.get_compression_lock_holder(session_id) is None
+
+
+def test_hard_stop_waits_for_commit_already_admitted(tmp_path: Path) -> None:
+    """A surfaced stop never races an untracked post-return transcript commit."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HARD_CANCEL_AFTER_COMMIT_ADMISSION"
+    db.create_session(session_id, source="tui")
+    agent = _build_agent_with_db(db, session_id)
+    agent.compression_in_place = True
+    agent._cached_system_prompt = "sys"
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    commit_started = threading.Event()
+    allow_commit = threading.Event()
+    stop_returned = threading.Event()
+    original_archive = db.archive_and_compact
+
+    def _blocked_archive(*args, **kwargs):
+        commit_started.set()
+        assert allow_commit.wait(timeout=5)
+        return original_archive(*args, **kwargs)
+
+    db.archive_and_compact = _blocked_archive
+    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: [
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+        {"role": "user", "content": "tail"},
+    ]
+    compression_result: dict[str, tuple] = {}
+    compression = threading.Thread(
+        target=lambda: compression_result.setdefault(
+            "value", agent._compress_context(messages, "sys", approx_tokens=120_000)
+        ),
+        daemon=True,
+    )
+    compression.start()
+    assert commit_started.wait(timeout=2)
+
+    stop = threading.Thread(
+        target=lambda: (
+            agent.hard_interrupt("stop after commit admission"),
+            stop_returned.set(),
+        ),
+        daemon=True,
+    )
+    stop.start()
+    assert not stop_returned.wait(timeout=0.1)
+    allow_commit.set()
+    compression.join(timeout=5)
+    stop.join(timeout=5)
+
+    assert not compression.is_alive()
+    assert not stop.is_alive()
+    assert stop_returned.is_set()
+    assert compression_result["value"][0][0]["content"] == (
+        "[CONTEXT COMPACTION] summary"
+    )
+    assert agent._hard_interrupt_requested.is_set()
+    assert db.get_compression_lock_holder(session_id) is None
+
+
+@pytest.mark.parametrize("deadline_offset", [-10.0, 0.05, None])
+def test_force_cancel_restores_exact_expired_or_expiring_cooldown_row(
+    tmp_path: Path,
+    deadline_offset: float | None,
+) -> None:
+    """Cancellation preserves raw cooldown columns even after their deadline."""
+    from agent.auxiliary_client import AuxiliaryExplicitCancellation
+    from agent.context_compressor import ContextCompressor
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = f"RAW_COOLDOWN_{deadline_offset}"
+    db.create_session(session_id, source="cli")
+    deadline = time.time() + deadline_offset if deadline_offset is not None else None
+    db.restore_compression_failure_cooldown_row(
+        session_id,
+        {
+            "session_exists": True,
+            "cooldown_until": deadline,
+            "error": "expired-but-exact",
+        },
+    )
+    before = db.get_compression_failure_cooldown_row(session_id)
+
+    agent = _build_agent_with_db(db, session_id, stub_compressor=False)
+    compressor = agent.context_compressor
+    assert isinstance(compressor, ContextCompressor)
+    # A stale local persistence-failure marker must not suppress restoration
+    # once the raw durable row was captured authoritatively under the lease.
+    compressor._cooldown_persist_failed = True
+    agent._compression_feasibility_checked = True
+    agent.compression_in_place = True
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    real_clear = ContextCompressor._clear_compression_failure_cooldown
+
+    def _mutate_then_cancel() -> None:
+        real_clear(compressor)
+        if deadline_offset is not None and deadline_offset > 0:
+            assert deadline is not None
+            while time.time() <= deadline:
+                time.sleep(0.005)
+        agent._hard_interrupt_requested.set()
+        raise AuxiliaryExplicitCancellation()
+
+    compressor._clear_compression_failure_cooldown = _mutate_then_cancel
+
+    compressed, _prompt = agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+        force=True,
+    )
+
+    assert compressed is messages
+    assert db.get_compression_failure_cooldown_row(session_id) == before
+    assert db.get_compression_lock_holder(session_id) is None
+
+
+def test_cooldown_rollback_failure_surfaces_and_releases_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed compensating write cannot masquerade as a mutation-free cancel."""
+    from agent.auxiliary_client import AuxiliaryExplicitCancellation
+    from agent.context_compressor import ContextCompressor
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "COOLDOWN_ROLLBACK_WRITE_FAILURE"
+    db.create_session(session_id, source="cli")
+    db.record_compression_failure_cooldown(
+        session_id,
+        time.time() + 120.0,
+        "must-restore",
+    )
+    agent = _build_agent_with_db(db, session_id, stub_compressor=False)
+    compressor = agent.context_compressor
+    assert isinstance(compressor, ContextCompressor)
+    agent._compression_feasibility_checked = True
+    agent.compression_in_place = True
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    real_clear = ContextCompressor._clear_compression_failure_cooldown
+
+    def _mutate_then_cancel() -> None:
+        real_clear(compressor)
+        agent._hard_interrupt_requested.set()
+        raise AuxiliaryExplicitCancellation()
+
+    compressor._clear_compression_failure_cooldown = _mutate_then_cancel
+
+    def _rollback_write_fails(_self, _session_id, _snapshot) -> None:
+        raise sqlite3.OperationalError("forced rollback write failure")
+
+    monkeypatch.setattr(
+        SessionDB,
+        "restore_compression_failure_cooldown_row",
+        _rollback_write_fails,
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="forced rollback write failure"):
+        agent._compress_context(
+            messages,
+            "sys",
+            approx_tokens=120_000,
+            force=True,
+        )
+
+    assert db.get_compression_lock_holder(session_id) is None
+
+
+def test_exact_cooldown_restore_api_propagates_sqlite_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "RAW_COOLDOWN_WRITE_FAILURE"
+    db.create_session(session_id, source="test")
+
+    def _write_fails(_callback) -> None:
+        raise sqlite3.OperationalError("forced low-level write failure")
+
+    monkeypatch.setattr(db, "_execute_write", _write_fails)
+
+    with pytest.raises(sqlite3.OperationalError, match="forced low-level write failure"):
+        db.restore_compression_failure_cooldown_row(
+            session_id,
+            {
+                "session_exists": True,
+                "cooldown_until": time.time() + 10.0,
+                "error": "must propagate",
+            },
+        )

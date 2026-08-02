@@ -23,6 +23,8 @@ import os
 import sqlite3
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from collections import Counter
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -570,60 +572,60 @@ def check_discord_bots() -> dict | None:
     return None
 
 
+def _http_probe(url: str, timeout: int) -> tuple[int | None, str, str]:
+    """Return HTTP status/body/error without shelling out or requiring root."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = response.read(1_000_000).decode("utf-8", errors="replace")
+            return response.status, body, ""
+    except urllib.error.HTTPError as exc:
+        body = exc.read(1_000_000).decode("utf-8", errors="replace")
+        return exc.code, body, str(exc)
+    except Exception as exc:
+        return None, "", str(exc)
+
+
 def check_web_backends() -> dict | None:
-    """Check SearXNG + GroktoCrawl + DDGS health."""
+    """Check SearXNG + GroktoCrawl + DDGS health without Docker access."""
     if _DRY_RUN:
-        return None  # dry-run: skip docker/curl/DDGS probes
-    import json as _json
+        return None  # dry-run: skip network/DDGS probes
 
     failures = []
 
-    # SearXNG
-    r = subprocess.run(
-        ["sudo", "docker", "inspect", "searxng", "--format", "{{.State.Status}}"],
-        capture_output=True, text=True, timeout=5
+    # SearXNG: probe the actual JSON search endpoint, bounded by urllib.
+    status, body, error = _http_probe(
+        "http://127.0.0.1:8082/search?q=health+check&format=json", timeout=5
     )
-    if r.returncode != 0 or "running" not in r.stdout:
-        failures.append("SearXNG container down")
+    if status != 200:
+        detail = f"status {status}" if status is not None else (error or "not responding")
+        failures.append(f"SearXNG API {detail}")
     else:
-        r2 = subprocess.run(
-            ["curl", "-sL", "--max-time", "5",
-             "http://127.0.0.1:8082/search?q=health+check&format=json"],
-            capture_output=True, text=True, timeout=10
-        )
-        if r2.returncode != 0 or not r2.stdout:
-            failures.append("SearXNG API not responding")
-        else:
-            try:
-                d = _json.loads(r2.stdout)
-                if len(d.get("results", [])) == 0:
-                    failures.append("SearXNG returning 0 results")
-            except Exception:
-                failures.append("SearXNG invalid JSON response")
+        try:
+            data = json.loads(body)
+            if len(data.get("results", [])) == 0:
+                failures.append("SearXNG returning 0 results")
+        except Exception:
+            failures.append("SearXNG invalid JSON response")
 
-    # GroktoCrawl
-    r = subprocess.run(
-        ["sudo", "docker", "inspect", "groktocrawl-agent-svc-1", "--format", "{{.State.Status}}"],
-        capture_output=True, text=True, timeout=5
-    )
-    if r.returncode != 0 or "running" not in r.stdout:
-        failures.append("GroktoCrawl container down")
-    else:
-        r2 = subprocess.run(
-            ["curl", "-sL", "--max-time", "10", "http://localhost:8090/health"],
-            capture_output=True, text=True, timeout=15
-        )
-        if r2.returncode != 0 or not r2.stdout:
-            failures.append("GroktoCrawl health endpoint not responding")
+    # GroktoCrawl: bounded health endpoint; no container inspection required.
+    status, body, error = _http_probe("http://127.0.0.1:8090/health", timeout=10)
+    if status != 200 or not body:
+        detail = f"status {status}" if status is not None else (error or "not responding")
+        failures.append(f"GroktoCrawl health {detail}")
 
-    # DDGS
-    r = subprocess.run(
-        ["python3", "-c",
-         "from ddgs import DDGS; ddgs=DDGS(); r=list(ddgs.text('test', max_results=1)); exit(0 if len(r)>0 else 1)"],
-        capture_output=True, text=True, timeout=15
+    # DDGS is optional; retain the existing subprocess boundary but route it
+    # through the common bounded runner so tests and failures cannot block the
+    # system-health process.
+    code, _, stderr = run(
+        [
+            "python3",
+            "-c",
+            "from ddgs import DDGS; ddgs=DDGS(); r=list(ddgs.text('test', max_results=1)); exit(0 if len(r)>0 else 1)",
+        ],
+        timeout=15,
     )
-    if r.returncode != 0:
-        failures.append(f"DDGS: {r.stderr[:60]}" if r.stderr else "DDGS import/search failed")
+    if code != 0:
+        failures.append(f"DDGS: {stderr[:60]}" if stderr else "DDGS import/search failed")
 
     if failures:
         priority = "P1" if len(failures) >= 2 else "P2"

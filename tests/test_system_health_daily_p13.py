@@ -79,6 +79,40 @@ def test_dry_run_probes_skip_subprocess(monkeypatch, fake_home):
     assert mod.check_discord_bots() is None
 
 
+def test_web_backends_use_bounded_http_not_docker(monkeypatch, fake_home):
+    """The web probe must not block on root-only Docker access."""
+    mod = _load_module(monkeypatch, fake_home)
+    calls = []
+
+    class Response:
+        def __init__(self, body):
+            self.status = 200
+            self._body = body
+
+        def read(self, _limit=-1):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_urlopen(url, timeout):
+        assert timeout <= 10
+        if ":8082/" in url:
+            return Response(b'{"results": [{"title": "ok"}]}')
+        return Response(b"ok")
+
+    def fake_run(cmd, timeout=20):
+        calls.append(cmd)
+        assert cmd[0] != "sudo"
+        return 0, "ok", ""
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(mod, "run", fake_run)
+    assert mod.check_web_backends() is None
+    assert len(calls) == 1
 def test_check_kanban_accepts_pathlike_and_string_paths(monkeypatch, fake_home, tmp_path):
     """Board paths are normalised before Path methods are used.
 

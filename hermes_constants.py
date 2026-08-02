@@ -294,8 +294,9 @@ def iter_hermes_node_dirs(home: Path | None = None) -> list[Path]:
     dirs = [root / "node"]
     bin_dir = root / "node" / "bin"
     # NOTE: keep this ordering in sync with hermesManagedNodePathEntries() in
-    # apps/desktop/electron/main.cjs — the Electron main process is Node and
-    # cannot import this module, so the platform-ordering rule is mirrored there.
+    # apps/desktop/electron/backend-env.ts — the Electron main process is Node
+    # and cannot import this module, so the platform-ordering rule is mirrored
+    # there (once; main.ts imports it rather than keeping its own copy).
     if sys.platform == "win32":
         return dirs + [bin_dir]
     return [bin_dir] + dirs
@@ -316,7 +317,7 @@ def _candidate_node_command_names(command: str) -> list[str]:
     return [f"{base}.cmd", f"{base}.exe", base]
 
 
-_HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22"))
+_HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "26"))
 _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
@@ -550,21 +551,54 @@ def heal_hermes_managed_node() -> bool:
     return result.returncode == 0
 
 
-def find_hermes_node_executable(command: str) -> str | None:
-    """Return a Hermes-managed Node/npm executable path, healing broken trees."""
-    names = _candidate_node_command_names(command)
-    broken_present = False
-    for directory in iter_hermes_node_dirs():
-        for name in names:
+def _managed_node_tree_outdated(home: Path | None = None) -> bool:
+    """Return True when the managed tree's node runs but is below the target major.
+
+    An outdated managed Node (e.g. a 22 tree from an older install) heals the
+    same way a broken one does: :func:`find_hermes_node_executable` triggers
+    the once-per-process heal, which redownloads
+    ``latest-v{_HERMES_NODE_TARGET_MAJOR}.x`` — so existing users are upgraded
+    on next launch, not just on the next installer re-run. Mirrors
+    ``_nb_managed_node_outdated`` in ``scripts/lib/node-bootstrap.sh``.
+    """
+    import subprocess
+
+    for directory in iter_hermes_node_dirs(home):
+        for name in _candidate_node_command_names("node"):
             candidate = directory / name
-            if candidate.is_file() and (
-                sys.platform == "win32" or os.access(candidate, os.X_OK)
+            if not candidate.is_file() or (
+                sys.platform != "win32" and not os.access(candidate, os.X_OK)
             ):
-                resolved = str(candidate)
-                if node_tool_runnable(resolved):
-                    return resolved
-                broken_present = True
-    if broken_present and heal_hermes_managed_node():
+                continue
+            try:
+                from hermes_cli._subprocess_compat import windows_hide_flags
+
+                result = subprocess.run(
+                    [str(candidate), "--version"],
+                    capture_output=True,
+                    timeout=10,
+                    creationflags=windows_hide_flags(),
+                )
+                major = int(result.stdout.decode().strip().lstrip("v").split(".")[0])
+            except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+                return False  # broken, not outdated — the runnable probe handles it
+            return major < _HERMES_NODE_TARGET_MAJOR
+    return False
+
+
+def find_hermes_node_executable(command: str) -> str | None:
+    """Return a Hermes-managed Node/npm executable path, healing broken trees.
+
+    Outdated trees (node major below ``_HERMES_NODE_TARGET_MAJOR``) heal the
+    same way broken ones do — the once-per-process heal redownloads the target
+    major, upgrading existing users on next launch rather than next reinstall.
+    When the heal fails (offline, download error), an outdated-but-runnable
+    tree is still returned: old Node beats no Node.
+    """
+    names = _candidate_node_command_names(command)
+
+    def _first_runnable() -> tuple[str | None, bool]:
+        broken = False
         for directory in iter_hermes_node_dirs():
             for name in names:
                 candidate = directory / name
@@ -573,8 +607,19 @@ def find_hermes_node_executable(command: str) -> str | None:
                 ):
                     resolved = str(candidate)
                     if node_tool_runnable(resolved):
-                        return resolved
-    return None
+                        return resolved, broken
+                    broken = True
+        return None, broken
+
+    resolved, broken_present = _first_runnable()
+    needs_heal = broken_present or (
+        resolved is not None and _managed_node_tree_outdated()
+    )
+    if needs_heal and heal_hermes_managed_node():
+        healed, _ = _first_runnable()
+        if healed:
+            return healed
+    return resolved
 
 
 def find_node_executable_on_path(command: str) -> str | None:

@@ -93,7 +93,15 @@ def has_linked_pr(repo, issue_number):
     if result.returncode == 0:
         data = json.loads(result.stdout)
         refs = data.get("closedByPullRequestsReferences", {})
-        if refs.get("totalCount", 0) > 0:
+        # gh currently returns a list; older GraphQL-shaped output used a
+        # mapping with totalCount. Accept both representations.
+        if isinstance(refs, list):
+            has_refs = bool(refs)
+        elif isinstance(refs, dict):
+            has_refs = refs.get("totalCount", 0) > 0 or bool(refs.get("nodes"))
+        else:
+            has_refs = False
+        if has_refs:
             return (True, "has closing PR reference")
 
     # 2. Search for open PRs that reference this issue number (title + body match)

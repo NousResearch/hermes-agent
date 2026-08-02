@@ -8999,6 +8999,59 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_snapshots_history_after_pending_model_switch(monkeypatch):
+    marker = {"role": "user", "content": "[model switched]"}
+    seen = {}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, **_kwargs):
+            seen["history"] = conversation_history
+            return {
+                "final_response": "reply",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, **_kwargs):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    def _apply_pending(_sid, session):
+        with session["history_lock"]:
+            session["history"].append(marker)
+            session["history_version"] += 1
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    server._sessions["sid"]["pending_model_switch"] = {"raw": "new-model"}
+    emits = []
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_apply_pending_model_switch", _apply_pending)
+        monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda *_a: None)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda *_a: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+
+        server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hi"}}
+        )
+
+        assert seen["history"] == [marker]
+        assert server._sessions["sid"]["history"][-1] == {
+            "role": "assistant", "content": "reply"
+        }
+        complete = [a for a in emits if a[0] == "message.complete"]
+        assert "warning" not in complete[0][2]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
     """Desktop user-message edits should restart the turn from the edited user."""
 

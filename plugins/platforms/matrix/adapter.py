@@ -1493,13 +1493,38 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 resp = await client.whoami()
                 resolved_user_id = getattr(resp, "user_id", "") or self._user_id
-                resolved_device_id = getattr(resp, "device_id", "")
+                resolved_device_id = str(getattr(resp, "device_id", "") or "")
                 if resolved_user_id:
                     self._user_id = str(resolved_user_id)
                     client.mxid = UserID(self._user_id)
 
-                # Prefer user-configured device_id for stable E2EE identity.
-                effective_device_id = self._device_id or resolved_device_id
+                # Normally the user-configured device_id wins, giving a stable
+                # E2EE identity when whoami() reports no device.
+                #
+                # But an access token is bound to exactly one device, and the
+                # homeserver only accepts key uploads for that device. If
+                # MATRIX_DEVICE_ID names a different one, honouring it means
+                # claiming an identity this token cannot publish — which is
+                # the stale-key failure mode this reset exists to clear. The
+                # live whoami() device therefore wins on conflict, loudly.
+                if (
+                    resolved_device_id
+                    and self._device_id
+                    and resolved_device_id != self._device_id
+                ):
+                    logger.error(
+                        "Matrix: MATRIX_DEVICE_ID=%s does not match the device "
+                        "this access token belongs to (%s). A token can only "
+                        "upload keys for its own device, so the configured "
+                        "value is being ignored. Unset MATRIX_DEVICE_ID, or "
+                        "use a token issued for %s.",
+                        self._device_id,
+                        resolved_device_id,
+                        self._device_id,
+                    )
+                    effective_device_id = resolved_device_id
+                else:
+                    effective_device_id = self._device_id or resolved_device_id
                 if effective_device_id:
                     client.device_id = effective_device_id
 

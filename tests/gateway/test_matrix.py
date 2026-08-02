@@ -1128,6 +1128,80 @@ class TestMatrixDeviceId:
         adapter = MatrixAdapter(config)
         assert adapter._device_id == "FROM_CONFIG"
 
+    @pytest.mark.asyncio
+    async def test_connect_keeps_configured_device_id_on_adapter(self):
+        """MATRIX_DEVICE_ID stays on the adapter regardless of whoami.
+
+        Note: this test previously asserted that the configured device_id
+        overrides the whoami device_id outright. That is no longer true for
+        the *client* identity — a token can only upload keys for its own
+        device, so a conflicting whoami device now wins (see
+        TestCryptoStoreResetOnDeviceChange). The configured value is still
+        preferred when whoami reports no device, and is still recorded on the
+        adapter, which is what this test pins.
+        """
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+                "device_id": "MY_STABLE_DEVICE",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="WHOAMI_DEV"))
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"MY_STABLE_DEVICE": {
+                "keys": {"ed25519:MY_STABLE_DEVICE": "fake_ed25519_key"},
+            }}},
+        })
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        assert await adapter.connect() is True
+
+        # The configured device_id is retained on the adapter.
+        assert adapter._device_id == "MY_STABLE_DEVICE"
+        # But the token's own device is what the client claims, because the
+        # homeserver will not accept key uploads for any other device.
+        assert mock_client.device_id == "WHOAMI_DEV"
+
+        await adapter.disconnect()
+
 
 class TestMatrixPasswordLoginDeviceId:
     """MATRIX_DEVICE_ID should be passed to mautrix Client even with password login."""
@@ -2913,3 +2987,115 @@ class TestCryptoStoreResetOnDeviceChange:
 
         assert await adapter._reset_crypto_store_if_device_changed(store, "") is False
         store.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_connect_resets_store_when_token_device_differs_from_config(
+        self, caplog
+    ):
+        """Rotated token, stale MATRIX_DEVICE_ID.
+
+        Persisted store device is A, MATRIX_DEVICE_ID is still A, but the
+        access token now belongs to device B. The helper alone cannot catch
+        this: connect() used to resolve client.device_id to the configured A,
+        so persisted A == live A and no reset happened. The token's device
+        must win, and the store must be reset.
+        """
+        import logging
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_rotated_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+                "device_id": "DEVICE_A",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        deleted = {"count": 0}
+
+        class _ResettableCryptoStore:
+            upgrade_table = MagicMock()
+
+            def __init__(self, account_id="", pickle_key="", db=None):
+                self.account_id = account_id
+                self.pickle_key = pickle_key
+                self.db = db
+                self._device_id = "DEVICE_A"  # persisted from the old token
+
+            async def open(self):
+                pass
+
+            async def get_device_id(self):
+                return self._device_id
+
+            async def delete(self):
+                deleted["count"] += 1
+                self._device_id = ""
+
+            async def put_device_id(self, device_id):
+                self._device_id = device_id
+
+        fake_mautrix_mods[
+            "mautrix.crypto.store.asyncpg"
+        ].PgCryptoStore = _ResettableCryptoStore
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        # Token was rotated: the homeserver reports device B.
+        mock_client.whoami = AsyncMock(
+            return_value=MagicMock(user_id="@bot:example.org", device_id="DEVICE_B")
+        )
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={"device_keys": {}})
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_rotated_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(
+            return_value=mock_client
+        )
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(
+            return_value=mock_olm
+        )
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        with caplog.at_level(logging.WARNING), patch.object(
+            matrix_mod, "_check_e2ee_deps", return_value=True
+        ), patch.dict("sys.modules", fake_mautrix_mods), patch.object(
+            adapter, "_refresh_dm_cache", AsyncMock()
+        ), patch.object(
+            adapter, "_sync_loop", AsyncMock(return_value=None)
+        ), patch.object(
+            adapter, "_verify_device_keys_on_server", AsyncMock(return_value=True)
+        ):
+            assert await adapter.connect() is True
+
+        # The token's device wins over the stale configured one.
+        assert mock_client.device_id == "DEVICE_B"
+        # ...which is what lets the mismatch be seen and the store reset.
+        assert deleted["count"] == 1
+        assert "MATRIX_DEVICE_ID=DEVICE_A" in caplog.text
+
+        await adapter.disconnect()

@@ -140,15 +140,20 @@ class WhatsAppBehaviorMixin:
         Source precedence matches construction: explicit config wins over any
         env carrier. When the adapter was seeded from an env var, re-read that
         same key so pairing approve/revoke takes effect without restart
-        (including an empty value while the key is still present). Config-seeded
-        adapters keep the in-memory snapshot, which pairing revoke purges in
-        place — a lower-precedence or stale env value must not broaden access.
+        (including an empty value while the key is still present). When the key
+        is absent — sole-entry revoke calls ``remove_env_value`` — treat the
+        allowlist as empty instead of falling back to the construction-time
+        snapshot. Config-seeded adapters keep the in-memory snapshot, which
+        pairing revoke purges in place — a lower-precedence or stale env value
+        must not broaden access.
         """
         source = getattr(self, "_dm_allowlist_source", None)
         if isinstance(source, str) and source != "config":
             if source in os.environ:
                 return self._coerce_allow_list(os.environ.get(source, ""))
-            return set(self._allow_from or ())
+            # Key removed (e.g. sole-entry pairing revoke) — do not revive the
+            # stale construction snapshot.
+            return set()
         return set(self._allow_from or ())
 
     # ------------------------------------------------------------------ JID helpers

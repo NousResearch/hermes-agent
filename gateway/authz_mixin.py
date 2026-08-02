@@ -751,8 +751,9 @@ class GatewayAuthorizationMixin:
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
 
-        # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
-        if source.platform == Platform.WHATSAPP:
+        # WhatsApp (Baileys + Cloud): resolve phone↔LID / JID aliases so
+        # device-suffix and bare-phone allowlist entries match the same principal.
+        if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
             normalized_allowed_ids = set()
             for allowed_id in allowed_ids:
                 normalized_allowed_ids.update(_expand_whatsapp_auth_aliases(allowed_id))

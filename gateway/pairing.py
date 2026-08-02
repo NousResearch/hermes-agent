@@ -113,10 +113,15 @@ def _split_allowlist(raw: str) -> list:
     return [uid.strip() for uid in raw.split(",") if uid.strip()]
 
 
+def _platform_uses_whatsapp_identity(platform: str) -> bool:
+    """True for Baileys WhatsApp and Meta Cloud — same phone/JID identity rules."""
+    return (platform or "").strip().lower() in {"whatsapp", "whatsapp_cloud"}
+
+
 def _normalize_user_id(platform: str, user_id: str) -> str:
     """Normalize platform-specific user IDs before persisting / comparing them."""
     raw_user_id = str(user_id or "").strip()
-    if platform == "whatsapp":
+    if _platform_uses_whatsapp_identity(platform):
         return normalize_whatsapp_identifier(raw_user_id) or raw_user_id
     return raw_user_id
 
@@ -128,7 +133,7 @@ def _user_id_aliases(platform: str, user_id: str) -> set[str]:
         return set()
 
     aliases = {raw_user_id, _normalize_user_id(platform, raw_user_id)}
-    if platform == "whatsapp":
+    if _platform_uses_whatsapp_identity(platform):
         aliases.update(expand_whatsapp_aliases(raw_user_id))
     aliases.discard("")
     return aliases

@@ -77,6 +77,56 @@ def test_kanban_ownership_env_not_persisted_to_shared_snapshot(tmp_path, monkeyp
         env.cleanup()
 
 
+def test_user_kanban_config_survives_snapshot(tmp_path, monkeypatch):
+    # HERMES_KANBAN_HOME / HERMES_KANBAN_DISPATCH_IN_GATEWAY are user-authored
+    # config, NOT dispatcher-owned lineage (they are absent from KANBAN_ENV_KEYS),
+    # so a broad HERMES_KANBAN_* exclusion must not strip them: the snapshot has
+    # to preserve the user's own exports.
+    monkeypatch.setenv("HERMES_KANBAN_HOME", "/home/u/.hermes")
+    monkeypatch.setenv("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "0")
+    assert "HERMES_KANBAN_HOME" not in KANBAN_ENV_KEYS
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+    try:
+        env.execute("true", timeout=15)
+        probe = env.execute(_probe("HERMES_KANBAN_HOME"), timeout=15)
+        assert probe["returncode"] == 0
+        assert "presence=set value=/home/u/.hermes" in probe["output"]
+        dispatch = env.execute(_probe("HERMES_KANBAN_DISPATCH_IN_GATEWAY"), timeout=15)
+        assert "presence=set value=0" in dispatch["output"]
+    finally:
+        env.cleanup()
+
+
+def test_precontaminated_snapshot_marker_stripped_before_command(tmp_path, monkeypatch):
+    # topbronson's case: a snapshot persisted by an OLDER build still carries
+    # ``export HERMES_DELEGATED_CHILD_CONTEXT=1``. Sourcing it before a non-
+    # delegated command would leak the marker for that first post-upgrade
+    # command; the post-source cleanup must strip it so the command is not
+    # misidentified as a delegated child.
+    monkeypatch.delenv(_MARKER, raising=False)
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+    try:
+        snapshot = Path(env._snapshot_path)
+        # Simulate the contaminated on-disk snapshot from before the fix.
+        snapshot.write_text(
+            snapshot.read_text(encoding="utf-8") + f'\nexport {_MARKER}=1\n',
+            encoding="utf-8",
+        )
+        parent = env.execute(_probe(_MARKER), timeout=15)
+        assert parent["returncode"] == 0
+        assert "presence= value=unset" in parent["output"]
+
+        # A genuine delegated child on the SAME contaminated snapshot must still
+        # see the marker — the cleanup restores the authoritative process-env
+        # state, it does not blanket-drop it.
+        with delegated_child_context():
+            child = env.execute(_probe(_MARKER), timeout=15)
+        assert child["returncode"] == 0
+        assert "presence=set value=1" in child["output"]
+    finally:
+        env.cleanup()
+
+
 def test_export_dump_filter_drops_marker_and_kanban_keeps_user_exports():
     # Faithful check of the real ``unset``-before-``export -p`` filter, independent
     # of the backend plumbing: invocation-scoped Hermes identity/lineage vars are

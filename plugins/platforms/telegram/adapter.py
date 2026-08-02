@@ -1709,8 +1709,13 @@ class TelegramAdapter(BasePlatformAdapter):
         if db is None or not hasattr(db, "delete_telegram_topic_binding"):
             return
         try:
+            # Prefer the profile stamped on this adapter under multiplex
+            # (issue #76423). Fall back to "default" for single-profile bots.
+            profile_name = getattr(self, "_hermes_profile_name", None) or "default"
             removed = db.delete_telegram_topic_binding(
-                chat_id=str(chat_id), thread_id=str(thread_id),
+                chat_id=str(chat_id),
+                thread_id=str(thread_id),
+                profile_name=profile_name,
             )
         except Exception:
             logger.debug(

@@ -2712,6 +2712,7 @@ export const en: Translations = {
       yesterday: time => `Yesterday, ${time}`,
       copy: 'Copy',
       refresh: 'Refresh',
+      reply: 'Reply',
       moreActions: 'More actions',
       branchNewChat: 'Branch in new chat',
       react: 'React',

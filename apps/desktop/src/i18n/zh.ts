@@ -2888,6 +2888,7 @@ export const zh: Translations = {
       yesterday: time => `昨天，${time}`,
       copy: '复制',
       refresh: '刷新',
+      reply: '回复',
       moreActions: '更多操作',
       branchNewChat: '在新对话中分支',
       react: '回应',

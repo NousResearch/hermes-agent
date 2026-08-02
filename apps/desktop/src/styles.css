@@ -621,7 +621,8 @@
 [data-ref='file'],
 [data-ref='folder'],
 [data-ref='line'],
-[data-ref='terminal'] {
+[data-ref='terminal'],
+[data-ref='quote'] {
   --ref-color: var(--ui-text-secondary);
 }
 

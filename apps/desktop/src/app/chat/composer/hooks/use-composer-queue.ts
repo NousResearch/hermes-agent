@@ -4,7 +4,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
-import { type ComposerAttachment } from '@/store/composer'
+import { type ComposerAttachment, expandComposerQuotes, removeComposerQuotesFromDraft } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
@@ -128,10 +128,16 @@ export function useComposerQueue({
       return index >= 0 // at the oldest: swallow; missing entry: let it fall through
     }
 
+    const rawText = draftRef.current
+
     const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
       attachments: cloneAttachments(attachments),
-      text: draftRef.current
+      text: expandComposerQuotes(rawText)
     })
+
+    if (saved) {
+      removeComposerQuotesFromDraft(rawText)
+    }
 
     const next = queuedPrompts[target]
 
@@ -155,7 +161,8 @@ export function useComposerQueue({
     }
 
     if (action === 'save') {
-      const text = draftRef.current
+      const rawText = draftRef.current
+      const text = expandComposerQuotes(rawText)
       const next = cloneAttachments(attachments)
 
       if (!text.trim() && next.length === 0) {
@@ -163,6 +170,11 @@ export function useComposerQueue({
       }
 
       const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { attachments: next, text })
+
+      if (saved) {
+        removeComposerQuotesFromDraft(rawText)
+      }
+
       triggerHaptic(saved ? 'success' : 'selection')
     } else {
       triggerHaptic('cancel')
@@ -176,7 +188,8 @@ export function useComposerQueue({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    const text = draftRef.current
+    const rawText = draftRef.current
+    const text = expandComposerQuotes(rawText)
 
     if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
       return false
@@ -186,6 +199,7 @@ export function useComposerQueue({
       return false
     }
 
+    removeComposerQuotesFromDraft(rawText)
     clearDraft()
     scope.attachments.clear()
     triggerHaptic('selection')

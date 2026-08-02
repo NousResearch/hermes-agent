@@ -20,6 +20,7 @@ export interface ComposerAttachment {
 export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
 export const $composerTerminalSelections = atom<Record<string, string>>({})
+export const $composerQuotes = atom<Record<string, string>>({})
 
 // Latched because opening a fresh session may remount the main composer before
 // it can start voice. Session-tile composers deliberately never consume this.
@@ -370,6 +371,109 @@ export function clearComposerTerminalSelections() {
   }
 
   $composerTerminalSelections.set({})
+}
+
+const QUOTE_REF_RE = /@quote:(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
+
+function quoteLabelsFromDraft(draft: string) {
+  const labels: string[] = []
+  const seen = new Set<string>()
+
+  for (const match of draft.matchAll(QUOTE_REF_RE)) {
+    const label = unquoteRefValue(match[1] || '')
+
+    if (label && !seen.has(label)) {
+      seen.add(label)
+      labels.push(label)
+    }
+  }
+
+  return labels
+}
+
+export function setComposerQuote(label: string, text: string) {
+  const nextLabel = label.trim()
+  const nextText = text.trim()
+
+  if (!nextLabel || !nextText) {
+    return
+  }
+
+  $composerQuotes.set({ ...$composerQuotes.get(), [nextLabel]: nextText })
+}
+
+/** Replace composer-only quote refs with real Markdown blockquotes. Each body
+ *  is separated from adjacent prose by one blank line so `>` remains block
+ *  syntax even when the user typed immediately after the atomic chip. */
+export function expandComposerQuotes(draft: string) {
+  if (!draft.includes('@quote:')) {
+    return draft
+  }
+
+  const quotes = $composerQuotes.get()
+  let cursor = 0
+  let expanded = ''
+
+  for (const match of draft.matchAll(QUOTE_REF_RE)) {
+    const start = match.index ?? 0
+    const end = start + match[0].length
+    const label = unquoteRefValue(match[1] || '')
+    const body = (Object.hasOwn(quotes, label) ? quotes[label] : undefined)?.trim()
+
+    expanded += draft.slice(cursor, start)
+
+    if (!body) {
+      expanded += match[0]
+      cursor = end
+
+      continue
+    }
+
+    if (expanded && !expanded.endsWith('\n\n')) {
+      expanded += expanded.endsWith('\n') ? '\n' : '\n\n'
+    }
+
+    expanded += body
+
+    const remainder = draft.slice(end)
+
+    if (remainder && !remainder.startsWith('\n\n')) {
+      expanded += remainder.startsWith('\n') ? '\n' : '\n\n'
+    }
+
+    cursor = end
+  }
+
+  return expanded + draft.slice(cursor)
+}
+
+/** Remove only the quote bodies consumed by one accepted/queued draft. */
+export function removeComposerQuotesFromDraft(draft: string) {
+  const labels = quoteLabelsFromDraft(draft)
+
+  if (labels.length === 0) {
+    return
+  }
+
+  const next = { ...$composerQuotes.get() }
+  let changed = false
+
+  for (const label of labels) {
+    if (Object.hasOwn(next, label)) {
+      delete next[label]
+      changed = true
+    }
+  }
+
+  if (changed) {
+    $composerQuotes.set(next)
+  }
+}
+
+export function clearComposerQuotes() {
+  if (Object.keys($composerQuotes.get()).length > 0) {
+    $composerQuotes.set({})
+  }
 }
 
 function upsertAttachment(attachments: ComposerAttachment[], attachment: ComposerAttachment) {

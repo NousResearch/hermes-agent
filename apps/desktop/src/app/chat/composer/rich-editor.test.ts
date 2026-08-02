@@ -36,6 +36,18 @@ describe('renderComposerContents', () => {
     expect(composerPlainText(editor)).toBe('@file:`<img src=x onerror=alert(1)>` <b>raw</b>')
   })
 
+  it('hydrates an internal quote reference as one atomic composer chip', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    renderComposerContents(editor, '@quote:`First line of the earlier reply`My response')
+
+    const chip = editor.querySelector('[data-ref-kind="quote"]')
+
+    expect(chip?.getAttribute('data-ref-text')).toBe('@quote:`First line of the earlier reply`')
+    expect(composerPlainText(editor)).toBe('@quote:`First line of the earlier reply`My response')
+  })
+
   it('hydrates a committed leading slash command back to its pill', () => {
     // Text-hydration parity with @ refs: a re-render from serialized text
     // (draft restore, undo, the trigger commit fallback) must not demote a

@@ -49,6 +49,7 @@ import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from '
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
+import { createComposerSelectionMenuItem } from './composer-selection'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
   authModeFromStatus,
@@ -5641,7 +5642,7 @@ function installZoomShortcuts(window) {
   })
 }
 
-function installContextMenu(window) {
+function installContextMenu(window, { composerEnabled = true }: { composerEnabled?: boolean } = {}) {
   window.webContents.on('context-menu', (_event, params) => {
     const template = []
     const hasSelection = Boolean(params.selectionText?.trim())
@@ -5723,6 +5724,20 @@ function installContextMenu(window) {
     if (hasSelection || isEditable) {
       if (template.length) {
         template.push({ type: 'separator' })
+      }
+
+      const composerSelectionItem = createComposerSelectionMenuItem(
+        {
+          canCompose: composerEnabled,
+          isEditable,
+          selectionText: params.selectionText
+        },
+        text => window.webContents.send('hermes:composer:append-selection', text),
+        message => rememberLog(`composer append-selection send failed: ${message}`)
+      )
+
+      if (composerSelectionItem) {
+        template.push(composerSelectionItem, { type: 'separator' })
       }
 
       if (isEditable) {
@@ -8682,8 +8697,13 @@ async function startHermes() {
 // `zoom` is opt-out for the pet overlay: it sizes its own OS window to fit the
 // sprite in unzoomed CSS px (overlayWindowSize -> setBounds) and has its own
 // Alt+wheel scale, so inheriting the global UI zoom would render the mascot
-// larger than its window and crop it. Chat windows keep zoom on.
-function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {}) {
+// larger than its window and crop it. `composerEnabled` is disabled for
+// spectator/watch windows and the pet overlay, where no chat composer is
+// mounted to receive the selection IPC event.
+function wireCommonWindowHandlers(
+  win,
+  { composerEnabled = true, zoom = true }: { composerEnabled?: boolean; zoom?: boolean } = {}
+) {
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
 
@@ -8699,7 +8719,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     win.webContents.on('did-finish-load', () => restorePersistedZoomLevel(win))
   }
 
-  installContextMenu(win)
+  installContextMenu(win, { composerEnabled })
   win.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
 
@@ -8778,7 +8798,10 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
   win.on('leave-full-screen', () => sendWindowStateChanged(false))
 
   streamThrottle.register(win)
-  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+  wireCommonWindowHandlers(win, {
+    ...zoomWiringForWindowKind('chat'),
+    composerEnabled: !watch
+  })
 
   loadWindowUrl(
     win,
@@ -8970,7 +8993,10 @@ function spawnPetOverlayWindow(bounds) {
 
   // Pet overlay opts out of global UI zoom (see zoomWiringForWindowKind): it
   // owns its window-fit + scale, and inheriting zoom would crop the sprite.
-  wireCommonWindowHandlers(win, zoomWiringForWindowKind('petOverlay'))
+  wireCommonWindowHandlers(win, {
+    ...zoomWiringForWindowKind('petOverlay'),
+    composerEnabled: false
+  })
 
   win.once('ready-to-show', () => {
     if (!win.isDestroyed()) {
@@ -9118,7 +9144,10 @@ function spawnQuickEntryWindow() {
 
   // Opts out of global UI zoom for the same reason as the pet overlay: it sizes
   // its own OS window and a zoomed composer would overflow it.
-  wireCommonWindowHandlers(win, zoomWiringForWindowKind('quickEntry'))
+  wireCommonWindowHandlers(win, {
+    ...zoomWiringForWindowKind('quickEntry'),
+    composerEnabled: false
+  })
 
   // Hide on blur. The window must never hold the user's focus captive — losing
   // focus is the cheapest, least surprising dismiss (matches Spotlight).

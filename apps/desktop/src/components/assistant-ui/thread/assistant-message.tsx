@@ -9,6 +9,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useMemo, useState } from 'react'
 
+import { insertMessageReply } from '@/app/chat/composer/message-reply'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
 import {
   contentHasVisibleText,
@@ -34,6 +35,7 @@ import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
+import { isWatchWindow } from '@/store/windows'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
 // would re-derive the changed-files card on every message re-render.
@@ -183,6 +185,12 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
     [react]
   )
 
+  const reply = useCallback(() => {
+    if (insertMessageReply(getMessageText())) {
+      triggerHaptic('selection')
+    }
+  }, [getMessageText])
+
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
       <ActionBarPrimitive.Root
@@ -211,6 +219,11 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
           </TooltipIconButton>
         )}
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
+        {!isWatchWindow() && (
+          <TooltipIconButton onClick={reply} tooltip={copy.reply}>
+            <Codicon name="reply" />
+          </TooltipIconButton>
+        )}
         <ReadAloudButton getText={getMessageText} messageId={messageId} />
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>

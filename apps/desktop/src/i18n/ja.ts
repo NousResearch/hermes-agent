@@ -2538,6 +2538,7 @@ export const ja = defineLocale({
       yesterday: time => `昨日 ${time}`,
       copy: 'コピー',
       refresh: '更新',
+      reply: '返信',
       moreActions: 'その他のアクション',
       branchNewChat: '新しいチャットでブランチ',
       react: 'リアクション',

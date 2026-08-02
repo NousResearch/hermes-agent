@@ -22,6 +22,7 @@ export type ReferenceKind =
   | 'tool'
   | 'line'
   | 'terminal'
+  | 'quote'
   | 'session'
   | 'git'
   | 'diff'
@@ -95,6 +96,14 @@ export const REFERENCE_STYLES: Record<ReferenceKind, ReferenceStyle> = {
     label: 'Lines'
   },
   terminal: { codicon: 'terminal', paths: TERMINAL_PATHS, label: 'Terminal' },
+  quote: {
+    codicon: 'quote',
+    paths: [
+      'M10 11h-4a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1h3a1 1 0 0 1 1 1v6c0 2.667 -1.333 4.333 -4 5',
+      'M19 11h-4a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1h3a1 1 0 0 1 1 1v6c0 2.667 -1.333 4.333 -4 5'
+    ],
+    label: 'Quotes'
+  },
   session: {
     codicon: 'comment-discussion',
     paths: ['M4 4h16v2.172a2 2 0 0 1 -.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48 -4.928a2 2 0 0 1 -.52 -1.345v-2.227'],
@@ -146,6 +155,9 @@ export const WIRE_REFERENCE_KINDS = ['file', 'folder', 'url', 'image', 'tool', '
  */
 const REFERENCE_PATTERN = /@(file|folder|url|image|tool|line|terminal|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/
 
+const COMPOSER_REFERENCE_PATTERN =
+  /@(file|folder|url|image|tool|line|terminal|session|quote):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/
+
 /**
  * A fresh matcher for every surface that has to find references in text: the
  * composer hydrating a draft, the sent bubble, the edit composer.
@@ -156,4 +168,11 @@ const REFERENCE_PATTERN = /@(file|folder|url|image|tool|line|terminal|session):(
  */
 export function referenceRe(): RegExp {
   return new RegExp(REFERENCE_PATTERN.source, 'g')
+}
+
+/** Composer-only refs include transient quote chips, which are expanded before
+ *  prompt text crosses the gateway and therefore are not part of the wire
+ *  vocabulary consumed by sent-message renderers. */
+export function composerReferenceRe(): RegExp {
+  return new RegExp(COMPOSER_REFERENCE_PATTERN.source, 'g')
 }

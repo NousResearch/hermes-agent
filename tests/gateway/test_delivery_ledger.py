@@ -59,13 +59,16 @@ def _blocking_probe():
 
     def _slow_ledger_call(*args, **kwargs):
         ledger_started.set()
-        if not event_loop_progressed.wait(timeout=0.5):
+        # Generous timeout: a genuinely blocked loop can never set the event
+        # (the witness coroutine cannot run), so a longer wait only guards
+        # against loaded-CI scheduling flake, not against missing the bug.
+        if not event_loop_progressed.wait(timeout=5.0):
             blocked_event_loop.append(True)
 
     async def _event_loop_witness():
         import asyncio
 
-        deadline = asyncio.get_running_loop().time() + 1
+        deadline = asyncio.get_running_loop().time() + 10
         while not ledger_started.is_set():
             if asyncio.get_running_loop().time() >= deadline:
                 raise AssertionError("ledger call never started")

@@ -230,6 +230,7 @@ def test_revoke_whatsapp_sole_entry_denies_live_adapter_without_restart(
             )
             self.platform = Platform.WHATSAPP
             self._dm_policy = "allowlist"
+            self._dm_allowlist_source = "config"
             self._allow_from = {"15551234567"}
             self._group_policy = "pairing"
             self._group_allow_from = set()
@@ -277,3 +278,55 @@ def test_revoke_whatsapp_sole_entry_denies_live_adapter_without_restart(
             chat_type="dm",
         )
     ) is False
+
+
+def test_whatsapp_live_allowlist_keeps_explicit_config_over_env(monkeypatch):
+    """Explicit allow_from must stay authoritative when env differs.
+
+    Live DM checks must not invert construction precedence: a stale or
+    lower-precedence WHATSAPP_ALLOWED_USERS entry must not authorize (or
+    replace) an explicit config allowlist.
+    """
+    from gateway.config import PlatformConfig
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000002")
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "dm_policy": "allowlist",
+                "allow_from": ["15550000001"],
+            },
+        )
+    )
+
+    assert adapter._dm_allowlist_source == "config"
+    assert adapter._is_dm_intake_allowed("15550000001") is True
+    assert adapter._is_dm_allowed("15550000001") is True
+    assert adapter._is_dm_intake_allowed("15550000002") is False
+    assert adapter._is_dm_allowed("15550000002") is False
+
+    # Pairing-style env mutation must not broaden a config-seeded allowlist.
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000002,15550000003")
+    assert adapter._is_dm_intake_allowed("15550000001") is True
+    assert adapter._is_dm_intake_allowed("15550000002") is False
+    assert adapter._is_dm_intake_allowed("15550000003") is False
+
+
+def test_whatsapp_live_allowlist_rereads_env_when_env_seeded(monkeypatch):
+    """Env-seeded adapters still pick up pairing allowlist mutations live."""
+    from gateway.config import PlatformConfig
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+    adapter = WhatsAppAdapter(
+        PlatformConfig(enabled=True, extra={"dm_policy": "allowlist"})
+    )
+
+    assert adapter._dm_allowlist_source == "WHATSAPP_ALLOWED_USERS"
+    assert adapter._is_dm_intake_allowed("15551234567") is True
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "")
+    assert adapter._is_dm_intake_allowed("15551234567") is False
+    assert adapter._is_dm_allowed("15551234567") is False

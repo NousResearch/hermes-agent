@@ -2,6 +2,7 @@
 factory for child-process environments (profile-home + secret-scrub owner).
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -123,12 +124,11 @@ def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeyp
     ):
         pytest.skip("no real hermes console-script install available")
 
-    # Simulate the service-manager minimal PATH: hermes dir absent.
     minimal_path = os.pathsep.join(["/usr/bin", "/bin"])
     monkeypatch.setenv("PATH", minimal_path)
     assert shutil.which("hermes", path=minimal_path) is None
 
-    env = build_subprocess_env(scrub_secrets=True)  # cron _run_job_script path
+    env = build_subprocess_env(scrub_secrets=True)
 
     resolved = shutil.which("hermes", path=env.get("PATH", ""))
     assert resolved is not None, (
@@ -136,7 +136,40 @@ def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeyp
     )
     assert os.path.dirname(resolved) == bin_dir
     assert env["PATH"].split(os.pathsep)[0] == bin_dir
-    # Idempotent: running the parent env through the factory again must not
-    # duplicate the entry.
     env2 = build_subprocess_env(env, scrub_secrets=True)
     assert env2["PATH"].split(os.pathsep).count(bin_dir) == 1
+
+
+def test_e2e_child_never_sees_bws_token_or_password(tmp_path, monkeypatch):
+    """BWS bootstrap tokens and password-shaped values stay out of children."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.abc123.def456:xyz789")
+    monkeypatch.setenv("DB_PASSWORD", "db-pass-9f2c1a")
+
+    env = build_subprocess_env()
+    code = (
+        "import os, json; "
+        "print(json.dumps({'bws': 'BWS_ACCESS_TOKEN' in os.environ, "
+        "'pw': 'DB_PASSWORD' in os.environ}))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env, capture_output=True, text=True, timeout=60, check=True,
+    )
+    result = json.loads(out.stdout)
+    assert result["bws"] is False
+    assert result["pw"] is False
+
+
+def test_hermes_subprocess_env_strips_bws_token_and_password(monkeypatch):
+    """Non-terminal child environments also strip these values by default."""
+    from tools.environments.local import hermes_subprocess_env
+
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.abc123.def456:xyz789")
+    monkeypatch.setenv("DB_PASSWORD", "db-pass-9f2c1a")
+
+    env = hermes_subprocess_env()
+    assert "BWS_ACCESS_TOKEN" not in env
+    assert "DB_PASSWORD" not in env

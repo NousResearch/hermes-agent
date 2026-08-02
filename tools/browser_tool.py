@@ -2188,10 +2188,7 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
 
     with _cleanup_lock:
         # Check if we already have a session for this task
-        if task_id in _active_sessions:
-            existing_session = _active_sessions[task_id]
-        else:
-            existing_session = None
+        existing_session = _active_sessions.get(task_id)
 
     if existing_session is not None:
         if not _session_has_expired(existing_session):
@@ -2205,6 +2202,15 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
         # Cleanup removes the activity entry. The replacement session must be
         # tracked by the inactivity reaper just like an initial session.
         _update_session_activity(task_id)
+
+        # Guard against a concurrent replacement: another thread may have
+        # already cleaned up the expired session and created a fresh one
+        # while we were waiting.  If so, return the live replacement instead
+        # of falling through to create yet another session.
+        with _cleanup_lock:
+            replacement = _active_sessions.get(task_id)
+        if replacement is not None and replacement is not existing_session:
+            return replacement
 
     # Hybrid routing: session keys ending with ``::local`` force a local
     # Chromium regardless of the globally-configured cloud provider.  Public

@@ -11,7 +11,9 @@ import hashlib
 import hmac
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -494,3 +496,35 @@ class TestDelivery:
         )
         # Must swallow the failure (logged), never raise into the agent loop.
         outbound_webhooks._deliver(delivery)
+
+    def test_events_enqueued_at_exit_still_delivered(self, http_server, tmp_path):
+        """A short-lived process (`hermes chat -q`, cron) exits right after
+        firing on_session_end.  The delivery worker is a daemon thread, so
+        without the atexit flush the final event is silently dropped."""
+        import subprocess
+        import sys as _sys
+
+        cfg = {"hooks": {"outbound": [
+            {"url": _url(http_server), "events": ["on_session_end"]}
+        ]}}
+        script = tmp_path / "fire_and_exit.py"
+        script.write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {repr(str(Path(outbound_webhooks.__file__).resolve().parents[1]))})\n"
+            "from agent import outbound_webhooks\n"
+            "from hermes_cli.plugins import get_plugin_manager\n"
+            f"cfg = {repr(cfg)}\n"
+            "outbound_webhooks.register_from_config(cfg)\n"
+            "get_plugin_manager().invoke_hook('on_session_end', session_id='exit_test')\n"
+            "# exit immediately — no explicit flush\n"
+        )
+        proc = subprocess.run(
+            [_sys.executable, str(script)], capture_output=True, timeout=30,
+        )
+        assert proc.returncode == 0, proc.stderr.decode()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not http_server.captured:
+            time.sleep(0.05)
+        assert len(http_server.captured) == 1
+        payload = json.loads(http_server.captured[0]["body"])
+        assert payload["session_id"] == "exit_test"

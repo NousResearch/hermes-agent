@@ -619,7 +619,7 @@ class TestWeixinRemoteMediaSafety:
     def test_download_remote_media_blocks_unsafe_urls(self):
         adapter = _make_adapter()
 
-        with patch("tools.url_safety.is_safe_url", return_value=False):
+        with patch("tools.url_safety.async_is_safe_url", new=AsyncMock(return_value=False)):
             try:
                 asyncio.run(adapter._download_remote_media("http://127.0.0.1/private.png"))
             except ValueError as exc:
@@ -659,14 +659,14 @@ class TestWeixinRemoteMediaSafety:
 
         adapter._send_session = _Session()
 
-        def _safe(u: str) -> bool:
+        async def _safe(u: str) -> bool:
             return not (
                 "127.0.0.1" in u
                 or "169.254." in u
                 or "localhost" in u
             )
 
-        with patch("tools.url_safety.is_safe_url", side_effect=_safe):
+        with patch("tools.url_safety.async_is_safe_url", side_effect=_safe):
             try:
                 asyncio.run(
                     adapter._download_remote_media("https://cdn.example.com/public.png")

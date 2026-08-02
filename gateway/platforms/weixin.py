@@ -2087,22 +2087,18 @@ class WeixinAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     async def _download_remote_media(self, url: str) -> str:
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import async_is_safe_url
 
-        if not is_safe_url(url):
+        if not await async_is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
 
         assert self._send_session is not None
-        # Pre-flight is_safe_url alone is insufficient: a public URL can
+        # Pre-flight async_is_safe_url alone is insufficient: a public URL can
         # 302 to link-local / RFC1918 / cloud metadata. Follow redirects
         # manually and re-validate every hop (same pattern as Discord/Matrix).
         async def _do_fetch():
             current_url = url
             for _ in range(_WEIXIN_MEDIA_MAX_REDIRECTS + 1):
-                if not is_safe_url(current_url):
-                    raise ValueError(
-                        f"Blocked redirect to private/internal address: {current_url}"
-                    )
                 async with self._send_session.get(
                     current_url, allow_redirects=False
                 ) as response:
@@ -2111,7 +2107,7 @@ class WeixinAdapter(BasePlatformAdapter):
                         if not location:
                             raise ValueError("redirect missing Location")
                         next_url = urljoin(current_url, location)
-                        if not is_safe_url(next_url):
+                        if not await async_is_safe_url(next_url):
                             raise ValueError(
                                 f"Blocked redirect to private/internal address: {next_url}"
                             )

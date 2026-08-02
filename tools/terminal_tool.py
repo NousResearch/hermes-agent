@@ -2164,14 +2164,16 @@ def _foreground_background_guidance(command: str) -> str | None:
     if _SHELL_LEVEL_BACKGROUND_RE.search(unquoted):
         return (
             "Foreground command uses shell-level background wrappers (nohup/disown/setsid). "
-            "Use terminal(background=true) so Hermes can track the process, then run "
-            "readiness checks and tests in separate commands."
+            "Re-send WITHOUT the wrapper as terminal(command=\"<cmd>\", background=true, "
+            "notify_on_complete=true) so Hermes tracks the process, then run readiness "
+            "checks and tests in separate commands."
         )
 
     if _INLINE_BACKGROUND_AMP_RE.search(unquoted) or _TRAILING_BACKGROUND_AMP_RE.search(unquoted):
         return (
-            "Foreground command uses '&' backgrounding. Use terminal(background=true) for long-lived "
-            "processes, then run health checks and tests in follow-up terminal calls."
+            "Foreground command uses '&' backgrounding. Re-send WITHOUT the '&' as "
+            "terminal(command=\"<cmd>\", background=true) — add notify_on_complete=true "
+            "for bounded jobs — then run health checks and tests in follow-up terminal calls."
         )
 
     for pattern in _LONG_LIVED_FOREGROUND_PATTERNS:

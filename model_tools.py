@@ -1415,8 +1415,7 @@ def handle_function_call(
         # Tool usage recording (opt-in, gated by tools.analytics config key).
         record_call(
             function_name,
-            success=True,
-            token_est=0,
+            result=result,
             session_id=session_id,
             turn_id=turn_id,
         )
@@ -1429,7 +1428,7 @@ def handle_function_call(
         record_call(
             function_name,
             success=False,
-            token_est=0,
+            result=f"[TOOL_ERROR] {error_msg}",
             session_id=session_id,
             turn_id=turn_id,
         )

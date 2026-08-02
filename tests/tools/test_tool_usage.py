@@ -30,7 +30,7 @@ def _set_analytics_on(hermes_home, enabled=True):
 def _record_calls(hermes_home, count=5, tool="web_search"):
     from tools.tool_usage import record_call
     for i in range(count):
-        record_call(tool, success=True, token_est=100 + i * 10)
+        record_call(tool, result='{"ok": true}', session_id="sess-1")
 
 
 def test_disabled_by_default(hermes_home):
@@ -97,6 +97,22 @@ def test_analytics_report_with_data(hermes_home):
 
 def test_record_call_no_effect_when_disabled(hermes_home):
     from tools.tool_usage import record_call, tool_summary
-    record_call("terminal", success=True, token_est=100)
+    record_call("terminal", result='{"ok": true}')
     summary = tool_summary()
     assert summary["total_calls"] == 0
+
+
+def test_record_call_detects_failure_from_result(hermes_home):
+    _set_analytics_on(hermes_home, True)
+    from tools.tool_usage import record_call, tool_summary
+    record_call("web_search", result='{"error": "rate limited"}', session_id="sess-1")
+    record_call("browser", result="[TOOL_ERROR] crashed", session_id="sess-1")
+    record_call("read_file", result='{"ok": true}', session_id="sess-1")
+    summary = tool_summary()
+    assert summary["total_calls"] == 3
+    web = next(t for t in summary["tools"] if t["tool_name"] == "web_search")
+    browser = next(t for t in summary["tools"] if t["tool_name"] == "browser")
+    read = next(t for t in summary["tools"] if t["tool_name"] == "read_file")
+    assert web["successes"] == 0
+    assert browser["successes"] == 0
+    assert read["successes"] == 1

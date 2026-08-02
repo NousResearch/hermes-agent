@@ -85,14 +85,28 @@ def _connect() -> Iterator[sqlite3.Connection]:
 
 def record_call(
     tool_name: str,
-    success: bool,
+    success: bool | None = None,
+    *,
     token_est: int = 0,
-    session_id: Optional[str] = None,
-    turn_id: Optional[str] = None,
+    result: str | None = None,
+    session_id: str | None = None,
+    turn_id: str | None = None,
 ) -> None:
-    """Record one tool call in the local store."""
+    """Record one tool call in the local store.
+
+    Args:
+        tool_name: Name of the tool called.
+        success: Whether the call succeeded. If None, derived from result.
+        token_est: Estimated token cost. If 0, estimated from result length.
+        result: The raw result string from the tool dispatch. Used to derive
+            success when not explicitly provided and to estimate token cost.
+    """
     if not is_enabled():
         return
+    if success is None and result is not None:
+        success = _is_successful(result)
+    if token_est == 0 and result is not None:
+        token_est = _estimate_tokens(result)
     try:
         with _connect() as conn:
             now = time.time()
@@ -112,6 +126,27 @@ def record_call(
             )
     except Exception:
         logger.warning("tool_usage: failed to record call to %s", tool_name, exc_info=True)
+
+
+def _is_successful(result: str) -> bool:
+    """Determine if a tool call succeeded based on its result string."""
+    if result.startswith("[TOOL_ERROR]"):
+        return False
+    try:
+        parsed = json.loads(result)
+        if isinstance(parsed, dict):
+            if parsed.get("error"):
+                return False
+            if parsed.get("success") is False:
+                return False
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return True
+
+
+def _estimate_tokens(result: str) -> int:
+    """Rough token estimate from result length (~4 chars per token)."""
+    return max(1, len(result) // 4)
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +232,9 @@ def generate_prune_diff() -> Dict[str, Any]:
         "suggestions": candidates,
         "diff_hint": (
             "Consider adding to your config.yaml under the relevant platform:\n"
-            "  tools.cli.disabled:\n"
+            "  platform_toolsets.cli:\n"
+            "    - hermes-cli\n"
+            "  platform_toolsets.cli.disabled:\n"
             + "\n".join(f"    - {name}" for name in disabled)
         ),
     }

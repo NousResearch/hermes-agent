@@ -970,16 +970,25 @@ def _check_not_found_cache(op: str, resolved_str: str, task_id: str) -> str | No
         if time.monotonic() - ts > _NOT_FOUND_TTL_SECONDS:
             nf.pop((op, resolved_str), None)
             return None
-        # Existence guard: the path may have been created since we cached
-        # the miss — by a terminal command, another agent, or any external
-        # process (write_file/patch invalidate explicitly, but they're not
-        # the only writers). The agent pattern "check file → create it →
-        # read it" is common; serving a stale miss for up to the TTL breaks
-        # it. One stat is ~free next to the subprocess walk we're skipping.
-        if _os.path.exists(resolved_str):
-            nf.pop((op, resolved_str), None)
-            return None
-        return cached_json
+    # Existence guard: the path may have been created since we cached the
+    # miss — by a terminal command, another agent, or any external process
+    # (write_file/patch invalidate explicitly, but they're not the only
+    # writers). The agent pattern "check file → create it → read it" is
+    # common; serving a stale miss for up to the TTL breaks it. One stat is
+    # ~free next to the subprocess walk we're skipping.
+    #
+    # The stat runs OUTSIDE _read_tracker_lock (matching the dedup mtime
+    # check below in read_file_tool): the lock is global across all tasks,
+    # and a hung stat on a dead network mount must not stall every other
+    # task's read/search bookkeeping.
+    if _os.path.exists(resolved_str):
+        with _read_tracker_lock:
+            task_data = _read_tracker.get(task_id)
+            nf = task_data.get("not_found") if task_data else None
+            if nf:
+                nf.pop((op, resolved_str), None)
+        return None
+    return cached_json
 
 
 def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str) -> None:

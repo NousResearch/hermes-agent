@@ -660,6 +660,12 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
                     if elapsed > _CRON_RUN_HEARTBEAT_CEILING:
                         # Stop masking the gateway watchdog — a run this long
                         # with an unlimited child watchdog is likely wedged.
+                        logger.warning(
+                            "cronjob run heartbeat ceiling reached for job "
+                            "'%s' (%.0fs) — stopping heartbeat; gateway "
+                            "watchdog regains authority",
+                            job_name, elapsed,
+                        )
                         return
                     try:
                         activity_cb(

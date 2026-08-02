@@ -585,7 +585,52 @@ def _user_deny_block_result(pattern: str) -> dict:
     }
 
 
-def _hardline_block_result(description: str) -> dict:
+def _save_blocked_payload(command: str) -> Optional[str]:
+    """Persist a parser-limit-blocked command as a runnable script.
+
+    The parser-limit block fires on payload SIZE/shape, not on the
+    operation — the command itself is usually a legitimate script the
+    model inlined (heredoc, giant one-liner). Materialize it to a file so
+    the recovery is one turn (`bash <file>`) instead of two (re-author via
+    write_file, then run). Saving is strictly safer than the hint-only
+    path: the file goes through the same execution pipeline as any other
+    script (including the referenced-script content guard), and nothing
+    is executed here.
+
+    Returns the saved path, or None on any failure (the hint then falls
+    back to the manual write_file recipe).
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        import time as _time
+        import uuid as _uuid
+        script_dir = get_hermes_home() / "cache" / "blocked-scripts"
+        script_dir.mkdir(parents=True, exist_ok=True)
+        # Opportunistic cleanup: blocked payloads older than 7 days.
+        cutoff = _time.time() - 7 * 86400
+        for old in script_dir.glob("blocked-*.sh"):
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass
+        path = script_dir / f"blocked-{int(_time.time())}-{_uuid.uuid4().hex[:8]}.sh"
+        path.write_text(
+            "#!/bin/bash\n"
+            "# Auto-saved by Hermes: this command exceeded the inline command\n"
+            "# parser limit and was blocked from direct execution. Review it,\n"
+            "# then run it via: bash " + str(path) + "\n"
+            + command
+            + ("\n" if not command.endswith("\n") else ""),
+            encoding="utf-8", errors="replace",
+        )
+        return str(path)
+    except Exception:
+        logger.debug("failed to save blocked payload", exc_info=True)
+        return None
+
+
+def _hardline_block_result(description: str, command: str = "") -> dict:
     """Build the standard block result for a hardline match."""
     message = (
         f"BLOCKED (hardline): {description}. "
@@ -599,15 +644,26 @@ def _hardline_block_result(description: str) -> dict:
     # (heredoc script, base64 blob, one-line python -c program) — not a
     # genuinely forbidden operation. 198 occurrences in a 250k-call
     # production window, typically followed by blind rephrase retries.
-    # Tell the model the working alternative explicitly.
+    # Auto-save the payload as a runnable script and point at it; fall
+    # back to the manual write_file recipe when saving fails.
     if description in (_PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION):
-        message += (
-            " RECOVERY: this block fires on oversized/unparseable inline "
-            "command payloads (heredocs, giant one-liners), not on the "
-            "operation itself. Write the script to a file with write_file, "
-            "then run it: terminal(command=\"bash /path/script.sh\") or "
-            "\"python3 /path/script.py\". Do not retry inline."
-        )
+        saved = _save_blocked_payload(command) if command else None
+        if saved:
+            message += (
+                " RECOVERY: this block fires on oversized/unparseable inline "
+                "command payloads (heredocs, giant one-liners), not on the "
+                f"operation itself. Your command was saved to {saved} — "
+                f"review it, then run: terminal(command=\"bash {saved}\"). "
+                "Do not retry inline."
+            )
+        else:
+            message += (
+                " RECOVERY: this block fires on oversized/unparseable inline "
+                "command payloads (heredocs, giant one-liners), not on the "
+                "operation itself. Write the script to a file with write_file, "
+                "then run it: terminal(command=\"bash /path/script.sh\") or "
+                "\"python3 /path/script.py\". Do not retry inline."
+            )
     return {
         "approved": False,
         "hardline": True,
@@ -3122,7 +3178,7 @@ def check_dangerous_command(command: str, env_type: str,
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc)
+        return _hardline_block_result(hardline_desc, command)
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
@@ -3422,7 +3478,7 @@ def check_all_command_guards(command: str, env_type: str,
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc)
+        return _hardline_block_result(hardline_desc, command)
 
     # == Sudo stdin guard ==
     # Like the hardline floor above, this is unconditional: there is never a

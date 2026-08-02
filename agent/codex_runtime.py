@@ -376,13 +376,18 @@ _KANBAN_TERMINAL_EVENTS = {
 }
 
 
-def _verified_kanban_terminal_tool_item(item: dict) -> bool:
-    """Return whether *item* durably ended this worker's exact Kanban run.
+def _verify_kanban_terminal_tool_item(item: dict) -> tuple[bool, str | None]:
+    """Classify a successful terminal callback against worker identity.
 
     The MCP callback is only a trigger to inspect the board.  The board's
     task/run/event rows are the authority, and the connection is deliberately
     read-only so this lifecycle check cannot migrate or mutate the database.
-    Missing or ambiguous worker identity fails closed.
+
+    ``(True, None)`` means the exact worker run is durably terminal.
+    ``(False, None)`` means the callback is irrelevant, failed, from an
+    orchestrator context, or belongs to a different/non-terminal run.
+    ``(False, reason)`` means dispatcher-worker identity cannot be proven and
+    the caller must fail closed.
     """
     if (
         item.get("type") != "mcpToolCall"
@@ -391,22 +396,47 @@ def _verified_kanban_terminal_tool_item(item: dict) -> bool:
         or item.get("error")
         or str(item.get("status") or "").lower() in {"error", "failed"}
     ):
-        return False
+        return False, None
     result = item.get("result")
     if isinstance(result, dict) and result.get("isError") is True:
-        return False
+        return False, None
 
     task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
     run_id_text = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
     db_text = (os.environ.get("HERMES_KANBAN_DB") or "").strip()
-    if not task_id or not run_id_text or not db_text:
-        return False
+
+    # Profiles can explicitly enable the Kanban toolset for orchestrator work.
+    # With no dispatcher identity at all, a successful terminal tool callback
+    # is therefore not a worker lifecycle boundary.  A partial identity is a
+    # broken worker context and must fail closed instead of continuing.
+    if not any((task_id, run_id_text, db_text)):
+        return False, None
+    missing = [
+        name
+        for name, value in (
+            ("HERMES_KANBAN_TASK", task_id),
+            ("HERMES_KANBAN_RUN_ID", run_id_text),
+            ("HERMES_KANBAN_DB", db_text),
+        )
+        if not value
+    ]
+    if missing:
+        return False, (
+            "Kanban worker identity cannot be verified: missing "
+            + ", ".join(missing)
+        )
     try:
         run_id = int(run_id_text)
     except ValueError:
-        return False
+        return False, (
+            "Kanban worker identity cannot be verified: "
+            "HERMES_KANBAN_RUN_ID must be a positive integer"
+        )
     if run_id <= 0:
-        return False
+        return False, (
+            "Kanban worker identity cannot be verified: "
+            "HERMES_KANBAN_RUN_ID must be a positive integer"
+        )
 
     tool_name = str(item["tool"])
     event_kinds = _KANBAN_TERMINAL_EVENTS[tool_name]
@@ -414,21 +444,20 @@ def _verified_kanban_terminal_tool_item(item: dict) -> bool:
     expected_outcome = "completed" if tool_name == "kanban_complete" else "blocked"
     placeholders = ", ".join("?" for _ in event_kinds)
     query = f"""
-        SELECT 1
+        SELECT r.status,
+               r.outcome,
+               r.ended_at,
+               EXISTS (
+                   SELECT 1
+                     FROM task_events AS e
+                    WHERE e.task_id = r.task_id
+                      AND e.run_id = r.id
+                      AND e.kind IN ({placeholders})
+               ) AS has_terminal_event
           FROM task_runs AS r
           JOIN tasks AS t ON t.id = r.task_id
          WHERE r.id = ?
            AND r.task_id = ?
-           AND r.status = ?
-           AND r.outcome = ?
-           AND r.ended_at IS NOT NULL
-           AND EXISTS (
-               SELECT 1
-                 FROM task_events AS e
-                WHERE e.task_id = r.task_id
-                  AND e.run_id = r.id
-                  AND e.kind IN ({placeholders})
-           )
          LIMIT 1
     """
 
@@ -444,20 +473,33 @@ def _verified_kanban_terminal_tool_item(item: dict) -> bool:
         row = conn.execute(
             query,
             (
+                *event_kinds,
                 run_id,
                 task_id,
-                expected_run_status,
-                expected_outcome,
-                *event_kinds,
             ),
         ).fetchone()
-        return row is not None
+        if row is None:
+            return False, (
+                "Kanban worker identity cannot be verified: "
+                "the configured task/run does not exist"
+            )
+        status, outcome, ended_at, has_terminal_event = row
+        return (
+            status == expected_run_status
+            and outcome == expected_outcome
+            and ended_at is not None
+            and bool(has_terminal_event),
+            None,
+        )
     except (OSError, sqlite3.Error):
         logger.debug(
             "codex app-server: Kanban terminal verification failed",
             exc_info=True,
         )
-        return False
+        return False, (
+            "Kanban worker identity cannot be verified: "
+            "the authoritative board database is unavailable"
+        )
     finally:
         if conn is not None:
             conn.close()
@@ -739,34 +781,55 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
                 "_emit_interim_assistant_message raised", exc_info=True,
             )
 
-    def _fence_verified_kanban_terminal(item: dict) -> None:
+    def _fence_kanban_terminal(item: dict) -> None:
         if getattr(agent, "_codex_kanban_terminal_fenced", False):
             return
-        if not _verified_kanban_terminal_tool_item(item):
+        verified, verification_error = _verify_kanban_terminal_tool_item(item)
+        if not verified and verification_error is None:
             return
+
+        # Set the lifecycle result before requesting the transport interrupt.
+        # Even if the transport cannot be interrupted synchronously, the turn
+        # finalizer will retire the session and suppress post-turn work.
+        agent._codex_kanban_terminal_fenced = True
+        agent._codex_kanban_terminal_fence_error = verification_error
         session = getattr(agent, "_codex_session", None)
         request_interrupt = getattr(session, "request_interrupt", None)
         if not callable(request_interrupt):
-            logger.debug(
-                "codex app-server: verified Kanban terminal state without "
-                "an interruptible session"
+            agent._codex_kanban_terminal_fence_error = (
+                verification_error
+                or "Verified Kanban terminal state could not interrupt "
+                "the Codex app-server session"
             )
+            logger.error("codex app-server: Kanban terminal fence has no session")
             return
         try:
             request_interrupt()
         except Exception:
-            logger.debug(
-                "codex app-server: failed to fence verified Kanban terminal state",
+            agent._codex_kanban_terminal_fence_error = (
+                verification_error
+                or "Verified Kanban terminal state could not interrupt "
+                "the Codex app-server session"
+            )
+            logger.error(
+                "codex app-server: failed to request Kanban terminal fence",
                 exc_info=True,
             )
             return
-        agent._codex_kanban_terminal_fenced = True
-        logger.info(
-            "codex app-server: fenced session after verified %s for task=%s run=%s",
-            item.get("tool"),
-            os.environ.get("HERMES_KANBAN_TASK"),
-            os.environ.get("HERMES_KANBAN_RUN_ID"),
-        )
+        if verification_error is not None:
+            logger.error(
+                "codex app-server: failing closed after unprovable Kanban "
+                "terminal callback: %s",
+                verification_error,
+            )
+        else:
+            logger.info(
+                "codex app-server: fenced session after verified %s "
+                "for task=%s run=%s",
+                item.get("tool"),
+                os.environ.get("HERMES_KANBAN_TASK"),
+                os.environ.get("HERMES_KANBAN_RUN_ID"),
+            )
 
     def on_event(note: dict) -> None:
         if not isinstance(note, dict):
@@ -791,7 +854,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         if method == "item/completed":
             if item_type in _CODEX_TOOL_ITEM_TYPES:
                 _fire_tool_completed(item)
-                _fence_verified_kanban_terminal(item)
+                _fence_kanban_terminal(item)
             elif item_type == "agentMessage":
                 _fire_agent_message_completed(item)
 
@@ -881,6 +944,7 @@ def run_codex_app_server_turn(
     # read-only check of this worker's exact Kanban task/run. Reset it for
     # every turn so a reused agent cannot inherit a prior terminal boundary.
     agent._codex_kanban_terminal_fenced = False
+    agent._codex_kanban_terminal_fence_error = None
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
@@ -933,7 +997,11 @@ def run_codex_app_server_turn(
         agent.clear_interrupt()
 
     terminal_fenced = bool(agent._codex_kanban_terminal_fenced)
+    terminal_fence_error = getattr(
+        agent, "_codex_kanban_terminal_fence_error", None
+    )
     agent._codex_kanban_terminal_fenced = False
+    agent._codex_kanban_terminal_fence_error = None
 
     # A verified terminal board transition is the authoritative worker
     # lifecycle boundary. Drop the provider session even though its
@@ -1064,14 +1132,14 @@ def run_codex_app_server_turn(
             logger.debug("background review spawn raised", exc_info=True)
 
     return {
-        "final_response": turn.final_text,
+        "final_response": terminal_fence_error or turn.final_text,
         "messages": messages,
         "api_calls": api_calls,
-        "completed": terminal_fenced or (
-            not turn.interrupted and turn.error is None
+        "completed": (terminal_fenced and terminal_fence_error is None) or (
+            not terminal_fenced and not turn.interrupted and turn.error is None
         ),
-        "partial": not terminal_fenced and (
-            turn.interrupted or turn.error is not None
+        "partial": terminal_fence_error is not None or (
+            not terminal_fenced and (turn.interrupted or turn.error is not None)
         ),
         "interrupted": _user_interrupted,
         **(
@@ -1079,7 +1147,7 @@ def run_codex_app_server_turn(
             if _interrupt_message
             else {}
         ),
-        "error": None if terminal_fenced else turn.error,
+        "error": terminal_fence_error if terminal_fenced else turn.error,
         # The codex app-server runtime IS an early-return path that bypasses
         # conversation_loop, but we flush the projected assistant/tool messages
         # ourselves above (see the _flush_messages_to_session_db call after

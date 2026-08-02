@@ -268,7 +268,46 @@ def test_unprovable_worker_identity_fails_closed(
         _completed_notification("kanban_complete")
     )
 
+    session.request_interrupt.assert_called_once_with()
+    assert agent._codex_kanban_terminal_fenced is True
+    assert "cannot be verified" in agent._codex_kanban_terminal_fence_error
+
+
+def test_orchestrator_without_worker_identity_is_not_fenced(monkeypatch):
+    for env_name in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_TASK",
+        "HERMES_KANBAN_RUN_ID",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+    session = SimpleNamespace(request_interrupt=MagicMock())
+    agent = SimpleNamespace(_codex_session=session)
+    make_codex_app_server_event_bridge(agent)(
+        _completed_notification("kanban_complete")
+    )
+
     session.request_interrupt.assert_not_called()
+    assert getattr(agent, "_codex_kanban_terminal_fenced", False) is False
+
+
+def test_unavailable_worker_board_fails_closed(tmp_path, monkeypatch):
+    _set_worker_identity(
+        monkeypatch,
+        tmp_path / "missing-kanban.db",
+        "task-does-not-matter",
+        42,
+    )
+
+    session = SimpleNamespace(request_interrupt=MagicMock())
+    agent = SimpleNamespace(_codex_session=session)
+    make_codex_app_server_event_bridge(agent)(
+        _completed_notification("kanban_complete")
+    )
+
+    session.request_interrupt.assert_called_once_with()
+    assert agent._codex_kanban_terminal_fenced is True
+    assert "database is unavailable" in agent._codex_kanban_terminal_fence_error
 
 
 def test_failed_terminal_tool_callback_does_not_interrupt(tmp_path, monkeypatch):
@@ -352,6 +391,81 @@ def test_terminal_fence_closes_session_and_suppresses_post_turn_work(
     assert result["completed"] is True
     assert result["partial"] is False
     assert result["error"] is None
+
+
+def test_unprovable_identity_closes_session_and_returns_partial(
+    tmp_path,
+    monkeypatch,
+):
+    db_path, task_id, run_id = _make_terminal_board(
+        tmp_path, "kanban_complete"
+    )
+    _set_worker_identity(monkeypatch, db_path, task_id, run_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "not-an-integer")
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.bridge = None
+            self.interrupt_requested = False
+            self.closed = False
+
+        def request_interrupt(self) -> None:
+            self.interrupt_requested = True
+
+        def run_turn(self, user_input):
+            assert self.bridge is not None
+            self.bridge(_completed_notification("kanban_complete"))
+            return TurnResult(
+                final_text="late provider text",
+                projected_messages=[],
+                tool_iterations=1,
+                interrupted=True,
+                error="interrupted",
+                turn_id="turn-unprovable",
+                thread_id="thread-unprovable",
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    session = FakeSession()
+    agent = SimpleNamespace(
+        _codex_session=session,
+        _codex_kanban_terminal_fenced=False,
+        _codex_kanban_terminal_fence_error=None,
+        _session_db=None,
+        _iters_since_skill=0,
+        _skill_nudge_interval=1,
+        valid_tool_names={"skill_manage"},
+        session_api_calls=0,
+        context_compressor=SimpleNamespace(
+            awaiting_real_usage_after_compression=False
+        ),
+        _interrupt_requested=False,
+        _sync_external_memory_for_turn=MagicMock(),
+        _spawn_background_review=MagicMock(),
+    )
+    session.bridge = make_codex_app_server_event_bridge(agent)
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="finish the task",
+        original_user_message="finish the task",
+        messages=[],
+        effective_task_id=task_id,
+        should_review_memory=True,
+    )
+
+    assert session.interrupt_requested is True
+    assert session.closed is True
+    assert agent._codex_session is None
+    agent._sync_external_memory_for_turn.assert_not_called()
+    agent._spawn_background_review.assert_not_called()
+    assert result["completed"] is False
+    assert result["partial"] is True
+    assert result["interrupted"] is False
+    assert "cannot be verified" in result["final_response"]
+    assert result["error"] == result["final_response"]
 
 
 def test_real_terminal_callback_commits_and_fences_entire_turn(

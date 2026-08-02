@@ -39,6 +39,14 @@ class TestZeroMatchProbe:
         assert r["total_count"] == 0
         assert "warning" not in r
 
+    def test_hidden_only_match_gets_hint(self, proj):
+        d = proj / "proj"
+        (d / ".secretdir").mkdir()
+        (d / ".secretdir" / "conf.cfg").write_text("HIDDEN_ONLY_TOKEN = true\n")
+        r = json.loads(search_tool("HIDDEN_ONLY_TOKEN", path=str(d), task_id="t-zm"))
+        assert r["total_count"] == 0
+        assert "hidden or gitignored" in r.get("warning", "")
+
     def test_matching_search_unaffected(self, proj):
         r = json.loads(search_tool("TOKEN_ALPHA", path=str(proj / "proj"), task_id="t-zm"))
         assert r["total_count"] >= 2

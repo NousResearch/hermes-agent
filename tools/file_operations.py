@@ -2262,6 +2262,29 @@ class ShellFileOperations(FileOperations):
                 f"0 exact matches, but {ci_total} case-insensitive match(es) "
                 f"in {ci_files} file(s) — the pattern's casing may be wrong."
             )
+        # Hidden/ignored probe: rg skips dotdirs and .gitignore'd files by
+        # default. When the pattern exists only there, say so instead of
+        # returning a bare zero (bench case: match in .hidden/ silently
+        # missing from results).
+        hidden = self._exec(
+            f"rg --hidden --no-ignore --count-matches{glob_expr} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"2>/dev/null | head -50",
+            timeout=30,
+        )
+        h_total = 0
+        h_files = 0
+        for line in (hidden.stdout or "").strip().splitlines():
+            _p, _sep, n = line.rpartition(":")
+            if n.isdigit():
+                h_total += int(n)
+                h_files += 1
+        if h_total > 0:
+            return (
+                f"0 matches in visible files, but {h_total} match(es) in "
+                f"{h_files} hidden or gitignored file(s) — these are excluded "
+                "by default. Search the hidden path explicitly to include them."
+            )
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
                 f"rg -F --count-matches{glob_expr} "

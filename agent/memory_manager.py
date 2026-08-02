@@ -177,6 +177,13 @@ _PROMPT_STRUCTURING_TAG_RE = re.compile(
     r')\b[^<>]*>',
     re.IGNORECASE,
 )
+_MODEL_TEMPLATE_CONTROL_RE = re.compile(
+    r'<(?:\||\uff5c)[^<>\r\n]{1,128}(?:\||\uff5c)>'
+    r'|<\s*/?\s*(?:s|bos|eos|(?:begin|start|end)_of_(?:text|turn))\s*>'
+    r'|<<\s*/?\s*SYS\s*>>'
+    r'|\[\s*/?\s*INST\s*\]',
+    re.IGNORECASE,
+)
 
 
 def sanitize_context(text: str) -> str:
@@ -187,16 +194,24 @@ def sanitize_context(text: str) -> str:
     return text
 
 
-def _neutralize_prompt_structuring_tags(text: str) -> str:
-    """Make role/control tags readable data instead of model prompt delimiters.
+def _escape_prompt_delimiters(match: re.Match[str]) -> str:
+    return match.group(0).translate(
+        str.maketrans({"<": "&lt;", ">": "&gt;", "[": "&#91;", "]": "&#93;"})
+    )
+
+
+def _neutralize_prompt_structuring_tokens(text: str) -> str:
+    """Make role/control tokens readable data instead of prompt delimiters.
 
     This is intentionally separate from ``sanitize_context`` because that
     helper also scrubs assistant output. Memory-provider text is untrusted at
     the prompt-injection boundary, while legitimate assistant output may quote
-    XML tags. Escaping only the delimiters preserves the provider's text.
+    XML or model-template examples. Escape the bounded XML role vocabulary and
+    common backend control-token syntaxes while preserving the payload text.
     """
-    return _PROMPT_STRUCTURING_TAG_RE.sub(
-        lambda match: match.group(0).replace('<', '&lt;').replace('>', '&gt;'),
+    text = _PROMPT_STRUCTURING_TAG_RE.sub(_escape_prompt_delimiters, text)
+    return _MODEL_TEMPLATE_CONTROL_RE.sub(
+        _escape_prompt_delimiters,
         text,
     )
 
@@ -373,7 +388,7 @@ def build_memory_context_block(raw_context: str) -> str:
     clean = sanitize_context(raw_context)
     if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
-    safe = _neutralize_prompt_structuring_tags(clean)
+    safe = _neutralize_prompt_structuring_tokens(clean)
     if safe != clean:
         logger.warning("memory provider returned prompt-structuring tags; neutralized")
     return (

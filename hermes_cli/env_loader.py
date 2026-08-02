@@ -208,6 +208,15 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             if _is_global_env(name)
         }
         local_env.update(load_env_file(home / ".env"))
+        # Mirror load_hermes_dotenv()'s .op.env bootstrap: the 1Password
+        # service-account token lives in <home>/.op.env (gitignored), not
+        # .env. Without seeding it here a cold profile configured for the
+        # supported .op.env flow fails 1Password hydration (sweeper review
+        # on #74549). .env values win — never override an existing key.
+        op_env = home / ".op.env"
+        if op_env.exists():
+            for _name, _value in load_env_file(op_env).items():
+                local_env.setdefault(_name, _value)
         local_env["HERMES_HOME"] = str(home)
         report = apply_all(cfg, home, environ=local_env)
     except Exception:  # noqa: BLE001 — preserve fail-open startup behavior

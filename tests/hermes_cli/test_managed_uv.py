@@ -1026,3 +1026,77 @@ class TestDefaultLiveVenv:
         result = repair_vulnerable_runtime("uv", project_root=root)
         assert result.status == "not-applicable"
 
+
+class TestVenvPythonUpdateBoundary:
+    """``_venv_python`` must survive a hermes_constants predating its symbol.
+
+    ``hermes update`` imports hermes_constants from the OLD checkout, ``git
+    pull`` replaces that file, and the freshly-pulled managed_uv then runs its
+    lazy ``from hermes_constants import venv_python_path`` against the module
+    object already cached in ``sys.modules``. That cached module has no such
+    symbol, so the import raises — while naming the NEW file on disk, which
+    plainly contains it, which is what made the error so confusing:
+
+        cannot import name 'venv_python_path' from 'hermes_constants'
+        (~/.hermes/hermes-agent/hermes_constants.py)
+
+    It aborted the managed-Python runtime repair on the first update from any
+    release older than the symbol. Same class as the ``ensure_uv()`` arity skew
+    documented on ``_UvResult``.
+    """
+
+    def test_recovers_when_the_cached_module_predates_the_symbol(self, monkeypatch):
+        import hermes_constants
+
+        from hermes_cli.managed_uv import _venv_python
+
+        # The stale in-memory module: the symbol the new code wants is absent,
+        # exactly as on an install that booted the pre-upgrade checkout. The
+        # file on disk is the current one, so a reload recovers the real helper.
+        monkeypatch.delattr(hermes_constants, "venv_python_path", raising=False)
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+
+        assert _venv_python(Path("/opt/hermes/venv")) == Path(
+            "/opt/hermes/venv/bin/python"
+        )
+
+    def test_recovery_uses_the_shared_helper_not_a_second_copy(self, monkeypatch):
+        """The reload must resolve through hermes_constants, not open-code it.
+
+        Hand-rolling `Scripts`/`bin` here is what #76105 deduped away and what
+        `test_no_open_coded_venv_layout_remains_in_hermes_cli` bans.
+        """
+        import hermes_constants
+
+        from hermes_cli.managed_uv import _venv_python
+
+        monkeypatch.delattr(hermes_constants, "venv_python_path", raising=False)
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+
+        sentinel = Path("/sentinel/from/shared/helper")
+        real_reload = __import__("importlib").reload
+
+        def _reload_with_marker(module):
+            fresh = real_reload(module)
+            monkeypatch.setattr(
+                fresh, "venv_python_path", lambda *a, **k: sentinel, raising=False
+            )
+            return fresh
+
+        monkeypatch.setattr("importlib.reload", _reload_with_marker)
+        assert _venv_python(Path("/opt/hermes/venv")) == sentinel
+
+    def test_uses_the_real_helper_when_it_is_importable(self, monkeypatch):
+        """The normal path never reloads — recovery stays a fallback."""
+        from hermes_cli.managed_uv import _venv_python
+
+        def _no_reload(module):  # pragma: no cover - must not run
+            raise AssertionError("reload must not run when the import succeeds")
+
+        monkeypatch.setattr("importlib.reload", _no_reload)
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+
+        assert _venv_python(Path("/opt/hermes/venv")) == Path(
+            "/opt/hermes/venv/bin/python"
+        )
+

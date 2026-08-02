@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import shlex
 import socket
@@ -370,6 +371,61 @@ _TOOL_STUBS = {
         '{"command": command, "timeout": timeout, "workdir": workdir}',
     ),
 }
+
+
+def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]:
+    """Map well-known sandbox script failures to one actionable recovery hint.
+
+    Production mining (state.db): the top execute_code failure classes are
+    hermes_tools import misuse (importing tools that aren't in the sandbox,
+    23x in one window), calling the built-in helpers via import, treating
+    tool results as strings instead of dicts, and importing third-party
+    packages that don't exist in the sandbox interpreter. Bounded scan,
+    first match wins, never raises.
+    """
+    if not stderr_text:
+        return None
+    window = stderr_text[:4000]
+    try:
+        m = re.search(
+            r"cannot import name '(\w+)' from 'hermes_tools'", window
+        )
+        if m:
+            missing = m.group(1)
+            available = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or SANDBOX_ALLOWED_TOOLS))
+            builtin = {"json_parse", "shell_quote", "retry"}
+            if missing in builtin:
+                return (
+                    f"{missing} is a BUILT-IN helper in the sandbox — no import "
+                    f"needed. Remove it from the import line and call {missing}(...) directly."
+                )
+            return (
+                f"'{missing}' is not available inside the execute_code sandbox. "
+                f"Importable tools here: {', '.join(available)}. For anything "
+                "else, use the normal tool call instead of execute_code."
+            )
+        m = re.search(r"NameError: name '(json_parse|shell_quote|retry)' is not defined", window)
+        if m:
+            return (
+                f"{m.group(1)} is built into the generated sandbox module — "
+                "call it directly at module scope without importing it."
+            )
+        m = re.search(r"ModuleNotFoundError: No module named '([\w.]+)'", window)
+        if m:
+            return (
+                f"'{m.group(1)}' is not installed in the sandbox interpreter. "
+                "Use Python stdlib inside execute_code, or run the code via "
+                "terminal() with the project venv's python instead."
+            )
+        if re.search(r"TypeError: string indices must be integers|AttributeError: 'str' object has no attribute 'get'", window):
+            return (
+                "Tool functions in the sandbox return DICTS (already parsed) — "
+                "do not json.loads() them or index them like strings. "
+                "Example: read_file(path)['content']."
+            )
+    except Exception:
+        return None
+    return None
 
 
 def generate_hermes_tools_module(enabled_tools: List[str],
@@ -1626,6 +1682,12 @@ def execute_code(
             # Include stderr in output so the LLM sees the traceback
             if stderr_text:
                 result["output"] = stdout_text + "\n--- stderr ---\n" + stderr_text
+            # Known-failure-class recovery hint (import misuse, missing
+            # module, dict-vs-string result handling) so the model fixes
+            # the script on the next attempt instead of re-diagnosing.
+            hint = _sandbox_failure_hint(stderr_text, enabled_tools=sandbox_tools)
+            if hint:
+                result["hint"] = hint
 
         return json.dumps(result, ensure_ascii=False)
 

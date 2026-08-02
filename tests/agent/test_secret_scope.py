@@ -250,3 +250,40 @@ class TestEnvFileParsing:
         )
 
         assert ss.build_profile_secret_scope(profile) == {}
+
+
+class TestApiServerListenerGlobals:
+    """API_SERVER listener settings are deployment config (#69379), not
+    profile secrets: the scoped runner reload must keep seeing container env
+    (Docker compose ``environment:`` block). API_SERVER_KEY IS a credential
+    and stays profile-scoped."""
+
+    LISTENER_VARS = (
+        "API_SERVER_ENABLED",
+        "API_SERVER_HOST",
+        "API_SERVER_PORT",
+        "API_SERVER_CORS_ORIGINS",
+    )
+
+    def test_listener_vars_read_environ_even_when_scoped_multiplex(self, monkeypatch):
+        for name in self.LISTENER_VARS:
+            monkeypatch.setenv(name, f"container-{name.lower()}")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"TELEGRAM_BOT_TOKEN": "scoped"})
+        try:
+            for name in self.LISTENER_VARS:
+                assert ss.get_secret(name) == f"container-{name.lower()}"
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_api_server_key_stays_profile_scoped(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_KEY", "default-profile-key-0123456789abcdef")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"OTHER": "x"})
+        try:
+            # A scoped miss must NOT borrow the (potentially cross-profile)
+            # environ value: API_SERVER_KEY is a credential.
+            assert ss.get_secret("API_SERVER_KEY") is None
+        finally:
+            ss.reset_secret_scope(token)
+        assert not ss._is_global_env("API_SERVER_KEY")

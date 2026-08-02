@@ -2944,6 +2944,7 @@ def _set_session_context(
             source=source,
             cwd=resolved,
             ui_session_id=ui_session_id,
+            cron_session="",
         )
     except Exception:
         return []

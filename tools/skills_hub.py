@@ -382,8 +382,9 @@ class GitHubAuth:
             if self._cached_method != "github-app" or time.time() < self._app_token_expiry:
                 return self._cached_token
 
-        # 1. Environment variable
-        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        # 1. Environment variable (profile-scoped under a multiplexed gateway)
+        from agent.secret_scope import get_secret
+        token = get_secret("GITHUB_TOKEN") or get_secret("GH_TOKEN")
         if token:
             self._cached_token = token
             self._cached_method = "pat"
@@ -424,9 +425,10 @@ class GitHubAuth:
 
     def _try_github_app(self) -> Optional[str]:
         """Try GitHub App JWT authentication if credentials are configured."""
-        app_id = os.environ.get("GITHUB_APP_ID")
-        key_path = os.environ.get("GITHUB_APP_PRIVATE_KEY_PATH")
-        installation_id = os.environ.get("GITHUB_APP_INSTALLATION_ID")
+        from agent.secret_scope import get_secret
+        app_id = get_secret("GITHUB_APP_ID")
+        key_path = get_secret("GITHUB_APP_PRIVATE_KEY_PATH")
+        installation_id = get_secret("GITHUB_APP_INSTALLATION_ID")
 
         if not all([app_id, key_path, installation_id]):
             return None

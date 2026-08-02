@@ -159,10 +159,12 @@ def _check_vercel_sandbox_requirements(config: dict[str, Any]) -> bool:
         )
         return False
 
-    has_oidc = bool(os.getenv("VERCEL_OIDC_TOKEN"))
-    has_token = bool(os.getenv("VERCEL_TOKEN"))
-    has_project = bool(os.getenv("VERCEL_PROJECT_ID"))
-    has_team = bool(os.getenv("VERCEL_TEAM_ID"))
+    from agent.secret_scope import get_secret
+
+    has_oidc = bool(get_secret("VERCEL_OIDC_TOKEN"))
+    has_token = bool(get_secret("VERCEL_TOKEN"))
+    has_project = bool(get_secret("VERCEL_PROJECT_ID"))
+    has_team = bool(get_secret("VERCEL_TEAM_ID"))
 
     if has_oidc:
         return True
@@ -3189,7 +3191,8 @@ def check_terminal_requirements() -> bool:
 
         elif env_type == "daytona":
             from daytona import Daytona  # noqa: F401 — SDK presence check
-            return os.getenv("DAYTONA_API_KEY") is not None
+            from agent.secret_scope import get_secret
+            return get_secret("DAYTONA_API_KEY") is not None
 
         else:
             logger.error(

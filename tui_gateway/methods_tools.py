@@ -1384,7 +1384,9 @@ def _(rid, params: dict) -> dict:
     try:
         cfg = _load_cfg()
         model = _resolve_model()
-        api_key = os.environ.get("HERMES_API_KEY", "") or cfg.get("api_key", "")
+        from agent.secret_scope import get_secret
+
+        api_key = get_secret("HERMES_API_KEY", "") or cfg.get("api_key", "")
         masked = f"****{api_key[-4:]}" if len(api_key) > 4 else "(not set)"
         base_url = os.environ.get("HERMES_BASE_URL", "") or cfg.get("base_url", "")
 

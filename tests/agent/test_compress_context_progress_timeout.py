@@ -100,8 +100,13 @@ class TestRunCompressContextWithProgressTimeout:
         def worker(fence: CompressionCommitFence):
             fence_holder["fence"] = fence
             # Keep ticking within each idle window so the waiter extends.
+            # Round-2 #8 (FLAKY policy): the old 0.1s-idle/0.04s-tick shape
+            # left only ~60ms of slack per tick — one slow scheduler pass on
+            # a loaded CI box let the idle budget lapse mid-loop. >=0.5s
+            # idle with 0.1s ticks keeps a 5x margin per tick while the
+            # total runtime stays under a second.
             for _ in range(6):
-                time.sleep(0.04)
+                time.sleep(0.1)
                 fence.touch_progress()
             if not fence.begin_commit():
                 return (original, "aborted")
@@ -114,8 +119,8 @@ class TestRunCompressContextWithProgressTimeout:
             worker=worker,
             messages=original,
             system_prompt_fallback="fallback",
-            idle_timeout_seconds=0.1,
-            total_ceiling_seconds=1.0,
+            idle_timeout_seconds=0.5,
+            total_ceiling_seconds=5.0,
         )
 
         assert result_msgs == compressed

@@ -93,3 +93,69 @@ class TestMultiPathRecovery:
         assert "error" not in r
         blob = json.dumps(r)
         assert "a.py" in blob
+
+
+class TestZeroMatchProbeEngineParity:
+    """The hint must be attached on BOTH search engines' code paths.
+
+    The probe block originally lived inline after the grep call. Three minutes
+    later a separate commit (auto-multiline) added an early ``return result`` to
+    the ripgrep branch, which orphaned the block: the entire zero-match
+    steering tier was unreachable for every user with rg installed, while the
+    feature's own tests reported the absence as a plain assertion failure.
+    Fixed in 794d6c434e; these tests pin the wiring per engine so a future
+    early return can't silently orphan it again.
+
+    The probe itself shells out to rg (by design: bounded, count-only), so a
+    grep-only host gets no hints even with correct wiring. The probe is
+    therefore stubbed to a sentinel here — this isolates the *wiring* rather
+    than the probe's own dependency, and a naive parity test asserting real
+    hint text would fail on the grep leg for an unrelated reason.
+    """
+
+    @pytest.mark.parametrize("engine", ["rg", "grep"])
+    def test_hint_is_attached_on_each_search_engine(self, proj, monkeypatch, engine):
+        from tools.file_tools import _get_file_ops
+
+        ops = _get_file_ops(task_id=f"t-parity-{engine}")
+        if not ops._has_command(engine):
+            pytest.skip(f"{engine} not installed")
+        real = ops._has_command
+
+        def only(cmd, _real=real, _keep=engine):
+            # Forces which engine `search` picks; other lookups pass through.
+            if cmd in ("rg", "grep"):
+                return _real(cmd) if cmd == _keep else False
+            return _real(cmd)
+
+        monkeypatch.setattr(ops, "_has_command", only)
+        monkeypatch.setattr(ops, "_zero_match_probe", lambda *a, **k: "SENTINEL_HINT")
+        r = ops.search("token_alpha", path=str(proj / "proj"), target="content")
+        assert r.total_count == 0
+        assert "SENTINEL_HINT" in (r.warning or ""), (
+            f"zero-match hint not wired on the {engine} path: warning={r.warning!r}"
+        )
+
+    def test_hint_not_attached_when_matches_exist(self, proj, monkeypatch):
+        from tools.file_tools import _get_file_ops
+
+        ops = _get_file_ops(task_id="t-parity-hit")
+        monkeypatch.setattr(ops, "_zero_match_probe", lambda *a, **k: "SENTINEL_HINT")
+        r = ops.search("TOKEN_ALPHA", path=str(proj / "proj"), target="content")
+        assert r.total_count > 0
+        assert "SENTINEL_HINT" not in (r.warning or "")
+
+    def test_rg_path_still_skips_line_oriented_newline_warning(self, proj):
+        """The early return existed to skip a grep-only warning — keep that.
+
+        rg auto-enables --multiline for ``\\n`` patterns, so the line-oriented
+        explanation must not be attached on the rg path. A fix that merely
+        deleted the early return would regress this.
+        """
+        from tools.file_tools import _get_file_ops
+
+        ops = _get_file_ops(task_id="t-parity-nl")
+        if not ops._has_command("rg"):
+            pytest.skip("rg not installed")
+        r = ops.search("TOKEN_ALPHA\\nother", path=str(proj / "proj"), target="content")
+        assert "line-oriented" not in (r.warning or "")

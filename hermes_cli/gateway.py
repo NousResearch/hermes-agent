@@ -1583,6 +1583,12 @@ def stop_profile_gateway() -> bool:
     a live orphan still holds the webhook port. In that case fall back to the
     orphan-aware process scan so the replacement reaps the prior instance
     instead of stacking a duplicate on the same port (#51325).
+
+    Even when the pid file is valid and points to the current gateway, older
+    orphans may linger from prior restarts that overwrote the pid file before
+    the old process exited. After killing the recorded PID, also sweep for
+    any remaining orphans so each restart produces at most one live gateway
+    (#75936).
     """
     try:
         from gateway.status import get_running_pid, remove_pid_file
@@ -1620,6 +1626,14 @@ def stop_profile_gateway() -> bool:
 
     if get_running_pid() is None:
         remove_pid_file()
+
+    # Also reap any orphans from prior restarts whose PIDs were overwritten
+    # in the pid file before they exited (#75936).
+    try:
+        _reap_unsupervised_gateway_orphans()
+    except Exception:
+        pass
+
     return True
 
 

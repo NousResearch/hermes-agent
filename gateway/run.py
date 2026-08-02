@@ -2709,6 +2709,11 @@ def _reap_gateway_turn_processes(
     process. The newer turn snapshots its own baseline independently, so
     skipping here does not leave anything permanently unreaped.
     """
+    if not task_id:
+        # ProcessSession.task_id defaults to "" for sessionless callers, so a
+        # blank id would match (and kill) every unrelated empty-task process
+        # instead of this turn's own. Nothing session-scoped to reap.
+        return 0
     if is_still_current is not None:
         try:
             if not is_still_current():
@@ -24402,11 +24407,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     done, _ = await asyncio.wait(
                         {_executor_task}, timeout=_POLL_INTERVAL
                     )
+                    if done:
+                        # Prefer the real result when the worker finished,
+                        # even if the watchdog fired in the same window: the
+                        # completed run already persisted its reply to session
+                        # history, so surfacing the "agent inactive" diagnostic
+                        # here would contradict the stored transcript. This
+                        # mirrors _abandon_timed_out_gateway_turn's own
+                        # worker_done-wins tiebreak (under cleanup_lock).
+                        response = _executor_task.result()
+                        break
                     if _turn_timeout_fired.is_set():
                         _inactivity_timeout = True
-                        break
-                    if done:
-                        response = _executor_task.result()
                         break
                     # Agent still running — check inactivity.
                     _agent_ref = agent_holder[0]

@@ -255,4 +255,186 @@ async def test_websocket_auth_uses_credentials_owner_tag():
     await adapter._authenticate_websocket(websocket)
     assert ["auth", "b" * 64, "", "c" * 128] in websocket.sent[0][1]["tags"]
 
+# ── CLOSED frame handling ──────────────────────────────────────────────────
 
+
+@pytest.mark.asyncio
+async def test_websocket_loop_drops_restricted_channel_without_reconnect():
+    """A CLOSED frame with 'restricted: not a channel member' must silently
+    drop the offending subscription and continue — not raise ConnectionError
+    and trigger a reconnect loop.
+
+    Regression test for the 1.6 s flood caused by the relay immediately
+    rejecting a private-channel subscription.
+    """
+    import sys
+    from unittest.mock import patch, MagicMock
+    from contextlib import asynccontextmanager
+
+    adapter = _make_adapter(extra={"channels": [CHANNEL]})
+    adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+    adapter._ws_ready = asyncio.Event()
+
+    sub_id = "hermes-buzz-0"
+    messages = [json.dumps(["CLOSED", sub_id, "restricted: not a channel member"])]
+    idx = 0
+
+    class _FakeWs:
+        sent = []
+
+        async def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            nonlocal idx
+            if idx < len(messages):
+                val = messages[idx]
+                idx += 1
+                return val
+            # Stall so the task stays alive for our assertions.
+            await asyncio.sleep(10)
+            raise StopAsyncIteration
+
+    @asynccontextmanager
+    async def _fake_connect(*_a, **_kw):
+        yield _FakeWs()
+
+    async def _noop_auth(self_inner, ws):
+        pass
+
+    async def _noop_subscribe(self_inner, ws):
+        return {sub_id: CHANNEL}
+
+    fake_ws_mod = MagicMock()
+    fake_ws_mod.connect = _fake_connect
+
+    with (
+        patch.dict(sys.modules, {"websockets": fake_ws_mod}),
+        patch.object(type(adapter), "_authenticate_websocket", _noop_auth),
+        patch.object(type(adapter), "_subscribe_websocket", _noop_subscribe),
+    ):
+        adapter._ws_ready = asyncio.Event()
+        adapter._ws_ready.set()
+        adapter._ws_active = True
+        task = asyncio.create_task(adapter._websocket_loop())
+        await asyncio.sleep(0.1)
+
+    assert CHANNEL in adapter._restricted_channels, (
+        "restricted channel should be recorded in _restricted_channels"
+    )
+    assert CHANNEL not in adapter._channel_state, (
+        "channel_state entry should be removed for a restricted channel"
+    )
+    assert not task.done(), "websocket_loop must not exit/reconnect on a restricted CLOSED"
+
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_websocket_loop_reconnects_on_non_restricted_closed():
+    """A CLOSED frame that is NOT 'restricted' must NOT add the channel to
+    _restricted_channels — it is a transient error and the loop should reconnect.
+    """
+    import sys
+    from unittest.mock import patch, MagicMock
+    from contextlib import asynccontextmanager
+
+    adapter = _make_adapter(extra={"channels": [CHANNEL]})
+    adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+
+    sub_id = "hermes-buzz-0"
+    messages = [json.dumps(["CLOSED", sub_id, "error: server shutting down"])]
+    idx = 0
+
+    class _FakeWs:
+        sent = []
+
+        async def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            nonlocal idx
+            if idx < len(messages):
+                val = messages[idx]
+                idx += 1
+                return val
+            await asyncio.sleep(10)
+            return json.dumps(["NOTICE", "stall"])
+
+    @asynccontextmanager
+    async def _fake_connect(*_a, **_kw):
+        yield _FakeWs()
+
+    async def _noop_auth(self_inner, ws):
+        pass
+
+    async def _noop_subscribe(self_inner, ws):
+        return {sub_id: CHANNEL}
+
+    fake_ws_mod = MagicMock()
+    fake_ws_mod.connect = _fake_connect
+
+    with (
+        patch.dict(sys.modules, {"websockets": fake_ws_mod}),
+        patch.object(type(adapter), "_authenticate_websocket", _noop_auth),
+        patch.object(type(adapter), "_subscribe_websocket", _noop_subscribe),
+    ):
+        adapter._ws_ready = asyncio.Event()
+        adapter._ws_ready.set()
+        adapter._ws_active = True
+        task = asyncio.create_task(adapter._websocket_loop())
+        await asyncio.sleep(0.1)
+
+    assert CHANNEL not in adapter._restricted_channels, (
+        "non-restricted CLOSED must not add channel to _restricted_channels"
+    )
+
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+def test_restricted_channels_skipped_during_subscribe():
+    """Channels in _restricted_channels are not re-subscribed on reconnect."""
+    adapter = _make_adapter()
+    adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+    adapter._restricted_channels.add(CHANNEL)
+
+    subscriptions = {}
+
+    class _CountingWs:
+        sent = []
+
+        async def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+    async def _run():
+        ws = _CountingWs()
+        result = await adapter._subscribe_websocket(ws)
+        return ws.sent, result
+
+    sent, subs = asyncio.get_event_loop().run_until_complete(_run())
+
+    assert CHANNEL not in subs.values(), (
+        "restricted channel must not appear in subscriptions dict"
+    )
+    req_channels = [
+        frame[2].get("#h", [])
+        for frame in sent
+        if isinstance(frame, list) and frame[0] == "REQ"
+    ]
+    assert all(CHANNEL not in ch_list for ch_list in req_channels), (
+        "restricted channel must not be sent in any REQ frame"
+    )

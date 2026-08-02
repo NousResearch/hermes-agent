@@ -715,6 +715,10 @@ class BuzzAdapter(BasePlatformAdapter):
         # }
         # event_meta backs NIP-10 reply-parent resolution for require_mention
         # (thread replies to our own messages count as addressed — #75826).
+        # Channels the relay has permanently rejected (e.g. "restricted: not a
+        # channel member").  Persists across reconnects so we never re-subscribe
+        # to a channel the relay won't serve us.
+        self._restricted_channels: set = set()
         self._channel_state: Dict[str, dict] = {}
         # Cursors read back from disk at connect() and consumed by the first
         # seed of each channel; empty on a first-ever run.
@@ -847,9 +851,15 @@ class BuzzAdapter(BasePlatformAdapter):
         # Seed high-water marks from the newest events so a (re)start never
         # replays channel history into the agent — except where a previous run
         # left a cursor, which is restored instead so the events that landed
-        # while we were down still dispatch (#90464).
+        # while we were down still dispatch (#90464).  Skip any channel the
+        # relay has permanently rejected in a previous session (e.g.
+        # "restricted: not a channel member") so we don't reconnect-loop on
+        # them.
         self._load_cursors()
         for channel_id in watch:
+            if channel_id in self._restricted_channels:
+                logger.debug("Buzz: skipping restricted channel %s (relay rejected subscription)", channel_id)
+                continue
             await self._seed_channel(channel_id, chat_type="group")
         await self._discover_dms(seed=True)
         self._save_cursors()
@@ -1443,6 +1453,8 @@ class BuzzAdapter(BasePlatformAdapter):
         (kind 44100 p-tagged to us) for live DM discovery."""
         subscriptions: Dict[str, Optional[str]] = {}
         for index, channel_id in enumerate(list(self._channel_state)):
+            if channel_id in self._restricted_channels:
+                continue
             subscription_id = f"hermes-buzz-{index}"
             subscriptions[subscription_id] = channel_id
             await self._send_channel_subscription(websocket, subscription_id, channel_id)
@@ -1539,7 +1551,23 @@ class BuzzAdapter(BasePlatformAdapter):
                                         self._save_cursors()
                             elif message[0] == "CLOSED":
                                 detail = message[-1] if len(message) > 2 else "subscription closed"
-                                raise ConnectionError(str(detail))
+                                sub_id = str(message[1]) if len(message) > 1 else ""
+                                closed_channel = subscriptions.get(sub_id)
+                                # "restricted: …" means the relay will never
+                                # serve this subscription — drop it permanently
+                                # rather than reconnecting and repeating the
+                                # same rejection in a tight loop.
+                                if "restricted" in str(detail).lower() and closed_channel:
+                                    logger.warning(
+                                        "Buzz: relay permanently rejected channel %s (%s) — "
+                                        "removing from watch list",
+                                        closed_channel, detail,
+                                    )
+                                    self._restricted_channels.add(closed_channel)
+                                    del subscriptions[sub_id]
+                                    self._channel_state.pop(closed_channel, None)
+                                else:
+                                    raise ConnectionError(str(detail))
                             elif message[0] == "NOTICE":
                                 logger.warning("Buzz: relay notice: %s", message[-1])
                 except asyncio.CancelledError:

@@ -157,5 +157,92 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
             ss.reset_secret_scope(token)
 
 
+class TestEmailAdapterUnscopedUnderMultiplex(unittest.TestCase):
+    """The DEFAULT profile's adapter constructs UNSCOPED under multiplexing.
+
+    In a multiplexed gateway only secondary profiles run inside
+    ``_profile_runtime_scope``; the default profile's adapter is constructed
+    with no scope installed while multiplexing is active. A bare
+    ``get_secret`` raises ``UnscopedSecretError`` there and would crash the
+    email path on startup — the exact WhatsApp defect fixed in 5438e9c629.
+    The Slack-pattern helper (``_get_esecret``) must swallow that and read
+    the default profile's own ``os.environ`` values instead.
+    """
+
+    def setUp(self):
+        ss.set_multiplex_active(False)
+
+    def tearDown(self):
+        ss.set_multiplex_active(False)
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "alpha@test.invalid",
+        "EMAIL_PASSWORD": "default-pw",
+        "EMAIL_IMAP_HOST": "imap.default.com",
+        "EMAIL_SMTP_HOST": "smtp.default.com",
+        "EMAIL_IMAP_PORT": "1993",
+        "EMAIL_SMTP_PORT": "1587",
+        "EMAIL_POLL_INTERVAL": "30",
+    }, clear=False)
+    def test_default_profile_constructs_unscoped_under_multiplex(self):
+        """Multiplex ON + no scope: construction must not raise and must
+        read the default profile's own environ values."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        ss.set_multiplex_active(True)
+        cfg = PlatformConfig(enabled=True)
+        adapter = EmailAdapter(cfg)  # must NOT raise UnscopedSecretError
+        self.assertEqual(adapter._address, "alpha@test.invalid")
+        self.assertEqual(adapter._password, "default-pw")
+        self.assertEqual(adapter._imap_host, "imap.default.com")
+        self.assertEqual(adapter._smtp_host, "smtp.default.com")
+        self.assertEqual(adapter._imap_port, 1993)
+        self.assertEqual(adapter._smtp_port, 1587)
+        self.assertEqual(adapter._poll_interval, 30)
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "alpha@test.invalid",
+        "EMAIL_PASSWORD": "default-pw",
+        "EMAIL_IMAP_HOST": "imap.default.com",
+        "EMAIL_SMTP_HOST": "smtp.default.com",
+        "EMAIL_IMAP_PORT": "1993",
+        "EMAIL_SMTP_PORT": "1587",
+        "EMAIL_POLL_INTERVAL": "30",
+        "EMAIL_TRUST_FROM_HEADER": "true",
+    }, clear=False)
+    def test_scoped_ports_and_trust_flag_do_not_inherit_environ(self):
+        """The env_int variants (EMAIL_IMAP_PORT / EMAIL_SMTP_PORT /
+        EMAIL_POLL_INTERVAL) and EMAIL_TRUST_FROM_HEADER must resolve from
+        the installed scope, not from the primary profile's environ."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        scoped = {
+            "EMAIL_ADDRESS": "beta@test.invalid",
+            "EMAIL_PASSWORD": "secondary-pw",
+            "EMAIL_IMAP_HOST": "imap.secondary.example",
+            "EMAIL_SMTP_HOST": "smtp.secondary.example",
+            "EMAIL_IMAP_PORT": "2993",
+            "EMAIL_SMTP_PORT": "2587",
+            "EMAIL_POLL_INTERVAL": "60",
+            # scope does NOT opt into trusting From: — environ's "true"
+            # must not leak in.
+        }
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(scoped)
+        try:
+            cfg = PlatformConfig(enabled=True)
+            adapter = EmailAdapter(cfg)
+            self.assertEqual(adapter._imap_port, 2993)
+            self.assertEqual(adapter._smtp_port, 2587)
+            self.assertEqual(adapter._poll_interval, 60)
+            # Environ's EMAIL_TRUST_FROM_HEADER=true must not leak in: the
+            # scope did not opt out, so authentication stays required.
+            self.assertTrue(adapter._require_authenticated_sender)
+        finally:
+            ss.reset_secret_scope(token)
+
+
 if __name__ == "__main__":
     unittest.main()

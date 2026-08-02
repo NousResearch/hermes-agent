@@ -3,12 +3,12 @@
 
 approval:
   dangerous_header: "⚠️  NIEBEZPIECZNA KOMENDA: {description}"
-  choose_long: "      [o] — zezwól tylko tym razem  |  [s] — zezwól w tej sesji  |  [a] — zezwalaj zawsze  |  [d] — odrzuć"
-  choose_short: "      [o] — zezwól tylko tym razem  |  [s] — zezwól w tej sesji  |  [d] — odrzuć"
-  prompt_long: "      Wybór [o/s/a; d lub Enter = odrzuć]: "
-  prompt_short: "      Wybór [o/s; d lub Enter = odrzuć]: "
-  choose_smart_deny: "      [o] — zezwól tylko tym razem  |  [d] — odrzuć"
-  prompt_smart_deny: "      Wybór [o; d lub Enter = odrzuć]: "
+  choose_long: "      [o] — zezwól tylko tym razem  |  [s] — zezwól w tej sesji  |  [a] — zezwalaj zawsze  |  Enter — odrzuć"
+  choose_short: "      [o] — zezwól tylko tym razem  |  [s] — zezwól w tej sesji  |  Enter — odrzuć"
+  prompt_long: "      Wybór [o/s/a; Enter = odrzuć]: "
+  prompt_short: "      Wybór [o/s; Enter = odrzuć]: "
+  choose_smart_deny: "      [o] — zezwól tylko tym razem  |  Enter — odrzuć"
+  prompt_smart_deny: "      Wybór [o; Enter = odrzuć]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
   timeout: "      ⏱ Upłynął limit czasu — komenda została odrzucona"
@@ -53,6 +53,7 @@ gateway:
     more: "… pozostałe pozycje: {count}"
     running_processes: "**Procesy działające w tle:** {count}"
     async_jobs: "**Zadania asynchroniczne bramy:** {count}"
+    background_delegations: "**Delegacje w tle:** {count}"
     none: "Brak aktywnych agentów i zadań w toku."
     state_starting: "uruchamia się"
     state_running: "w toku"
@@ -275,9 +276,33 @@ gateway:
     restored: "✅ Przywrócono stan z punktu kontrolnego {hash}: {reason}\nAutomatycznie zapisano migawkę sprzed wycofania zmian."
     restore_failed: "❌ {error}"
 
+  diff:
+    not_enabled: "Punkty kontrolne są wyłączone, więc nie ma bazowej migawki sesji.\nWłącz je w config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nZwykłe /diff nadal działa — używa bezpośrednio gita."
+    no_changes: "Brak zmian."
+    failed: "{error}"
+
   set_home:
     save_failed: "Nie udało się zapisać kanału głównego: {error}"
     success: "✅ Ustawiono kanał główny **{name}** (ID: {chat_id}).\nZadania cron i wiadomości międzyplatformowe będą dostarczane tutaj."
+
+  context:
+    header: "🧠 **Okno kontekstu**"
+    model: "Model: `{model}`"
+    window: "Okno: {total} tokenów"
+    in_use: "W użyciu: {used} / {total} ({pct}%)"
+    bar: "{bar}"
+    headroom: "Zapas do limitu: {headroom} tokenów"
+    threshold: "Automatyczna kompresja przy: {threshold} ({threshold_pct}%) — pozostało {to_go}"
+    over_threshold: "⚠️ **Powyżej progu automatycznej kompresji ({threshold}, {threshold_pct}%)**"
+    compressions: "Kompresje w tej sesji: {count}"
+    last_savings: "Ostatnia kompresja zwolniła: {savings}% kontekstu"
+    totals_header: "Sumy sesji (łącznie przez {calls} wywołań API)"
+    totals_line: "Wejście {input} · Wyjście {output} · Rozumowanie {reasoning}"
+    total_billed: "Łącznie naliczone: {total}"
+    throughput_note: "_Przepustowość, nie rozmiar kontekstu — każde wywołanie ponownie wysyła powyższe okno._"
+    estimated: "Szacowany kontekst: ~{count} tokenów w {messages} wiadomościach"
+    detail_after_first: "_(Pełne statystyki kompresji i przepustowości będą dostępne po pierwszej odpowiedzi agenta)_"
+    no_data: "Brak danych o kontekście. Wyślij wiadomość, aby rozpocząć sesję."
 
   status:
     header: "📊 **Stan bramy Hermesa**"

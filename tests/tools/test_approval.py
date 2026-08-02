@@ -669,30 +669,33 @@ class TestPolishApprovalChoiceCopy:
         i18n.reset_language_cache()
         menu = (
             "      [o] — zezwól tylko tym razem  |  [s] — zezwól w tej sesji  |"
-            "  [a] — zezwalaj zawsze  |  [d] — odrzuć"
+            "  [a] — zezwalaj zawsze  |  Enter — odrzuć"
         )
         short_menu = (
             "      [o] — zezwól tylko tym razem  |  [s] — zezwól w tej sesji  |"
-            "  [d] — odrzuć"
+            "  Enter — odrzuć"
         )
-        prompt = "      Wybór [o/s/a; d lub Enter = odrzuć]: "
-        short_prompt = "      Wybór [o/s; d lub Enter = odrzuć]: "
+        prompt = "      Wybór [o/s/a; Enter = odrzuć]: "
+        short_prompt = "      Wybór [o/s; Enter = odrzuć]: "
         prompts = []
 
         def fake_input(value):
             prompts.append(value)
-            return "o"
+            return "a"
 
         try:
             assert i18n.t("approval.choose_long") == menu
             assert i18n.t("approval.choose_short") == short_menu
             assert i18n.t("approval.prompt_long") == prompt
             assert i18n.t("approval.prompt_short") == short_prompt
+            rendered_copy = "\n".join((menu, short_menu, prompt, short_prompt))
+            for legacy_token in ("[o] raz", "[a] zawsze", "[d]", "d lub Enter"):
+                assert legacy_token not in rendered_copy
 
             with mock_patch("builtins.input", side_effect=fake_input):
                 assert (
                     prompt_dangerous_approval("rm -rf /tmp/test", "test", timeout_seconds=1)
-                    == "once"
+                    == "always"
                 )
 
             assert menu in capsys.readouterr().out
@@ -705,8 +708,8 @@ class TestPolishApprovalChoiceCopy:
 
         monkeypatch.setenv("HERMES_LANGUAGE", "pl")
         i18n.reset_language_cache()
-        menu = "      [o] — zezwól tylko tym razem  |  [d] — odrzuć"
-        prompt = "      Wybór [o; d lub Enter = odrzuć]: "
+        menu = "      [o] — zezwól tylko tym razem  |  Enter — odrzuć"
+        prompt = "      Wybór [o; Enter = odrzuć]: "
         prompts = []
 
         def choose_once(value):
@@ -718,6 +721,8 @@ class TestPolishApprovalChoiceCopy:
             assert i18n.t("approval.prompt_smart_deny") == prompt
             assert i18n.t("approval.smart_deny_once_inputs") == "o,once"
             assert i18n.t("approval.smart_deny_deny_inputs") == "d,deny"
+            assert "[d]" not in menu
+            assert "d lub Enter" not in prompt
 
             with mock_patch("builtins.input", side_effect=choose_once):
                 assert (

@@ -12,7 +12,8 @@ description: >
   CrewAI, Google ADK, OpenClaw, ...).
 
   INBOUND (platform adapter): exposes Hermes as an A2A-discoverable agent. An
-  Agent Card is served at /.well-known/agent.json and incoming tasks are routed
+  Agent Card is served at /.well-known/agent-card.json (v1.0 canonical path;
+  legacy agent.json also answers) and incoming tasks are routed
   into the agent's live gateway session like any other platform — so the agent
   that replies is the same one talking to its user, with full memory and
   context, not a throwaway clone.

@@ -40,7 +40,7 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   class that killed inbound serving in forks). The request handler is a
   module-level class (`A2ARequestHandler`) reached through
   `server.adapter`, so RPC handlers are unit-testable without HTTP.
-- Agent Card at `GET /.well-known/agent.json` (v1.0: `supportedInterfaces[]`,
+- Agent Card at `GET /.well-known/agent-card.json` (canonical v1.0 path; legacy `agent.json` also answers) (v1.0: `supportedInterfaces[]`,
   `provider`, `capabilities.extendedAgentCard`). **Dynamic**: skills are
   built from the live tool registry at serve time
   (`A2A_ADVERTISED_TOOLSETS` / `extra.advertised_toolsets` restricts them).

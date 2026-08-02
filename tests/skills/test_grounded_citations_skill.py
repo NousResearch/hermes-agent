@@ -337,3 +337,132 @@ def test_corrupt_ledger_raises_actionable_error(sources_mod, tmp_path: Path) -> 
     with pytest.raises(SystemExit) as exc:
         sources_mod.load_ledger(bad)
     assert "reset" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Fact-checking: evidence quotes and [unverified] markers
+# ---------------------------------------------------------------------------
+
+_PAGE = (
+    "Water expands when it freezes.\n"
+    "Ice is about 9% less   dense than liquid water,\n"
+    "which is why icebergs float.\n"
+)
+
+
+def test_quote_verbatim_match_is_whitespace_and_case_insensitive(sources_mod, ledger: Path) -> None:
+    sources_mod.add_sources(ledger, ["https://a.example"])
+    entry = sources_mod.attach_quote(
+        ledger, 1, "ice is about 9% less dense than liquid water,", _PAGE
+    )
+    assert len(entry["quotes"]) == 1
+
+
+def test_quote_rejects_paraphrase(sources_mod, ledger: Path) -> None:
+    sources_mod.add_sources(ledger, ["https://a.example"])
+    with pytest.raises(SystemExit) as exc:
+        sources_mod.attach_quote(ledger, 1, "Frozen water is roughly 9% lighter", _PAGE)
+    assert "not found verbatim" in str(exc.value)
+
+
+def test_quote_rejects_unknown_id_and_short_text(sources_mod, ledger: Path) -> None:
+    sources_mod.add_sources(ledger, ["https://a.example"])
+    with pytest.raises(SystemExit) as exc:
+        sources_mod.attach_quote(ledger, 7, "which is why icebergs float.", _PAGE)
+    assert "no source [7]" in str(exc.value)
+    with pytest.raises(SystemExit) as exc:
+        sources_mod.attach_quote(ledger, 1, "icebergs float.", _PAGE)
+    assert "too short" in str(exc.value)
+
+
+def test_quote_is_idempotent(sources_mod, ledger: Path) -> None:
+    sources_mod.add_sources(ledger, ["https://a.example"])
+    sources_mod.attach_quote(ledger, 1, "Water expands when it freezes.", _PAGE)
+    entry = sources_mod.attach_quote(ledger, 1, "water  expands when it freezes.", _PAGE)
+    assert len(entry["quotes"]) == 1
+
+
+def test_verify_evidence_gate_requires_quotes(sources_mod, ledger: Path, tmp_path: Path) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        "A claim supported by the first source.[1]\n\n"
+        "Sources:\n[1] https://a.example\n"
+    )
+    code, errors, _ = _verify(sources_mod, ledger, tmp_path, text, require_evidence=True)
+    assert code == 1
+    assert any("no verbatim evidence quote" in e for e in errors)
+
+    sources_mod.attach_quote(ledger, 1, "Water expands when it freezes.", _PAGE)
+    code, errors, _ = _verify(sources_mod, ledger, tmp_path, text, require_evidence=True)
+    assert (code, errors) == (0, [])
+
+
+def test_evidence_gate_only_applies_to_cited_sources(sources_mod, ledger: Path, tmp_path: Path) -> None:
+    _seed(sources_mod, ledger)
+    sources_mod.attach_quote(ledger, 1, "Water expands when it freezes.", _PAGE)
+    # [2] and [3] have no quotes but are not cited — the gate must not fail on them.
+    text = "A claim supported by the first source.[1]\n\nSources:\n[1] https://a.example\n"
+    code, errors, _ = _verify(sources_mod, ledger, tmp_path, text, require_evidence=True)
+    assert (code, errors) == (0, [])
+
+
+def test_unverified_marker_counts_toward_coverage(sources_mod, ledger: Path, tmp_path: Path) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        "A cited claim about the subject matter.[1]\n"
+        "A model-knowledge claim declared as such.[unverified]\n\n"
+        "Sources:\n[1] https://a.example\n"
+    )
+    code, errors, _ = _verify(sources_mod, ledger, tmp_path, text, min_coverage=0.9)
+    assert (code, errors) == (0, [])
+
+
+def test_unverified_marker_does_not_hide_uncited_sentences(sources_mod, ledger: Path, tmp_path: Path) -> None:
+    _seed(sources_mod, ledger)
+    text = (
+        "A cited claim about the subject matter.[1]\n"
+        "An uncited, unmarked claim about the subject.\n"
+        "Another uncited, unmarked claim about the subject.\n\n"
+        "Sources:\n[1] https://a.example\n"
+    )
+    code, errors, _ = _verify(sources_mod, ledger, tmp_path, text, min_coverage=0.9)
+    assert code == 1
+    assert any("coverage" in e for e in errors)
+
+
+def test_render_evidence_style_includes_quotes(sources_mod, ledger: Path) -> None:
+    _seed(sources_mod, ledger)
+    sources_mod.attach_quote(ledger, 1, "Water expands when it freezes.", _PAGE)
+    sources = json.loads(ledger.read_text(encoding="utf-8"))["sources"]
+    block = sources_mod.render_sources(sources, style="evidence", only={1})
+    assert "[1] https://a.example" in block
+    assert '> "Water expands when it freezes."' in block
+    plain = sources_mod.render_sources(sources, style="markdown", only={1})
+    assert "Water expands" not in plain
+
+
+def test_cli_quote_and_evidence_verify_roundtrip(sources_mod, tmp_path: Path, capsys) -> None:
+    ledger = tmp_path / "ev.json"
+    page = tmp_path / "page.txt"
+    page.write_text(_PAGE, encoding="utf-8")
+    args = ["--ledger", str(ledger)]
+    assert sources_mod.main(args + ["add", "https://a.example"]) == 0
+    capsys.readouterr()
+
+    assert (
+        sources_mod.main(
+            args + ["quote", "1", "--text", "Water expands when it freezes.", "--from", str(page)]
+        )
+        == 0
+    )
+    assert "evidence attached" in capsys.readouterr().out
+
+    draft = tmp_path / "d.md"
+    draft.write_text(
+        "A claim resting on the source page.[1]\n\nSources:\n[1] https://a.example\n",
+        encoding="utf-8",
+    )
+    assert sources_mod.main(args + ["verify", str(draft), "--evidence"]) == 0
+    capsys.readouterr()
+    assert sources_mod.main(args + ["render", "--style", "evidence"]) == 0
+    assert '> "Water expands when it freezes."' in capsys.readouterr().out

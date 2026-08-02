@@ -1566,6 +1566,15 @@ def init_agent(
     
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
+    # Whether close() must also close that handle. Default False: a
+    # caller-supplied session_db is almost always the SHARED launch handle,
+    # which outlives every agent and must never be closed here. Callers that
+    # hand over a DEDICATED handle (the gateway's per-profile state.db opens)
+    # set this True at the point ownership transfers, so teardown releases the
+    # sqlite fds and the token-writer thread instead of leaking them for the
+    # life of the process. Also set True on the lazy self-open in
+    # _get_session_db_for_recall, where nothing else holds a reference.
+    agent._owns_session_db = False
     agent._parent_session_id = parent_session_id
     # A close flush and the worker's turn-start flush can overlap. The durable
     # marker is attached to each in-memory message dict, so its test-and-append

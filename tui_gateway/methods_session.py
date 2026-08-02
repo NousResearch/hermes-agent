@@ -690,6 +690,22 @@ def _(rid, params: dict) -> dict:
                     # _init_owns_db stays False). Closing it in the finally
                     # below would fault every later turn on this session with
                     # "Cannot operate on a closed database".
+                    #
+                    # Ownership moves ONTO the agent rather than just being
+                    # dropped: AIAgent.close() (reached from _teardown_session
+                    # on session.close and the orphaned-session reaper) closes
+                    # a handle it owns, so the dedicated fds and the token
+                    # writer are released at teardown instead of living as
+                    # long as the gateway process.
+                    #
+                    # The drop is UNCONDITIONAL and the transfer is best-effort
+                    # on top of it, deliberately. Past this line the session is
+                    # registered and holding this handle, so the finally must
+                    # not close it even if the transfer was refused — a refusal
+                    # leaves the old leak, which is survivable; closing under a
+                    # live session is the permanent "Cannot operate on a closed
+                    # database" break this patch exists to avoid.
+                    _transfer_db_to_agent(agent, db)
                     owns_db = False
                 finally:
                     if init_home_token is not None:
@@ -2786,6 +2802,10 @@ def _(rid, params: dict) -> dict:
             if lease is not None:
                 lease.release()
             return _err(rid, 5008, f"branch failed: {e}")
+    # Bound before the try so the ownership finally below can never see them
+    # unbound, whatever raises inside.
+    branch_db = None
+    branch_owns_db = False
     try:
         # Bind the branched AGENT to the parent's profile, mirroring
         # session.create/resume: home override so config/skills/memory resolve
@@ -2795,11 +2815,14 @@ def _(rid, params: dict) -> dict:
         # parent's db while the agent stayed on the launch handle would
         # recreate the cross-profile split one turn later.
         parent_home = session.get("profile_home")
-        branch_db = None
         if parent_home:
             from hermes_state import SessionDB
 
+            # DEDICATED handle, same ownership rule as session.resume: ours
+            # until the branched agent takes it below. _make_agent raising, or
+            # _init_session raising, both leave here without that transfer.
             branch_db = SessionDB(db_path=Path(parent_home) / "state.db")
+            branch_owns_db = True
         home_token = (
             set_hermes_home_override(parent_home) if parent_home else None
         )
@@ -2836,6 +2859,13 @@ def _(rid, params: dict) -> dict:
                 source=source,
                 profile_home=parent_home,
             )
+            # Ownership TRANSFER — the branched session's agent holds this
+            # handle for its whole life and closes it on teardown. Drop is
+            # unconditional for the same reason as session.resume: past
+            # _init_session the branched session is registered against this
+            # handle, so the finally must not close it.
+            _transfer_db_to_agent(agent, branch_db)
+            branch_owns_db = False
         finally:
             if secret_token is not None:
                 reset_secret_scope(secret_token)
@@ -2847,6 +2877,10 @@ def _(rid, params: dict) -> dict:
         if lease is not None:
             lease.release()
         return _err(rid, 5000, f"agent init failed on branch: {e}")
+    finally:
+        if branch_owns_db and branch_db is not None:
+            with contextlib.suppress(Exception):
+                branch_db.close()
     branched_session = _sessions.get(new_sid)
     return _ok(
         rid,

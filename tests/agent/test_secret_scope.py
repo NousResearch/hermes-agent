@@ -137,6 +137,50 @@ class TestEnvFileParsing:
             "EMPTY": "",
         }
 
+    def test_inline_comment_stripped_from_unquoted_value(self, tmp_path):
+        """`KEY=value # comment` → `value` (python-dotenv semantics)."""
+        (tmp_path / ".env").write_text("KEY=value # comment\nTABBED=foo\t#tabbed\n")
+        assert ss.load_env_file(tmp_path / ".env") == {
+            "KEY": "value",
+            "TABBED": "foo",
+        }
+
+    def test_hash_without_preceding_whitespace_is_not_a_comment(self, tmp_path):
+        """`KEY=foo#bar` stays intact — dotenv only strips `#` after whitespace."""
+        (tmp_path / ".env").write_text("KEY=foo#bar\nLEAD=#leading\n")
+        assert ss.load_env_file(tmp_path / ".env") == {
+            "KEY": "foo#bar",
+            "LEAD": "#leading",
+        }
+
+    def test_inline_comment_after_quoted_value(self, tmp_path):
+        """Quotes strip AND the trailing comment drops; inner `#` survives."""
+        (tmp_path / ".env").write_text(
+            "DQ=\"has # inside\" # trailing\n"
+            "SQ='single # inside' # trailing\n"
+        )
+        assert ss.load_env_file(tmp_path / ".env") == {
+            "DQ": "has # inside",
+            "SQ": "single # inside",
+        }
+
+    def test_inline_comment_with_escaped_quote_inside_value(self, tmp_path):
+        r"""Escape-aware close-quote scan: `\"` must not terminate the value."""
+        (tmp_path / ".env").write_text(
+            'KEY="a \\" quote # x" # trail\n'
+        )
+        assert ss.load_env_file(tmp_path / ".env") == {"KEY": 'a " quote # x'}
+
+    def test_round_trip_writer_value_with_trailing_comment(self, tmp_path):
+        """A value quoted by the save_env_value writer survives an appended
+        inline comment byte-exactly."""
+        from hermes_cli.config import _quote_env_value
+
+        original = 'we#ird "tok\\en" # not a comment'
+        quoted = _quote_env_value(original)
+        (tmp_path / ".env").write_text(f"MY_TOKEN={quoted} # rotated 2026-08\n")
+        assert ss.load_env_file(tmp_path / ".env") == {"MY_TOKEN": original}
+
 
 
 

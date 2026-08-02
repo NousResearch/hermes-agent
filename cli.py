@@ -14108,6 +14108,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
+            # Persist session messages to SQLite + JSON log after every turn.
+            # This was done inside the old run_conversation() (23 call sites)
+            # but was lost in the Phase 6B-2 pipeline refactor. Without it,
+            # session metadata exists in DB but messages are never written,
+            # causing data loss on exit/crash. (#17021)
+            if self.agent and self.conversation_history:
+                try:
+                    self.agent._persist_session(
+                        self.conversation_history,
+                        self.conversation_history,
+                    )
+                except Exception as _persist_err:
+                    logger.debug("Session persist failed: %s", _persist_err)
+
             # If auto-compression fired mid-turn, the agent created a new
             # continuation session and mutated self.agent.session_id. Sync
             # the CLI's session_id so /status, /resume, title generation,
@@ -17715,6 +17729,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             set_sudo_password_callback(None)
             set_approval_callback(None)
             set_secret_capture_callback(None)
+            # Final flush: persist any un-saved messages before closing the
+            # session row. Covers the case where the per-turn persist
+            # (above, after run_conversation) was skipped due to an
+            # exception or mid-turn interrupt. (#17021)
+            if self.agent and self.conversation_history:
+                try:
+                    self.agent._persist_session(
+                        self.conversation_history,
+                        self.conversation_history,
+                    )
+                except Exception:
+                    pass  # Best-effort — never block exit
             # Flush any in-memory turn transcript before marking the session
             # closed.  On SIGHUP/SIGTERM/window close the agent thread may not
             # reach its normal run_conversation() persistence path before the
@@ -18325,6 +18351,17 @@ def main(
                             print(f"Error: {result['error']}", file=sys.stderr)
                         elif response:
                             print(response)
+
+                        # Persist session messages in single-query mode (#17021)
+                        if cli.agent and isinstance(result, dict):
+                            try:
+                                cli.conversation_history = result.get("messages", cli.conversation_history)
+                                cli.agent._persist_session(
+                                    cli.conversation_history,
+                                    cli.conversation_history,
+                                )
+                            except Exception:
+                                pass  # Best-effort
 
                         # Kanban goal-loop mode: a worker spawned for a
                         # goal_mode card keeps working in THIS session until an

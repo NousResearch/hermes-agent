@@ -2000,6 +2000,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 apply_database_pragmas(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
+                # Load sqlite-vec for semantic search vector tables
+                try:
+                    import sqlite_vec
+                    self._conn.enable_load_extension(True)
+                    sqlite_vec.load(self._conn)
+                    self._conn.enable_load_extension(False)
+                except Exception:
+                    pass
                 self._init_schema()
 
             def _connect_and_init_with_lock_patience():

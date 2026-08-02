@@ -17314,17 +17314,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     }
                 )
             
-            # The agent already persisted these messages to SQLite via
-            # _flush_messages_to_session_db(), so skip the DB write here
-            # to prevent the duplicate-write bug (#860 / #42039). This holds
-            # for the codex app-server runtime too: although it early-returns
-            # and bypasses conversation_loop's per-step flushes, it flushes its
-            # own projected assistant/tool messages before returning and
-            # reports agent_persisted=True (see agent/codex_runtime.py). Reading
-            # the flag (default = self._session_db is not None) keeps the
-            # persistence contract explicit and lets any future non-persisting
-            # runtime opt into a gateway-side write by returning False.
-            agent_persisted = agent_result.get("agent_persisted", self._session_db is not None)
+            # NOTE(#17021): The old run_conversation() called
+            # _flush_messages_to_session_db() on each exit path, so the
+            # gateway could skip the DB write to avoid duplicates (#860).
+            # The Phase 6B-2 pipeline refactor removed those calls, so
+            # the agent no longer persists to SQLite.  We must write
+            # messages here ourselves.  The CLI mode handles its own
+            # persistence via _persist_session() after each turn, but
+            # the gateway still needs this path.
+            agent_persisted = False
 
             # Find only the NEW messages from this turn (skip history we loaded).
             # Use the filtered history length (history_offset) that was actually

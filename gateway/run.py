@@ -1,3 +1,4 @@
+from agent.account_usage import fetch_account_usage
 """
 Gateway runner - entry point for messaging platform integrations.
 
@@ -2267,6 +2268,126 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
+
+
+# Short-lived runtime-footer quota cache: keyed by provider/base_url/credential
+# fingerprint so credential-pool rotation never reuses another account's snapshot.
+_FOOTER_ACCOUNT_USAGE_CACHE: dict[tuple[str, str, str], tuple[float, object]] = {}
+_FOOTER_ACCOUNT_USAGE_TTL_SECONDS = 90.0
+
+
+def _footer_account_usage_cache_key(
+    provider: str | None,
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+) -> tuple[str, str, str]:
+    import hashlib
+
+    token = str(api_key or "").strip()
+    digest = hashlib.sha256(token.encode()).hexdigest()[:16] if token else ""
+    return (
+        str(provider or "").strip().lower(),
+        str(base_url or "").strip().rstrip("/").lower(),
+        digest,
+    )
+
+
+
+
+def _footer_reasoning_effort_from_agent(agent) -> str | None:
+    """Return the active reasoning effort label for footer display.
+
+    Prefer the live agent runtime config (includes /reasoning overrides and
+    per-model clamps already applied on the agent). Fall back to nothing when
+    the agent is missing or has no reasoning config — the footer field is then
+    silently omitted.
+    """
+    if agent is None:
+        return None
+    rc = getattr(agent, "reasoning_config", None)
+    if not isinstance(rc, dict):
+        return None
+    if rc.get("enabled") is False:
+        return "none"
+    effort = rc.get("effort")
+    if effort is None:
+        return None
+    label = str(effort).strip().lower()
+    return label or None
+
+def _fetch_footer_account_usage_cached(
+    provider: str | None,
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+):
+    """Fetch account usage for footer rendering with a short per-credential cache."""
+    import time
+
+    key = _footer_account_usage_cache_key(provider, base_url=base_url, api_key=api_key)
+    now = time.monotonic()
+    cached = _FOOTER_ACCOUNT_USAGE_CACHE.get(key)
+    if cached is not None:
+        expires_at, snapshot = cached
+        if now < expires_at:
+            return snapshot
+    try:
+        snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+    except Exception:
+        snapshot = None
+    _FOOTER_ACCOUNT_USAGE_CACHE[key] = (now + _FOOTER_ACCOUNT_USAGE_TTL_SECONDS, snapshot)
+    return snapshot
+
+from agent.async_utils import safe_schedule_threadsafe
+from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+from agent.i18n import t
+from hermes_cli.config import cfg_get
+from hermes_cli.fallback_config import get_fallback_chain
+
+# --- Agent cache tuning ---------------------------------------------------
+# Bounds the per-session AIAgent cache to prevent unbounded growth in
+# long-lived gateways (each AIAgent holds LLM clients, tool schemas,
+# memory providers, etc.).  LRU order + idle TTL eviction are enforced
+# from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
+_AGENT_CACHE_MAX_SIZE = 128
+_AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
+_PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
+_ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
+_TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+
+_TELEGRAM_NOISY_STATUS_RE = re.compile(
+    r"("  # transient/auxiliary status that should stay in logs, not gateway chats
+    r"auxiliary\s+.+\s+failed"
+    r"|compression\s+summary\s+failed"
+    r"|fallback\s+context\s+marker"
+    r"|configured\s+compression\s+model\s+.+\s+failed"
+    r"|no\s+auxiliary\s+llm\s+provider\s+configured"
+    r"|auto-lowered\s+compression\s+threshold"
+    r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
+    r"|preflight\s+compression"
+    r"|session\s+compressed\s+\d+\s+times"
+    r"|rate\s+limited\.\s+waiting\s+\d"
+    r"|retrying\s+in\s+\d"
+    r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
+    r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
+    r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Surfaces that consume gateway text programmatically (CLI/TUI "local"
+# diagnostics, API JSON, webhook payloads) and therefore must keep RAW
+# status/error text. EVERY other platform is a human-facing chat surface
+# where operational lifecycle/provider-error noise (and any secrets in it)
+# must be suppressed or sanitized. Widens #28533's Telegram-only filter to
+# all chat gateways (#39293). Fail-closed: unknown/empty platform -> chat.
+_GATEWAY_RAW_TEXT_PLATFORMS = frozenset(
+    {"local", "api_server", "webhook", "msgraph_webhook"}
+)
+
+
 
 
 logger = logging.getLogger(__name__)
@@ -5433,6 +5554,10 @@ class TurnRunner:
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "provider": getattr(agent, "provider", None) if agent else None,
+                "base_url": getattr(agent, "base_url", None) if agent else None,
+                "api_key": getattr(agent, "api_key", None) if agent else None,
+                "reasoning_effort": _footer_reasoning_effort_from_agent(agent),
                 "context_length": _context_length,
             }
 
@@ -5571,6 +5696,10 @@ class TurnRunner:
             "input_tokens": _input_toks,
             "output_tokens": _output_toks,
             "model": _resolved_model,
+            "provider": getattr(agent, "provider", None) if agent else None,
+            "base_url": getattr(agent, "base_url", None) if agent else None,
+            "api_key": getattr(agent, "api_key", None) if agent else None,
+            "reasoning_effort": _footer_reasoning_effort_from_agent(agent),
             "context_length": _context_length,
             "session_id": effective_session_id,
             "response_previewed": result.get("response_previewed", False),
@@ -17092,14 +17221,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # text, so we fire a separate trailing send below.
             _footer_line = ""
             try:
-                from gateway.runtime_footer import build_footer_line as _bfl
+                from gateway.runtime_footer import build_footer_line as _bfl, resolve_footer_config as _rfc
+                _footer_user_config = _load_gateway_config()
+                _footer_platform_key = _platform_config_key(source.platform)
+                _footer_cfg = _rfc(_footer_user_config, _footer_platform_key)
+                _footer_fields = {
+                    str(field).strip().lower()
+                    for field in (_footer_cfg.get("fields") or [])
+                }
+                _footer_provider = agent_result.get("provider")
+                _footer_base_url = agent_result.get("base_url")
+                _footer_api_key = agent_result.get("api_key")
+                _footer_account_usage = None
+                _footer_account_label = None
+                if "quota" in _footer_fields or "account" in _footer_fields:
+                    try:
+                        _footer_account_usage = await asyncio.to_thread(
+                            _fetch_footer_account_usage_cached,
+                            _footer_provider,
+                            base_url=_footer_base_url,
+                            api_key=_footer_api_key,
+                        )
+                    except Exception as _footer_usage_err:
+                        logger.debug("runtime_footer usage lookup failed: %s", _footer_usage_err)
+                        _footer_account_usage = None
+                    if _footer_account_usage is not None:
+                        _footer_account_label = (
+                            getattr(_footer_account_usage, "account_label", None)
+                            or getattr(_footer_account_usage, "plan", None)
+                        )
                 _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
-                    platform_key=_platform_config_key(source.platform),
+                    user_config=_footer_user_config,
+                    platform_key=_footer_platform_key,
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    provider=_footer_provider,
+                    account_label=_footer_account_label,
+                    account_usage=_footer_account_usage,
+                    reasoning_effort=agent_result.get("reasoning_effort"),
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

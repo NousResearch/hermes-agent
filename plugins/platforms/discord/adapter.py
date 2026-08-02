@@ -862,6 +862,11 @@ class VoiceReceiver:
             input=pcm_data,
             check=True,
             timeout=10,
+            # Capture ffmpeg's -loglevel error output so a failure's
+            # CalledProcessError carries the actual message (parity with
+            # tools/transcription_tools' ffmpeg call sites) instead of
+            # "returned non-zero exit status N" with stderr detached.
+            stderr=subprocess.PIPE,
             creationflags=windows_hide_flags(),
         )
 
@@ -4479,7 +4484,18 @@ class DiscordAdapter(BasePlatformAdapter):
                     transcript=transcript,
                 )
         except Exception as e:
-            logger.warning("Voice input processing failed: %s", e, exc_info=True)
+            # CalledProcessError from pcm_to_wav carries ffmpeg's captured
+            # stderr — surface it, or the log only says "exit status N".
+            _ff_err = getattr(e, "stderr", None)
+            if _ff_err:
+                if isinstance(_ff_err, bytes):
+                    _ff_err = _ff_err.decode("utf-8", "replace")
+                logger.warning(
+                    "Voice input processing failed: %s (ffmpeg: %s)",
+                    e, _ff_err.strip(), exc_info=True,
+                )
+            else:
+                logger.warning("Voice input processing failed: %s", e, exc_info=True)
         finally:
             try:
                 os.unlink(wav_path)

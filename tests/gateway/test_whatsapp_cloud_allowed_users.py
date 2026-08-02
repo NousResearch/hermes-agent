@@ -114,3 +114,16 @@ def test_cloud_allowed_users_live_reread_when_env_seeded(monkeypatch):
 
     monkeypatch.setenv("WHATSAPP_CLOUD_ALLOWED_USERS", "")
     assert adapter._is_dm_allowed("15551234567") is False
+
+
+def test_cloud_live_allowlist_denies_when_env_key_removed(monkeypatch):
+    """Sole-entry revoke removes the key — stale construction snapshot must not authorize."""
+    adapter = _build_adapter(
+        monkeypatch,
+        {"WHATSAPP_CLOUD_ALLOWED_USERS": "15551234567"},
+    )
+    assert "15551234567" in adapter._allow_from
+
+    monkeypatch.delenv("WHATSAPP_CLOUD_ALLOWED_USERS", raising=False)
+    assert adapter._live_dm_allow_from() == set()
+    assert adapter._is_dm_allowed("15551234567") is False

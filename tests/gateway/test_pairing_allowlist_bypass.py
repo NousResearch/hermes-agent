@@ -29,6 +29,7 @@ def _isolate_env(monkeypatch):
         "TELEGRAM_GROUP_ALLOWED_USERS",
         "TELEGRAM_GROUP_ALLOWED_CHATS",
         "WHATSAPP_ALLOWED_USERS",
+        "WHATSAPP_CLOUD_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
     ):
@@ -172,6 +173,28 @@ def test_revoke_whatsapp_removes_all_alias_forms_from_allowlist(store, monkeypat
 
     assert store.revoke("whatsapp", "15551234567@s.whatsapp.net") is True
     assert saved.get("WHATSAPP_ALLOWED_USERS") == "keeper"
+
+
+def test_revoke_whatsapp_cloud_device_jid_removes_bare_allowlist_entry(store, monkeypatch):
+    """Cloud pairing uses platform whatsapp_cloud — same JID/phone alias rules."""
+    monkeypatch.setenv("WHATSAPP_CLOUD_ALLOWED_USERS", "already,15551234567")
+    saved = {}
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(
+        cfg,
+        "save_env_value",
+        lambda k, v: (saved.__setitem__(k, v), os.environ.__setitem__(k, v)),
+    )
+    monkeypatch.setattr(cfg, "remove_env_value", lambda k: os.environ.pop(k, None))
+
+    store._approve_user("whatsapp_cloud", "15551234567@s.whatsapp.net", "")
+    assert store.is_approved("whatsapp_cloud", "15551234567@s.whatsapp.net") is True
+
+    assert store.revoke("whatsapp_cloud", "15551234567:47@s.whatsapp.net") is True
+    assert store.is_approved("whatsapp_cloud", "15551234567@s.whatsapp.net") is False
+    assert saved.get("WHATSAPP_CLOUD_ALLOWED_USERS") == "already"
+    assert os.environ.get("WHATSAPP_CLOUD_ALLOWED_USERS") == "already"
 
 
 def test_revoke_whatsapp_preserves_wildcard_allowlist_entry(store, monkeypatch):
@@ -328,5 +351,22 @@ def test_whatsapp_live_allowlist_rereads_env_when_env_seeded(monkeypatch):
     assert adapter._is_dm_intake_allowed("15551234567") is True
 
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "")
+    assert adapter._is_dm_intake_allowed("15551234567") is False
+    assert adapter._is_dm_allowed("15551234567") is False
+
+
+def test_whatsapp_live_allowlist_denies_when_env_key_removed(monkeypatch):
+    """Sole-entry revoke pops the env key — must not revive the construction snapshot."""
+    from gateway.config import PlatformConfig
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+    adapter = WhatsAppAdapter(
+        PlatformConfig(enabled=True, extra={"dm_policy": "allowlist"})
+    )
+    assert adapter._allow_from == {"15551234567"}
+
+    monkeypatch.delenv("WHATSAPP_ALLOWED_USERS", raising=False)
+    assert adapter._live_dm_allow_from() == set()
     assert adapter._is_dm_intake_allowed("15551234567") is False
     assert adapter._is_dm_allowed("15551234567") is False

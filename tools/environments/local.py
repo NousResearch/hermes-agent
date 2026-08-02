@@ -369,13 +369,16 @@ def _is_hermes_internal_secret(key: str) -> bool:
       ``_ALWAYS_STRIP_KEYS``. Non-secret ``GATEWAY_RELAY_*`` routing hints
       (``GATEWAY_RELAY_URL``, ``GATEWAY_RELAY_PLATFORMS``, …) are NOT matched
       and remain visible.
-    - ``BWS_ACCESS_TOKEN`` — the Bitwarden Secrets Manager bootstrap token
-      (and any ``*_ACCESS_TOKEN`` name it is remapped to via
-      ``secrets.bitwarden.access_token_env``). Hermes's own vault credential;
-      no spawned child legitimately needs it. The one child that does — the
-      ``bws`` CLI — receives it explicitly via
-      ``build_subprocess_env(scrub_secrets=False)`` in
-      ``agent/secret_sources/bitwarden.py``, never through inheritance.
+    - ``BWS_ACCESS_TOKEN`` — the Bitwarden Secrets Manager bootstrap token,
+      under the **exact** name configured via ``secrets.bitwarden.access_token_env``
+      (default ``BWS_ACCESS_TOKEN``; may be remapped to any name, e.g.
+      ``MY_BWS_TOKEN``). Hermes's own vault credential; no spawned child
+      legitimately needs it. The one child that does — the ``bws`` CLI —
+      receives it explicitly via ``build_subprocess_env(scrub_secrets=False)``
+      in ``agent/secret_sources/bitwarden.py``, never through inheritance.
+      Only the exact configured name is matched (not a ``*_ACCESS_TOKEN``
+      suffix) so legitimate third-party access tokens stay
+      ``env_passthrough``-registerable — see ``tools/env_passthrough.py``.
 
     ``code_execution_tool.py`` already catches these via substring matching on
     ``KEY`` / ``SECRET`` / ``TOKEN``; the terminal backend's narrower name-based
@@ -398,11 +401,48 @@ def _is_hermes_internal_secret(key: str) -> bool:
         upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
     ):
         return True
-    if upper.endswith("_ACCESS_TOKEN"):
-        # BWS bootstrap token and any access_token_env remap.  Hermes's own
-        # vault credential must never reach a child by inheritance.
+    if upper == _get_configured_bws_token_env().upper():
+        # Bitwarden Secrets Manager bootstrap token — the exact configured
+        # access_token_env name (default BWS_ACCESS_TOKEN; may be remapped to
+        # a non-suffix name like MY_BWS_TOKEN). Hermes's own vault credential
+        # must never reach a child by inheritance.
         return True
     return False
+
+
+_configured_bws_token_env: str | None = None
+_configured_bws_token_env_loaded = False
+
+
+def _get_configured_bws_token_env() -> str:
+    """Resolve the exact Bitwarden ``access_token_env`` name from config.
+
+    ``BitwardenSource.fetch`` reads the *configured* name
+    (``secrets.bitwarden.access_token_env``, default ``BWS_ACCESS_TOKEN``) —
+    including names that do not end in ``_ACCESS_TOKEN`` (e.g. a user remap to
+    ``MY_BWS_TOKEN``).  Matching that exact name (instead of a global
+    ``*_ACCESS_TOKEN`` suffix) is what keeps legitimate third-party access
+    tokens ``env_passthrough``-registerable.
+
+    Resolved once per process and cached; tests that exercise a remap reset
+    the module globals before calling.
+    """
+    global _configured_bws_token_env, _configured_bws_token_env_loaded
+    if not _configured_bws_token_env_loaded:
+        _configured_bws_token_env_loaded = True
+        name = "BWS_ACCESS_TOKEN"
+        try:
+            from hermes_cli.config import cfg_get, read_raw_config
+
+            configured = cfg_get(
+                read_raw_config(), "secrets", "bitwarden", "access_token_env"
+            )
+            if isinstance(configured, str) and configured.strip():
+                name = configured.strip()
+        except Exception:
+            pass
+        _configured_bws_token_env = name
+    return _configured_bws_token_env or "BWS_ACCESS_TOKEN"
 
 
 def _is_credential_shaped_password(key: str) -> bool:

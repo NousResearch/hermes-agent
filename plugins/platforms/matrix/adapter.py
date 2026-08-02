@@ -3345,9 +3345,18 @@ class MatrixAdapter(BasePlatformAdapter):
         # spurious "rejecting invite ... from unauthorized user <bridge
         # bot>" for every such invite, even though nothing was actually
         # offered to us and there's nothing to reject.
+        #
+        # The comparison goes through _is_self_sender() rather than a raw
+        # equality check: some homeservers normalize the localpart case
+        # differently at different API surfaces, so a byte-comparison here
+        # would discard a *genuine* invite whose state_key differs from our
+        # resolved mxid only by casing or surrounding whitespace. It also
+        # gives us the right fallback — when our own mxid hasn't resolved
+        # yet, _is_self_sender() returns True defensively, so we fall
+        # through to the authorization gate instead of silently swallowing
+        # an invite we cannot yet attribute.
         state_key = str(getattr(event, "state_key", "") or "")
-        our_mxid = str(getattr(self._client, "mxid", "") or "")
-        if our_mxid and state_key and state_key != our_mxid:
+        if state_key and not self._is_self_sender(state_key):
             return
 
         # Only auto-join when the inviter is authorized. Without this, any

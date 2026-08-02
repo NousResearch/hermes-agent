@@ -3783,13 +3783,13 @@ def test_ws_orphan_reap_retries_when_delegation_lookup_fails(monkeypatch):
         def start(self):
             return None
 
-    def _raise_lookup_error(_origin_ui_session_id):
+    def _raise_lookup_error(*_args, **_kwargs):
         raise RuntimeError("delegation registry unavailable")
 
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
     monkeypatch.setattr(
-        async_delegation, "active_for_session", _raise_lookup_error
+        async_delegation, "has_live_for_session", _raise_lookup_error
     )
     monkeypatch.setattr(
         server,

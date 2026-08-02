@@ -1157,4 +1157,36 @@ describe('appendLiveSessionProjection', () => {
       'partial'
     ])
   })
+
+  it('still projects inflight when only a completed historical tool reply has structure', () => {
+    // Older completed assistants keep reasoning/tool parts in the full
+    // transcript; they must not suppress a new turn's text projection.
+    const stored: ChatMessage[] = [
+      msg('old-user', 'user', 'previous task'),
+      {
+        id: 'old-assistant',
+        role: 'assistant',
+        parts: [
+          { type: 'tool-call', toolCallId: 'old', toolName: 'terminal', args: {} },
+          { type: 'text', text: 'done earlier' }
+        ]
+      },
+      msg('new-user', 'user', 'new task')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'new task',
+        assistant: 'working on it',
+        streaming: true
+      }
+    })
+
+    expect(restored.map(message => message.id)).toContain('assistant-stream-runtime-1')
+    expect(restored.at(-1)).toMatchObject({
+      id: 'assistant-stream-runtime-1',
+      pending: true
+    })
+  })
 })

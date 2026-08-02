@@ -16753,3 +16753,134 @@ def test_fast_mode_pick_during_agent_build_reaches_installed_agent(monkeypatch):
     finally:
         release.set()
         server._sessions.pop(sid, None)
+
+
+def test_reconcile_drops_the_fast_pin_when_the_switched_model_cannot_honor_it(
+    monkeypatch,
+):
+    """Reconciling both keys must not break the resolver's own invariant.
+
+    ``config.set fast`` returns 4002 ("fast mode is not available for this
+    model") *before* pinning anything, so ``create_service_tier_override ==
+    "priority"`` has always implied that ``resolve_fast_mode_overrides``
+    resolved for the session's model.  A model picked in the same build window
+    is reconciled first and can land on a model without fast support, at which
+    point setting the tier unconditionally leaves the session advertising
+    ``service_tier="priority"`` with no request overrides behind it — a state
+    the live path cannot produce.
+    """
+    monkeypatch.setattr(server, "_resolve_model", lambda: "old/model")
+    monkeypatch.setattr(
+        "hermes_cli.models.resolve_fast_mode_overrides",
+        lambda model: None if model == "no-fast/model" else {"service_tier": "priority"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **_kwargs: _switch_result("no-fast/model", "anthropic"),
+    )
+
+    sid, session, agent, release = _park_agent_build(monkeypatch)
+    try:
+        # Fast first: it validates against the model the session has *now*, so
+        # picking the unsupported model first would simply 4002 here.
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": sid, "key": "fast", "value": "fast"},
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert session["create_service_tier_override"] == "priority"
+
+        resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "config.set",
+                "params": {
+                    "session_id": sid,
+                    "key": "model",
+                    "value": "no-fast/model --provider anthropic",
+                    "confirm_expensive_model": True,
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert session.get("agent") is None, "build must still be in flight"
+
+        _finish_build(session, release)
+
+        assert agent.model == "no-fast/model", "the model reconcile must run first"
+        assert agent.service_tier is None, (
+            "the session advertises priority service tier on a model whose fast "
+            "overrides do not resolve; config.set fast refuses to create that state"
+        )
+        assert "service_tier" not in agent.request_overrides
+        assert "speed" not in agent.request_overrides
+        assert session.get("create_service_tier_override") is None, (
+            "an unhonorable fast pin must not survive to the next rebuild"
+        )
+    finally:
+        release.set()
+        server._sessions.pop(sid, None)
+
+
+def test_reconcile_skips_a_model_switch_a_live_writer_already_applied(monkeypatch):
+    """``before`` is the pre-build snapshot, not the agent's live state.
+
+    A writer that takes its live branch after ``session["agent"]`` is set but
+    before reconciliation runs applies the switch itself and pins the same
+    ``model_override`` this function then reads, so the ``!= before`` guard
+    stays true and the switch runs a second time.  The duplicate is not
+    harmless: it restarts the slash worker, appends a second switch marker to
+    the transcript, and re-emits ``session.info``.
+    """
+    switch_calls: list = []
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kwargs: switch_calls.append(kwargs)
+        or _switch_result("new/model", "anthropic"),
+    )
+
+    side_effects: list[str] = []
+    monkeypatch.setattr(
+        server, "_restart_slash_worker", lambda *_a: side_effects.append("slash_worker")
+    )
+    monkeypatch.setattr(
+        server,
+        "_append_model_switch_marker",
+        lambda *_a, **_kw: side_effects.append("switch_marker"),
+    )
+    monkeypatch.setattr(
+        server, "_emit", lambda kind, *_a, **_kw: side_effects.append(f"emit:{kind}")
+    )
+    monkeypatch.setattr(server, "_session_info", lambda _a, *_a2: {"model": "x"})
+    monkeypatch.setattr(server, "_persist_live_session_runtime", lambda _s: None)
+    monkeypatch.setattr(server, "_persist_live_session_system_prompt", lambda _s: None)
+
+    agent = _BuildRaceAgent()
+    # The concurrent live-apply already landed: the agent runs the target model
+    # and the rich override it pinned is what the reconcile reads back.
+    agent.model = "new/model"
+    agent.provider = "anthropic"
+    session = _session(agent=agent)
+    session["model_override"] = {
+        "model": "new/model",
+        "provider": "anthropic",
+        "base_url": "https://example.invalid",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+    }
+
+    server._reconcile_deferred_build_overrides(
+        "sid", session, agent, {"model": None, "reasoning": None, "tier": None}
+    )
+
+    assert switch_calls == [], "resolved a switch for a model already installed"
+    assert agent.switch_calls == [], "swapped the client for a no-op switch"
+    assert side_effects == [], (
+        "duplicated the live writer's side effects: " f"{side_effects}"
+    )
+    assert session["model_override"]["model"] == "new/model", (
+        "the pin the live writer wrote must survive the skip"
+    )

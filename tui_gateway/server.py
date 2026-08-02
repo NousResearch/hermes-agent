@@ -2151,7 +2151,18 @@ def _reconcile_deferred_build_overrides(
     if isinstance(override, dict) and override != before.get("model"):
         model = str(override.get("model") or "").strip()
         provider = str(override.get("provider") or "").strip()
-        if model:
+        # Already running the requested model: a writer that took its LIVE
+        # branch between the agent's installation and this call has applied the
+        # switch itself and pinned the ``model_override`` we just read, but
+        # ``before`` is the pre-build snapshot, so the guard above cannot see
+        # that.  Re-running the switch would duplicate its side effects — a
+        # second slash-worker restart, a second switch marker in the
+        # transcript, a redundant ``session.info`` — for no change.  Same
+        # baseline-adoption check ``_sync_agent_model_with_config`` makes.
+        already_live = model == getattr(agent, "model", "") and (
+            not provider or provider == getattr(agent, "provider", "")
+        )
+        if model and not already_live:
             raw = f"{model} --provider {provider}" if provider else model
             try:
                 _apply_model_switch(
@@ -2187,16 +2198,31 @@ def _reconcile_deferred_build_overrides(
 
     tier = session.get("create_service_tier_override")
     if tier is not None and tier != before.get("tier"):
-        agent.service_tier = "priority" if tier == "priority" else None
-        request_overrides = dict(getattr(agent, "request_overrides", {}) or {})
-        request_overrides.pop("service_tier", None)
-        request_overrides.pop("speed", None)
+        fast_overrides = None
         if tier == "priority":
             from hermes_cli.models import resolve_fast_mode_overrides
 
             fast_overrides = resolve_fast_mode_overrides(getattr(agent, "model", None))
-            if fast_overrides:
-                request_overrides.update(fast_overrides)
+            if fast_overrides is None:
+                # ``config.set fast`` refuses the pin outright (4002, "fast mode
+                # is not available for this model") rather than recording a tier
+                # the model cannot honor, so ``create_service_tier_override ==
+                # "priority"`` has always implied resolvable overrides.  The
+                # model switch reconciled above can invalidate that after the
+                # fact.  Erroring is not available here — nothing is listening
+                # to a background build — so mirror the resolver precedence the
+                # live path enforces and drop the pin instead of advertising
+                # ``service_tier="priority"`` in ``session.info`` with no
+                # matching request overrides behind it.
+                session.pop("create_service_tier_override", None)
+        # Priority iff the overrides actually resolved: the same invariant the
+        # live path gets from its early return.
+        agent.service_tier = "priority" if fast_overrides else None
+        request_overrides = dict(getattr(agent, "request_overrides", {}) or {})
+        request_overrides.pop("service_tier", None)
+        request_overrides.pop("speed", None)
+        if fast_overrides:
+            request_overrides.update(fast_overrides)
         agent.request_overrides = request_overrides
         changed = True
 

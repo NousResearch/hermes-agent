@@ -1,5 +1,7 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
+import threading
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -189,9 +191,37 @@ class TestAutoTitleSession:
 class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""
 
-    def test_skips_if_not_first_exchange(self):
-        """Should not fire for conversations with more than 2 user messages."""
+    def test_titles_session_with_technical_user_entries(self, tmp_path):
+        """Technical role=user markers must not suppress a real title write."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-technical", source="cli")
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "response 1"},
+            {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY]"},
+            {"role": "user", "content": "[IMPORTANT: Background process exited]"},
+            {"role": "user", "content": "[The user attached an image: image.png]"},
+            {"role": "user", "content": "model switched", "display_kind": "model_switch"},
+            {"role": "user", "content": "first"},
+        ]
+
+        called = threading.Event()
+        with patch("agent.title_generator.generate_title", return_value="Recovered Session"):
+            maybe_auto_title(
+                db,
+                "sess-technical",
+                "first",
+                "response 1",
+                history,
+                title_callback=lambda _title: called.set(),
+            )
+            assert called.wait(timeout=10), "auto-title thread never persisted a title"
+
+        assert db.get_session_title("sess-technical") == "Recovered Session"
+
+    def test_skips_after_two_distinct_real_exchanges(self):
         db = MagicMock()
+        db.get_session_title.return_value = None
         history = [
             {"role": "user", "content": "first"},
             {"role": "assistant", "content": "response 1"},
@@ -202,11 +232,18 @@ class TestMaybeAutoTitle:
         ]
 
         with patch("agent.title_generator.auto_title_session") as mock_auto:
-            maybe_auto_title(db, "sess-1", "third", "response 3", history)
-            # Wait briefly for any thread to start
-            import time
-            time.sleep(0.1)
+            maybe_auto_title(db, "sess-third-turn", "third", "response 3", history)
             mock_auto.assert_not_called()
+
+    def test_skips_if_session_already_has_title(self):
+        db = MagicMock()
+        db.get_session_title.return_value = "Existing title"
+        history = [{"role": "user", "content": "hello"}]
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-titled", "hello", "hi there", history)
+            mock_auto.assert_not_called()
+        db.get_session_title.assert_called_once_with("sess-titled")
 
     def test_fires_on_first_exchange(self):
         """Should fire a background thread for the first exchange."""
@@ -218,7 +255,6 @@ class TestMaybeAutoTitle:
         ]
 
         with patch("agent.title_generator.auto_title_session") as mock_auto:
-            import threading
             called = threading.Event()
             mock_auto.side_effect = lambda *a, **k: called.set()
             maybe_auto_title(db, "sess-1", "hello", "hi there", history)
@@ -235,6 +271,46 @@ class TestMaybeAutoTitle:
                 title_callback=None,
                 runtime_validator=None,
             )
+
+    def test_does_not_start_duplicate_worker_while_title_is_in_flight(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [{"role": "user", "content": "hello"}]
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        def _blocked_worker(*_args, **_kwargs):
+            started.set()
+            release.wait(timeout=10)
+            finished.set()
+
+        with patch("agent.title_generator.auto_title_session", side_effect=_blocked_worker) as mock_auto:
+            maybe_auto_title(db, "sess-in-flight", "hello", "hi there", history)
+            assert started.wait(timeout=10), "first auto-title worker never ran"
+
+            maybe_auto_title(db, "sess-in-flight", "hello again", "hi again", history)
+            mock_auto.assert_called_once()
+
+            release.set()
+            assert finished.wait(timeout=10), "auto-title worker never finished"
+
+    def test_releases_in_flight_claim_when_worker_cannot_start(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [{"role": "user", "content": "hello"}]
+
+        with patch(
+            "agent.title_generator.threading.Thread",
+            side_effect=RuntimeError("thread limit reached"),
+        ), pytest.raises(RuntimeError, match="thread limit reached"):
+            maybe_auto_title(db, "sess-start-failure", "hello", "hi there", history)
+
+        called = threading.Event()
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            mock_auto.side_effect = lambda *a, **k: called.set()
+            maybe_auto_title(db, "sess-start-failure", "hello", "hi there", history)
+            assert called.wait(timeout=10), "auto-title retry never ran"
 
 
 

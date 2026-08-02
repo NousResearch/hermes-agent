@@ -6,11 +6,33 @@ adds latency to the user-facing reply.
 
 import logging
 import threading
+from collections.abc import Mapping
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
 
 logger = logging.getLogger(__name__)
+
+_title_in_flight: set[str] = set()
+_title_in_flight_lock = threading.Lock()
+
+_TITLE_SYNTHETIC_USER_PREFIXES = (
+    "[CONTEXT COMPACTION",
+    "[CONTEXT SUMMARY]:",
+    "[IMPORTANT: Background process ",
+    "[System:",
+    "[SYSTEM:",
+    "[Background process ",
+    "[The user attached an image",
+    "[Your active task list was preserved across context compression]",
+)
+_TITLE_SYNTHETIC_USER_FLAGS = (
+    "_todo_snapshot_synthetic",
+    "_empty_recovery_synthetic",
+    "_verification_stop_synthetic",
+    "_pre_verify_synthetic",
+    "_dropped_toolcall_nudge",
+)
 
 # Callback signature: (task_name, exception) -> None. Used to surface
 # auxiliary failures to the user through AIAgent._emit_auxiliary_failure
@@ -18,6 +40,25 @@ logger = logging.getLogger(__name__)
 # become visible instead of piling up as NULL session titles.
 FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
+
+
+def _title_history_user_key(message: Mapping[str, object]) -> Optional[tuple[str, str]]:
+    """Return a stable key for a real user turn, excluding runtime scaffolding."""
+    if not isinstance(message, Mapping) or message.get("role") != "user":
+        return None
+    if message.get("display_kind") or any(message.get(flag) for flag in _TITLE_SYNTHETIC_USER_FLAGS):
+        return None
+
+    content = message.get("content")
+    if isinstance(content, list):
+        content = str(content)
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    if not text or text.startswith(_TITLE_SYNTHETIC_USER_PREFIXES):
+        return None
+
+    return "text", text
 
 # Validation callback: () -> bool. Called right before the LLM request in
 # generate_title(). Return False to skip — e.g. the user switched models
@@ -364,39 +405,67 @@ def maybe_auto_title(
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
 ) -> None:
-    """Fire-and-forget title generation after the first exchange.
+    """Fire-and-forget title generation after a completed exchange.
 
     Only generates a title when:
-    - This appears to be the first user→assistant exchange
+    - This is within the first two distinct real user exchanges
     - No title is already set
+
+    ``conversation_history`` remains part of the public signature for callers
+    that already provide it. Runtime scaffolding is excluded from the
+    first-exchange check by display metadata, stable technical prefixes, and
+    duplicate-content suppression, so replayed or injected ``role="user"``
+    entries cannot block a valid title attempt.
     """
     if not session_db or not session_id or not user_message or not assistant_response:
         return
 
-    # Count user messages in history to detect first exchange.
-    # conversation_history includes the exchange that just happened,
-    # so for a first exchange we expect exactly 1 user message
-    # (or 2 counting system). Be generous: generate on first 2 exchanges.
-    user_msg_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
-    if user_msg_count > 2:
+    real_user_keys = set()
+    for message in conversation_history or []:
+        key = _title_history_user_key(message)
+        if key is not None:
+            real_user_keys.add(key)
+    if len(real_user_keys) > 2:
         return
 
-    # Config read comes after the cheap first-exchange guard so the file
-    # isn't touched on every subsequent turn of a long session.
+    with _title_in_flight_lock:
+        if session_id in _title_in_flight:
+            return
+        try:
+            existing = session_db.get_session_title(session_id)
+        except Exception:
+            logger.debug("Could not read session title before auto-title", exc_info=True)
+            return
+        if existing:
+            return
+        _title_in_flight.add(session_id)
+
     if not _auto_title_enabled():
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
+        with _title_in_flight_lock:
+            _title_in_flight.discard(session_id)
         return
 
-    thread = threading.Thread(
-        target=auto_title_session,
-        args=(session_db, session_id, user_message, assistant_response),
-        kwargs={
-            "failure_callback": failure_callback,
-            "main_runtime": main_runtime,
-            "title_callback": title_callback,
-            "runtime_validator": runtime_validator,
-        },
-        daemon=True,
-        name="auto-title",
-    )
-    thread.start()
+    def _run() -> None:
+        try:
+            auto_title_session(
+                session_db,
+                session_id,
+                user_message,
+                assistant_response,
+                failure_callback=failure_callback,
+                main_runtime=main_runtime,
+                title_callback=title_callback,
+                runtime_validator=runtime_validator,
+            )
+        finally:
+            with _title_in_flight_lock:
+                _title_in_flight.discard(session_id)
+
+    try:
+        thread = threading.Thread(target=_run, daemon=True, name="auto-title")
+        thread.start()
+    except Exception:
+        with _title_in_flight_lock:
+            _title_in_flight.discard(session_id)
+        raise

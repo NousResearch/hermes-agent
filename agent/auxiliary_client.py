@@ -14,15 +14,9 @@ Resolution order for text tasks (auto mode):
   6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
   7. None
 
-OpenRouter fallback cost guard (issue #75803):
-  The step-2 OpenRouter fallback model is ``auxiliary.openrouter_model`` in
-  config.yaml (default: google/gemini-3.6-flash — a PAID model).  Because
-  auxiliary traffic is background-shaped (compression, title generation,
-  session search, vision, web extract), a paid fallback must never be
-  silent: set ``auxiliary.free_only: true`` to restrict the fallback to
-  ``:free`` SKUs (skipping OpenRouter entirely when the model is not a
-  ``:free`` id), and a one-time WARNING is logged whenever a non-``:free``
-  model is engaged so no cash lane is reachable without the user knowing.
+OpenRouter fallback cost guard: ``auxiliary.free_only: true`` restricts the
+step-2 fallback to ``:free`` SKUs; ``auxiliary.openrouter_model`` overrides
+the default. A one-time WARNING is logged for non-``:free`` models.
 
 Resolution order for vision/multimodal tasks (auto mode):
   1. Selected main provider, if it is one of the supported vision backends below
@@ -2169,21 +2163,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 # ── Provider resolution helpers ─────────────────────────────────────────────
 
 
-# ── Issue #75803: paid-lane guard for the OpenRouter auxiliary fallback ─────
-# The auto-chain's step-2 OpenRouter fallback historically used a hardcoded
-# PAID model (_OPENROUTER_MODEL) with no config surface and no free marker.
-# A user whose fallback ladder is deliberately :free/local could still have
-# background auxiliary traffic (compression, title generation, session
-# search, vision, web extract) land on a real-money OpenRouter lane.
-#
-# Guards (all best-effort, config-driven):
-#   * auxiliary.free_only: true  — the OpenRouter fallback is skipped unless
-#     the resolved model is a :free SKU. This is the opt-out.
-#   * auxiliary.openrouter_model — replaces the hardcoded fallback model
-#     (e.g. "nvidia/nemotron-3-ultra-550b-a55b:free"). This is the config
-#     surface.
-#   * A one-time WARNING is logged whenever the fallback would serve a
-#     non-:free model, so the paid lane is never silent.
 _paid_lane_warned: set = set()
 
 
@@ -2192,48 +2171,26 @@ def _is_free_model(model: Optional[str]) -> bool:
     return bool(model) and str(model).strip().endswith(":free")
 
 
-def _aux_free_only() -> bool:
-    """Read ``auxiliary.free_only`` from config.yaml (default False).
+def _aux_openrouter_settings() -> Tuple[bool, str]:
+    """Read free_only and openrouter_model from config in one pass.
 
-    When enabled, the auxiliary auto-chain's OpenRouter fallback refuses to
-    engage a PAID model: if the resolved fallback model is not a ``:free``
-    SKU, the OpenRouter step is skipped entirely with an explicit WARNING.
-    Best-effort — any config-read failure falls back to the default.
+    Returns (free_only, model) — defaults (False, _OPENROUTER_MODEL) on any
+    config-read failure.
     """
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_cli.config import cfg_get, load_config_readonly
 
-        val = cfg_get(load_config(), "auxiliary", "free_only", default=False)
-        return bool(val)
+        cfg = load_config_readonly()
+        free_only = bool(cfg_get(cfg, "auxiliary", "free_only", default=False))
+        val = cfg_get(cfg, "auxiliary", "openrouter_model")
+        model = val.strip() if isinstance(val, str) and val.strip() else _OPENROUTER_MODEL
+        return free_only, model
     except Exception:
-        return False
-
-
-def _aux_openrouter_model() -> str:
-    """Resolve the auxiliary OpenRouter fallback model.
-
-    ``auxiliary.openrouter_model`` in config.yaml wins; otherwise the module
-    default ``_OPENROUTER_MODEL`` is used. Best-effort — a config-read
-    failure falls back to the default.
-    """
-    try:
-        from hermes_cli.config import cfg_get, load_config
-
-        val = cfg_get(load_config(), "auxiliary", "openrouter_model")
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-    except Exception:
-        pass
-    return _OPENROUTER_MODEL
+        return False, _OPENROUTER_MODEL
 
 
 def _warn_paid_lane_once(model: str) -> None:
-    """Log a WARNING the first time a non-:free OpenRouter model is engaged.
-
-    Auxiliary traffic is background-shaped (compression and title generation
-    fire inside cron and idle sessions), so a paid lane must never be silent.
-    Deduplicated per model id to avoid log spam on every aux call.
-    """
+    """Log a WARNING the first time a non-:free OpenRouter model is engaged."""
     if model in _paid_lane_warned:
         return
     _paid_lane_warned.add(model)
@@ -2247,13 +2204,9 @@ def _warn_paid_lane_once(model: str) -> None:
 
 
 def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
-    # Issue #75803: never let the OpenRouter fallback silently engage a PAID
-    # lane. The fallback model is configurable (auxiliary.openrouter_model)
-    # and auxiliary.free_only: true skips OpenRouter unless the model is a
-    # :free SKU. Explicit caller models (auxiliary.<task>.model) go through
-    # the same guard so the opt-out covers every OpenRouter aux path.
-    or_model = model or _aux_openrouter_model()
-    if _aux_free_only() and not _is_free_model(or_model):
+    free_only, cfg_model = _aux_openrouter_settings()
+    or_model = model or cfg_model
+    if free_only and not _is_free_model(or_model):
         logger.warning(
             "Auxiliary client: auxiliary.free_only is enabled but the "
             "OpenRouter fallback model %r is not a :free SKU — skipping the "

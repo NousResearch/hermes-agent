@@ -295,17 +295,23 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // the strict equality path — they reconcile a SETTLED row, and a growing
     // row is by definition not settled.
     //
-    // Structured local assistant + text-only live projection (gateway inflight
-    // dump) at the same ordinal is still the same turn even when answer text is
-    // still empty — without this the dump would drop structure and reappear as
-    // a plain-text sandwich (#76444).
+    // Live-tail identity: only treat structure as same-turn evidence when the
+    // cached row is still the in-flight stream (pending / stream id), not a
+    // historical completed assistant that merely shares a role ordinal after
+    // compression rewrote history (#76444 review).
+    const isLiveTailRow = (row: ChatMessage): boolean =>
+      Boolean(row.pending) ||
+      row.id.startsWith('assistant-stream-') ||
+      Boolean(row.interim)
+
     const sameTurn =
       sameText ||
       (nextText.length > 0 && previousTrimmed.length > 0 && isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
       (message.role === 'assistant' &&
         previous.role === 'assistant' &&
         hasStructuralParts(previous) &&
-        !hasStructuralParts(message))
+        !hasStructuralParts(message) &&
+        (isLiveTailRow(previous) || isLiveTailRow(message)))
 
     if (sameTurn) {
       preserved = preserveStructuralParts(preserved, previous)
@@ -690,20 +696,43 @@ export function appendLiveSessionProjection(
   // Keep a pending assistant boundary even before the first delta when a
   // queued user turn follows it. This preserves the two distinct turns.
   //
-  // When the transcript already holds a structured mid-turn assistant row
-  // (reasoning / tool-call parts from the live stream or journal), do NOT
-  // append a pure-text projection of `inflight.assistant` — that flat dump
-  // re-renders thinking as answer text and sandwiches the structured parts
-  // (#76444). Errors still force a projection so the failure is visible.
-  const lastAssistant = [...messages].reverse().find(message => message.role === 'assistant')
-  const turnAlreadyStructured = Boolean(lastAssistant && hasStructuralParts(lastAssistant))
+  // When the *current live turn* already holds a structured mid-turn assistant
+  // row (reasoning / tool-call from the live stream or journal), do NOT append
+  // a pure-text projection of `inflight.assistant` — that flat dump re-renders
+  // thinking as answer text and sandwiches the structured parts (#76444).
+  // Only inspect the live tail after the latest user run — never a completed
+  // historical tool-bearing reply earlier in the transcript (review feedback).
+  const liveStreamId = `assistant-stream-${sessionId}`
+  const liveAssistantOfCurrentTurn = (() => {
+    const byStreamId = messages.find(message => message.id === liveStreamId)
+    if (byStreamId) {
+      return byStreamId
+    }
+    // Assistants after the latest user row belong to this turn's tail.
+    if (latestUserIndex < 0) {
+      return null
+    }
+    for (let index = messages.length - 1; index > latestUserIndex; index -= 1) {
+      if (messages[index].role === 'assistant') {
+        return messages[index]
+      }
+    }
+    return null
+  })()
+  const turnAlreadyStructured = Boolean(
+    liveAssistantOfCurrentTurn &&
+      hasStructuralParts(liveAssistantOfCurrentTurn) &&
+      (liveAssistantOfCurrentTurn.pending ||
+        liveAssistantOfCurrentTurn.id === liveStreamId ||
+        liveAssistantOfCurrentTurn.interim)
+  )
 
   if (inflightAssistant || inflightStreaming || inflightError || (inflightUser && queuedUser)) {
     if (turnAlreadyStructured && !inflightError) {
       // Structure is authoritative; skip the text-only dump row.
     } else {
       projected.push({
-        id: `assistant-stream-${sessionId}`,
+        id: liveStreamId,
         role: 'assistant',
         parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
         pending: inflightStreaming,

@@ -13,6 +13,22 @@ test('isCredentialEnvVar matches suffix and known names', () => {
   assert.equal(isCredentialEnvVar('HERMES_DESKTOP'), false)
 })
 
+test('isCredentialEnvVar normalizes case and preserves endpoint overrides', () => {
+  assert.equal(isCredentialEnvVar('openrouter_api_key'), true)
+  assert.equal(isCredentialEnvVar('Anthropic_Token'), true)
+  assert.equal(isCredentialEnvVar('OPENROUTER_BASE_URL'), false)
+})
+
+test('scrubDesktopChildEnv keeps OPENROUTER_BASE_URL and drops lower-case secrets', () => {
+  const scrubbed = scrubDesktopChildEnv({
+    OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+    openrouter_api_key: 'sk-live'
+  })
+
+  assert.equal(scrubbed.OPENROUTER_BASE_URL, 'https://openrouter.ai/api/v1')
+  assert.equal(scrubbed.openrouter_api_key, undefined)
+})
+
 test('scrubDesktopChildEnv drops secrets and keeps operational keys', () => {
   const scrubbed = scrubDesktopChildEnv(
     {

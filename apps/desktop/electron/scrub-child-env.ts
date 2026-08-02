@@ -26,7 +26,6 @@ const CREDENTIAL_NAMES = new Set([
   'CUSTOM_API_KEY',
   'GEMINI_BASE_URL',
   'OPENAI_BASE_URL',
-  'OPENROUTER_BASE_URL',
   'OLLAMA_BASE_URL',
   'GROQ_BASE_URL',
   'XAI_BASE_URL'
@@ -37,11 +36,13 @@ export function isCredentialEnvVar(name: string): boolean {
     return false
   }
 
-  if (CREDENTIAL_NAMES.has(name)) {
+  const normalized = name.toUpperCase()
+
+  if (CREDENTIAL_NAMES.has(normalized)) {
     return true
   }
 
-  return CREDENTIAL_SUFFIXES.some(suffix => name.endsWith(suffix))
+  return CREDENTIAL_SUFFIXES.some(suffix => normalized.endsWith(suffix))
 }
 
 export type EnvMap = Record<string, string | undefined>

@@ -1152,6 +1152,12 @@ DEFAULT_CONFIG = {
         # Set 0 to disable the background refresh if it fights terminal
         # auto-scroll in non-fullscreen mode on some emulators (#48309).
         "cli_refresh_interval": 1.0,
+        # Ambient TUI widget soft-refresh period (milliseconds). User widgets
+        # and the widget SDK read this for countdown / value ticks so they do
+        # not each hardcode an interval. Default 30000 (30s). Set 0 to mean
+        # "no host-suggested UI tick" (widgets still refresh on their own
+        # network cadence). Values below 1000 clamp to 1000 at the TUI unless 0.
+        "tui_widget_refresh_ms": 30000,
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,

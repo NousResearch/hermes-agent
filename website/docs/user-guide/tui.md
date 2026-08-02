@@ -179,6 +179,18 @@ display:
 
 Or in-session: `/indicator emoji` (etc.). Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.
 
+## Ambient widget refresh
+
+Ambient dock widgets (quota gauges, countdown labels, and other glanceable cards) can soft-refresh their **values** on a shared cadence without redrawing the whole dock strip or the main status bar.
+
+```yaml
+display:
+  tui_widget_refresh_ms: 30000   # soft UI tick period in ms; default 30000
+  # tui_widget_refresh_ms: 0     # disable the host-suggested tick (widgets may still poll networks themselves)
+```
+
+The TUI clamps values below `1000` up to `1000` (except `0`, which turns the host suggestion off). User widgets read the live value via `sdk.refreshMs()` and should prefer `sdk.softUpdateWidget(app, { field: next })` for value-only ticks so sibling cards keep their React state identity.
+
 ## Auto-resume
 
 By default, `hermes --tui` starts a fresh session each launch. To re-attach to the most recent TUI session automatically (useful when your terminal or SSH connection drops unexpectedly), opt in:

@@ -343,6 +343,8 @@ export interface UiState {
   status: string
   statusBar: StatusBarMode
   streaming: boolean
+  /** Host-suggested ambient widget soft UI-tick period (ms). 0 = off. */
+  widgetRefreshMs: number
   theme: Theme
   usage: Usage
 }

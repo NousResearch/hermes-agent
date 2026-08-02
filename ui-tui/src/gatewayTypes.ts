@@ -106,6 +106,8 @@ export interface ConfigDisplayConfig {
   // narrowing-and-autocomplete contract on a value that requires runtime
   // validation anyway.
   tui_status_indicator?: string
+  /** Ambient widget soft UI-tick period in ms (0 = no host-suggested tick). */
+  tui_widget_refresh_ms?: number
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
   /** Theme mode pin: 'light' / 'dark' beat background auto-detection; 'auto'
    *  (default) trusts the OSC-11 probe + env signals. */

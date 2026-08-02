@@ -1824,7 +1824,23 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_api_mode = "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        # An explicit api_mode/transport on the chain entry is the user's
+        # declared transport for that route and wins over every heuristic
+        # below.  Without this, a custom-provider entry pointing at a relay
+        # that only speaks Responses (e.g. gpt-5.x behind a local gateway)
+        # was silently downgraded to chat_completions: _provider_model_requires_responses_api()
+        # deliberately returns False for provider="custom", so the declared
+        # codex_responses mode was dropped and requests went to
+        # POST /v1/chat/completions.  Mirrors the auxiliary fallback path,
+        # which already honors entry["api_mode"] / entry["transport"].
+        from hermes_cli.runtime_provider import _parse_api_mode
+
+        _fb_declared_api_mode = _parse_api_mode(
+            fb.get("api_mode") or fb.get("transport")
+        )
+        if _fb_declared_api_mode:
+            fb_api_mode = _fb_declared_api_mode
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
             # Portal is dual-wire: anthropic/* must land on /v1/messages.

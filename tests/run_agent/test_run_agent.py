@@ -4874,6 +4874,86 @@ class TestFallbackAnthropicProvider:
         assert agent._use_prompt_caching is True
 
 
+class TestFallbackExplicitApiMode:
+    """An explicit api_mode on a fallback entry must win over heuristics."""
+
+    def _activate(self, agent, entry):
+        agent._fallback_activated = False
+        agent._fallback_model = entry
+        agent._fallback_chain = [entry]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = entry.get("base_url") or "https://example.invalid/v1"
+        mock_client.api_key = "test-key-1234567890"
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            return agent._try_activate_fallback()
+
+    def test_custom_provider_honors_declared_codex_responses(self, agent):
+        """provider=custom + gpt-5.x must not be downgraded to chat_completions.
+
+        ``_provider_model_requires_responses_api`` returns False for
+        provider="custom" on purpose, so without honoring the declared
+        api_mode the request lands on POST /v1/chat/completions.
+        """
+        result = self._activate(agent, {
+            "provider": "custom",
+            "model": "gpt-5.6-sol",
+            "base_url": "http://127.0.0.1:3000/v1",
+            "api_mode": "codex_responses",
+        })
+
+        assert result is True
+        assert agent.api_mode == "codex_responses"
+
+    def test_transport_alias_is_accepted(self, agent):
+        result = self._activate(agent, {
+            "provider": "custom",
+            "model": "gpt-5.6-sol",
+            "base_url": "http://127.0.0.1:3000/v1",
+            "transport": "codex_responses",
+        })
+
+        assert result is True
+        assert agent.api_mode == "codex_responses"
+
+    def test_declared_chat_completions_overrides_openai_url_heuristic(self, agent):
+        """A relay on api.openai.com that only speaks chat completions."""
+        result = self._activate(agent, {
+            "provider": "custom",
+            "model": "gpt-5.6-sol",
+            "base_url": "https://api.openai.com/v1",
+            "api_mode": "chat_completions",
+        })
+
+        assert result is True
+        assert agent.api_mode == "chat_completions"
+
+    def test_invalid_api_mode_falls_back_to_autodetection(self, agent):
+        result = self._activate(agent, {
+            "provider": "custom",
+            "model": "gpt-5.6-sol",
+            "base_url": "https://api.openai.com/v1",
+            "api_mode": "not-a-real-mode",
+        })
+
+        assert result is True
+        assert agent.api_mode == "codex_responses"
+
+    def test_no_declared_api_mode_keeps_existing_behavior(self, agent):
+        result = self._activate(agent, {
+            "provider": "custom",
+            "model": "gpt-5.6-sol",
+            "base_url": "http://127.0.0.1:3000/v1",
+        })
+
+        assert result is True
+        assert agent.api_mode == "chat_completions"
+
 
 def test_aiagent_uses_copilot_acp_client():
     with (

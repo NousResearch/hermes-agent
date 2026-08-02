@@ -5,13 +5,16 @@ import {
   getActionStatus,
   getElevenLabsVoices,
   getMemoryProviderConfig,
+  getMessagingPlatforms,
   getStatus,
   restartGateway,
   saveMemoryProviderConfig,
   setApiRequestProfile,
   speakText,
+  testMessagingPlatform,
   transcribeAudio,
-  updateHermes
+  updateHermes,
+  updateMessagingPlatform
 } from './hermes'
 
 // Contract: every backend-targeted action helper must carry the active gateway
@@ -79,5 +82,19 @@ describe('backend action helpers are profile-scoped', () => {
     for (const call of api.mock.calls) {
       expect(call[0].profile).toBe('jarvis')
     }
+  })
+
+  it('forwards the active profile to every messaging-platform request', () => {
+    setApiRequestProfile('jeeves')
+
+    void getMessagingPlatforms()
+    void updateMessagingPlatform('weixin', { enabled: true })
+    void testMessagingPlatform('weixin')
+
+    expect(api.mock.calls.map(([request]) => [request.path, request.profile])).toEqual([
+      ['/api/messaging/platforms', 'jeeves'],
+      ['/api/messaging/platforms/weixin', 'jeeves'],
+      ['/api/messaging/platforms/weixin/test', 'jeeves']
+    ])
   })
 })

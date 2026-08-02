@@ -732,6 +732,40 @@
   display: none;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   Composer placeholder.
+
+   The prompt is a PAINTED HINT, never content. Rendering `::before` inline —
+   the obvious way — puts a box in the contenteditable's text flow, and the
+   caret sits after it: click an empty composer and the insertion point lands
+   at the right edge of the hint rather than the left edge of the field, and a
+   hint that wraps makes the empty composer two lines tall. Taking it out of
+   flow is what makes it a hint: the caret keeps the field's real origin, the
+   box keeps its real height, and no pointer or selection can reach the text.
+
+   `data-empty` carries emptiness because `:empty` can't: a cleared editor
+   keeps a scaffolding <br>. See markEditorEmptiness in rich-editor.ts.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-slot='composer-rich-input'] {
+  position: relative;
+}
+
+[data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  inset: 0;
+  padding: inherit;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
+  /* One line, clipped — the hint states the field's purpose; it never reflows
+     the box it sits in. A narrow composer or a long locale string would
+     otherwise wrap and double the empty composer's height. */
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* Primitive-level pointer cursor for every interactive control (buttons,
    selects, menu items, switches, tabs, summaries). Keeps individual
    components from having to hardcode `cursor-pointer`; explicit cursor

@@ -670,6 +670,11 @@ class TestReadStatProbeAborted:
         result = ops.read_file_raw("/tmp/test/present.md")
         assert result.error == "Read interrupted while checking file: /tmp/test/present.md"
 
+    def test_read_file_raw_timeout_reports_timed_out(self, mock_env):
+        ops = self._stat_exit(mock_env, 124)
+        result = ops.read_file_raw("/tmp/test/present.md")
+        assert result.error == "Read timed out while checking file: /tmp/test/present.md"
+
     def test_read_file_raw_other_error_still_file_not_found(self, mock_env):
         ops = self._stat_exit(mock_env, 1)
         result = ops.read_file_raw("/tmp/test/missing.md")

@@ -2873,6 +2873,27 @@ export const zh: Translations = {
     zoneCount: count => `${count} 个区域`
   },
 
+  selectionTranslate: {
+    title: '翻译',
+    providerNote: '使用你配置的 Hermes 模型。所选文本可能通过该提供商离开本机。',
+    target: '首选语言',
+    preferredHint: '将保存用于后续翻译。如果文本已匹配非英语目标语言，Hermes 会改为翻译成英语。',
+    searchLanguages: '搜索语言…',
+    noLanguages: '未找到语言。',
+    useLanguageTag: (name, tag) => `使用 ${name}（${tag}）`,
+    languageTagHint: '也可以输入语言标签，例如 pt-BR 或 zh-Hant。',
+    source: '所选文本',
+    translation: '译文',
+    translating: '翻译中…',
+    failed: '翻译失败',
+    emptyResult: '提供商返回了空译文。',
+    tooLong: '请选择不超过 4,000 个字符的文本进行翻译。',
+    retry: '重试',
+    copy: '复制',
+    copied: '译文已复制',
+    copyFailed: '无法复制译文'
+  },
+
   assistant: {
     thread: {
       loadingSession: '正在加载会话',

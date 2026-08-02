@@ -1,7 +1,11 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
-import { playSpeechText } from '@/lib/voice-playback'
+import {
+  getVoicePlaybackSequence,
+  isVoicePlaybackSequenceCurrent,
+  playSpeechText
+} from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -52,12 +56,15 @@ export function useAutoSpeakReplies({
       return undefined
     }
 
+    let active = true
+    let pendingCueId: string | null = null
+
     // Don't read whatever reply already sits at the bottom when the toggle flips
     // on (or a chat opens) — consume it so only later replies are spoken.
     latest.current.markSpoken()
 
     const speakLatest = () => {
-      const { conversationActive, failureLabel, markSpoken, pendingReply } = latest.current
+      const { conversationActive, pendingReply } = latest.current
 
       if (conversationActive || $voicePlayback.get().status !== 'idle') {
         return
@@ -69,16 +76,45 @@ export function useAutoSpeakReplies({
         return
       }
 
-      markSpoken()
+      if (pendingCueId === reply.id) {
+        return
+      }
+
+      pendingCueId = reply.id
+      const playbackSequence = getVoicePlaybackSequence()
       // Only one window voices a given reply when the same chat is open in
-      // several (reply.id is the shared backend message id). markSpoken already
-      // ran in every window, so peers just stay quiet.
+      // several (reply.id is the shared backend message id). Every live peer
+      // marks the reply spoken once ownership resolves; only the owner speaks.
       void ownsAmbientCue(`speak:${reply.id}`).then(owns => {
-        if (owns) {
-          void playSpeechText(reply.text, { messageId: reply.id, source: 'read-aloud' }).catch(error =>
-            notifyError(error, failureLabel)
-          )
+        if (pendingCueId === reply.id) {
+          pendingCueId = null
         }
+
+        if (!active) {
+          return
+        }
+
+        const current = latest.current
+        const currentReply = current.pendingReply()
+
+        if (!currentReply || currentReply.pending || currentReply.id !== reply.id) {
+          return
+        }
+
+        current.markSpoken()
+
+        if (
+          !owns ||
+          current.conversationActive ||
+          $voicePlayback.get().status !== 'idle' ||
+          !isVoicePlaybackSequenceCurrent(playbackSequence)
+        ) {
+          return
+        }
+
+        void playSpeechText(reply.text, { messageId: reply.id, source: 'read-aloud' }).catch(error =>
+          notifyError(error, current.failureLabel)
+        )
       })
     }
 
@@ -86,6 +122,9 @@ export function useAutoSpeakReplies({
     // ($voicePlayback → idle), which frees us to read the next held reply.
     const stops = [$messages.subscribe(speakLatest), $voicePlayback.listen(speakLatest)]
 
-    return () => stops.forEach(f => f())
+    return () => {
+      active = false
+      stops.forEach(f => f())
+    }
   }, [$messages, enabled, sessionId])
 }

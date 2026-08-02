@@ -2695,6 +2695,28 @@ export const en: Translations = {
     zoneCount: count => `${count} zones`
   },
 
+  selectionTranslate: {
+    title: 'Translate',
+    providerNote: 'Uses your configured Hermes model. Selected text may leave this device via that provider.',
+    target: 'Preferred language',
+    preferredHint:
+      'Saved for future translations. If the text already matches a non-English target, Hermes translates it to English instead.',
+    searchLanguages: 'Search languages…',
+    noLanguages: 'No languages found.',
+    useLanguageTag: (name, tag) => `Use ${name} (${tag})`,
+    languageTagHint: 'You can also enter a language tag, such as pt-BR or zh-Hant.',
+    source: 'Selected text',
+    translation: 'Translation',
+    translating: 'Translating…',
+    failed: 'Translation failed',
+    emptyResult: 'The provider returned an empty translation.',
+    tooLong: 'Select 4,000 characters or fewer to translate.',
+    retry: 'Retry',
+    copy: 'Copy',
+    copied: 'Translation copied',
+    copyFailed: 'Could not copy translation'
+  },
+
   assistant: {
     thread: {
       loadingSession: 'Loading session',

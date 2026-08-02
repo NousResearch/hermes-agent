@@ -124,6 +124,34 @@ class SentenceChunker:
         return [tail] if tail else []
 
 
+def split_text_for_tts(text: str, cap: int) -> List[str]:
+    """Split *text* losslessly into ordered, non-empty pieces within *cap*.
+
+    Whitespace at or before the request boundary is preferred and retained in
+    the preceding piece, so concatenating the result exactly reconstructs the
+    preprocessed input. Text without a safe boundary is hard-split.
+    """
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+        raise ValueError("TTS text cap must be a positive integer")
+    if not text:
+        return []
+
+    pieces: List[str] = []
+    start = 0
+    while len(text) - start > cap:
+        window = text[start:start + cap]
+        whitespace_cut = max(
+            (index + 1 for index, char in enumerate(window) if char.isspace()),
+            default=0,
+        )
+        cut = whitespace_cut or cap
+        pieces.append(text[start:start + cut])
+        start += cut
+    if start < len(text):
+        pieces.append(text[start:])
+    return pieces
+
+
 # ---------------------------------------------------------------------------
 # ABC + registry
 # ---------------------------------------------------------------------------
@@ -131,6 +159,7 @@ class SentenceChunker:
 class StreamingTTSProvider(ABC):
     """Yields raw int16, little-endian, mono PCM chunks at ``sample_rate``."""
 
+    provider_id: Optional[str] = None
     sample_rate: int = 24000
     channels: int = 1
     sample_width: int = 2  # bytes/sample (int16)
@@ -153,8 +182,10 @@ _REGISTRY: Dict[str, type[StreamingTTSProvider]] = {}
 
 
 def register(name: str) -> Callable[[type[StreamingTTSProvider]], type[StreamingTTSProvider]]:
+    normalized_name = name.lower().strip()
+
     def _wrap(cls: type[StreamingTTSProvider]) -> type[StreamingTTSProvider]:
-        _REGISTRY[name] = cls
+        _REGISTRY[normalized_name] = cls
         return cls
 
     return _wrap
@@ -162,13 +193,16 @@ def register(name: str) -> Callable[[type[StreamingTTSProvider]], type[Streaming
 
 def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvider]:
     """Construct the registered streamer *name* if it's usable, else None."""
-    cls = _REGISTRY.get(name)
+    normalized_name = name.lower().strip()
+    cls = _REGISTRY.get(normalized_name)
     if cls is None or not cls.available():
         return None
     try:
-        return cls(tts_config, tts_config.get(name) or {})
+        instance = cls(tts_config, tts_config.get(normalized_name) or {})
+        instance.provider_id = normalized_name
+        return instance
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("streaming provider %s init failed: %s", name, exc)
+        logger.debug("streaming provider %s init failed: %s", normalized_name, exc)
         return None
 
 
@@ -213,6 +247,30 @@ def resolve_streaming_provider(
     return _try_instantiate(name, tts_config)
 
 
+def resolve_streaming_text_limit(
+    streamer: StreamingTTSProvider,
+    tts_config: Dict,
+    *,
+    fallback_provider: Optional[str] = None,
+) -> int:
+    """Return the cap for the resolved streaming provider and model.
+
+    Registry-created instances carry ``provider_id``. Directly constructed
+    legacy/plugin/test doubles may not, so they retain the previous bounded
+    configured-provider policy instead of crashing.
+    """
+    resolved_provider = getattr(streamer, "provider_id", None)
+    if not isinstance(resolved_provider, str) or not resolved_provider.strip():
+        resolved_provider = fallback_provider or _get_provider(tts_config)
+    from tools.tts_tool import _resolve_max_text_length
+
+    return _resolve_max_text_length(
+        resolved_provider.lower().strip(),
+        tts_config,
+        streaming=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Providers
 # ---------------------------------------------------------------------------
@@ -229,10 +287,10 @@ class ElevenLabsStreamer(StreamingTTSProvider):
 
     def stream(self, text: str) -> Iterator[bytes]:
         from tools.tts_tool import (
-            DEFAULT_ELEVENLABS_STREAMING_MODEL_ID,
             DEFAULT_ELEVENLABS_VOICE_ID,
             _elevenlabs_environment_kwargs,
             _import_elevenlabs,
+            _resolve_elevenlabs_model_id,
         )
 
         client = _import_elevenlabs()(
@@ -240,10 +298,7 @@ class ElevenLabsStreamer(StreamingTTSProvider):
             **_elevenlabs_environment_kwargs(self.section),
         )
         voice_id = self.section.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
-        model_id = self.section.get(
-            "streaming_model_id",
-            self.section.get("model_id", DEFAULT_ELEVENLABS_STREAMING_MODEL_ID),
-        )
+        model_id = _resolve_elevenlabs_model_id(self.section, streaming=True)
         yield from client.text_to_speech.convert(
             text=text,
             voice_id=voice_id,

@@ -21,11 +21,11 @@ Two usage modes are exposed:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import sys
 import threading
+import time
 from typing import Any, Callable, Optional
 
 # Modifier aliases mirrored from the TUI parser (``ui-tui/src/lib/platform.ts``)
@@ -896,8 +896,9 @@ def _speak_text_streaming(text: str, stop_event: Optional[threading.Event] = Non
     it the pipeline's stop event was private and speech over this path
     was uninterruptible (the desktop/TUI fallback-speak hole).
 
-    Returns False when playback produced nothing (caller falls back to the
-    whole-file sync path).
+    Returns True when audio played or explicit Stop consumed the request.
+    Returns False only after the pipeline's own lossless synchronous fallback
+    also produced no audio.
     """
     import queue as _queue
     import threading as _threading
@@ -910,18 +911,17 @@ def _speak_text_streaming(text: str, stop_event: Optional[threading.Event] = Non
     if stop_event is None:
         stop_event = _threading.Event()
     done_event = _threading.Event()
-    stream_tts_to_speaker(text_queue, stop_event, done_event)
-    return done_event.is_set()
+    return bool(stream_tts_to_speaker(text_queue, stop_event, done_event))
 
 
 def speak_text(text: str, stop_event: Optional[threading.Event] = None) -> None:
     """Synthesize ``text`` with the configured TTS provider and play it.
 
-    Mirrors cli.py:_voice_speak_response exactly — same markdown strip
-    pipeline, same 4000-char cap, same explicit mp3 output path, same
-    MP3-over-OGG playback choice (afplay misbehaves on OGG), same cleanup
-    of both extensions. Keeping these in sync means a voice-mode TTS
-    session in the TUI sounds identical to one in the classic CLI.
+    All providers use the universal ``stream_tts_to_speaker`` pipeline. It
+    streams when a chunked provider is available and otherwise uses its own
+    ordered, provider-capped synchronous fallback. Keeping synthesis in one
+    dispatcher avoids a second lossy retry with different Stop, result,
+    playback, and cleanup semantics.
 
     While playback is in flight the module-level _tts_playing Event is
     cleared so the continuous-recording loop knows to wait before
@@ -930,10 +930,6 @@ def speak_text(text: str, stop_event: Optional[threading.Event] = None) -> None:
     """
     if not text or not text.strip():
         return
-
-    import re
-    import tempfile
-    import time
 
     # Cancel any live capture before we open the speakers — otherwise the
     # last ~200ms of the user's turn tail + the first syllables of our TTS
@@ -956,85 +952,8 @@ def speak_text(text: str, stop_event: Optional[threading.Event] = None) -> None:
     _debug(f"speak_text: TTS begin (paused_recording={paused_recording})")
 
     try:
-        from tools.tts_tool import text_to_speech_tool
-
-        # One dispatcher, zero parallel streaming implementations (#58930):
-        # when the configured provider has a chunked streamer registered in
-        # tools.tts_streaming, route the whole reply through the same
-        # stream_tts_to_speaker pipeline the CLI voice mode uses — audio
-        # starts on sentence one instead of after full synthesis. Falls
-        # through to the legacy whole-file path when no streamer resolves.
-        try:
-            from tools.tts_streaming import resolve_streaming_provider
-            from tools.tts_tool import _load_tts_config
-
-            if resolve_streaming_provider(_load_tts_config()) is not None:
-                if _speak_text_streaming(text, stop_event):
-                    return
-        except Exception as e:
-            _debug(f"speak_text: streaming dispatch unavailable ({e}); using sync path")
-
-        # Shared cleaner (tools/tts_text_normalize): markdown, emoji,
-        # <think> blocks, verifier footer, units, newline flattening.
-        try:
-            from tools.tts_text_normalize import prepare_spoken_text
-            tts_text = prepare_spoken_text(text, max_chars=4000)
-        except Exception:
-            # Legacy fallback pipeline — keep speak_text best-effort.
-            tts_text = text[:4000] if len(text) > 4000 else text
-            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
-            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
-            tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
-            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
-            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
-            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
-            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
-            tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
-            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
-            tts_text = tts_text.strip()
-        if not tts_text:
-            return
-
-        # MP3 output path, pre-chosen so we can play the MP3 directly even
-        # when text_to_speech_tool auto-converts to OGG for messaging
-        # platforms.  afplay's OGG support is flaky, MP3 always works.
-        os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
-        mp3_path = os.path.join(
-            tempfile.gettempdir(),
-            "hermes_voice",
-            f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
-        )
-
-        _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
-        raw_result = text_to_speech_tool(text=tts_text, output_path=mp3_path)
-        try:
-            tts_result = json.loads(raw_result) if isinstance(raw_result, str) else {}
-        except Exception:
-            tts_result = {}
-
-        # Prefer the requested MP3 when the provider produced it. This
-        # preserves reliable local playback while still supporting providers
-        # that write to and return a different path.
-        audio_path = mp3_path
-        if not os.path.isfile(mp3_path) or os.path.getsize(mp3_path) == 0:
-            audio_path = tts_result.get("file_path") or mp3_path
-
-        if os.path.isfile(audio_path) and os.path.getsize(audio_path) > 0:
-            _debug(f"speak_text: playing {audio_path} ({os.path.getsize(audio_path)} bytes)")
-            play_audio_file(audio_path)
-            try:
-                cleanup_paths = {audio_path, mp3_path}
-                for path in list(cleanup_paths):
-                    ogg_path = path.rsplit(".", 1)[0] + ".ogg"
-                    cleanup_paths.add(ogg_path)
-                for path in cleanup_paths:
-                    if os.path.isfile(path):
-                        os.unlink(path)
-            except OSError:
-                pass
-        else:
-            _debug(f"speak_text: TTS tool produced no audio at {audio_path}")
+        if not _speak_text_streaming(text, stop_event):
+            _debug("speak_text: universal TTS pipeline produced no audio")
     except Exception as e:
         logger.warning("Voice TTS playback failed: %s", e)
         _debug(f"speak_text raised {type(e).__name__}: {e}")

@@ -2,12 +2,16 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { useI18n } from '@/i18n'
+import { registry } from '@/contrib/registry'
+import { translateNow, useI18n } from '@/i18n'
 import { iconSize, Loader2, Mic, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { stopVoicePlayback } from '@/lib/voice-playback'
+import { playSelectedSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { notifyError } from '@/store/notifications'
+import { openSelectionTranslate } from '@/store/selection-translate'
 import { $voicePlayback } from '@/store/voice-playback'
 
+import { SelectionTranslateDialog } from './selection-translate-dialog'
 import type { VoiceActivityState } from './types'
 
 type BrowserAudioContext = typeof AudioContext
@@ -203,11 +207,55 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
   )
 }
 
-export function VoicePlaybackActivity() {
+
+export function SelectionSpeechActivity() {
+  useEffect(() => {
+    const onReadRequested = window.hermesDesktop.selectionSpeech?.onReadRequested
+
+    if (!onReadRequested) {
+      return
+    }
+
+    return onReadRequested(text => {
+      void playSelectedSpeechText(text).catch(error =>
+        notifyError(error, translateNow('assistant.thread.readAloudFailed'))
+      )
+    })
+  }, [])
+
+  return null
+}
+
+export function SelectionTranslateActivity() {
+  useEffect(() => {
+    const onOpenRequested = window.hermesDesktop.selectionTranslate?.onOpenRequested
+
+    if (!onOpenRequested) {
+      return
+    }
+
+    return onOpenRequested(text => {
+      openSelectionTranslate(text)
+    })
+  }, [])
+
+  return null
+}
+
+export function VoicePlaybackActivity({
+  scope = 'all'
+}: {
+  scope?: 'all' | 'non-selection' | 'selection'
+}) {
   const { t } = useI18n()
   const playback = useStore($voicePlayback)
+  const isSelectionPlayback = playback.messageId === 'selection-read-aloud'
 
-  if (playback.status === 'idle') {
+  if (
+    playback.status === 'idle' ||
+    (scope === 'selection' && !isSelectionPlayback) ||
+    (scope === 'non-selection' && isSelectionPlayback)
+  ) {
     return null
   }
 
@@ -245,8 +293,31 @@ export function VoicePlaybackActivity() {
         variant="ghost"
       >
         <VolumeX className={iconSize.xs} />
-        Stop
+        {t.assistant.thread.stop}
       </Button>
     </div>
   )
 }
+
+function SelectionActionsHost() {
+  return (
+    <>
+      <SelectionSpeechActivity />
+      <SelectionTranslateActivity />
+      <VoicePlaybackActivity scope="selection" />
+      <SelectionTranslateDialog />
+    </>
+  )
+}
+
+// Chat bars now mount once per session tile, so renderer-wide IPC listeners
+// cannot live inside a composer without multiplying. The titlebar contribution
+// slot is mounted exactly once for the lifetime of each full app window; this
+// nonvisual host keeps both listeners and the dialog stable across session and
+// layout changes while retaining normal React effect teardown.
+registry.register({
+  area: 'titleBar.center',
+  id: 'selection-actions.host',
+  render: () => <SelectionActionsHost />,
+  source: 'core'
+})

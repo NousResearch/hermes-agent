@@ -4460,29 +4460,10 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
 
 
 def _split_text_for_speak_stream(text: str, cap: int) -> list:
-    """Split *text* into provider-cap-sized pieces on sentence boundaries.
+    """Compatibility wrapper around the shared lossless streaming-TTS splitter."""
+    from tools.tts_streaming import split_text_for_tts
 
-    Deliberately NOT unified with gateway.platforms.helpers'
-    split_text_fence_aware: this splitter reflows whitespace (sentences are
-    re-joined with single spaces) and has no fence/markdown semantics, so
-    expressing it as knobs on the fence-aware core would change behavior.
-    """
-    from tools.tts_streaming import SENTENCE_BOUNDARY_RE as _SENTENCE_BOUNDARY_RE
-
-    cap = cap if cap and cap > 0 else 4000
-    pieces, buf = [], ""
-    for sentence in filter(str.strip, _SENTENCE_BOUNDARY_RE.split(text)):
-        while len(sentence) > cap:
-            pieces.append(sentence[:cap])
-            sentence = sentence[cap:]
-        if buf and len(buf) + len(sentence) + 1 > cap:
-            pieces.append(buf)
-            buf = sentence
-        else:
-            buf = f"{buf} {sentence}" if buf else sentence
-    if buf:
-        pieces.append(buf)
-    return pieces
+    return split_text_for_tts(text, cap)
 
 
 @app.websocket("/api/audio/speak-stream")
@@ -4502,8 +4483,9 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                ``{"stop": true}`` or disconnect = barge-in
       server → ``{"type": "start", "sample_rate": N, "channels": 1}``,
                binary PCM frames, then ``{"type": "end"}``
-      server → ``{"type": "fallback"}`` when the configured provider has no
-               chunked API — the client uses the POST endpoint instead.
+      server → ``{"type": "fallback", "max_text_length": N}`` when the
+               configured provider has no chunked API — the client uses the
+               POST endpoint instead and keeps every request within its cap.
     """
     if not _ws_auth_ok(ws):
         await ws.close(code=4401)
@@ -4522,23 +4504,40 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
     loop = asyncio.get_running_loop()
 
     def _resolve():
-        from tools.tts_streaming import resolve_streaming_provider
+        from tools.tts_streaming import (
+            resolve_streaming_provider,
+            resolve_streaming_text_limit,
+        )
         from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
 
         with _config_profile_scope(profile):
             cfg = _load_tts_config()
+            fallback_provider = _get_provider(cfg)
+            fallback_cap = _resolve_max_text_length(fallback_provider, cfg)
             streamer = resolve_streaming_provider(cfg)
-            cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
-        return streamer, cap
+            stream_cap = (
+                resolve_streaming_text_limit(
+                    streamer,
+                    cfg,
+                    fallback_provider=fallback_provider,
+                )
+                if streamer is not None
+                else 0
+            )
+        return streamer, stream_cap, fallback_cap
 
     try:
-        streamer, cap = await loop.run_in_executor(None, _resolve)
+        streamer, stream_cap, fallback_cap = await loop.run_in_executor(None, _resolve)
     except Exception:
+        from tools.tts_tool import FALLBACK_MAX_TEXT_LENGTH
+
         _log.exception("speak-stream provider resolution failed")
-        streamer, cap = None, 0
+        streamer, stream_cap, fallback_cap = None, 0, FALLBACK_MAX_TEXT_LENGTH
     if streamer is None:
         with contextlib.suppress(Exception):
-            await ws.send_json({"type": "fallback"})
+            await ws.send_json(
+                {"type": "fallback", "max_text_length": fallback_cap}
+            )
             await ws.close()
         return
 
@@ -4547,6 +4546,8 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
     )
 
     stop = threading.Event()
+    attempted_text = threading.Event()
+    produced_audio = threading.Event()
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
     chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
 
@@ -4591,10 +4592,16 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                 cleaned = _strip_markdown_for_tts(sentence)
                 if not cleaned:
                     continue
-                for piece in _split_text_for_speak_stream(cleaned, cap):
+                for piece in _split_text_for_speak_stream(cleaned, stream_cap):
+                    if stop.is_set():
+                        return
+                    attempted_text.set()
                     for chunk in streamer.stream(piece):
                         if stop.is_set():
                             return
+                        if not chunk:
+                            continue
+                        produced_audio.set()
                         loop.call_soon_threadsafe(chunks.put_nowait, chunk)
         except Exception as exc:
             _log.warning("speak-stream synthesis failed: %s", exc)
@@ -4626,9 +4633,18 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             chunk = await chunks.get()
             if chunk is None:
                 break
+            if stop.is_set():
+                break
+            if not chunk:
+                continue
             await ws.send_bytes(chunk)
         if not stop.is_set():
-            await ws.send_json({"type": "end"})
+            if attempted_text.is_set() and not produced_audio.is_set():
+                await ws.send_json(
+                    {"type": "fallback", "max_text_length": fallback_cap}
+                )
+            else:
+                await ws.send_json({"type": "end"})
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:

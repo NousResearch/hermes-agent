@@ -45,6 +45,29 @@ export const ja = defineLocale({
     off: 'オフ'
   },
 
+  selectionTranslate: {
+    title: '翻訳',
+    providerNote:
+      '設定済みの Hermes モデルを使用します。選択したテキストは、そのプロバイダーを経由してこのデバイスの外部に送信される場合があります。',
+    target: '優先言語',
+    preferredHint:
+      '今後の翻訳用に保存されます。テキストが英語以外の対象言語と一致する場合、Hermes は代わりに英語へ翻訳します。',
+    searchLanguages: '言語を検索…',
+    noLanguages: '言語が見つかりません。',
+    useLanguageTag: (name, tag) => `${name}（${tag}）を使用`,
+    languageTagHint: 'pt-BR や zh-Hant などの言語タグも入力できます。',
+    source: '選択したテキスト',
+    translation: '翻訳',
+    translating: '翻訳中…',
+    failed: '翻訳に失敗しました',
+    emptyResult: 'プロバイダーから空の翻訳が返されました。',
+    tooLong: '翻訳するテキストは4,000文字以内で選択してください。',
+    retry: '再試行',
+    copy: 'コピー',
+    copied: '翻訳をコピーしました',
+    copyFailed: '翻訳をコピーできませんでした'
+  },
+
   fileMenu: {
     revealFinder: 'Finder で表示',
     revealExplorer: 'エクスプローラーで表示',

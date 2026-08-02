@@ -8,7 +8,7 @@ import {
   type VoicePlaybackState
 } from '@/store/voice-playback'
 
-import { sanitizeTextForSpeech } from './speech-text'
+import { sanitizeTextForSpeech, splitSpeechText } from './speech-text'
 
 // Free Edge TTS occasionally hands back audio that never fires `playing`/`ended`
 // nor `error` — leaving voice mode stuck "speaking" forever. Reject if playback
@@ -19,6 +19,14 @@ const PLAYBACK_STALL_MS = 15_000
 let currentAudio: HTMLAudioElement | null = null
 let currentStop: (() => void) | null = null
 let sequence = 0
+
+export function getVoicePlaybackSequence(): number {
+  return sequence
+}
+
+export function isVoicePlaybackSequenceCurrent(expected: number): boolean {
+  return expected === sequence
+}
 
 // A shared, lazily-created AudioContext used only to nudge the browser's
 // autoplay state out of "suspended". A wake-word-started voice turn has no
@@ -140,6 +148,8 @@ export interface SpeechStreamSession {
    *             text through `playSpeechText` instead.
    */
   done: Promise<'done' | 'fallback'>
+  /** Resolved provider cap supplied by a structured fallback frame, if any. */
+  fallbackMaxChars: () => number | null
 }
 
 /**
@@ -148,7 +158,11 @@ export interface SpeechStreamSession {
  * streams PCM back while generation continues, so speech overlaps the text
  * stream (ChatGPT-style) with no per-sentence connection or synthesis gaps.
  */
-function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechStreamSession {
+function openSpeechStream(
+  wsUrl: string,
+  options: VoicePlaybackOptions,
+  ownerSequence: number
+): SpeechStreamSession {
   const ws = new WebSocket(wsUrl)
   ws.binaryType = 'arraybuffer'
 
@@ -159,9 +173,11 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   let started = false
   let settled = false
   let finished = false
+  let fallbackMaxChars: number | null = null
   const pendingSends: string[] = []
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
+  let ownedStop: () => void = () => undefined
 
   const done = new Promise<'done' | 'fallback'>(resolve => {
     settle = value => {
@@ -170,7 +186,10 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       }
 
       settled = true
-      currentStop = null
+
+      if (currentStop === ownedStop) {
+        currentStop = null
+      }
 
       try {
         ws.close()
@@ -196,7 +215,11 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
   // stopVoicePlayback() → immediate barge-in: kill the socket (the server
   // aborts synthesis on disconnect) and the audio context (cuts sound now).
-  currentStop = () => settle('done')
+  ownedStop = () => settle('done')
+
+  if (ownerSequence === sequence) {
+    currentStop = ownedStop
+  }
 
   const finishWhenDrained = () => {
     const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
@@ -204,7 +227,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   }
 
   const schedule = (data: ArrayBuffer) => {
-    if (!context) {
+    if (ownerSequence !== sequence || !context) {
       return
     }
 
@@ -245,7 +268,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     source.start(startAt)
     nextStartAt = startAt + buffer.duration
 
-    if (!started) {
+    if (!started && ownerSequence === sequence) {
       started = true
       setVoicePlaybackState(currentState('speaking', options))
     }
@@ -256,13 +279,19 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   }
 
   ws.onmessage = event => {
+    if (ownerSequence !== sequence) {
+      settle('done')
+
+      return
+    }
+
     if (typeof event.data !== 'string') {
       schedule(event.data as ArrayBuffer)
 
       return
     }
 
-    let frame: { channels?: number; sample_rate?: number; type?: string }
+    let frame: { channels?: number; max_text_length?: number; sample_rate?: number; type?: string }
 
     try {
       frame = JSON.parse(event.data) as typeof frame
@@ -287,6 +316,10 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     } else if (frame.type === 'end') {
       finishWhenDrained()
     } else if (frame.type === 'fallback') {
+      if (Number.isFinite(frame.max_text_length) && (frame.max_text_length ?? 0) > 0) {
+        fallbackMaxChars = Math.floor(frame.max_text_length as number)
+      }
+
       settle(started ? 'done' : 'fallback')
     }
   }
@@ -311,7 +344,8 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
         send({ done: true })
       }
     },
-    done
+    done,
+    fallbackMaxChars: () => fallbackMaxChars
   }
 }
 
@@ -321,20 +355,29 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
  * unavailable (old backend / non-chunked provider) — the caller falls back to
  * whole-text `playSpeechText`.
  */
-export async function startSpeechStream(options: VoicePlaybackOptions): Promise<null | SpeechStreamSession> {
+export async function startSpeechStream(
+  options: VoicePlaybackOptions
+): Promise<null | SpeechStreamSession | undefined> {
+  stopVoicePlayback()
+  const ownerSequence = sequence
+  setVoicePlaybackState(currentState('preparing', options))
+
   const wsUrl = await resolveSpeakStreamUrl()
 
+  if (ownerSequence !== sequence) {
+    return undefined
+  }
+
   if (!wsUrl) {
+    setVoicePlaybackState(currentState('idle'))
+
     return null
   }
 
-  stopVoicePlayback()
-  setVoicePlaybackState(currentState('preparing', options))
-
-  const session = openSpeechStream(wsUrl, options)
+  const session = openSpeechStream(wsUrl, options, ownerSequence)
 
   void session.done.then(outcome => {
-    if (outcome === 'done') {
+    if (outcome === 'done' && ownerSequence === sequence) {
       setVoicePlaybackState(currentState('idle'))
     }
   })
@@ -343,12 +386,20 @@ export async function startSpeechStream(options: VoicePlaybackOptions): Promise<
 }
 
 /** One-shot playback of complete text over the streaming WS. */
-function playSpeechStream(wsUrl: string, text: string, options: VoicePlaybackOptions): Promise<'fallback' | 'played'> {
-  const session = openSpeechStream(wsUrl, options)
+function playSpeechStream(
+  wsUrl: string,
+  text: string,
+  options: VoicePlaybackOptions,
+  ownerSequence: number
+): Promise<{ maxChars: number | null; status: 'fallback' | 'played' }> {
+  const session = openSpeechStream(wsUrl, options, ownerSequence)
   session.append(text)
   session.finish()
 
-  return session.done.then(outcome => (outcome === 'done' ? 'played' : 'fallback'))
+  return session.done.then(outcome => ({
+    maxChars: outcome === 'fallback' ? session.fallbackMaxChars() : null,
+    status: outcome === 'done' ? 'played' : 'fallback'
+  }))
 }
 
 async function playSpeechDataUrl(
@@ -368,6 +419,7 @@ async function playSpeechDataUrl(
 
   await new Promise<void>((resolve, reject) => {
     let stall: number | null = null
+    let ownedStop: () => void = () => undefined
 
     const cleanup = () => {
       if (stall !== null) {
@@ -378,7 +430,10 @@ async function playSpeechDataUrl(
       audio.removeEventListener('ended', onEnded)
       audio.removeEventListener('error', onError)
       audio.removeEventListener('timeupdate', armStall)
-      currentStop = null
+
+      if (currentStop === ownedStop) {
+        currentStop = null
+      }
     }
 
     const armStall = () => {
@@ -402,10 +457,12 @@ async function playSpeechDataUrl(
       reject(new Error('Playback failed'))
     }
 
-    currentStop = () => {
+    ownedStop = () => {
       cleanup()
       resolve()
     }
+
+    currentStop = ownedStop
 
     audio.addEventListener('ended', onEnded, { once: true })
     audio.addEventListener('error', onError, { once: true })
@@ -435,6 +492,13 @@ async function playSpeechDataUrl(
   return true
 }
 
+export function playSelectedSpeechText(text: string): Promise<boolean> {
+  return playSpeechText(text, {
+    messageId: 'selection-read-aloud',
+    source: 'read-aloud'
+  })
+}
+
 export async function playSpeechText(text: string, options: VoicePlaybackOptions): Promise<boolean> {
   stopVoicePlayback()
 
@@ -449,15 +513,17 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
 
   setVoicePlaybackState(currentState('preparing', options))
 
+  let fallbackMaxChars: number | null = null
+
   try {
     // Streaming first; the POST data-URL path is the fallback for backends
     // without the WS endpoint or providers without a chunked API.
     const streamUrl = await resolveSpeakStreamUrl()
 
     if (streamUrl && isCurrent()) {
-      const outcome = await playSpeechStream(streamUrl, speakableText, options)
+      const outcome = await playSpeechStream(streamUrl, speakableText, options, ownSequence)
 
-      if (outcome === 'played') {
+      if (outcome.status === 'played') {
         if (!isCurrent()) {
           return false
         }
@@ -466,19 +532,35 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
 
         return true
       }
+
+      fallbackMaxChars = outcome.maxChars
     }
 
     if (!isCurrent()) {
       return false
     }
 
-    const played = await playSpeechDataUrl(speakableText, options, isCurrent)
+    const chunks = splitSpeechText(
+      speakableText,
+      fallbackMaxChars ? Math.min(1_900, fallbackMaxChars) : undefined
+    )
 
-    if (played) {
-      setVoicePlaybackState(currentState('idle'))
+    for (const chunk of chunks) {
+      if (!isCurrent()) {
+        return false
+      }
+
+      setVoicePlaybackState(currentState('preparing', options))
+      const played = await playSpeechDataUrl(chunk, options, isCurrent)
+
+      if (!played) {
+        return false
+      }
     }
 
-    return played
+    setVoicePlaybackState(currentState('idle'))
+
+    return true
   } catch (error) {
     if (isCurrent()) {
       currentStop = null

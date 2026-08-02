@@ -406,9 +406,38 @@ FALLBACK_MAX_TEXT_LENGTH = 4000
 MAX_TEXT_LENGTH = FALLBACK_MAX_TEXT_LENGTH
 
 
+def _resolve_elevenlabs_model_id(
+    provider_config: Optional[Dict[str, Any]],
+    *,
+    streaming: bool = False,
+) -> str:
+    """Return the effective non-empty ElevenLabs model for one request mode."""
+    config = provider_config if isinstance(provider_config, dict) else {}
+    candidates = (
+        (
+            config.get("streaming_model_id"),
+            config.get("model_id"),
+            DEFAULT_ELEVENLABS_STREAMING_MODEL_ID,
+        )
+        if streaming
+        else (config.get("model_id"), DEFAULT_ELEVENLABS_MODEL_ID)
+    )
+    for candidate in candidates:
+        normalized = str(candidate or "").strip()
+        if normalized:
+            return normalized
+    return (
+        DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
+        if streaming
+        else DEFAULT_ELEVENLABS_MODEL_ID
+    )
+
+
 def _resolve_max_text_length(
     provider: Optional[str],
     tts_config: Optional[Dict[str, Any]] = None,
+    *,
+    streaming: bool = False,
 ) -> int:
     """Return the input-character cap for *provider*.
 
@@ -440,8 +469,8 @@ def _resolve_max_text_length(
         return override
 
     if key == "elevenlabs":
-        model_id = (prov_cfg or {}).get("model_id") or DEFAULT_ELEVENLABS_MODEL_ID
-        mapped = ELEVENLABS_MODEL_MAX_TEXT_LENGTH.get(str(model_id).strip())
+        model_id = _resolve_elevenlabs_model_id(prov_cfg, streaming=streaming)
+        mapped = ELEVENLABS_MODEL_MAX_TEXT_LENGTH.get(model_id)
         if mapped:
             return mapped
 
@@ -491,7 +520,8 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
     Users opt into cloud TTS by setting ``tts.provider`` (normally through
     ``hermes tools``); otherwise the historical Edge backend remains active.
     """
-    return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+    configured = str(tts_config.get("provider") or "").strip().lower()
+    return configured or DEFAULT_PROVIDER
 
 
 @dataclass(frozen=True)
@@ -1415,7 +1445,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
 
     el_config = tts_config.get("elevenlabs") or {}
     voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
-    model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
+    model_id = _resolve_elevenlabs_model_id(el_config)
 
     # Determine output format based on file extension
     if output_path.endswith(".ogg"):
@@ -3354,7 +3384,7 @@ def stream_tts_to_speaker(
     tts_done_event: threading.Event,
     display_callback: Optional[Callable[[str], None]] = None,
     provider: Optional[str] = None,
-):
+) -> bool:
     """Consume text deltas from *text_queue*, buffer them into sentences, and
     speak each sentence the moment it's ready — the conversational path.
 
@@ -3370,26 +3400,51 @@ def stream_tts_to_speaker(
         * *stop_event* can be set to abort early (barge-in / user interrupt).
         * *tts_done_event* is **set** in the ``finally`` block so callers
           waiting on it (continuous voice mode) know playback is finished.
+
+    Returns ``True`` when audio played or Stop was explicit, so callers must
+    not replay the whole response. Returns ``False`` only when no audio played
+    and Stop was not requested.
     """
     tts_done_event.clear()
+    output_stream = None
+    played_audio = False
 
     try:
-        output_stream = None
         tts_config = _load_tts_config()
 
         # Prefer a chunked streamer for low time-to-first-audio; fall back to
         # per-sentence sync synthesis (universal — edge + every non-streamer).
-        from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
-        streamer = resolve_streaming_provider(tts_config, preferred=provider)
+        from tools.tts_streaming import (
+            SentenceChunker,
+            resolve_streaming_provider,
+            resolve_streaming_text_limit,
+            split_text_for_tts,
+        )
+        requested_provider = (
+            str(provider).strip().lower() if provider is not None else ""
+        )
+        provider_override = requested_provider or None
+        sync_provider = provider_override or _get_provider(tts_config)
+        sync_max_len = _resolve_max_text_length(sync_provider, tts_config)
+        streamer = resolve_streaming_provider(
+            tts_config,
+            preferred=provider_override,
+        )
 
         stream_max_len = 0
         if streamer is not None:
+            fallback_provider = sync_provider
             try:
-                stream_max_len = _resolve_max_text_length(
-                    provider or _get_provider(tts_config), tts_config
+                stream_max_len = resolve_streaming_text_limit(
+                    streamer,
+                    tts_config,
+                    fallback_provider=fallback_provider,
                 )
             except Exception:
-                stream_max_len = 0
+                stream_max_len = _resolve_max_text_length(
+                    fallback_provider,
+                    tts_config,
+                )
             # On macOS, skip the sounddevice OutputStream entirely: PortAudio/
             # CoreAudio init triggers a kTCCServiceMediaLibrary permission
             # prompt even though output needs no media-library access. Leaving
@@ -3420,6 +3475,7 @@ def stream_tts_to_speaker(
 
         def _speak_sentence(sentence: str):
             """Display sentence and optionally generate + play audio."""
+            nonlocal played_audio
             if stop_event.is_set():
                 return
             cleaned = _strip_markdown_for_tts(sentence).strip()
@@ -3436,13 +3492,30 @@ def stream_tts_to_speaker(
                 display_callback(sentence)
             # No chunked streamer → per-sentence sync synthesis (universal).
             if streamer is None:
-                _speak_via_sync(cleaned)
+                played_audio = _speak_via_sync(cleaned) or played_audio
                 return
-            # Truncate very long sentences to the provider's per-request cap.
-            if stream_max_len and len(cleaned) > stream_max_len:
-                cleaned = cleaned[:stream_max_len]
+
+            active_streamer = streamer
+            pieces = split_text_for_tts(cleaned, stream_max_len)
+
+            def _stream_pieces():
+                for piece in pieces:
+                    if stop_event.is_set():
+                        return
+                    piece_produced_audio = False
+                    for chunk in active_streamer.stream(piece):
+                        if stop_event.is_set():
+                            return
+                        if chunk:
+                            piece_produced_audio = True
+                        yield chunk
+                    if not piece_produced_audio and not stop_event.is_set():
+                        raise RuntimeError("streaming TTS piece produced no audio")
+
+            streamed_audio = False
+            playback_attempted = False
             try:
-                audio_iter = streamer.stream(cleaned)
+                audio_iter = _stream_pieces()
                 if output_stream is not None:
                     import numpy as _np
 
@@ -3460,42 +3533,111 @@ def stream_tts_to_speaker(
                         for chunk in audio_iter:
                             if stop_event.is_set():
                                 break
+                            if not chunk:
+                                continue
+                            playback_attempted = True
                             output_stream.write(_np.frombuffer(chunk, dtype=_np.int16).reshape(-1, 1))
+                            streamed_audio = True
                     finally:
                         mark_audio_output_active(False)
                 else:
                     # No audio device: buffer chunks to a temp WAV and play it.
-                    _play_via_tempfile(audio_iter, stop_event, streamer.sample_rate)
+                    streamed_audio, playback_attempted = _play_via_tempfile(
+                        audio_iter,
+                        stop_event,
+                        streamer.sample_rate,
+                    )
             except Exception as exc:
                 logger.warning("Streaming TTS sentence failed: %s", exc)
+            played_audio = streamed_audio or played_audio
+            if (
+                not streamed_audio
+                and not playback_attempted
+                and not stop_event.is_set()
+            ):
+                played_audio = _speak_via_sync(cleaned) or played_audio
 
-        def _speak_via_sync(cleaned: str):
-            """Synthesize one sentence via the proven sync tool, then block on
-            playback. No chunked API, but per-*sentence* granularity keeps the
-            flow conversational for edge and every other non-streaming provider.
-            """
-            tmp_path = None
-            try:
-                fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
-                os.close(fd)
-                text_to_speech_tool(text=cleaned, output_path=tmp_path)
-                if (not stop_event.is_set() and os.path.isfile(tmp_path)
-                        and os.path.getsize(tmp_path) > 0):
+        def _speak_via_sync(cleaned: str) -> bool:
+            """Synthesize and play every effective-cap piece in source order."""
+            played = False
+            for piece in split_text_for_tts(cleaned, sync_max_len):
+                if stop_event.is_set():
+                    break
+
+                requested_path: Optional[Path] = None
+                owned_paths: set[Path] = set()
+                try:
+                    fd, requested = tempfile.mkstemp(suffix=".mp3")
+                    os.close(fd)
+                    requested_path = Path(requested)
+                    owned_paths.add(requested_path)
+
+                    raw_result = text_to_speech_tool(
+                        text=piece,
+                        output_path=str(requested_path),
+                        provider=sync_provider,
+                    )
+                    result = json.loads(raw_result)
+                    if not isinstance(result, dict):
+                        raise ValueError("TTS tool returned a non-object result")
+
+                    returned = result.get("file_path")
+                    returned_path = Path(returned) if isinstance(returned, str) and returned else None
+                    if returned_path is not None:
+                        owned_paths.add(returned_path)
+                    if result.get("success") is not True:
+                        logger.warning(
+                            "Sync per-sentence TTS failed: %s",
+                            result.get("error", "provider reported failure"),
+                        )
+                        break
+
+                    candidates = []
+                    for candidate in (requested_path, returned_path):
+                        if (
+                            candidate is not None
+                            and candidate not in candidates
+                            and candidate.is_file()
+                            and candidate.stat().st_size > 0
+                        ):
+                            candidates.append(candidate)
+                    if not candidates:
+                        logger.warning("Sync per-sentence TTS produced no audio artifact")
+                        break
+
                     from tools.voice_mode import play_audio_file
-                    play_audio_file(tmp_path)
-            except Exception as exc:
-                logger.warning("Sync per-sentence TTS failed: %s", exc)
-            finally:
-                if tmp_path:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
+
+                    sentence_played = False
+                    audio_path = candidates[0]
+                    if not stop_event.is_set():
+                        try:
+                            sentence_played = bool(play_audio_file(str(audio_path)))
+                        except Exception:
+                            logger.debug(
+                                "Sync per-sentence TTS candidate playback failed",
+                                exc_info=True,
+                            )
+                    if not sentence_played:
+                        logger.warning("Sync per-sentence TTS playback failed")
+                        break
+                    played = True
+                except Exception as exc:
+                    logger.warning("Sync per-sentence TTS failed: %s", exc)
+                    break
+                finally:
+                    for path in owned_paths:
+                        try:
+                            path.unlink()
+                        except OSError:
+                            pass
+            return played
 
         def _play_via_tempfile(audio_iter, stop_evt, sample_rate=24000):
-            """Write PCM chunks to a temp WAV file and play it."""
+            """Return (played, attempted) for one buffered PCM playback."""
             tmp = None
             tmp_path = None
+            played = False
+            attempted = False
             try:
                 import wave
                 tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -3504,10 +3646,14 @@ def stream_tts_to_speaker(
                     wf.setnchannels(1)
                     wf.setsampwidth(2)  # 16-bit
                     wf.setframerate(sample_rate)
+                    bytes_written = 0
                     for chunk in audio_iter:
                         if stop_evt.is_set():
                             break
+                        if not chunk:
+                            continue
                         wf.writeframes(chunk)
+                        bytes_written += len(chunk)
                 # wave.open() given a file object flushes but does NOT close it
                 # (it only closes files it opened itself, by name), so the OS
                 # handle to tmp stays open.  On Windows an open write handle
@@ -3515,8 +3661,10 @@ def stream_tts_to_speaker(
                 # os.unlink() below (WinError 32, swallowed → temp .wav files
                 # pile up).  Release the handle before playback and cleanup.
                 tmp.close()
-                from tools.voice_mode import play_audio_file
-                play_audio_file(tmp_path)
+                if bytes_written and not stop_evt.is_set():
+                    from tools.voice_mode import play_audio_file
+                    attempted = True
+                    played = bool(play_audio_file(tmp_path))
             except Exception as exc:
                 logger.warning("Temp-file TTS fallback failed: %s", exc)
             finally:
@@ -3530,6 +3678,7 @@ def stream_tts_to_speaker(
                         os.unlink(tmp_path)
                     except OSError:
                         pass
+            return played, attempted
 
         while not stop_event.is_set():
             # Read next delta from queue
@@ -3571,6 +3720,7 @@ def stream_tts_to_speaker(
             except Exception:
                 pass
         tts_done_event.set()
+    return bool(played_audio or stop_event.is_set())
 
 
 # ===========================================================================

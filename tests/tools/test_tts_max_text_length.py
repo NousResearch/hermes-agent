@@ -7,6 +7,8 @@ MiniMax allows 10000, and ElevenLabs allows 5000-40000 depending on model.
 
 import json
 
+import pytest
+
 
 from tools.tts_tool import (
     FALLBACK_MAX_TEXT_LENGTH,
@@ -46,6 +48,37 @@ class TestResolveMaxTextLength:
 
 
     # --- ElevenLabs model-aware ---
+
+    @pytest.mark.parametrize("configured_model", [None, "", "   "])
+    def test_elevenlabs_sync_request_and_fallback_cap_share_nonempty_model_precedence(
+        self,
+        configured_model,
+        tmp_path,
+        monkeypatch,
+    ):
+        from tools import tts_tool
+
+        captured_models = []
+
+        class _TextToSpeech:
+            @staticmethod
+            def convert(**kwargs):
+                captured_models.append(kwargs["model_id"])
+                return iter([b"audio"])
+
+        class _ElevenLabs:
+            def __init__(self, **_kwargs):
+                self.text_to_speech = _TextToSpeech()
+
+        config = {"elevenlabs": {"model_id": configured_model}}
+        monkeypatch.setattr(tts_tool, "_resolve_provider_key", lambda *_args: "test-key")
+        monkeypatch.setattr(tts_tool, "_import_elevenlabs", lambda: _ElevenLabs)
+
+        output_path = str(tmp_path / "sync.mp3")
+        tts_tool._generate_elevenlabs("Fallback contract.", output_path, config)
+
+        assert captured_models == [tts_tool.DEFAULT_ELEVENLABS_MODEL_ID]
+        assert _resolve_max_text_length("elevenlabs", config) == 10000
 
 
     # --- Sanity: the table covers every provider listed in the schema ---

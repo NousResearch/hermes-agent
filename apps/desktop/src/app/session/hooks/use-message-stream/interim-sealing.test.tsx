@@ -217,6 +217,40 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts[0]).toBe('partial answer continued')
   })
 
+
+  it('does not delete an earlier distinct interim when collapsing post-seal stream (R9 scope)', async () => {
+    await mountStream()
+    await start()
+
+    await interim('first narration segment')
+    await delta('The answer is 42.')
+    await interim('The answer is 42.')
+    await delta(' Verified.')
+    await complete('The answer is 42. Verified.')
+
+    const texts = assistantMessages()
+    expect(texts).toContain('first narration segment')
+    expect(texts.filter(t => t === 'The answer is 42. Verified.')).toHaveLength(1)
+    expect(texts).toHaveLength(2)
+  })
+
+  it('collapses sealed interim + trailing post-seal deltas into one final bubble (R9 / double-bubble)', async () => {
+    await mountStream()
+    await start()
+
+    // Real double-bubble class: interim seals the stream (streamId cleared),
+    // then more deltas arrive before complete. Those mint a fresh stream
+    // bubble; complete must not leave BOTH the sealed interim and the final.
+    await delta('The answer is 42.')
+    await interim('The answer is 42.')
+    await delta(' Verified.')
+    await complete('The answer is 42. Verified.')
+
+    const texts = assistantMessages()
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toBe('The answer is 42. Verified.')
+  })
+
   it('appends a genuinely different final as its own bubble (two real assistant segments)', async () => {
     await mountStream()
     await start()

@@ -10,6 +10,13 @@ import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
+export type ComposerModeSource = '' | 'default' | 'manual'
+export type ComposerModeField = 'effort' | 'fast'
+
+export interface ComposerModeSources {
+  effort: ComposerModeSource
+  fast: ComposerModeSource
+}
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
@@ -22,7 +29,9 @@ const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
+const COMPOSER_EFFORT_SOURCE_KEY = 'hermes.desktop.composer.reasoning-effort-source'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
+const COMPOSER_FAST_SOURCE_KEY = 'hermes.desktop.composer.fast-source'
 
 // The last chat the user had open, so a relaunch lands back on it instead of an
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
@@ -501,13 +510,20 @@ export const setResumeExhaustedSessionId = (next: Updater<string | null>) => upd
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)
 
+// Transient: paint focused-runtime metadata without claiming durable future-chat
+// intent. Durable setters persist + mark ownership so config refresh / delayed
+// runtime callbacks cannot silently replace a user selection (sticky route).
+export const setCurrentModelTransient = (next: Updater<string>) => updateAtom($currentModel, next)
+
 export const setCurrentModel = (next: Updater<string>) => {
-  updateAtom($currentModel, next)
+  setCurrentModelTransient(next)
   persistString(COMPOSER_MODEL_KEY, $currentModel.get() || null)
 }
 
+export const setCurrentProviderTransient = (next: Updater<string>) => updateAtom($currentProvider, next)
+
 export const setCurrentProvider = (next: Updater<string>) => {
-  updateAtom($currentProvider, next)
+  setCurrentProviderTransient(next)
   persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
 }
 
@@ -540,9 +556,57 @@ export const markComposerSelectionManual = (): void => {
   setCurrentModelSource('manual')
 }
 
-export const setCurrentReasoningEffort = (next: Updater<string>) => {
+const composerModeSourceKey: Record<ComposerModeField, string> = {
+  effort: COMPOSER_EFFORT_SOURCE_KEY,
+  fast: COMPOSER_FAST_SOURCE_KEY
+}
+
+const persistedComposerModeValueExists = (field: ComposerModeField): boolean =>
+  storedString(field === 'effort' ? COMPOSER_EFFORT_KEY : COMPOSER_FAST_KEY) !== null
+
+export const getComposerModeSource = (field: ComposerModeField): ComposerModeSource => {
+  const source = storedString(composerModeSourceKey[field])
+
+  if (source === 'default' || source === 'manual') {
+    return source
+  }
+
+  // Legacy builds persisted values without provenance. Preserve those as
+  // user-owned so a background config refresh cannot erase them.
+  return persistedComposerModeValueExists(field) ? 'manual' : ''
+}
+
+export const getComposerModeSources = (): ComposerModeSources => ({
+  effort: getComposerModeSource('effort'),
+  fast: getComposerModeSource('fast')
+})
+
+export const setComposerModeSource = (field: ComposerModeField, source: ComposerModeSource): void => {
+  persistString(composerModeSourceKey[field], source || null)
+}
+
+/** True when localStorage holds an explicit Fast override (true OR false).
+ *  Absent key means inherit / unset — distinct from explicit false. */
+export const hasPersistedComposerFastMode = (): boolean => storedString(COMPOSER_FAST_KEY) !== null
+
+/** Raw durable Fast: null = absent, true/false = explicit. */
+export const snapshotPersistedComposerFastMode = (): boolean | null => {
+  const raw = storedString(COMPOSER_FAST_KEY)
+
+  if (raw === null) {
+    return null
+  }
+
+  return raw === 'true'
+}
+
+export const setCurrentReasoningEffortTransient = (next: Updater<string>) =>
   updateAtom($currentReasoningEffort, next)
+
+export const setCurrentReasoningEffort = (next: Updater<string>) => {
+  setCurrentReasoningEffortTransient(next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
+  setComposerModeSource('effort', 'manual')
 }
 
 // The profile's `agent.reasoning_effort`, mirrored from config so surfaces that
@@ -555,9 +619,32 @@ export const setDefaultReasoningEffort = (next: string) => updateAtom($defaultRe
 
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 
+export const setCurrentFastModeTransient = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
+
 export const setCurrentFastMode = (next: Updater<boolean>) => {
-  updateAtom($currentFastMode, next)
+  setCurrentFastModeTransient(next)
   persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
+  setComposerModeSource('fast', 'manual')
+}
+
+/** Profile/config default seed — durable paint with `default` provenance (not manual). */
+export const setCurrentFastModeFromDefault = (value: boolean): void => {
+  setCurrentFastModeTransient(value)
+  persistBoolean(COMPOSER_FAST_KEY, value)
+  setComposerModeSource('fast', 'default')
+}
+
+export const setCurrentReasoningEffortFromDefault = (value: string): void => {
+  setCurrentReasoningEffortTransient(value)
+  persistString(COMPOSER_EFFORT_KEY, value || null)
+  setComposerModeSource('effort', 'default')
+}
+
+/** Clear durable Fast override (absent). Runtime atom becomes false for wire. */
+export const clearCurrentFastMode = (): void => {
+  setCurrentFastModeTransient(false)
+  persistString(COMPOSER_FAST_KEY, null)
+  setComposerModeSource('fast', '')
 }
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)

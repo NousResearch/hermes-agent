@@ -8207,6 +8207,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         model_config={
                             "max_iterations": self.max_turns,
                             "reasoning_config": self.reasoning_config,
+                            "model": self.model,
+                            "provider": getattr(self, "provider", None),
+                            "base_url": getattr(self, "base_url", None) or None,
+                            "api_mode": getattr(self, "api_mode", None) or None,
                         },
                     )
                     self.agent._session_db_created = True

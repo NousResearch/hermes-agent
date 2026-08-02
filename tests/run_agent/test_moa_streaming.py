@@ -92,15 +92,15 @@ def test_create_streams_aggregator_when_requested(monkeypatch, tmp_path):
 
 def test_build_moa_facade_ignores_fallback_model_name_when_restoring(monkeypatch, tmp_path):
     """A fallback restore must not turn the temporary fallback model name into
-    a MoA preset. Sessions that drifted to e.g. deepseek-v4-flash previously
-    crashed on restore with MoAPresetNotFoundError because build_moa_facade()
-    reused agent.model as the preset (#MoA restore path).
+    a MoA preset. Callers re-align agent.model to a real preset before rebuild;
+    build_moa_facade itself fails closed on unknown names (sticky integrity).
     """
     home = tmp_path / ".hermes"
     _write_cfg(home)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    from agent.moa_loop import build_moa_facade
+    from agent.errors import MoAPresetNotFoundError
+    from agent.moa_loop import build_moa_facade, resolve_moa_preset_name
 
     agent = SimpleNamespace(
         provider="moa",
@@ -108,9 +108,24 @@ def test_build_moa_facade_ignores_fallback_model_name_when_restoring(monkeypatch
         tool_progress_callback=None,
     )
 
-    client = build_moa_facade(agent, None)
+    # Direct facade build with a non-preset model id must fail closed.
+    with pytest.raises(MoAPresetNotFoundError):
+        build_moa_facade(agent, agent.model)
+
+    # Default resolve must fail-closed for non-preset model ids (T1).
+    with pytest.raises(MoAPresetNotFoundError):
+        resolve_moa_preset_name(agent, agent.model)
+
+    # Recovery rebuild path may realign with the explicit flag.
+    preset = resolve_moa_preset_name(
+        agent, agent.model, allow_default_realign=True
+    )
+    agent.model = preset
+    client = build_moa_facade(agent, preset)
 
     assert client.chat.completions.preset_name == "review"
+    assert agent.model == "review"
+    assert preset == "review"
 
 
 def test_create_wraps_completed_aggregator_response_as_delta_chunk(monkeypatch, tmp_path):

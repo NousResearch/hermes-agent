@@ -46,11 +46,11 @@ else
     }
 fi
 export GH_TOKEN
-export GIT_ASKPASS="${HOME}/.hermes/scripts/git-askpass.sh"
-# Suppress credential helper - force GIT_ASKPASS path (fresh token each run)
+# Use GitHub CLI's credential helper so no token is written to disk or remote config.
+unset GIT_ASKPASS
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=credential.helper
-export GIT_CONFIG_VALUE_0=""
+export GIT_CONFIG_VALUE_0="!gh auth git-credential"
 
 # 1. Push any unpushed commits from a previous failed run (idempotent recovery)
 if [[ -n "$(git log origin/main..HEAD --oneline 2>/dev/null)" ]]; then

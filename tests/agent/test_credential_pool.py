@@ -39,6 +39,77 @@ def _jwt_with_claims(claims: dict) -> str:
 
 
 
+def test_stale_runtime_persist_preserves_concurrent_round_robin_order(
+    tmp_path, monkeypatch
+):
+    """Runtime metadata writes must not undo another pool's rotation."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "test-key-primary",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "test-key-secondary",
+                    },
+                ]
+            },
+        },
+    )
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(
+        "credential_pool_strategies:\n  openrouter: round_robin\n",
+        encoding="utf-8",
+    )
+
+    from agent.credential_pool import load_pool
+
+    rotating_pool = load_pool("openrouter")
+    stale_pool = load_pool("openrouter")
+
+    selected = rotating_pool.select()
+    assert selected is not None
+    assert selected.id == "cred-1"
+
+    rotated = json.loads(
+        (tmp_path / "hermes" / "auth.json").read_text(encoding="utf-8")
+    )
+    rotated_entries = rotated["credential_pool"]["openrouter"]
+    assert [entry["id"] for entry in rotated_entries] == ["cred-2", "cred-1"]
+    assert [entry["priority"] for entry in rotated_entries] == [0, 1]
+
+    stale_pool.mark_exhausted_and_rotate(
+        status_code=429,
+        credential_id="cred-1",
+    )
+
+    final = json.loads(
+        (tmp_path / "hermes" / "auth.json").read_text(encoding="utf-8")
+    )
+    final_entries = final["credential_pool"]["openrouter"]
+    assert [entry["id"] for entry in final_entries] == ["cred-2", "cred-1"]
+    assert [entry["priority"] for entry in final_entries] == [0, 1]
+    persisted_primary = next(
+        entry for entry in final_entries if entry["id"] == "cred-1"
+    )
+    assert persisted_primary["last_status"] == "exhausted"
+
+
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent auto-seeding from Codex CLI tokens on the host

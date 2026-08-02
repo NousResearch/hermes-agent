@@ -1557,6 +1557,7 @@ def write_credential_pool(
     entries: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
+    preserve_disk_order: bool = False,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
@@ -1575,6 +1576,11 @@ def write_credential_pool(
 
     Pass ``removed_ids`` for entries the caller intentionally removed, so the
     merge does not resurrect them from the on-disk copy.
+
+    Pass ``preserve_disk_order=True`` when a long-lived runtime is persisting
+    metadata from an in-memory snapshot. Matching entries then retain the
+    latest on-disk order while new in-memory entries are appended. Management
+    callers leave this false so explicit reorder operations remain authoritative.
     """
     removed = {rid for rid in (removed_ids or ()) if rid}
     with _auth_store_lock():
@@ -1615,6 +1621,41 @@ def write_credential_pool(
             if not disk_id or disk_id in new_ids or disk_id in removed:
                 continue
             merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
+        if preserve_disk_order:
+            merged_by_id = {
+                entry.get("id"): entry
+                for entry in merged
+                if isinstance(entry, dict) and entry.get("id")
+            }
+            disk_order_ids = [
+                entry.get("id")
+                for entry in existing_list
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("id")
+                    and entry.get("id") not in removed
+                    and entry.get("id") in merged_by_id
+                )
+            ]
+            ordered_ids = disk_order_ids + [
+                entry.get("id")
+                for entry in merged
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("id")
+                    and entry.get("id") not in disk_order_ids
+                )
+            ]
+            ordered_entries = [merged_by_id[entry_id] for entry_id in ordered_ids]
+            unkeyed_entries = [
+                entry
+                for entry in merged
+                if not isinstance(entry, dict) or not entry.get("id")
+            ]
+            merged = [
+                {**entry, "priority": priority}
+                for priority, entry in enumerate(ordered_entries)
+            ] + unkeyed_entries
         pool[provider_id] = merged
         return _save_auth_store(auth_store)
 

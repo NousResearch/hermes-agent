@@ -662,11 +662,17 @@ class CredentialPool:
                 self._entries[idx] = new
                 return
 
-    def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
+    def _persist(
+        self,
+        *,
+        removed_ids: Optional[List[str]] = None,
+        preserve_disk_order: bool = True,
+    ) -> None:
         write_credential_pool(
             self.provider,
             [entry.to_dict() for entry in self._entries],
             removed_ids=removed_ids,
+            preserve_disk_order=preserve_disk_order,
         )
 
     def _is_terminal_auth_failure(
@@ -1806,7 +1812,10 @@ class CredentialPool:
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
             rotated.append(replace(entry, priority=len(self._entries) - 1))
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
-            self._persist()
+            # Round-robin intentionally owns the next priority order. Other
+            # runtime writes preserve the latest disk order so a stale pool
+            # cannot undo a rotation performed by another process.
+            self._persist(preserve_disk_order=False)
             self._current_id = entry.id
             return self._current_unlocked() or entry
 

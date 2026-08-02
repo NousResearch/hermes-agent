@@ -57,7 +57,7 @@ else
     INSTALL_DIR_EXPLICIT=false
 fi
 PYTHON_VERSION="3.11"
-NODE_VERSION="26"
+NODE_VERSION="22"
 
 # FHS-style root install layout (set by resolve_install_layout when applicable):
 #   code at /usr/local/lib/hermes-agent, command at /usr/local/bin/hermes,
@@ -780,16 +780,43 @@ check_git() {
     exit 1
 }
 
-# Hermes requires Node 26 across every install: the desktop build's toolchain
-# floor is pinned there and the managed runtime, heal, and upgrade paths all
-# provision latest-v26.x. Returns 0 when the given `node --version` string
-# clears that floor; anything below it is replaced with the Hermes-managed
-# Node $NODE_VERSION.
+# The desktop build runs Vite ^8, which refuses to start on Node outside
+# `^20.19 || >=22.12` — older Node lacks `node:util.styleText`, so `vite build`
+# crashes with a SyntaxError that surfaces only as the opaque "Build desktop
+# app … exit code 1" install failure. That toolchain floor is the real
+# constraint; do NOT raise it past what a dependency actually demands, or every
+# user on a working Node gets their toolchain replaced for nothing. Returns 0
+# when the given `node --version` string clears the floor; anything below it is
+# replaced with the Hermes-managed Node $NODE_VERSION.
 node_satisfies_build() {
     local ver="${1#v}"
     local major="${ver%%.*}"
+    local minor="${ver#*.}"; minor="${minor%%.*}"
     case "$major" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$major" -ge 26 ]
+    case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
+    if [ "$major" -eq 20 ] && [ "$minor" -ge 19 ]; then return 0; fi
+    if [ "$major" -ge 22 ] && { [ "$major" -gt 22 ] || [ "$minor" -ge 12 ]; }; then return 0; fi
+    return 1
+}
+
+# npm 11.10.0–11.16.x honor `min-release-age` but ignore
+# `min-release-age-exclude`, both of which `.npmrc` sets. That combination
+# applies the 14-day age gate to packages we deliberately exempted, so every
+# install fails ETARGET on a freshly published dependency. The root
+# package.json excludes that band via `engines.npm`, and `engine-strict=true`
+# makes it fatal — so a system npm in the band cannot install this repo, no
+# matter how new its Node is. Returns 0 when the npm is usable.
+npm_supports_npmrc() {
+    local ver="${1#v}"
+    local major="${ver%%.*}"
+    local minor="${ver#*.}"; minor="${minor%%.*}"
+    case "$major" in ''|*[!0-9]*) return 1 ;; esac
+    case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
+    # The bad band is 11.10.0 through 11.16.x.
+    if [ "$major" -eq 11 ] && [ "$minor" -ge 10 ] && [ "$minor" -le 16 ]; then
+        return 1
+    fi
+    return 0
 }
 
 check_node() {
@@ -800,10 +827,20 @@ check_node() {
     # every install — including re-runs that skip the Node (re)install below.
     configure_managed_node_npm_prefix
 
+    # The system toolchain is only usable when BOTH halves work: a Node new
+    # enough for the desktop build AND an npm that can read our .npmrc. A
+    # bad-band npm (see npm_supports_npmrc) fails `npm ci` outright, and the
+    # managed Node we install instead bundles one that works.
     if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
-        log_success "Node.js $(node --version) found"
-        HAS_NODE=true
-        return 0
+        if ! command -v npm &> /dev/null || npm_supports_npmrc "$(npm --version 2>/dev/null)"; then
+            log_success "Node.js $(node --version) found"
+            HAS_NODE=true
+            return 0
+        fi
+        log_warn "npm $(npm --version) cannot honor this repo's .npmrc (npm 11.10-11.16 ignore"
+        log_warn "min-release-age-exclude) — installing Hermes-managed Node $NODE_VERSION instead..."
+        install_node
+        return
     fi
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.

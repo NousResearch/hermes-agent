@@ -215,10 +215,13 @@ class TestNodeToolRunnable:
 
     def test_outdated_managed_node_heals_to_target_major(self, tmp_path, monkeypatch):
         """A healthy managed tree below the target major upgrades on next resolve."""
+        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
         profile_home = tmp_path / "profiles" / "assistant"
         managed_bin = profile_home / "node" / "bin"
         managed_bin.mkdir(parents=True)
-        old_node = self._stub(managed_bin, "node", "#!/bin/sh\necho 'v22.20.0'\nexit 0\n")
+        old_node = self._stub(
+            managed_bin, "node", f"#!/bin/sh\necho 'v{target - 1}.20.0'\nexit 0\n"
+        )
         heal_called = {"value": False}
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
@@ -227,7 +230,7 @@ class TestNodeToolRunnable:
 
         def _heal():
             heal_called["value"] = True
-            old_node.write_text("#!/bin/sh\necho 'v26.5.1'\nexit 0\n")
+            old_node.write_text(f"#!/bin/sh\necho 'v{target}.5.1'\nexit 0\n")
             old_node.chmod(0o755)
             return True
 
@@ -239,10 +242,13 @@ class TestNodeToolRunnable:
 
     def test_outdated_managed_node_survives_failed_heal(self, tmp_path, monkeypatch):
         """Offline heal failure keeps serving the old tree — old Node beats no Node."""
+        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
         profile_home = tmp_path / "profiles" / "assistant"
         managed_bin = profile_home / "node" / "bin"
         managed_bin.mkdir(parents=True)
-        old_node = self._stub(managed_bin, "node", "#!/bin/sh\necho 'v22.20.0'\nexit 0\n")
+        old_node = self._stub(
+            managed_bin, "node", f"#!/bin/sh\necho 'v{target - 1}.20.0'\nexit 0\n"
+        )
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
         monkeypatch.setenv("PATH", "")
@@ -253,10 +259,13 @@ class TestNodeToolRunnable:
 
     def test_target_major_managed_node_does_not_heal(self, tmp_path, monkeypatch):
         """A tree already at the target major never triggers the heal."""
+        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
         profile_home = tmp_path / "profiles" / "assistant"
         managed_bin = profile_home / "node" / "bin"
         managed_bin.mkdir(parents=True)
-        node = self._stub(managed_bin, "node", "#!/bin/sh\necho 'v26.5.1'\nexit 0\n")
+        node = self._stub(
+            managed_bin, "node", f"#!/bin/sh\necho 'v{target}.5.1'\nexit 0\n"
+        )
 
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
         monkeypatch.setenv("PATH", "")

@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import base64
 import time
+from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -33,6 +34,29 @@ from hermes_cli.dashboard_auth import (
 from hermes_cli.dashboard_auth import native_flow
 from hermes_cli.dashboard_auth.base import Session
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+
+class NousStubAuthProvider(StubAuthProvider):
+    name = "nous"
+    display_name = "Nous Research"
+
+
+class SelfHostedOidcStubAuthProvider(StubAuthProvider):
+    name = "self-hosted"
+    display_name = "Self-Hosted OIDC"
+
+
+class ProviderLinkParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.hrefs: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag == "a" and "provider-btn" in (values.get("class") or "").split():
+            href = values.get("href")
+            if href:
+                self.hrefs.append(href)
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +185,85 @@ def _walk_native_login(client, *, redirect_uri, challenge, state="cli-state"):
         f"native callback must NOT set a session cookie; got {set_cookie!r}"
     )
     return loop_qs["code"][0], loop_qs["state"][0]
+
+
+def test_native_authorize_auto_selects_single_provider(gated_client):
+    _verifier, challenge = _make_pkce()
+    response = gated_client.get(
+        "/auth/native/authorize",
+        params={
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": "http://127.0.0.1:53999/cb",
+            "state": "single-provider-state",
+        },
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("https://fly-app.fly.dev/auth/callback?")
+
+
+def test_native_authorize_renders_multi_provider_chooser(gated_client):
+    clear_providers()
+    register_provider(NousStubAuthProvider())
+    register_provider(SelfHostedOidcStubAuthProvider())
+    _verifier, challenge = _make_pkce()
+    redirect_uri = "http://127.0.0.1:53999/cb"
+    state = 'state-with-unsafe-chars-"&<>'
+
+    response = gated_client.get(
+        "/auth/native/authorize",
+        params={
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": redirect_uri,
+            "state": state,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate"
+    assert "Nous Research" in response.text
+    assert "Self-Hosted OIDC" in response.text
+
+    parser = ProviderLinkParser()
+    parser.feed(response.text)
+    assert len(parser.hrefs) == 2
+
+    links_by_provider = {}
+    for href in parser.hrefs:
+        parsed = urlparse(href)
+        query = parse_qs(parsed.query)
+        links_by_provider[query["provider"][0]] = (parsed, query)
+
+    assert set(links_by_provider) == {"nous", "self-hosted"}
+    for parsed, query in links_by_provider.values():
+        assert parsed.path == "/auth/native/authorize"
+        assert query["code_challenge"] == [challenge]
+        assert query["code_challenge_method"] == ["S256"]
+        assert query["redirect_uri"] == [redirect_uri]
+        assert query["state"] == [state]
+
+    for href in parser.hrefs:
+        selected = gated_client.get(href)
+        assert selected.status_code == 302
+
+
+def test_native_authorize_without_registered_provider_fails_closed(gated_client):
+    clear_providers()
+    _verifier, challenge = _make_pkce()
+    response = gated_client.get(
+        "/auth/native/authorize",
+        params={
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": "http://127.0.0.1:53999/cb",
+            "state": "no-provider-state",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Unknown provider: ''"
 
 
 

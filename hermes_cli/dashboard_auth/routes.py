@@ -46,7 +46,10 @@ from hermes_cli.dashboard_auth.cookies import (
     set_pkce_cookie,
     set_session_cookies,
 )
-from hermes_cli.dashboard_auth.login_page import render_login_html
+from hermes_cli.dashboard_auth.login_page import (
+    render_login_html,
+    render_native_provider_choice_html,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -323,6 +326,26 @@ async def auth_native_authorize(
         sess_providers = list_session_providers()
         if len(sess_providers) == 1:
             p = sess_providers[0]
+        else:
+            native_providers = [
+                candidate
+                for candidate in sess_providers
+                if not getattr(candidate, "supports_password", False)
+            ]
+            if len(native_providers) == 1:
+                p = native_providers[0]
+            elif len(native_providers) > 1:
+                return HTMLResponse(
+                    render_native_provider_choice_html(
+                        providers=native_providers,
+                        authorize_path=f"{_prefix(request)}/auth/native/authorize",
+                        code_challenge=code_challenge,
+                        code_challenge_method=code_challenge_method,
+                        redirect_uri=redirect_uri,
+                        state=state,
+                    ),
+                    headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+                )
     if p is None:
         raise HTTPException(
             status_code=404, detail=f"Unknown provider: {provider!r}"

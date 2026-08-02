@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -3098,6 +3099,119 @@ class TestCodexAuxiliaryAdapterTimeout:
             )
 
         assert time.monotonic() - started < 0.14
+
+
+class TestCodexAuxiliaryTimeoutFdOwnership:
+    """Regression: the timeout Timer must not release the client's FDs.
+
+    ``close()`` from a thread that does not own the in-flight httpx connection
+    releases the raw TLS fd while the owner's OpenSSL BIO still caches that
+    integer. The kernel can hand the same integer to the next ``open()`` in the
+    process — a SessionDB or kanban.db handle — and the owner's unwinding TLS
+    flush then writes an application-data record into that database file
+    (#29507 / #67142 / #70773). ``shutdown()`` is FD-safe from any thread;
+    ``close()`` is not, so it belongs to the owning thread.
+    """
+
+    @staticmethod
+    def _adapter_with_recording_client(stream):
+        """Build an adapter whose client records (action, thread) events.
+
+        The nested ``_client._transport._pool._connections`` shape is what
+        ``force_close_tcp_sockets`` traverses.
+        """
+        events = []
+
+        class _Sock:
+            def shutdown(self, how):
+                events.append(("shutdown", threading.get_ident()))
+
+            def close(self):
+                events.append(("sock.close", threading.get_ident()))
+
+        sock = _Sock()
+
+        class _Conn:
+            def __init__(self):
+                self._connection = self
+                self._network_stream = self
+
+            def get_extra_info(self, name):
+                return sock if name == "socket" else None
+
+        class _Client:
+            def __init__(self):
+                self._transport = SimpleNamespace(
+                    _pool=SimpleNamespace(_connections=[_Conn()])
+                )
+
+        class _LeafClient:
+            def __init__(self):
+                self._client = _Client()
+                self.responses = SimpleNamespace(create=lambda **kw: stream)
+
+            def close(self):
+                events.append(("client.close", threading.get_ident()))
+
+        return _CodexCompletionsAdapter(_LeafClient(), "gpt-5.5"), events
+
+    def test_stalled_stream_timeout_does_not_release_fds_from_timer_thread(self):
+        """The Timer fires on a stalled stream — it may only shutdown()."""
+
+        class _StalledStream:
+            def __iter__(self):
+                # No event ever arrives, so the owner-thread ``_check_cancelled``
+                # hook never runs and the Timer is the only thing that can fire.
+                time.sleep(1.5)
+                return
+                yield  # pragma: no cover
+
+            def close(self):
+                pass
+
+        owner_tid = threading.get_ident()
+        adapter, events = self._adapter_with_recording_client(_StalledStream())
+
+        with pytest.raises(TimeoutError):
+            adapter.create(
+                messages=[{"role": "user", "content": "summarize this"}],
+                timeout=0.05,
+            )
+
+        stranger = [action for action, tid in events if tid != owner_tid]
+        assert stranger, "the timeout callback never ran on the Timer thread"
+        # The stranger thread may shut sockets down, but must never release a FD.
+        assert all(action == "shutdown" for action in stranger), events
+        assert "client.close" not in stranger
+        assert "sock.close" not in stranger
+
+    def test_owner_thread_releases_fds_after_a_stranger_thread_timeout(self):
+        """Deferring the close still has to actually happen — on the owner."""
+
+        class _StalledStream:
+            def __iter__(self):
+                time.sleep(1.5)
+                return
+                yield  # pragma: no cover
+
+            def close(self):
+                pass
+
+        owner_tid = threading.get_ident()
+        adapter, events = self._adapter_with_recording_client(_StalledStream())
+
+        with pytest.raises(TimeoutError):
+            adapter.create(
+                messages=[{"role": "user", "content": "summarize this"}],
+                timeout=0.05,
+            )
+
+        owner_actions = [action for action, tid in events if tid == owner_tid]
+        assert "client.close" in owner_actions, events
+        # Ordering matters: shutdown unblocks the owner, then the owner closes.
+        assert [a for a, _ in events].index("shutdown") < [
+            a for a, _ in events
+        ].index("client.close")
 
 
 class TestCodexAuxiliaryToolMessageConversion:

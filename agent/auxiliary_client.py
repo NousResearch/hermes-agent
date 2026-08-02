@@ -1151,18 +1151,47 @@ class _CodexCompletionsAdapter:
         deadline = time.monotonic() + float(total_timeout) if total_timeout else None
         timed_out = threading.Event()
         timeout_timer: Optional[threading.Timer] = None
+        # The thread driving this request owns its transport's file
+        # descriptors — see the ownership note in _close_client_on_timeout.
+        owner_tid = threading.get_ident()
 
         def _timeout_message() -> str:
             return f"Codex auxiliary Responses stream exceeded {float(total_timeout):.1f}s total timeout"
 
         def _close_client_on_timeout() -> None:
             timed_out.set()
-            close = getattr(self._client, "close", None)
-            if callable(close):
+            # FD-ownership contract (#29507 / #67142 / #70773): only the thread
+            # driving the request may RELEASE this client's file descriptors.
+            # This callback has two callers — ``_check_cancelled()`` on the
+            # owning thread, and the daemon ``threading.Timer`` below, which is
+            # a stranger thread. From a stranger thread we may only
+            # ``shutdown()`` the pooled sockets: ``close()`` releases the raw
+            # TLS fd while the owner's OpenSSL BIO still caches that integer,
+            # the kernel recycles it into the next ``open()`` in this process
+            # (a SessionDB / kanban.db handle), and the owner's unwinding TLS
+            # flush writes an application-data record into that database file.
+            # ``shutdown()`` from any thread is FD-safe; ``close()`` is not.
+            # The owning thread performs the real close in the ``finally``
+            # below, which is where the FD release belongs.
+            if threading.get_ident() == owner_tid:
+                close = getattr(self._client, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logger.debug("Codex auxiliary: client close during timeout failed", exc_info=True)
+            else:
                 try:
-                    close()
+                    from agent.agent_runtime_helpers import force_close_tcp_sockets
+
+                    shutdown_count = force_close_tcp_sockets(self._client)
+                    logger.info(
+                        "Codex auxiliary client aborted (timeout, tcp_force_closed=%d, "
+                        "deferred_close=stranger_thread)",
+                        shutdown_count,
+                    )
                 except Exception:
-                    logger.debug("Codex auxiliary: client close during timeout failed", exc_info=True)
+                    logger.debug("Codex auxiliary: client abort during timeout failed", exc_info=True)
             # The cached auxiliary client wraps this same ``self._client``
             # (or *is* a ``CodexAuxiliaryClient`` whose ``_real_client`` is
             # this instance).  After we close the httpx transport above, the
@@ -1295,6 +1324,19 @@ class _CodexCompletionsAdapter:
         finally:
             if timeout_timer is not None:
                 timeout_timer.cancel()
+            # A stranger-thread timeout only shut the sockets down; the FDs are
+            # still open and this — the owning thread, now unwound — is the one
+            # context that may release them (#29507).
+            if timed_out.is_set():
+                close = getattr(self._client, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logger.debug(
+                            "Codex auxiliary: owner-thread close after timeout failed",
+                            exc_info=True,
+                        )
 
         content = "".join(text_parts).strip() or None
 

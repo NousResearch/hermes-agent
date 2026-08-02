@@ -205,9 +205,18 @@ class PatchResult:
     # See :class:`WriteResult.lsp_diagnostics`.
     lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
-    
+    # Set on success-shaped no-ops: the requested edit was already present
+    # in the file, so nothing was written. Carries a short note for the
+    # model explaining why no diff is included.
+    no_change: bool = False
+    note: Optional[str] = None
+
     def to_dict(self) -> dict:
-        result = {"success": self.success}
+        result: Dict[str, Any] = {"success": self.success}
+        if self.no_change:
+            result["no_change"] = True
+        if self.note:
+            result["note"] = self.note
         if self.diff:
             result["diff"] = self.diff
         if self.files_modified:
@@ -1631,6 +1640,23 @@ class ShellFileOperations(FileOperations):
         )
         
         if error or match_count == 0:
+            # Already-applied detection: the most common patch failure in
+            # production is a re-send of an edit that has already landed
+            # (identical old/new strings, or old_string gone while
+            # new_string is present verbatim). Surface that as an explicit
+            # success-shaped no-op so the model moves on instead of
+            # burning turns on re-reads and re-patches.
+            from tools.fuzzy_match import is_already_applied
+            if is_already_applied(content, old_string, new_string):
+                return PatchResult(
+                    success=True,
+                    no_change=True,
+                    note=(
+                        f"File already contains the target text — the edit "
+                        f"appears to be already applied to {path}. No write "
+                        "performed; do not re-send this patch."
+                    ),
+                )
             err_msg = error or f"Could not find match for old_string in {path}"
             try:
                 from tools.fuzzy_match import format_no_match_hint

@@ -326,6 +326,15 @@ def _validate_operations(
                     simulated, search_pattern, replacement, replace_all=False
                 )
                 if count == 0:
+                    # Already-applied hunk: validate as a no-op when the
+                    # replacement text is already present (and the search
+                    # text gone) — the edit landed earlier. Keeps multi-hunk
+                    # patches from failing wholesale because one hunk was
+                    # already applied in a prior call. The apply phase
+                    # performs the same skip.
+                    from tools.fuzzy_match import is_already_applied
+                    if is_already_applied(simulated or "", search_pattern, replacement):
+                        continue
                     label = f"'{hunk.context_hint}'" if hunk.context_hint else "(no hint)"
                     msg = (
                         f"{op.file_path}: hunk {hunk_index} {label} not found"
@@ -628,6 +637,13 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optiona
                             error = None
                 
                 if error:
+                    # Already-applied hunk: skip it, mirroring the
+                    # validation-phase check (validation may also have
+                    # passed via this path, so apply MUST skip too or the
+                    # two phases disagree and the whole patch fails here).
+                    from tools.fuzzy_match import is_already_applied
+                    if is_already_applied(new_content, search_pattern, replacement):
+                        continue
                     err_msg = f"Could not apply hunk: {error}"
                     try:
                         from tools.fuzzy_match import format_no_match_hint

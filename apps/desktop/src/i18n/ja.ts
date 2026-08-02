@@ -303,6 +303,7 @@ export const ja = defineLocale({
       approvalTitleNamed: session => `承認が必要です — ${session}`,
       approveAction: '承認',
       rejectAction: '拒否',
+      runAction: '実行',
       inputTitle: '入力が必要です',
       inputTitleNamed: session => `入力が必要です — ${session}`,
       inputBody: 'Hermes が応答を待っています。',

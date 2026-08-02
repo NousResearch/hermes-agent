@@ -17067,6 +17067,16 @@ ipcMain.handle('hermes:ambient:claim', (_event: IpcMainInvokeEvent, key: unknown
   ownsAmbientCue(String(key ?? ''))
 )
 
+ipcMain.handle('hermes:beep', () => {
+  // Renderer WebAudio is subject to autoplay policy: while the window is
+  // unfocused the AudioContext stays suspended and the cue is inaudible —
+  // exactly the case an approval/input alert must cover. shell.beep() plays
+  // the system alert sound from the main process, independent of focus.
+  shell.beep()
+
+  return true
+})
+
 const nativeNotifications = registerNativeNotifications({
   getMainWindow: (): BrowserWindow | null => mainWindow,
   focusWindow

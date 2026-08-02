@@ -62,6 +62,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:browser-popout:closed', listener)
   },
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
+  // Play the OS alert sound from main. Unlike renderer WebAudio, this is not
+  // subject to autoplay policy, so it works while the window is unfocused.
+  playSystemBeep: () => ipcRenderer.invoke('hermes:beep'),
   windowControls: {
     custom: customWindowControlsEnabled(),
     minimize: () => ipcRenderer.send('hermes:window-control', 'minimize'),

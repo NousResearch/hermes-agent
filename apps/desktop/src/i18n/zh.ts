@@ -333,6 +333,7 @@ export const zh = defineLocale({
       approvalTitleNamed: session => `需要批准 — ${session}`,
       approveAction: '批准',
       rejectAction: '拒绝',
+      runAction: '运行',
       inputTitle: '需要输入',
       inputTitleNamed: session => `需要输入 — ${session}`,
       inputBody: 'Hermes 正在等待你的回应。',

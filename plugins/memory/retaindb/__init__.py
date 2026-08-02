@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 from agent.memory_provider import MemoryProvider
 from agent.secret_scope import get_secret
@@ -309,9 +309,31 @@ class _Client:
         import requests
         token = self.api_key.replace("Bearer ", "").strip()
         url = f"{self.base_url}/v1/files/{quote(file_id, safe='')}/content"
-        resp = requests.get(url, headers={"Authorization": f"Bearer {token}", "x-sdk-runtime": "hermes-plugin"}, timeout=30, allow_redirects=True)
-        resp.raise_for_status()
-        return resp.content
+        headers = {"Authorization": f"Bearer {token}", "x-sdk-runtime": "hermes-plugin"}
+        # Follow redirects manually so every Location is subject to the same
+        # metadata/SSRF floor as the configured base URL.
+        for _ in range(10):
+            resp = requests.get(url, headers=headers, timeout=30, allow_redirects=False)
+            if not resp.is_redirect:
+                resp.raise_for_status()
+                return resp.content
+
+            location = resp.headers.get("Location")
+            resp.close()
+            if not location:
+                raise RuntimeError("RetainDB file response redirected without a Location header")
+            url = urljoin(url, location)
+            try:
+                from tools.url_safety import is_always_blocked_url
+
+                if is_always_blocked_url(url):
+                    raise RuntimeError("RetainDB redirect target is always blocked")
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                raise RuntimeError("RetainDB redirect safety check failed") from exc
+
+        raise RuntimeError("RetainDB file response exceeded the redirect limit")
 
     def ingest_file(self, file_id: str, user_id: str | None = None, agent_id: str | None = None) -> dict:
         body: dict = {}
@@ -491,6 +513,23 @@ class RetainDBMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         api_key = get_secret("RETAINDB_API_KEY", "") or ""
         base_url = re.sub(r"/+$", "", os.environ.get("RETAINDB_BASE_URL", _DEFAULT_BASE_URL))
+
+        # Self-hosted RetainDB is allowed on LAN/loopback, but cloud-metadata
+        # and other always-blocked targets must never become the API base
+        # (salvage of incomplete #4984 which incorrectly used full is_safe_url
+        # and would break intentional private deployments).
+        try:
+            from tools.url_safety import is_always_blocked_url
+
+            if is_always_blocked_url(base_url):
+                logger.warning(
+                    "RETAINDB_BASE_URL '%s' targets an always-blocked address; "
+                    "resetting to the default endpoint.",
+                    base_url,
+                )
+                base_url = _DEFAULT_BASE_URL
+        except Exception as exc:
+            logger.debug("RetainDB base URL always-blocked check skipped: %s", exc)
 
         # Project resolution: RETAINDB_PROJECT > hermes-<profile> > "default"
         # If unset, the API auto-creates and uses the "default" project — no config required.

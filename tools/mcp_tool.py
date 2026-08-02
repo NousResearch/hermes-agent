@@ -316,7 +316,14 @@ def _ensure_mcp_sdk() -> bool:
             # deprecated `streamablehttp_client` alias, so gating on that name
             # alone made _run_http raise ImportError for every HTTP and SSE
             # server on 2.x before it could reach the `streamable_http_client`
-            # path that does work.
+            # path.
+            #
+            # Reaching it was necessary and not sufficient: that path also
+            # unpacked the transport as a fixed 3-tuple, which is 1.x's shape.
+            # On 2.x it raised "not enough values to unpack (expected 3, got
+            # 2)" and every HTTP/SSE server parked after its retry ladder.
+            # Only stdio servers kept working, which is why this survived
+            # review - the common configs are all stdio.
             _MCP_HTTP_AVAILABLE = _MCP_NEW_HTTP or _MCP_LEGACY_HTTP
             try:
                 from mcp.types import LATEST_PROTOCOL_VERSION
@@ -3351,9 +3358,12 @@ class MCPServerTask:
             # http_client is provided, so we wrap in async-with.
             try:
                 async with httpx.AsyncClient(**client_kwargs) as http_client:
-                    async with streamable_http_client(url, http_client=http_client) as (
-                        read_stream, write_stream, _get_session_id,
-                    ):
+                    # Unpacked positionally rather than by fixed arity: mcp
+                    # 1.x yields (read, write, get_session_id) and 2.x yields
+                    # (read, write). This file supports both SDK generations,
+                    # and get_session_id was never used here.
+                    async with streamable_http_client(url, http_client=http_client) as _streams:
+                        read_stream, write_stream = _streams[0], _streams[1]
                         async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                             # Bound the handshake (#59349) — see stdio path.
                             self.initialize_result = await asyncio.wait_for(

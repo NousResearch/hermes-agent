@@ -315,6 +315,17 @@ async def _resolve_container_fallback(
 
     Fail-closed: if there is no active sandbox env we refuse rather than falling
     back to a host read, so a non-cache host path under a sandbox never leaks.
+
+    Cold-start retry: under Docker the very first exec against a freshly
+    started container can fail (empty pipe / partial setup) while an identical
+    second call succeeds. We retry once with a short delay before giving up,
+    so callers don't see "could not read inside the sandbox" on a file that is
+    verifiably readable on the immediate retry. See #76566.
+
+    Diagnostic: when every attempt fails, the container's own output (stderr
+    + stdout) is folded into the raised error so the user can distinguish
+    "no such file" from "permission denied" from "container never came up"
+    instead of staring at one opaque message.
     """
     import asyncio
     import shlex
@@ -340,13 +351,29 @@ async def _resolve_container_fallback(
     # env.execute is a blocking backend exec; keep it off the event loop so a
     # multi-MB base64 read doesn't stall every other coroutine.
     qp = shlex.quote(str(p))
-    res = await asyncio.to_thread(
-        env.execute,
-        f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'")
-    if res.get("returncode", 1) != 0:
-        raise SourceNotFound(f"could not read '{p}' inside the sandbox", src=src, origin="container")
+    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'"
+
+    last_res: dict = {"returncode": 1, "output": ""}
+    for attempt in range(2):
+        last_res = await asyncio.to_thread(env.execute, cmd)
+        if last_res.get("returncode", 1) == 0:
+            break
+        if attempt == 0:
+            # Cold-start: give the container a moment to settle its pipes
+            # before retrying. 150ms covers Docker exec warm-up in practice
+            # without making a real failure feel sluggish.
+            await asyncio.sleep(0.15)
+    if last_res.get("returncode", 1) != 0:
+        diag = (last_res.get("output") or "").strip().splitlines()
+        # Keep the diagnostic small and noise-free: first non-empty line,
+        # trimmed to a sane length so it slots into the agent's error UI.
+        first = next((ln.strip() for ln in diag if ln.strip()), "")
+        suffix = f" ({first[:200]})" if first else ""
+        raise SourceNotFound(
+            f"could not read '{p}' inside the sandbox{suffix}",
+            src=src, origin="container")
     try:
-        data = base64.b64decode(res.get("output", ""), validate=True)
+        data = base64.b64decode(last_res.get("output", ""), validate=True)
     except Exception as exc:
         raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
     if len(data) > _MAX_INGEST_BYTES:

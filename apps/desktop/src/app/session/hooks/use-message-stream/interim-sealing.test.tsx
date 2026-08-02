@@ -217,6 +217,23 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts[0]).toBe('partial answer continued')
   })
 
+  it('settles final onto interim even after message.start reset the boundary flag (#74560)', async () => {
+    await mountStream()
+    await start()
+    await delta('partial')
+    await interim('partial')
+    // A chained turn / follow-up re-emits message.start, which resets
+    // interimBoundaryPending to false BEFORE the same turn's message.complete.
+    // The continuation must still settle onto the interim — not append a
+    // duplicate bubble. Regression for #74560.
+    await start()
+    await complete('partial answer continued')
+
+    const texts = assistantMessages()
+    expect(texts.filter(t => t.includes('partial'))).toHaveLength(1)
+    expect(texts[0]).toBe('partial answer continued')
+  })
+
   it('appends a genuinely different final as its own bubble (two real assistant segments)', async () => {
     await mountStream()
     await start()

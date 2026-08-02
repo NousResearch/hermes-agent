@@ -632,7 +632,7 @@ export function useMessageStream({
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
-            } else if (interimBoundaryPending && (responsePreviewed || finalContinuesInterim)) {
+            } else if (existing.interim && (responsePreviewed || finalContinuesInterim)) {
               // Settle the interim in place instead of creating a duplicate —
               // the DB has one row, so the live UI must agree. Previously this
               // was gated on `responsePreviewed` alone, so a NON-previewed
@@ -642,6 +642,15 @@ export function useMessageStream({
               // for ordinary tool-call turns while `responsePreviewed` still
               // covers the verify-on-stop continuation-budget case even when the
               // final text was rewritten and no longer shares a prefix.
+              //
+              // We key on the message's OWN durable `interim` state, not the
+              // session's volatile `interimBoundaryPending` flag: the flag is
+              // reset to false by a subsequent `message.start` (a chained turn,
+              // follow-up, or mid-turn compaction). When that reset lands
+              // between this turn's `message.interim` and `message.complete`, the
+              // flag-based gate wrongly fell through to appending a duplicate
+              // bubble (#74560). The message row still says `interim`, so the
+              // continuation merges correctly regardless of the flag.
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )

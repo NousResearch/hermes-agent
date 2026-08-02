@@ -173,3 +173,73 @@ def test_hermes_subprocess_env_strips_bws_token_and_password(monkeypatch):
     env = hermes_subprocess_env()
     assert "BWS_ACCESS_TOKEN" not in env
     assert "DB_PASSWORD" not in env
+
+
+def test_hermes_subprocess_env_strips_password_with_inherit_credentials(monkeypatch):
+    """*_PASSWORD values are stripped unconditionally on the non-terminal
+    factory even when the caller opts into credential inheritance — a
+    model-driving CLI has no legitimate use for a DB/redis/postgres password."""
+    from tools.environments.local import hermes_subprocess_env
+
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.abc123.def456:xyz789")
+    monkeypatch.setenv("DB_PASSWORD", "db-pass-9f2c1a")
+
+    env = hermes_subprocess_env(inherit_credentials=True)
+    assert "BWS_ACCESS_TOKEN" not in env
+    assert "DB_PASSWORD" not in env
+
+
+def test_terminal_path_keeps_passthrough_db_password(monkeypatch):
+    """An explicitly registered DB_PASSWORD passthrough (skill
+    required_environment_variables or terminal.env_passthrough) must still
+    reach the terminal child — the *_PASSWORD strip is passthrough-aware."""
+    from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
+
+    monkeypatch.setenv("DB_PASSWORD", "db-pass-9f2c1a")
+    register_env_passthrough(["DB_PASSWORD"])
+    try:
+        env = build_subprocess_env()
+        assert env.get("DB_PASSWORD") == "db-pass-9f2c1a"
+    finally:
+        clear_env_passthrough()
+
+
+def test_bws_token_env_remap_non_suffix_stripped(tmp_path, monkeypatch):
+    """A Bitwarden access_token_env remapped to a non-suffix name (e.g.
+    MY_BWS_TOKEN) is stripped exactly, while third-party *_ACCESS_TOKEN vars
+    (e.g. STRIPE_ACCESS_TOKEN) stay passthrough-able — the fix for the
+    over-broad *_ACCESS_TOKEN suffix match."""
+    import yaml
+
+    import tools.environments.local as _local_mod
+
+    config = {"secrets": {"bitwarden": {"access_token_env": "MY_BWS_TOKEN"}}}
+    (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Reset the module-level cache so the remap is picked up.
+    monkeypatch.setattr(_local_mod, "_configured_bws_token_env", None)
+    monkeypatch.setattr(_local_mod, "_configured_bws_token_env_loaded", False)
+
+    monkeypatch.setenv("MY_BWS_TOKEN", "0.remapped.token")
+    monkeypatch.setenv("STRIPE_ACCESS_TOKEN", "sk_live_third_party")
+
+    assert _local_mod._is_hermes_internal_secret("MY_BWS_TOKEN") is True
+    assert _local_mod._is_hermes_internal_secret("STRIPE_ACCESS_TOKEN") is False
+
+    env = build_subprocess_env()
+    assert "MY_BWS_TOKEN" not in env
+    # Third-party access token is not Hermes-internal — survives on the
+    # terminal path (and is registerable as passthrough, unlike BWS).
+    assert env.get("STRIPE_ACCESS_TOKEN") == "sk_live_third_party"
+
+    from tools.env_passthrough import (
+        clear_env_passthrough,
+        is_env_passthrough,
+        register_env_passthrough,
+    )
+
+    register_env_passthrough(["STRIPE_ACCESS_TOKEN"])
+    try:
+        assert is_env_passthrough("STRIPE_ACCESS_TOKEN")
+    finally:
+        clear_env_passthrough()

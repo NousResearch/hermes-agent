@@ -146,6 +146,32 @@ def _user_ids_match(platform: str, left: str, right: str) -> bool:
     return bool(left_aliases and right_aliases and (left_aliases & right_aliases))
 
 
+def _read_allowlist_env(env_var: str) -> str:
+    """Read a platform allowlist env var through the profile secret scope.
+
+    Under multiplexing the process env may hold ANOTHER profile's allowlist
+    (first-writer-wins YAML→env bridges), so reads must honor the installed
+    scope's verdict — including a scoped miss returning empty rather than
+    borrowing the process value.  Unscoped callers (single-profile CLI /
+    admin endpoints) keep the legacy ``os.getenv`` read.
+
+    TODO(profile-secrets): the grant mirror below still WRITES through
+    ``hermes_cli.config.save_env_value`` / ``remove_env_value``, which target
+    the root ``.env`` — those writes need a profile-aware counterpart before
+    pairing grants can be mirrored correctly under multiplexing.
+    """
+    try:
+        from agent.secret_scope import UnscopedSecretError, get_secret
+
+        try:
+            return (get_secret(env_var) or "").strip()
+        except UnscopedSecretError:
+            pass
+    except Exception:
+        pass
+    return (os.getenv(env_var) or "").strip()
+
+
 def _sync_allowlist_add(platform: str, user_id: str) -> None:
     """Add ``user_id`` to the platform allowlist env var IF one is configured.
 
@@ -158,7 +184,7 @@ def _sync_allowlist_add(platform: str, user_id: str) -> None:
     env_var = _allowlist_env_for_platform(platform)
     if not env_var:
         return
-    current = os.getenv(env_var, "").strip()
+    current = _read_allowlist_env(env_var)
     if not current:
         return  # No allowlist configured — leave the gateway open (option i).
     ids = _split_allowlist(current)
@@ -278,7 +304,7 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
     env_var = _allowlist_env_for_platform(platform)
     if not env_var:
         return
-    current = os.getenv(env_var, "").strip()
+    current = _read_allowlist_env(env_var)
     if not current:
         return  # No allowlist configured — do not touch config-only snapshots.
     ids = _split_allowlist(current)

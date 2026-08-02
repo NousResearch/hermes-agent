@@ -36,6 +36,27 @@ logger = logging.getLogger("hermes_state")
 class SessionSchemaMixin:
     """See module docstring — mixin for SessionDB (Schema cluster)."""
 
+    def _dedupe_legacy_system_prompts(self, cursor: sqlite3.Cursor) -> None:
+        """Move inline prompt snapshots into the shared content-addressed table."""
+        try:
+            rows = cursor.execute(
+                "SELECT id, system_prompt FROM sessions "
+                "WHERE system_prompt IS NOT NULL"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+
+        for row in rows:
+            session_id = row["id"] if isinstance(row, sqlite3.Row) else row[0]
+            prompt = row["system_prompt"] if isinstance(row, sqlite3.Row) else row[1]
+            prompt_hash = self._store_system_prompt(cursor, prompt)
+            cursor.execute(
+                "UPDATE sessions "
+                "SET system_prompt_hash = ?, system_prompt = NULL "
+                "WHERE id = ?",
+                (prompt_hash, session_id),
+            )
+
     def _sqlite_supports_fts5(self, cursor: sqlite3.Cursor) -> bool:
         try:
             cursor.execute("CREATE VIRTUAL TABLE temp._hermes_fts5_probe USING fts5(x)")
@@ -861,6 +882,14 @@ class SessionSchemaMixin:
                 # users too. Only the FTS *layout* waits for opt-in.
                 if fts5_available and self._db_has_legacy_inline_fts(cursor):
                     self.set_meta("fts_optimize_available", "1", cursor=cursor)
+
+            if current_version < 25:
+                # v25: de-duplicate per-session system prompt snapshots into
+                # a shared content-addressed table. Keep the old column as a
+                # read fallback for partially migrated or externally written
+                # rows, but clear migrated rows so future writes do not keep
+                # one large prompt copy per session.
+                self._dedupe_legacy_system_prompts(cursor)
 
             # The FTS storage layout is versioned independently of the main
             # schema (see the v23 note above). Stamp the current layout so the

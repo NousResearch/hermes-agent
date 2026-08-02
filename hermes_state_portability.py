@@ -32,7 +32,7 @@ class SessionPortabilityMixin:
     @classmethod
     def _compact_session_cols(cls) -> str:
         """SELECT list for compact_rows: every ``sessions`` column declared in
-        SCHEMA_SQL except the ``system_prompt`` blob, aliased with the ``s``
+        SCHEMA_SQL except prompt storage internals, aliased with the ``s``
         prefix used by list_sessions_rich/_get_session_rich_row queries."""
         if cls._session_compact_cols_sql is None:
             declared = cls._parse_schema_columns(SCHEMA_SQL)["sessions"]
@@ -102,6 +102,7 @@ class SessionPortabilityMixin:
 
         query = f"""
             SELECT s.*,
+                COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved,
                 COALESCE(
                     (SELECT {_PREVIEW_RAW_SELECT}
                      FROM messages m
@@ -111,6 +112,7 @@ class SessionPortabilityMixin:
                 ) AS _preview_raw,
                 {_sql_session_last_active("s")} AS last_active
             FROM sessions s
+            LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
             WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
             ORDER BY s.started_at DESC, s.id DESC
             LIMIT ? OFFSET ?
@@ -121,7 +123,7 @@ class SessionPortabilityMixin:
 
         runs: List[Dict[str, Any]] = []
         for row in rows:
-            s = dict(row)
+            s = self._session_row_dict(row)
             s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
             runs.append(s)
         return runs
@@ -175,8 +177,16 @@ class SessionPortabilityMixin:
         self.flush_token_counts()
         _sel = self._compact_session_cols() if compact_rows else "s.*"
         placeholders = ",".join("?" for _ in ids)
+        prompt_select = (
+            "" if compact_rows
+            else ", COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved"
+        )
+        prompt_join = (
+            "" if compact_rows
+            else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
+        )
         query = f"""
-            SELECT {_sel},
+            SELECT {_sel}{prompt_select},
                 COALESCE(
                     (SELECT {_PREVIEW_RAW_SELECT}
                      FROM messages m
@@ -186,6 +196,7 @@ class SessionPortabilityMixin:
                 ) AS _preview_raw,
                 {_sql_session_last_active("s")} AS last_active
             FROM sessions s
+            {prompt_join}
             WHERE s.id IN ({placeholders})
         """
         with self._lock:
@@ -193,7 +204,7 @@ class SessionPortabilityMixin:
             rows = cursor.fetchall()
         result: Dict[str, Dict[str, Any]] = {}
         for row in rows:
-            s = dict(row)
+            s = self._session_row_dict(row)
             s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
             result[s["id"]] = s
         return result
@@ -557,10 +568,14 @@ class SessionPortabilityMixin:
                 if started_at is None:
                     started_at = time.time()
                 archived = 1 if raw.get("archived") else 0
+                system_prompt_hash = self._store_system_prompt(
+                    conn, raw.get("system_prompt")
+                )
 
                 conn.execute(
                     """INSERT INTO sessions (
                            id, source, user_id, model, model_config, system_prompt,
+                           system_prompt_hash,
                            parent_session_id, started_at, ended_at, end_reason,
                            message_count, tool_call_count, input_tokens, output_tokens,
                            cache_read_tokens, cache_write_tokens, reasoning_tokens,
@@ -571,7 +586,7 @@ class SessionPortabilityMixin:
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
-                           :system_prompt, NULL, :started_at, :ended_at,
+                           NULL, :system_prompt_hash, NULL, :started_at, :ended_at,
                            :end_reason, 0, 0, :input_tokens, :output_tokens,
                            :cache_read_tokens, :cache_write_tokens,
                            :reasoning_tokens, :cwd, :git_branch, :git_repo_root,
@@ -586,7 +601,7 @@ class SessionPortabilityMixin:
                         "user_id": raw.get("user_id"),
                         "model": raw.get("model"),
                         "model_config": raw.get("model_config"),
-                        "system_prompt": raw.get("system_prompt"),
+                        "system_prompt_hash": system_prompt_hash,
                         "started_at": started_at,
                         "ended_at": self._float_or_none(raw.get("ended_at")),
                         "end_reason": raw.get("end_reason"),

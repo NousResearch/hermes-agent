@@ -91,6 +91,31 @@ def is_already_applied(content: str, old_string: str, new_string: str) -> bool:
     return old_string not in content
 
 
+def _format_match_locations(content: str, matches: List[Tuple[int, int]],
+                            cap: int = 5) -> str:
+    """Render up to ``cap`` match positions as 'L<line>: <snippet>' rows.
+
+    Gives the model the information it needs to disambiguate an ambiguous
+    old_string in ONE follow-up (add neighboring context, or choose
+    replace_all) instead of re-reading the file to find the occurrences.
+    """
+    rows = []
+    for start, _end in matches[:cap]:
+        line_no = content.count("\n", 0, start) + 1
+        line_start = content.rfind("\n", 0, start) + 1
+        line_end = content.find("\n", line_start)
+        if line_end == -1:
+            line_end = len(content)
+        snippet = content[line_start:line_end].strip()
+        if len(snippet) > 80:
+            snippet = snippet[:77] + "..."
+        rows.append(f"  L{line_no}: {snippet}")
+    extra = len(matches) - cap
+    if extra > 0:
+        rows.append(f"  ... and {extra} more")
+    return "\n".join(rows)
+
+
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                             replace_all: bool = False) -> Tuple[str, int, Optional[str], Optional[str]]:
     """
@@ -146,9 +171,11 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         if matches:
             # Found matches with this strategy
             if len(matches) > 1 and not replace_all:
+                locations = _format_match_locations(content, matches)
                 return content, 0, None, (
                     f"Found {len(matches)} matches for old_string. "
-                    f"Provide more context to make it unique, or use replace_all=True."
+                    f"Provide more context to make it unique, or use replace_all=True. "
+                    f"Matches:\n{locations}"
                 )
 
             # replace_all with a similarity-based strategy would overwrite

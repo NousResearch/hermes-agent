@@ -3341,6 +3341,31 @@ def compress_context(
         )
         _boundary_parent = _old_sid or agent.session_id or ""
 
+        # Round-2 #4: the activity heartbeat's terminal "context compression
+        # completed" stamp landed on the PARENT row (force-persisted before
+        # the rotation re-pointed agent.session_id at the child). Without a
+        # cleanup, the archived parent advertises a fresh last_activity_at +
+        # "context compression completed" forever — a permanent false-fresh
+        # row for any activity consumer that scans ended sessions. Clear the
+        # labels on the parent best-effort (keeps last_activity_at so idle
+        # clocks stay continuous; the CHILD carries the live labels).
+        if _old_sid and _session_commit_succeeded:
+            try:
+                _labels_db = getattr(agent, "_session_db", None)
+                _clear_labels = getattr(
+                    type(_labels_db) if _labels_db is not None else None,
+                    "clear_session_activity_labels",
+                    None,
+                )
+                if callable(_clear_labels):
+                    _clear_labels(_labels_db, _old_sid)
+            except Exception:
+                logger.debug(
+                    "failed to clear archived compression parent's activity "
+                    "labels (ignored)",
+                    exc_info=True,
+                )
+
         # Notify the context engine that a compaction boundary occurred. Plugin
         # engines (e.g. hermes-lcm) use boundary_reason="compression" to preserve
         # DAG lineage / checkpoint per-session state across the boundary instead of

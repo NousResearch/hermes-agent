@@ -8,9 +8,7 @@ Checks:
 4. DDGS importable and working
 
 Exit codes:
-  0 = all healthy
-  1 = one or more services degraded
-  2 = critical failure (search or extract completely down)
+  0 = check completed (healthy or degraded; findings are emitted as output)
 
 Designed for cron execution. Output is single-line status for Discord.
 """
@@ -48,21 +46,18 @@ def _http_probe(url, timeout):
 
 
 def check_searxng():
-    """Check the SearXNG JSON API without inspecting a container."""
+    """Check the effective SearXNG HTML search boundary."""
     if _DRY_RUN:
         return True, "dry-run: probes skipped"
+    # The deployed instance deliberately rejects format=json with HTTP 403.
     status, body, error = _http_probe(
-        "http://127.0.0.1:8082/search?q=health+check&format=json", timeout=5
+        "http://127.0.0.1:8082/search?q=health+check", timeout=5
     )
     if status != 200:
         return False, f"API status {status}" if status is not None else (error or "API not responding")
-    try:
-        n = len(json.loads(body).get("results", []))
-        if n == 0:
-            return False, "0 results returned"
-        return True, f"{n} results"
-    except Exception:
-        return False, "invalid JSON response"
+    if 'class="result' not in body:
+        return False, "search returned no result markup"
+    return True, "HTML search returned results"
 
 
 def check_groktoCrawl():
@@ -79,12 +74,12 @@ def check_groktoCrawl():
         checks = h.get("checks", {})
         down_services = [
             k for k, v in checks.items()
-            if isinstance(v, dict) and v.get("status") == "down" and k not in ("searxng",)
+            if isinstance(v, dict) and v.get("status") == "down"
         ]
         if down_services:
             return False, f"degraded: {','.join(down_services)}"
-        if status == "down" and not down_services:
-            return True, "healthy (searxng health check cosmetic 404, search works)"
+        if status != "ok":
+            return False, f"health status {status}"
         return True, f"healthy ({status})"
     except Exception:
         return False, "invalid health JSON"
@@ -127,10 +122,8 @@ def main():
     
     if search_ok and extract_ok:
         status_emoji = "🟡"
-        exit_code = 1
     else:
         status_emoji = "🔴"
-        exit_code = 2
     
     print(f"{status_emoji} Web Backend Health [{ts}]")
     for p in parts:
@@ -141,7 +134,9 @@ def main():
     if not extract_ok:
         print("  CRITICAL: Extract backend (GroktoCrawl) down — extract will fall back to Tavily")
     
-    sys.exit(exit_code)
+    # A detected dependency outage is a successful watchdog execution.  The
+    # alert is the result; reserve non-zero exits for unexpected script faults.
+    sys.exit(0)
 
 
 if __name__ == '__main__':

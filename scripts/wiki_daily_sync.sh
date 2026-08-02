@@ -6,6 +6,7 @@
 #   WIKI_SYNC_DRY_RUN=1 — print the git commands that would run, do not
 #                          push, commit, or touch the working tree
 #   WIKI_SYNC_DIR        — override the wiki checkout (default $HOME/wiki)
+#   WIKI_SYNC_EXPECTED_REMOTE — exact permitted origin URL
 set -uo pipefail
 # NOTE: errexit (set -e) intentionally OFF so the dry-run path and the
 # auth-failure path can print diagnostics without aborting early.
@@ -18,6 +19,7 @@ export GIT_TERMINAL_PROMPT=0
 export PATH="/usr/bin:${HOME}/.local/bin:${PATH:-}"
 
 WIKI_DIR="${WIKI_SYNC_DIR:-${HOME}/wiki}"
+EXPECTED_REMOTE="${WIKI_SYNC_EXPECTED_REMOTE:-https://github.com/Sahil-SS9/kensei-wiki.git}"
 
 # Dry-run short-circuits before cd so the target dir need not exist.
 if [ "${DRY_RUN}" = "1" ]; then
@@ -30,6 +32,22 @@ cd "${WIKI_DIR}" 2>/dev/null || {
     echo "ERROR: cannot cd to ${WIKI_DIR}"
     exit 1
 }
+
+# Serialize the index/commit/push sequence and fail closed if migration wiring
+# points origin at a checked-out staging clone instead of the GitHub authority.
+exec 9>"${WIKI_DIR}/.git/wiki-daily-sync.lock"
+flock -n 9 || {
+    echo "ERROR: wiki sync already running"
+    exit 75
+}
+REMOTE_URL=$(git remote get-url origin 2>/dev/null) || {
+    echo "ERROR: wiki origin is not configured"
+    exit 1
+}
+if [[ "${REMOTE_URL}" != "${EXPECTED_REMOTE}" ]]; then
+    echo "ERROR: refusing unsafe wiki origin: ${REMOTE_URL}"
+    exit 1
+fi
 
 # --- Auth setup ---
 # Fetch token from env (set by Hermes config) or gh CLI as fallback.
@@ -51,6 +69,22 @@ unset GIT_ASKPASS
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=credential.helper
 export GIT_CONFIG_VALUE_0="!gh auth git-credential"
+
+# Refresh the checkpoint before deciding whether a push is safe. Automatic
+# reconciliation is forbidden because generated wiki content can be duplicated.
+git fetch --prune origin 2>&1 || exit 128
+read -r BEHIND AHEAD < <(git rev-list --left-right --count origin/main...HEAD)
+if (( BEHIND > 0 && AHEAD > 0 )); then
+    echo "ERROR: wiki branch diverged from origin/main (behind=${BEHIND} ahead=${AHEAD})"
+    exit 1
+fi
+if (( BEHIND > 0 )); then
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "ERROR: wiki branch is behind origin/main with local work; refusing automatic merge"
+        exit 1
+    fi
+    git merge --ff-only origin/main 2>&1 || exit 1
+fi
 
 # 1. Push any unpushed commits from a previous failed run (idempotent recovery)
 if [[ -n "$(git log origin/main..HEAD --oneline 2>/dev/null)" ]]; then

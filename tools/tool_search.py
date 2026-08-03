@@ -871,8 +871,9 @@ def _available_source_summary(catalog: List[CatalogEntry]) -> List[Dict[str, Any
     """
     counts: Dict[str, int] = {}
     for entry in catalog:
-        source_name = entry.source_name or entry.source or "other"
-        label = _listing_group_label(source_name)
+        # _listing_group_label already falls back to "other" for empty
+        # source names, matching the listing path's grouping.
+        label = _listing_group_label(entry.source_name)
         counts[label] = counts.get(label, 0) + 1
     return [
         {"name": name, "tool_count": counts[name]}

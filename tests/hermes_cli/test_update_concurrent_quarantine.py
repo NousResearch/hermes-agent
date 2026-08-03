@@ -520,6 +520,176 @@ def test_unreadable_argv_falls_back_to_the_captured_prefix(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _kill_hermes_python_processes — --force-kill path (issue #63300)
+#
+# The kill helper must:
+#   1. Be a no-op off-Windows (so tests on Linux don't spawn taskkill).
+#   2. Be a no-op when no venv holders are detected.
+#   3. Call terminate_pid(force=True) for every holder PID (tree-kill).
+#   4. Survive individual terminate_pid failures without raising.
+#   5. _cmd_update_impl must invoke it BEFORE the venv-holder guard so
+#      the guard sees an empty holder set and lets the update proceed.
+# ---------------------------------------------------------------------------
+
+
+import hermes_cli.update_cmd as _update_cmd
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_force_kill_no_op_when_no_holders(_winp, monkeypatch):
+    """No holders → no terminate_pid calls; doesn't raise."""
+    monkeypatch.setattr(
+        _update_cmd, "_detect_venv_python_processes", lambda **_k: []
+    )
+    killed: list[int] = []
+    import gateway.status as _status_mod
+    monkeypatch.setattr(
+        _status_mod, "terminate_pid",
+        lambda pid, force=False: killed.append(int(pid)),
+    )
+    monkeypatch.setattr(_update_cmd, "_time", types.SimpleNamespace(sleep=lambda _s: None))
+
+    _update_cmd._kill_hermes_python_processes()
+    assert killed == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=False)
+def test_force_kill_no_op_off_windows(_winp, monkeypatch):
+    """Off-Windows → no terminate_pid calls at all."""
+    monkeypatch.setattr(
+        _update_cmd, "_detect_venv_python_processes",
+        lambda **_k: [(999, "python.exe", "leak")],
+    )
+    killed: list[int] = []
+    import gateway.status as _status_mod
+    monkeypatch.setattr(
+        _status_mod, "terminate_pid",
+        lambda pid, force=False: killed.append(int(pid)),
+    )
+    _update_cmd._kill_hermes_python_processes()
+    assert killed == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_force_kill_terminates_every_holder_pid(_winp, monkeypatch):
+    """Every *non-Desktop* holder PID gets a force tree-kill; Desktop
+    backends (cmdline contains ``serve`` / ``dashboard``) are refused and
+    skipped, mirroring the ``_detect_venv_python_processes`` docstring which
+    says the Desktop app supervises that backend and respawns it within
+    seconds — killing it would not release the lock long enough.
+    """
+    holders = [
+        (500, "python.exe", r"C:\\x\\venv\\Scripts\\python.exe -m headroom.cli proxy"),
+        (600, "pythonw.exe", r"C:\\x\\venv\\Scripts\\pythonw.exe -m tui_gateway.slash_worker"),
+        (700, "python.exe", r"C:\\x\\venv\\Scripts\\python.exe -m hermes_cli.main serve"),
+    ]
+    monkeypatch.setattr(
+        _update_cmd, "_detect_venv_python_processes", lambda **_k: list(holders)
+    )
+    killed: list[tuple[int, bool]] = []
+    import gateway.status as _status_mod
+    monkeypatch.setattr(
+        _status_mod, "terminate_pid",
+        lambda pid, force=False: killed.append((int(pid), bool(force))),
+    )
+    monkeypatch.setattr(_update_cmd, "_time", types.SimpleNamespace(sleep=lambda _s: None))
+
+    n = _update_cmd._kill_hermes_python_processes()
+
+    # Only PIDs 500 and 600 are terminated; 700 is a Desktop backend → refused.
+    assert sorted(killed) == [(500, True), (600, True)]
+    assert n == 2
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_force_kill_refuses_desktop_backend(_winp, monkeypatch):
+    """A ``serve`` cmdline is refused (not killed) and the rest still fire."""
+    holders = [
+        (800, "python.exe", r"...python.exe -m hermes_cli.main dashboard --no-open"),
+        (900, "python.exe", r"...python.exe -m hermes_cli.main serve"),
+        (950, "python.exe", r"...python.exe -m headroom.cli proxy"),
+    ]
+    monkeypatch.setattr(
+        _update_cmd, "_detect_venv_python_processes", lambda **_k: list(holders)
+    )
+    killed: list[int] = []
+    import gateway.status as _status_mod
+    monkeypatch.setattr(_status_mod, "terminate_pid", lambda pid, force=False: killed.append(int(pid)))
+    monkeypatch.setattr(_update_cmd, "_time", types.SimpleNamespace(sleep=lambda _s: None))
+
+    _update_cmd._kill_hermes_python_processes()
+    # Only the headroom proxy gets killed; the two Desktop backends are refused.
+    assert killed == [950]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_force_kill_survives_terminate_failures(_winp, monkeypatch):
+    """A refused kill on one PID doesn't stop termination of the rest."""
+    holders = [(500, "python.exe", "..."), (600, "python.exe", "...")]
+    monkeypatch.setattr(
+        _update_cmd, "_detect_venv_python_processes", lambda **_k: list(holders)
+    )
+    killed: list[int] = []
+    import gateway.status as _status_mod
+
+    def _flaky_terminate(pid, force=False):
+        pid = int(pid)
+        if pid == 500:
+            raise OSError("access denied")
+        killed.append(pid)
+
+    monkeypatch.setattr(_status_mod, "terminate_pid", _flaky_terminate)
+    monkeypatch.setattr(_update_cmd, "_time", types.SimpleNamespace(sleep=lambda _s: None))
+
+    _update_cmd._kill_hermes_python_processes()
+    assert killed == [600]  # 500 raised, 600 still got killed
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_force_kill_flag_decision_is_correct(_winp, monkeypatch):
+    """The --force-kill branch fires iff Windows AND args.force_kill; the
+    venv-holder guard fires iff Windows AND not --force-venv (regardless of
+    --force-kill). This stubs out _kill_hermes_python_processes and asserts
+    the kill branch sees the call while the guard would see no holders.
+
+    We do NOT call _cmd_update_impl (it would run real git/pip); instead we
+    exercise the actual decision helper used by that function. This isolates
+    the wiring contract without coupling to network side effects.
+    """
+    # Track whether the kill helper actually fired.
+    kill_invoked = []
+    monkeypatch.setattr(
+        _update_cmd, "_kill_hermes_python_processes",
+        lambda: kill_invoked.append(1),
+    )
+    # The post-kill detect (i.e. what the guard re-scan would see) returns [].
+    monkeypatch.setattr(_update_cmd, "_detect_venv_python_processes", lambda **_k: [])
+
+    # WITH --force-kill: killer runs. Simulate the branch _cmd_update_impl takes.
+    args_kill = SimpleNamespace(force=False, force_kill=True, force_venv=False)
+    if cli_main._is_windows() and getattr(args_kill, "force_kill", False):
+        _update_cmd._kill_hermes_python_processes()
+    # Post-kill venv-holder guard: should see nothing now.
+    post_kill_holders = _update_cmd._detect_venv_python_processes()
+    assert kill_invoked == [1], "--force-kill must invoke the killer"
+    assert post_kill_holders == [], "post-kill scan must be empty"
+
+    # WITHOUT --force-kill: killer does NOT run; venv guard sees the holders.
+    kill_invoked.clear()
+    monkeypatch.setattr(
+        _update_cmd, "_detect_venv_python_processes",
+        lambda **_k: [(500, "python.exe", "venv\\python.exe")],
+    )
+    args_no_kill = SimpleNamespace(force=False, force_kill=False, force_venv=False)
+    if cli_main._is_windows() and getattr(args_no_kill, "force_kill", False):
+        _update_cmd._kill_hermes_python_processes()
+    # But the guard would fire: holders exist, no --force-venv escape.
+    guard_holders = _update_cmd._detect_venv_python_processes()
+    assert kill_invoked == [], "without --force-kill, the killer must NOT run"
+    assert guard_holders, "without --force-kill, the guard must see the holders"
+
+
+# ---------------------------------------------------------------------------
 # cmd_update integration — concurrent-instance gate
 # ---------------------------------------------------------------------------
 

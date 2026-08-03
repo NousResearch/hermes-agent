@@ -41,6 +41,11 @@ from agent.error_classifier import FailoverReason
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
+try:
+    from agent.tool_repair_stats import record_repair as _record_repair
+except ImportError:
+    _record_repair = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -396,6 +401,11 @@ def sanitize_tool_call_arguments(
                     preview,
                 )
                 function["arguments"] = "{}"
+                if _record_repair is not None:
+                    try:
+                        _record_repair("truncated_args", function_name)
+                    except Exception:
+                        pass
 
                 existing_tool_msg = None
                 scan_index = message_index + 1

@@ -28,6 +28,27 @@ logger = logging.getLogger(__name__)
 # scrubbing.
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
+try:
+    from agent.tool_repair_stats import record_repair as _record_repair
+    from agent.tool_repair_stats import RepairPattern as _RP
+except ImportError:
+    _record_repair = None  # type: ignore[assignment]
+    _RP = None  # type: ignore[assignment]
+
+
+def _stat(pattern: Any, tool: str = "?") -> None:
+    """Emit a repair stat event.  No-op when stats module is unavailable."""
+    if _record_repair is not None:
+        try:
+            # Resolve string pattern names to RepairPattern enums for
+            # consistent counting (prevents typos / mismatched keys).
+            rp_pattern = pattern
+            if _RP is not None and isinstance(pattern, str):
+                rp_pattern = _RP(pattern)
+            _record_repair(rp_pattern, tool)
+        except Exception:
+            pass
+
 
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD (replacement character).
@@ -197,11 +218,13 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     # Fast-path: empty / whitespace-only -> empty object
     if not raw_stripped:
         logger.warning("Sanitized empty tool_call arguments for %s", tool_name)
+        _stat("empty_args", tool_name)
         return "{}"
 
     # Python-literal None -> normalise to {}
     if raw_stripped == "None":
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
+        _stat("none_literal", tool_name)
         return "{}"
 
     # Repair pass 0: llama.cpp backends sometimes emit literal control
@@ -217,6 +240,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
                 "Repaired unescaped control chars in tool_call arguments for %s",
                 tool_name,
             )
+            _stat("control_char_escape", tool_name)
         return reserialised
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
@@ -251,6 +275,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
             "Repaired malformed tool_call arguments for %s: %s → %s",
             tool_name, raw_stripped[:80], fixed[:80],
         )
+        _stat("malformed_json_repair", tool_name)
         return fixed
     except json.JSONDecodeError:
         pass
@@ -266,6 +291,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
                 "Repaired control-char-laced tool_call arguments for %s: %s → %s",
                 tool_name, raw_stripped[:80], escaped[:80],
             )
+            _stat("control_char_escape", tool_name)
             return escaped
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
@@ -277,6 +303,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         "replaced with empty object (was: %s)",
         tool_name, raw_stripped[:80],
     )
+    _stat("unrepairable", tool_name)
     return "{}"
 
 

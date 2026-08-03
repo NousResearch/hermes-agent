@@ -42,7 +42,10 @@ const exactCache = new Map<string, string[]>()
 // (main reply + reasoning part, maybe a tile). A tiny ring is enough; each
 // entry holds the last parse for one growing text lineage.
 const APPEND_CACHE_MAX = 4
-const APPEND_CACHE_MIN_LENGTH = 2048
+// Kick in incremental lex earlier — mid-length replies (512–2KB) used to pay
+// a full `marked` lex every flush. Settled-prefix reuse is the win for
+// Streamdown Block identity (propsChanged=0 waste under streaming).
+const APPEND_CACHE_MIN_LENGTH = 512
 const appendCache: { blocks: string[]; text: string }[] = []
 
 function rememberAppend(text: string, blocks: string[]): void {

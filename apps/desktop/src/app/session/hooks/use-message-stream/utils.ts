@@ -57,14 +57,11 @@ export function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boole
 }
 
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
-// (rAF only), which at typical LLM token rates of ~30-80 tok/sec meant every
-// token got its own React commit + Streamdown markdown re-parse, scaling
-// linearly with the growing last-block length. Bumping to 33ms lets ~2 tokens
-// batch into one commit at 60 tok/sec without introducing visible lag on the
-// streaming text (still 30 fps of visible text growth). Big perceived
-// smoothness win on long messages with big trailing paragraphs; see
-// `scripts/profile-typing-lag.md` for the measurement work behind this.
-export const STREAM_DELTA_FLUSH_MS = 33
+// (rAF only), then 33ms (~2 tokens/commit at 60 tok/s). Now 48ms ≈ 20fps of
+// visible text growth — batches ~3 tokens/commit, cutting Streamdown Block
+// remounts under load on Windows without making the stream look stuttery.
+// See `scripts/profile-typing-lag.md` for the measurement work behind this.
+export const STREAM_DELTA_FLUSH_MS = 48
 
 // Ceiling for the ADAPTIVE flush gap (see scheduleDeltaFlush). Under heavy
 // multi-stream load the gap stretches to 3x the measured flush cost so the

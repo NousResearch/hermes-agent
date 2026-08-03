@@ -7,8 +7,6 @@ import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import * as ClipboardModule from '../lib/clipboard.js'
-import * as Osc52Module from '../lib/osc52.js'
-import * as TerminalSetupModule from '../lib/terminalSetup.js'
 
 // DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
 // so toggling process.env in a test body can't move it. Mock just that one
@@ -247,49 +245,30 @@ describe('createSlashHandler', () => {
     })
   })
 
-  it('prefers OSC52 copy for remote sessions', async () => {
-    const writeClipboardText = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
-    const writeOsc52Clipboard = vi.spyOn(Osc52Module, 'writeOsc52Clipboard').mockReturnValue(true)
-    vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(true)
+  it.each([
+    ['native', { path: 'native', success: true }, 'copied to clipboard'],
+    ['tmux', { path: 'tmux-buffer', success: true }, 'copied to tmux buffer'],
+    ['OSC52', { path: 'osc52', success: true }, 'sent OSC52 copy sequence (terminal support required)'],
+    [
+      'failure',
+      { path: null, success: false },
+      'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence'
+    ]
+  ] as const)('reports %s results from the shared clipboard policy', async (_label, result, message) => {
+    const copyTextToClipboard = vi.spyOn(ClipboardModule, 'copyTextToClipboard').mockResolvedValue(result)
 
     const ctx = buildCtx({
       local: {
         ...buildLocal(),
-        getHistoryItems: vi.fn(() => [{ role: 'assistant', text: 'remote answer' }])
+        getHistoryItems: vi.fn(() => [{ role: 'assistant', text: 'answer' }])
       }
     })
 
     expect(createSlashHandler(ctx)('/copy')).toBe(true)
     await vi.waitFor(() => {
-      expect(writeOsc52Clipboard).toHaveBeenCalledWith('remote answer')
+      expect(copyTextToClipboard).toHaveBeenCalledWith('answer')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(message)
     })
-    expect(writeClipboardText).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('sent OSC52 copy sequence (terminal support required)')
-  })
-
-  it('keeps native-first copy in local tmux sessions', async () => {
-    const tmuxBackup = process.env.TMUX
-    process.env.TMUX = '/tmp/tmux-123/default,1,0'
-
-    const writeClipboardText = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
-    const writeOsc52Clipboard = vi.spyOn(Osc52Module, 'writeOsc52Clipboard').mockReturnValue(true)
-    vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(false)
-
-    const ctx = buildCtx({
-      local: {
-        ...buildLocal(),
-        getHistoryItems: vi.fn(() => [{ role: 'assistant', text: 'local answer' }])
-      }
-    })
-
-    expect(createSlashHandler(ctx)('/copy')).toBe(true)
-    await vi.waitFor(() => {
-      expect(writeClipboardText).toHaveBeenCalledWith('local answer')
-    })
-    expect(writeOsc52Clipboard).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('copied to clipboard')
-
-    process.env.TMUX = tmuxBackup
   })
 
   it('applies /reasoning hide to the thinking section immediately', async () => {

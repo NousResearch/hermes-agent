@@ -1,8 +1,33 @@
-import { describe, expect, it } from 'vitest'
+import { Buffer } from 'buffer'
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { env, supportsOsc52Clipboard } from '../../utils/env.js'
 
-import { shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
+import { setTerminalClipboard, shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
+
+afterEach(() => vi.unstubAllEnvs())
+
+describe('setTerminalClipboard', () => {
+  it('returns the OSC 52 path and sequence when terminal emission is enabled', async () => {
+    vi.stubEnv('HERMES_TUI_FORCE_OSC52', '1')
+    vi.stubEnv('TMUX', '')
+    vi.stubEnv('STY', '')
+
+    const result = await setTerminalClipboard('A日本🎉')
+
+    expect(result).toMatchObject({ path: 'osc52', success: true })
+    expect(result.sequence).toContain(Buffer.from('A日本🎉', 'utf8').toString('base64'))
+  })
+
+  it('reports no path when terminal emission is disabled and no multiplexer is present', async () => {
+    vi.stubEnv('HERMES_TUI_FORCE_OSC52', '0')
+    vi.stubEnv('TMUX', '')
+    vi.stubEnv('STY', '')
+
+    await expect(setTerminalClipboard('text')).resolves.toEqual({ path: null, sequence: '', success: false })
+  })
+})
 
 describe('shouldEmitClipboardSequence', () => {
   it('suppresses local multiplexer clipboard OSC by default', () => {

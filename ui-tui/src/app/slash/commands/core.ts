@@ -14,13 +14,8 @@ import type {
   SessionUndoResponse,
   SystemBatteryResponse
 } from '../../../gatewayTypes.js'
-import { writeClipboardText } from '../../../lib/clipboard.js'
-import { writeOsc52Clipboard } from '../../../lib/osc52.js'
-import {
-  configureDetectedTerminalKeybindings,
-  configureTerminalKeybindings,
-  isRemoteShellSession
-} from '../../../lib/terminalSetup.js'
+import { copyTextToClipboard } from '../../../lib/clipboard.js'
+import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -407,32 +402,25 @@ export const coreCommands: SlashCommand[] = [
         return sys('nothing to copy — start a conversation first')
       }
 
-      const shouldUseTerminalClipboard = isRemoteShellSession(process.env)
+      const result = await copyTextToClipboard(target.text)
 
-      if (shouldUseTerminalClipboard) {
-        writeOsc52Clipboard(target.text)
-
-        return sys('sent OSC52 copy sequence (terminal support required)')
+      if (ctx.stale()) {
+        return
       }
 
-      void writeClipboardText(target.text)
-        .then(nativeOk => {
-          if (ctx.stale()) {
-            return
-          }
+      if (!result.success) {
+        return sys('clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence')
+      }
 
-          if (nativeOk) {
-            sys('copied to clipboard')
-          } else {
-            writeOsc52Clipboard(target.text)
-            sys('sent OSC52 copy sequence (terminal support required)')
-          }
-        })
-        .catch(error => {
-          if (!ctx.stale()) {
-            sys(`copy failed: ${String(error)}`)
-          }
-        })
+      if (result.path === 'native') {
+        return sys('copied to clipboard')
+      }
+
+      if (result.path === 'tmux-buffer') {
+        return sys('copied to tmux buffer')
+      }
+
+      return sys('sent OSC52 copy sequence (terminal support required)')
     }
   },
 

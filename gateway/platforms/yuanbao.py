@@ -5124,9 +5124,13 @@ class YuanbaoAdapter(BasePlatformAdapter):
             # our msg_id is still current.  A concurrent pending message may
             # have already overwritten the entry in _dispatch_inbound_event
             # while we were running; in that case the drain task owns it and
-            # we must not clear it.
+            # we must not clear it.  Id-less events (internal/synthetic
+            # messages, pushes without a msg_id) never wrote a tracking entry
+            # in _dispatch_inbound_event, so they must never pop either — the
+            # entry they see belongs to a concurrently-queued id-bearing
+            # message whose drain task still needs it for recall matching.
             msg_id = event.message_id
-            if not msg_id or self._processing_msg_ids.get(session_key) == msg_id:
+            if msg_id and self._processing_msg_ids.get(session_key) == msg_id:
                 self._processing_msg_ids.pop(session_key, None)
                 self._processing_msg_texts.pop(session_key, None)
 

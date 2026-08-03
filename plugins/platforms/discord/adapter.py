@@ -46,11 +46,14 @@ def _format_discord_markdown_link(label: str, url: str) -> str:
     URL label can therefore win over the Markdown destination and remain a
     broken link. Dropping only the scheme keeps the preview recognizable while
     leaving one unambiguous click target.
+
+    The destination is wrapped in angle brackets (``<url>``) so Discord does
+    not unfurl an OG-preview embed under every tool progress bubble.
     """
     label = _DISCORD_URL_LABEL_SCHEME_RE.sub("", label, count=1)
     escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
     escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
-    return f"[{escaped_label}]({escaped_url})"
+    return f"[{escaped_label}](<{escaped_url}>)"
 
 
 class _Snowflake:

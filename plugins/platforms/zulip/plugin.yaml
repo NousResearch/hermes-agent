@@ -1,0 +1,74 @@
+name: zulip-platform
+label: Zulip
+kind: platform
+version: 1.0.0
+description: >
+  Zulip gateway adapter for Hermes Agent. Connects to Zulip Cloud or a
+  self-hosted Zulip server with a bot email, API key, and site URL.
+author: Hermes Agent contributors
+requires_env:
+  - name: ZULIP_SITE_URL
+    description: "Zulip organization URL (for example https://example.zulipchat.com)"
+    prompt: "Zulip site URL"
+    password: false
+  - name: ZULIP_BOT_EMAIL
+    description: "Bot email address from Zulip bot settings"
+    prompt: "Zulip bot email"
+    password: false
+  - name: ZULIP_API_KEY
+    description: "Bot API key from Zulip bot settings"
+    prompt: "Zulip bot API key"
+    password: true
+optional_env:
+  - name: ZULIP_ALLOWED_USERS
+    description: "Comma-separated Zulip user email addresses allowed to DM the bot"
+    prompt: "Allowed user emails (comma-separated)"
+    password: false
+  - name: ZULIP_ALLOW_ALL_USERS
+    description: "Allow any Zulip user to talk to the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: ZULIP_DEFAULT_STREAM
+    description: "Default stream for outbound messages"
+    prompt: "Default stream"
+    password: false
+  - name: ZULIP_HOME_TOPIC
+    description: "Default topic for cron and notification delivery"
+    prompt: "Home topic"
+    password: false
+  - name: ZULIP_HOME_CHANNEL
+    description: "Home stream or stream:topic for cron and notification delivery"
+    prompt: "Home channel"
+    password: false
+  - name: ZULIP_HOME_CHANNEL_NAME
+    description: "Display name for the Zulip home channel"
+    prompt: "Home channel display name"
+    password: false
+  - name: ZULIP_CERT_BUNDLE
+    description: "Path to a CA bundle for self-hosted Zulip TLS"
+    prompt: "CA bundle path"
+    password: false
+  - name: ZULIP_ALLOW_INSECURE
+    description: "Disable TLS verification for development-only self-hosted Zulip"
+    prompt: "Allow insecure TLS? (true/false)"
+    password: false
+  - name: ZULIP_REQUIRE_MENTION
+    description: "Require @mention in streams (default true)"
+    prompt: "Require mentions? (true/false)"
+    password: false
+  - name: ZULIP_FREE_RESPONSE_STREAMS
+    description: "Comma-separated stream names or IDs that do not require @mention"
+    prompt: "Free-response streams"
+    password: false
+  - name: ZULIP_CONTEXT_DEPTH
+    description: "Number of prior topic messages to inject as context on @mention"
+    prompt: "Context depth"
+    password: false
+  - name: ZULIP_CATCHUP
+    description: "Replay missed stream messages after reconnect (default false)"
+    prompt: "Enable catch-up? (true/false)"
+    password: false
+  - name: ZULIP_CATCHUP_MAX_MESSAGES
+    description: "Maximum missed messages replayed per stream on reconnect"
+    prompt: "Catch-up max messages"
+    password: false

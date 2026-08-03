@@ -98,6 +98,7 @@ gateway:
 ## Mentions, channels, and DMs
 
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
+- If Buzz rejects an outbound message because an `@name` is unknown or ambiguous, Hermes removes only that offending mention marker and retries. If a retry identifies another invalid name, this repeats up to three fallback attempts in total. If the message exceeds Buzz's mention limit, all mention markers are removed for the retry. Readable text, email addresses, reply threads, attachments, and remaining content are preserved; neutralized names do not notify users.
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
 

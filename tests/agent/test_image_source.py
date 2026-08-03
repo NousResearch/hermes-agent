@@ -153,3 +153,65 @@ class TestPackaging:
 
         with pytest.raises(ValueError, match="not a local file"):
             _ = src.path
+
+
+class TestBackendConstraints:
+    """``max_bytes`` and ``accepted_mimes`` let a backend narrow the resolver to
+    what its own API will take, so an input it would reject server-side fails
+    locally with an actionable message instead."""
+
+    _BMP = b"BM" + b"\x00" * 24
+
+    def test_oversized_local_rejected(self, tmp_path):
+        path = tmp_path / "big.png"
+        path.write_bytes(_PNG + b"\x00" * 4096)
+
+        with pytest.raises(ValueError, match="exceeds the .*MB limit"):
+            resolve_image_source(str(path), max_bytes=1024)
+
+    def test_oversized_data_uri_rejected(self):
+        with pytest.raises(ValueError, match="exceeds the .*MB limit"):
+            resolve_image_source(_data_uri(_PNG + b"\x00" * 4096), max_bytes=1024)
+
+    @pytest.mark.parametrize("raw,mime", [(_PNG, "image/png"), (_GIF, "image/gif")])
+    def test_within_cap_accepted(self, tmp_path, raw, mime):
+        path = tmp_path / "small.img"
+        path.write_bytes(raw)
+
+        assert resolve_image_source(str(path), max_bytes=1024).mime == mime
+        assert resolve_image_source(_data_uri(raw, mime), max_bytes=1024).mime == mime
+
+    def test_local_outside_accepted_mimes_rejected(self, tmp_path):
+        path = tmp_path / "logo.bmp"
+        path.write_bytes(self._BMP)
+
+        with pytest.raises(ValueError, match="not supported here"):
+            resolve_image_source(str(path), accepted_mimes=frozenset({"image/png"}))
+
+    def test_data_uri_outside_accepted_mimes_rejected(self):
+        with pytest.raises(ValueError, match="not supported here"):
+            resolve_image_source(
+                _data_uri(self._BMP, "image/bmp"),
+                accepted_mimes=frozenset({"image/png"}),
+            )
+
+    def test_accepted_mime_passes(self, tmp_path):
+        path = tmp_path / "ok.png"
+        path.write_bytes(_PNG)
+
+        src = resolve_image_source(
+            str(path), accepted_mimes=frozenset({"image/png", "image/gif"})
+        )
+
+        assert src.mime == "image/png"
+
+    def test_remote_is_not_constrained(self):
+        """A REMOTE URL is fetched by the backend, not here, so neither the cap
+        nor the allowlist can be applied to it."""
+        src = resolve_image_source(
+            "https://example.com/huge.bmp",
+            max_bytes=1,
+            accepted_mimes=frozenset({"image/png"}),
+        )
+
+        assert src.kind is SourceKind.REMOTE

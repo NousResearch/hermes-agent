@@ -31,7 +31,7 @@ import base64
 import enum
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Collection, Optional
 
 # Enough leading bytes to identify any format ``_sniff_mime_from_bytes`` knows
 # (the longest check inspects offset 12).
@@ -57,8 +57,14 @@ class SourceKind(enum.Enum):
     LOCAL = "local"
 
 
-def _require_image_mime(head: bytes, ref: str) -> str:
-    """Return the sniffed image MIME for *head*, or raise if it isn't an image."""
+def _require_image_mime(
+    head: bytes, ref: str, accepted: Optional[Collection[str]] = None
+) -> str:
+    """Return the sniffed image MIME for *head*, or raise if it isn't an image.
+
+    ``accepted`` narrows the result to a backend's supported formats, so an
+    input its API would reject server-side fails here with a clear message.
+    """
     from agent.image_routing import _sniff_mime_from_bytes
 
     mime = _sniff_mime_from_bytes(head)
@@ -67,10 +73,33 @@ def _require_image_mime(head: bytes, ref: str) -> str:
             f"Source image is not a recognised image file: {ref}. "
             f"image sources must be one of {ACCEPTED_IMAGE_TYPES}."
         )
+    if accepted is not None and mime not in accepted:
+        readable = ", ".join(sorted(m.split("/", 1)[-1].upper() for m in accepted))
+        raise ValueError(
+            f"Source image type {mime} is not supported here: {ref}. "
+            f"image sources must be one of {readable}."
+        )
     return mime
 
 
-def _validate_data_uri(value: str, ref: str) -> str:
+def _data_uri_decoded_size(value: str) -> int:
+    """Decoded byte length of a base64 ``data:`` URI, without decoding it."""
+    _, _, payload = value.partition(",")
+    compact = "".join(payload.split())
+    return (len(compact) // 4) * 3 - compact[-2:].count("=")
+
+
+def _require_within_cap(size: int, ref: str, max_bytes: Optional[int]) -> None:
+    """Raise when *size* exceeds a backend's inline cap."""
+    if max_bytes is not None and size > max_bytes:
+        raise ValueError(
+            f"Source image exceeds the {max_bytes // (1024 * 1024)}MB limit: {ref}"
+        )
+
+
+def _validate_data_uri(
+    value: str, ref: str, accepted: Optional[Collection[str]] = None
+) -> str:
     """Validate a ``data:`` URI declares an image and carries image bytes.
 
     The declared MIME is checked, and the base64 payload's leading bytes are
@@ -96,7 +125,7 @@ def _validate_data_uri(value: str, ref: str) -> str:
         head = base64.b64decode(prefix)
     except Exception as exc:  # noqa: BLE001 — malformed payload, reject clearly
         raise ValueError(f"Source data URI has malformed base64: {ref}") from exc
-    return _require_image_mime(head, ref)
+    return _require_image_mime(head, ref, accepted)
 
 
 def _local_path_from_ref(value: str) -> str:
@@ -194,7 +223,13 @@ class ImageSource:
         return f"image.{ext}"
 
 
-def resolve_image_source(ref: str, *, sniff_bytes: int = SNIFF_BYTES) -> ImageSource:
+def resolve_image_source(
+    ref: str,
+    *,
+    sniff_bytes: int = SNIFF_BYTES,
+    max_bytes: Optional[int] = None,
+    accepted_mimes: Optional[Collection[str]] = None,
+) -> ImageSource:
     """Classify and validate a source-image reference.
 
     ``http(s)`` URLs are trusted and returned as ``REMOTE`` without a fetch.
@@ -203,6 +238,11 @@ def resolve_image_source(ref: str, *, sniff_bytes: int = SNIFF_BYTES) -> ImageSo
     real image. Raises :class:`ValueError` with an actionable message on any
     failure, so callers can surface it rather than handing a backend something
     it will reject.
+
+    ``max_bytes`` caps the inlineable size and ``accepted_mimes`` narrows the
+    permitted formats, for backends whose API is stricter than the sniffer.
+    Both apply to ``LOCAL`` and ``DATA_URI`` sources; a ``REMOTE`` URL is
+    fetched by the backend, not here, so neither can be checked for it.
     """
     value = (ref or "").strip()
     if not value:
@@ -213,7 +253,8 @@ def resolve_image_source(ref: str, *, sniff_bytes: int = SNIFF_BYTES) -> ImageSo
     if low.startswith(("http://", "https://")):
         return ImageSource(SourceKind.REMOTE, value, ref)
     if low.startswith("data:"):
-        mime = _validate_data_uri(value, ref)
+        mime = _validate_data_uri(value, ref, accepted_mimes)
+        _require_within_cap(_data_uri_decoded_size(value), ref, max_bytes)
         return ImageSource(SourceKind.DATA_URI, value, ref, mime=mime)
 
     path = _local_path_from_ref(value)
@@ -232,7 +273,11 @@ def resolve_image_source(ref: str, *, sniff_bytes: int = SNIFF_BYTES) -> ImageSo
     if block_error:
         raise ValueError(block_error)
 
+    # Size is checked before the read so an oversized file isn't buffered just
+    # to be turned down.
+    _require_within_cap(os.path.getsize(path), ref, max_bytes)
+
     with open(path, "rb") as handle:
         head = handle.read(sniff_bytes)
-    mime = _require_image_mime(head, ref)
+    mime = _require_image_mime(head, ref, accepted_mimes)
     return ImageSource(SourceKind.LOCAL, path, ref, mime=mime)

@@ -2934,6 +2934,37 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"found": ok, "subagent_id": subagent_id})
 
 
+@method("subagent.steer")
+def _(rid, params: dict) -> dict:
+    """Queue steering text into a live delegated child without stopping it.
+
+    The redirection-side mirror of subagent.interrupt: resolves the child in
+    the delegation registry and calls AIAgent.steer(), which appends the text
+    to the child's last tool result at its next iteration boundary — the
+    in-flight tool call is never cut. "queued" is not "delivered": a child
+    already past its final tool batch has no boundary left to drain into,
+    and that race surfaces as ``missed_steer`` on the parent's completion
+    entry instead of being silently dropped.
+    """
+    from tools.delegate_tool import steer_subagent
+
+    subagent_id = str(params.get("subagent_id") or "").strip()
+    if not subagent_id:
+        return _err(rid, 4000, "subagent_id required")
+    text = (params.get("text") or "").strip()
+    if not text:
+        return _err(rid, 4002, "text is required")
+    queued = steer_subagent(subagent_id, text)
+    return _ok(
+        rid,
+        {
+            "status": "queued" if queued else "rejected",
+            "subagent_id": subagent_id,
+            "text": text,
+        },
+    )
+
+
 @method("spawn_tree.save")
 def _(rid, params: dict) -> dict:
     session_id = str(params.get("session_id") or "").strip()

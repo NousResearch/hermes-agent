@@ -205,6 +205,38 @@ def interrupt_subagent(subagent_id: str) -> bool:
     return True
 
 
+def steer_subagent(subagent_id: str, text: str) -> bool:
+    """Queue steering text into a single running subagent without stopping it.
+
+    The redirection-side mirror of interrupt_subagent(): resolves the live
+    child in the registry and calls AIAgent.steer(), which appends the text
+    to the child's last tool result at its next iteration boundary — the
+    current tool call is never cut. Returns True if a matching subagent
+    QUEUED the text; False for an unknown id, a record with no live agent,
+    or empty text.
+
+    Queued is not delivered: a child already past its final tool batch has
+    no boundary left to drain into.  That race is surfaced, not swallowed —
+    the finalizer returns the undelivered text as ``pending_steer`` and
+    ``_run_single_child`` retains it in the completion entry as
+    ``missed_steer`` with a note appended to the summary.
+    """
+    if not text or not text.strip():
+        return False
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+    if not record:
+        return False
+    agent = record.get("agent")
+    if agent is None:
+        return False
+    try:
+        return bool(agent.steer(text))
+    except Exception as exc:
+        logger.debug("steer_subagent(%s) failed: %s", subagent_id, exc)
+        return False
+
+
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Snapshot of the currently running subagent tree.
 
@@ -2437,6 +2469,21 @@ def _run_single_child(
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
+
+        # A steer that queued after the child's final assistant turn had no
+        # tool batch left to drain into.  The finalizer hands the undelivered
+        # text back (turn_finalizer.py "pending_steer"); retain it here so the
+        # parent sees the steer was MISSED rather than silently absorbed —
+        # steer_subagent() returning True means "queued", and this is where a
+        # queued-but-never-delivered steer gets named.
+        _missed_steer = result.get("pending_steer")
+        if isinstance(_missed_steer, str) and _missed_steer.strip():
+            entry["missed_steer"] = _missed_steer
+            _miss_note = (
+                "[steer did not land — the subagent finished before it could "
+                f"be delivered: {_missed_steer}]"
+            )
+            entry["summary"] = f"{summary}\n\n{_miss_note}" if summary else _miss_note
 
         # Cross-agent file-state reminder.  If this subagent wrote any
         # files the parent had already read, surface it so the parent

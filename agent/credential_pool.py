@@ -642,7 +642,8 @@ class CredentialPool:
         ``_available_entries`` caller (see the comment on ``has_available``).
         """
         with self._lock:
-            if self._available_entries():
+            available, _pending = self._available_entries()
+            if available:
                 return None
             candidates: List[float] = []
             for entry in self._entries:

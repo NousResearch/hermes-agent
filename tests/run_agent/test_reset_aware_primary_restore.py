@@ -203,9 +203,23 @@ class TestNextAvailableAt:
         original = pool._available_entries
 
         def _probe(**kwargs):
-            held["locked"] = not pool._lock.acquire(blocking=False)
-            if not held["locked"]:
-                pool._lock.release()
+            # self._lock is an RLock (deferred-refresh mutations self-lock),
+            # so a same-thread non-blocking acquire always succeeds; probe
+            # ownership from a helper thread instead.
+            import threading as _t
+
+            blocked = _t.Event()
+
+            def _try():
+                if not pool._lock.acquire(blocking=False):
+                    blocked.set()
+                else:
+                    pool._lock.release()
+
+            worker = _t.Thread(target=_try)
+            worker.start()
+            worker.join(timeout=5)
+            held["locked"] = blocked.is_set()
             return original(**kwargs)
 
         pool._available_entries = _probe

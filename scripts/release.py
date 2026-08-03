@@ -1347,6 +1347,7 @@ LEGACY_AUTHOR_MAP = {
     "iamagenius00@users.noreply.github.com": "iamagenius00",
     "9219265+cresslank@users.noreply.github.com": "cresslank",
     "trevmanthony@gmail.com": "trevthefoolish",
+    "at828@proton.me": "ATran28",  # PR #77270 whatsapp bridge reconnect wedge fix
     "ziliangpeng@users.noreply.github.com": "ziliangpeng",
     "ziliangdotme@gmail.com": "ziliangpeng",
     "centripetal-star@users.noreply.github.com": "centripetal-star",

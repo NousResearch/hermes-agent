@@ -24158,6 +24158,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         new_output = redact_terminal_output(
                             new_output, getattr(session, "command", "") or ""
                         )
+                        # redact_terminal_output() is unforced, so it returns raw
+                        # text when security.redact_secrets is off.  This send
+                        # goes straight to the platform adapter, so it needs the
+                        # same unconditional floor as the agent-notify path.
+                        new_output = _redact_gateway_user_facing_secrets(new_output)
                     if notify_mode == "concise":
                         _cmd_disp = _redact_gateway_user_facing_secrets(
                             getattr(session, "command", "") or ""
@@ -24204,6 +24209,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     new_output = redact_terminal_output(
                         new_output, getattr(session, "command", "") or ""
                     )
+                    new_output = _redact_gateway_user_facing_secrets(new_output)
                 message_text = (
                     f"[Background process {session_id} is still running~ "
                     f"New output:\n{new_output}]"

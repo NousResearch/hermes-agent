@@ -238,6 +238,8 @@ async def _lifespan(app: "FastAPI"):
         await PTY_REGISTRY.close_all()
         if cron_stop is not None:
             cron_stop.set()
+        if os.getenv("HERMES_DESKTOP") == "1":
+            _terminate_desktop_managed_gateway()
 
 
 def _get_event_state(app: "FastAPI"):
@@ -3717,6 +3719,19 @@ _ACTION_COMMANDS: Dict[str, Tuple[str, ...]] = {}
 # ``name`` → completed synthetic action result for actions the server handled
 # without spawning a subprocess (for example, unsupported Docker updates).
 _ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
+
+
+def _terminate_desktop_managed_gateway() -> None:
+    """Stop a live gateway restart child when its Desktop backend shuts down."""
+    proc = _ACTION_PROCS.get("gateway-restart")
+    if proc is None:
+        return
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+    except OSError:
+        # The child may have exited between poll() and terminate().
+        pass
 
 
 def _record_completed_action(name: str, message: str, exit_code: int = 1) -> None:

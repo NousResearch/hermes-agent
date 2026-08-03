@@ -108,6 +108,7 @@ def _make_adapter() -> BasePlatformAdapter:
     adapter._auto_tts_enabled_chats = set()
     adapter._auto_tts_disabled_chats = set()
     adapter._typing_paused = set()
+    adapter._streaming_tts_completed_turns = set()
     return adapter
 
 
@@ -148,7 +149,12 @@ async def test_non_dm_message_does_not_wait_for_topic_recovery_executor(monkeypa
 
 @pytest.mark.asyncio
 async def test_dm_topic_recovery_stays_offloaded(monkeypatch):
-    """Real Telegram DM topic recovery must still run outside the event loop."""
+    """Stripped Telegram DM replies still recover off the event loop.
+
+    Plain root-chat DMs (empty/``1`` thread, no reply) intentionally skip
+    recovery so lobby messages stay in the lobby. This regression covers the
+    remaining recovery path: a DM reply whose topic metadata was stripped.
+    """
     adapter = _make_adapter()
     recovery = MagicMock(return_value="topic-222")
     adapter.set_topic_recovery_fn(recovery)
@@ -161,6 +167,7 @@ async def test_dm_topic_recovery_stays_offloaded(monkeypatch):
 
     monkeypatch.setattr(asyncio, "to_thread", _inline_to_thread)
     event = _make_event("hello", chat_type="dm", thread_id="1")
+    event.reply_to_message_id = "10"
     original_source = event.source
 
     await adapter.handle_message(event)
@@ -170,6 +177,32 @@ async def test_dm_topic_recovery_stays_offloaded(monkeypatch):
     assert recovery.call_count == 1
     assert recovery.call_args.args[0] is original_source
     assert event.source.thread_id == "topic-222"
+
+
+@pytest.mark.asyncio
+async def test_plain_dm_root_message_skips_topic_recovery(monkeypatch):
+    """Plain root-chat DM messages must not be moved into the latest topic."""
+    adapter = _make_adapter()
+    recovery = MagicMock(return_value="topic-222")
+    adapter.set_topic_recovery_fn(recovery)
+    offloaded = False
+
+    async def _inline_to_thread(func, *args, **kwargs):
+        nonlocal offloaded
+        offloaded = True
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _inline_to_thread)
+    event = _make_event("hello from lobby", chat_type="dm", thread_id="1")
+
+    await adapter.handle_message(event)
+    await asyncio.sleep(0)
+
+    # DM still enters the offloaded recovery wrapper, but plain root messages
+    # return before calling the recovery hook.
+    assert offloaded is True
+    recovery.assert_not_called()
+    assert event.source.thread_id == "1"
 
 
 @pytest.mark.asyncio

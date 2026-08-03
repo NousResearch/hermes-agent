@@ -85,8 +85,6 @@ class SessionSchemaMixin:
 
         Returns the number of triggers dropped (0 when already converged).
         """
-        import re as _re
-
         # CJK is a v23-only surface.  Decide the layout before selecting
         # destructive candidates so the legacy branch never drops a trigger
         # it does not recreate.
@@ -113,9 +111,8 @@ class SessionSchemaMixin:
             return 0
 
         for name in to_drop:
-            # Trigger names are from our fixed allowlist, not user input.
-            if not _re.fullmatch(r"[A-Za-z0-9_]+", name):
-                continue
+            # Names are drawn from the update_names literal allowlist above —
+            # never user input — so the identifier is interpolation-safe.
             cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
 
         # Re-apply current DDL so CREATE TRIGGER installs the OF variants.

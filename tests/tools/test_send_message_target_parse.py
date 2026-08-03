@@ -10,11 +10,80 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _parse_target_ref, send_message_tool
+from tools.send_message_tool import _parse_target_ref, _send_to_platform, send_message_tool
 
 
 def _run_async_immediately(coro):
     return asyncio.run(coro)
+
+
+def test_buzz_uuid_target_is_explicit() -> None:
+    channel_id = "31b543d5-80d4-4df5-8a5c-cefca1a58fdd"
+
+    assert _parse_target_ref("buzz", channel_id) == (channel_id, None, True)
+
+
+def test_plugin_media_receipt_suppresses_omitted_warning() -> None:
+    media_result = {
+        "success": True,
+        "message_id": "evt-media",
+        "media_delivered": True,
+    }
+
+    with patch(
+        "tools.send_message_tool._send_via_adapter",
+        new=AsyncMock(return_value=media_result),
+    ):
+        result = asyncio.run(
+            _send_to_platform(
+                Platform("buzz"),
+                SimpleNamespace(enabled=True, token=None, extra={}),
+                "31b543d5-80d4-4df5-8a5c-cefca1a58fdd",
+                "attached",
+                media_files=[("/tmp/report.txt", False)],
+            )
+        )
+
+    assert result == media_result
+    assert "warnings" not in result
+
+
+def test_send_message_routes_buzz_uuid_without_home_fallback() -> None:
+    buzz_platform = Platform("buzz")
+    buzz_cfg = SimpleNamespace(enabled=True, token=None, extra={})
+    config = SimpleNamespace(
+        platforms={buzz_platform: buzz_cfg},
+        get_home_channel=lambda _platform: SimpleNamespace(chat_id="home-channel"),
+    )
+    channel_id = "31b543d5-80d4-4df5-8a5c-cefca1a58fdd"
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("raw UUID should not resolve via directory")), \
+         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+         patch("gateway.mirror.mirror_to_session", return_value=True):
+        result = json.loads(
+            send_message_tool(
+                {
+                    "action": "send",
+                    "target": f"buzz:{channel_id}",
+                    "message": "hello group",
+                }
+            )
+        )
+
+    assert result["success"] is True
+    assert "note" not in result
+    send_mock.assert_awaited_once_with(
+        buzz_platform,
+        buzz_cfg,
+        channel_id,
+        "hello group",
+        thread_id=None,
+        media_files=[],
+        force_document=False,
+    )
 
 
 def test_photon_e164_target_is_explicit() -> None:

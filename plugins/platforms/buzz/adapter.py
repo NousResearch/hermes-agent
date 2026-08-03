@@ -3131,7 +3131,7 @@ async def _standalone_send(
     message: str,
     *,
     thread_id: Optional[str] = None,
-    media_files: Optional[List[str]] = None,
+    media_files: Optional[List[Any]] = None,
     force_document: bool = False,
 ) -> Dict[str, Any]:
     """One-shot send without a live adapter (out-of-process cron delivery).
@@ -3175,7 +3175,8 @@ async def _standalone_send(
         _rtm = "off"
     if thread_id and _rtm != "off":
         args += ["--reply-to", str(thread_id)]
-    for path in media_files or []:
+    for media in media_files or []:
+        path = media[0] if isinstance(media, (list, tuple)) and media else media
         args += ["--file", str(path)]
     try:
         code, out, err = await _exec_buzz(
@@ -3210,7 +3211,10 @@ async def _standalone_send(
         data = json.loads(out or "{}")
     except ValueError:
         data = {}
-    return {"success": True, "message_id": str(data.get("event_id") or "")}
+    result = {"success": True, "message_id": str(data.get("event_id") or "")}
+    if media_files:
+        result["media_delivered"] = True
+    return result
 
 
 def interactive_setup() -> None:

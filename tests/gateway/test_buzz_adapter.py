@@ -3253,6 +3253,42 @@ class TestStandaloneSend:
             "See @\u200bsession:default/example.",
         ]
 
+    @pytest.mark.asyncio
+    async def test_standalone_send_extracts_path_from_media_descriptor(self, monkeypatch, tmp_path):
+        from gateway.config import PlatformConfig
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        document = tmp_path / "report.txt"
+        document.write_text("report", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+
+        captured = {}
+
+        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0):
+            captured["args"] = args
+            return 0, json.dumps({"accepted": True, "event_id": "evt-media"}), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            CHANNEL,
+            "attached",
+            media_files=[(str(document), False)],
+        )
+
+        assert result == {
+            "success": True,
+            "message_id": "evt-media",
+            "media_delivered": True,
+        }
+        file_index = captured["args"].index("--file")
+        assert captured["args"][file_index + 1] == str(document)
+
+
 
 
 # ── Editing and deleting (streaming) ──────────────────────────────────

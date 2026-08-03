@@ -1403,7 +1403,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             return result
         last_result = result
 
-    if warning and isinstance(last_result, dict) and last_result.get("success"):
+    if (
+        warning
+        and isinstance(last_result, dict)
+        and last_result.get("success")
+        and not last_result.get("media_delivered")
+    ):
         warnings = list(last_result.get("warnings", []))
         warnings.append(warning)
         last_result["warnings"] = warnings

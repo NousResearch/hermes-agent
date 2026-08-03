@@ -204,6 +204,128 @@ def test_terminal_path_keeps_passthrough_db_password(monkeypatch):
         clear_env_passthrough()
 
 
+def test_make_run_env_strips_password_by_default(monkeypatch):
+    """The LocalEnvironment terminal spawn factory (_make_run_env) must
+    strip *_PASSWORD values even when they are not in the static blocklist —
+    the exact gap egilewski flagged: _sanitize_subprocess_env protected the
+    build_subprocess_env/background path, but the live terminal path merged
+    os.environ without the credential-shaped password predicate."""
+    from tools.environments.local import _make_run_env
+
+    monkeypatch.setenv("DB_PASSWORD", "db-pass-9f2c1a")
+    monkeypatch.setenv("REDIS_PASSWORD", "redis-pass-77aa")
+    monkeypatch.setenv("MY_HARMLESS_VAR", "keep-me")
+
+    env = _make_run_env({})
+
+    assert "DB_PASSWORD" not in env
+    assert "REDIS_PASSWORD" not in env
+    assert env.get("MY_HARMLESS_VAR") == "keep-me"
+
+
+def test_make_run_env_keeps_passthrough_db_password(monkeypatch):
+    """An explicitly registered DB_PASSWORD passthrough must survive the
+    terminal spawn factory — the strip is passthrough-aware here too, so a
+    skill-registered command that legitimately needs the value still gets it."""
+    from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
+    from tools.environments.local import _make_run_env
+
+    monkeypatch.setenv("DB_PASSWORD", "db-pass-9f2c1a")
+    register_env_passthrough(["DB_PASSWORD"])
+    try:
+        env = _make_run_env({})
+        assert env.get("DB_PASSWORD") == "db-pass-9f2c1a"
+    finally:
+        clear_env_passthrough()
+
+
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true" and not os.path.isfile("/bin/bash"),
+    reason="Requires bash; CI sandbox may strip it.",
+)
+def test_local_environment_e2e_password_denial_and_passthrough(tmp_path, monkeypatch):
+    """End-to-end LocalEnvironment execution: a real terminal child must
+    NOT see a *_PASSWORD value by default, and MUST see it once explicitly
+    registered as passthrough — proving the _make_run_env filter closes the
+    live spawn sink, not just the helper factories."""
+    from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
+    from tools.environments.local import LocalEnvironment
+
+    monkeypatch.setenv("DB_PASSWORD", "db-pass-e2e-77")
+
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+    try:
+        denied = env.execute(
+            'if [ -n "$DB_PASSWORD" ]; then echo "LEAKED"; else echo "DENIED"; fi'
+        )
+        assert denied["returncode"] == 0
+        assert "DENIED" in denied.get("output", "")
+
+        register_env_passthrough(["DB_PASSWORD"])
+        try:
+            allowed = env.execute(
+                'if [ "$DB_PASSWORD" = "db-pass-e2e-77" ]; then echo "PASSTHROUGH"; else echo "MISSING"; fi'
+            )
+            assert allowed["returncode"] == 0
+            assert "PASSTHROUGH" in allowed.get("output", "")
+        finally:
+            clear_env_passthrough()
+    finally:
+        env.cleanup()
+
+
+def test_bws_token_env_cache_is_scoped_per_profile(tmp_path, monkeypatch):
+    """The Bitwarden token-name cache must be keyed by the active Hermes
+    home, not process-global — a gateway serving multiple profiles by
+    switching the context-local home per turn must match each profile's own
+    configured access_token_env name (egilewski P1)."""
+    import yaml
+
+    import tools.environments.local as _local_mod
+
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+    profile_a.mkdir()
+    profile_b.mkdir()
+    (profile_a / "config.yaml").write_text(
+        yaml.dump({"secrets": {"bitwarden": {"access_token_env": "ALPHA_BWS_TOKEN"}}}),
+        encoding="utf-8",
+    )
+    (profile_b / "config.yaml").write_text(
+        yaml.dump({"secrets": {"bitwarden": {"access_token_env": "BETA_BWS_TOKEN"}}}),
+        encoding="utf-8",
+    )
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    # Fresh cache: no cross-test pollution.
+    monkeypatch.setattr(_local_mod, "_configured_bws_token_env_by_home", {})
+
+    token_a = set_hermes_home_override(str(profile_a))
+    try:
+        assert _local_mod._get_configured_bws_token_env() == "ALPHA_BWS_TOKEN"
+        assert _local_mod._is_hermes_internal_secret("ALPHA_BWS_TOKEN") is True
+        assert _local_mod._is_hermes_internal_secret("BETA_BWS_TOKEN") is False
+    finally:
+        reset_hermes_home_override(token_a)
+
+    token_b = set_hermes_home_override(str(profile_b))
+    try:
+        assert _local_mod._get_configured_bws_token_env() == "BETA_BWS_TOKEN"
+        assert _local_mod._is_hermes_internal_secret("BETA_BWS_TOKEN") is True
+        assert _local_mod._is_hermes_internal_secret("ALPHA_BWS_TOKEN") is False
+    finally:
+        reset_hermes_home_override(token_b)
+
+    # Back on profile A the first resolution is still its own name (cache
+    # entries are isolated per home, not overwritten by the last visitor).
+    token_a2 = set_hermes_home_override(str(profile_a))
+    try:
+        assert _local_mod._get_configured_bws_token_env() == "ALPHA_BWS_TOKEN"
+    finally:
+        reset_hermes_home_override(token_a2)
+
+
 def test_bws_token_env_remap_non_suffix_stripped(tmp_path, monkeypatch):
     """A Bitwarden access_token_env remapped to a non-suffix name (e.g.
     MY_BWS_TOKEN) is stripped exactly, while third-party *_ACCESS_TOKEN vars
@@ -216,9 +338,8 @@ def test_bws_token_env_remap_non_suffix_stripped(tmp_path, monkeypatch):
     config = {"secrets": {"bitwarden": {"access_token_env": "MY_BWS_TOKEN"}}}
     (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # Reset the module-level cache so the remap is picked up.
-    monkeypatch.setattr(_local_mod, "_configured_bws_token_env", None)
-    monkeypatch.setattr(_local_mod, "_configured_bws_token_env_loaded", False)
+    # Reset the per-home cache so the remap is picked up for this home.
+    monkeypatch.setattr(_local_mod, "_configured_bws_token_env_by_home", {})
 
     monkeypatch.setenv("MY_BWS_TOKEN", "0.remapped.token")
     monkeypatch.setenv("STRIPE_ACCESS_TOKEN", "sk_live_third_party")

@@ -146,6 +146,17 @@ hermes                # 启动交互式 CLI
 录音键可通过 `~/.hermes/config.yaml` 中的 `voice.record_key` 配置（默认：`ctrl+b`）。
 :::
 
+### 回复指引
+
+默认情况下，经典 CLI 的麦克风请求会包含简短、对话式的回复指引。要让经典 CLI 中的口述请求像键入请求一样处理，只需禁用这项指引：
+
+```yaml
+voice:
+  concise_responses: false
+```
+
+这不会改变语音识别、语言提示、可编辑的转录文本、TTS、工具使用或会话历史。该设置只会移除 API 调用本地的指令；该指令要求语音回复限制在 2–3 句且不使用 Markdown 或代码块。
+
 ### 静音检测
 
 两阶段算法检测您是否已停止说话：
@@ -389,6 +400,7 @@ voice:
   record_key: "ctrl+b"            # 开始/停止录音的按键
   max_recording_seconds: 120       # 最大录音时长
   auto_tts: false                  # 启用语音模式时自动开启 TTS
+  concise_responses: true          # 让经典 CLI 麦克风请求保持简洁、对话式回复
   beep_enabled: true               # 播放录音开始/结束提示音
   silence_threshold: 200           # 静音判定的 RMS 电平（0-32767）
   silence_duration: 3.0            # 自动停止前的静音秒数

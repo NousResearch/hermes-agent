@@ -148,6 +148,17 @@ This loop continues until you press **Ctrl+B** during recording (exits continuou
 The record key is configurable via `voice.record_key` in `~/.hermes/config.yaml` (default: `ctrl+b`).
 :::
 
+### Response guidance
+
+By default, classic-CLI microphone requests include brief, conversational response guidance. To make classic-CLI dictation behave like typed input, disable only that guidance:
+
+```yaml
+voice:
+  concise_responses: false
+```
+
+This does not change speech recognition, language hints, editable transcription, TTS, tool use, or conversation history. The setting only removes the API-call-local instruction limiting voice replies to 2–3 sentences without Markdown or code blocks.
+
 ### Silence Detection
 
 Two-stage algorithm detects when you've finished speaking:
@@ -412,6 +423,7 @@ voice:
   record_key: "ctrl+b"            # Key to start/stop recording
   max_recording_seconds: 120       # Maximum recording length
   auto_tts: false                  # Auto-enable TTS when voice mode starts
+  concise_responses: true          # Keep classic-CLI microphone replies concise and conversational
   beep_enabled: true               # Play record start/stop beeps
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop

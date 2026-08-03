@@ -331,6 +331,177 @@ class TestZulipSearchMessages:
         assert call_args["num_before"] == 5
         assert call_args["num_after"] == 5
 
+    def test_reassembles_hermes_multi_chunk_replies(self, monkeypatch):
+        """Long Hermes answers split at 10k are rejoined for search results.
+
+        truncate_message appends ' (i/n)' to each outbound chunk. Without
+        reassembly, a query that only matches text in chunk 2+ looks like a
+        miss even though Zulip returned the fragments.
+        """
+        _set_zulip_env(monkeypatch)
+
+        bot = "bot@test.zulipchat.com"
+        mock_client = MagicMock()
+        mock_client.get_messages.return_value = {
+            "result": "success",
+            # Newest-first order (common when anchoring at newest).
+            "messages": [
+                {
+                    "id": 302,
+                    "sender_full_name": "Hermes Bot",
+                    "sender_email": bot,
+                    "content": "tail with UNIQUE_TOKEN_XYZ (3/3)",
+                    "timestamp": 1700000020,
+                },
+                {
+                    "id": 301,
+                    "sender_full_name": "Hermes Bot",
+                    "sender_email": bot,
+                    "content": "middle section (2/3)",
+                    "timestamp": 1700000010,
+                },
+                {
+                    "id": 300,
+                    "sender_full_name": "Hermes Bot",
+                    "sender_email": bot,
+                    "content": "head of a very long answer (1/3)",
+                    "timestamp": 1700000000,
+                },
+                {
+                    "id": 200,
+                    "sender_full_name": "Alice",
+                    "sender_email": "alice@example.com",
+                    "content": "user question",
+                    "timestamp": 1699999990,
+                },
+            ],
+            "found_newest": True,
+            "found_oldest": False,
+        }
+
+        with patch("zulip.Client", return_value=mock_client):
+            result = zulip_search_messages(stream="general")
+
+        data = json.loads(result)
+        assert data["count"] == 2
+        bot_msg = next(m for m in data["messages"] if m["is_bot"])
+        user_msg = next(m for m in data["messages"] if not m["is_bot"])
+        assert user_msg["content"] == "user question"
+        assert "UNIQUE_TOKEN_XYZ" in bot_msg["content"]
+        assert "head of a very long answer" in bot_msg["content"]
+        assert "middle section" in bot_msg["content"]
+        assert "(1/3)" not in bot_msg["content"]
+        assert bot_msg["chunk_count"] == 3
+        assert bot_msg["chunk_ids"] == [300, 301, 302]
+        assert bot_msg["id"] == 300
+
+    def test_incomplete_chunk_series_left_unmerged_when_expand_fails(
+        self, monkeypatch
+    ):
+        """If siblings cannot be fetched, leave partial chunks unmerged."""
+        _set_zulip_env(monkeypatch)
+
+        bot = "bot@test.zulipchat.com"
+        mock_client = MagicMock()
+        # First call: partial series. Expand retries return the same partial.
+        partial = {
+            "result": "success",
+            "messages": [
+                {
+                    "id": 301,
+                    "sender_full_name": "Hermes Bot",
+                    "sender_email": bot,
+                    "content": "middle only (2/3)",
+                    "timestamp": 1700000010,
+                },
+                {
+                    "id": 300,
+                    "sender_full_name": "Hermes Bot",
+                    "sender_email": bot,
+                    "content": "head (1/3)",
+                    "timestamp": 1700000000,
+                },
+            ],
+            "found_newest": True,
+            "found_oldest": False,
+        }
+        mock_client.get_messages.return_value = partial
+
+        with patch("zulip.Client", return_value=mock_client):
+            result = zulip_search_messages(stream="general")
+
+        data = json.loads(result)
+        assert data["count"] == 2
+        assert all("chunk_ids" not in m for m in data["messages"])
+        contents = [m["content"] for m in data["messages"]]
+        assert any("(1/3)" in c for c in contents)
+        assert any("(2/3)" in c for c in contents)
+
+    def test_expands_single_chunk_search_hit_into_full_reply(self, monkeypatch):
+        """Full-text hits on chunk 2 alone should expand and rejoin the series."""
+        _set_zulip_env(monkeypatch)
+
+        bot = "bot@test.zulipchat.com"
+        mock_client = MagicMock()
+        initial = {
+            "result": "success",
+            "messages": [
+                {
+                    "id": 301,
+                    "sender_full_name": "Hermes Bot",
+                    "sender_email": bot,
+                    "content": "middle with UNIQUE_TOKEN_XYZ (2/3)",
+                    "timestamp": 1700000010,
+                },
+            ],
+            "found_newest": False,
+            "found_oldest": False,
+        }
+        expanded = {
+            "result": "success",
+            "messages": [
+                {
+                    "id": 300,
+                    "sender_full_name": "Hermes Bot",
+                    "sender_email": bot,
+                    "content": "head of a very long answer (1/3)",
+                    "timestamp": 1700000000,
+                },
+                {
+                    "id": 301,
+                    "sender_full_name": "Hermes Bot",
+                    "sender_email": bot,
+                    "content": "middle with UNIQUE_TOKEN_XYZ (2/3)",
+                    "timestamp": 1700000010,
+                },
+                {
+                    "id": 302,
+                    "sender_full_name": "Hermes Bot",
+                    "sender_email": bot,
+                    "content": "tail section (3/3)",
+                    "timestamp": 1700000020,
+                },
+            ],
+            "found_newest": True,
+            "found_oldest": True,
+        }
+        mock_client.get_messages.side_effect = [initial, expanded]
+
+        with patch("zulip.Client", return_value=mock_client):
+            result = zulip_search_messages(
+                stream="general", query="UNIQUE_TOKEN_XYZ"
+            )
+
+        data = json.loads(result)
+        assert data["count"] == 1
+        msg = data["messages"][0]
+        assert "UNIQUE_TOKEN_XYZ" in msg["content"]
+        assert "head of a very long answer" in msg["content"]
+        assert "tail section" in msg["content"]
+        assert msg["chunk_count"] == 3
+        assert msg["chunk_ids"] == [300, 301, 302]
+        assert mock_client.get_messages.call_count == 2
+
 
 class TestZulipDownloadAttachment:
     """Verify the tool that materializes files found in Zulip history."""

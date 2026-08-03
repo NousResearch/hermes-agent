@@ -10,9 +10,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Hermes outbound long replies are split by BasePlatformAdapter.truncate_message
+# into multiple Zulip messages ending with " (i/n)" (see gateway/platforms/base.py).
+# Zulip's 10k code-point cap means a single agent answer can become several
+# consecutive bot messages; search must rejoin them or full-text queries for
+# content that only appears past the first chunk look like a miss.
+_CHUNK_MARKER_RE = re.compile(r" \((\d+)/(\d+)\)\s*$")
 
 
 def _get_zulip_credentials(platform_config: Any = None) -> tuple[str, str, str]:
@@ -189,7 +197,6 @@ def zulip_search_messages(
         narrow = list(session_narrow)
         # Sanitize query to prevent scope escalation via search operators.
         if query:
-            import re
             sanitized = re.sub(r"\b(stream|pm-with):\S+", "", query).strip()
             if sanitized:
                 narrow.append(["search", sanitized])
@@ -233,16 +240,32 @@ def zulip_search_messages(
             "note": "No messages matched the search criteria.",
         })
 
-    # Format messages for readability.
+    # Format messages for readability, then rejoin Hermes multi-chunk replies
+    # so content past the 10k Zulip cap is searchable/readable as one body.
     formatted: List[Dict[str, Any]] = []
     for msg in messages:
         formatted.append({
             "id": msg.get("id"),
             "sender": msg.get("sender_full_name") or msg.get("sender_email", "?"),
+            "sender_email": msg.get("sender_email") or "",
             "timestamp": msg.get("timestamp", 0),
             "content": (msg.get("content") or "").strip(),
             "is_bot": msg.get("sender_email") == bot_email,
         })
+
+    # Full-text search often returns only the matching chunk of a long
+    # Hermes reply. Expand isolated chunk hits so we can rejoin the series.
+    formatted = _expand_partial_hermes_chunks(
+        client,
+        formatted,
+        narrow=narrow or None,
+        bot_email=bot_email,
+    )
+    formatted = _reassemble_hermes_chunks(formatted)
+
+    # Drop internal sender_email used only for chunk grouping.
+    for entry in formatted:
+        entry.pop("sender_email", None)
 
     # Pagination cues.
     oldest_id = None
@@ -269,15 +292,216 @@ def zulip_search_messages(
     })
 
 
+def _parse_chunk_marker(content: str) -> Optional[tuple[str, int, int]]:
+    """Return ``(body, index, total)`` when *content* ends with `` (i/n)``."""
+    if not content:
+        return None
+    match = _CHUNK_MARKER_RE.search(content)
+    if not match:
+        return None
+    index = int(match.group(1))
+    total = int(match.group(2))
+    if index < 1 or total < 2 or index > total:
+        return None
+    body = content[: match.start()]
+    return body, index, total
+
+
+def _format_raw_message(msg: Dict[str, Any], bot_email: str) -> Dict[str, Any]:
+    return {
+        "id": msg.get("id"),
+        "sender": msg.get("sender_full_name") or msg.get("sender_email", "?"),
+        "sender_email": msg.get("sender_email") or "",
+        "timestamp": msg.get("timestamp", 0),
+        "content": (msg.get("content") or "").strip(),
+        "is_bot": msg.get("sender_email") == bot_email,
+    }
+
+
+def _expand_partial_hermes_chunks(
+    client: Any,
+    messages: List[Dict[str, Any]],
+    *,
+    narrow: Optional[List[List[str]]],
+    bot_email: str = "",
+    max_expansions: int = 5,
+) -> List[Dict[str, Any]]:
+    """Fetch sibling chunks when the window only contains part of a series.
+
+    A full-text ``query`` hit often returns only the matching chunk of a
+    multi-message Hermes reply.  Pull a tight window around that message so
+    ``_reassemble_hermes_chunks`` can join the full body.  Caps expansions to
+    avoid hammering the API when many partial hits appear.
+    """
+    if not messages:
+        return messages
+
+    by_id: Dict[Any, Dict[str, Any]] = {
+        m["id"]: m for m in messages if m.get("id") is not None
+    }
+    expansions = 0
+
+    # Snapshot ids up front — we mutate by_id as we expand.
+    candidates = list(by_id.values())
+    for msg in candidates:
+        if expansions >= max_expansions:
+            break
+        parsed = _parse_chunk_marker(msg.get("content") or "")
+        if parsed is None:
+            continue
+        _, index, total = parsed
+        # Already have a complete run nearby? Skip.
+        sender = msg.get("sender_email") or msg.get("sender") or ""
+        have = 0
+        for other in by_id.values():
+            other_sender = other.get("sender_email") or other.get("sender") or ""
+            if other_sender != sender:
+                continue
+            other_parsed = _parse_chunk_marker(other.get("content") or "")
+            if other_parsed and other_parsed[2] == total:
+                have += 1
+        if have >= total:
+            continue
+
+        msg_id = msg.get("id")
+        if msg_id is None:
+            continue
+        try:
+            # Fetch enough neighbors to cover the full series around this hit.
+            num_before = max(0, index - 1)
+            num_after = max(0, total - index)
+            # Small pad for interleaved non-bot messages in the same topic.
+            num_before = min(num_before + 2, 20)
+            num_after = min(num_after + 2, 20)
+            result = client.get_messages({
+                "anchor": msg_id,
+                "num_before": num_before,
+                "num_after": num_after,
+                "narrow": narrow,
+                "apply_markdown": False,
+            })
+        except Exception as exc:
+            logger.debug("Zulip chunk expand failed for %s: %s", msg_id, exc)
+            continue
+        if result.get("result") != "success":
+            continue
+        expansions += 1
+        for raw in result.get("messages") or []:
+            rid = raw.get("id")
+            if rid is None or rid in by_id:
+                continue
+            by_id[rid] = _format_raw_message(raw, bot_email)
+
+    return list(by_id.values())
+
+
+def _reassemble_hermes_chunks(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Merge consecutive Hermes multi-chunk replies into single messages.
+
+    ``truncate_message`` emits N consecutive messages from the same sender,
+    each ending with `` (i/n)``.  Zulip stores them as independent messages, so
+    a full-text search hit on chunk 2 alone returns only a fragment.  When a
+    complete ``1..n`` run is present in the result window we collapse it into
+    one entry with the concatenated body and ``chunk_ids`` for traceability.
+    Incomplete runs (pagination window cut mid-series) are left as-is so the
+    caller can widen the window.
+    """
+    if len(messages) < 2:
+        return messages
+
+    # Work in chronological order (oldest first) so chunk 1 precedes chunk n.
+    ordered = sorted(
+        messages,
+        key=lambda m: (
+            m.get("id") is None,
+            m.get("id") if m.get("id") is not None else 0,
+            m.get("timestamp") or 0,
+        ),
+    )
+
+    out: List[Dict[str, Any]] = []
+    i = 0
+    while i < len(ordered):
+        msg = ordered[i]
+        parsed = _parse_chunk_marker(msg.get("content") or "")
+        if parsed is None or parsed[1] != 1:
+            out.append(msg)
+            i += 1
+            continue
+
+        body, index, total = parsed
+        sender_key = (
+            msg.get("sender_email")
+            or msg.get("sender")
+            or ""
+        )
+        group = [(msg, body, index)]
+        j = i + 1
+        expected = 2
+        while j < len(ordered) and expected <= total:
+            nxt = ordered[j]
+            nxt_key = nxt.get("sender_email") or nxt.get("sender") or ""
+            if nxt_key != sender_key:
+                break
+            nxt_parsed = _parse_chunk_marker(nxt.get("content") or "")
+            if nxt_parsed is None:
+                break
+            nxt_body, nxt_index, nxt_total = nxt_parsed
+            if nxt_total != total or nxt_index != expected:
+                break
+            group.append((nxt, nxt_body, nxt_index))
+            expected += 1
+            j += 1
+
+        if len(group) != total:
+            # Incomplete series — keep every collected chunk as-is so the
+            # agent can widen the pagination window and retry.
+            for piece, _, _ in group:
+                out.append(piece)
+            i = j
+            continue
+
+        combined_content = "\n".join(part_body for _, part_body, _ in group)
+        first = group[0][0]
+        last = group[-1][0]
+        merged = {
+            "id": first.get("id"),
+            "sender": first.get("sender"),
+            "sender_email": first.get("sender_email", ""),
+            "timestamp": first.get("timestamp", 0),
+            "content": combined_content,
+            "is_bot": first.get("is_bot", False),
+            "chunk_ids": [g[0].get("id") for g in group],
+            "chunk_count": total,
+            "newest_chunk_id": last.get("id"),
+        }
+        out.append(merged)
+        i = j
+
+    # Oldest-first by message id — clearer for agents reconstructing long
+    # multi-chunk answers. Pagination still exposes oldest/newest ids.
+    out.sort(
+        key=lambda m: (
+            m.get("id") is None,
+            m.get("id") if m.get("id") is not None else 0,
+        )
+    )
+    return out
+
+
 _ZULIP_SEARCH_SCHEMA = {
     "name": "zulip_search_messages",
     "description": (
         "Search Zulip message history. Fetches messages from streams, "
         "topics, or by full-text search. Supports pagination via "
-        "message ID anchors. Use this to get context about what was "
-        "discussed before your @mention, to search for specific "
-        "information in past conversations, or to find messages "
-        "by a specific sender."
+        "message ID anchors. Long Hermes replies that were split across "
+        "multiple Zulip messages (over the ~10k limit) are rejoined into "
+        "one result when the full chunk series is in the window. Use this "
+        "to get context about what was discussed before your @mention, to "
+        "search for specific information in past conversations, or to find "
+        "messages by a specific sender."
     ),
     "parameters": {
         "type": "object",

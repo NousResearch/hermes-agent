@@ -64,7 +64,10 @@ import uuid
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from hermes_state import DurableTranscriptRevision
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import (
@@ -87,12 +90,6 @@ _TERMINAL_COMPRESSION_PROVENANCES = frozenset(
         ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
     }
 )
-from hermes_state import (
-    CompressionSessionBusyError,
-    CompressionTranscriptRevisionError,
-    DurableTranscriptRevision,
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -2240,6 +2237,13 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    # Keep durable state lazy: gateway configuration imports this module during
+    # collection, before per-test/runtime ``HERMES_HOME`` redirects are active.
+    from hermes_state import (
+        CompressionSessionBusyError,
+        CompressionTranscriptRevisionError,
+    )
+
     _compressor_attempt_snapshot = _snapshot_compressor_attempt_state(
         agent.context_compressor
     )

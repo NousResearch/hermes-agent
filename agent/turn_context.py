@@ -29,7 +29,10 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
+
+if TYPE_CHECKING:
+    from hermes_state import DurableTranscriptRevision
 
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
@@ -46,10 +49,6 @@ from agent.memory_provider import is_trivial_prompt
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
-)
-from hermes_state import (
-    DurableTranscriptRevision,
-    normalize_durable_transcript_revision,
 )
 
 logger = logging.getLogger(__name__)
@@ -362,6 +361,13 @@ def build_turn_context(
     ``conversation_loop`` module are passed in explicitly to keep this module
     free of an import cycle with ``agent.conversation_loop``.
     """
+    # Keep durable state lazy: gateway configuration imports this module during
+    # collection, before per-test/runtime ``HERMES_HOME`` redirects are active.
+    from hermes_state import (
+        DurableTranscriptRevision,
+        normalize_durable_transcript_revision,
+    )
+
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 

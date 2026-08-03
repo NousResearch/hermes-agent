@@ -318,6 +318,7 @@ import {
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
+import { clampIntensity, windowOpacity } from './window-opacity'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -874,14 +875,8 @@ nativeTheme.themeSource = readPersistedThemeSource()
 // default). Mapped to the native window opacity so the desktop shows through
 // the whole window. Persisted so a cold launch applies it at window creation,
 // before the renderer reports its value. macOS + Windows only; `setOpacity` is
-// a no-op on Linux. See store/translucency.
+// a no-op on Linux. See store/translucency, and window-opacity for the ramp.
 const TRANSLUCENCY_CONFIG_PATH = path.join(app.getPath('userData'), 'translucency.json')
-
-function clampIntensity(value) {
-  const n = Math.round(Number(value))
-
-  return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0
-}
 
 function readPersistedTranslucency() {
   try {
@@ -902,12 +897,6 @@ function writePersistedTranslucency(intensity) {
 
 let translucencyIntensity = readPersistedTranslucency()
 
-// Map the 0–100 lever to a window opacity. Floor at 0.3 so the most see-through
-// setting is still usable rather than nearly invisible. 0 → fully opaque.
-function windowOpacity() {
-  return 1 - (translucencyIntensity / 100) * 0.7
-}
-
 // Re-apply translucency to a live window (runtime toggle, no recreation).
 // `setOpacity` is a no-op on Linux, which is fine — it just stays opaque there.
 function applyWindowTranslucency(win) {
@@ -916,7 +905,7 @@ function applyWindowTranslucency(win) {
   }
 
   try {
-    win.setOpacity(windowOpacity())
+    win.setOpacity(windowOpacity(translucencyIntensity))
   } catch (error) {
     rememberLog(`[translucency] apply failed: ${error.message}`)
   }
@@ -10646,7 +10635,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     vibrancy: IS_MAC ? 'sidebar' : undefined,
-    opacity: windowOpacity(),
+    opacity: windowOpacity(translucencyIntensity),
     icon,
     // Don't show until the renderer's first themed paint is ready. macOS
     // `vibrancy` ignores `backgroundColor` and paints a translucent OS
@@ -10746,7 +10735,7 @@ function createInstanceWindow() {
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     vibrancy: IS_MAC ? 'sidebar' : undefined,
-    opacity: windowOpacity(),
+    opacity: windowOpacity(translucencyIntensity),
     icon,
     show: false,
     backgroundColor: getWindowBackgroundColor(),
@@ -11607,7 +11596,7 @@ function createWindow() {
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     vibrancy: IS_MAC ? 'sidebar' : undefined,
-    opacity: windowOpacity(),
+    opacity: windowOpacity(translucencyIntensity),
     icon,
     // Hidden until the first themed paint so macOS `vibrancy` (which ignores
     // `backgroundColor` and follows the OS appearance) can't flash a light

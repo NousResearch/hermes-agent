@@ -243,9 +243,13 @@ export function useIncrementalExternalStoreRuntime<T extends ThreadMessage>(
 ): AssistantRuntime {
   const [runtime] = useState(() => new IncrementalExternalStoreRuntimeCore(store as ExternalStoreAdapter))
 
+  // Re-sync the adapter only when it actually changes — a dep-less effect ran
+  // on EVERY render of the chat surface. `__internal_setAdapter` early-exits
+  // when the store is unchanged, so gating on [runtime, store] is behavior-
+  // preserving while skipping the per-render call entirely.
   useEffect(() => {
     runtime.setAdapter(store as ExternalStoreAdapter)
-  })
+  }, [runtime, store])
 
   const { modelContext } = useRuntimeAdapters() ?? {}
 

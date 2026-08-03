@@ -223,6 +223,12 @@ _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
 })
 
 
+def _provider_env_lookup_name(name: str, *, is_windows: bool | None = None) -> str:
+    """Return the host-appropriate key for provider-secret comparisons."""
+    windows = _IS_WINDOWS if is_windows is None else is_windows
+    return name.upper() if windows else name
+
+
 def _build_provider_env_blocklist() -> set[str]:
     """Derive the blocklist from provider, tool, and gateway config."""
     blocked: set[str] = set()
@@ -344,6 +350,13 @@ def _build_provider_env_blocklist() -> set[str]:
     # It arrives via the registry loop above (anthropic api_key_env_vars),
     # so remove it explicitly.
     blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
+    from providers import is_reserved_provider_env_var
+
+    blocked = {
+        _provider_env_lookup_name(name)
+        for name in blocked
+        if not is_reserved_provider_env_var(name)
+    }
     return blocked
 
 
@@ -357,6 +370,21 @@ def _refresh_provider_env_blocklist() -> None:
     with _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
         _HERMES_PROVIDER_ENV_BLOCKLIST.update(additions)
         _HERMES_PROVIDER_ENV_BLOCKLIST.discard("CLAUDE_CODE_OAUTH_TOKEN")
+        from providers import is_reserved_provider_env_var
+
+        reserved_names = tuple(
+            name
+            for name in _HERMES_PROVIDER_ENV_BLOCKLIST
+            if is_reserved_provider_env_var(name)
+        )
+        _HERMES_PROVIDER_ENV_BLOCKLIST.difference_update(reserved_names)
+        if _IS_WINDOWS:
+            normalized = {
+                _provider_env_lookup_name(name)
+                for name in _HERMES_PROVIDER_ENV_BLOCKLIST
+            }
+            _HERMES_PROVIDER_ENV_BLOCKLIST.clear()
+            _HERMES_PROVIDER_ENV_BLOCKLIST.update(normalized)
 
 
 def _current_provider_env_blocklist() -> frozenset[str]:
@@ -374,15 +402,28 @@ def _current_provider_env_blocklist() -> frozenset[str]:
 
 def _is_provider_env_blocked(name: str) -> bool:
     """Check static and just-observed provider names without hook latency."""
+    from providers import is_reserved_provider_env_var
+
+    if is_reserved_provider_env_var(name):
+        return False
     if _is_hermes_internal_secret(name):
         return True
+    lookup_name = _provider_env_lookup_name(name)
     with _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
-        if name in _HERMES_PROVIDER_ENV_BLOCKLIST:
+        if lookup_name in _HERMES_PROVIDER_ENV_BLOCKLIST:
+            return True
+        # A long-lived Windows process may still hold mixed-case entries that
+        # predate canonicalization. Match those case-insensitively even before
+        # the next full refresh rewrites the monotonic set.
+        if _IS_WINDOWS and any(
+            _provider_env_lookup_name(existing) == lookup_name
+            for existing in _HERMES_PROVIDER_ENV_BLOCKLIST
+        ):
             return True
     try:
         from providers import is_observed_provider_env_var
 
-        return is_observed_provider_env_var(name)
+        return is_observed_provider_env_var(lookup_name)
     except Exception:
         # This helper grants/retains passthrough exceptions, so an unavailable
         # provider observation index must fail closed.
@@ -533,7 +574,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         if _is_hermes_internal_secret(key):
             continue
         passthrough = _is_passthrough(key)
-        if key in provider_blocklist:
+        if _provider_env_lookup_name(key) in provider_blocklist:
             continue
         resolved = _resolve_passthrough_value(key, value) if passthrough else value
         if resolved is not None:
@@ -549,7 +590,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             continue
         else:
             passthrough = _is_passthrough(key)
-            if key in provider_blocklist:
+            if _provider_env_lookup_name(key) in provider_blocklist:
                 continue
             resolved = _resolve_passthrough_value(key, value) if passthrough else value
             if resolved is not None:
@@ -683,8 +724,9 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
 
     if not inherit_credentials:
         # Tier 2 — strip provider/tool credentials unless explicitly inherited.
-        for key in provider_blocklist:
-            env.pop(key, None)
+        for key in list(env):
+            if _provider_env_lookup_name(key) in provider_blocklist:
+                env.pop(key, None)
 
     # Windows UTF-8 safety for spawned processes (#31420).
     env.setdefault("PYTHONUTF8", "1")
@@ -1351,7 +1393,7 @@ def _make_run_env(env: dict) -> dict:
             continue
         else:
             passthrough = _is_passthrough(k)
-            if k in provider_blocklist:
+            if _provider_env_lookup_name(k) in provider_blocklist:
                 continue
             value = _resolve_passthrough_value(k, v) if passthrough else v
             if value is not None:

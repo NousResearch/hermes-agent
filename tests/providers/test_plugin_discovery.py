@@ -21,6 +21,13 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_RESERVED_OPERATIONAL_TEST_ENV = (
+    "PATH",
+    "HOME",
+    "SHELL",
+    "SystemRoot",
+    "ComSpec",
+)
 
 
 def _clear_provider_caches():
@@ -471,9 +478,22 @@ def test_observed_provider_secret_names_remain_blocked_after_disable(
 @pytest.mark.parametrize(
     ("activation", "requires_env"),
     (
-        ("inactive", "  - LC_VENDOR_ACCESS\n"),
+        (
+            "inactive",
+            "  - PATH\n"
+            "  - HOME\n"
+            "  - SHELL\n"
+            "  - SystemRoot\n"
+            "  - ComSpec\n"
+            "  - LC_VENDOR_ACCESS\n",
+        ),
         (
             "disabled",
+            "  - name: PATH\n"
+            "  - name: HOME\n"
+            "  - name: SHELL\n"
+            "  - name: SystemRoot\n"
+            "  - name: ComSpec\n"
             "  - name: LC_VENDOR_ACCESS\n"
             "    description: Vendor API credential\n"
             "    secret: true\n",
@@ -518,8 +538,13 @@ def test_inactive_manifest_credentials_are_blocked_after_process_restart(
     assert result == {
         "active": False,
         "observed": True,
+        "observed_reserved": False,
+        "profile_secret": False,
+        "profile_reserved": False,
         "in_child": False,
         "in_code_child": False,
+        "reserved_in_child": True,
+        "reserved_in_code_child": True,
     }
     assert not marker.exists()
 
@@ -528,26 +553,36 @@ def _probe_provider_security_in_fresh_process(
     home: Path,
     provider_name: str,
 ) -> dict[str, bool]:
+    reserved_env = {
+        name: f"test-{name.lower()}"
+        for name in _RESERVED_OPERATIONAL_TEST_ENV
+    }
     probe = "\n".join(
         (
             "import json",
             "import providers",
             "from tools.code_execution_tool import _scrub_child_env",
             "from tools.environments.local import _sanitize_subprocess_env",
+            f"reserved_env = {reserved_env!r}",
             f"profile = providers.get_provider_profile({provider_name!r})",
-            "sanitized = _sanitize_subprocess_env(",
-            "    {'LC_VENDOR_ACCESS': 'test-secret', 'PATH': 'test-path'}",
-            ")",
+            "source_env = {**reserved_env, 'LC_VENDOR_ACCESS': 'test-secret'}",
+            "sanitized = _sanitize_subprocess_env(source_env)",
             "scrubbed = _scrub_child_env(",
-            "    {'LC_VENDOR_ACCESS': 'test-secret'},",
+            "    source_env,",
             "    is_passthrough=lambda _name: True,",
-            "    is_windows=False,",
+            "    is_windows=True,",
             ")",
+            "observed = providers.get_observed_provider_env_vars()",
             "print(json.dumps({",
             "    'active': profile is not None,",
-            "    'observed': 'LC_VENDOR_ACCESS' in providers.get_observed_provider_env_vars(),",
+            "    'observed': 'LC_VENDOR_ACCESS' in observed,",
+            "    'observed_reserved': any(name in observed for name in reserved_env),",
+            "    'profile_secret': bool(profile and 'LC_VENDOR_ACCESS' in profile.env_vars),",
+            "    'profile_reserved': bool(profile and any(name in profile.env_vars for name in reserved_env)),",
             "    'in_child': 'LC_VENDOR_ACCESS' in sanitized,",
             "    'in_code_child': 'LC_VENDOR_ACCESS' in scrubbed,",
+            "    'reserved_in_child': all(name in sanitized for name in reserved_env),",
+            "    'reserved_in_code_child': all(name in scrubbed for name in reserved_env),",
             "}))",
         )
     )
@@ -578,7 +613,7 @@ def test_legacy_provider_observed_names_persist_across_disabled_restart(
         home,
         provider_name,
         base_url="https://legacy-secret.example/v1",
-        env_var="LC_VENDOR_ACCESS",
+        env_vars=("LC_VENDOR_ACCESS", *_RESERVED_OPERATIONAL_TEST_ENV),
         marker=marker,
     )
     _write_activation(home, enabled=(f"model-providers/{provider_name}",))
@@ -587,8 +622,13 @@ def test_legacy_provider_observed_names_persist_across_disabled_restart(
     assert first == {
         "active": True,
         "observed": True,
+        "observed_reserved": False,
+        "profile_secret": True,
+        "profile_reserved": False,
         "in_child": False,
         "in_code_child": False,
+        "reserved_in_child": True,
+        "reserved_in_code_child": True,
     }
     assert marker.exists()
 
@@ -597,6 +637,13 @@ def test_legacy_provider_observed_names_persist_across_disabled_restart(
     cache_text = cache_files[0].read_text(encoding="utf-8")
     assert "LC_VENDOR_ACCESS" in cache_text
     assert "test-secret" not in cache_text
+    assert all(name not in cache_text for name in _RESERVED_OPERATIONAL_TEST_ENV)
+
+    # A cache written by an older process may already contain poisoned names.
+    # Cache parsing must re-apply the policy before publishing observations.
+    cache_data = json.loads(cache_text)
+    cache_data["env_vars"].extend(_RESERVED_OPERATIONAL_TEST_ENV)
+    cache_files[0].write_text(json.dumps(cache_data), encoding="utf-8")
 
     marker.unlink()
     _write_activation(home, disabled=(f"model-providers/{provider_name}",))
@@ -604,10 +651,21 @@ def test_legacy_provider_observed_names_persist_across_disabled_restart(
     assert second == {
         "active": False,
         "observed": True,
+        "observed_reserved": False,
+        "profile_secret": False,
+        "profile_reserved": False,
         "in_child": False,
         "in_code_child": False,
+        "reserved_in_child": True,
+        "reserved_in_code_child": True,
     }
     assert not marker.exists()
+    healed_cache_text = cache_files[0].read_text(encoding="utf-8")
+    assert "LC_VENDOR_ACCESS" in healed_cache_text
+    assert all(
+        name not in healed_cache_text
+        for name in _RESERVED_OPERATIONAL_TEST_ENV
+    )
 
     plugin_dir = home / "plugins" / "model-providers" / provider_name
     plugin_dir.rename(plugin_dir.with_name(f".{provider_name}-removed"))
@@ -615,9 +673,121 @@ def test_legacy_provider_observed_names_persist_across_disabled_restart(
     assert removed == {
         "active": False,
         "observed": False,
+        "observed_reserved": False,
+        "profile_secret": False,
+        "profile_reserved": False,
         "in_child": True,
         "in_code_child": True,
+        "reserved_in_child": True,
+        "reserved_in_code_child": True,
     }
+
+
+def test_reserved_provider_names_are_exempt_after_in_memory_pollution():
+    """Long-lived monotonic indexes must self-filter old poisoned names."""
+    import providers
+    from tools.code_execution_tool import (
+        _WINDOWS_ESSENTIAL_ENV_VARS,
+        _scrub_child_env,
+    )
+    from tools.environments import local
+
+    secret_name = "LC_VENDOR_ACCESS"
+    assert all(
+        providers.is_reserved_provider_env_var(name)
+        for name in (
+            *_RESERVED_OPERATIONAL_TEST_ENV,
+            *_WINDOWS_ESSENTIAL_ENV_VARS,
+        )
+    )
+    assert not providers.is_reserved_provider_env_var(secret_name)
+
+    injected_names = (*_RESERVED_OPERATIONAL_TEST_ENV, secret_name)
+    with providers._DISCOVERY_LOCK:
+        previously_observed = {
+            name: name in providers._OBSERVED_PROVIDER_ENV_VARS
+            for name in injected_names
+        }
+        providers._OBSERVED_PROVIDER_ENV_VARS.update(injected_names)
+    with local._HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
+        previously_blocked = {
+            name: name in local._HERMES_PROVIDER_ENV_BLOCKLIST
+            for name in injected_names
+        }
+        local._HERMES_PROVIDER_ENV_BLOCKLIST.update(injected_names)
+
+    source_env = {
+        **{
+            name: f"test-{name.lower()}"
+            for name in _RESERVED_OPERATIONAL_TEST_ENV
+        },
+        secret_name: "test-secret",
+    }
+    try:
+        observed = providers.get_observed_provider_env_vars()
+        assert secret_name in observed
+        for name in _RESERVED_OPERATIONAL_TEST_ENV:
+            assert name not in observed
+            assert not providers.is_observed_provider_env_var(name)
+            assert not local._is_provider_env_blocked(name)
+        assert local._is_provider_env_blocked(secret_name)
+
+        sanitized = local._sanitize_subprocess_env(source_env)
+        scrubbed = _scrub_child_env(
+            source_env,
+            is_passthrough=lambda _name: True,
+            is_windows=True,
+        )
+        assert secret_name not in sanitized
+        assert secret_name not in scrubbed
+        assert all(name in sanitized for name in _RESERVED_OPERATIONAL_TEST_ENV)
+        assert all(name in scrubbed for name in _RESERVED_OPERATIONAL_TEST_ENV)
+    finally:
+        with providers._DISCOVERY_LOCK:
+            for name, was_present in previously_observed.items():
+                if not was_present:
+                    providers._OBSERVED_PROVIDER_ENV_VARS.discard(name)
+        with local._HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
+            for name, was_present in previously_blocked.items():
+                if was_present:
+                    local._HERMES_PROVIDER_ENV_BLOCKLIST.add(name)
+                else:
+                    local._HERMES_PROVIDER_ENV_BLOCKLIST.discard(name)
+
+
+def test_provider_secret_names_are_case_insensitive_on_windows(monkeypatch):
+    """Mixed-case provider metadata must scrub any Windows key spelling."""
+    import providers
+    from tools.code_execution_tool import _scrub_child_env
+    from tools.environments import local
+
+    declared_name = "Lc_Vendor_Access"
+    actual_name = "LC_VENDOR_ACCESS"
+    monkeypatch.setattr(local, "_IS_WINDOWS", True)
+
+    with providers._DISCOVERY_LOCK:
+        previously_observed = declared_name in providers._OBSERVED_PROVIDER_ENV_VARS
+        providers._OBSERVED_PROVIDER_ENV_VARS.add(declared_name)
+    with local._HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
+        previous_blocklist = set(local._HERMES_PROVIDER_ENV_BLOCKLIST)
+        local._HERMES_PROVIDER_ENV_BLOCKLIST.add(declared_name)
+
+    try:
+        source_env = {actual_name: "test-secret"}
+        assert local._is_provider_env_blocked(actual_name)
+        assert actual_name not in local._sanitize_subprocess_env(source_env)
+        assert actual_name not in _scrub_child_env(
+            source_env,
+            is_passthrough=lambda _name: True,
+            is_windows=True,
+        )
+    finally:
+        with providers._DISCOVERY_LOCK:
+            if not previously_observed:
+                providers._OBSERVED_PROVIDER_ENV_VARS.discard(declared_name)
+        with local._HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
+            local._HERMES_PROVIDER_ENV_BLOCKLIST.clear()
+            local._HERMES_PROVIDER_ENV_BLOCKLIST.update(previous_blocklist)
 
 
 def test_new_provider_secret_is_blocked_before_refresh_hooks_finish(

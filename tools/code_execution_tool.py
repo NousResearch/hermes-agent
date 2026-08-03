@@ -277,6 +277,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         from tools.environments.local import (
             _current_provider_env_blocklist,
             _is_hermes_internal_secret,
+            _provider_env_lookup_name,
         )
 
         provider_blocklist = _current_provider_env_blocklist()
@@ -302,12 +303,34 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             if callable(internal_predicate)
             else (lambda _name: False)
         )
+        lookup_name = getattr(
+            local_module,
+            "_provider_env_lookup_name",
+            None,
+        )
+        _provider_env_lookup_name = (
+            lookup_name
+            if callable(lookup_name)
+            else (
+                lambda name, *, is_windows=False: (
+                    name.upper() if is_windows else name
+                )
+            )
+        )
         logger.warning(
             "execute_code: provider env security metadata unavailable; "
             "using a restricted child environment",
             exc_info=True,
         )
 
+    provider_case_insensitive = bool(is_windows or _IS_WINDOWS)
+    provider_blocklist = frozenset(
+        _provider_env_lookup_name(
+            name,
+            is_windows=provider_case_insensitive,
+        )
+        for name in provider_blocklist
+    )
     scrubbed = {}
     # Non-secret HERMES_* vars dropped by the tightened allowlist (#27303). The
     # broad "HERMES_" prefix used to pass these through; now only the
@@ -318,7 +341,14 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     # diagnosable and points at the env_passthrough opt-in escape hatch.
     _dropped_hermes = []
     for k, v in source_env.items():
-        if k in provider_blocklist or _is_hermes_internal_secret(k):
+        if (
+            _provider_env_lookup_name(
+                k,
+                is_windows=provider_case_insensitive,
+            )
+            in provider_blocklist
+            or _is_hermes_internal_secret(k)
+        ):
             continue
         if provider_security_degraded:
             upper = k.upper()

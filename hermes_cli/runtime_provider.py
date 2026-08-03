@@ -1872,7 +1872,13 @@ def resolve_runtime_provider(
     if explicit_runtime:
         return explicit_runtime
 
-    should_use_pool = provider != "openrouter"
+    # An explicit custom endpoint must not be replaced by the legacy bare
+    # ``custom`` credential pool. Endpoint-scoped custom pools are resolved
+    # later by ``_resolve_openrouter_runtime`` only when their configured URL
+    # actually matches this request.
+    should_use_pool = provider != "openrouter" and not (
+        provider == "custom" and bool(explicit_api_key or explicit_base_url)
+    )
     if provider == "openrouter":
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = str(model_cfg.get("base_url") or "").strip()
@@ -2290,7 +2296,7 @@ def resolve_runtime_provider(
         }
 
     runtime = _resolve_openrouter_runtime(
-        requested_provider=requested_provider,
+        requested_provider=("custom" if provider == "custom" else requested_provider),
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )

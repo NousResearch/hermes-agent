@@ -52,7 +52,13 @@ from hermes_cli.config import (
 )
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
+from utils import (
+    atomic_replace,
+    atomic_yaml_write,
+    base_url_hostname,
+    env_float,
+    is_truthy_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2257,7 +2263,8 @@ def resolve_provider(
 
     Priority (when requested="auto" or None) — explicit user intent wins over a
     stale logged-in OAuth provider (#29285):
-    1. Explicit CLI api_key/base_url -> "openrouter"
+    1. Explicit CLI base_url -> "openrouter" for the OpenRouter host,
+       otherwise "custom"; an api_key without a base_url -> "openrouter"
     2. config.yaml `model.provider`
     3. OPENAI_API_KEY / OPENROUTER_API_KEY env vars -> "openrouter"
     4. OpenRouter credential pool
@@ -2339,8 +2346,19 @@ def resolve_provider(
             msg += " Check 'hermes model' for available providers, or run 'hermes doctor' to diagnose config issues."
         raise AuthError(msg, code="invalid_provider")
 
-    # Explicit one-off CLI creds always mean openrouter/custom
-    if explicit_api_key or explicit_base_url:
+    # An explicit endpoint owns its provider identity. Only the real
+    # OpenRouter host is routed through that plugin; arbitrary and malformed
+    # endpoints remain custom and are validated by the runtime path.
+    if explicit_base_url:
+        try:
+            is_openrouter_url = (
+                base_url_hostname(explicit_base_url)
+                == base_url_hostname(OPENROUTER_BASE_URL)
+            )
+        except ValueError:
+            is_openrouter_url = False
+        return resolve_provider("openrouter" if is_openrouter_url else "custom")
+    if explicit_api_key:
         return resolve_provider("openrouter")
 
     # Provider precedence for the auto-path (#29285): explicit user intent must

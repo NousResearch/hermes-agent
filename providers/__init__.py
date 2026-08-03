@@ -114,6 +114,111 @@ _BUNDLED_PLUGINS_DIR = (
     Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
 )
 
+# Exact operational names that a provider must never claim as credentials.
+# Provider metadata is allowed to use unconventional secret names (for example
+# ``LC_VENDOR_ACCESS``), so this must remain an exact-name policy rather than a
+# prefix allowlist.  Compare through ``upper()`` because Windows environment
+# names are case-insensitive even when a plugin manifest preserves mixed case.
+_RESERVED_PROVIDER_ENV_VARS = frozenset({
+    # POSIX process/runtime essentials.
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "PWD",
+    "OLDPWD",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    # Windows process/runtime essentials. Keep this aligned with the exact
+    # operational allowlist in tools.code_execution_tool.
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "OS",
+    "PROCESSOR_ARCHITECTURE",
+    "NUMBER_OF_PROCESSORS",
+    "PUBLIC",
+    "ALLUSERSPROFILE",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "USERPROFILE",
+    "USERDOMAIN",
+    "USERNAME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "COMPUTERNAME",
+    # Hermes child-process routing/location invariants.
+    "HERMES_HOME",
+    "HERMES_PROFILE",
+    "HERMES_CONFIG",
+    "HERMES_ENV",
+    "HERMES_DELEGATED_CHILD_CONTEXT",
+})
+
+
+def is_reserved_provider_env_var(name: object) -> bool:
+    """Return whether *name* is operational and cannot be a credential."""
+    return (
+        isinstance(name, str)
+        and bool(name.strip())
+        and name.strip().upper() in _RESERVED_PROVIDER_ENV_VARS
+    )
+
+
+def _provider_credential_env_names(values: object) -> tuple[str, ...]:
+    """Validate credential names while preserving their declared order."""
+    if isinstance(values, str):
+        entries = (values,)
+    elif isinstance(values, (list, tuple, set, frozenset)):
+        entries = values
+    else:
+        return ()
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for value in entries:
+        if not isinstance(value, str):
+            continue
+        name = value.strip()
+        # NUL and '=' cannot name environment variables on supported hosts.
+        # Reserved operational names are rejected fail-closed so declarative
+        # metadata cannot turn child-process credential scrubbing into a DoS.
+        if (
+            not name
+            or "\x00" in name
+            or "=" in name
+            or is_reserved_provider_env_var(name)
+        ):
+            continue
+        # Windows environment names are case-insensitive. Canonicalizing the
+        # security metadata prevents a mixed-case manifest name from missing
+        # the differently-cased key spelling preserved by ``os.environ``.
+        if sys.platform == "win32":
+            name = name.upper()
+        if name in seen:
+            continue
+        names.append(name)
+        seen.add(name)
+    return tuple(names)
+
 
 def _record_observed_profile_locked(
     source: str,
@@ -122,7 +227,9 @@ def _record_observed_profile_locked(
 ) -> None:
     """Record monotonic non-executable security metadata under discovery lock."""
     _OBSERVED_PROFILES[(source, path, profile.name)] = profile
-    _OBSERVED_PROVIDER_ENV_VARS.update(profile.env_vars)
+    _OBSERVED_PROVIDER_ENV_VARS.update(
+        _provider_credential_env_names(profile.env_vars)
+    )
 
 
 def register_provider(profile: ProviderProfile) -> None:
@@ -133,6 +240,10 @@ def register_provider(profile: ProviderProfile) -> None:
     bundled profiles without editing repo code.
     """
     global _PROVIDER_LIST_CACHE, _RUNTIME_REGISTRATION_GENERATION
+    # ProviderProfile is mutable by design. Normalize at the registration
+    # boundary so active plugin metadata cannot reach auth/config indexes under
+    # an OS-essential name through a path other than the observation set.
+    profile.env_vars = _provider_credential_env_names(profile.env_vars)
     build_state = getattr(_BUILD_LOCAL, "state", None)
     if isinstance(build_state, _ProviderBuildState):
         build_state.registry[profile.name] = profile
@@ -356,11 +467,17 @@ def get_observed_provider_env_vars() -> frozenset[str]:
     publication barrier for spawn-time checks.
     """
     with _DISCOVERY_LOCK:
-        return frozenset(_OBSERVED_PROVIDER_ENV_VARS)
+        # Re-filter on read as defense in depth for a long-lived process whose
+        # monotonic set was populated before this policy became active.
+        return frozenset(
+            _provider_credential_env_names(_OBSERVED_PROVIDER_ENV_VARS)
+        )
 
 
 def is_observed_provider_env_var(name: str) -> bool:
     """Check the provider-owned spawn-security index without hook latency."""
+    if is_reserved_provider_env_var(name):
+        return False
     with _DISCOVERY_LOCK:
         return name in _OBSERVED_PROVIDER_ENV_VARS
 
@@ -511,18 +628,15 @@ def _manifest_env_names(value: object) -> frozenset[str]:
     else:
         return frozenset()
 
-    names: set[str] = set()
+    names: list[str] = []
     for entry in entries:
         raw_name = entry.get("name") if isinstance(entry, dict) else entry
-        if not isinstance(raw_name, str):
-            continue
-        name = raw_name.strip()
-        # NUL and '=' cannot name environment variables on supported hosts.
-        # Keep every other non-empty name: provider credentials do not have to
-        # follow API_KEY/TOKEN naming conventions (for example LC_VENDOR_ACCESS).
-        if name and "\x00" not in name and "=" not in name:
-            names.add(name)
-    return frozenset(names)
+        if isinstance(raw_name, str):
+            names.append(raw_name)
+    # Provider credentials do not have to follow API_KEY/TOKEN naming
+    # conventions (for example LC_VENDOR_ACCESS); only invalid and exact
+    # operational names are excluded.
+    return frozenset(_provider_credential_env_names(names))
 
 
 def _provider_env_cache_path(
@@ -561,10 +675,14 @@ def _persist_provider_env_names(
     names: set[str],
 ) -> None:
     """Persist a monotonic name-only blocklist, never credentials or activation."""
-    if path is None or not names:
+    if path is None:
         return
     merged = set(_load_cached_provider_env_names(path))
-    merged.update(names)
+    merged.update(_provider_credential_env_names(names))
+    # Avoid creating empty cache files, but rewrite an existing cache even when
+    # only rejected names remain so an older poisoned file is self-healing.
+    if not merged and not path.is_file():
+        return
     try:
         atomic_json_write(
             path,
@@ -785,10 +903,18 @@ def _discover_providers(
             # untrusted ``__init__.py`` code. This union is process-local and
             # never changes routing or plugin activation.
             cache_path = _provider_env_cache_path(scope_identity, plugin)
+            cached_env_vars = _load_cached_provider_env_names(cache_path)
             _OBSERVED_PROVIDER_ENV_VARS.update(
-                _load_cached_provider_env_names(cache_path)
+                _provider_credential_env_names(cached_env_vars)
             )
-            _OBSERVED_PROVIDER_ENV_VARS.update(plugin.credential_env_vars)
+            _OBSERVED_PROVIDER_ENV_VARS.update(
+                _provider_credential_env_names(plugin.credential_env_vars)
+            )
+            # Rewrite legacy cache files through the current validator even
+            # when the plugin is inactive or disabled. Otherwise a reserved
+            # name removed from the in-memory index would remain poisoned on
+            # disk indefinitely (and could affect an older binary later).
+            _persist_provider_env_names(cache_path, set(cached_env_vars))
             grouped.setdefault(plugin.key, []).append(plugin)
             known_provider_ids.update(plugin.provider_ids)
             known_provider_ids.update((plugin.path.name, plugin.name))
@@ -836,7 +962,9 @@ def _discover_providers(
                 profiles = _import_plugin_dir(plugin.path, plugin.source)
                 observed_plugin_env_vars: set[str] = set()
                 for profile in profiles:
-                    observed_plugin_env_vars.update(profile.env_vars)
+                    observed_plugin_env_vars.update(
+                        _provider_credential_env_names(profile.env_vars)
+                    )
                     active_provider_ids.add(profile.name)
                     active_provider_ids.update(profile.aliases)
                     managed_provider_ids.add(profile.name)

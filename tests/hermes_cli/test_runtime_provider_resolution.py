@@ -8,6 +8,90 @@ import pytest
 from hermes_cli import runtime_provider as rp
 
 
+def _set_model_provider_active(provider: str, *, active: bool) -> None:
+    from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+
+    result = dashboard_set_agent_plugin_enabled(
+        f"model-providers/{provider}", enabled=active
+    )
+    assert result["ok"] is True
+
+
+def test_auto_explicit_custom_url_requires_custom_plugin() -> None:
+    _set_model_provider_active("custom", active=False)
+    _set_model_provider_active("openrouter", active=True)
+
+    with pytest.raises(rp.AuthError, match="Provider 'custom'.*disabled"):
+        rp.resolve_runtime_provider(
+            requested="auto",
+            explicit_api_key="test-key",
+            explicit_base_url="https://proxy.example.com/v1",
+        )
+
+
+def test_auto_explicit_custom_url_uses_custom_plugin() -> None:
+    _set_model_provider_active("openrouter", active=False)
+    _set_model_provider_active("custom", active=True)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="auto",
+        explicit_api_key="test-key",
+        explicit_base_url="https://proxy.example.com/v1",
+    )
+
+    assert resolved["provider"] == "custom"
+    assert resolved["requested_provider"] == "auto"
+    assert resolved["base_url"] == "https://proxy.example.com/v1"
+
+
+def test_auto_explicit_custom_url_skips_unscoped_custom_pool(monkeypatch) -> None:
+    _set_model_provider_active("custom", active=True)
+    pooled_entry = SimpleNamespace(
+        runtime_api_key=None,
+        access_token="pooled-key",
+        runtime_base_url=None,
+        base_url="",
+    )
+    pooled = SimpleNamespace(
+        provider="custom",
+        has_credentials=lambda: True,
+        select=lambda: pooled_entry,
+    )
+    pool_calls = []
+
+    def load_pool(provider):
+        pool_calls.append(provider)
+        return pooled
+
+    monkeypatch.setattr(rp, "load_pool", load_pool)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+
+    resolved = rp.resolve_runtime_provider(
+        requested="auto",
+        explicit_api_key="explicit-key",
+        explicit_base_url="https://proxy.example.com/v1",
+    )
+
+    assert pool_calls == []
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://proxy.example.com/v1"
+    assert resolved["api_key"] == "explicit-key"
+    assert resolved["source"] == "explicit"
+    assert resolved["requested_provider"] == "auto"
+
+
+def test_auto_explicit_openrouter_url_requires_openrouter_plugin() -> None:
+    _set_model_provider_active("openrouter", active=False)
+    _set_model_provider_active("custom", active=True)
+
+    with pytest.raises(rp.AuthError, match="Provider 'openrouter'.*disabled"):
+        rp.resolve_runtime_provider(
+            requested="auto",
+            explicit_api_key="test-key",
+            explicit_base_url="https://openrouter.ai/api/v1",
+        )
+
+
 def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
     """A saved provider must not resolve as another authenticated provider."""
     monkeypatch.setattr(

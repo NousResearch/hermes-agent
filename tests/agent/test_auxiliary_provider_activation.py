@@ -202,3 +202,121 @@ def test_auto_cache_is_partitioned_by_canonical_activation_state(monkeypatch):
     # the important invariant is that the old client is not reused.
     assert aux._get_cached_client("auto", "test/model") == (None, "test/model")
     assert resolver.call_count == 2
+
+
+def test_cache_is_partitioned_by_provider_discovery_identity(monkeypatch):
+    activation_state = ("same-activation",)
+    discovery_identity = {"value": ("profile-a", "project-a")}
+    monkeypatch.setattr(
+        "hermes_cli.config.load_plugin_activation_state",
+        lambda: activation_state,
+    )
+    monkeypatch.setattr(
+        "providers.get_provider_discovery_identity",
+        lambda: discovery_identity["value"],
+    )
+    monkeypatch.setattr(aux, "_pool_cache_hint", lambda *args, **kwargs: "")
+    first_client = MagicMock(name="profile-a-client")
+    second_client = MagicMock(name="profile-b-client")
+    resolver = MagicMock(
+        side_effect=[
+            (first_client, "test/model"),
+            (second_client, "test/model"),
+        ]
+    )
+    monkeypatch.setattr(aux, "resolve_provider_client", resolver)
+
+    assert aux._get_cached_client("auto", "test/model")[0] is first_client
+    discovery_identity["value"] = ("profile-b", "project-b")
+    assert aux._get_cached_client("auto", "test/model")[0] is second_client
+
+    assert resolver.call_count == 2
+
+
+def test_named_custom_alias_uses_custom_activation_owner_before_cache_gate(
+    monkeypatch,
+    tmp_path,
+):
+    activation_checks = []
+    hermes_home = tmp_path / "profile"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """custom_providers:
+  - name: kimi
+    base_url: https://custom-kimi.invalid/v1
+    api_key: custom-key
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def is_active(provider_id):
+        activation_checks.append(provider_id)
+        return provider_id != "kimi-coding"
+
+    monkeypatch.setattr("providers.is_provider_plugin_active", is_active)
+    monkeypatch.setattr(aux, "_aux_activation_cache_fingerprint", lambda: "stable")
+    monkeypatch.setattr(aux, "_pool_cache_hint", lambda *args, **kwargs: "")
+    monkeypatch.setattr(aux, "_peek_pool_entry", lambda _provider: None)
+
+    try:
+        client, model = aux._get_cached_client("kimi", "custom-model")
+
+        assert client is not None
+        assert "custom-kimi.invalid" in str(client.base_url)
+        assert model == "custom-model"
+        assert "custom" in activation_checks
+    finally:
+        aux.shutdown_cached_clients()
+
+
+def test_disabled_canonical_provider_cannot_be_shadowed_by_named_custom(
+    monkeypatch,
+    tmp_path,
+):
+    hermes_home = tmp_path / "profile"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """custom_providers:
+  - name: nous
+    base_url: https://custom-nous.invalid/v1
+    api_key: custom-key
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "providers.is_provider_plugin_active",
+        lambda provider_id: provider_id != "nous",
+    )
+    resolver = MagicMock(side_effect=AssertionError("resolver must stay gated"))
+    monkeypatch.setattr(aux, "resolve_provider_client", resolver)
+
+    assert aux._get_cached_client("nous", "test-model") == (None, None)
+    resolver.assert_not_called()
+
+
+def test_disabled_canonical_provider_cannot_be_shadowed_through_alias(
+    monkeypatch,
+    tmp_path,
+):
+    hermes_home = tmp_path / "profile"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """custom_providers:
+  - name: kimi-coding
+    base_url: https://custom-kimi-canonical.invalid/v1
+    api_key: custom-key
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "providers.is_provider_plugin_active",
+        lambda provider_id: provider_id != "kimi-coding",
+    )
+    resolver = MagicMock(side_effect=AssertionError("resolver must stay gated"))
+    monkeypatch.setattr(aux, "resolve_provider_client", resolver)
+
+    assert aux._get_cached_client("kimi", "test-model") == (None, None)
+    resolver.assert_not_called()

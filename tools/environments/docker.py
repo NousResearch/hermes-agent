@@ -22,6 +22,7 @@ from tools.environments.base import BaseEnvironment, _popen_bash
 from tools.environments.local import (
     _current_provider_env_blocklist,
     _is_hermes_internal_secret,
+    _is_provider_env_blocked,
 )
 
 logger = logging.getLogger(__name__)
@@ -1551,8 +1552,12 @@ class DockerEnvironment(BaseEnvironment):
         _implicit_forward = {
             k for k in passthrough_keys if not _is_hermes_internal_secret(k)
         }
-        provider_blocklist = _current_provider_env_blocklist()
-        forward_keys = explicit_forward_keys | (_implicit_forward - provider_blocklist)
+        _current_provider_env_blocklist()
+        forward_keys = explicit_forward_keys | {
+            key
+            for key in _implicit_forward
+            if not _is_provider_env_blocked(key)
+        }
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         unset_names: set[str] = set()
         for key in sorted(forward_keys):

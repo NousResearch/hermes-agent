@@ -592,22 +592,72 @@ def _aux_provider_activation_id(
     # Named custom endpoints all execute through the bundled ``custom``
     # provider profile.  Their user-facing suffix is config data, not an
     # independently activatable model-provider plugin.
-    if original.startswith("custom:"):
+    if original.startswith("custom:") or normalized.startswith("custom:"):
         return "custom"
+
+    # Only an alias collision needs to change ownership before the cache gate.
+    # Arbitrary named custom providers are not plugin-managed and receive the
+    # canonical ``custom`` gate in ``resolve_provider_client``.  In contrast,
+    # probing a canonical name here (for example ``nous``) is unsafe: when that
+    # bundled plugin is disabled, the runtime named-custom helper deliberately
+    # keeps scanning config and could let a same-named custom entry bypass the
+    # canonical provider's deny.
+    alias_candidate = original
+    if alias_candidate == "main":
+        alias_candidate = (_read_main_provider() or "").strip().lower()
+    if alias_candidate and _normalize_aux_provider(alias_candidate) != alias_candidate:
+        try:
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+
+            # Probe only the raw alias here. Falling back to its normalized
+            # canonical name would let a same-named custom entry take over
+            # precisely when the canonical plugin's deny must win.
+            if _get_named_custom_provider(alias_candidate) is not None:
+                return "custom"
+        except Exception:
+            # The resolver owns diagnostics for malformed custom-provider
+            # config. Keep activation probing fail-closed without introducing
+            # a new error path.
+            pass
     return normalized
 
 
+def _get_aux_named_custom_provider(
+    provider: str,
+    *,
+    original_provider: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Resolve a named custom entry before built-in alias normalization wins."""
+    try:
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+    except ImportError:
+        return None
+
+    original = (original_provider or provider or "").strip().lower()
+    normalized = _normalize_aux_provider(provider)
+    custom_entry = None
+    if original and original != normalized:
+        custom_entry = _get_named_custom_provider(original)
+    if custom_entry is None:
+        custom_entry = _get_named_custom_provider(normalized)
+    return custom_entry
+
+
 def _aux_activation_cache_fingerprint() -> Any:
-    """Return the canonical activation state for auxiliary cache isolation."""
+    """Return canonical activation and discovery scope for cache isolation."""
     try:
         from hermes_cli.config import load_plugin_activation_state
+        from providers import get_provider_discovery_identity
 
-        return load_plugin_activation_state()
+        return (
+            load_plugin_activation_state(),
+            get_provider_discovery_identity(),
+        )
     except Exception as exc:
-        # Keep cache hits fail-closed if the canonical activation accessor is
+        # Keep cache hits fail-closed if either canonical accessor is
         # unexpectedly unavailable.  A unique opaque value avoids reusing a
-        # client that was constructed under a previously readable policy.
-        logger.debug("Auxiliary activation cache fingerprint failed: %s", exc)
+        # client constructed under another activation, profile, or project.
+        logger.debug("Auxiliary provider cache fingerprint failed: %s", exc)
         return object()
 
 
@@ -5827,18 +5877,6 @@ def resolve_provider_client(
         provider,
         original_provider=original_provider,
     )
-    if original_provider and original_provider != provider:
-        # A user may deliberately name a custom endpoint after a built-in
-        # alias (for example ``kimi``).  The named-custom branch below gives
-        # that config entry precedence, so its activation owner is ``custom``
-        # rather than the alias target (``kimi-coding``).
-        try:
-            from hermes_cli.runtime_provider import _get_named_custom_provider
-
-            if _get_named_custom_provider(original_provider) is not None:
-                activation_provider = "custom"
-        except Exception:
-            pass
     if not _aux_provider_plugin_is_active(activation_provider):
         return None, None
 
@@ -6142,7 +6180,6 @@ def resolve_provider_client(
 
     # ── Named custom providers (config.yaml providers dict / custom_providers list) ───
     try:
-        from hermes_cli.runtime_provider import _get_named_custom_provider
         # When the raw requested name is an alias (``kimi`` → ``kimi-coding``)
         # and the user defined a ``custom_providers`` entry under that alias
         # name, the custom entry is the intended target — the built-in alias
@@ -6150,11 +6187,10 @@ def resolve_provider_client(
         # the raw name is an alias (not a canonical provider name) so custom
         # entries that coincidentally match a canonical provider (e.g. ``nous``)
         # still defer to the built-in per `_get_named_custom_provider`'s guard.
-        custom_entry = None
-        if original_provider and original_provider != provider:
-            custom_entry = _get_named_custom_provider(original_provider)
-        if custom_entry is None:
-            custom_entry = _get_named_custom_provider(provider)
+        custom_entry = _get_aux_named_custom_provider(
+            provider,
+            original_provider=original_provider,
+        )
         if custom_entry:
             if not _aux_provider_plugin_is_active("custom"):
                 return None, None
@@ -7014,8 +7050,9 @@ def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> di
 # Every auxiliary LLM consumer should use these instead of manually
 # constructing clients and calling .chat.completions.create().
 
-# Client cache keys include the canonical plugin activation state so a runtime
-# enable/disable change cannot reuse a client selected under the old policy.
+# Client cache keys include the canonical provider-discovery identity so a
+# runtime enable/disable, profile, project, or provider-origin change cannot
+# reuse a client selected under another discovery scope.
 # NOTE: loop identity is NOT part of the key.  On async cache hits we check
 # whether the cached loop is the *current* loop; if not, the stale entry is
 # replaced in-place.  This bounds cache growth to one entry per unique

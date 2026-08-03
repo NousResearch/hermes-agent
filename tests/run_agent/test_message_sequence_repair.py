@@ -157,6 +157,90 @@ def test_repair_keeps_tool_matching_only_call_id():
     assert any(m.get("role") == "tool" for m in messages)
 
 
+# ── consecutive-assistant merge: tool_calls union / drop (#58755, #77921) ──
+
+def test_repair_merge_drops_stale_empty_tool_calls_on_surviving_turn():
+    """A pre-existing ``tool_calls: []`` on the surviving (first) assistant
+    turn must not survive a merge with a later tool-call-free assistant turn
+    verbatim — it must be dropped entirely, not left as ``[]``.
+
+    Before the fix: ``prev_calls`` and ``new_calls`` are both empty lists, so
+    neither the ``if new_calls`` nor ``elif prev_calls`` branch fires and
+    ``prev["tool_calls"]`` keeps its stale ``[]``. That merged turn then
+    reaches the provider as ``tool_calls: []`` wherever a consumer of the
+    repaired/persisted ``messages`` list doesn't happen to go through
+    ``sanitize_api_messages`` — DeepSeek v4 and other strict
+    OpenAI-compatible providers reject it with HTTP 400 ("empty array.
+    Expected an array with minimum length 1").
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "first reply", "tool_calls": []},
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    assert "tool_calls" not in messages[1]
+    assert messages[1]["content"] == "first reply\nsecond reply"
+
+
+def test_repair_merge_drops_none_tool_calls_on_surviving_turn():
+    """Same as above but the surviving turn carries a malformed
+    ``tool_calls: None`` instead of an empty array."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "first reply", "tool_calls": None},
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    assert len(messages) == 2
+    assert "tool_calls" not in messages[1]
+
+
+def test_repair_merge_preserves_real_tool_calls_on_surviving_turn():
+    """Regression guard: a surviving turn with REAL tool_calls must keep them
+    (only the empty/falsy case is dropped)."""
+    agent = _bare_agent()
+    real_calls = [{"id": "t1", "type": "function",
+                   "function": {"name": "f", "arguments": "{}"}}]
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "", "tool_calls": list(real_calls)},
+        {"role": "assistant", "content": "continuation"},
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    assert len(messages) == 2
+    assert messages[1]["tool_calls"] == real_calls
+
+
+def test_repair_merge_unions_tool_calls_from_later_turn():
+    """Regression guard: when the LATER turn carries the real tool_calls
+    (and the earlier one has none), the union still lands on the surviving
+    turn."""
+    agent = _bare_agent()
+    real_calls = [{"id": "t2", "type": "function",
+                   "function": {"name": "g", "arguments": "{}"}}]
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "thinking out loud"},
+        {"role": "assistant", "content": "", "tool_calls": list(real_calls)},
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    assert len(messages) == 2
+    assert messages[1]["tool_calls"] == real_calls
+
+
 
 
 

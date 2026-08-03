@@ -640,6 +640,25 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 prev["tool_calls"] = prev_calls + new_calls
             elif prev_calls:
                 prev["tool_calls"] = prev_calls
+            else:
+                # Neither side carries a real tool_calls list — drop the key
+                # instead of leaving a stale ``[]``/``None`` on the surviving
+                # turn. A pre-existing empty array on ``prev`` (e.g. an
+                # assistant turn that ended its response with no tool calls)
+                # would otherwise survive this merge verbatim and reach the
+                # provider as ``tool_calls: []`` on the merged turn — DeepSeek
+                # v4 and other strict OpenAI-compatible providers reject that
+                # with HTTP 400 "empty array. Expected an array with minimum
+                # length 1" (#58755, #77921). ``sanitize_api_messages`` strips
+                # this on the per-call wire copy too, but this repair mutates
+                # (and persists) ``messages`` directly, so the stored
+                # trajectory should not keep carrying a value that is
+                # semantically identical to "no tool calls" and that every
+                # other write path already normalizes away (a falsy
+                # ``tool_calls`` is never persisted as JSON — see
+                # ``_insert_message_rows``). Popping here is a no-op on what
+                # eventually reaches state.db either way.
+                prev.pop("tool_calls", None)
             # Concatenate plain-text content; leave multimodal (list)
             # content on either side alone to avoid mangling attachment
             # blocks — fall back to keeping the existing content.

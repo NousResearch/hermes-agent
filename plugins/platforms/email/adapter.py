@@ -8,6 +8,8 @@ import imaplib
 import logging
 import os
 import re
+import html
+import html.parser
 import smtplib
 import socket
 import ssl
@@ -52,6 +54,208 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
 # "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
 _AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
+
+
+# ── HTML Email Formatting ───────────────────────────────────────────────
+# Converts Markdown to styled HTML for rich email rendering.
+# Config: platforms.email.html_format (default: true)
+
+_HERMES_EMAIL_HTML_TEMPLATE = """\
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f4f4f7;">
+<div style="max-width:680px;margin:0 auto;background:#ffffff;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px;line-height:1.6;color:#2d3748;padding:32px;">
+{body}
+<div style="margin-top:32px;padding-top:16px;border-top:1px solid #e2e8f0;
+  font-size:12px;color:#a0aec0;">
+  Sent by <strong>Hermes Agent</strong>
+</div>
+</div>
+</body>
+</html>
+"""
+
+# Inline CSS per-element for email client compat (Gmail strips <style> tags).
+# Note: Python-Markdown generates <pre><code>...</code></pre> for fenced code.
+# The <pre> styling provides the dark background; <code> inside inherits it.
+# We use a two-pass approach: first style all <code> (inline code gets light bg),
+# then override <code> inside <pre> blocks to be transparent.
+_HERMES_EMAIL_STYLES = [
+    ("h1", 'style="font-size:24px;font-weight:700;color:#1a202c;margin:24px 0 12px;border-bottom:2px solid #667eea;padding-bottom:8px;"'),
+    ("h2", 'style="font-size:20px;font-weight:700;color:#2d3748;margin:24px 0 10px;border-bottom:1px solid #e2e8f0;padding-bottom:6px;"'),
+    ("h3", 'style="font-size:17px;font-weight:600;color:#4a5568;margin:18px 0 8px;"'),
+    ("h4", 'style="font-size:15px;font-weight:600;color:#718096;margin:14px 0 6px;"'),
+    ("p", 'style="margin:0 0 12px;"'),
+    ("ul", 'style="margin:0 0 12px;padding-left:24px;"'),
+    ("ol", 'style="margin:0 0 12px;padding-left:24px;"'),
+    ("li", 'style="margin-bottom:4px;"'),
+    ("blockquote", 'style="margin:12px 0;padding:12px 16px;border-left:4px solid #667eea;background:#f7fafc;color:#4a5568;font-style:italic;"'),
+    ("table", 'style="border-collapse:collapse;width:100%;margin:12px 0;font-size:14px;"'),
+    ("th", 'style="background:#667eea;color:#fff;padding:8px 12px;text-align:left;font-weight:600;"'),
+    ("td", 'style="padding:8px 12px;border-bottom:1px solid #e2e8f0;"'),
+    ("code", 'style="background:#edf2f7;padding:2px 5px;border-radius:3px;font-size:13px;font-family:Menlo,Monaco,Consolas,monospace;"'),
+    ("pre", 'style="background:#2d3748;color:#e2e8f0;padding:16px;border-radius:6px;overflow-x:auto;font-size:13px;line-height:1.5;"'),
+    ("a", 'style="color:#667eea;text-decoration:none;"'),
+    ("hr", 'style="border:none;border-top:1px solid #e2e8f0;margin:20px 0;"'),
+]
+
+# Regex to match <pre><code>...</code></pre> blocks — protect from style injection.
+# Strategy: temporarily replace these with placeholders BEFORE injecting inline
+# styles, then restore with custom styling. This avoids duplicate style=
+# attributes from two-pass injection (Copilot #73294).
+_PRE_CODE_BLOCK_RE = re.compile(r"<pre><code>(.*?)</code></pre>", re.DOTALL)
+_PRE_CODE_PLACEHOLDER = "\x00PRE_CODE_BLOCK_{}\x00"
+
+# Styled <pre><code> replacement — dark background, transparent code
+_PRE_CODE_STYLED = (
+    '<pre style="background:#2d3748;color:#e2e8f0;padding:16px;border-radius:6px;'
+    'overflow-x:auto;font-size:13px;line-height:1.5;">'
+    '<code style="background:transparent;padding:0;color:inherit;font-size:13px;'
+    'font-family:Menlo,Monaco,Consolas,monospace;">{}</code></pre>'
+)
+
+
+# ── HTML Sanitization ─────────────────────────────────────────────────
+# Allowlist-based sanitizer for outbound email HTML.
+# Mirrors the Matrix adapter pattern (html.parser-based, no bleach dependency).
+# Policy: only safe structural tags pass; event attributes, unsafe URLs,
+# and script/style blocks are stripped (Tecnium #73294).
+
+_EMAIL_ALLOWED_TAGS = {
+    "a", "b", "blockquote", "br", "code", "em", "h1", "h2", "h3", "h4", "h5", "h6",
+    "hr", "i", "li", "ol", "p", "pre", "strong", "table", "tbody", "td", "th",
+    "thead", "tr", "ul", "img",
+}
+_EMAIL_VOID_TAGS = {"br", "hr", "img"}
+
+
+class _EmailHtmlSanitizer(html.parser.HTMLParser):
+    """Allowlist sanitizer for email-compatible HTML."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    @staticmethod
+    def _safe_url(value: str) -> str:
+        stripped = re.sub(r"[\x00-\x1f\x7f]+", "", value or "").strip()
+        match = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*):", stripped)
+        scheme = match.group(1).lower() if match else ""
+        if scheme and scheme not in {"http", "https", "mailto"}:
+            return ""
+        return stripped
+
+    def _safe_attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> str:
+        safe: list[str] = []
+        for key, value in attrs:
+            attr = str(key or "").lower()
+            raw_value = "" if value is None else str(value)
+            # Strip all event handlers
+            if attr.startswith("on"):
+                continue
+            if tag == "a" and attr == "href":
+                href = self._safe_url(raw_value)
+                if href:
+                    safe.append(f' href="{html.escape(href, quote=True)}"')
+            elif tag == "img" and attr == "src":
+                src = self._safe_url(raw_value)
+                if src:
+                    safe.append(f' src="{html.escape(src, quote=True)}"')
+            elif tag == "code" and attr == "class":
+                if re.fullmatch(r"language-[A-Za-z0-9_+.-]{1,64}", raw_value):
+                    safe.append(f' class="{html.escape(raw_value, quote=True)}"')
+            elif attr == "style":
+                # Allow inline styles (email clients need them)
+                safe.append(f' style="{html.escape(raw_value, quote=True)}"')
+        return "".join(safe)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in {"script", "style"}:
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        if tag not in _EMAIL_ALLOWED_TAGS:
+            return
+        if tag in _EMAIL_VOID_TAGS:
+            self._parts.append(f"<{tag}{self._safe_attrs(tag, attrs)}>")
+            return
+        self._parts.append(f"<{tag}{self._safe_attrs(tag, attrs)}>")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in {"script", "style"} and self._skip_depth:
+            self._skip_depth -= 1
+            return
+        if self._skip_depth or tag not in _EMAIL_ALLOWED_TAGS or tag in _EMAIL_VOID_TAGS:
+            return
+        self._parts.append(f"</{tag}>")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self._parts.append(html.escape(data))
+
+    def handle_entityref(self, name: str) -> None:
+        if not self._skip_depth:
+            self._parts.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        if not self._skip_depth:
+            self._parts.append(f"&#{name};")
+
+    def get_html(self) -> str:
+        return "".join(self._parts)
+
+
+def _sanitize_email_html(html_str: str) -> str:
+    """Sanitize HTML for email using allowlist policy."""
+    sanitizer = _EmailHtmlSanitizer()
+    try:
+        sanitizer.feed(html_str or "")
+        sanitizer.close()
+        return sanitizer.get_html()
+    except Exception:
+        return html.escape(html_str or "")
+
+
+def _is_html(text: str) -> bool:
+    """Detect if text already contains HTML markup."""
+    return bool(re.search(r"<(?:p|div|h[1-6]|table|ul|ol|blockquote|pre|br)\b", text, re.I))
+
+
+def _markdown_to_html_email(body: str) -> str:
+    """Convert Markdown body to styled HTML email content.
+
+    If the body already contains HTML (detected by block-level tags),
+    sanitize it directly instead of re-rendering through Markdown.
+    """
+    if _is_html(body):
+        # Body is already HTML — sanitize and wrap, don't re-render
+        sanitized = _sanitize_email_html(body)
+        return _HERMES_EMAIL_HTML_TEMPLATE.replace("{body}", sanitized)
+    import markdown as _md_mod
+    html = _md_mod.markdown(body, extensions=["tables", "fenced_code", "nl2br"])
+    # Protect <pre><code> blocks from style injection (replace with placeholders)
+    pre_code_blocks = []
+    def _save_block(m):
+        pre_code_blocks.append(m.group(1))
+        return _PRE_CODE_PLACEHOLDER.format(len(pre_code_blocks) - 1)
+    html = _PRE_CODE_BLOCK_RE.sub(_save_block, html)
+    # Inject inline styles per element (Gmail strips <style> blocks)
+    for tag, style in _HERMES_EMAIL_STYLES:
+        html = re.sub(rf"<{tag}(\s|>)", rf"<{tag} {style}\1", html)
+    # Restore <pre><code> blocks with proper styling (no duplicate style=)
+    for i, content in enumerate(pre_code_blocks):
+        html = html.replace(_PRE_CODE_PLACEHOLDER.format(i), _PRE_CODE_STYLED.format(content))
+    # Sanitize to enforce allowlist policy (event handlers, unsafe URLs, script/style)
+    html = _sanitize_email_html(html)
+    # Use .replace() instead of .format() — body may contain { } braces
+    return _HERMES_EMAIL_HTML_TEMPLATE.replace("{body}", html)
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -338,6 +542,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
+        self._html_format = extra.get("html_format", True)  # platforms.email.html_format (Markdown→HTML rendering)
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
         if "require_authenticated_sender" in extra:
@@ -662,8 +867,39 @@ class EmailAdapter(BasePlatformAdapter):
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if body or attach_empty_body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+            self._attach_parts(msg, body)
         return msg, msg_id, subject
+
+    def _create_body_part(self, body: str):
+        """Create a body part for use inside multipart/mixed.
+
+        Returns ``MIMEMultipart("alternative")`` when HTML is enabled (the
+        plain/text + HTML pair), or a simple ``MIMEText`` when html_format is
+        disabled — the pre-feature behavior.
+        """
+        if self._html_format:
+            alt = MIMEMultipart("alternative")
+            self._attach_parts(alt, body)
+            return alt
+        return MIMEText(body, "plain", "utf-8")
+
+    def _attach_parts(self, container: MIMEMultipart, body: str) -> None:
+        """Attach plain + optional HTML parts to a multipart container.
+
+        Honors ``html_format`` (platforms.email.html_format, default true): attach
+        a ``text/plain`` part always, plus a ``text/html`` part rendered from the
+        Markdown body when enabled. HTML rendering is defensive — on failure we
+        fall back to plain text only, never breaking the send.
+        """
+        container.attach(MIMEText(body, "plain", "utf-8"))
+        if self._html_format:
+            try:
+                html = _markdown_to_html_email(body)
+                container.attach(MIMEText(html, "html", "utf-8"))
+            except ImportError:
+                logger.debug("[Email] markdown not installed, sending plain text only")
+            except Exception as e:
+                logger.warning("[Email] HTML conversion failed, sending plain only: %s", e, exc_info=True)
 
     def _smtp_send(self, msg: MIMEMultipart) -> None:
         """Login, send, and always release the SMTP connection (quit, else close)."""

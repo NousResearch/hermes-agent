@@ -5710,7 +5710,7 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         return _run_npm_install_deterministic(
             npm,
             npm_cwd,
-            extra_args=(*npm_workspace_args, "--silent") if silent else npm_workspace_args,
+            extra_args=(*npm_workspace_args, "--silent", "--prefer-offline") if silent else (*npm_workspace_args, "--prefer-offline"),
             env=build_env,
         )
 

@@ -2336,6 +2336,7 @@ DEFAULT_CONFIG = {
     # See tools/tool_search.py for full design notes and the
     # openclaw-tool-search-report PDF in this PR for the rationale.
     "tools": {
+        "analytics": False,
         "tool_search": {
             # Tiered disclosure: any deferrable (MCP/plugin) tool activates
             # the bridge; the listing then scales with catalog size.

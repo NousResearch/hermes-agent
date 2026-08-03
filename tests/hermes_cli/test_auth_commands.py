@@ -567,6 +567,49 @@ def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch
     assert "openrouter" in payload.get("credential_pool", {})
 
 
+def test_logout_allows_persisted_provider_after_plugin_is_removed(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    """Cleanup identity is broader than the currently routable catalog."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "retired-provider",
+            "providers": {},
+            "credential_pool": {
+                "retired-provider": [
+                    {
+                        "id": "retired-1",
+                        "source": "manual",
+                        "access_token": "retired-secret",
+                    }
+                ]
+            },
+        },
+    )
+    (hermes_home / "config.yaml").write_text(
+        "model:\n  provider: retired-provider\n",
+        encoding="utf-8",
+    )
+
+    from types import SimpleNamespace
+
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider="retired-provider"))
+
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert "retired-provider" not in payload.get("credential_pool", {})
+    assert payload.get("active_provider") is None
+    assert "provider: auto" in (hermes_home / "config.yaml").read_text()
+    assert "Logged out of retired-provider." in capsys.readouterr().out
+
+
 def test_logout_resets_codex_config_when_auth_state_already_cleared(tmp_path, monkeypatch, capsys):
     """`hermes logout --provider openai-codex` must still clear model.provider.
 

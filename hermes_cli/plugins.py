@@ -13,8 +13,9 @@ Discovers, loads, and manages plugins from four sources:
 4. **Pip plugins**     – packages that expose the ``hermes_agent.plugins``
    entry-point group.
 
-Later sources override earlier ones on name collision, so a user or project
-plugin with the same name as a bundled plugin replaces it.
+Among active candidates, later sources override earlier ones on name
+collision. An external candidate must be explicitly enabled before it can
+replace a bundled default with the same canonical key.
 
 Each directory plugin must contain a ``plugin.yaml`` manifest **and** an
 ``__init__.py`` with a ``register(ctx)`` function.
@@ -44,7 +45,7 @@ import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, TypeVar, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
@@ -312,6 +313,38 @@ class LoadedPlugin:
     # imported) loader. The module loads on first real use via the
     # platform_registry; see PluginManager._register_deferred_platform.
     deferred: bool = False
+
+
+_PluginCandidate = TypeVar("_PluginCandidate")
+
+
+def resolve_plugin_candidate_winner(
+    candidates: Iterable[_PluginCandidate],
+    status_for: Callable[[_PluginCandidate], str],
+) -> Optional[tuple[_PluginCandidate, str]]:
+    """Resolve one canonical-key group using active-winner semantics.
+
+    ``candidates`` must be ordered from lowest to highest source precedence,
+    matching discovery (bundled, user, project, then entry point).  An
+    explicit disable on any candidate blocks the whole canonical key.
+    Otherwise, the highest-precedence enabled candidate wins and an inactive
+    external candidate cannot shadow an enabled bundled fallback.
+
+    When no candidate is enabled, the highest-precedence candidate is
+    returned with its inactive status so callers can retain one useful
+    introspection record without executing it.
+    """
+    ranked = list(candidates)
+    if not ranked:
+        return None
+
+    statuses = [(candidate, status_for(candidate)) for candidate in reversed(ranked)]
+    if any(status == "disabled" for _candidate, status in statuses):
+        return statuses[0][0], "disabled"
+    for candidate, status in statuses:
+        if status == "enabled":
+            return candidate, status
+    return statuses[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1370,25 +1403,30 @@ class PluginManager:
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)
 
-        # Load each manifest (skip user-disabled plugins).
-        # Later sources override earlier ones on key collision — user
-        # plugins take precedence over bundled, project plugins take
-        # precedence over user. Dedup here so we only load the final
-        # winner. Keys are path-derived (``image_gen/openai``,
-        # ``disk-cleanup``) so ``tts/openai`` and ``image_gen/openai``
-        # don't collide even when both manifests say ``name: openai``.
+        # Load one active winner per canonical key. Source precedence is the
+        # discovery order above (later sources win), but only among active
+        # candidates: an unconfigured external plugin must not shadow a
+        # bundled default with the same key. Explicit disable remains a
+        # key-wide deny. Keys are path-derived (``image_gen/openai``,
+        # ``disk-cleanup``) so ``tts/openai`` and ``image_gen/openai`` don't
+        # collide even when both manifests say ``name: openai``.
         activation = load_plugin_activation_state()
-        winners: Dict[str, PluginManifest] = {}
+        grouped: Dict[str, List[PluginManifest]] = {}
         for manifest in manifests:
-            winners[manifest.key or manifest.name] = manifest
-        for manifest in winners.values():
-            lookup_key = manifest.key or manifest.name
-            status = activation.status(
-                name=manifest.name,
-                key=lookup_key,
-                source=manifest.source,
-                kind=manifest.kind,
+            grouped.setdefault(manifest.key or manifest.name, []).append(manifest)
+        for lookup_key, candidates in grouped.items():
+            selection = resolve_plugin_candidate_winner(
+                candidates,
+                lambda candidate: activation.status(
+                    name=candidate.name,
+                    key=candidate.key or candidate.name,
+                    source=candidate.source,
+                    kind=candidate.kind,
+                ),
             )
+            if selection is None:  # pragma: no cover - groups are never empty
+                continue
+            manifest, status = selection
 
             # Explicit disable always wins, including for bundled defaults.
             if status == "disabled":

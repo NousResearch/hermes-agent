@@ -16550,16 +16550,38 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
 
 
 def _discover_dashboard_runtime_entries() -> list:
-    """Discover runtime winners in the dashboard's process-home scope."""
+    """Discover active runtime winners in the dashboard process-home scope."""
     from hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
-    from hermes_cli.plugins_cmd import _discover_all_plugins
+    from hermes_cli.config import load_plugin_activation_state
+    from hermes_cli.plugins_cmd import (
+        _discover_plugin_candidates,
+        _select_active_plugin_entries,
+    )
 
     token = set_hermes_home_override(get_process_hermes_home())
     try:
-        return _discover_all_plugins()
+        return _select_active_plugin_entries(
+            _discover_plugin_candidates(),
+            load_plugin_activation_state(),
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _load_dashboard_plugin_activation_state():
+    """Load activation config in the same process-home scope as discovery."""
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from hermes_cli.config import load_plugin_activation_state
+
+    token = set_hermes_home_override(get_process_hermes_home())
+    try:
+        return load_plugin_activation_state()
     finally:
         reset_hermes_home_override(token)
 
@@ -16576,13 +16598,16 @@ def _discover_dashboard_plugins() -> list:
     bundled_root = get_bundled_plugins_dir()
     try:
         runtime_entries = _discover_dashboard_runtime_entries()
-        runtime_discovery_ok = True
     except Exception:
         # A dashboard extension backed by a runtime plugin must never become
         # executable merely because canonical runtime discovery failed. Pure
         # dashboard-only extensions still use the activation policy below.
         runtime_entries = []
-        runtime_discovery_ok = False
+
+    try:
+        activation = _load_dashboard_plugin_activation_state()
+    except Exception:
+        activation = None
 
     runtime_by_root: Dict[Path, tuple] = {}
     runtime_by_key: Dict[str, tuple] = {}
@@ -16594,12 +16619,10 @@ def _discover_dashboard_plugins() -> list:
         runtime_by_root[root] = entry
         runtime_by_key[str(entry[5])] = entry
 
-    # Use the same source precedence as PluginManager/_discover_all_plugins:
-    # bundled first, then user, then project. Later non-bundled candidates
-    # replace earlier candidates on canonical-key collision. A higher-priority
-    # plugin therefore suppresses a lower-priority dashboard even when the
-    # winner is inactive (there is no fallback to executable bundled UI/code).
-    winners: Dict[str, dict] = {}
+    # Retain all dashboard candidates until their canonical-key group can be
+    # resolved against the active runtime winner. This permits a bundled
+    # fallback when a higher-priority copy is installed but inactive.
+    candidates_by_key: Dict[str, List[dict]] = {}
     # User dashboard plugins are a dashboard-owned asset (same category as
     # theme YAML): resolve them from the process launch home so they don't
     # vanish when a request is scoped to another profile via a context-local
@@ -16659,7 +16682,6 @@ def _discover_dashboard_plugins() -> list:
                     runtime_source = str(runtime_entry[3])
                     runtime_key = str(runtime_entry[5])
                     runtime_kind = str(runtime_entry[6])
-                    runtime_winner = True
                 elif runtime_managed:
                     # Flat dashboard plugins use the manifest name as their
                     # canonical runtime key, matching _read_manifest_info(...,
@@ -16687,16 +16709,6 @@ def _discover_dashboard_plugins() -> list:
                         "git" if source == "user" and (child / ".git").exists()
                         else source
                     )
-                    winning_entry = runtime_by_key.get(runtime_key)
-                    if winning_entry is None:
-                        runtime_winner = False
-                    else:
-                        try:
-                            winning_root = Path(winning_entry[4]).resolve()
-                        except (OSError, RuntimeError, TypeError, ValueError):
-                            runtime_winner = False
-                        else:
-                            runtime_winner = winning_root == plugin_root
                 else:
                     # Dashboard-only extensions have no Python runtime
                     # manifest. They still follow source activation policy and
@@ -16705,7 +16717,6 @@ def _discover_dashboard_plugins() -> list:
                     runtime_key = name
                     runtime_source = source
                     runtime_kind = "backend" if source == "bundled" else "standalone"
-                    runtime_winner = True
                 # Tab options: ``path`` + ``position`` for a new tab, optional
                 # ``override`` to replace a built-in route, and ``hidden`` to
                 # register the plugin component/slots without adding a tab
@@ -16763,26 +16774,62 @@ def _discover_dashboard_plugins() -> list:
                     "_runtime_source": runtime_source,
                     "_runtime_kind": runtime_kind,
                     "_runtime_managed": runtime_managed,
-                    "_runtime_winner": runtime_winner and runtime_discovery_ok
-                    if runtime_managed else runtime_winner,
                 }
 
-                # _discover_all_plugins keeps the first bundled candidate for
-                # a duplicate key, while later user/project sources override.
-                if runtime_key in winners and source == "bundled":
-                    continue
-                winners[runtime_key] = candidate
+                candidates_by_key.setdefault(runtime_key, []).append(candidate)
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
                 continue
-    return list(winners.values())
+
+    from hermes_cli.plugins import resolve_plugin_candidate_winner
+
+    def _candidate_status(candidate: dict) -> str:
+        if activation is None:
+            return "not enabled"
+        status = activation.status(
+            name=str(candidate.get("_runtime_name") or ""),
+            key=str(candidate.get("_runtime_key") or ""),
+            source=str(candidate.get("_runtime_source") or "user"),
+            kind=str(candidate.get("_runtime_kind") or "standalone"),
+        )
+        if status == "disabled" or not candidate.get("_runtime_managed"):
+            return status
+
+        active_entry = runtime_by_key.get(str(candidate.get("_runtime_key") or ""))
+        candidate_root = _dashboard_plugin_root(candidate)
+        if active_entry is None or candidate_root is None:
+            return "not enabled"
+        try:
+            active_root = Path(active_entry[4]).resolve()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return "not enabled"
+        return status if active_root == candidate_root else "not enabled"
+
+    selected: List[dict] = []
+    for candidates in candidates_by_key.values():
+        selection = resolve_plugin_candidate_winner(candidates, _candidate_status)
+        if selection is not None:
+            selected.append(selection[0])
+
+    # Route names are the public asset/API namespace. Two canonical plugins
+    # claiming one name are ambiguous, so every claimant is marked fail-closed
+    # rather than letting discovery order choose whose gate protects the route.
+    route_name_counts: Dict[str, int] = {}
+    for candidate in selected:
+        route_name = str(candidate.get("name") or "")
+        route_name_counts[route_name] = route_name_counts.get(route_name, 0) + 1
+    for candidate in selected:
+        if route_name_counts.get(str(candidate.get("name") or ""), 0) > 1:
+            candidate["_route_name_collision"] = True
+
+    return selected
 
 
 # Cache discovered plugins per process and discovery scope. Dashboard manifests
 # can include project-controlled JavaScript, so a cache populated in one cwd or
 # with the project gate enabled must not survive a scope switch.
 _dashboard_plugins_cache: Optional[list] = None
-_dashboard_plugins_cache_fingerprint: Optional[tuple[str, str, str, bool]] = None
+_dashboard_plugins_cache_fingerprint: Optional[tuple] = None
 _dashboard_plugins_cache_lock = threading.RLock()
 
 
@@ -16793,15 +16840,31 @@ def _dashboard_path_identity(path: Path) -> str:
         return str(path.absolute())
 
 
-def _dashboard_plugins_discovery_fingerprint() -> tuple[str, str, str, bool]:
+def _dashboard_plugins_discovery_fingerprint() -> tuple:
     """Return every process value that changes dashboard plugin scope."""
     from hermes_cli.plugins import get_bundled_plugins_dir
+
+    try:
+        activation = _load_dashboard_plugin_activation_state()
+        enabled_identity = (
+            None
+            if activation.enabled is None
+            else tuple(sorted(activation.enabled))
+        )
+        activation_identity = (
+            enabled_identity,
+            tuple(sorted(activation.disabled)),
+            bool(activation.safe_mode),
+        )
+    except Exception:
+        activation_identity = ("unavailable",)
 
     return (
         _dashboard_path_identity(get_process_hermes_home() / "plugins"),
         _dashboard_path_identity(get_bundled_plugins_dir()),
         _dashboard_path_identity(Path.cwd()),
         env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"),
+        activation_identity,
     )
 
 
@@ -16873,9 +16936,8 @@ def _dashboard_plugin_identity(
     ):
         if runtime_managed:
             # A runtime-backed dashboard is active only for the current
-            # canonical winner. This recomputation deliberately ignores the
-            # cached _runtime_winner marker so cwd/profile/source changes are
-            # fail-closed even when a stale plugin dict reaches this helper.
+            # canonical active winner. Recompute from root identity so
+            # cwd/profile/source changes fail closed for stale plugin dicts.
             for entry in runtime_entries:
                 if str(entry[5]) != runtime_key:
                     continue
@@ -16937,11 +16999,11 @@ def _dashboard_plugin_status(
     activation=None,
 ) -> str:
     """Return the canonical activation status for a dashboard extension."""
+    if plugin.get("_route_name_collision"):
+        return "not enabled"
     if activation is None:
         try:
-            from hermes_cli.config import load_plugin_activation_state
-
-            activation = load_plugin_activation_state()
+            activation = _load_dashboard_plugin_activation_state()
         except Exception:
             return "not enabled"
 
@@ -16949,14 +17011,17 @@ def _dashboard_plugin_status(
         plugin,
         runtime_entries,
     )
-    if not is_winner or not _dashboard_plugin_source_scope_active(plugin, source):
-        return "not enabled"
-    return activation.status(
+    status = activation.status(
         name=name,
         key=key,
         source=source,
         kind=kind,
     )
+    if status == "disabled":
+        return status
+    if not is_winner or not _dashboard_plugin_source_scope_active(plugin, source):
+        return "not enabled"
+    return status
 
 
 def _dashboard_plugin_is_active(
@@ -16982,11 +17047,8 @@ async def get_dashboard_plugins():
         if isinstance(value, str) and value
     }
     try:
-        from hermes_cli.plugins_cmd import _discover_all_plugins
-        from hermes_cli.config import load_plugin_activation_state
-
-        runtime_entries = _discover_all_plugins()
-        activation = load_plugin_activation_state()
+        runtime_entries = _discover_dashboard_runtime_entries()
+        activation = _load_dashboard_plugin_activation_state()
     except Exception:
         runtime_entries = []
         activation = None
@@ -17103,13 +17165,19 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         if (root := _dashboard_plugin_root(plugin)) is not None
     }
     runtime_entries = _discover_all_plugins()
-    from hermes_cli.config import load_plugin_activation_state
-
-    activation = load_plugin_activation_state()
+    try:
+        active_runtime_entries = _discover_dashboard_runtime_entries()
+        activation = _load_dashboard_plugin_activation_state()
+    except Exception:
+        active_runtime_entries = []
+        activation = None
 
     # Read user-hidden plugins from config for the user_hidden field.
     config = load_config()
-    hidden_plugins: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+    hidden_values = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+    hidden_plugins = {
+        value for value in hidden_values if isinstance(value, str) and value
+    }
 
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
     rows: List[Dict[str, Any]] = []
@@ -17130,8 +17198,13 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
                 "name": name,
                 "source": source,
                 "_plugin_dir": str(dir_path),
+                "_runtime_name": name,
+                "_runtime_key": key,
+                "_runtime_source": source,
+                "_runtime_kind": kind,
+                "_runtime_managed": True,
             },
-            runtime_entries,
+            active_runtime_entries,
             activation,
         )
         if runtime_status == "not enabled":
@@ -17180,6 +17253,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
 
         rows.append({
             "name": name,
+            "key": key,
             "version": version or "",
             "description": description or "",
             "source": source,
@@ -17191,7 +17265,10 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "can_update_git": can_remove_update and (Path(dir_str) / ".git").exists(),
             "auth_required": auth_required,
             "auth_command": auth_command,
-            "user_hidden": name in hidden_plugins,
+            "user_hidden": bool(
+                {name, key, str(dm.get("name") or "") if dm else ""}
+                & hidden_plugins
+            ),
         })
 
     orphan_dashboard = [
@@ -17468,11 +17545,8 @@ def _mount_plugin_api_routes():
     GHSA-mcfc-hp25-cjv7)
     """
     try:
-        from hermes_cli.plugins_cmd import _discover_all_plugins
-        from hermes_cli.config import load_plugin_activation_state
-
-        runtime_entries = _discover_all_plugins()
-        activation = load_plugin_activation_state()
+        runtime_entries = _discover_dashboard_runtime_entries()
+        activation = _load_dashboard_plugin_activation_state()
     except Exception:
         runtime_entries = []
         activation = None

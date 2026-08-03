@@ -943,7 +943,94 @@ def _ensure_hermes_home_managed(home: Path):
 # Config loading/saving
 # =============================================================================
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS  # noqa: F401
+from hermes_cli.config_defaults import (  # noqa: F401
+    DEFAULT_CONFIG,
+    OPTIONAL_ENV_VARS as _BASE_OPTIONAL_ENV_VARS,
+)
+
+
+class _AtomicMetadataDict(dict):
+    """Dict-compatible metadata table with copy-on-write publication."""
+
+    _MISSING = object()
+
+    def __init__(self, initial: dict):
+        super().__init__()
+        self._data = dict(initial)
+        self._lock = threading.RLock()
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def __iter__(self):
+        return iter(tuple(self._data))
+
+    def __len__(self):
+        return len(self._data)
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def keys(self):
+        return tuple(self._data)
+
+    def values(self):
+        return tuple(self._data.values())
+
+    def items(self):
+        return tuple(self._data.items())
+
+    def copy(self):
+        return dict(self._data)
+
+    def __repr__(self):
+        return repr(self._data)
+
+    def __eq__(self, other):
+        if isinstance(other, _AtomicMetadataDict):
+            other = other._data
+        return self._data == other
+
+    def replace(self, replacement: dict) -> None:
+        with self._lock:
+            self._data = dict(replacement)
+
+    def update(self, *args, **kwargs) -> None:
+        with self._lock:
+            replacement = dict(self._data)
+            replacement.update(*args, **kwargs)
+            self._data = replacement
+
+    def __setitem__(self, key, value) -> None:
+        self.update({key: value})
+
+    def pop(self, key, default=_MISSING):
+        with self._lock:
+            replacement = dict(self._data)
+            if default is self._MISSING:
+                value = replacement.pop(key)
+            else:
+                value = replacement.pop(key, default)
+            self._data = replacement
+            return value
+
+    def setdefault(self, key, default=None):
+        with self._lock:
+            if key in self._data:
+                return self._data[key]
+            replacement = dict(self._data)
+            replacement[key] = default
+            self._data = replacement
+            return default
+
+    def clear(self) -> None:
+        self.replace({})
+
+
+OPTIONAL_ENV_VARS = _AtomicMetadataDict(_BASE_OPTIONAL_ENV_VARS)
 
 # =============================================================================
 # Config Migration System
@@ -3167,13 +3254,20 @@ def load_plugin_activation_state() -> "PluginActivationState":
     from hermes_cli.plugin_activation import PluginActivationState
     from utils import env_var_enabled
 
+    safe_mode = env_var_enabled("HERMES_SAFE_MODE")
+    if safe_mode:
+        # Safe mode is a recovery boundary, not merely another config flag.
+        # Do not let an unreadable or user-controlled plugins section disable
+        # the bundled model providers needed to recover the installation.
+        return PluginActivationState(safe_mode=True)
+
     try:
         config = load_config_readonly()
     except Exception:
         config = {}
     return PluginActivationState.from_config(
         config,
-        safe_mode=env_var_enabled("HERMES_SAFE_MODE"),
+        safe_mode=False,
     )
 
 
@@ -5327,6 +5421,7 @@ def config_command(args):
 
 _profile_env_vars_injected = False
 _profile_env_var_names: set[str] = set()
+_profile_env_vars_lock = threading.RLock()
 
 
 def _inject_profile_env_vars() -> None:
@@ -5335,9 +5430,11 @@ def _inject_profile_env_vars() -> None:
     Called once at module load time. Idempotent — repeated calls are no-ops.
     """
     global _profile_env_vars_injected
-    if _profile_env_vars_injected:
-        return
-    _profile_env_vars_injected = True
+    with _profile_env_vars_lock:
+        if _profile_env_vars_injected:
+            return
+        _profile_env_vars_injected = True
+    additions: dict[str, dict[str, Any]] = {}
     try:
         from providers import list_providers
         for _pp in list_providers():
@@ -5347,7 +5444,7 @@ def _inject_profile_env_vars() -> None:
                 if _var in OPTIONAL_ENV_VARS:
                     continue
                 _is_key = not _var.endswith("_BASE_URL") and not _var.endswith("_URL")
-                OPTIONAL_ENV_VARS[_var] = {
+                additions[_var] = {
                     "description": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL override'}",
                     "prompt": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL (leave empty for default)'}",
                     "url": _pp.signup_url or None,
@@ -5356,17 +5453,23 @@ def _inject_profile_env_vars() -> None:
                     "advanced": True,
                 }
                 _profile_env_var_names.add(_var)
+        if additions:
+            OPTIONAL_ENV_VARS.update(additions)
     except Exception:
         pass
 
 
 def _refresh_profile_env_vars() -> None:
-    """Rebuild provider-plugin environment metadata after activation changes."""
+    """Monotonically extend provider metadata after activation changes.
+
+    This table also feeds subprocess secret filtering.  Removing a name when
+    one profile disables a provider would both race concurrent readers and
+    reopen that secret name for another profile, so observed names remain for
+    the process lifetime.
+    """
     global _profile_env_vars_injected
-    for name in _profile_env_var_names:
-        OPTIONAL_ENV_VARS.pop(name, None)
-    _profile_env_var_names.clear()
-    _profile_env_vars_injected = False
+    with _profile_env_vars_lock:
+        _profile_env_vars_injected = False
     _inject_profile_env_vars()
 
 

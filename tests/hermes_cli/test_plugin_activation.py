@@ -165,6 +165,32 @@ def test_fresh_corrupt_config_fails_closed_for_nonbundled(
     )
 
 
+def test_safe_mode_does_not_read_user_plugin_configuration(
+    monkeypatch,
+):
+    from hermes_cli import config
+
+    monkeypatch.setenv("HERMES_SAFE_MODE", "1")
+
+    def user_config_must_not_be_read():
+        raise AssertionError("safe mode read user config")
+
+    monkeypatch.setattr(
+        config,
+        "load_config_readonly",
+        user_config_must_not_be_read,
+    )
+    state = config.load_plugin_activation_state()
+
+    assert state == PluginActivationState(safe_mode=True)
+    assert state.is_active(
+        name="openrouter",
+        key="model-providers/openrouter",
+        source="bundled",
+        kind="model-provider",
+    )
+
+
 def test_static_model_alias_cannot_revive_disabled_provider(monkeypatch):
     from hermes_cli import models
 

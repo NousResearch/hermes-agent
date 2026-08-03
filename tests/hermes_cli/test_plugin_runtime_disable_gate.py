@@ -94,6 +94,22 @@ def _make_bundled_plugin(tmp_path, name="bundledx"):
     return dashboard_dir
 
 
+def _make_bundled_runtime_plugin(root, directory, *, key, dashboard_name):
+    """Create a bundled runtime plugin claiming a dashboard route name."""
+    plugin_root = root / directory
+    dashboard_dir = plugin_root / "dashboard"
+    dashboard_dir.mkdir(parents=True)
+    (plugin_root / "plugin.yaml").write_text(
+        f"name: {key}\nkind: backend\nversion: 1.0.0\n"
+    )
+    (dashboard_dir / "manifest.json").write_text(json.dumps({
+        "name": dashboard_name,
+        "label": dashboard_name,
+        "entry": "dist/index.js",
+    }))
+    return dashboard_dir
+
+
 def _make_project_plugin(project_root, name="project-extension"):
     """Create a dashboard-only project extension with a browser asset."""
     dashboard_dir = project_root / ".hermes" / "plugins" / name / "dashboard"
@@ -203,6 +219,83 @@ class TestPluginApiRuntimeGate:
                  "hermes_cli.config.load_plugin_activation_state",
                  return_value=_activation(),
              ):
+            response = await web_server._plugin_api_runtime_gate(request, call_next)
+
+        assert response.status_code == 404
+        call_next.assert_not_called()
+
+
+class TestDashboardRouteNameCollision:
+    def test_distinct_canonical_plugins_sharing_route_fail_closed(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        bundled = tmp_path / "bundled"
+        home = tmp_path / "home"
+        bundled.mkdir()
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_bundled_runtime_plugin(
+            bundled,
+            "one",
+            key="runtime-one",
+            dashboard_name="shared-route",
+        )
+        _make_bundled_runtime_plugin(
+            bundled,
+            "two",
+            key="runtime-two",
+            dashboard_name="shared-route",
+        )
+
+        with patch(
+            "hermes_cli.plugins.get_bundled_plugins_dir",
+            return_value=bundled,
+        ):
+            plugins = web_server._get_dashboard_plugins(force_rescan=True)
+            claimants = [p for p in plugins if p["name"] == "shared-route"]
+            assert len(claimants) == 2
+            assert all(p.get("_route_name_collision") for p in claimants)
+            assert all(
+                web_server._dashboard_plugin_status(p) == "not enabled"
+                for p in claimants
+            )
+
+    @pytest.mark.asyncio
+    async def test_collision_cannot_borrow_another_plugins_runtime_gate(self):
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+
+        claimants = [
+            {
+                "name": "shared-route",
+                "source": "bundled",
+                "_runtime_key": "runtime-one",
+                "_route_name_collision": True,
+            },
+            {
+                "name": "shared-route",
+                "source": "bundled",
+                "_runtime_key": "runtime-two",
+                "_route_name_collision": True,
+            },
+        ]
+        request = Request({
+            "type": "http",
+            "method": "GET",
+            "path": "/api/plugins/shared-route/probe",
+            "query_string": b"",
+            "headers": [],
+            "state": {"token_authenticated": True},
+        })
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+
+        with patch.object(
+            web_server,
+            "_get_dashboard_plugins",
+            return_value=claimants,
+        ):
             response = await web_server._plugin_api_runtime_gate(request, call_next)
 
         assert response.status_code == 404

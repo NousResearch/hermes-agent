@@ -33,11 +33,13 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import hashlib
 import logging
 import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Callable
 
 from hermes_cli.plugin_activation import PluginActivationState
@@ -59,10 +61,67 @@ _PROVIDER_REFRESH_HOOKS: list[Callable[[], None]] = []
 _PLUGIN_MANAGED_PROVIDER_IDS: set[str] = set()
 _PROVIDER_PROFILE_ORIGINS: dict[str, tuple[str, str]] = {}
 
+
+@dataclass(frozen=True)
+class ProviderCatalogSnapshot:
+    """One immutable provider catalog for one profile/project scope.
+
+    Provider discovery used to publish into the module globals above.  That is
+    unsafe in the TUI gateway, where concurrent turns bind different
+    ``HERMES_HOME`` values with a ContextVar: one turn could read another
+    profile's endpoint after the second turn refreshed the process-global
+    registry.  Runtime readers now resolve this snapshot from their current
+    scope.  The old globals remain only as a compatibility mirror for tests
+    and third-party code that inspected private attributes.
+    """
+
+    scope_identity: tuple[str, str]
+    fingerprint: tuple[object, ...]
+    activation: PluginActivationState
+    registry: MappingProxyType
+    aliases: MappingProxyType
+    origins: MappingProxyType
+    profiles: tuple[ProviderProfile, ...]
+    plugin_managed_provider_ids: frozenset[str]
+    active_plugin_provider_ids: frozenset[str]
+    bundled_provider_ids: frozenset[str]
+    known_provider_ids: frozenset[str]
+
+
+@dataclass
+class _ProviderBuildState:
+    registry: dict[str, ProviderProfile]
+    aliases: dict[str, str]
+    origins: dict[str, tuple[str, str]]
+
+
+_BUILD_LOCAL = threading.local()
+_SNAPSHOT_CACHE: dict[tuple[object, ...], ProviderCatalogSnapshot] = {}
+_LAST_SNAPSHOT_FINGERPRINT: tuple[object, ...] | None = None
+_NOTIFIED_SNAPSHOT_FINGERPRINTS: set[tuple[object, ...]] = set()
+_MODULE_REGISTRATIONS: dict[str, tuple[ProviderProfile, ...]] = {}
+_MODULE_PATHS: dict[str, str] = {}
+_OBSERVED_PROFILES: dict[tuple[str, str, str], ProviderProfile] = {}
+_OBSERVED_PROVIDER_ENV_VARS: set[str] = set()
+_OBSERVED_PROVIDER_IDS_BY_SCOPE: dict[tuple[str, str], set[str]] = {}
+_RUNTIME_REGISTRY: dict[str, ProviderProfile] = {}
+_RUNTIME_ALIASES: dict[str, str] = {}
+_RUNTIME_REGISTRATION_GENERATION = 0
+
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
     Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
 )
+
+
+def _record_observed_profile_locked(
+    source: str,
+    path: str,
+    profile: ProviderProfile,
+) -> None:
+    """Record monotonic non-executable security metadata under discovery lock."""
+    _OBSERVED_PROFILES[(source, path, profile.name)] = profile
+    _OBSERVED_PROVIDER_ENV_VARS.update(profile.env_vars)
 
 
 def register_provider(profile: ProviderProfile) -> None:
@@ -72,11 +131,23 @@ def register_provider(profile: ProviderProfile) -> None:
     plugins under ``$HERMES_HOME/plugins/model-providers/`` can override
     bundled profiles without editing repo code.
     """
-    global _PROVIDER_LIST_CACHE
+    global _PROVIDER_LIST_CACHE, _RUNTIME_REGISTRATION_GENERATION
+    build_state = getattr(_BUILD_LOCAL, "state", None)
+    if isinstance(build_state, _ProviderBuildState):
+        build_state.registry[profile.name] = profile
+        for alias in profile.aliases:
+            build_state.aliases[alias] = profile.name
+        return
+
     with _DISCOVERY_LOCK:
+        _RUNTIME_REGISTRY[profile.name] = profile
+        for alias in profile.aliases:
+            _RUNTIME_ALIASES[alias] = profile.name
+        _RUNTIME_REGISTRATION_GENERATION += 1
         _REGISTRY[profile.name] = profile
         for alias in profile.aliases:
             _ALIASES[alias] = profile.name
+        _record_observed_profile_locked("runtime", "", profile)
         _PROVIDER_LIST_CACHE = None
 
 
@@ -85,29 +156,79 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 
     Returns None if the provider has no profile (falls back to generic).
     """
-    _ensure_providers_discovered()
-    with _DISCOVERY_LOCK:
-        canonical = _ALIASES.get(name, name)
-        return _REGISTRY.get(canonical)
+    snapshot = _ensure_providers_discovered()
+    if snapshot is None:
+        with _DISCOVERY_LOCK:
+            canonical = _ALIASES.get(name, name)
+            return _REGISTRY.get(canonical)
+    canonical = snapshot.aliases.get(name, name)
+    return snapshot.registry.get(canonical)
 
 
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name)."""
     global _PROVIDER_LIST_CACHE
-    _ensure_providers_discovered()
+    snapshot = _ensure_providers_discovered()
+    if snapshot is not None:
+        return list(snapshot.profiles)
+
+    # Private-registry compatibility for tests that deliberately install a
+    # hand-built registry and mark it discovered without a fingerprint.
     with _DISCOVERY_LOCK:
         if _PROVIDER_LIST_CACHE is not None:
             return list(_PROVIDER_LIST_CACHE)
-        # Deduplicate: _REGISTRY has canonical names; _ALIASES points to same objects
-        seen: set[int] = set()
-        result: list[ProviderProfile] = []
-        for profile in _REGISTRY.values():
-            pid = id(profile)
-            if pid not in seen:
-                seen.add(pid)
-                result.append(profile)
-        _PROVIDER_LIST_CACHE = result
-        return list(result)
+        result = _dedupe_profiles(_REGISTRY.values())
+        _PROVIDER_LIST_CACHE = list(result)
+        return result
+
+
+def _dedupe_profiles(profiles) -> list[ProviderProfile]:
+    seen: set[int] = set()
+    result: list[ProviderProfile] = []
+    for profile in profiles:
+        profile_identity = id(profile)
+        if profile_identity not in seen:
+            seen.add(profile_identity)
+            result.append(profile)
+    return result
+
+
+def get_provider_catalog_snapshot() -> ProviderCatalogSnapshot:
+    """Return the immutable provider catalog for the current ContextVar scope."""
+    snapshot = _ensure_providers_discovered()
+    if snapshot is None:
+        with _DISCOVERY_LOCK:
+            profiles = tuple(_dedupe_profiles(_REGISTRY.values()))
+            return ProviderCatalogSnapshot(
+                scope_identity=("compat", ""),
+                fingerprint=("compat",),
+                activation=PluginActivationState(),
+                registry=MappingProxyType(dict(_REGISTRY)),
+                aliases=MappingProxyType(dict(_ALIASES)),
+                origins=MappingProxyType(dict(_PROVIDER_PROFILE_ORIGINS)),
+                profiles=profiles,
+                plugin_managed_provider_ids=frozenset(
+                    _PLUGIN_MANAGED_PROVIDER_IDS
+                ),
+                active_plugin_provider_ids=frozenset(_REGISTRY),
+                bundled_provider_ids=frozenset(),
+                known_provider_ids=frozenset(_REGISTRY),
+            )
+    return snapshot
+
+
+def get_provider_scope_identity() -> tuple[str, str]:
+    """Return the profile/project identity without importing plugin code."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = _path_identity(get_hermes_home())
+    except Exception:
+        home = ""
+    project = _path_identity(Path.cwd()) if env_var_enabled(
+        "HERMES_ENABLE_PROJECT_PLUGINS"
+    ) else ""
+    return home, project
 
 
 def register_provider_refresh_hook(callback: Callable[[], None]) -> None:
@@ -119,55 +240,127 @@ def register_provider_refresh_hook(callback: Callable[[], None]) -> None:
 
 def get_provider_discovery_identity() -> tuple[object, ...]:
     """Return the active discovery identity for downstream cache keys."""
-    _ensure_providers_discovered()
-    with _DISCOVERY_LOCK:
-        fingerprint = _DISCOVERY_FINGERPRINT or ()
-        if not fingerprint or not isinstance(
-            fingerprint[0], PluginActivationState
-        ):
-            return fingerprint
-        state = fingerprint[0]
-        return (
-            state.safe_mode,
-            None if state.enabled is None else tuple(sorted(state.enabled)),
-            tuple(sorted(state.disabled)),
-            *fingerprint[1:],
-            tuple(sorted(_PROVIDER_PROFILE_ORIGINS.items())),
-        )
+    snapshot = _ensure_providers_discovered()
+    if snapshot is None:
+        with _DISCOVERY_LOCK:
+            return _DISCOVERY_FINGERPRINT or ()
+    state = snapshot.activation
+    return (
+        *snapshot.scope_identity,
+        state.safe_mode,
+        None if state.enabled is None else tuple(sorted(state.enabled)),
+        tuple(sorted(state.disabled)),
+        *snapshot.fingerprint[3:],
+        tuple(sorted(snapshot.origins.items())),
+    )
 
 
 def get_provider_profile_origin(name: str) -> tuple[str, str] | None:
     """Return ``(source, path)`` for the active provider profile."""
-    _ensure_providers_discovered()
-    with _DISCOVERY_LOCK:
-        canonical = _ALIASES.get(name, name)
-        return _PROVIDER_PROFILE_ORIGINS.get(canonical)
+    snapshot = _ensure_providers_discovered()
+    if snapshot is None:
+        with _DISCOVERY_LOCK:
+            canonical = _ALIASES.get(name, name)
+            return _PROVIDER_PROFILE_ORIGINS.get(canonical)
+    canonical = snapshot.aliases.get(name, name)
+    return snapshot.origins.get(canonical)
 
 
 def invalidate_provider_discovery() -> None:
     """Rebuild providers and notify indexes after activation changes."""
     global _discovered, _ACTIVATION_STATE, _DISCOVERY_FINGERPRINT
+    global _LAST_SNAPSHOT_FINGERPRINT
+    scope_identity = get_provider_scope_identity()
     with _DISCOVERY_LOCK:
+        stale = [
+            fingerprint
+            for fingerprint, snapshot in _SNAPSHOT_CACHE.items()
+            if snapshot.scope_identity == scope_identity
+        ]
+        for fingerprint in stale:
+            _SNAPSHOT_CACHE.pop(fingerprint, None)
+            _NOTIFIED_SNAPSHOT_FINGERPRINTS.discard(fingerprint)
+
+        # Explicit invalidation also means plugin code may have changed on
+        # disk.  Existing snapshots retain their already-created objects, so
+        # it is safe to evict module/cache entries before the next build.
+        for prefix in tuple(_IMPORTED_PROVIDER_MODULES):
+            for module_name in tuple(sys.modules):
+                if module_name == prefix or module_name.startswith(f"{prefix}."):
+                    sys.modules.pop(module_name, None)
+        _IMPORTED_PROVIDER_MODULES.clear()
+        _MODULE_REGISTRATIONS.clear()
+        _MODULE_PATHS.clear()
         _discovered = False
         _ACTIVATION_STATE = None
         _DISCOVERY_FINGERPRINT = None
+        _LAST_SNAPSHOT_FINGERPRINT = None
     _ensure_providers_discovered()
 
 
 def is_plugin_managed_provider_id(provider_id: str) -> bool:
     """Return whether any model-provider plugin declares *provider_id*."""
-    _ensure_providers_discovered()
-    with _DISCOVERY_LOCK:
-        return provider_id in _PLUGIN_MANAGED_PROVIDER_IDS
+    snapshot = _ensure_providers_discovered()
+    if snapshot is None:
+        with _DISCOVERY_LOCK:
+            return provider_id in _PLUGIN_MANAGED_PROVIDER_IDS
+    return provider_id in snapshot.plugin_managed_provider_ids
 
 
 def is_provider_plugin_active(provider_id: str) -> bool:
     """Return whether a plugin-managed provider is active and registered."""
-    _ensure_providers_discovered()
+    snapshot = _ensure_providers_discovered()
+    if snapshot is None:
+        with _DISCOVERY_LOCK:
+            if provider_id not in _PLUGIN_MANAGED_PROVIDER_IDS:
+                return True
+            return provider_id in _REGISTRY
+    if provider_id not in snapshot.plugin_managed_provider_ids:
+        return True
+    return provider_id in snapshot.active_plugin_provider_ids
+
+
+def is_bundled_provider_id(provider_id: str) -> bool:
+    """Return whether the trusted bundled catalog owns *provider_id*."""
+    snapshot = _ensure_providers_discovered()
+    if snapshot is None:
+        return False
+    return provider_id in snapshot.bundled_provider_ids
+
+
+def get_known_provider_ids() -> frozenset[str]:
+    """Return non-executable identities suitable for cleanup validation."""
+    snapshot = _ensure_providers_discovered()
+    if snapshot is None:
+        with _DISCOVERY_LOCK:
+            return frozenset(_REGISTRY)
+    return snapshot.known_provider_ids
+
+
+def get_observed_provider_profiles() -> tuple[ProviderProfile, ...]:
+    """Return a process-lifetime union used only for secret-name hardening."""
     with _DISCOVERY_LOCK:
-        if provider_id not in _PLUGIN_MANAGED_PROVIDER_IDS:
-            return True
-        return provider_id in _REGISTRY
+        return tuple(_OBSERVED_PROFILES.values())
+
+
+def get_observed_provider_env_vars() -> frozenset[str]:
+    """Return provider env names observed before catalog publication.
+
+    Provider refresh hooks run after a newly built catalog is placed in the
+    snapshot cache.  A concurrent subprocess launch must not depend on those
+    callbacks having completed: otherwise a newly discovered provider key can
+    briefly escape the child-env scrubber.  ``_OBSERVED_PROFILES`` is updated
+    synchronously while discovery still holds ``_DISCOVERY_LOCK``, so this
+    monotonic view is the security publication barrier for spawn-time checks.
+    """
+    with _DISCOVERY_LOCK:
+        return frozenset(_OBSERVED_PROVIDER_ENV_VARS)
+
+
+def is_observed_provider_env_var(name: str) -> bool:
+    """Check the provider-owned spawn-security index without hook latency."""
+    with _DISCOVERY_LOCK:
+        return name in _OBSERVED_PROVIDER_ENV_VARS
 
 
 def _current_activation_state() -> PluginActivationState:
@@ -182,37 +375,87 @@ def _current_activation_state() -> PluginActivationState:
         )
 
 
-def _ensure_providers_discovered() -> None:
-    """Refresh when activation or any discovery root changes."""
+def _ensure_providers_discovered() -> ProviderCatalogSnapshot | None:
+    """Resolve the immutable catalog for the caller's current scope."""
+    global _LAST_SNAPSHOT_FINGERPRINT
+
+    # A small private compatibility seam used by provider-registry unit tests.
+    if _discovered and _DISCOVERY_FINGERPRINT is None:
+        return None
+
     state = _current_activation_state()
+    scope_identity = get_provider_scope_identity()
     user_dir = _user_plugins_dir()
     project_dir = _project_plugins_dir()
     fingerprint = (
+        *scope_identity,
         state,
+        _RUNTIME_REGISTRATION_GENERATION,
         _path_identity(_BUNDLED_PLUGINS_DIR),
         _path_identity(user_dir),
         _path_identity(project_dir),
     )
     callbacks: tuple[Callable[[], None], ...] = ()
     with _DISCOVERY_LOCK:
-        if _discovered and _DISCOVERY_FINGERPRINT == fingerprint:
-            return
-        _discover_providers(
-            state,
-            user_dir=user_dir,
-            project_dir=project_dir,
-            fingerprint=fingerprint,
-        )
-        callbacks = tuple(_PROVIDER_REFRESH_HOOKS)
+        snapshot = _SNAPSHOT_CACHE.get(fingerprint)
+        if snapshot is None:
+            snapshot = _discover_providers(
+                state,
+                scope_identity=scope_identity,
+                user_dir=user_dir,
+                project_dir=project_dir,
+                fingerprint=fingerprint,
+            )
+            _SNAPSHOT_CACHE[fingerprint] = snapshot
 
+        if _LAST_SNAPSHOT_FINGERPRINT != fingerprint:
+            _publish_compatibility_mirror(snapshot)
+            _LAST_SNAPSHOT_FINGERPRINT = fingerprint
+
+        # Derived registries are context-scoped/lazy, while the remaining
+        # hooks only warm or monotonically harden metadata. Notify once per
+        # immutable snapshot rather than every A/B profile switch; otherwise
+        # concurrent multiplex traffic turns a compatibility-mirror change
+        # into a refresh storm.
+        if fingerprint not in _NOTIFIED_SNAPSHOT_FINGERPRINTS:
+            _NOTIFIED_SNAPSHOT_FINGERPRINTS.add(fingerprint)
+            callbacks = tuple(_PROVIDER_REFRESH_HOOKS)
+
+    callback_failed = False
     for callback in callbacks:
         try:
             callback()
         except Exception:
+            callback_failed = True
             logger.warning(
                 "Failed to refresh a provider-derived registry",
                 exc_info=True,
             )
+    if callback_failed:
+        # Best-effort hooks may be retried by the next reader. Runtime routing
+        # and subprocess security do not depend on hook completion.
+        with _DISCOVERY_LOCK:
+            _NOTIFIED_SNAPSHOT_FINGERPRINTS.discard(fingerprint)
+    return snapshot
+
+
+def _publish_compatibility_mirror(snapshot: ProviderCatalogSnapshot) -> None:
+    """Publish a non-authoritative mirror for legacy private-attribute users."""
+    global _discovered, _ACTIVATION_STATE, _DISCOVERY_FINGERPRINT
+    global _PROVIDER_LIST_CACHE
+
+    _REGISTRY.clear()
+    _REGISTRY.update(snapshot.registry)
+    _ALIASES.clear()
+    _ALIASES.update(snapshot.aliases)
+    _PROVIDER_PROFILE_ORIGINS.clear()
+    _PROVIDER_PROFILE_ORIGINS.update(snapshot.origins)
+    _PLUGIN_MANAGED_PROVIDER_IDS.clear()
+    _PLUGIN_MANAGED_PROVIDER_IDS.update(snapshot.plugin_managed_provider_ids)
+    _PROVIDER_LIST_CACHE = list(snapshot.profiles)
+    _ACTIVATION_STATE = snapshot.activation
+    _DISCOVERY_FINGERPRINT = snapshot.fingerprint
+    _discovered = True
 
 
 def _path_identity(path: Path | None) -> str:
@@ -291,95 +534,136 @@ def _provider_plugin(plugin_dir: Path, source: str) -> _ProviderPlugin:
     )
 
 
-def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
+def _provider_module_name(plugin_dir: Path, source: str) -> str:
+    safe_name = plugin_dir.name.replace("-", "_")
+    if source == "bundled":
+        return f"plugins.model_providers.{safe_name}"
+    path_digest = hashlib.sha256(
+        _path_identity(plugin_dir).encode("utf-8", errors="surrogatepass")
+    ).hexdigest()[:16]
+    return f"_hermes_{source}_provider_{safe_name}_{path_digest}"
+
+
+def _module_provider_profiles(module) -> tuple[ProviderProfile, ...]:
+    """Best-effort replay for a provider module imported before discovery."""
+    profiles: list[ProviderProfile] = []
+    seen: set[int] = set()
+    for value in vars(module).values():
+        if isinstance(value, ProviderProfile) and id(value) not in seen:
+            seen.add(id(value))
+            profiles.append(value)
+    return tuple(profiles)
+
+
+def _record_plugin_profiles(
+    profiles: tuple[ProviderProfile, ...],
+    *,
+    source: str,
+    plugin_dir: Path,
+) -> None:
+    build_state = getattr(_BUILD_LOCAL, "state", None)
+    if not isinstance(build_state, _ProviderBuildState):
+        raise RuntimeError("provider plugin imported outside discovery build")
+    origin = (source, _path_identity(plugin_dir))
+    for profile in profiles:
+        register_provider(profile)
+        build_state.origins[profile.name] = origin
+        _record_observed_profile_locked(source, origin[1], profile)
+
+
+def _import_plugin_dir(plugin_dir: Path, source: str) -> tuple[ProviderProfile, ...]:
     """Import a single plugin directory so it self-registers.
 
     ``source`` is "bundled", "user", or "project".
     """
-    global _PROVIDER_LIST_CACHE
-
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
-        return
+        return ()
 
     # Give bundled plugins a stable import path (``plugins.model_providers.<name>``)
     # so relative imports within the plugin work. User plugins load via
     # ``importlib.util.spec_from_file_location`` with a unique module name so
     # multiple HERMES_HOME profiles don't alias each other.
-    safe_name = plugin_dir.name.replace("-", "_")
-    if source == "bundled":
-        module_name = f"plugins.model_providers.{safe_name}"
-    else:
-        module_name = f"_hermes_{source}_provider_{safe_name}"
+    module_name = _provider_module_name(plugin_dir, source)
 
     if module_name in sys.modules:
+        profiles = _MODULE_REGISTRATIONS.get(module_name)
+        if profiles is None:
+            profiles = _module_provider_profiles(sys.modules[module_name])
+            _MODULE_REGISTRATIONS[module_name] = profiles
+        _record_plugin_profiles(profiles, source=source, plugin_dir=plugin_dir)
         _IMPORTED_PROVIDER_MODULES.add(module_name)
-        return  # already imported
+        return profiles
 
-    registry_snapshot = dict(_REGISTRY)
-    aliases_snapshot = dict(_ALIASES)
-    origins_snapshot = dict(_PROVIDER_PROFILE_ORIGINS)
-    cache_snapshot = (
-        None if _PROVIDER_LIST_CACHE is None else list(_PROVIDER_LIST_CACHE)
-    )
+    build_state = getattr(_BUILD_LOCAL, "state", None)
+    if not isinstance(build_state, _ProviderBuildState):
+        raise RuntimeError("provider discovery build state is unavailable")
+    registry_snapshot = dict(build_state.registry)
+    aliases_snapshot = dict(build_state.aliases)
+    origins_snapshot = dict(build_state.origins)
     try:
         spec = importlib.util.spec_from_file_location(
             module_name, init_file, submodule_search_locations=[str(plugin_dir)]
         )
         if spec is None or spec.loader is None:
-            return
+            return ()
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
+        profiles = tuple(
+            profile
+            for provider_id, profile in build_state.registry.items()
+            if registry_snapshot.get(provider_id) is not profile
+        )
         origin = (source, _path_identity(plugin_dir))
-        for provider_id, profile in _REGISTRY.items():
-            if registry_snapshot.get(provider_id) is not profile:
-                _PROVIDER_PROFILE_ORIGINS[provider_id] = origin
+        for profile in profiles:
+            build_state.origins[profile.name] = origin
+            _record_observed_profile_locked(source, origin[1], profile)
+        _MODULE_REGISTRATIONS[module_name] = profiles
+        _MODULE_PATHS[module_name] = origin[1]
         _IMPORTED_PROVIDER_MODULES.add(module_name)
+        return profiles
     except Exception as exc:
         logger.warning(
             "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
         )
-        _REGISTRY.clear()
-        _REGISTRY.update(registry_snapshot)
-        _ALIASES.clear()
-        _ALIASES.update(aliases_snapshot)
-        _PROVIDER_PROFILE_ORIGINS.clear()
-        _PROVIDER_PROFILE_ORIGINS.update(origins_snapshot)
-        _PROVIDER_LIST_CACHE = cache_snapshot
+        build_state.registry.clear()
+        build_state.registry.update(registry_snapshot)
+        build_state.aliases.clear()
+        build_state.aliases.update(aliases_snapshot)
+        build_state.origins.clear()
+        build_state.origins.update(origins_snapshot)
+        _MODULE_REGISTRATIONS.pop(module_name, None)
+        _MODULE_PATHS.pop(module_name, None)
         for imported_name in tuple(sys.modules):
             if imported_name == module_name or imported_name.startswith(
                 f"{module_name}."
             ):
                 sys.modules.pop(imported_name, None)
+        return ()
 
 
 def _discover_providers(
     state: PluginActivationState,
     *,
+    scope_identity: tuple[str, str],
     user_dir: Path | None,
     project_dir: Path | None,
     fingerprint: tuple[object, ...],
-) -> None:
-    """Rebuild provider discovery from one canonical activation snapshot."""
-    global _discovered, _discovering, _ACTIVATION_STATE
-    global _DISCOVERY_FINGERPRINT, _PROVIDER_LIST_CACHE
+) -> ProviderCatalogSnapshot:
+    """Build one provider snapshot without publishing process-global state."""
+    global _discovering
     if _discovering:
-        return
+        raise RuntimeError("recursive provider discovery")
 
     _discovering = True
+    build_state = _ProviderBuildState(
+        registry=dict(_RUNTIME_REGISTRY),
+        aliases=dict(_RUNTIME_ALIASES),
+        origins={},
+    )
+    _BUILD_LOCAL.state = build_state
     try:
-        for prefix in tuple(_IMPORTED_PROVIDER_MODULES):
-            for module_name in tuple(sys.modules):
-                if module_name == prefix or module_name.startswith(f"{prefix}."):
-                    sys.modules.pop(module_name, None)
-        _IMPORTED_PROVIDER_MODULES.clear()
-        _REGISTRY.clear()
-        _ALIASES.clear()
-        _PROVIDER_LIST_CACHE = None
-        _PLUGIN_MANAGED_PROVIDER_IDS.clear()
-        _PROVIDER_PROFILE_ORIGINS.clear()
-
         candidates: list[_ProviderPlugin] = []
         for directory, source in (
             (_BUNDLED_PLUGINS_DIR, "bundled"),
@@ -395,39 +679,69 @@ def _discover_providers(
                     continue
                 candidates.append(_provider_plugin(child, source))
 
-        winners: dict[str, _ProviderPlugin] = {}
         grouped: dict[str, list[_ProviderPlugin]] = {}
+        managed_provider_ids: set[str] = set(
+            _OBSERVED_PROVIDER_IDS_BY_SCOPE.get(scope_identity, ())
+        )
+        known_provider_ids: set[str] = set(managed_provider_ids)
+        bundled_provider_ids: set[str] = set()
+        active_provider_ids: set[str] = set()
         for plugin in candidates:
-            winners[plugin.key] = plugin
             grouped.setdefault(plugin.key, []).append(plugin)
-            _PLUGIN_MANAGED_PROVIDER_IDS.update(plugin.provider_ids)
+            known_provider_ids.update(plugin.provider_ids)
+            known_provider_ids.update((plugin.path.name, plugin.name))
+            if plugin.source == "bundled":
+                managed_provider_ids.update(plugin.provider_ids)
+                bundled_provider_ids.update(plugin.provider_ids)
 
-        for key, winner in winners.items():
-            if not state.is_active(
-                name=winner.name,
-                key=winner.key,
-                source=winner.source,
-                kind="model-provider",
-            ):
+        for key, plugins in grouped.items():
+            statuses = [
+                (
+                    plugin,
+                    state.status(
+                        name=plugin.name,
+                        key=plugin.key,
+                        source=plugin.source,
+                        kind="model-provider",
+                    ),
+                )
+                for plugin in plugins
+            ]
+            # A deny on any identity in a canonical-key collision is a
+            # fail-closed deny for the whole key.  Otherwise inactive external
+            # candidates simply fall back to active bundled candidates.
+            if any(status == "disabled" for _plugin, status in statuses):
                 logger.debug(
-                    "Skipping inactive provider plugin winner '%s' (%s)",
+                    "Skipping explicitly disabled provider plugin group '%s'",
                     key,
-                    winner.source,
+                )
+                continue
+            active_plugins = [
+                plugin for plugin, status in statuses if status == "enabled"
+            ]
+            if not active_plugins:
+                logger.debug(
+                    "Skipping inactive provider plugin group '%s' (%s)",
+                    key,
+                    ", ".join(plugin.source for plugin in plugins),
                 )
                 continue
 
             # Load active sources in precedence order. Bundled profiles load
             # first so an enabled user/project override can replace selected
             # IDs without deleting sibling profiles from a multi-ID bundle.
-            for plugin in grouped[key]:
-                if not state.is_active(
-                    name=plugin.name,
-                    key=plugin.key,
-                    source=plugin.source,
-                    kind="model-provider",
-                ):
-                    continue
-                _import_plugin_dir(plugin.path, plugin.source)
+            for plugin in active_plugins:
+                profiles = _import_plugin_dir(plugin.path, plugin.source)
+                for profile in profiles:
+                    active_provider_ids.add(profile.name)
+                    active_provider_ids.update(profile.aliases)
+                    managed_provider_ids.add(profile.name)
+                    managed_provider_ids.update(profile.aliases)
+                    known_provider_ids.add(profile.name)
+                    known_provider_ids.update(profile.aliases)
+                    if plugin.source == "bundled":
+                        bundled_provider_ids.add(profile.name)
+                        bundled_provider_ids.update(profile.aliases)
 
         # Legacy single-file profiles are a compatibility extension path. Safe
         # mode must not execute them because their provenance is unknowable.
@@ -440,7 +754,7 @@ def _discover_providers(
                 for _importer, modname, _ispkg in pkgutil.iter_modules(_pkg.__path__):
                     if modname.startswith("_") or modname == "base":
                         continue
-                    _PLUGIN_MANAGED_PROVIDER_IDS.add(modname)
+                    known_provider_ids.add(modname)
                     if not state.is_active(
                         name=modname,
                         key=f"model-providers/{modname}",
@@ -448,36 +762,53 @@ def _discover_providers(
                         kind="model-provider",
                     ):
                         continue
-                    registry_snapshot = dict(_REGISTRY)
-                    aliases_snapshot = dict(_ALIASES)
-                    origins_snapshot = dict(_PROVIDER_PROFILE_ORIGINS)
-                    cache_snapshot = (
-                        None
-                        if _PROVIDER_LIST_CACHE is None
-                        else list(_PROVIDER_LIST_CACHE)
-                    )
                     module_name = f"providers.{modname}"
+                    registry_snapshot = dict(build_state.registry)
+                    aliases_snapshot = dict(build_state.aliases)
+                    origins_snapshot = dict(build_state.origins)
                     try:
-                        module = importlib.import_module(module_name)
+                        if module_name in sys.modules:
+                            module = sys.modules[module_name]
+                            profiles = _MODULE_REGISTRATIONS.get(module_name)
+                            if profiles is None:
+                                profiles = _module_provider_profiles(module)
+                        else:
+                            module = importlib.import_module(module_name)
+                            profiles = tuple(
+                                profile
+                                for provider_id, profile in build_state.registry.items()
+                                if registry_snapshot.get(provider_id) is not profile
+                            )
+                        _MODULE_REGISTRATIONS[module_name] = profiles
                         origin = (
                             "legacy",
                             _path_identity(
                                 Path(getattr(module, "__file__", None) or modname)
                             ),
                         )
-                        for provider_id, profile in _REGISTRY.items():
-                            if registry_snapshot.get(provider_id) is not profile:
-                                _PROVIDER_PROFILE_ORIGINS[provider_id] = origin
-                                _PLUGIN_MANAGED_PROVIDER_IDS.add(provider_id)
+                        _MODULE_PATHS[module_name] = origin[1]
+                        for profile in profiles:
+                            register_provider(profile)
+                            build_state.origins[profile.name] = origin
+                            _record_observed_profile_locked(
+                                "legacy", origin[1], profile
+                            )
+                            active_provider_ids.add(profile.name)
+                            active_provider_ids.update(profile.aliases)
+                            managed_provider_ids.add(profile.name)
+                            managed_provider_ids.update(profile.aliases)
+                            known_provider_ids.add(profile.name)
+                            known_provider_ids.update(profile.aliases)
                         _IMPORTED_PROVIDER_MODULES.add(module_name)
                     except Exception as exc:
-                        _REGISTRY.clear()
-                        _REGISTRY.update(registry_snapshot)
-                        _ALIASES.clear()
-                        _ALIASES.update(aliases_snapshot)
-                        _PROVIDER_PROFILE_ORIGINS.clear()
-                        _PROVIDER_PROFILE_ORIGINS.update(origins_snapshot)
-                        _PROVIDER_LIST_CACHE = cache_snapshot
+                        build_state.registry.clear()
+                        build_state.registry.update(registry_snapshot)
+                        build_state.aliases.clear()
+                        build_state.aliases.update(aliases_snapshot)
+                        build_state.origins.clear()
+                        build_state.origins.update(origins_snapshot)
+                        _MODULE_REGISTRATIONS.pop(module_name, None)
+                        _MODULE_PATHS.pop(module_name, None)
                         for imported_name in tuple(sys.modules):
                             if imported_name == module_name or imported_name.startswith(
                                 f"{module_name}."
@@ -491,13 +822,31 @@ def _discover_providers(
             except Exception:
                 pass
 
-        _ACTIVATION_STATE = state
-        _DISCOVERY_FINGERPRINT = fingerprint
-        _discovered = True
-    except BaseException:
-        _ACTIVATION_STATE = None
-        _DISCOVERY_FINGERPRINT = None
-        _discovered = False
-        raise
+        observed_ids = _OBSERVED_PROVIDER_IDS_BY_SCOPE.setdefault(
+            scope_identity, set()
+        )
+        observed_ids.update(managed_provider_ids)
+        observed_ids.update(active_provider_ids)
+        managed_provider_ids.update(observed_ids)
+        known_provider_ids.update(observed_ids)
+
+        profiles = tuple(_dedupe_profiles(build_state.registry.values()))
+        return ProviderCatalogSnapshot(
+            scope_identity=scope_identity,
+            fingerprint=fingerprint,
+            activation=state,
+            registry=MappingProxyType(dict(build_state.registry)),
+            aliases=MappingProxyType(dict(build_state.aliases)),
+            origins=MappingProxyType(dict(build_state.origins)),
+            profiles=profiles,
+            plugin_managed_provider_ids=frozenset(managed_provider_ids),
+            active_plugin_provider_ids=frozenset(active_provider_ids),
+            bundled_provider_ids=frozenset(bundled_provider_ids),
+            known_provider_ids=frozenset(known_provider_ids),
+        )
     finally:
+        try:
+            del _BUILD_LOCAL.state
+        except AttributeError:
+            pass
         _discovering = False

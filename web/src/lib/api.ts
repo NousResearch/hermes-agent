@@ -982,13 +982,13 @@ export const api = {
     }),
 
   enableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
+    fetchJSON<{ ok: boolean; name: string; key?: string; unchanged?: boolean }>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/enable`,
       { method: "POST" },
     ),
 
   disableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
+    fetchJSON<{ ok: boolean; name: string; key?: string; unchanged?: boolean }>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/disable`,
       { method: "POST" },
     ),
@@ -2565,6 +2565,7 @@ export interface PluginManifestResponse {
 
 export interface HubAgentPluginRow {
   name: string;
+  key?: string;
   version: string;
   description: string;
   source: string;

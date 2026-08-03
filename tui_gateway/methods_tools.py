@@ -1794,10 +1794,11 @@ def _(rid, params: dict) -> dict:
     agree on what's installed and what's enabled.
 
     Actions:
-      - ``list``   → {"plugins": [{name, version, description, source,
+      - ``list``   → {"plugins": [{name, key, version, description, source,
                        status}], "user_count": N, "bundled_count": M}
-      - ``toggle`` → flip ``name`` based on ``enable`` (bool). Returns the
-                       refreshed row plus {"ok", "unchanged"}.
+      - ``toggle`` → flip ``key`` (falling back to ``name``) based on
+                       ``enable`` (bool). Returns the refreshed row plus
+                       {"ok", "unchanged"}.
     """
     action = params.get("action", "list")
     try:
@@ -1818,6 +1819,7 @@ def _(rid, params: dict) -> dict:
                 out.append(
                     {
                         "name": name,
+                        "key": key,
                         "version": str(version or ""),
                         "description": desc or "",
                         "source": source,
@@ -1848,20 +1850,26 @@ def _(rid, params: dict) -> dict:
         if action == "toggle":
             from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
 
-            name = (params.get("name") or "").strip()
-            if not name:
-                return _err(rid, 4019, "plugins.toggle requires a 'name'")
+            input_name = (params.get("name") or "").strip()
+            identifier = (params.get("key") or input_name).strip()
+            if not identifier:
+                return _err(rid, 4019, "plugins.toggle requires a 'key' or 'name'")
             enable = bool(params.get("enable"))
-            result = dashboard_set_agent_plugin_enabled(name, enabled=enable)
+            result = dashboard_set_agent_plugin_enabled(identifier, enabled=enable)
             if not result.get("ok"):
                 return _err(rid, 5026, result.get("error") or "toggle failed")
-            row = next((r for r in _rows() if r["name"] == name), None)
+            resolved_key = result.get("key") or identifier
+            rows = _rows()
+            row = next((r for r in rows if r["key"] == resolved_key), None)
+            if row is None:
+                row = next((r for r in rows if r["name"] == input_name), None)
             return _ok(
                 rid,
                 {
                     "ok": True,
                     "unchanged": bool(result.get("unchanged")),
-                    "name": name,
+                    "name": input_name or identifier,
+                    "key": resolved_key,
                     "plugin": row,
                 },
             )

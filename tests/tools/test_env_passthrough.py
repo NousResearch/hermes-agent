@@ -363,6 +363,32 @@ class TestTerminalIntegration:
         register_env_passthrough(["MY_SKILL_CUSTOM_CONFIG"])
         assert is_env_passthrough("MY_SKILL_CUSTOM_CONFIG")
 
+    def test_late_provider_classification_revokes_existing_passthrough(self):
+        """A pre-discovery allowlist entry must not become a lasting bypass."""
+        from tools.code_execution_tool import _scrub_child_env
+        from tools.environments.local import (
+            _HERMES_PROVIDER_ENV_BLOCKLIST,
+            _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK,
+        )
+
+        name = "LC_LATE_PROVIDER_CREDENTIAL"
+        register_env_passthrough([name])
+        assert is_env_passthrough(name)
+
+        with _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
+            _HERMES_PROVIDER_ENV_BLOCKLIST.add(name)
+
+        assert not is_env_passthrough(name)
+        assert name not in get_all_passthrough()
+        # LC_ is normally a safe execute_code prefix, so this proves the
+        # provider check itself wins rather than relying on KEY/TOKEN matching.
+        child = _scrub_child_env(
+            {name: "secret", "PATH": "/usr/bin"},
+            is_passthrough=lambda _key: True,
+            is_windows=False,
+        )
+        assert name not in child
+
     def test_provider_blocklist_import_failure_fails_closed(self, monkeypatch):
         """If the dynamic provider blocklist can't be imported, provider
         credentials must be treated as protected and refused passthrough —
@@ -392,17 +418,27 @@ class TestTerminalIntegration:
         assert _ep_mod._is_hermes_provider_credential("OPENAI_API_KEY")
         assert _ep_mod._is_hermes_provider_credential("ANTHROPIC_API_KEY")
         assert _ep_mod._is_hermes_provider_credential("GH_TOKEN")
+        assert _ep_mod._is_hermes_provider_credential("LC_VENDOR_CRED")
 
         # Registration is refused while the blocklist is unavailable.
-        register_env_passthrough(["OPENAI_API_KEY", "ANTHROPIC_API_KEY"])
+        register_env_passthrough([
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "LC_VENDOR_CRED",
+        ])
         assert not is_env_passthrough("OPENAI_API_KEY")
         assert not is_env_passthrough("ANTHROPIC_API_KEY")
+        assert not is_env_passthrough("LC_VENDOR_CRED")
 
         # And the credential never reaches the execute_code child.
         child_env = _scrub_child_env(
             {
                 "OPENAI_API_KEY": "synthetic-secret",
                 "ANTHROPIC_API_KEY": "synthetic-secret",
+                # LC_ normally passes the broad safe-prefix rule and CRED does
+                # not match the generic secret substrings. Degraded provider
+                # security must still keep it out.
+                "LC_VENDOR_CRED": "synthetic-secret",
                 "PATH": "/usr/bin",
             },
             is_passthrough=is_env_passthrough,
@@ -410,4 +446,5 @@ class TestTerminalIntegration:
         )
         assert "OPENAI_API_KEY" not in child_env
         assert "ANTHROPIC_API_KEY" not in child_env
+        assert "LC_VENDOR_CRED" not in child_env
         assert child_env["PATH"] == "/usr/bin"

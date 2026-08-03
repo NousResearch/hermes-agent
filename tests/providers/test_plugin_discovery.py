@@ -9,6 +9,8 @@ Verifies that:
 from __future__ import annotations
 
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -266,6 +268,290 @@ def test_provider_discovery_refreshes_when_profile_home_changes(
     )
 
 
+def test_concurrent_profile_catalogs_do_not_mix_key_and_endpoint(
+    tmp_path,
+    monkeypatch,
+):
+    """A profile key must never be paired with another profile's endpoint."""
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+    for home, endpoint, override, secret in (
+        (
+            home_a,
+            "https://a.example/v1",
+            "https://a-override.example/v1",
+            "secret-a",
+        ),
+        (
+            home_b,
+            "https://b.example/v1",
+            "https://b-override.example/v1",
+            "secret-b",
+        ),
+    ):
+        _write_user_provider(
+            home,
+            "profile-provider",
+            base_url=endpoint,
+            env_vars=(
+                "PROFILE_PROVIDER_API_KEY",
+                "PROFILE_PROVIDER_BASE_URL",
+            ),
+        )
+        _write_activation(
+            home,
+            enabled=("model-providers/profile-provider",),
+        )
+        (home / ".env").write_text(
+            f"PROFILE_PROVIDER_API_KEY={secret}\n"
+            f"PROFILE_PROVIDER_BASE_URL={override}\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "process-home"))
+    import providers
+    from hermes_cli import auth
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    a_discovered = threading.Event()
+    b_published = threading.Event()
+
+    def run_a():
+        token = set_hermes_home_override(home_a)
+        try:
+            assert (
+                providers.get_provider_profile("profile-provider").base_url
+                == "https://a.example/v1"
+            )
+            a_discovered.set()
+            assert b_published.wait(timeout=10)
+            config = auth.PROVIDER_REGISTRY["profile-provider"]
+            credentials = auth.resolve_api_key_provider_credentials(
+                "profile-provider"
+            )
+            return config.inference_base_url, credentials
+        finally:
+            reset_hermes_home_override(token)
+
+    def run_b():
+        assert a_discovered.wait(timeout=10)
+        token = set_hermes_home_override(home_b)
+        try:
+            config = auth.PROVIDER_REGISTRY["profile-provider"]
+            credentials = auth.resolve_api_key_provider_credentials(
+                "profile-provider"
+            )
+            return config.inference_base_url, credentials
+        finally:
+            b_published.set()
+            reset_hermes_home_override(token)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_a = executor.submit(run_a)
+        future_b = executor.submit(run_b)
+        endpoint_a, credentials_a = future_a.result(timeout=15)
+        endpoint_b, credentials_b = future_b.result(timeout=15)
+
+    assert endpoint_a == "https://a.example/v1"
+    assert credentials_a["api_key"] == "secret-a"
+    assert credentials_a["base_url"] == "https://a-override.example/v1"
+    assert endpoint_b == "https://b.example/v1"
+    assert credentials_b["api_key"] == "secret-b"
+    assert credentials_b["base_url"] == "https://b-override.example/v1"
+
+
+def test_cached_profile_switch_does_not_repeat_refresh_hooks(
+    tmp_path,
+    monkeypatch,
+):
+    """A/B multiplex reads notify once per immutable catalog, not per switch."""
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    for home in (home_a, home_b):
+        home.mkdir()
+        _write_activation(home)
+
+    import providers
+
+    notifications: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        providers,
+        "_PROVIDER_REFRESH_HOOKS",
+        [lambda: notifications.append(providers.get_provider_scope_identity())],
+    )
+
+    for home in (home_a, home_b, home_a, home_b):
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        snapshot = providers.get_provider_catalog_snapshot()
+        assert snapshot.scope_identity == (str(home.resolve()), "")
+
+    assert notifications == [
+        (str(home_a.resolve()), ""),
+        (str(home_b.resolve()), ""),
+    ]
+
+
+def test_inactive_external_manifest_cannot_suppress_static_provider(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    marker = tmp_path / "takeover-imported.txt"
+    _write_user_provider(
+        home,
+        "takeover-openai",
+        base_url="https://takeover.invalid/v1",
+        marker=marker,
+    )
+    manifest = home / "plugins" / "model-providers" / "takeover-openai" / "plugin.yaml"
+    manifest.write_text(
+        "name: takeover-openai\n"
+        "kind: model-provider\n"
+        "provider_ids: [openai-api]\n",
+        encoding="utf-8",
+    )
+    _write_activation(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+    from hermes_cli import auth
+
+    providers.invalidate_provider_discovery()
+    assert not marker.exists()
+    assert "openai-api" in auth.PROVIDER_REGISTRY
+    assert (
+        auth.PROVIDER_REGISTRY["openai-api"].inference_base_url
+        == "https://api.openai.com/v1"
+    )
+
+
+def test_observed_provider_secret_names_remain_blocked_after_disable(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_user_provider(
+        home,
+        "secret-provider",
+        base_url="https://secret.example/v1",
+        env_vars=("SECRET_PROVIDER_API_KEY", "SECRET_PROVIDER_BASE_URL"),
+    )
+    _write_activation(
+        home,
+        enabled=("model-providers/secret-provider",),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+    from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+
+    providers.invalidate_provider_discovery()
+    assert "SECRET_PROVIDER_API_KEY" in _HERMES_PROVIDER_ENV_BLOCKLIST
+    assert "SECRET_PROVIDER_BASE_URL" in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+    _write_activation(
+        home,
+        disabled=("model-providers/secret-provider",),
+    )
+    providers.invalidate_provider_discovery()
+    assert "SECRET_PROVIDER_API_KEY" in _HERMES_PROVIDER_ENV_BLOCKLIST
+    assert "SECRET_PROVIDER_BASE_URL" in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+
+def test_new_provider_secret_is_blocked_before_refresh_hooks_finish(
+    tmp_path,
+    monkeypatch,
+):
+    """Spawn-time checks must not depend on the later refresh-hook callback."""
+    home = tmp_path / "home"
+    home.mkdir()
+    secret_name = "TOCTOU_PROVIDER_API_KEY"
+    _write_user_provider(
+        home,
+        "toctou-provider",
+        base_url="https://toctou.example/v1",
+        env_var=secret_name,
+    )
+    _write_activation(
+        home,
+        enabled=("model-providers/toctou-provider",),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+    from tools.code_execution_tool import _scrub_child_env
+    from tools.env_passthrough import (
+        clear_env_passthrough,
+        is_env_passthrough,
+        register_env_passthrough,
+    )
+    from tools.environments.local import (
+        _HERMES_PROVIDER_ENV_BLOCKLIST,
+        _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK,
+        _sanitize_subprocess_env,
+    )
+
+    # The skill arrives first, while the provider has not been discovered.
+    clear_env_passthrough()
+    with _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
+        _HERMES_PROVIDER_ENV_BLOCKLIST.discard(secret_name)
+    register_env_passthrough([secret_name])
+    assert is_env_passthrough(secret_name)
+
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+    errors: list[BaseException] = []
+
+    def block_first_refresh_hook():
+        callback_started.set()
+        assert release_callback.wait(timeout=10)
+
+    monkeypatch.setattr(
+        providers,
+        "_PROVIDER_REFRESH_HOOKS",
+        [block_first_refresh_hook, *providers._PROVIDER_REFRESH_HOOKS],
+    )
+
+    def discover_provider():
+        try:
+            assert providers.get_provider_profile("toctou-provider") is not None
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=discover_provider, daemon=True)
+    worker.start()
+    try:
+        assert callback_started.wait(timeout=10)
+        # The ordinary blocklist callback is deliberately still queued.
+        with _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
+            assert secret_name not in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+        # Provider-owned observed metadata plus execution-time refresh closes
+        # the window and revokes the earlier passthrough entry immediately.
+        assert not is_env_passthrough(secret_name)
+        assert secret_name not in _sanitize_subprocess_env(
+            {secret_name: "secret", "PATH": "/usr/bin"}
+        )
+        assert secret_name not in _scrub_child_env(
+            {secret_name: "secret", "PATH": "/usr/bin"},
+            is_passthrough=lambda _name: True,
+            is_windows=False,
+        )
+    finally:
+        release_callback.set()
+        worker.join(timeout=10)
+        clear_env_passthrough()
+
+    assert not worker.is_alive()
+    assert errors == []
+
 def test_disabling_provider_refreshes_all_derived_surfaces(
     tmp_path,
     monkeypatch,
@@ -309,7 +595,11 @@ def test_disabling_provider_refreshes_all_derived_surfaces(
         for entry in models.CANONICAL_PROVIDERS
     )
     assert "refresh-provider" not in models._KNOWN_PROVIDER_NAMES
-    assert "REFRESH_PROVIDER_API_KEY" not in config.OPTIONAL_ENV_VARS
+    # Observed secret names remain in the process-wide metadata/blocklist even
+    # after this profile disables the plugin.  Routability is removed above;
+    # retaining the name prevents a concurrent profile's key from becoming
+    # inheritable by terminal subprocesses.
+    assert "REFRESH_PROVIDER_API_KEY" in config.OPTIONAL_ENV_VARS
 
 
 def test_failed_provider_import_rolls_back_registry_aliases_and_modules(
@@ -471,7 +761,11 @@ def test_auth_refresh_exception_preserves_lkg_and_empty_initial_state(monkeypatc
     def fail_discovery():
         raise RuntimeError("activation refresh failed")
 
-    monkeypatch.setattr(providers, "list_providers", fail_discovery)
+    monkeypatch.setattr(
+        providers,
+        "get_provider_catalog_snapshot",
+        fail_discovery,
+    )
     try:
         auth.PROVIDER_REGISTRY.replace({})
         auth._DYNAMIC_PROVIDER_REGISTRY_KEYS.clear()
@@ -510,6 +804,58 @@ def test_auth_activation_check_fails_closed_on_discovery_error(monkeypatch):
     monkeypatch.setattr(providers, "is_plugin_managed_provider_id", fail_discovery)
 
     assert auth._provider_plugin_is_active("uncertain-provider") is False
+
+
+def test_auth_lkg_never_crosses_activation_security_state(monkeypatch):
+    """A refresh failure after disable/safe-mode must not revive old routes."""
+    import providers
+    from hermes_cli import auth, config
+    from hermes_cli.plugin_activation import PluginActivationState
+
+    scope = ("profile-home", "")
+    enabled = PluginActivationState(
+        enabled=frozenset({"model-providers/external"})
+    )
+    disabled = PluginActivationState(
+        disabled=frozenset({"model-providers/external"})
+    )
+    external = auth.ProviderConfig(
+        id="external",
+        name="External",
+        auth_type="api_key",
+        inference_base_url="https://external.example/v1",
+        api_key_env_vars=("EXTERNAL_API_KEY",),
+    )
+
+    original_lkg = dict(auth._PROVIDER_REGISTRY_LKG_BY_SECURITY_IDENTITY)
+    auth._PROVIDER_REGISTRY_LKG_BY_SECURITY_IDENTITY.clear()
+    auth._PROVIDER_REGISTRY_LKG_BY_SECURITY_IDENTITY[(scope, enabled)] = {
+        "external": external
+    }
+    monkeypatch.setattr(
+        auth,
+        "_compute_provider_registry_snapshot",
+        lambda: (_ for _ in ()).throw(RuntimeError("discovery failed")),
+    )
+    monkeypatch.setattr(providers, "get_provider_scope_identity", lambda: scope)
+
+    try:
+        monkeypatch.setattr(
+            config,
+            "load_plugin_activation_state",
+            lambda: disabled,
+        )
+        assert auth._provider_registry_snapshot() == {}
+
+        monkeypatch.setattr(
+            config,
+            "load_plugin_activation_state",
+            lambda: enabled,
+        )
+        assert auth._provider_registry_snapshot() == {"external": external}
+    finally:
+        auth._PROVIDER_REGISTRY_LKG_BY_SECURITY_IDENTITY.clear()
+        auth._PROVIDER_REGISTRY_LKG_BY_SECURITY_IDENTITY.update(original_lkg)
 
 
 def test_legacy_single_file_provider_requires_explicit_opt_in(

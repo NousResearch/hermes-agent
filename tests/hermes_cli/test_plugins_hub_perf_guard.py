@@ -6,14 +6,37 @@ from types import SimpleNamespace
 
 from hermes_cli import web_server
 from hermes_cli import plugins_cmd
+from hermes_cli.plugin_activation import PluginActivationState
 from tools import registry as tools_registry
 
 
-_PLUGIN_ROW = [("demo", "1.0.0", "demo plugin", "user", "/tmp/demo-plugin", "demo")]
+_PLUGIN_ROW = [
+    (
+        "demo",
+        "1.0.0",
+        "demo plugin",
+        "user",
+        "/tmp/demo-plugin",
+        "category/demo",
+        "standalone",
+    )
+]
 
 
 def _patch_minimal_hub_dependencies(monkeypatch, *, check_fn, discover_all_plugins=None):
     monkeypatch.setattr(web_server, "_get_dashboard_plugins", lambda force_rescan=False: [])
+    monkeypatch.setattr(
+        web_server,
+        "_discover_dashboard_runtime_entries",
+        lambda: list(_PLUGIN_ROW),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_load_dashboard_plugin_activation_state",
+        lambda: PluginActivationState(
+            enabled=frozenset({"category/demo"})
+        ),
+    )
     monkeypatch.setattr(web_server, "_discover_memory_provider_statuses", lambda: [])
     monkeypatch.setattr(web_server, "get_hermes_home", lambda: Path("/tmp/hermes-home"))
     monkeypatch.setattr(web_server, "load_config", lambda: {"dashboard": {"hidden_plugins": []}})
@@ -58,6 +81,8 @@ def test_plugins_hub_does_not_probe_cold_check_fns(monkeypatch):
     # happens on a background warmer thread, never inline.
     assert payload["plugins"][0]["auth_required"] is False
     assert payload["plugins"][0]["auth_command"] == ""
+    assert payload["plugins"][0]["name"] == "demo"
+    assert payload["plugins"][0]["key"] == "category/demo"
     assert threading.current_thread() not in calls["threads"]
 
 

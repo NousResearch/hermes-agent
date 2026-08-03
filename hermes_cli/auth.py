@@ -34,6 +34,7 @@ import time
 import uuid
 import webbrowser
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -173,53 +174,69 @@ class ProviderConfig:
     base_url_env_var: str = ""
 
 
-class _AtomicProviderRegistry(dict[str, ProviderConfig]):
-    """Dict-compatible registry with atomic replacement and snapshot views."""
+class _ContextProviderRegistry(dict[str, ProviderConfig]):
+    """Dict-compatible, context-scoped view of the active provider catalog."""
 
     def __init__(self, initial: Dict[str, ProviderConfig]):
-        super().__init__(initial)
-        self._lock = threading.RLock()
+        super().__init__()
+        self._override: ContextVar[Optional[Dict[str, ProviderConfig]]] = (
+            ContextVar("_AUTH_PROVIDER_REGISTRY_OVERRIDE", default=None)
+        )
+        if initial:
+            self._override.set(dict(initial))
+
+    def _snapshot(self) -> Dict[str, ProviderConfig]:
+        override = self._override.get()
+        if override is not None:
+            return override
+        return _provider_registry_snapshot()
 
     def replace(self, replacement: Dict[str, ProviderConfig]) -> None:
-        with self._lock:
-            super().clear()
-            super().update(replacement)
+        """Install a context-local compatibility/test override."""
+        self._override.set(dict(replacement))
+
+    def clear_override(self) -> None:
+        self._override.set(None)
 
     def __getitem__(self, key: str) -> ProviderConfig:
-        with self._lock:
-            return super().__getitem__(key)
+        return self._snapshot()[key]
 
     def __setitem__(self, key: str, value: ProviderConfig) -> None:
-        with self._lock:
-            super().__setitem__(key, value)
+        replacement = dict(self._snapshot())
+        replacement[key] = value
+        self.replace(replacement)
 
     def __contains__(self, key: object) -> bool:
-        with self._lock:
-            return super().__contains__(key)
+        return key in self._snapshot()
 
     def __iter__(self):
-        with self._lock:
-            return iter(tuple(super().keys()))
+        return iter(tuple(self._snapshot()))
 
     def __len__(self) -> int:
-        with self._lock:
-            return super().__len__()
+        return len(self._snapshot())
 
     def get(self, key: str, default=None):
-        with self._lock:
-            return super().get(key, default)
+        return self._snapshot().get(key, default)
 
     def keys(self):
-        with self._lock:
-            return tuple(super().keys())
+        return tuple(self._snapshot())
 
     def values(self):
-        with self._lock:
-            return tuple(super().values())
+        return tuple(self._snapshot().values())
 
     def items(self):
-        with self._lock:
-            return tuple(super().items())
+        return tuple(self._snapshot().items())
+
+    def copy(self):
+        return dict(self._snapshot())
+
+    def __repr__(self):
+        return repr(self._snapshot())
+
+    def __eq__(self, other):
+        if isinstance(other, _ContextProviderRegistry):
+            other = other._snapshot()
+        return self._snapshot() == other
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -512,55 +529,77 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
 }
 _STATIC_PROVIDER_REGISTRY = dict(PROVIDER_REGISTRY)
-# The public registry is the live, activation-filtered view. Starting empty
-# makes an initial discovery failure fail closed; later refresh failures leave
-# the last successfully published snapshot untouched.
-PROVIDER_REGISTRY = _AtomicProviderRegistry({})
+# The public registry resolves the immutable provider catalog for the caller's
+# current HERMES_HOME ContextVar.  No profile-specific endpoint is published
+# into process-global routing state.
+PROVIDER_REGISTRY = _ContextProviderRegistry({})
 
 # Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
 # providers/ that is not already declared above. New providers only need a
 # plugins/model-providers/<name>/ plugin — no edits to this file required.
 _DYNAMIC_PROVIDER_REGISTRY_KEYS: set[str] = set()
+_PROVIDER_REGISTRY_CACHE: dict[
+    int, tuple[object, Dict[str, ProviderConfig], frozenset[str]]
+] = {}
+_PROVIDER_REGISTRY_LKG_BY_SECURITY_IDENTITY: dict[
+    tuple[tuple[str, str], object], Dict[str, ProviderConfig]
+] = {}
+_PROVIDER_REGISTRY_CACHE_LOCK = threading.RLock()
 
 
-def _refresh_provider_registry_from_plugins() -> None:
-    """Atomically rebuild auth entries from the active provider profiles."""
-    try:
-        from providers import (
-            get_provider_profile_origin,
-            is_plugin_managed_provider_id,
-            list_providers,
-        )
+def _provider_config_from_profile(profile) -> ProviderConfig | None:
+    if profile.auth_type != "api_key" or not profile.env_vars:
+        return None
+    api_key_vars = tuple(
+        value
+        for value in profile.env_vars
+        if not value.endswith(("_BASE_URL", "_URL"))
+    )
+    base_url_var = next(
+        (
+            value
+            for value in profile.env_vars
+            if value.endswith(("_BASE_URL", "_URL"))
+        ),
+        None,
+    )
+    return ProviderConfig(
+        id=profile.name,
+        name=profile.display_name or profile.name,
+        auth_type="api_key",
+        inference_base_url=profile.base_url,
+        api_key_env_vars=api_key_vars or profile.env_vars,
+        base_url_env_var=base_url_var or "",
+    )
 
-        profiles = list_providers()
-    except Exception:
-        logger.warning(
-            "Failed to refresh the active provider registry; keeping its "
-            "last-known-good snapshot",
-            exc_info=True,
-        )
-        return
 
-    active_provider_ids = {profile.name for profile in profiles}
+def _compute_provider_registry_snapshot() -> Dict[str, ProviderConfig]:
+    from providers import get_provider_catalog_snapshot
+
+    catalog = get_provider_catalog_snapshot()
+    cache_key = id(catalog)
+    with _PROVIDER_REGISTRY_CACHE_LOCK:
+        cached = _PROVIDER_REGISTRY_CACHE.get(cache_key)
+        if cached is not None and cached[0] is catalog:
+            return cached[1]
+
     replacement = {
         provider_id: config
         for provider_id, config in _STATIC_PROVIDER_REGISTRY.items()
         if (
-            not is_plugin_managed_provider_id(provider_id)
-            or provider_id in active_provider_ids
+            provider_id not in catalog.bundled_provider_ids
+            or provider_id in catalog.active_plugin_provider_ids
         )
     }
     dynamic_keys: set[str] = set()
 
-    for profile in profiles:
+    for profile in catalog.profiles:
         existing = replacement.get(profile.name)
-        origin = get_provider_profile_origin(profile.name)
+        origin = catalog.origins.get(profile.name)
         is_external_override = bool(
             origin and origin[0] in {"user", "project", "legacy"}
         )
         if existing is not None and not is_external_override:
-            continue
-        if profile.auth_type != "api_key" or not profile.env_vars:
             continue
         if existing is not None and existing.auth_type != "api_key":
             continue
@@ -574,36 +613,79 @@ def _refresh_provider_registry_from_plugins() -> None:
             "custom",
         }:
             continue
-        api_key_vars = tuple(
-            value
-            for value in profile.env_vars
-            if not value.endswith(("_BASE_URL", "_URL"))
-        )
-        base_url_var = next(
-            (
-                value
-                for value in profile.env_vars
-                if value.endswith(("_BASE_URL", "_URL"))
-            ),
-            None,
-        )
-        replacement[profile.name] = ProviderConfig(
-            id=profile.name,
-            name=profile.display_name or profile.name,
-            auth_type="api_key",
-            inference_base_url=profile.base_url,
-            api_key_env_vars=api_key_vars or profile.env_vars,
-            base_url_env_var=base_url_var or "",
-        )
+        config = _provider_config_from_profile(profile)
+        if config is None:
+            continue
+        replacement[profile.name] = config
         dynamic_keys.add(profile.name)
         for alias in profile.aliases:
             if alias not in replacement:
-                replacement[alias] = replacement[profile.name]
+                replacement[alias] = config
                 dynamic_keys.add(alias)
 
-    PROVIDER_REGISTRY.replace(replacement)
-    _DYNAMIC_PROVIDER_REGISTRY_KEYS.clear()
-    _DYNAMIC_PROVIDER_REGISTRY_KEYS.update(dynamic_keys)
+    with _PROVIDER_REGISTRY_CACHE_LOCK:
+        _PROVIDER_REGISTRY_CACHE[cache_key] = (
+            catalog,
+            replacement,
+            frozenset(dynamic_keys),
+        )
+        _PROVIDER_REGISTRY_LKG_BY_SECURITY_IDENTITY[
+            (catalog.scope_identity, catalog.activation)
+        ] = replacement
+        # Compatibility/debug view only; runtime decisions use the immutable
+        # context-specific replacement returned above.
+        _DYNAMIC_PROVIDER_REGISTRY_KEYS.clear()
+        _DYNAMIC_PROVIDER_REGISTRY_KEYS.update(dynamic_keys)
+    return replacement
+
+
+def _provider_registry_snapshot() -> Dict[str, ProviderConfig]:
+    try:
+        return _compute_provider_registry_snapshot()
+    except Exception:
+        try:
+            from providers import get_provider_scope_identity
+            from hermes_cli.config import load_plugin_activation_state
+
+            scope = get_provider_scope_identity()
+            activation = load_plugin_activation_state()
+        except Exception:
+            scope = None
+            activation = None
+        with _PROVIDER_REGISTRY_CACHE_LOCK:
+            lkg = (
+                _PROVIDER_REGISTRY_LKG_BY_SECURITY_IDENTITY.get(
+                    (scope, activation)
+                )
+                if scope is not None and activation is not None
+                else None
+            )
+        if lkg is not None:
+            logger.warning(
+                "Failed to refresh the active provider registry; keeping the "
+                "same-profile, same-activation last-known-good snapshot",
+                exc_info=True,
+            )
+            return lkg
+        logger.warning(
+            "Failed to build the active provider registry; failing closed",
+            exc_info=True,
+        )
+        return {}
+
+
+def _refresh_provider_registry_from_plugins() -> None:
+    """Warm the current context snapshot after provider invalidation."""
+    try:
+        _compute_provider_registry_snapshot()
+    except Exception:
+        logger.warning(
+            "Failed to refresh the active provider registry; keeping its "
+            "last-known-good snapshot",
+            exc_info=True,
+        )
+        return
+    PROVIDER_REGISTRY.clear_override()
 
 
 def get_provider_implementation_config(provider_id: str) -> ProviderConfig:
@@ -614,6 +696,41 @@ def get_provider_implementation_config(provider_id: str) -> ProviderConfig:
     metadata to finish cleanup or report status after a provider is disabled.
     """
     return _STATIC_PROVIDER_REGISTRY[provider_id]
+
+
+def get_known_provider_config(provider_id: str) -> ProviderConfig | None:
+    """Return cleanup/security metadata independently of live routability."""
+    normalized = (provider_id or "").strip().lower()
+    live = PROVIDER_REGISTRY.get(normalized)
+    if live is not None:
+        return live
+    static = _STATIC_PROVIDER_REGISTRY.get(normalized)
+    if static is not None:
+        return static
+    try:
+        from providers import get_observed_provider_profiles
+
+        for profile in get_observed_provider_profiles():
+            if normalized == profile.name or normalized in profile.aliases:
+                return _provider_config_from_profile(profile)
+    except Exception:
+        pass
+    return None
+
+
+def get_all_known_provider_configs() -> tuple[ProviderConfig, ...]:
+    """Return a monotonic union for secret-name filtering, not routing."""
+    configs = list(_STATIC_PROVIDER_REGISTRY.values())
+    try:
+        from providers import get_observed_provider_profiles
+
+        for profile in get_observed_provider_profiles():
+            config = _provider_config_from_profile(profile)
+            if config is not None:
+                configs.append(config)
+    except Exception:
+        pass
+    return tuple(configs)
 
 
 def get_nous_service_config() -> ProviderConfig:
@@ -758,6 +875,20 @@ def _resolve_api_key_provider_secret(
         pass
 
     return "", ""
+
+
+def _resolve_provider_base_url_override(pconfig: ProviderConfig) -> str:
+    """Read a provider endpoint override from the current profile scope."""
+    if not pconfig.base_url_env_var:
+        return ""
+    try:
+        from hermes_cli.config import get_env_value_prefer_dotenv
+
+        return (
+            get_env_value_prefer_dotenv(pconfig.base_url_env_var) or ""
+        ).strip()
+    except Exception:
+        return os.getenv(pconfig.base_url_env_var, "").strip()
 
 
 # =============================================================================
@@ -1591,13 +1722,44 @@ def mark_provider_active_if_unset(provider_id: str) -> None:
 
 def is_known_auth_provider(provider_id: str) -> bool:
     normalized = (provider_id or "").strip().lower()
-    return normalized in PROVIDER_REGISTRY or normalized in SERVICE_PROVIDER_NAMES
+    if (
+        normalized in PROVIDER_REGISTRY
+        or normalized in _STATIC_PROVIDER_REGISTRY
+        or normalized in SERVICE_PROVIDER_NAMES
+    ):
+        return True
+    try:
+        from providers import get_known_provider_ids
+
+        if normalized in get_known_provider_ids():
+            return True
+    except Exception:
+        pass
+
+    # Logout is a cleanup operation.  A provider that was disabled or removed
+    # must remain addressable when this profile still has persisted auth for
+    # it; routability is deliberately not required here.
+    try:
+        auth_store = _load_auth_store()
+        for field in ("providers", "credential_pool"):
+            values = auth_store.get(field)
+            if isinstance(values, dict) and normalized in {
+                str(key).strip().lower() for key in values
+            }:
+                return True
+        active = auth_store.get("active_provider")
+        if isinstance(active, str) and active.strip().lower() == normalized:
+            return True
+    except Exception:
+        pass
+    return _config_provider_matches(normalized)
 
 
 def get_auth_provider_display_name(provider_id: str) -> str:
     normalized = (provider_id or "").strip().lower()
-    if normalized in PROVIDER_REGISTRY:
-        return PROVIDER_REGISTRY[normalized].name
+    config = get_known_provider_config(normalized)
+    if config is not None:
+        return config.name
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
@@ -7089,9 +7251,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
 
-    env_url = ""
-    if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+    env_url = _resolve_provider_base_url_override(pconfig)
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -7123,7 +7283,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     )
     raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
     args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    base_url = _resolve_provider_base_url_override(pconfig)
     if not base_url:
         base_url = pconfig.inference_base_url
 
@@ -7276,9 +7436,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
         key_source = key_source or "default"
 
-    env_url = ""
-    if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+    env_url = _resolve_provider_base_url_override(pconfig)
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -7336,7 +7494,7 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
             code="invalid_provider",
         )
 
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    base_url = _resolve_provider_base_url_override(pconfig)
     if not base_url:
         base_url = pconfig.inference_base_url
 
@@ -7463,7 +7621,7 @@ def _should_reset_config_provider_on_logout(provider_id: Optional[str]) -> bool:
     if not provider_id:
         return False
     normalized = provider_id.strip().lower()
-    return normalized in PROVIDER_REGISTRY and _config_provider_matches(normalized)
+    return is_known_auth_provider(normalized) and _config_provider_matches(normalized)
 
 
 def _logout_default_provider_from_config() -> Optional[str]:

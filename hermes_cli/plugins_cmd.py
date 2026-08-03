@@ -1055,6 +1055,7 @@ def _scan_level(
     prefix: str,
     depth: int,
     seen: dict,
+    candidates: Optional[list] = None,
 ) -> None:
     """Recursive directory scan matching PluginManager._scan_directory_level.
 
@@ -1071,30 +1072,35 @@ def _scan_level(
         info = _read_manifest_info(d, prefix)
         if info is not None:
             name, version, description, key, kind = info
-            if key in seen and source == "bundled":
-                continue
             src_label = source
             if source == "user" and (d / ".git").exists():
                 src_label = "git"
-            seen[key] = (name, version, description, src_label, d, key, kind)
+            entry = (name, version, description, src_label, d, key, kind)
+            if candidates is not None:
+                candidates.append(entry)
+            if key in seen and source == "bundled":
+                continue
+            seen[key] = entry
             continue
         if depth >= 1:
             continue
         sub_prefix = f"{prefix}/{d.name}" if prefix else d.name
-        _scan_level(d, source, set(), sub_prefix, depth + 1, seen)
+        _scan_level(d, source, set(), sub_prefix, depth + 1, seen, candidates)
 
 
-def _discover_all_plugins() -> list:
-    """Return side-effect-free metadata for every discoverable plugin.
+def _discover_plugin_candidates() -> list:
+    """Return every discoverable plugin candidate in runtime priority order.
 
-    Matches the ordering/dedup of ``PluginManager.discover_and_load``:
-    bundled first, then user, then project, then entry points. Later sources
-    override earlier ones on key collision.
+    Unlike :func:`_discover_all_plugins`, this retains lower-priority copies
+    that share a canonical key. Runtime-adjacent consumers use it to select
+    the highest-priority *active* copy instead of letting an installed but
+    inactive user/project copy suppress an active bundled fallback.
     """
     seen: dict = {}
+    candidates: list = []
 
-    # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
     from hermes_cli.plugins import get_bundled_plugins_dir
+
     repo_plugins = get_bundled_plugins_dir()
     _scan_level(
         repo_plugins,
@@ -1103,12 +1109,18 @@ def _discover_all_plugins() -> list:
         "",
         0,
         seen,
+        candidates,
     )
-    # Runtime discovery scans bundled platforms from this category root, so
-    # their canonical key is the manifest name (for example
-    # ``buzz-platform``), not ``platforms/buzz``.
-    _scan_level(repo_plugins / "platforms", "bundled", set(), "", 0, seen)
-    _scan_level(_plugins_dir(), "user", set(), "", 0, seen)
+    _scan_level(
+        repo_plugins / "platforms",
+        "bundled",
+        set(),
+        "",
+        0,
+        seen,
+        candidates,
+    )
+    _scan_level(_plugins_dir(), "user", set(), "", 0, seen, candidates)
 
     if env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
         _scan_level(
@@ -1118,19 +1130,62 @@ def _discover_all_plugins() -> list:
             "",
             0,
             seen,
+            candidates,
         )
 
-    # Entry-point plugins (installed as Python packages; no plugin directory).
     for name, version, description, path in _discover_entrypoint_plugins():
-        seen[name] = (
-            name,
-            version,
-            description,
-            "entrypoint",
-            path,
-            name,
-            "standalone",
+        candidates.append(
+            (
+                name,
+                version,
+                description,
+                "entrypoint",
+                path,
+                name,
+                "standalone",
+            )
         )
+    return candidates
+
+
+def _select_active_plugin_entries(entries: list, activation: PluginActivationState) -> list:
+    """Select the highest-priority active candidate for each canonical key."""
+    from hermes_cli.plugins import resolve_plugin_candidate_winner
+
+    grouped: dict[str, list] = {}
+    for entry in entries:
+        grouped.setdefault(entry[5], []).append(entry)
+
+    winners: list = []
+    for candidates in grouped.values():
+        selection = resolve_plugin_candidate_winner(
+            candidates,
+            lambda entry: activation.status(
+                name=entry[0],
+                key=entry[5],
+                source=entry[3],
+                kind=entry[6],
+            ),
+        )
+        if selection is not None and selection[1] == "enabled":
+            winners.append(selection[0])
+    return winners
+
+
+def _discover_all_plugins() -> list:
+    """Return side-effect-free metadata for every effective raw plugin.
+
+    Matches the ordering/dedup of ``PluginManager.discover_and_load``:
+    bundled first, then user, then project, then entry points. Later sources
+    override earlier ones on key collision.
+    """
+    seen: dict = {}
+    for entry in _discover_plugin_candidates():
+        source = entry[3]
+        key = entry[5]
+        if key in seen and source == "bundled":
+            continue
+        seen[key] = entry
     return list(seen.values())
 
 
@@ -1226,11 +1281,20 @@ def cmd_list(args: Any | None = None) -> None:
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
     entries = _filter_plugin_entries(entries, args, enabled, disabled)
+    manifest_name_counts: dict[str, int] = {}
+    for entry in entries:
+        manifest_name_counts[entry[0]] = manifest_name_counts.get(entry[0], 0) + 1
+
+    def _display_name(name: str, key: str) -> str:
+        if manifest_name_counts.get(name, 0) > 1:
+            return f"{name} [{key}]"
+        return name
 
     if getattr(args, "json", False):
         payload = [
             {
                 "name": name,
+                "key": key,
                 "status": _plugin_status(
                     name,
                     enabled,
@@ -1258,7 +1322,10 @@ def cmd_list(args: Any | None = None) -> None:
                 source=source,
                 kind=kind,
             )
-            print(f"{status:12} {source:8} {str(version):8} {name}")
+            print(
+                f"{status:12} {source:8} {str(version):8} "
+                f"{_display_name(name, key)}"
+            )
         return
 
     if not entries:
@@ -1287,7 +1354,7 @@ def cmd_list(args: Any | None = None) -> None:
             status = "[green]enabled[/green]"
         else:
             status = "[yellow]not enabled[/yellow]"
-        table.add_row(name, status, str(version), description, source)
+        table.add_row(_display_name(name, key), status, str(version), description, source)
 
     console.print()
     console.print(table)
@@ -2032,17 +2099,17 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
 
     if enabled:
         if status == "enabled":
-            return {"ok": True, "name": key, "unchanged": True}
+            return {"ok": True, "name": name, "key": key, "unchanged": True}
         en.difference_update(aliases)
         en.add(key)
         dis.difference_update(aliases)
         _save_enabled_set(en)
         _save_disabled_set(dis)
         _toggle_plugin_toolset(key, enable=True)
-        return {"ok": True, "name": key, "unchanged": False}
+        return {"ok": True, "name": name, "key": key, "unchanged": False}
 
     if status == "disabled":
-        return {"ok": True, "name": key, "unchanged": True}
+        return {"ok": True, "name": name, "key": key, "unchanged": True}
 
     en.difference_update(aliases)
     dis.difference_update(aliases)
@@ -2050,12 +2117,31 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     _save_enabled_set(en)
     _save_disabled_set(dis)
     _toggle_plugin_toolset(key, enable=False)
-    return {"ok": True, "name": key, "unchanged": False}
+    return {"ok": True, "name": name, "key": key, "unchanged": False}
 
 
 def _user_installed_plugin_dir(name: str) -> Optional[Path]:
-    """Resolved path under ``~/.hermes/plugins/<name>`` if it exists."""
+    """Resolve a plugin identifier to its installed user-tree directory."""
     plugins_dir = _plugins_dir()
+    try:
+        plugins_root = plugins_dir.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+    key = _resolve_plugin_key(name)
+    if key is not None:
+        for entry in _discover_all_plugins():
+            if entry[5] != key or entry[3] not in {"user", "git"}:
+                continue
+            try:
+                target = Path(entry[4]).resolve()
+                target.relative_to(plugins_root)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                return None
+            return target if target.is_dir() else None
+
+    # Compatibility for old clients that send a directory name rather than a
+    # canonical key (including an ambiguous manifest-name collision).
     try:
         target = _sanitize_plugin_name(name, plugins_dir, allow_subdir=True)
     except ValueError:
@@ -2146,9 +2232,12 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
     """Delete a plugin tree under ``~/.hermes/plugins/`` only."""
     plugins_dir = _plugins_dir()
-    for n, _ver, _d, src, _path, _key, _kind in _discover_all_plugins():
-        if n == name and src == "bundled":
-            return {"ok": False, "error": "Bundled plugins cannot be removed from the dashboard."}
+    resolved = _resolve_plugin_key_and_source(name)
+    if resolved is not None and resolved[1] == "bundled":
+        return {
+            "ok": False,
+            "error": "Bundled plugins cannot be removed from the dashboard.",
+        }
 
     target = _user_installed_plugin_dir(name)
     if target is None:

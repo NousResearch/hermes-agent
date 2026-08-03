@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -222,18 +223,30 @@ _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
 })
 
 
-def _build_provider_env_blocklist() -> frozenset:
+def _build_provider_env_blocklist() -> set[str]:
     """Derive the blocklist from provider, tool, and gateway config."""
     blocked: set[str] = set()
 
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        for pconfig in PROVIDER_REGISTRY.values():
+        from hermes_cli.auth import get_all_known_provider_configs
+
+        for pconfig in get_all_known_provider_configs():
             blocked.update(pconfig.api_key_env_vars)
             if pconfig.auth_type == "aws_sdk":
                 blocked.update(_AWS_SDK_CREDENTIAL_ENV_VARS)
             if pconfig.base_url_env_var:
                 blocked.add(pconfig.base_url_env_var)
+    except ImportError:
+        pass
+
+    # Provider discovery records executable profiles while still holding its
+    # discovery lock, before the new catalog becomes visible to other callers.
+    # Read that provider-owned monotonic view directly so subprocess security
+    # never relies on the later best-effort refresh-hook callback.
+    try:
+        from providers import get_observed_provider_env_vars
+
+        blocked.update(get_observed_provider_env_vars())
     except ImportError:
         pass
 
@@ -331,10 +344,57 @@ def _build_provider_env_blocklist() -> frozenset:
     # It arrives via the registry loop above (anthropic api_key_env_vars),
     # so remove it explicitly.
     blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
-    return frozenset(blocked)
+    return blocked
 
 
+_HERMES_PROVIDER_ENV_BLOCKLIST_LOCK = threading.RLock()
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+
+
+def _refresh_provider_env_blocklist() -> None:
+    """Monotonically harden the shared blocklist with newly observed names."""
+    additions = _build_provider_env_blocklist()
+    with _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
+        _HERMES_PROVIDER_ENV_BLOCKLIST.update(additions)
+        _HERMES_PROVIDER_ENV_BLOCKLIST.discard("CLAUDE_CODE_OAUTH_TOKEN")
+
+
+def _current_provider_env_blocklist() -> frozenset[str]:
+    """Return an execution-time provider-secret snapshot.
+
+    The refresh is deliberate on every child-env construction.  It closes the
+    interval between provider catalog discovery and its asynchronous derived-
+    registry hooks, and a frozen copy prevents concurrent monotonic updates
+    from invalidating an active set iterator.
+    """
+    _refresh_provider_env_blocklist()
+    with _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
+        return frozenset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+
+
+def _is_provider_env_blocked(name: str) -> bool:
+    """Check static and just-observed provider names without hook latency."""
+    if _is_hermes_internal_secret(name):
+        return True
+    with _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
+        if name in _HERMES_PROVIDER_ENV_BLOCKLIST:
+            return True
+    try:
+        from providers import is_observed_provider_env_var
+
+        return is_observed_provider_env_var(name)
+    except Exception:
+        # This helper grants/retains passthrough exceptions, so an unavailable
+        # provider observation index must fail closed.
+        return True
+
+
+try:
+    from providers import register_provider_refresh_hook
+
+    register_provider_refresh_hook(_refresh_provider_env_blocklist)
+except Exception:
+    pass
 
 # Active-virtualenv markers that must NOT leak into terminal subprocesses.
 # The gateway runs inside its own venv, so its process environment carries
@@ -464,6 +524,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         _is_passthrough = lambda _: False  # noqa: E731
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
+    provider_blocklist = _current_provider_env_blocklist()
     sanitized: dict[str, str] = {}
 
     for key, value in (base_env or {}).items():
@@ -472,7 +533,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         if _is_hermes_internal_secret(key):
             continue
         passthrough = _is_passthrough(key)
-        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+        if key in provider_blocklist:
             continue
         resolved = _resolve_passthrough_value(key, value) if passthrough else value
         if resolved is not None:
@@ -488,7 +549,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             continue
         else:
             passthrough = _is_passthrough(key)
-            if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if key in provider_blocklist:
                 continue
             resolved = _resolve_passthrough_value(key, value) if passthrough else value
             if resolved is not None:
@@ -603,6 +664,7 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     ``inherit_credentials=False`` and copy just those keys back from
     ``os.environ`` into the returned dict.
     """
+    provider_blocklist = _current_provider_env_blocklist()
     env = os.environ.copy()
 
     # Tier 1 — always strip.
@@ -621,7 +683,7 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
 
     if not inherit_credentials:
         # Tier 2 — strip provider/tool credentials unless explicitly inherited.
-        for key in _HERMES_PROVIDER_ENV_BLOCKLIST:
+        for key in provider_blocklist:
             env.pop(key, None)
 
     # Windows UTF-8 safety for spawned processes (#31420).
@@ -1276,6 +1338,7 @@ def _make_run_env(env: dict) -> dict:
         _is_passthrough = lambda _: False  # noqa: E731
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
+    provider_blocklist = _current_provider_env_blocklist()
     merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
@@ -1288,7 +1351,7 @@ def _make_run_env(env: dict) -> dict:
             continue
         else:
             passthrough = _is_passthrough(k)
-            if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if k in provider_blocklist:
                 continue
             value = _resolve_passthrough_value(k, v) if passthrough else v
             if value is not None:

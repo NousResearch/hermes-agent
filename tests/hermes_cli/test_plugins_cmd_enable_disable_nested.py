@@ -77,6 +77,23 @@ class TestResolvePluginKey:
         assert _resolve_plugin_key("openai") is None
         assert _resolve_plugin_key("image_gen/openai") == "image_gen/openai"
 
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_dashboard_file_actions_resolve_key_to_real_user_directory(
+        self,
+        mock_user,
+        mock_bundled,
+        nested_plugin_env,
+    ):
+        from hermes_cli.plugins_cmd import _user_installed_plugin_dir
+
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        assert _user_installed_plugin_dir("observability/nemo_relay") == (
+            nested_plugin_env / "observability" / "nemo_relay"
+        ).resolve()
+
 
 # ---------------------------------------------------------------------------
 # cmd_enable / cmd_disable — write the canonical key

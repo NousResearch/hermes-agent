@@ -261,6 +261,8 @@ class TestCmdListJson:
         names = [p["name"] for p in payload]
         assert "web-tavily" in names
         assert "disk-cleanup" in names
+        by_name = {p["name"]: p for p in payload}
+        assert by_name["web-tavily"]["key"] == "web/tavily"
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")

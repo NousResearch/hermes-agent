@@ -52,6 +52,55 @@ def test_cmd_list_plain_compact_output(monkeypatch, capsys):
     assert "Search" not in out  # plain mode stays compact, no descriptions
 
 
+def test_cmd_list_json_preserves_name_and_adds_canonical_key(monkeypatch, capsys):
+    entries = [
+        ("xai", "1.0.0", "Images", "bundled", None, "image_gen/xai", "backend"),
+    ]
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
+
+    plugins_cmd.cmd_list(_args(json=True))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["name"] == "xai"
+    assert payload[0]["key"] == "image_gen/xai"
+
+
+def test_cmd_list_plain_disambiguates_duplicate_manifest_names(monkeypatch, capsys):
+    entries = [
+        ("xai", "1.0.0", "Images", "bundled", None, "image_gen/xai", "backend"),
+        ("xai", "1.0.0", "Video", "bundled", None, "video_gen/xai", "backend"),
+    ]
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
+
+    plugins_cmd.cmd_list(_args(plain=True))
+
+    out = capsys.readouterr().out
+    assert "xai [image_gen/xai]" in out
+    assert "xai [video_gen/xai]" in out
+
+
+def test_dashboard_toggle_response_keeps_input_name_and_adds_key(monkeypatch):
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_resolve_plugin_key_and_source",
+        lambda _name: ("image_gen/xai", "user", "xai", "standalone"),
+    )
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
+    monkeypatch.setattr(plugins_cmd, "_save_enabled_set", lambda _value: None)
+    monkeypatch.setattr(plugins_cmd, "_save_disabled_set", lambda _value: None)
+    monkeypatch.setattr(plugins_cmd, "_toggle_plugin_toolset", lambda *args, **kwargs: None)
+
+    result = plugins_cmd.dashboard_set_agent_plugin_enabled("xai", enabled=True)
+
+    assert result["name"] == "xai"
+    assert result["key"] == "image_gen/xai"
+
+
 def test_discover_all_plugins_includes_entrypoint_plugins(monkeypatch, tmp_path):
     bundled_dir = tmp_path / "bundled"
     user_dir = tmp_path / "user"

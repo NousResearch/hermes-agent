@@ -314,6 +314,12 @@ def test_bws_token_env_cache_is_scoped_per_profile(tmp_path, monkeypatch):
         assert _local_mod._get_configured_bws_token_env() == "BETA_BWS_TOKEN"
         assert _local_mod._is_hermes_internal_secret("BETA_BWS_TOKEN") is True
         assert _local_mod._is_hermes_internal_secret("ALPHA_BWS_TOKEN") is False
+        # The default name stays internal even in a remapped profile: the
+        # process-global os.environ can carry a default profile's token into
+        # this profile's turn, and it must not cross the child boundary.
+        assert _local_mod._is_hermes_internal_secret("BWS_ACCESS_TOKEN") is True
+        # Third-party tokens remain registerable in every profile.
+        assert _local_mod._is_hermes_internal_secret("STRIPE_ACCESS_TOKEN") is False
     finally:
         reset_hermes_home_override(token_b)
 

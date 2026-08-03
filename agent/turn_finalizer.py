@@ -680,11 +680,24 @@ def finalize_turn(
     # Persistence failures already set failed=True + an explanation in
     # final_response; also stamp `error` so gateway surfaces status="error"
     # (and desktop can toast the cause) instead of a quiet complete frame.
-    if failed and str(_turn_exit_reason) == "session_persistence_failed":
-        result["error"] = final_response or (
-            "session storage could not be written — check the state database "
-            "health (`hermes doctor`), then send your message again"
-        )
+    # Distinguish compression-lock timeout from genuine disk/permission errors
+    # so the desktop doesn't show a misleading "Disk full" toast when the
+    # real issue was a long-running context compression (#77386).
+    if failed and str(_turn_exit_reason) in (
+        "session_persistence_failed",
+        "compression_lock_timeout",
+    ):
+        if str(_turn_exit_reason) == "compression_lock_timeout":
+            result["error"] = final_response or (
+                "session storage was temporarily locked by a context "
+                "compression — the compression has finished; send your "
+                "message again"
+            )
+        else:
+            result["error"] = final_response or (
+                "session storage could not be written — check the state database "
+                "health (`hermes doctor`), then send your message again"
+            )
         # Machine-readable cause for the gateway/desktop: exactly
         # 'session_persistence_failed:<locked|disk|unknown>'. Never clobber a
         # failure_reason another path already stamped on this result.

@@ -596,6 +596,98 @@ def test_in_place_compaction_also_rejects_stale_revision(tmp_path: Path) -> None
     ] == ["snapshot row", "external committed row"]
 
 
+def test_compression_rejects_projection_owned_by_another_session(
+    tmp_path: Path,
+) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    first_session = "projection-owner"
+    second_session = "compression-target"
+    db.create_session(first_session, source="cli")
+    db.create_session(second_session, source="cli")
+    db.append_message(first_session, "user", "first-session row")
+    db.append_message(second_session, "user", "second-session row")
+    agent = _build_compression_agent(db, first_session)
+    foreign_projection = [
+        {"role": "user", "content": "first-session row", "_db_persisted": True}
+    ]
+
+    # Simulate a legacy/plugin session switch that bypasses the turn prologue.
+    agent.session_id = second_session
+
+    with pytest.raises(CompressionSnapshotStaleError):
+        agent._compress_context(
+            foreign_projection,
+            "sys",
+            approx_tokens=120_000,
+        )
+
+    agent.context_compressor.compress.assert_not_called()
+    assert [
+        message["content"]
+        for message in db.get_messages_as_conversation(second_session)
+    ] == ["second-session row"]
+
+
+def test_compression_rejects_projection_without_durable_revision(
+    tmp_path: Path,
+) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "projection-without-revision"
+    db.create_session(session_id, source="cli")
+    db.append_message(session_id, "user", "durable row")
+    agent = _build_compression_agent(db, session_id)
+    agent._durable_transcript_revision = None
+
+    with pytest.raises(CompressionSnapshotStaleError):
+        agent._compress_context(
+            [{"role": "user", "content": "unverified bytes"}],
+            "sys",
+            approx_tokens=120_000,
+        )
+
+    agent.context_compressor.compress.assert_not_called()
+    assert [
+        message["content"]
+        for message in db.get_messages_as_conversation(session_id)
+    ] == ["durable row"]
+
+
+def test_in_place_compaction_rolls_back_transcript_when_prompt_update_fails(
+    tmp_path: Path,
+) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "in-place-prompt-rollback"
+    db.create_session(session_id, source="cli", system_prompt="original prompt")
+    db.append_message(session_id, "user", "original row")
+    agent = _build_compression_agent(db, session_id)
+    agent.compression_in_place = True
+    original_messages = [
+        {"role": "user", "content": "original row", "_db_persisted": True}
+    ]
+
+    def _install_failure_trigger(conn) -> None:
+        conn.execute(
+            "CREATE TRIGGER fail_compaction_prompt_update "
+            "BEFORE UPDATE OF system_prompt ON sessions "
+            "BEGIN SELECT RAISE(ABORT, 'prompt update failed'); END"
+        )
+
+    db._execute_write(_install_failure_trigger)
+
+    returned, _ = agent._compress_context(
+        original_messages,
+        "replacement prompt",
+        approx_tokens=120_000,
+    )
+
+    assert returned == original_messages
+    assert [
+        message["content"]
+        for message in db.get_messages_as_conversation(session_id)
+    ] == ["original row"]
+    assert db.get_session(session_id)["system_prompt"] == "original prompt"
+
+
 def test_in_place_compaction_rebinds_revision_before_next_append(
     tmp_path: Path,
 ) -> None:

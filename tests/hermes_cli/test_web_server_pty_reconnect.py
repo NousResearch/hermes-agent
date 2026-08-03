@@ -97,7 +97,11 @@ def test_automatic_reconnect_drops_unreachable_local_resume(monkeypatch, tmp_pat
         def close(self):
             pass
 
-    monkeypatch.setattr(ws, "_open_session_db_for_profile", lambda _profile: _DB())
+    def _open_db(_profile, *, read_only):
+        assert read_only is False
+        return _DB()
+
+    monkeypatch.setattr(ws, "_open_session_db_for_profile", _open_db)
     monkeypatch.setattr(
         main_mod,
         "_make_tui_argv",

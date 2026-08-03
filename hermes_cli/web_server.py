@@ -14825,7 +14825,8 @@ def _resolve_chat_argv(
 
     if resume and automatic_resume:
         _resume_db = _open_session_db_for_profile(
-            requested if profile_dir is not None else None
+            requested if profile_dir is not None else None,
+            read_only=False,
         )
         try:
             if _resume_db.archive_if_unreachable_local_endpoint(resume):

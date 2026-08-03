@@ -130,7 +130,9 @@ export function useComposerQueue({
 
     const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
       attachments: cloneAttachments(attachments),
-      text: draftRef.current
+      text: draftRef.current.trim()
+        ? expandComposerDraftWithTerminalContext(draftRef.current)
+        : draftRef.current
     })
 
     const next = queuedPrompts[target]
@@ -162,7 +164,11 @@ export function useComposerQueue({
         return false
       }
 
-      const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { attachments: next, text })
+      const expanded = text.trim() ? expandComposerDraftWithTerminalContext(text) : text
+      const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
+        attachments: next,
+        text: expanded
+      })
       triggerHaptic(saved ? 'success' : 'selection')
     } else {
       triggerHaptic('cancel')

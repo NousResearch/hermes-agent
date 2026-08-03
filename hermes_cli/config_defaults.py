@@ -1217,6 +1217,8 @@ DEFAULT_CONFIG = {
         # Desktop remote clients call STT/TTS providers DIRECTLY (config + key fetched over
         # authenticated REST at session start) instead of relaying via the gateway.
         "client_direct": True,
+        # Brief, speakable reply guidance on spoken voice turns (agent/voice_turn_route.py).
+        "concise_responses": True,
         "beep_enabled": True,  # record start/stop beeps in CLI voice mode
         "beep_volume": 0.3,  # beep amplitude multiplier, 0.0-1.0
         "thinking_sound": True,  # ambient bubble sound while the agent works (volume = beep_volume)

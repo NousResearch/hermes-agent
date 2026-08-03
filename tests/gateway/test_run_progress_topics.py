@@ -576,7 +576,8 @@ def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_p
     assert result["final_response"] == "done"
     assert adapter.sent
     visible = UrlPreviewAgent.URL[:37] + "..."
-    assert f"[{visible}]({UrlPreviewAgent.URL})" in adapter.sent[0]["content"]
+    label = visible.removeprefix("https://")
+    assert f"[{label}]({UrlPreviewAgent.URL})" in adapter.sent[0]["content"]
 
 
 class CommentaryAgent:

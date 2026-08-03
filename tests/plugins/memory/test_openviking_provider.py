@@ -206,21 +206,25 @@ def test_linked_ovcli_without_url_falls_through_to_dashboard_endpoint(tmp_path, 
     assert settings["api_key"] == "linked-key"
 
 
-def test_profile_discovery_skips_unsafe_ovcli_endpoint(tmp_path):
+def test_profile_discovery_warns_when_skipping_unsafe_ovcli_endpoint(tmp_path, caplog):
     profile_path = tmp_path / "ovcli.conf.blocked"
     profile_path.write_text(
         json.dumps({"url": "http://169.254.169.254/latest/meta-data"}),
         encoding="utf-8",
     )
 
-    assert (
-        openviking_module._load_profile(
-            profile_path,
-            source="saved",
-            name="blocked",
+    with caplog.at_level("WARNING", logger=openviking_module.__name__):
+        assert (
+            openviking_module._load_profile(
+                profile_path,
+                source="saved",
+                name="blocked",
+            )
+            is None
         )
-        is None
-    )
+
+    assert "Skipping invalid OpenViking CLI config" in caplog.text
+    assert str(profile_path) in caplog.text
 
 
 def test_connection_values_omit_stale_identity_for_user_key_with_root_key():
@@ -734,6 +738,157 @@ def test_viking_client_delete_uses_identity_headers(monkeypatch):
     assert captured["kwargs"]["params"] == {"uri": "viking://user/memories/x.md"}
     assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
     assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+
+
+def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(monkeypatch):
+    calls = []
+
+    def response(payload):
+        return SimpleNamespace(status_code=200, text="", json=lambda: payload)
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs["headers"]))
+        if url.endswith("/health"):
+            return response({"status": "ok"})
+        if url.endswith("/openapi.json"):
+            return response({"info": {"title": "OpenViking API"}})
+        if url.endswith("/api/v1/system/status"):
+            return response({"status": "ok"})
+        if url.endswith("/api/v1/admin/accounts"):
+            return response({"status": "ok", "result": []})
+        raise AssertionError(f"unexpected request: {url}")
+
+    monkeypatch.setattr(
+        openviking_module,
+        "_get_httpx",
+        lambda: SimpleNamespace(get=fake_get),
+    )
+
+    valid, message, role = openviking_module._validate_openviking_setup_values({
+        "endpoint": "https://openviking.example",
+        "api_key": "secret-key",
+        "account": "acct",
+        "user": "alice",
+        "agent": "hermes",
+    })
+
+    assert (valid, message, role) == (True, "", "root")
+    assert [url.removeprefix("https://openviking.example") for url, _headers in calls] == [
+        "/health",
+        "/openapi.json",
+        "/api/v1/system/status",
+        "/api/v1/admin/accounts",
+    ]
+    assert calls[0][1] == {"Accept": "application/json"}
+    assert calls[1][1] == {"Accept": "application/json"}
+    for _url, headers in calls[2:]:
+        assert headers["X-API-Key"] == "secret-key"
+        assert headers["Authorization"] == "Bearer secret-key"
+
+
+def test_repeated_openviking_health_probes_never_send_identity_headers(monkeypatch):
+    captured_headers = []
+    client = _VikingClient(
+        "https://openviking.example",
+        api_key="secret-key",
+        account="acct",
+        user="alice",
+        agent="hermes",
+    )
+
+    def fake_get(_url, **kwargs):
+        captured_headers.append(kwargs["headers"])
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "healthy": True, "version": "0.2.10"},
+        )
+
+    monkeypatch.setattr(client._httpx, "get", fake_get)
+
+    assert client.health() is True
+    assert client.health() is True
+    assert captured_headers == [
+        {"Accept": "application/json"},
+        {"Accept": "application/json"},
+    ]
+
+
+def test_modern_openviking_identity_does_not_probe_openapi():
+    client = MagicMock()
+    client.health_payload.return_value = {
+        "status": "ok",
+        "healthy": True,
+        "version": "0.2.10",
+    }
+
+    state, health = openviking_module._probe_openviking_identity(client)
+
+    assert state == "modern"
+    assert health["version"] == "0.2.10"
+    client.openapi_payload.assert_not_called()
+
+
+def test_legacy_health_requires_openviking_openapi_identity_before_auth(monkeypatch):
+    events = []
+
+    class ForeignServiceClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health_payload(self):
+            events.append("health")
+            return {"status": "ok"}
+
+        def openapi_payload(self):
+            events.append("openapi")
+            return {"info": {"title": "Unrelated Service"}}
+
+        def validate_auth(self):
+            raise AssertionError("credentials must not be sent before identity is verified")
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", ForeignServiceClient)
+
+    valid, message, role = openviking_module._validate_openviking_setup_values({
+        "endpoint": "https://foreign.example",
+        "api_key": "secret-key",
+    })
+
+    assert valid is False
+    assert role is None
+    assert "0.2.6 or earlier" in message
+    assert "0.2.10 or newer" in message
+    assert events == ["health", "openapi"]
+
+
+def test_verified_legacy_openviking_is_healthy_for_reachability_and_runtime(monkeypatch):
+    events = []
+
+    class LegacyOpenVikingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health_payload(self):
+            events.append("health")
+            return {"status": "ok"}
+
+        def openapi_payload(self):
+            events.append("openapi")
+            return {"info": {"title": "OpenViking API"}}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", LegacyOpenVikingClient)
+
+    reachable, message = openviking_module._validate_openviking_reachability(
+        "https://legacy.example"
+    )
+    runtime_state, runtime_message = openviking_module._classify_runtime_openviking_health(
+        LegacyOpenVikingClient(),
+        "https://legacy.example",
+    )
+
+    assert (reachable, message) == (True, "")
+    assert (runtime_state, runtime_message) == ("healthy", "")
+    assert events == ["health", "openapi", "health", "openapi"]
 
 
 def test_validate_openviking_reachability_uses_health_only(monkeypatch):

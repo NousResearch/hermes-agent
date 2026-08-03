@@ -4,6 +4,7 @@ import pytest
 
 from plugins.memory.openviking import (
     _OpenVikingEndpointError,
+    _local_openviking_bind,
     _normalize_openviking_url,
     _openviking_endpoint_is_always_blocked,
 )
@@ -16,6 +17,18 @@ def test_openviking_blocks_metadata_endpoint():
 
 def test_openviking_keeps_default_loopback():
     assert _normalize_openviking_url("http://127.0.0.1:1933") == "http://127.0.0.1:1933"
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1"])
+def test_openviking_bare_loopback_health_and_autostart_use_same_default_port(host):
+    endpoint = _normalize_openviking_url(host)
+
+    assert endpoint == f"http://{host}:1933"
+    assert _local_openviking_bind(endpoint) == (host, 1933)
+
+
+def test_openviking_explicit_loopback_url_preserves_implicit_http_port():
+    assert _normalize_openviking_url("http://localhost") == "http://localhost"
 
 
 def test_openviking_blocks_ecs_metadata_hostname():

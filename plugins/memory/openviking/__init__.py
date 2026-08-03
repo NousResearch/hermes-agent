@@ -142,6 +142,20 @@ _LOCAL_SERVER_FAILED = "failed"
 _FAILED_CONFIG_RETRY_COOLDOWN_SECONDS = 30.0
 _OPENVIKING_SERVER_LOG_RELATIVE_PATH = Path("logs") / "openviking-server.log"
 _OPENVIKING_RESPONDED_FAILURE_PREFIX = "OpenViking server responded"
+_OPENVIKING_IDENTITY_MODERN = "modern"
+_OPENVIKING_IDENTITY_LEGACY = "legacy"
+_OPENVIKING_IDENTITY_UNHEALTHY = "unhealthy"
+_OPENVIKING_IDENTITY_LEGACY_UNVERIFIED = "legacy-unverified"
+_OPENVIKING_IDENTITY_INVALID = "invalid"
+_OPENVIKING_IDENTIFIED_STATES = frozenset({
+    _OPENVIKING_IDENTITY_MODERN,
+    _OPENVIKING_IDENTITY_LEGACY,
+})
+_LEGACY_OPENVIKING_IDENTITY_DETAIL = (
+    "returned OpenViking's legacy health response, but its anonymous "
+    "OpenAPI metadata did not identify OpenViking. If this is OpenViking 0.2.6 or "
+    "earlier, upgrade to OpenViking 0.2.10 or newer."
+)
 _PENDING_SESSIONS_RELATIVE_DIR = Path("openviking") / "pending_sessions"
 _RUN_LOCKS_RELATIVE_DIR = Path("openviking") / "runs"
 _LEGACY_RECOVERY_LOCK_FILENAME = "legacy-recovery.lock"
@@ -424,15 +438,23 @@ class _VikingClient:
 
     def health(self) -> bool:
         try:
-            return _is_openviking_health_payload(self.health_payload())
+            identity, _health = _probe_openviking_identity(self)
+            return identity in _OPENVIKING_IDENTIFIED_STATES
         except Exception:
             return False
 
-    def health_payload(self) -> dict:
+    def _anonymous_json(self, path: str) -> dict:
+        """Probe server identity without disclosing credentials or tenant IDs."""
         resp = self._httpx.get(
-            self._url("/health"), headers=self._headers(), timeout=3.0
+            self._url(path), headers={"Accept": "application/json"}, timeout=3.0
         )
         return self._parse_response(resp)
+
+    def health_payload(self) -> dict:
+        return self._anonymous_json("/health")
+
+    def openapi_payload(self) -> dict:
+        return self._anonymous_json("/openapi.json")
 
     def validate_auth(self) -> dict:
         """Validate authenticated OpenViking access without mutating state."""
@@ -844,7 +866,9 @@ def _normalize_openviking_url(url: str) -> str:
     if not trimmed:
         return _DEFAULT_ENDPOINT
     lower = trimmed.lower()
-    if lower in {"::1", "[::1]"}:
+    if lower in {"localhost", "127.0.0.1"}:
+        candidate = f"http://{trimmed}:1933"
+    elif lower in {"::1", "[::1]"}:
         candidate = "http://[::1]:1933"
     elif lower.startswith("[::1]:") or lower.startswith("::1:"):
         candidate = f"http://[::1]:{trimmed.rsplit(':', 1)[1]}"
@@ -902,12 +926,57 @@ def _is_openviking_health_payload(payload: Any) -> bool:
     )
 
 
+def _is_legacy_openviking_health_payload(payload: Any) -> bool:
+    """Match the status-only health contract published through OpenViking 0.2.6."""
+    return (
+        isinstance(payload, dict)
+        and payload.get("status") == "ok"
+        and "healthy" not in payload
+        and "version" not in payload
+    )
+
+
+def _is_openviking_openapi_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    info = payload.get("info")
+    return isinstance(info, dict) and info.get("title") == "OpenViking API"
+
+
+def _probe_openviking_identity(client: _VikingClient) -> tuple[str, Any]:
+    """Identify modern or legacy OpenViking before any authenticated request."""
+    health = client.health_payload()
+    if isinstance(health, dict) and health.get("healthy") is False:
+        return _OPENVIKING_IDENTITY_UNHEALTHY, health
+    if _is_openviking_health_payload(health):
+        return _OPENVIKING_IDENTITY_MODERN, health
+    if not _is_legacy_openviking_health_payload(health):
+        return _OPENVIKING_IDENTITY_INVALID, health
+
+    try:
+        openapi = client.openapi_payload()
+    except Exception:
+        logger.debug("Legacy OpenViking OpenAPI identity probe failed", exc_info=True)
+        return _OPENVIKING_IDENTITY_LEGACY_UNVERIFIED, health
+    if _is_openviking_openapi_payload(openapi):
+        return _OPENVIKING_IDENTITY_LEGACY, health
+    return _OPENVIKING_IDENTITY_LEGACY_UNVERIFIED, health
+
+
+def _legacy_openviking_identity_error(subject: str) -> str:
+    return f"{subject} {_LEGACY_OPENVIKING_IDENTITY_DETAIL}"
+
+
 def _load_profile(path: Path, *, source: str, name: str) -> Optional[_OvcliProfile]:
     try:
         data = _load_ovcli_config(path)
         values = _connection_values_from_ovcli(data)
     except Exception as e:
-        logger.debug("Skipping invalid OpenViking CLI config %s: %s", path, e)
+        logger.warning(
+            "Skipping invalid OpenViking CLI config %s: %s",
+            path,
+            _format_openviking_exception(e),
+        )
         return None
     return _OvcliProfile(
         source=source,
@@ -1178,11 +1247,13 @@ def _validate_openviking_reachability(endpoint: str) -> tuple[bool, str]:
     try:
         client = _VikingClient(endpoint)
         if hasattr(client, "health_payload"):
-            payload = client.health_payload()
-            if isinstance(payload, dict) and payload.get("healthy") is False:
+            identity, _health = _probe_openviking_identity(client)
+            if identity == _OPENVIKING_IDENTITY_UNHEALTHY:
                 return False, "OpenViking server responded but reported unhealthy status."
-            if _is_openviking_health_payload(payload):
+            if identity in _OPENVIKING_IDENTIFIED_STATES:
                 return True, ""
+            if identity == _OPENVIKING_IDENTITY_LEGACY_UNVERIFIED:
+                return False, _legacy_openviking_identity_error("The server")
             return False, "OpenViking server responded, but its /health response is not valid OpenViking."
         elif client.health():
             return True, ""
@@ -1274,10 +1345,12 @@ def _validate_openviking_setup_values(
             user=_clean_config_value(values.get("user")),
             agent=_clean_config_value(values.get("agent")) or _DEFAULT_AGENT,
         )
-        health = client.health_payload()
-        if isinstance(health, dict) and health.get("healthy") is False:
+        identity, health = _probe_openviking_identity(client)
+        if identity == _OPENVIKING_IDENTITY_UNHEALTHY:
             return False, "OpenViking server responded but reported unhealthy status.", None
-        if not _is_openviking_health_payload(health):
+        if identity == _OPENVIKING_IDENTITY_LEGACY_UNVERIFIED:
+            return False, _legacy_openviking_identity_error("The server"), None
+        if identity not in _OPENVIKING_IDENTIFIED_STATES:
             return False, "Server /health response is not valid OpenViking.", None
         if _should_probe_openviking_auth(
             health,
@@ -1547,15 +1620,21 @@ def _classify_runtime_openviking_health(client: _VikingClient, endpoint: str) ->
     """Classify runtime health without treating every false result as server absence."""
     try:
         if hasattr(client, "health_payload"):
-            payload = client.health_payload()
-            if isinstance(payload, dict) and payload.get("healthy") is False:
+            identity, _health = _probe_openviking_identity(client)
+            if identity == _OPENVIKING_IDENTITY_UNHEALTHY:
                 return (
                     "responded",
                     f"Service at {endpoint} responded but reported unhealthy OpenViking status."
                     f"{_local_listener_suffix(endpoint)}",
                 )
-            if _is_openviking_health_payload(payload):
+            if identity in _OPENVIKING_IDENTIFIED_STATES:
                 return "healthy", ""
+            if identity == _OPENVIKING_IDENTITY_LEGACY_UNVERIFIED:
+                return (
+                    "responded",
+                    _legacy_openviking_identity_error(f"Service at {endpoint}")
+                    + _local_listener_suffix(endpoint),
+                )
             return (
                 "responded",
                 f"Service at {endpoint} responded, but its /health response is not valid OpenViking."

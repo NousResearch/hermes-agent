@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import contextlib
 from hermes_cli.cli_output import line_input
+import html
 import json
 import logging
 import os
@@ -2854,6 +2855,44 @@ def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
+def _service_proxy_env() -> dict[str, str]:
+    """Return proxy env vars that should be preserved in service definitions."""
+    keys = (
+        "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+        "https_proxy", "http_proxy", "all_proxy",
+        "NO_PROXY", "no_proxy",
+    )
+    return {key: value for key in keys if (value := os.environ.get(key))}
+
+
+def _launchd_env_entries_xml(env: dict[str, str]) -> str:
+    if not env:
+        return ""
+    return "\n" + "\n".join(
+        f"        <key>{html.escape(key)}</key>\n"
+        f"        <string>{html.escape(value)}</string>"
+        for key, value in env.items()
+    )
+
+
+def _write_launchd_plist_securely(plist_path: Path, plist_text: str) -> None:
+    """Write a launchd plist with owner-only permissions."""
+    if plist_path.exists():
+        plist_path.chmod(0o600)
+    fd: int | None = os.open(
+        str(plist_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+    )
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = None
+            stream.write(plist_text)
+        plist_path.chmod(0o600)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 # Directives older systemd silently strips; ignored in stale-checks so such units aren't flagged forever.
 _SYSTEMD_OPTIONAL_DIRECTIVES = ("RestartMaxDelaySec", "RestartSteps")
 
@@ -3735,6 +3774,8 @@ def generate_launchd_plist() -> str:
     </dict>
 """
 
+    proxy_env_xml = _launchd_env_entries_xml(_service_proxy_env())
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -3757,7 +3798,7 @@ def generate_launchd_plist() -> str:
         <key>VIRTUAL_ENV</key>
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        <string>{hermes_home}</string>{proxy_env_xml}
         <key>HERMES_SUPERVISED_CHILD</key>
         <string>1</string>
     </dict>
@@ -3883,7 +3924,7 @@ def refresh_launchd_plist_if_needed() -> bool:
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
 
-    plist_path.write_text(new_plist, encoding="utf-8")
+    _write_launchd_plist_securely(plist_path, new_plist)
     label = get_launchd_label()
     domain = _launchd_domain()
     target = f"{domain}/{label}"
@@ -3952,7 +3993,7 @@ def launchd_install(force: bool = False):
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
-    plist_path.write_text(new_plist, encoding="utf-8")
+    _write_launchd_plist_securely(plist_path, new_plist)
 
     try:
         _launchctl_bootstrap(_launchd_domain(), plist_path, get_launchd_label(), timeout=30)
@@ -3990,7 +4031,7 @@ def launchd_start():
             sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
-        plist_path.write_text(new_plist, encoding="utf-8")
+        _write_launchd_plist_securely(plist_path, new_plist)
         if _launchd_bootstrap_and_kickstart(plist_path, label):
             _launchd_ok("✓ Service started")
         return

@@ -39,6 +39,13 @@ class TestSessionPaginationClamps:
         r = client.get("/api/profiles/sessions", params={"limit": 10_000})
         assert r.status_code == 422
 
+    def test_profile_fanout_accepts_real_desktop_maximum(self, client):
+        # Desktop callers use limit=200 (ARCHIVED_FETCH_LIMIT, command
+        # palette) and electron over-fetches limit+offset — the clamp must
+        # sit ABOVE real client maxima, not break them.
+        r = client.get("/api/profiles/sessions", params={"limit": 200, "offset": 120})
+        assert r.status_code == 200
+
     def test_in_range_limit_accepted(self, client):
         r = client.get("/api/sessions", params={"limit": 50})
         assert r.status_code == 200

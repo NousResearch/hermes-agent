@@ -159,18 +159,15 @@ export function referenceRe(): RegExp {
 }
 
 /** Remove reference-only lines when comparing visible message text. */
-export function textWithoutReferenceLines(text: string): string {
-  const matcher = referenceRe()
+// Anchored + non-global: no shared `lastIndex` state (the hazard referenceRe()
+// exists to avoid), and hoisting skips a RegExp construction per call — this
+// runs on both sides of every message comparison in the reconcile loops.
+const REFERENCE_LINE_RE = new RegExp(`^(?:${REFERENCE_PATTERN.source})$`)
 
+export function textWithoutReferenceLines(text: string): string {
   return text
     .split('\n')
-    .filter(line => {
-      const candidate = line.trimEnd()
-      matcher.lastIndex = 0
-      const match = matcher.exec(candidate)
-
-      return !match || match.index !== 0 || match[0] !== candidate
-    })
+    .filter(line => !REFERENCE_LINE_RE.test(line.trimEnd()))
     .join('\n')
     .trim()
 }

@@ -191,8 +191,9 @@ class TestRateLimiting:
         )
         mgr = FederationConnectionManager(device_id="dev-a")
         ip = "192.168.1.100"
+        loop = asyncio.get_event_loop()
         for _ in range(10):
-            assert mgr._check_rate_limit(ip) is True
+            assert loop.run_until_complete(mgr._check_rate_limit(ip)) is True
 
     def test_rate_limit_blocks_11th(self):
         from gateway.federation.federation_connection import (
@@ -200,9 +201,10 @@ class TestRateLimiting:
         )
         mgr = FederationConnectionManager(device_id="dev-a")
         ip = "192.168.1.100"
+        loop = asyncio.get_event_loop()
         for _ in range(10):
-            mgr._check_rate_limit(ip)
-        assert mgr._check_rate_limit(ip) is False
+            loop.run_until_complete(mgr._check_rate_limit(ip))
+        assert loop.run_until_complete(mgr._check_rate_limit(ip)) is False
 
     def test_rate_limit_resets_after_60s(self):
         from gateway.federation.federation_connection import (
@@ -210,12 +212,13 @@ class TestRateLimiting:
         )
         mgr = FederationConnectionManager(device_id="dev-a")
         ip = "192.168.1.100"
+        loop = asyncio.get_event_loop()
         for _ in range(10):
-            mgr._check_rate_limit(ip)
+            loop.run_until_complete(mgr._check_rate_limit(ip))
 
         # Fake time passage by clearing timestamps
         mgr._conn_times[ip] = []
-        assert mgr._check_rate_limit(ip) is True
+        assert loop.run_until_complete(mgr._check_rate_limit(ip)) is True
 
 
 # ========================================================================

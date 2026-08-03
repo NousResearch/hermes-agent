@@ -122,3 +122,69 @@ def test_xai_oauth_soft_accept_preserved_when_no_match():
     )
     assert result.success is True, result.error_message
     assert result.target_provider == "xai-oauth"
+
+
+def test_compatibility_dedup_prevents_duplicate_match():
+    """A custom_providers entry that carries a ``provider_key`` (i.e. was
+    converted from a new-style ``providers.<slug>`` block by
+    ``get_compatible_custom_providers()``) must not cause the same model
+    to be reported as declared by both the bare slug *and* the
+    ``custom:<slug>`` form."""
+    user_providers = {
+        "openai-codex": {
+            "name": "OpenAI Codex",
+            "base_url": "http://codex/v1",
+            "models": ["gpt-5.9-codex-hidden"],
+        }
+    }
+    # This is what get_compatible_custom_providers() produces:
+    # a custom_providers entry with ``provider_key`` pointing back to the
+    # original slug.  Without the dedup the model would match both
+    # ``openai-codex`` and ``custom:openai-codex``.
+    custom_providers = [
+        {
+            "name": "openai-codex",
+            "provider_key": "openai-codex",
+            "base_url": "http://codex/v1",
+            "models": ["gpt-5.9-codex-hidden"],
+        }
+    ]
+    result = _run_switch(
+        raw_input="gpt-5.9-codex-hidden",
+        current_provider="claude-codex",
+        current_model="claude-sonnet-4",
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openai-codex"
+
+
+def test_compatibility_dedup_with_mixed_case_slug():
+    """Mixed-case provider slugs (e.g. ``providers: {OAI: ...}``) must
+    also be deduplicated.  ``OAI`` and ``custom:OAI`` should not both
+    appear as matches."""
+    user_providers = {
+        "OAI": {
+            "name": "OpenAI",
+            "base_url": "http://oai/v1",
+            "models": ["gpt-5.9-codex-hidden"],
+        }
+    }
+    custom_providers = [
+        {
+            "name": "OAI",
+            "provider_key": "OAI",
+            "base_url": "http://oai/v1",
+            "models": ["gpt-5.9-codex-hidden"],
+        }
+    ]
+    result = _run_switch(
+        raw_input="gpt-5.9-codex-hidden",
+        current_provider="claude-codex",
+        current_model="claude-sonnet-4",
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "OAI"

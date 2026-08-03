@@ -56,7 +56,10 @@ _write_profile_model = late("_write_profile_model")
 
 @sessions_router.get("/api/profiles/sessions")
 def get_profiles_sessions(
-    limit: int = Query(20, ge=0),
+    # ``le=100`` caps the per-request page size (idea from #39200) — this
+    # endpoint fans the query out across EVERY profile's state.db, so an
+    # unbounded limit multiplies the damage.
+    limit: int = Query(20, ge=0, le=100),
     offset: int = Query(0, ge=0),
     min_messages: int = 0,
     archived: str = "exclude",

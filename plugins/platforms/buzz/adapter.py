@@ -229,6 +229,33 @@ def _normalize_user_ref(ref: str) -> Optional[str]:
 # buzz-cli invocation helpers
 # ---------------------------------------------------------------------------
 
+_MEMBER_MENTION_ERROR_RE = re.compile(
+    r"mention '(@.+?)' (?:does not match a current channel member|is ambiguous)",
+    re.IGNORECASE,
+)
+_MAX_MENTIONS_ERROR = "too many unique message mentions"
+_OUTBOUND_MENTION_RE = re.compile(r"(?<![\w@])@(?=[^\s@])")
+_MENTION_FALLBACK_MAX_RETRIES = 3
+
+
+def _unresolved_mention_fallback(content: str, error: str) -> Optional[str]:
+    """Return readable text after a Buzz outbound mention-validation error."""
+    error = error or ""
+    match = _MEMBER_MENTION_ERROR_RE.search(error)
+    if match:
+        mention = match.group(1)
+        fallback = re.sub(
+            rf"(?<![\w@]){re.escape(mention)}",
+            mention[1:],
+            content or "",
+            flags=re.IGNORECASE,
+        )
+    elif _MAX_MENTIONS_ERROR in error.lower():
+        fallback = _OUTBOUND_MENTION_RE.sub("", content or "")
+    else:
+        return None
+    return fallback if fallback != content else None
+
 def _resolve_cli_path(configured: str = "") -> str:
     """Resolve the buzz CLI binary path portably.
 
@@ -612,7 +639,19 @@ class BuzzAdapter(BasePlatformAdapter):
         reply_target = reply_to or (metadata or {}).get("thread_id")
         if reply_target:
             args += ["--reply-to", str(reply_target)]
-        code, out, err = await self._run_cli(args, input_text=content)
+        send_content = content
+        code, out, err = await self._run_cli(args, input_text=send_content)
+        for _ in range(_MENTION_FALLBACK_MAX_RETRIES):
+            fallback = (
+                _unresolved_mention_fallback(send_content, err)
+                if code != 0
+                else None
+            )
+            if fallback is None:
+                break
+            logger.warning("Buzz: unresolved outbound mention; retrying as readable text")
+            send_content = fallback
+            code, out, err = await self._run_cli(args, input_text=send_content)
         if code != 0:
             return SendResult(
                 success=False,
@@ -683,7 +722,21 @@ class BuzzAdapter(BasePlatformAdapter):
             ]
             if reply_to:
                 args += ["--reply-to", str(reply_to)]
-            code, out, err = await self._run_cli(args, input_text=caption or "")
+            send_content = caption or ""
+            code, out, err = await self._run_cli(args, input_text=send_content)
+            for _ in range(_MENTION_FALLBACK_MAX_RETRIES):
+                fallback = (
+                    _unresolved_mention_fallback(send_content, err)
+                    if code != 0
+                    else None
+                )
+                if fallback is None:
+                    break
+                logger.warning(
+                    "Buzz: unresolved outbound caption mention; retrying as readable text"
+                )
+                send_content = fallback
+                code, out, err = await self._run_cli(args, input_text=send_content)
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
             try:
@@ -1391,9 +1444,33 @@ async def _standalone_send(
     for path in media_files or []:
         args += ["--file", str(path)]
     try:
+        send_content = message
         code, out, err = await _exec_buzz(
-            cli_path, args, relay_url=relay, private_key=private_key, input_text=message
+            cli_path,
+            args,
+            relay_url=relay,
+            private_key=private_key,
+            input_text=send_content,
         )
+        for _ in range(_MENTION_FALLBACK_MAX_RETRIES):
+            fallback = (
+                _unresolved_mention_fallback(send_content, err)
+                if code != 0
+                else None
+            )
+            if fallback is None:
+                break
+            logger.warning(
+                "Buzz: unresolved standalone mention; retrying as readable text"
+            )
+            send_content = fallback
+            code, out, err = await _exec_buzz(
+                cli_path,
+                args,
+                relay_url=relay,
+                private_key=private_key,
+                input_text=send_content,
+            )
     except asyncio.CancelledError:
         raise
     except OSError as e:

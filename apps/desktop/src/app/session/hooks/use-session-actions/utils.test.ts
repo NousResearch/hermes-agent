@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -24,6 +24,21 @@ import {
 
 const msg = (id: string, role: ChatMessage['role'], text: string, extra: Partial<ChatMessage> = {}): ChatMessage =>
   ({ id, role, parts: [{ type: 'text', text }], ...extra }) as ChatMessage
+
+// A live assistant row carrying the structure the gateway's text-only inflight
+// snapshot cannot: reasoning and tool calls, with or without any text yet.
+const streamingMsg = (id: string, text: string, extra: Partial<ChatMessage> = {}): ChatMessage =>
+  ({
+    id,
+    role: 'assistant',
+    parts: [
+      { type: 'reasoning', text: 'planning' },
+      { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', result: 'done' },
+      ...(text ? [{ type: 'text', text } as ChatMessagePart] : [])
+    ],
+    pending: true,
+    ...extra
+  }) as ChatMessage
 
 const session = (over: Partial<SessionInfo>): SessionInfo => over as SessionInfo
 
@@ -395,6 +410,126 @@ describe('reconcileResumeMessages', () => {
 
     expect(out.attachmentRefs).toBeUndefined()
   })
+
+  // #75825: switching sessions mid-stream can re-hydrate an empty inflight shell
+  // at the same ordinal as the live stream row that still holds the full reply.
+  it('prefers a richer local pending assistant over an empty projection shell', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-live', 'assistant', 'hello from stream', { pending: true })
+    ]
+
+    const next = [msg('1-user', 'user', 'question'), msg('assistant-stream-sess', 'assistant', '', { pending: true })]
+
+    const reconciled = reconcileResumeMessages(next, previous)
+
+    expect(reconciled[1]).toMatchObject({ id: 'assistant-stream-live', pending: true })
+    expect(chatMessageText(reconciled[1])).toBe('hello from stream')
+  })
+
+  it('prefers a richer local pending assistant when the projection lags mid-stream', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-live', 'assistant', 'hello world', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-sess', 'assistant', 'hello', { pending: true })
+    ]
+
+    const reconciled = reconcileResumeMessages(next, previous)
+
+    expect(chatMessageText(reconciled[1])).toBe('hello world')
+    expect(reconciled[1].id).toBe('assistant-stream-live')
+  })
+
+  it('does not override when the authoritative assistant has advanced further', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-live', 'assistant', 'hello', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-sess', 'assistant', 'hello world', { pending: true })
+    ]
+
+    const reconciled = reconcileResumeMessages(next, previous)
+
+    expect(chatMessageText(reconciled[1])).toBe('hello world')
+    expect(reconciled[1].id).toBe('assistant-stream-sess')
+  })
+
+  // The reported "no inference traces or tool calls": mid tool-work, the local
+  // row holds reasoning + tool calls and NO text yet, so both bodies are empty
+  // text and a text-length comparison cannot tell them apart.
+  it('prefers a traces-only local pending row over an empty shell', () => {
+    const previous = [msg('1-user', 'user', 'run the tools'), streamingMsg('assistant-stream-live', '')]
+
+    const next = [
+      msg('1-user', 'user', 'run the tools'),
+      msg('assistant-stream-sess', 'assistant', '', { pending: true })
+    ]
+
+    const reconciled = reconcileResumeMessages(next, previous)
+
+    expect(reconciled[1].id).toBe('assistant-stream-live')
+    expect(reconciled[1].parts.map(part => part.type)).toEqual(['reasoning', 'tool-call'])
+  })
+
+  // A longer local body that is NOT an extension of the authoritative text is a
+  // different turn at the same ordinal (compression rewrites history) and must
+  // not hijack the slot.
+  it('leaves a shorter non-prefix authoritative assistant intact', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-live', 'assistant', 'a long local reply about something else entirely', { pending: true })
+    ]
+
+    const next = [msg('1-user', 'user', 'question'), msg('9-assistant', 'assistant', 'short authoritative answer')]
+
+    const reconciled = reconcileResumeMessages(next, previous)
+
+    expect(reconciled[1].id).toBe('9-assistant')
+    expect(chatMessageText(reconciled[1])).toBe('short authoritative answer')
+  })
+
+  // A retained failure snapshot (`inflight.error`) is projected with empty text.
+  // Preferring the local partial over it would erase the error and repaint the
+  // turn as healthy.
+  it('does not treat an errored authoritative row as an empty shell', () => {
+    const previous = [
+      msg('1-user', 'user', 'do the thing'),
+      msg('assistant-stream-live', 'assistant', 'partial answer before the failure', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user', 'user', 'do the thing'),
+      msg('assistant-stream-sess', 'assistant', '', { error: 'model call failed: 500' })
+    ]
+
+    const reconciled = reconcileResumeMessages(next, previous)
+
+    expect(reconciled[1].error).toBe('model call failed: 500')
+  })
+
+  // Content comes from the renderer; liveness stays the backend's call. A
+  // settled shell (queued turn behind a finished inflight one) must not leave
+  // the preserved reply spinning forever.
+  it('takes the local body but the authoritative settled state', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-live', 'assistant', 'streamed body', { pending: true })
+    ]
+
+    const next = [msg('1-user', 'user', 'question'), msg('assistant-stream-sess', 'assistant', '', { pending: false })]
+
+    const reconciled = reconcileResumeMessages(next, previous)
+
+    expect(reconciled[1]).toMatchObject({ id: 'assistant-stream-live', pending: false })
+    expect(chatMessageText(reconciled[1])).toBe('streamed body')
+  })
 })
 
 describe('preserveLocalPendingTurnMessages', () => {
@@ -682,6 +817,151 @@ describe('preserveLocalPendingTurnMessages', () => {
       '3-user-stored',
       'user-optimistic'
     ])
+  })
+
+  // #75825: an empty inflight projection shell at the same ordinal must not
+  // discard the local pending assistant that still holds the streamed content.
+  // Replace the shell (do not append) so the transcript shows one reply.
+  it('replaces an empty inflight shell with a fuller local pending assistant', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-live', 'assistant', 'partial answer so far', { pending: true })
+    ]
+
+    const next = [msg('1-user', 'user', 'question'), msg('assistant-stream-sess', 'assistant', '', { pending: true })]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toEqual(['1-user', 'assistant-stream-live'])
+    expect(chatMessageText(preserved[1])).toBe('partial answer so far')
+    expect(preserved[1].pending).toBe(true)
+  })
+
+  it('replaces a lagging same-id shell with the fuller local pending body', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-sess', 'assistant', 'full streamed content', { pending: true })
+    ]
+
+    const next = [msg('1-user', 'user', 'question'), msg('assistant-stream-sess', 'assistant', '', { pending: true })]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toEqual(['1-user', 'assistant-stream-sess'])
+    expect(chatMessageText(preserved[1])).toBe('full streamed content')
+  })
+
+  it('still drops local pending when authoritative text is at least as complete', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-live', 'assistant', 'partial', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-sess', 'assistant', 'partial and more', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  // Mid tool-work both bodies are empty text, so only the parts distinguish the
+  // live row from the shell — the reported "no inference traces or tool calls".
+  it('replaces an empty shell with a traces-only local pending row', () => {
+    const previous = [msg('1-user', 'user', 'run the tools'), streamingMsg('assistant-stream-live', '')]
+
+    const next = [
+      msg('1-user', 'user', 'run the tools'),
+      msg('assistant-stream-sess', 'assistant', '', { pending: true })
+    ]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved).toHaveLength(2)
+    expect(preserved[1].parts.map(part => part.type)).toEqual(['reasoning', 'tool-call'])
+  })
+
+  // Length alone is not identity: a longer local row that does not extend the
+  // authoritative text belongs to another turn and must not take its slot — by
+  // ordinal or by reusing the stream id.
+  it('leaves a shorter non-prefix authoritative assistant intact', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-live', 'assistant', 'a long local reply about something else entirely', { pending: true })
+    ]
+
+    const next = [msg('1-user', 'user', 'question'), msg('9-assistant', 'assistant', 'short authoritative answer')]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toEqual(['1-user', '9-assistant'])
+    expect(chatMessageText(preserved[1])).toBe('short authoritative answer')
+  })
+
+  it('leaves a shorter non-prefix authoritative assistant intact on the same stream id', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-sess', 'assistant', 'a long local reply about something else entirely', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-sess', 'assistant', 'short authoritative answer')
+    ]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(chatMessageText(preserved[1])).toBe('short authoritative answer')
+  })
+
+  it('does not erase a retained failure with the local partial', () => {
+    const previous = [
+      msg('1-user', 'user', 'do the thing'),
+      msg('assistant-stream-live', 'assistant', 'partial answer before the failure', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user', 'user', 'do the thing'),
+      msg('assistant-stream-sess', 'assistant', '', { error: 'model call failed: 500' })
+    ]
+
+    const assistant = preserveLocalPendingTurnMessages(next, previous).find(message => message.role === 'assistant')
+
+    expect(assistant?.error).toBe('model call failed: 500')
+    expect(assistant?.pending).not.toBe(true)
+  })
+
+  it('takes the local body but the authoritative settled state', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-live', 'assistant', 'streamed body', { pending: true })
+    ]
+
+    const next = [msg('1-user', 'user', 'question'), msg('assistant-stream-sess', 'assistant', '', { pending: false })]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved[1]).toMatchObject({ id: 'assistant-stream-live', pending: false })
+    expect(chatMessageText(preserved[1])).toBe('streamed body')
+  })
+
+  // The whole point of replacing rather than appending: one reply on screen,
+  // and the committed history around the live turn untouched.
+  it('does not duplicate or rewrite committed history around the live turn', () => {
+    const history = [
+      msg('1-user', 'user', 'first question'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('3-user', 'user', 'run the tools')
+    ]
+
+    const previous = [...history, streamingMsg('assistant-stream-live', 'here is the full reply')]
+    const next = [...history, msg('assistant-stream-sess', 'assistant', '', { pending: true })]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved).toHaveLength(4)
+    expect(chatMessageText(preserved[1])).toBe('first answer')
+    expect(preserved.filter(message => message.role === 'assistant')).toHaveLength(2)
   })
 })
 

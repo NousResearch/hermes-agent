@@ -588,7 +588,12 @@ class CredentialPool:
         self._entries = sorted(entries, key=lambda entry: entry.priority)
         self._current_id: Optional[str] = None
         self._strategy = get_pool_strategy(provider)
-        self._lock = threading.Lock()
+        # RLock: the mutation primitives below (_replace_entry/_persist)
+        # self-acquire this lock so the DEFERRED single-use-token refresh
+        # path (which runs network I/O outside the lock by design) still
+        # serializes its pool mutations. In-lock callers re-acquire
+        # reentrantly at negligible cost.
+        self._lock = threading.RLock()
         self._active_leases: Dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
         # Monotonic timestamp of the last "no available entries" log, used to
@@ -684,18 +689,27 @@ class CredentialPool:
             return matches[0].id if len(matches) == 1 else None
 
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
-        """Swap an entry in-place by id, preserving sort order."""
-        for idx, entry in enumerate(self._entries):
-            if entry.id == old.id:
-                self._entries[idx] = new
-                return
+        """Swap an entry in-place by id, preserving sort order.
+
+        Self-locking (RLock) so the deferred refresh path — which
+        deliberately runs outside the pool lock — cannot tear
+        ``self._entries`` against a concurrent select()/rotation.
+        """
+        with self._lock:
+            for idx, entry in enumerate(self._entries):
+                if entry.id == old.id:
+                    self._entries[idx] = new
+                    return
 
     def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
-        write_credential_pool(
-            self.provider,
-            [entry.to_dict() for entry in self._entries],
-            removed_ids=removed_ids,
-        )
+        # Self-locking (RLock): snapshotting self._entries must not race a
+        # concurrent rotation when called from the deferred refresh path.
+        with self._lock:
+            write_credential_pool(
+                self.provider,
+                [entry.to_dict() for entry in self._entries],
+                removed_ids=removed_ids,
+            )
 
     def _is_terminal_auth_failure(
         self,
@@ -1701,10 +1715,10 @@ class CredentialPool:
         On failure the entry is silently skipped.
         """
         for entry, sync_fn in pending:
-            refreshed = self._refresh_entry(entry, force=False)
-            if refreshed is not None:
-                with self._lock:
-                    self._replace_entry(entry, refreshed)
+            # _refresh_entry already merges the refreshed entry into the
+            # pool internally (its mutation primitives are self-locking),
+            # so no second _replace_entry is needed here.
+            self._refresh_entry(entry, force=False)
 
     def _available_entries(
         self, *, clear_expired: bool = False, refresh: bool = False,

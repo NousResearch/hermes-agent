@@ -272,6 +272,19 @@ class TestReadShape:
         assert len(result["messages"]) == 5
         assert result["session_meta"]["title"] == "Building the Modpack"
 
+    def test_read_strips_ansi_sequences_from_messages(self, db):
+        db.create_session("s_ansi", source="cli")
+        db.append_message("s_ansi", role="user", content="plain")
+        db.append_message(
+            "s_ansi", role="assistant", content="\u001b[31mred text\u001b[0m and more"
+        )
+        db._conn.commit()
+        result = json.loads(session_search(session_id="s_ansi", db=db))
+        assert result["success"] is True
+        rendered = [m["content"] for m in result["messages"] if m.get("content")]
+        assert any(text == "red text and more" for text in rendered)
+        assert all("\u001b" not in text for text in rendered)
+
     def test_read_truncates_large_session(self, db):
         db.create_session("s_big", source="cli")
         for i in range(50):

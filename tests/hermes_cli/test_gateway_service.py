@@ -539,6 +539,38 @@ class TestGatewaySystemServiceRouting:
         assert "21627" not in out  # must use the mocked budget, not live defaults
         assert "27" in out
 
+    def test_launchd_restart_uses_after_turn_sigusr1_before_hard_restart(
+        self, monkeypatch, capsys
+    ):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 0.0)
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 42.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 987)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append((pid, timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("hard launchctl restart must not run after a graceful exit")
+            ),
+        )
+        monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [(987, 42.0)]
+        out = capsys.readouterr().out.lower()
+        assert "restarting gracefully" in out
+        assert "42" in out
+
 
 
 
@@ -1759,4 +1791,3 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
         )
         assert ok is True
         assert attempts["bootstrap"] >= 2  # the timeout was retried, not raised
-

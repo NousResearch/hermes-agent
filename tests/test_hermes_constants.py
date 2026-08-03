@@ -64,6 +64,52 @@ class TestGetDefaultHermesRoot:
 
         assert get_default_hermes_root() == local_appdata / "hermes"
 
+    def test_result_memoised_until_env_or_home_changes(self, tmp_path, monkeypatch):
+        """Repeated calls reuse the memo; HERMES_HOME / home changes invalidate.
+
+        get_default_hermes_root() resolves HERMES_HOME against the native
+        home (~80us of path resolution) and is called at 31+ sites — every
+        _load_global_auth_store() (per provider row in the /model picker),
+        kanban, backup, gateway, update. The memo is keyed on
+        (native home, HERMES_HOME) compared for free each call.
+        """
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # Probe the expensive inner work: the memo check itself calls
+        # _get_platform_default_hermes_home() on every call (even hits), so
+        # count Path.resolve on the env path instead — only the actual
+        # resolution branch pays it.
+        resolve_calls = {"n": 0}
+        orig_resolve = Path.resolve
+
+        def counting_resolve(self, *a, **k):
+            resolve_calls["n"] += 1
+            return orig_resolve(self, *a, **k)
+
+        monkeypatch.setattr(Path, "resolve", counting_resolve)
+        hermes_constants._default_hermes_root_memo = None
+
+        first = get_default_hermes_root()
+        first_count = resolve_calls["n"]
+        for _ in range(10):
+            get_default_hermes_root()
+        assert resolve_calls["n"] == first_count, (
+            "repeated calls must be memo hits (no path resolution on hits), "
+            f"resolve went {first_count} -> {resolve_calls['n']}"
+        )
+        assert first == tmp_path / ".hermes"
+
+        # HERMES_HOME change invalidates the memo (fresh resolution).
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "elsewhere"))
+        before = resolve_calls["n"]
+        assert get_default_hermes_root() == tmp_path / "elsewhere"
+        assert resolve_calls["n"] > before, (
+            "HERMES_HOME change must force a fresh resolution"
+        )
+
+
+
 
 
 class TestGetHermesHome:

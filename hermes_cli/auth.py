@@ -1103,34 +1103,51 @@ def _load_global_auth_store() -> Dict[str, Any]:
     Returns an empty dict when no global fallback exists (classic mode,
     or the global auth.json is absent). Never raises on missing file.
 
-    Seat belt: under pytest, refuses to read the real user's
-    ``~/.hermes/auth.json`` even when HERMES_HOME is set to a profile
-    path. The hermetic conftest does not redirect ``HOME``, so
-    ``get_default_hermes_root()`` for a profile-shaped HERMES_HOME can
-    still resolve to the real user's home on a dev machine. That would
-    leak real credentials into tests. This guard uses the unmodified
-    ``HOME`` env var (what ``os.path.expanduser('~')`` would resolve to),
-    not ``Path.home()``, because ``Path.home`` is sometimes monkeypatched
-    by fixtures that want to relocate the global root to a tmp path.
+    Memoised keyed on the global auth file's path + mtime (same pattern as
+    ``_nous_auth_status_cache``): read_credential_pool() -> load_pool() runs
+    this once per provider row in the /model picker, and the path resolution
+    + JSON parse cost ~105us+ per call even when nothing changed. The global
+    store only changes when the user authenticates at global scope (writes
+    always go through _save_auth_store, which touches the file), so the mtime
+    key keeps the memo freshness-correct. Callers must treat the returned
+    store as read-only (all current callers do — .get / dict() / list()
+    copies only).
     """
+    global _global_auth_store_cache
     global_path = _global_auth_file_path()
     if global_path is None or not global_path.exists():
+        _global_auth_store_cache = None
         return {}
+    try:
+        resolved_path = str(global_path.resolve(strict=False))
+        mtime_ns = global_path.stat().st_mtime_ns
+        cache_key: Optional[Tuple[str, int]] = (resolved_path, mtime_ns)
+    except Exception:
+        cache_key = None
+    if cache_key is not None and _global_auth_store_cache is not None:
+        cached_path, cached_mtime, cached_store = _global_auth_store_cache
+        if cached_path == cache_key[0] and cached_mtime == cache_key[1]:
+            return cached_store
     if os.environ.get("PYTEST_CURRENT_TEST"):
         real_home_env = os.environ.get("HOME", "")
         if real_home_env:
             real_root = Path(real_home_env) / ".hermes" / "auth.json"
             try:
                 if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    _global_auth_store_cache = None
                     return {}
             except Exception:
                 pass
     try:
-        return _load_auth_store(global_path)
+        store = _load_auth_store(global_path)
     except Exception:
         # A malformed global store must not break profile reads. The
         # profile's own auth store is still authoritative.
+        _global_auth_store_cache = None
         return {}
+    if cache_key is not None:
+        _global_auth_store_cache = (cache_key[0], cache_key[1], store)
+    return store
 
 
 def _auth_lock_path() -> Path:
@@ -6680,6 +6697,11 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
 # `hermes auth login/logout/add/remove` invalidate naturally on the next call.
 _NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
 _nous_auth_status_cache: Optional[Tuple[float, str, Optional[float], Dict[str, Any]]] = None
+
+# mtime-keyed memo for _load_global_auth_store(): (path, mtime_ns, store).
+# Same invalidation contract as _nous_auth_status_cache — the global auth
+# file changes only when a global-scope auth write touches it.
+_global_auth_store_cache: Optional[Tuple[str, int, Dict[str, Any]]] = None
 
 
 def _auth_file_cache_key() -> Tuple[str, Optional[float]]:

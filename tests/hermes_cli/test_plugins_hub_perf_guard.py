@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,19 +42,61 @@ def test_plugins_hub_does_not_probe_cold_check_fns(monkeypatch):
     tools_registry.invalidate_check_fn_cache()
     web_server._invalidate_plugins_hub_cache()
 
-    calls = {"count": 0}
+    calls = {"count": 0, "threads": set()}
 
     def check_fn():
         calls["count"] += 1
+        calls["threads"].add(threading.current_thread())
         return False
 
     _patch_minimal_hub_dependencies(monkeypatch, check_fn=check_fn)
 
     payload = web_server._merged_plugins_hub(force_refresh=True)
 
-    assert calls["count"] == 0
+    # The request path itself must never execute the probe: the cold verdict
+    # is unknown, so the payload reports no auth requirement. Any probing
+    # happens on a background warmer thread, never inline.
     assert payload["plugins"][0]["auth_required"] is False
     assert payload["plugins"][0]["auth_command"] == ""
+    assert threading.current_thread() not in calls["threads"]
+
+
+def test_plugins_hub_cold_cache_schedules_background_probe(monkeypatch):
+    tools_registry.invalidate_check_fn_cache()
+    web_server._invalidate_plugins_hub_cache()
+
+    probe_ran = threading.Event()
+
+    def check_fn():
+        probe_ran.set()
+        return False
+
+    _patch_minimal_hub_dependencies(monkeypatch, check_fn=check_fn)
+
+    scheduled: list = []
+    real_schedule = web_server._schedule_check_fn_probe
+
+    def tracking_schedule(fn):
+        thread = real_schedule(fn)
+        scheduled.append(thread)
+        return thread
+
+    monkeypatch.setattr(web_server, "_schedule_check_fn_probe", tracking_schedule)
+
+    # Cold cache → the fetch schedules a background probe and reports the
+    # verdict as unknown (auth_required stays False for now).
+    payload = web_server._merged_plugins_hub(force_refresh=True)
+    assert payload["plugins"][0]["auth_required"] is False
+    assert scheduled and scheduled[0] is not None
+
+    scheduled[0].join(timeout=5)
+    assert probe_ran.wait(timeout=5)
+
+    # Once the TTL cache refreshes, the probed False verdict surfaces as an
+    # auth requirement.
+    refreshed = web_server._merged_plugins_hub(force_refresh=True)
+    assert refreshed["plugins"][0]["auth_required"] is True
+    assert refreshed["plugins"][0]["auth_command"] == "hermes auth demo"
 
 
 

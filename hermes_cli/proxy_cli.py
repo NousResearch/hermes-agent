@@ -826,10 +826,15 @@ def cmd_health(args: argparse.Namespace) -> int:
         )
         return 0
 
-    if not watch:
+    # A positive --timeout implies polling even without --watch, so the
+    # documented `hermes egress health --timeout 30` waits for the deadline
+    # instead of returning after a single probe.  Reuses the same deadline
+    # and poll loop as --watch below.
+    if not watch and timeout <= 0:
         return _check()
 
-    # --watch mode: poll every second until healthy or timeout
+    # --watch (or a positive --timeout): poll every second until healthy or
+    # the deadline expires
     try:
         while True:
             rc = _check()

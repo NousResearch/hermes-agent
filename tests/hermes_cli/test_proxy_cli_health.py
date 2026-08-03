@@ -79,6 +79,41 @@ class TestCmdHealth:
             with patch("time.sleep"):
                 assert cmd_health(_args(watch=True, timeout=1)) != 0
 
+    def test_timeout_without_watch_polls_until_healthy(self):
+        """A positive --timeout without --watch must enter the polling loop,
+        not return after a single probe.  An initially-down proxy that comes
+        up before the deadline should be reported healthy (exit 0) — this is
+        the documented `hermes egress health --timeout N` standalone contract.
+        """
+        down = _make_status(pid=None, listening=False)
+        up = _make_status(pid=1234, listening=True)
+        with _env(down):
+            with patch(
+                "hermes_cli.proxy_cli.ip.get_status",
+                side_effect=[down, down, up],
+            ) as gs, patch("time.sleep"):
+                assert cmd_health(_args(watch=False, timeout=30)) == 0
+            # Proves it polled repeatedly rather than probing once and
+            # returning the initial down state.
+            assert gs.call_count == 3
+
+    def test_timeout_without_watch_returns_nonzero_at_deadline(self):
+        """--timeout without --watch that never becomes healthy must poll
+        until the deadline and then exit non-zero (not hang, not exit 0)."""
+        down = _make_status(pid=None, listening=False)
+        # Fake monotonic clock advancing 1s per call so the timeout=3
+        # deadline is crossed after a few polls instead of blocking.
+        ticks = iter([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        with _env(down):
+            with patch(
+                "hermes_cli.proxy_cli.ip.get_status", return_value=down
+            ) as gs, patch("time.sleep"), patch(
+                "time.monotonic", side_effect=lambda: next(ticks)
+            ):
+                assert cmd_health(_args(watch=False, timeout=3)) == 2
+            # Polled more than once before giving up at the deadline.
+            assert gs.call_count > 1
+
     def test_watch_keyboard_interrupt_returns_2(self):
         with _env(_make_status(pid=None, listening=False)):
             with patch("time.sleep", side_effect=KeyboardInterrupt):

@@ -945,6 +945,32 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(chatMessageText(preserved[1])).toBe('streamed body')
   })
 
+  // #70209: history committed the reply under its own id, so the settled local
+  // stream row sits at a later ordinal, pairs with nothing, and gets appended —
+  // the same answer twice.
+  it('does not re-append a settled stream row the authoritative history already carries', () => {
+    const next = [msg('1-user-stored', 'user', 'question'), msg('2-assistant-stored', 'assistant', 'answer')]
+    const settledLocalStream = msg('assistant-stream-runtime-1', 'assistant', 'answer', { pending: false })
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, settledLocalStream])).toBe(next)
+  })
+
+  // The reply finished locally but the gateway had not committed it when the
+  // session was reopened — the local row is the only copy and must survive.
+  it('keeps a settled stream row the authoritative history has not committed', () => {
+    const previous = [
+      msg('1-user', 'user', 'question'),
+      msg('assistant-stream-sess', 'assistant', 'the finished reply', { pending: false })
+    ]
+
+    const next = [msg('1-user', 'user', 'question')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      'assistant-stream-sess'
+    ])
+  })
+
   // The whole point of replacing rather than appending: one reply on screen,
   // and the committed history around the live turn untouched.
   it('does not duplicate or rewrite committed history around the live turn', () => {

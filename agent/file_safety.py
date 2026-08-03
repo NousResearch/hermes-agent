@@ -49,6 +49,18 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Bitwarden Secrets Manager encrypted disk cache.
             str(hermes_home / "cache" / "bws_cache.enc.json"),
             str(hermes_root / "cache" / "bws_cache.enc.json"),
+            # Bitwarden plaintext disk cache — still live alongside the
+            # encrypted one (agent.secret_sources.bitwarden._DISK_CACHE), and
+            # read-blocked by get_read_block_error(). Left writable, a
+            # prompt-injected write could seed cached secret VALUES that the
+            # next process reads back as if they came from BSM.
+            str(hermes_home / "cache" / "bws_cache.json"),
+            str(hermes_root / "cache" / "bws_cache.json"),
+            # Google Workspace OAuth token store, also read-blocked by
+            # get_read_block_error(): overwriting it plants attacker-controlled
+            # refresh tokens that get loaded on the next run.
+            str(hermes_home / "auth" / "google_oauth.json"),
+            str(hermes_root / "auth" / "google_oauth.json"),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),

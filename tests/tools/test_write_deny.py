@@ -5,7 +5,18 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tools.file_operations import _is_write_denied
+
+# Credential stores that get_read_block_error() refuses to read, and which
+# must therefore also be write-denied — a writable read-blocked credential
+# file lets a prompt-injected write plant tokens it can never be caught
+# reading back.
+READ_BLOCKED_CREDENTIAL_FILES = [
+    os.path.join("auth", "google_oauth.json"),
+    os.path.join("cache", "bws_cache.json"),
+]
 
 
 class TestWriteDenyExactPaths:
@@ -46,6 +57,45 @@ class TestWriteDenyExactPaths:
         assert get_default_hermes_root() == root
 
         assert _is_write_denied(str(global_env)) is True
+
+    @pytest.mark.parametrize("rel_path", READ_BLOCKED_CREDENTIAL_FILES)
+    def test_active_home_credential_stores_denied(self, tmp_path, monkeypatch, rel_path):
+        """``<HERMES_HOME>/auth/google_oauth.json`` and
+        ``<HERMES_HOME>/cache/bws_cache.json`` are write-denied.
+
+        Both are read-blocked by ``get_read_block_error()``; the write side
+        only covered the encrypted Bitwarden cache
+        (``cache/bws_cache.enc.json``), leaving the Google OAuth token store
+        and the plaintext Bitwarden cache (still live — see
+        ``agent.secret_sources.bitwarden._DISK_CACHE``) overwritable.
+        """
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        assert _is_write_denied(str(home / rel_path)) is True
+
+    @pytest.mark.parametrize("rel_path", READ_BLOCKED_CREDENTIAL_FILES)
+    def test_hermes_root_credential_stores_when_running_under_profile(
+        self, tmp_path, monkeypatch, rel_path
+    ):
+        """The same two stores stay write-denied at ``<root>/`` while a profile
+        is active — same shape as the ``<root>/.env`` widening above (#15981).
+
+        Every profile inherits the root credentials, so a root-level write is
+        strictly worse than a per-profile one.
+        """
+        root = tmp_path / "hermes_root"
+        profile_home = root / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        from hermes_constants import get_hermes_home, get_default_hermes_root
+        assert get_hermes_home() == profile_home
+        assert get_default_hermes_root() == root
+
+        assert _is_write_denied(str(root / rel_path)) is True
+        assert _is_write_denied(str(profile_home / rel_path)) is True
 
     def test_shell_profiles_are_writable(self):
         home = str(Path.home())

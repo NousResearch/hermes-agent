@@ -255,6 +255,26 @@ async def test_managed_role_mention_counts_as_self_mention(adapter, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_live_ingress_accepts_bot_managed_role_mention(adapter, monkeypatch):
+    """Bot-authored role mentions must pass the live admission gate."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._ready_event.set()
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&555> bot handoff via role mention",
+        role_mentions=[_managed_role(bot_id=adapter._client.user.id)],
+    )
+    message.author.bot = True
+
+    assert await adapter._dispatch_discord_message(message) is True
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "bot handoff via role mention"
+
+
+@pytest.mark.asyncio
 async def test_other_bots_managed_role_mention_is_ignored(adapter, monkeypatch):
     monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)

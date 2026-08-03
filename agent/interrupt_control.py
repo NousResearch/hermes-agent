@@ -320,6 +320,19 @@ class InterruptControlMixin:
         self._turn_user_intervened = True
         return True
 
+    def clear_pending_steer(self) -> bool:
+        """Drop any queued /steer text before it is injected.
+
+        Returns True if there was a pending steer to drop, False otherwise.
+        Thread-safe like steer(): the gateway/TUI calls this when the user
+        deletes the pending-steer row from the queue strip, so the text is
+        not injected on the next tool result behind their back.
+        """
+        with _ic_lock(self, "_pending_steer_lock"):
+            had = _ic_slot(self, "_pending_steer_lock", "_pending_steer") is not None
+            self._pending_steer = None
+            return had
+
     def redirect(self, text: str) -> bool:
         """Redirect the active turn without converting it into a new task: during a model request only that
         request is cancelled (completed messages kept, partial reasoning becomes assistant context, the

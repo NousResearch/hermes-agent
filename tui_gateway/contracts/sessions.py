@@ -641,6 +641,37 @@ method("session.redirect", params=SessionCorrectionParams, result=SessionCorrect
        doc="Redirect the active turn (queued for the next turn while the agent is still building).")
 
 
+class SteerClearStatus(WireEnum):
+    cleared = "cleared"
+    noop = "noop"
+
+
+class SessionSteerClearParams(SessionParams):
+    pass  # session_id (+ optional profile) only
+
+
+class SessionSteerClearResult(Result):
+    status: SteerClearStatus
+    cleared: bool
+
+
+method("session.steer_clear", params=SessionSteerClearParams, result=SessionSteerClearResult,
+       doc="Drop a pending /steer that has not been injected yet (TUI queue-strip delete).")
+
+
+class SessionPendingParams(SessionParams):
+    pass
+
+
+class SessionPendingResult(Result):
+    steer: str | None = None
+    queue: list[str] = Field(default_factory=list)
+
+
+method("session.pending", params=SessionPendingParams, result=SessionPendingResult,
+       doc="Snapshot of the pending steer plus every queued prompt (TUI pending strip / reconnect rebuild).")
+
+
 # ── spawn trees ───────────────────────────────────────────────────────────────────────────────
 
 

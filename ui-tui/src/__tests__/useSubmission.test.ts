@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ComposerToken } from '../app/interfaces.js'
-import { prepareSubmission, shouldInterpolateSubmission } from '../app/useSubmission.js'
+import { isSteerAccepted, prepareSubmission, shouldInterpolateSubmission } from '../app/useSubmission.js'
 
 describe('prepareSubmission', () => {
   it('keeps the collapsed paste for display and expands the model payload', () => {
@@ -50,5 +50,24 @@ describe('visible interpolation combined with a collapsed paste', () => {
     expect(submission.display).toBe(`Tue for ${label}`)
     expect(submission.display).not.toContain('{!')
     expect(submission.text).toBe('Tue for line one\nline two')
+  })
+})
+
+describe('isSteerAccepted (status contract)', () => {
+  it('accepts steered — the unified success status from both gateway steer paths', () => {
+    expect(isSteerAccepted({ status: 'steered' })).toBe(true)
+  })
+
+  it('accepts the legacy queued status', () => {
+    expect(isSteerAccepted({ status: 'queued' })).toBe(true)
+  })
+
+  it('rejects rejected — the only explicit failure status', () => {
+    expect(isSteerAccepted({ status: 'rejected' })).toBe(false)
+  })
+
+  it('rejects missing or errored responses', () => {
+    expect(isSteerAccepted(null)).toBe(false)
+    expect(isSteerAccepted(undefined)).toBe(false)
   })
 })

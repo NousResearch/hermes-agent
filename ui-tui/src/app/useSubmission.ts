@@ -5,7 +5,7 @@ import { TYPING_IDLE_MS } from '../config/timing.js'
 import { expandTokens, imageAttachments } from '../domain/attachments.js'
 import { completionToApplyOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ShellExecResponse } from '../gatewayTypes.js'
+import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
 import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
@@ -25,6 +25,15 @@ const DOUBLE_ENTER_MS = 450
 
 const spliceMatches = (text: string, matches: RegExpMatchArray[], results: string[]) =>
   matches.reduceRight((acc, m, i) => acc.slice(0, m.index!) + results[i] + acc.slice(m.index! + m[0].length), text)
+
+/**
+ * Whether a `session.steer` response means the steer was accepted. Both
+ * gateway steer paths (session.steer and the prompt.submit busy path) report
+ * 'steered' on success; 'queued' is the legacy value and means the same
+ * thing. Only 'rejected' (or a missing/errored response) is a failure.
+ */
+export const isSteerAccepted = (r: Pick<SessionSteerResponse, 'status'> | null | undefined): boolean =>
+  !!r && (r.status === 'steered' || r.status === 'queued')
 
 export const expandPasteTokens = (tokens: ComposerToken[]) =>
   expandTokens(tokens.filter(token => token.kind === 'paste'))
@@ -291,10 +300,34 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
       }
 
+      // A steer accepted by the gateway becomes a first-class pending row in the
+      // queue strip (tagged, editable, deletable). Both steer transports report
+      // acceptance through the staged item's settle: canonical control replies via
+      // settleControlReply, legacy prompt.submit replies via submitLegacy. The
+      // original callback always runs first (settle is single-shot per claim).
+      const parkSteerOnSettle = (staged: QueueItem) => {
+        if (mode !== 'steer') {
+          return staged
+        }
+
+        const prior = staged.settle
+
+        staged.settle = accepted => {
+          prior?.(accepted)
+
+          if (accepted) {
+            composerActions.setSteer(staged.text)
+          }
+        }
+
+        return staged
+      }
+
       if (gw.isCanonical && mode !== 'queue') {
         const staged = item.settle ? item : composerActions.stage?.(item.text, item.display, destination)
 
         if (!staged) { return }
+        parkSteerOnSettle(staged)
         staged.controlMethod ??= mode === 'steer' ? 'session.steer' : 'session.redirect'
         staged.executionGeneration ??= executionGeneration
         staged.attachments ??= item.attachments
@@ -315,15 +348,18 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return enqueueText()
       }
 
-      if (item.settle) {
-        item.queued = false
-      }
+      const staged = item.settle ? item : composerActions.stage?.(item.text, item.display, destination)
+
+      if (!staged) { return }
+      parkSteerOnSettle(staged)
+      staged.queued = false
 
       // The gateway owns the atomic redirect decision because it knows whether
       // the agent is in model generation, tool execution, or an older runtime.
       // Reuse the normal submit pipeline so the correction gets its user bubble
       // and file-drop interpolation exactly once.
-      send(item.text, true, item.display, value => value, { destination, queueItem: item.settle ? item : undefined, attachments: item.attachments })
+      send(item.text, true, item.display, value => value, {
+        destination, queueItem: staged, attachments: item.attachments })
     },
     [composerActions, gw, send]
   )
@@ -418,6 +454,33 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       const editIdx = composerRefs.queueEditRef.current
+      const steerEdit = composerRefs.steerEditRef.current
+
+      if (steerEdit !== null) {
+        // Editing the pending steer: swap the text in place and re-inject via
+        // session.steer so the agent slot carries the corrected wording. The
+        // steer row stays visible (tagged) until the next tool drain.
+        composerActions.replaceSteer(full)
+        composerActions.setSteerEdit(null)
+
+        if (!live.sid) {
+          return
+        }
+
+        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text: full })
+          .then(raw => {
+            const r = asRpcResult<SessionSteerResponse>(raw)
+
+            if (!r || r.status === 'rejected') {
+              // Rejected mid-edit: keep the row so the user sees the state
+              // instead of silently dropping the replacement.
+              sys('steer replace rejected — pending steer kept')
+            }
+          })
+          .catch(() => sys('steer replace failed — pending steer kept'))
+
+        return
+      }
 
       if (editIdx !== null) {
         const picked = journaled(() => composerActions.takeQueue(editIdx, full))?.value

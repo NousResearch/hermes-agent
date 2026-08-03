@@ -6,7 +6,12 @@ import { sharedControlParams } from '../canonicalGateway.js'
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
-import type { ConfigSetResponse, SharedControlRespondResponse, VoiceRecordResponse } from '../gatewayTypes.js'
+import type {
+  ConfigSetResponse,
+  SessionSteerClearResponse,
+  SharedControlRespondResponse,
+  VoiceRecordResponse
+} from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { isAction, isCopyShortcut, isMac, isMacActionFallback, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
@@ -349,12 +354,36 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
   }
 
+  // Draft the input held when the user arrowed up into the pending steer, so
+  // Esc during a steer edit restores it instead of wiping the composer.
+  const steerDraftRef = useRef('')
+
+  const cyclePending = () => {
+    const steer = cRefs.steerRef.current
+
+    if (steer === null) {
+      return false
+    }
+
+    steerDraftRef.current = cState.input
+    cActions.setSteerEdit(0)
+    cActions.setHistoryIdx(null)
+    cActions.setQueueEdit(null)
+    cActions.setInput(steer)
+
+    return true
+  }
+
   const cycleQueue = (dir: 1 | -1) => {
     const len = cState.queuedDisplay.length
 
     if (!len) {
       return false
     }
+
+    // Queue and steer edits are mutually exclusive — moving into the queue
+    // leaves any active steer edit behind.
+    cActions.setSteerEdit(null)
 
     const index = cState.queueEditIdx === null ? (dir > 0 ? 0 : len - 1) : (cState.queueEditIdx + dir + len) % len
 
@@ -670,6 +699,16 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return voiceRecordToggle()
     }
 
+    // Steer-edit cancel: restore the draft the user had before arrow-up pulled
+    // the pending steer into the input, and drop the edit marker. Checked before
+    // the queue-edit Esc so the steer row (always row 1) wins.
+    if (key.escape && cState.steerEditIdx !== null) {
+      cActions.setInput(steerDraftRef.current)
+      cActions.setSteerEdit(null)
+
+      return
+    }
+
     // Queue-edit cancel beats selection-clear for plain Esc: the queue header
     // explicitly promises "Esc cancel", so honoring it takes priority over the
     // implicit selection-dismissal convention. Without an active edit, fall through.
@@ -689,7 +728,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         !cState.input || (cursor !== null && cState.input.lastIndexOf('\n', Math.max(0, cursor - 1)) < 0)
 
       if (noLineAbove) {
-        cycleQueue(1) || cycleHistory(-1)
+        // Pending steer is row 1 — arrow up reaches it before the queue.
+        cyclePending() || cycleQueue(1) || cycleHistory(-1)
 
         return
       }
@@ -727,6 +767,22 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isCtrl(key, ch, 'x') && handleInputSelectionClipboard(getInputSelection(), 'cut')) {
       return
+    }
+
+    if (isCtrl(key, ch, 'x') && cState.steerEditIdx !== null) {
+      // Delete the pending steer: drop it from the composer AND tell the
+      // gateway to clear the agent slot, so the text is not injected on the
+      // next tool result behind the user's back.
+      cActions.clearSteer()
+      cActions.setSteerEdit(null)
+
+      const _sid = getUiState().sid
+
+      if (_sid) {
+        void gateway.rpc<SessionSteerClearResponse>('session.steer_clear', { session_id: _sid })
+      }
+
+      return cActions.clearIn()
     }
 
     if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {

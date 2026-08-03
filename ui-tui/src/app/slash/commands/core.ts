@@ -866,7 +866,7 @@ export const coreCommands: SlashCommand[] = [
         })
         .then(
           ctx.guarded<SessionSteerResponse>(r => {
-            if (r?.status === 'queued') {
+            if (r?.status === 'steered' || r?.status === 'queued') {
               ctx.transcript.sys(t('slashCmd.core.steer.queued', previewOf(payload)))
             } else {
               // The turn ended before the steer landed (#64578): keep the words as the next turn.

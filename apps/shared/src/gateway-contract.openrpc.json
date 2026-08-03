@@ -3517,6 +3517,24 @@
       }
     },
     {
+      "name": "session.pending",
+      "summary": "Snapshot of the pending steer plus every queued prompt (TUI pending strip / reconnect rebuild).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionPendingParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionPendingResult"
+        }
+      }
+    },
+    {
       "name": "session.redirect",
       "summary": "Redirect the active turn (queued for the next turn while the agent is still building).",
       "params": [
@@ -3621,6 +3639,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionCorrectionResult"
+        }
+      }
+    },
+    {
+      "name": "session.steer_clear",
+      "summary": "Drop a pending /steer that has not been injected yet (TUI queue-strip delete).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionSteerClearParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionSteerClearResult"
         }
       }
     },
@@ -37750,6 +37786,58 @@
         "title": "SessionParams",
         "type": "object"
       },
+      "SessionPendingParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionPendingParams",
+        "type": "object"
+      },
+      "SessionPendingResult": {
+        "additionalProperties": false,
+        "properties": {
+          "steer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Steer"
+          },
+          "queue": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Queue",
+            "type": "array"
+          }
+        },
+        "title": "SessionPendingResult",
+        "type": "object"
+      },
       "SessionPruneParams": {
         "additionalProperties": false,
         "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
@@ -38514,6 +38602,50 @@
           "output"
         ],
         "title": "SessionStatusResult",
+        "type": "object"
+      },
+      "SessionSteerClearParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionSteerClearParams",
+        "type": "object"
+      },
+      "SessionSteerClearResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/SteerClearStatus"
+          },
+          "cleared": {
+            "title": "Cleared",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "status",
+          "cleared"
+        ],
+        "title": "SessionSteerClearResult",
         "type": "object"
       },
       "SessionTitleParams": {
@@ -41711,6 +41843,14 @@
         ],
         "title": "StatusUpdatePayload",
         "type": "object"
+      },
+      "SteerClearStatus": {
+        "enum": [
+          "cleared",
+          "noop"
+        ],
+        "title": "SteerClearStatus",
+        "type": "string"
       },
       "SteerStatus": {
         "enum": [

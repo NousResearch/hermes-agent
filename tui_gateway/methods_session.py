@@ -2323,6 +2323,32 @@ def _(rid, params: dict) -> dict:
                      "count": len(frames), "epoch": er.replay_epoch(), "open_requests": _open_requests(sid)})
 
 
+@method("session.pending")
+def _(rid, params: dict) -> dict:
+    """Snapshot of what will run on the next turn: the pending steer (if any)
+    plus the queued prompts. The TUI renders this as the pending strip, and a
+    reconnect can rebuild it from here so a pending steer is never invisible
+    after a resume."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    steer: str | None = None
+    if agent is not None:
+        pending = getattr(agent, "_pending_steer", None)
+        if isinstance(pending, str) and pending:
+            steer = pending
+    queue: list[str] = []
+    queued = session.get("queued_prompt")
+    if queued and isinstance(queued.get("text"), str):
+        queue.append(queued["text"])
+    for extra in session.get("queued_prompts", []) or []:
+        text = extra.get("text") if isinstance(extra, dict) else None
+        if isinstance(text, str):
+            queue.append(text)
+    return _ok(rid, {"steer": steer, "queue": queue})
+
+
 @method("session.events.stats")
 def _(rid, params: dict) -> dict:
     """Replay-buffer telemetry (ops/debug)."""

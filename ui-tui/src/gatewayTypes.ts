@@ -361,8 +361,18 @@ export interface SessionInterruptResponse {
 }
 
 export interface SessionSteerResponse {
-  status?: 'queued' | 'rejected'
+  status?: 'steered' | 'queued' | 'rejected'
   text?: string
+}
+
+export interface SessionSteerClearResponse {
+  status?: 'cleared' | 'noop'
+  cleared?: boolean
+}
+
+export interface SessionPendingResponse {
+  steer?: string | null
+  queue?: string[]
 }
 
 // ── Prompt / submission ──────────────────────────────────────────────

@@ -164,6 +164,40 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     takeQ
   } = useQueue(gw)
 
+  // Pending steer: text accepted by the gateway (session.steer) that will be
+  // injected on the next tool result. Mirrors the queue pattern — a ref is the
+  // source of truth for keystroke handlers, the state drives the strip render.
+  const steerRef = useRef<string | null>(null)
+  const [steerText, setSteerText] = useState<string | null>(null)
+  const steerEditRef = useRef<number | null>(null)
+  const [steerEditIdx, setSteerEditIdx] = useState<number | null>(null)
+
+  const setSteer = useCallback((text: string) => {
+    steerRef.current = text
+    setSteerText(text)
+    steerEditRef.current = null
+    setSteerEditIdx(null)
+  }, [])
+
+  const clearSteer = useCallback(() => {
+    steerRef.current = null
+    setSteerText(null)
+    steerEditRef.current = null
+    setSteerEditIdx(null)
+  }, [])
+
+  const setSteerEdit = useCallback((idx: number | null) => {
+    steerEditRef.current = idx
+    setSteerEditIdx(idx)
+  }, [])
+
+  // Post-edit re-steer: swap the text in place. The edit flag was already
+  // cleared by the submit path, so this must NOT touch edit state.
+  const replaceSteer = useCallback((text: string) => {
+    steerRef.current = text
+    setSteerText(text)
+  }, [])
+
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
 
@@ -172,9 +206,10 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     setInputBuf([])
     setComposerTokens([])
     setQueueEdit(null)
+    setSteerEdit(null)
     setHistoryIdx(null)
     historyDraftRef.current = ''
-  }, [historyDraftRef, setComposerTokens, setHistoryIdx, setInput, setInputBuf, setQueueEdit])
+  }, [historyDraftRef, setComposerTokens, setHistoryIdx, setInput, setInputBuf, setQueueEdit, setSteerEdit])
 
   /**
    * Deleting an `[[ Image N ]]` token IS how you unattach the image — there is
@@ -559,6 +594,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       attachClipboardImage,
       attachImagePath,
       clearIn,
+      clearSteer,
       stage,
       dequeue,
       enqueue,
@@ -568,12 +604,15 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       pushHistory,
       queueDraft,
       removeQueue: removeQ,
+      replaceSteer,
       setCompIdx,
       setComposerTokens,
       setHistoryIdx,
       setInput,
       setInputBuf,
       setQueueEdit,
+      setSteer,
+      setSteerEdit,
       takeQueue: takeQ,
       syncTokens
     }),
@@ -581,6 +620,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       attachClipboardImage,
       attachImagePath,
       clearIn,
+      clearSteer,
       stage,
       dequeue,
       enqueue,
@@ -590,11 +630,14 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       pushHistory,
       queueDraft,
       removeQ,
+      replaceSteer,
       setCompIdx,
       setComposerTokens,
       setHistoryIdx,
       setInput,
       setQueueEdit,
+      setSteer,
+      setSteerEdit,
       takeQ,
       setInputBuf,
       syncTokens
@@ -607,10 +650,12 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       historyRef,
       queueEditRef,
       queueRef,
+      steerEditRef,
+      steerRef,
       submitRef,
       tokensRef
     }),
-    [historyDraftRef, historyRef, queueEditRef, queueRef, submitRef]
+    [historyDraftRef, historyRef, queueEditRef, queueRef, steerEditRef, steerRef, submitRef]
   )
 
   const state = useMemo(
@@ -621,11 +666,13 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       historyIdx,
       input,
       inputBuf,
+      pendingSteer: steerText,
       queueEditIdx,
       queuedDisplay,
+      steerEditIdx,
       tokens
     }),
-    [compIdx, compReplace, completions, historyIdx, input, inputBuf, queueEditIdx, queuedDisplay, tokens]
+    [compIdx, compReplace, completions, historyIdx, input, inputBuf, steerText, queueEditIdx, queuedDisplay, steerEditIdx, tokens]
   )
 
   return {

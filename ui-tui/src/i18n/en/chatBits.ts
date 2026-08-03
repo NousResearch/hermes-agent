@@ -81,6 +81,10 @@ export const chatBitsEn = {
     },
     queued: {
       header: (count: number) => `queued (${count})`,
+      pendingHeader: (count: number) => `pending (${count})`,
+      steerTag: '[steer]',
+      steerHint: ' · ↑↓ edit · Ctrl+X delete · Esc cancel',
+      steerEditing: ' · editing 1 · Ctrl+X delete · Esc cancel',
       editing: (position: number) => ` · editing ${position} · Ctrl+X delete · Esc cancel`,
       more: (count: number) => `…and ${count} more`
     },

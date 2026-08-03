@@ -157,7 +157,8 @@ function settleControlReply(
   const control = r as PromptSubmitResponse & { execution_generation?: number }
 
   const accepted =
-    control.execution_generation === item.executionGeneration && ['queued', 'redirected'].includes(control.status ?? '')
+    control.execution_generation === item.executionGeneration &&
+    ['queued', 'redirected', 'steered'].includes(control.status ?? '')
 
   item.settle?.(accepted)
 

@@ -176,6 +176,44 @@ _correction_method("session.redirect", "redirect", "redirected",
                    and hasattr(agent, "redirect"), "agent does not support active-turn redirect")
 
 
+@method("session.steer_clear")
+def _(rid, params: dict) -> dict:
+    """Drop any pending /steer text that has not been injected yet.
+
+    The TUI shows a pending steer as the top row of its queue strip; when the
+    user deletes that row (Ctrl+X) it calls this so the agent's stashed slot is
+    cleared too — otherwise the text would still be injected on the next tool
+    result. ``cleared`` is True when there was a pending steer to drop.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    if agent is None:
+        return _err(rid, 4010, "no active agent")
+    clearer = getattr(agent, "clear_pending_steer", None)
+    if callable(clearer):
+        try:
+            cleared = bool(clearer())
+        except Exception as exc:
+            return _err(rid, 5000, f"steer clear failed: {exc}")
+        return _ok(rid, {"status": "cleared" if cleared else "noop", "cleared": cleared})
+    # Older runtimes / test stubs without the method: clear the internal slot
+    # directly under its lock when present.
+    _steer_lock = getattr(agent, "_pending_steer_lock", None)
+    try:
+        if _steer_lock is not None:
+            with _steer_lock:
+                had = getattr(agent, "_pending_steer", None) is not None
+                agent._pending_steer = None
+        else:
+            had = getattr(agent, "_pending_steer", None) is not None
+            setattr(agent, "_pending_steer", None)
+    except Exception as exc:
+        return _err(rid, 5000, f"steer clear failed: {exc}")
+    return _ok(rid, {"status": "cleared" if had else "noop", "cleared": bool(had)})
+
+
 def register(server) -> None:
     """Publish this module's helpers onto ``server`` (rebound to its globals) and install handlers."""
     bind_module(globals(), server, skip=("_",))

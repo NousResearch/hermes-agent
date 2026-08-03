@@ -791,6 +791,10 @@ class TestTrivialPromptHeuristic:
         for t in ("ok", "OK", " ok ", "y", "yes", "sure", "thanks", "lgtm", "/help", "", "   "):
             assert HonchoMemoryProvider._is_trivial_prompt(t), f"expected trivial: {t!r}"
 
+    def test_classifier_catches_greetings(self):
+        """Greeting words must register as trivial so context injection is skipped."""
+        for t in ("hi", "HI", "hey", "hello", "yo", "sup", " hi ", "hey!", "hello."):
+            assert HonchoMemoryProvider._is_trivial_prompt(t), f"expected trivial: {t!r}"
 
     def test_prefetch_skips_on_trivial_prompt(self):
         provider = self._make_provider()

@@ -6001,116 +6001,38 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         )
         return None
 
-    # INSERT column list shared by append_message and append_messages_batch so
-    # the row shape can never drift between the single and batched writers.
-    _MESSAGE_INSERT_SQL = (
-        "INSERT INTO messages (session_id, role, content, tool_call_id, "
-        "tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason, "
-        "reasoning, reasoning_content, reasoning_details, codex_reasoning_items, "
-        "codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    )
+    def _check_transcript_write_guards(
+        self, conn, session_id: str, compression_lock_holder: Optional[str]
+    ) -> None:
+        """Transcript-append admission checks, run INSIDE the write txn.
 
-    def _prepare_message_row(
-        self,
-        *,
-        session_id: str,
-        role: str,
-        content: Any = None,
-        tool_name: Optional[str] = None,
-        tool_calls: Any = None,
-        tool_call_id: Optional[str] = None,
-        token_count: Optional[int] = None,
-        finish_reason: Optional[str] = None,
-        reasoning: Optional[str] = None,
-        reasoning_content: Optional[str] = None,
-        reasoning_details: Any = None,
-        codex_reasoning_items: Any = None,
-        codex_message_items: Any = None,
-        platform_message_id: Optional[str] = None,
-        observed: bool = False,
-        effect_disposition: Optional[str] = None,
-        timestamp: Any = None,
-        api_content: Optional[str] = None,
-        display_kind: Optional[str] = None,
-        display_metadata: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[tuple, int]:
-        """Serialize one message into ``_MESSAGE_INSERT_SQL`` bind params.
-
-        Runs entirely OUTSIDE the write transaction (JSON encoding, surrogate
-        scrubbing, timestamp coercion), so batched flushes keep the BEGIN
-        IMMEDIATE window as short as possible. Returns ``(params,
-        num_tool_calls)`` where ``num_tool_calls`` feeds the session counter
-        update.
+        Shared by :meth:`append_message` and :meth:`append_messages_batch` so
+        the two writers can never diverge on these correctness invariants
+        (this guard has already needed targeted fixes — see the #74478
+        patience note below).
         """
-        # Display metadata is presentation-only and never changes the model
-        # context role/content replayed to providers.
-        display_metadata_json = self._encode_display_metadata(display_metadata)
-        # Serialize structured fields to JSON before entering the write txn
-        reasoning_details_json = (
-            json.dumps(reasoning_details)
-            if reasoning_details else None
-        )
-        codex_items_json = (
-            json.dumps(codex_reasoning_items)
-            if codex_reasoning_items else None
-        )
-        codex_message_items_json = (
-            json.dumps(codex_message_items)
-            if codex_message_items else None
-        )
-        # tool_calls may arrive as a Python list (from the live agent) or
-        # as a JSON string (from import/export). Parse first to avoid
-        # double-encoding.
-        if isinstance(tool_calls, str):
-            try:
-                tool_calls = json.loads(tool_calls)
-            except (json.JSONDecodeError, TypeError):
-                tool_calls = []
-        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-        # Multimodal content (list of parts) must be JSON-encoded: sqlite3
-        # cannot bind list/dict parameters directly.
-        stored_content = self._encode_content(content)
-
-        message_timestamp = time.time()
-        if timestamp is not None:
-            try:
-                if hasattr(timestamp, "timestamp"):
-                    message_timestamp = float(timestamp.timestamp())
-                else:
-                    message_timestamp = float(timestamp)
-            except (TypeError, ValueError):
-                logger.debug("Ignoring invalid explicit message timestamp: %r", timestamp)
-
-        # Pre-compute tool call count
-        num_tool_calls = 0
-        if tool_calls is not None:
-            num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
-
-        params = (
-            session_id,
-            role,
-            stored_content,
-            tool_call_id,
-            tool_calls_json,
-            _scrub_surrogates(tool_name),
-            effect_disposition,
-            message_timestamp,
-            token_count,
-            finish_reason,
-            _scrub_surrogates(reasoning),
-            _scrub_surrogates(reasoning_content),
-            reasoning_details_json,
-            codex_items_json,
-            codex_message_items_json,
-            platform_message_id,
-            1 if observed else 0,
-            1,
-            _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
-            _scrub_surrogates(display_kind) if isinstance(display_kind, str) else None,
-            display_metadata_json,
-        )
-        return params, num_tool_calls
+        active_lock = conn.execute(
+            "SELECT holder FROM compression_locks "
+            "WHERE session_id = ? AND expires_at > ?",
+            (session_id, time.time()),
+        ).fetchone()
+        if (
+            active_lock is not None
+            and active_lock["holder"] != compression_lock_holder
+        ):
+            raise SessionCompressionInProgressError(
+                f"Session {session_id!r} is being compressed by another writer"
+            )
+        session = conn.execute(
+            "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if (
+            session is not None
+            and session["ended_at"] is not None
+            and session["end_reason"] == "compression"
+        ):
+            raise CompressionSessionClosedError(session_id)
 
     @staticmethod
     def _decode_display_metadata(raw: Any) -> Optional[Dict[str, Any]]:
@@ -6179,53 +6101,84 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         from every outgoing payload anyway, so the scrubbed form IS the
         wire bytes).
         """
-        row_params, num_tool_calls = self._prepare_message_row(
-            session_id=session_id,
-            role=role,
-            content=content,
-            tool_name=tool_name,
-            tool_calls=tool_calls,
-            tool_call_id=tool_call_id,
-            token_count=token_count,
-            finish_reason=finish_reason,
-            reasoning=reasoning,
-            reasoning_content=reasoning_content,
-            reasoning_details=reasoning_details,
-            codex_reasoning_items=codex_reasoning_items,
-            codex_message_items=codex_message_items,
-            platform_message_id=platform_message_id,
-            observed=observed,
-            effect_disposition=effect_disposition,
-            timestamp=timestamp,
-            api_content=api_content,
-            display_kind=display_kind,
-            display_metadata=display_metadata,
+        # Display metadata is presentation-only and never changes the model
+        # context role/content replayed to providers.
+        display_metadata_json = self._encode_display_metadata(display_metadata)
+        # Serialize structured fields to JSON before entering the write txn
+        reasoning_details_json = (
+            json.dumps(reasoning_details)
+            if reasoning_details else None
         )
+        codex_items_json = (
+            json.dumps(codex_reasoning_items)
+            if codex_reasoning_items else None
+        )
+        codex_message_items_json = (
+            json.dumps(codex_message_items)
+            if codex_message_items else None
+        )
+        # tool_calls may arrive as a Python list (from the live agent) or
+        # as a JSON string (from import/export). Parse first to avoid
+        # double-encoding.
+        if isinstance(tool_calls, str):
+            try:
+                tool_calls = json.loads(tool_calls)
+            except (json.JSONDecodeError, TypeError):
+                tool_calls = []
+        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        # Multimodal content (list of parts) must be JSON-encoded: sqlite3
+        # cannot bind list/dict parameters directly.
+        stored_content = self._encode_content(content)
+
+        message_timestamp = time.time()
+        if timestamp is not None:
+            try:
+                if hasattr(timestamp, "timestamp"):
+                    message_timestamp = float(timestamp.timestamp())
+                else:
+                    message_timestamp = float(timestamp)
+            except (TypeError, ValueError):
+                logger.debug("Ignoring invalid explicit message timestamp: %r", timestamp)
+
+        # Pre-compute tool call count
+        num_tool_calls = 0
+        if tool_calls is not None:
+            num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
         def _do(conn):
-            active_lock = conn.execute(
-                "SELECT holder FROM compression_locks "
-                "WHERE session_id = ? AND expires_at > ?",
-                (session_id, time.time()),
-            ).fetchone()
-            if (
-                active_lock is not None
-                and active_lock["holder"] != compression_lock_holder
-            ):
-                raise SessionCompressionInProgressError(
-                    f"Session {session_id!r} is being compressed by another writer"
-                )
-            session = conn.execute(
-                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-            if (
-                session is not None
-                and session["ended_at"] is not None
-                and session["end_reason"] == "compression"
-            ):
-                raise CompressionSessionClosedError(session_id)
-            cursor = conn.execute(self._MESSAGE_INSERT_SQL, row_params)
+            self._check_transcript_write_guards(
+                conn, session_id, compression_lock_holder
+            )
+            cursor = conn.execute(
+                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                   codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    role,
+                    stored_content,
+                    tool_call_id,
+                    tool_calls_json,
+                    _scrub_surrogates(tool_name),
+                    effect_disposition,
+                    message_timestamp,
+                    token_count,
+                    finish_reason,
+                    _scrub_surrogates(reasoning),
+                    _scrub_surrogates(reasoning_content),
+                    reasoning_details_json,
+                    codex_items_json,
+                    codex_message_items_json,
+                    platform_message_id,
+                    1 if observed else 0,
+                    1,
+                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
+                    _scrub_surrogates(display_kind) if isinstance(display_kind, str) else None,
+                    display_metadata_json,
+                ),
+            )
             msg_id = cursor.lastrowid
 
             # Update counters
@@ -6256,102 +6209,68 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         messages: List[Dict[str, Any]],
         compression_lock_holder: Optional[str] = None,
-    ) -> List[int]:
+        chunk_rows: Optional[int] = None,
+    ) -> int:
         """Append multiple messages atomically in ONE write transaction.
 
-        ``messages`` is a list of dicts whose keys mirror
-        :meth:`append_message`'s keyword arguments (role, content, tool_name,
-        tool_calls, tool_call_id, finish_reason, reasoning, reasoning_content,
-        reasoning_details, codex_reasoning_items, codex_message_items,
-        timestamp, api_content, display_kind, display_metadata, ...).
+        ``messages`` is a list of dicts in the same shape
+        :meth:`_insert_message_rows` already consumes for replace/compact/
+        import (role, content, tool_name, tool_calls, tool_call_id,
+        finish_reason, reasoning*, codex_*, timestamp, api_content,
+        display_kind, display_metadata, ...). Reusing that helper keeps ONE
+        row-serialization path for every multi-row writer.
 
         A turn-boundary flush writes the whole turn (user + assistant + tool
         rows, typically 3-8 messages) as one BEGIN IMMEDIATE / commit pair
-        instead of one transaction (and, off WAL, one fsync) per row. Row
-        serialization happens OUTSIDE the transaction via
-        ``_prepare_message_row`` — the same helper ``append_message`` uses,
-        so the row shape cannot drift between the two writers.
+        instead of one transaction (and, off WAL, one fsync) per row.
 
         Atomicity contract: all rows land or none do (the caller re-flushes
-        unstamped messages on the next attempt). The compression-lock and
-        compression-closed guards from ``append_message`` run once for the
-        batch — same session, same instant. Returns the inserted row IDs in
-        input order.
+        unstamped messages on the next attempt). The same admission guards
+        as :meth:`append_message` run once for the batch — same session,
+        same instant.
+
+        ``chunk_rows`` bounds the transaction size for LARGE copies (branch
+        seeds can be thousands of rows; measured: 10k rows ≈ 2.4s inside one
+        BEGIN IMMEDIATE because the FTS triggers run per row, which would
+        monopolize the write lock and starve concurrent writers). When set,
+        the batch commits in chunks of at most that many rows — same
+        recovery semantics as the old per-row loops (a mid-copy failure
+        leaves a partial seed), just with bounded lock holds. A turn flush
+        never needs it. Returns the inserted row count.
         """
         if not messages:
-            return []
+            return 0
 
-        prepared: List[tuple] = []
-        total_tool_calls = 0
-        for msg in messages:
-            role = msg.get("role", "unknown")
-            params, num_tc = self._prepare_message_row(
-                session_id=session_id,
-                role=role,
-                content=msg.get("content"),
-                tool_name=msg.get("tool_name"),
-                tool_calls=msg.get("tool_calls"),
-                tool_call_id=msg.get("tool_call_id"),
-                token_count=msg.get("token_count"),
-                finish_reason=msg.get("finish_reason"),
-                reasoning=msg.get("reasoning") if role == "assistant" else None,
-                reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
-                reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
-                codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
-                codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
-                platform_message_id=msg.get("platform_message_id"),
-                observed=bool(msg.get("observed")),
-                effect_disposition=msg.get("effect_disposition"),
-                timestamp=msg.get("timestamp"),
-                api_content=msg.get("api_content"),
-                display_kind=msg.get("display_kind"),
-                display_metadata=msg.get("display_metadata"),
-            )
-            prepared.append(params)
-            total_tool_calls += num_tc
+        if chunk_rows is not None and len(messages) > chunk_rows:
+            inserted_total = 0
+            for start in range(0, len(messages), chunk_rows):
+                inserted_total += self.append_messages_batch(
+                    session_id,
+                    messages[start:start + chunk_rows],
+                    compression_lock_holder=compression_lock_holder,
+                )
+            return inserted_total
 
         def _do(conn):
-            active_lock = conn.execute(
-                "SELECT holder FROM compression_locks "
-                "WHERE session_id = ? AND expires_at > ?",
-                (session_id, time.time()),
-            ).fetchone()
-            if (
-                active_lock is not None
-                and active_lock["holder"] != compression_lock_holder
-            ):
-                raise SessionCompressionInProgressError(
-                    f"Session {session_id!r} is being compressed by another writer"
-                )
-            session = conn.execute(
-                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-            if (
-                session is not None
-                and session["ended_at"] is not None
-                and session["end_reason"] == "compression"
-            ):
-                raise CompressionSessionClosedError(session_id)
-
-            row_ids: List[int] = []
-            for params in prepared:
-                cursor = conn.execute(self._MESSAGE_INSERT_SQL, params)
-                row_ids.append(cursor.lastrowid)
-
+            self._check_transcript_write_guards(
+                conn, session_id, compression_lock_holder
+            )
+            inserted, tool_calls_total = self._insert_message_rows(
+                conn, session_id, messages
+            )
             # One aggregated counter update for the whole batch.
-            if total_tool_calls > 0:
+            if tool_calls_total > 0:
                 conn.execute(
                     """UPDATE sessions SET message_count = message_count + ?,
                        tool_call_count = tool_call_count + ? WHERE id = ?""",
-                    (len(prepared), total_tool_calls, session_id),
+                    (inserted, tool_calls_total, session_id),
                 )
             else:
                 conn.execute(
                     "UPDATE sessions SET message_count = message_count + ? WHERE id = ?",
-                    (len(prepared), session_id),
+                    (inserted, session_id),
                 )
-            return row_ids
+            return inserted
 
         # Same criticality as append_message: this IS the turn's transcript.
         return self._execute_write(

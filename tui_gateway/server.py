@@ -2749,9 +2749,11 @@ def _persist_branch_seed(session: dict) -> None:
         if db is None:
             return
         try:
-            # One transaction for the whole seed (see #23254): a branch seed
-            # can be hundreds of rows and is all-or-nothing anyway — the
-            # _branch_seed_persisted flag below assumes every row landed.
+            # Bounded-chunk transactions (see #23254): a branch seed can be
+            # hundreds of rows; chunking keeps each BEGIN IMMEDIATE short so
+            # concurrent writers aren't starved. Recovery semantics match the
+            # old per-row loop (mid-copy failure leaves a partial seed with
+            # _branch_seed_persisted unset).
             db.append_messages_batch(
                 key,
                 [
@@ -2765,6 +2767,7 @@ def _persist_branch_seed(session: dict) -> None:
                     }
                     for msg in seed
                 ],
+                chunk_rows=500,
             )
             session["_branch_seed_persisted"] = True
         except Exception as exc:

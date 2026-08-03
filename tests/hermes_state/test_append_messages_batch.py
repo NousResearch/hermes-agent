@@ -1,8 +1,9 @@
 """Tests for SessionDB.append_messages_batch (#23254 salvage).
 
-The batch writer must be row-shape-identical to append_message (shared
-_prepare_message_row + _MESSAGE_INSERT_SQL), atomic (all rows or none),
-and must aggregate the session counters in one UPDATE.
+The batch writer reuses _insert_message_rows (the same row-serialization
+path as replace/compact/import), runs the same admission guards as
+append_message, is atomic (all rows or none), and aggregates the session
+counters in one UPDATE.
 """
 
 import json
@@ -80,6 +81,26 @@ class TestAppendMessagesBatch:
         finally:
             db2.close()
 
+    def test_reasoning_gated_to_assistant_rows(self, db):
+        """_insert_message_rows role-gates reasoning fields; a tool row
+        carrying reasoning keys must not persist them."""
+        db.append_messages_batch(
+            "sess-batch",
+            [
+                {
+                    "role": "tool",
+                    "content": "out",
+                    "tool_name": "t",
+                    "tool_call_id": "c1",
+                    "reasoning_content": "should not persist",
+                }
+            ],
+        )
+        row = db._conn.execute(
+            "SELECT reasoning_content FROM messages"
+        ).fetchone()
+        assert row[0] is None
+
     def test_counters_aggregate_once(self, db):
         db.append_messages_batch("sess-batch", _turn_messages())
         row = db._conn.execute(
@@ -89,13 +110,11 @@ class TestAppendMessagesBatch:
         assert row["message_count"] == 4
         assert row["tool_call_count"] == 1
 
-    def test_returns_row_ids_in_input_order(self, db):
-        ids = db.append_messages_batch("sess-batch", _turn_messages())
-        assert ids == sorted(ids)
-        assert len(ids) == 4
+    def test_returns_inserted_count(self, db):
+        assert db.append_messages_batch("sess-batch", _turn_messages()) == 4
 
     def test_empty_batch_is_noop(self, db):
-        assert db.append_messages_batch("sess-batch", []) == []
+        assert db.append_messages_batch("sess-batch", []) == 0
         row = db._conn.execute(
             "SELECT message_count FROM sessions WHERE id = ?", ("sess-batch",)
         ).fetchone()
@@ -103,31 +122,26 @@ class TestAppendMessagesBatch:
 
     def test_atomicity_all_or_nothing(self, db, monkeypatch):
         """A failure mid-batch leaves ZERO rows and untouched counters."""
-        real_execute_write = db._execute_write
-        original_insert = SessionDB._MESSAGE_INSERT_SQL
+        real_insert = SessionDB._insert_message_rows
 
-        calls = {"n": 0}
+        def failing_insert(self_db, conn, session_id, messages):
+            real_conn_execute = conn.execute
+            calls = {"n": 0}
 
-        def _do_wrapper(fn, **kwargs):
-            def failing(conn):
-                real_conn_execute = conn.execute
+            def exec_counting(sql, *args):
+                if sql.lstrip().startswith("INSERT INTO messages"):
+                    calls["n"] += 1
+                    if calls["n"] == 3:
+                        raise sqlite3.OperationalError("boom mid-batch")
+                return real_conn_execute(sql, *args)
 
-                def exec_counting(sql, *args):
-                    if sql == original_insert:
-                        calls["n"] += 1
-                        if calls["n"] == 3:
-                            raise sqlite3.OperationalError("boom mid-batch")
-                    return real_conn_execute(sql, *args)
+            conn.execute = exec_counting
+            try:
+                return real_insert(self_db, conn, session_id, messages)
+            finally:
+                conn.execute = real_conn_execute
 
-                conn.execute = exec_counting
-                try:
-                    return fn(conn)
-                finally:
-                    conn.execute = real_conn_execute
-
-            return real_execute_write(failing, **kwargs)
-
-        monkeypatch.setattr(db, "_execute_write", _do_wrapper)
+        monkeypatch.setattr(SessionDB, "_insert_message_rows", failing_insert)
         with pytest.raises(sqlite3.OperationalError):
             db.append_messages_batch("sess-batch", _turn_messages())
         monkeypatch.undo()

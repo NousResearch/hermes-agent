@@ -4632,30 +4632,39 @@ class GatewaySlashCommandsMixin:
             logger.error("Failed to create branch session: %s", e)
             return t("gateway.branch.create_failed", error=e)
 
-        # Copy conversation history to the new session
-        for msg in history:
-            try:
-                await self._session_db.append_message(
-                    session_id=new_session_id,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    tool_name=msg.get("tool_name") or msg.get("name"),
-                    tool_calls=msg.get("tool_calls"),
-                    tool_call_id=msg.get("tool_call_id"),
-                    finish_reason=msg.get("finish_reason"),
-                    reasoning=msg.get("reasoning"),
-                    reasoning_content=msg.get("reasoning_content"),
-                    reasoning_details=msg.get("reasoning_details"),
-                    codex_reasoning_items=msg.get("codex_reasoning_items"),
-                    codex_message_items=msg.get("codex_message_items"),
-                    # Keep the api_content sidecar so the branch's first turn
-                    # replays the parent's exact wire bytes (warm provider
-                    # prompt cache) instead of a full cold prefill.
-                    api_content=extract_api_content_sidecar(msg),
-                    timestamp=msg.get("timestamp"),
-                )
-            except Exception:
-                pass  # Best-effort copy
+        # Copy conversation history to the new session in bounded-chunk
+        # transactions (see #23254): one txn per row was the removed
+        # write-amplification pattern, and a history can be hundreds of rows.
+        # Best-effort like the old loop — a failed copy still yields a
+        # usable (partial) branch.
+        try:
+            await self._session_db.append_messages_batch(
+                new_session_id,
+                [
+                    {
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content"),
+                        "tool_name": msg.get("tool_name") or msg.get("name"),
+                        "tool_calls": msg.get("tool_calls"),
+                        "tool_call_id": msg.get("tool_call_id"),
+                        "finish_reason": msg.get("finish_reason"),
+                        "reasoning": msg.get("reasoning"),
+                        "reasoning_content": msg.get("reasoning_content"),
+                        "reasoning_details": msg.get("reasoning_details"),
+                        "codex_reasoning_items": msg.get("codex_reasoning_items"),
+                        "codex_message_items": msg.get("codex_message_items"),
+                        # Keep the api_content sidecar so the branch's first turn
+                        # replays the parent's exact wire bytes (warm provider
+                        # prompt cache) instead of a full cold prefill.
+                        "api_content": extract_api_content_sidecar(msg),
+                        "timestamp": msg.get("timestamp"),
+                    }
+                    for msg in history
+                ],
+                chunk_rows=500,
+            )
+        except Exception:
+            pass  # Best-effort copy
 
         # Set title
         try:

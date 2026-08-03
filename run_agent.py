@@ -2225,11 +2225,13 @@ class AIAgent:
                     "tool_calls": tool_calls_data,
                     "tool_call_id": msg.get("tool_call_id"),
                     "finish_reason": msg.get("finish_reason"),
-                    "reasoning": msg.get("reasoning") if role == "assistant" else None,
-                    "reasoning_content": msg.get("reasoning_content") if role == "assistant" else None,
-                    "reasoning_details": msg.get("reasoning_details") if role == "assistant" else None,
-                    "codex_reasoning_items": msg.get("codex_reasoning_items") if role == "assistant" else None,
-                    "codex_message_items": msg.get("codex_message_items") if role == "assistant" else None,
+                    # Reasoning/codex fields are role-gated (assistant-only)
+                    # inside _insert_message_rows — pass through untouched.
+                    "reasoning": msg.get("reasoning"),
+                    "reasoning_content": msg.get("reasoning_content"),
+                    "reasoning_details": msg.get("reasoning_details"),
+                    "codex_reasoning_items": msg.get("codex_reasoning_items"),
+                    "codex_message_items": msg.get("codex_message_items"),
                     "timestamp": _row_timestamp,
                     "api_content": _row_api_content,
                     "display_kind": (

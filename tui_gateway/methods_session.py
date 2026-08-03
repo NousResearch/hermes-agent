@@ -2649,9 +2649,9 @@ def _(rid, params: dict) -> dict:
                     else None
                 ),
             )
-            # Copy the whole parent history in ONE transaction — a branch
-            # seed can be hundreds of rows, and per-row transactions were
-            # the write-amplification pattern removed in #23254.
+            # Copy the whole parent history in bounded-chunk transactions —
+            # a branch seed can be hundreds of rows, and per-row transactions
+            # were the write-amplification pattern removed in #23254.
             db.append_messages_batch(
                 new_key,
                 [
@@ -2664,6 +2664,7 @@ def _(rid, params: dict) -> dict:
                     }
                     for msg in history
                 ],
+                chunk_rows=500,
             )
             db.set_session_title(new_key, title)
         except Exception as e:

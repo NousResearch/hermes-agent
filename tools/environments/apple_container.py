@@ -8,8 +8,8 @@ container) with sub-second startup on Apple Silicon.
 Security model: each container gets its own Linux kernel, so the VM boundary
 is the primary isolation mechanism (stronger than Docker's namespace-based
 isolation). Inside the container we additionally apply --read-only root
-filesystem and size-limited tmpfs mounts, matching Docker backend conventions
-where the CLI supports it.
+filesystem and writable tmpfs mounts for scratch directories, matching Docker
+backend conventions where the CLI supports them.
 
 Requires: macOS 26+, Apple Silicon, and the separately installed `container` CLI.
 """
@@ -17,6 +17,7 @@ Requires: macOS 26+, Apple Silicon, and the separately installed `container` CLI
 import logging
 import os
 import platform
+import posixpath
 import shutil
 import subprocess
 import uuid
@@ -255,8 +256,8 @@ class AppleContainerEnvironment(BaseEnvironment):
     by this class.
 
     Security: the VM boundary provides kernel-level isolation. Additionally,
-    the root filesystem is mounted read-only with size-limited tmpfs for
-    scratch directories, and credential/skills files are mounted read-only.
+    the root filesystem is mounted read-only with writable tmpfs scratch
+    directories, and credential/skills files are mounted read-only.
     """
 
     def __init__(
@@ -281,6 +282,7 @@ class AppleContainerEnvironment(BaseEnvironment):
         self._task_id = task_id
         self._container_name: Optional[str] = None
         self._workspace_dir: Optional[str] = None
+        self._credential_staging_dirs: list[Path] = []
 
         # Resolve resource limits (cached sysctl query)
         sys_info = query_system_resources()
@@ -308,11 +310,13 @@ class AppleContainerEnvironment(BaseEnvironment):
             "--detach",
             "--cpus", f"{self._cpus:g}",
             "--memory", f"{self._memory_mb}M",
-            # Read-only root for security; writable scratch via tmpfs
+            # Apple Container accepts a mount path only (no Docker-style
+            # ``:rw,size=...`` suffix). These writable tmpfs mounts sit on top
+            # of the read-only root filesystem.
             "--read-only",
-            "--tmpfs", "/tmp:rw,size=512m",
-            "--tmpfs", "/var/tmp:rw,size=256m",
-            "--tmpfs", "/run:rw,size=64m",
+            "--tmpfs", "/tmp",
+            "--tmpfs", "/var/tmp",
+            "--tmpfs", "/run",
         ]
 
         # Persistent workspace via bind mount, or ephemeral tmpfs
@@ -326,9 +330,9 @@ class AppleContainerEnvironment(BaseEnvironment):
             run_cmd.extend(_bind_mount_args(root_dir, "/root", readonly=False))
         else:
             run_cmd.extend([
-                "--tmpfs", "/workspace:rw,size=10g",
-                "--tmpfs", "/root:rw,size=1g",
-                "--tmpfs", "/home:rw,size=1g",
+                "--tmpfs", "/workspace",
+                "--tmpfs", "/root",
+                "--tmpfs", "/home",
             ])
 
         # Mount credential files, skills, and cache directories read-only
@@ -339,17 +343,24 @@ class AppleContainerEnvironment(BaseEnvironment):
                 get_cache_directory_mounts,
             )
 
-            for mount_entry in get_credential_file_mounts():
-                run_cmd.extend(_bind_mount_args(
-                    mount_entry["host_path"], mount_entry["container_path"], readonly=True
-                ))
+            credential_mounts = get_credential_file_mounts()
+            skills_mounts = get_skills_directory_mount()
+            cache_mounts = get_cache_directory_mounts()
+            nested_mount_targets = [
+                mount["container_path"] for mount in skills_mounts + cache_mounts
+            ] + [target for _source, target, _readonly in volumes]
+            for source_dir, target_dir in self._stage_credential_mounts(
+                credential_mounts, nested_mount_targets
+            ):
+                run_cmd.extend(
+                    _bind_mount_args(str(source_dir), target_dir, readonly=True)
+                )
                 logger.debug(
-                    "Apple Container: mounting credential %s -> %s",
-                    mount_entry["host_path"],
-                    mount_entry["container_path"],
+                    "Apple Container: mounting staged credentials -> %s",
+                    target_dir,
                 )
 
-            for skills_mount in get_skills_directory_mount():
+            for skills_mount in skills_mounts:
                 run_cmd.extend(_bind_mount_args(
                     skills_mount["host_path"], skills_mount["container_path"], readonly=True
                 ))
@@ -359,7 +370,7 @@ class AppleContainerEnvironment(BaseEnvironment):
                     skills_mount["container_path"],
                 )
 
-            for cache_mount in get_cache_directory_mounts():
+            for cache_mount in cache_mounts:
                 run_cmd.extend(_bind_mount_args(
                     cache_mount["host_path"], cache_mount["container_path"], readonly=True
                 ))
@@ -368,7 +379,7 @@ class AppleContainerEnvironment(BaseEnvironment):
                     cache_mount["host_path"],
                     cache_mount["container_path"],
                 )
-        except ValueError:
+        except (OSError, ValueError):
             raise
         except Exception as e:
             logger.debug("Apple Container: could not load credential file mounts: %s", e)
@@ -408,10 +419,98 @@ class AppleContainerEnvironment(BaseEnvironment):
         except Exception as exc:
             self._force_delete_candidate()
             raise RuntimeError(f"Apple Container startup failed: {exc}") from exc
+
         logger.info(
             "Started Apple Container '%s' (%d CPUs, %d MB RAM)",
             container_name, self._cpus, self._memory_mb,
         )
+
+    def _stage_credential_mounts(
+        self,
+        mount_entries: list[dict[str, str]],
+        nested_mount_targets: list[str],
+    ) -> list[tuple[Path, str]]:
+        """Copy credentials into directory mounts supported by Apple Container.
+
+        Apple Container 1.2 rejects bind mounts whose source is a regular file.
+        Grouping copies by target parent preserves least privilege: each mounted
+        directory contains only explicitly registered credentials, never their
+        host-side siblings. Placeholder directories allow narrower skills,
+        cache, user, or credential mounts below a read-only staged parent.
+        """
+        if not mount_entries:
+            return []
+
+        unsafe = {",", "\x00", "\r", "\n"}
+        grouped: dict[str, list[tuple[Path, str]]] = {}
+        for entry in mount_entries:
+            source = entry.get("host_path", "")
+            target = entry.get("container_path", "")
+            if any(character in source for character in unsafe):
+                raise ValueError(
+                    "Apple Container mount source contains an unsafe character: "
+                    f"{source!r}"
+                )
+            if (
+                not target.startswith("/")
+                or posixpath.normpath(target) != target
+                or any(character in target for character in unsafe)
+            ):
+                raise ValueError(
+                    "Apple Container mount target is unsafe or not absolute: "
+                    f"{target!r}"
+                )
+            source_path = Path(source).expanduser().resolve()
+            if not source_path.is_file():
+                raise OSError(f"Credential mount source is not a file: {source_path}")
+            target_parent = posixpath.dirname(target)
+            target_name = posixpath.basename(target)
+            if not target_parent or target_name in {"", ".", ".."}:
+                raise ValueError(f"Invalid credential mount target: {target!r}")
+            grouped.setdefault(target_parent, []).append((source_path, target_name))
+
+        staging_parent = (
+            get_sandbox_dir() / "apple_container" / self._task_id / "credential-mounts"
+        )
+        staging_root = staging_parent / uuid.uuid4().hex
+        staging_root.mkdir(parents=True, mode=0o700)
+        self._credential_staging_dirs.append(staging_root)
+
+        result: list[tuple[Path, str]] = []
+        try:
+            mount_targets = [*nested_mount_targets, *grouped]
+            for target_parent, files in sorted(grouped.items()):
+                group_dir = staging_root / str(len(result))
+                group_dir.mkdir(mode=0o700)
+                for source_path, target_name in files:
+                    staged_file = group_dir / target_name
+                    shutil.copyfile(source_path, staged_file)
+                    staged_file.chmod(0o400)
+
+                prefix = target_parent.rstrip("/") + "/"
+                for mount_target in mount_targets:
+                    normalized_target = posixpath.normpath(mount_target)
+                    if not normalized_target.startswith(prefix):
+                        continue
+                    relative_target = normalized_target[len(prefix):]
+                    placeholder = group_dir.joinpath(*relative_target.split("/"))
+                    if placeholder.exists() and not placeholder.is_dir():
+                        raise ValueError(
+                            "Credential path conflicts with nested mount target: "
+                            f"{mount_target!r}"
+                        )
+                    placeholder.mkdir(parents=True, exist_ok=True)
+
+                result.append((group_dir, target_parent))
+        except Exception:
+            self._cleanup_credential_staging()
+            raise
+        return result
+
+    def _cleanup_credential_staging(self) -> None:
+        for staging_dir in self._credential_staging_dirs:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        self._credential_staging_dirs.clear()
 
     def _run_bash(
         self,
@@ -439,6 +538,7 @@ class AppleContainerEnvironment(BaseEnvironment):
     def cleanup(self):
         """Stop and remove the container, waiting for graceful shutdown."""
         if not self._container_name:
+            self._cleanup_credential_staging()
             return
 
         name = self._container_name
@@ -452,6 +552,7 @@ class AppleContainerEnvironment(BaseEnvironment):
             )
             if self._result_says_not_found(stop_result):
                 self._container_name = None
+                self._cleanup_credential_staging()
                 return
             if stop_result.returncode != 0:
                 force_delete = True
@@ -501,6 +602,8 @@ class AppleContainerEnvironment(BaseEnvironment):
         if deleted:
             self._container_name = None
             logger.info("Removed Apple Container '%s'", name)
+
+        self._cleanup_credential_staging()
 
         # Clean up workspace if non-persistent
         if not self._persistent and self._workspace_dir:

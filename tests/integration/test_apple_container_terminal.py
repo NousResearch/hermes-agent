@@ -87,6 +87,7 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
     task_id = f"apple-native-{os.getpid()}-{tmp_path.name}"
     environment = None
     container_name = None
+    container_names = []
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("TERMINAL_ENV", "apple_container")
     monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_IMAGE", "python:3.11-slim-bookworm")
@@ -108,6 +109,7 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
         assert isinstance(environment, apple_container.AppleContainerEnvironment)
         container_name = environment._container_name
         assert container_name and container_name.startswith("hermes-")
+        container_names.append(container_name)
         identity = _terminal_result(identity_raw)["output"]
         assert "Linux" in identity
         assert any(machine in identity for machine in ("aarch64", "arm64"))
@@ -161,6 +163,29 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
         terminal.clear_task_env_overrides(task_id)
         file_tools.clear_file_ops_cache(task_id)
 
+    # Persistent root/workspace directories are reused for the same task. A
+    # second lifecycle verifies credential exposure leaves no stale container
+    # state (for example, symlinks) that prevents a restart.
+    restart_environment = None
+    try:
+        restart_environment = apple_container.AppleContainerEnvironment(
+            image="python:3.11-slim-bookworm",
+            cpu=1,
+            memory=1024,
+            persistent_filesystem=True,
+            task_id=task_id,
+        )
+        restart_name = restart_environment._container_name
+        assert restart_name and restart_name.startswith("hermes-")
+        container_names.append(restart_name)
+        restart_read = restart_environment.execute(
+            "cat /root/.hermes/native-readonly-token.txt", cwd="/"
+        )
+        assert "native-readonly-fixture" in restart_read.get("output", "")
+    finally:
+        if restart_environment is not None:
+            restart_environment.cleanup()
+
     after_hash = _sha256(credential)
     print(f"credential fixture SHA-256 after:  {after_hash}")
     assert after_hash == before_hash
@@ -173,5 +198,6 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
         check=False,
     )
     assert listing.returncode == 0, listing.stderr
-    assert container_name is not None
-    assert not _list_json_contains_identity(listing.stdout, container_name)
+    assert container_names
+    for name in container_names:
+        assert not _list_json_contains_identity(listing.stdout, name)

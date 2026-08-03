@@ -1850,29 +1850,31 @@ def restore_quick_snapshot(
             sort_keys=True,
             separators=(",", ":"),
         )
-        with sqlite3.connect(str(runtime_tmp)) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS pending_definitions (
-                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                    definitions_json TEXT NOT NULL
+        with contextlib.closing(sqlite3.connect(str(runtime_tmp))) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pending_definitions (
+                        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                        definitions_json TEXT NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                """
-                INSERT INTO pending_definitions (singleton, definitions_json)
-                VALUES (1, ?)
-                ON CONFLICT(singleton) DO UPDATE SET
+                conn.execute(
+                    """
+                    INSERT INTO pending_definitions (singleton, definitions_json)
+                    VALUES (1, ?)
+                    ON CONFLICT(singleton) DO UPDATE SET
                     definitions_json = excluded.definitions_json
-                """,
-                (definitions_json,),
-            )
+                    """,
+                    (definitions_json,),
+                )
 
     def _clear_live_definition_journal(runtime_path: Path) -> None:
         """Clear recovery intent after the JSON half is durably installed."""
-        with sqlite3.connect(str(runtime_path)) as conn:
-            conn.execute("DELETE FROM pending_definitions WHERE singleton = 1")
+        with contextlib.closing(sqlite3.connect(str(runtime_path))) as conn:
+            with conn:
+                conn.execute("DELETE FROM pending_definitions WHERE singleton = 1")
 
     def _restore_cron_pair() -> int:
         """Restore both cron files runtime-first with roll-forward recovery."""

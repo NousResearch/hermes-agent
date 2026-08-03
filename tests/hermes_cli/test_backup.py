@@ -962,6 +962,76 @@ class TestQuickSnapshot:
         writer_thread.join(timeout=2)
         assert writer_finished.is_set()
 
+    def test_cron_pair_restore_closes_staged_wal_before_publish(
+        self, hermes_home, monkeypatch
+    ):
+        """A staged WAL database must be closed before its main file is moved."""
+        from cron import jobs
+        from hermes_cli import backup as backup_mod
+
+        with jobs.use_cron_store(hermes_home):
+            created = jobs.create_job(
+                prompt="snapshotted",
+                schedule="every 1h",
+                repeat=3,
+                deliver="local",
+            )
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        snapshot_runtime = snap_dir / "cron" / "runtime.db"
+        snapshot_connection = sqlite3.connect(snapshot_runtime)
+        try:
+            journal_mode = snapshot_connection.execute(
+                "PRAGMA journal_mode=WAL"
+            ).fetchone()[0]
+        finally:
+            snapshot_connection.close()
+        assert journal_mode == "wal"
+
+        manifest_path = snap_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        cron_pair = ("cron/jobs.json", "cron/runtime.db")
+        manifest["files"] = {rel: manifest["files"][rel] for rel in cron_pair}
+        manifest_path.write_text(json.dumps(manifest))
+
+        with jobs.use_cron_store(hermes_home):
+            jobs.update_job(created["id"], {"prompt": "live"})
+
+        # sqlite3.Connection's context manager commits but does not close.
+        # Retain the staged connection so a missing explicit close cannot be
+        # hidden by cyclic garbage collection before the database is moved.
+        real_connect = backup_mod.sqlite3.connect
+        retained_staged_connections = []
+
+        def retain_staged_connection(database, *args, **kwargs):
+            connection = real_connect(database, *args, **kwargs)
+            if ".runtime.db.snap_restore." in str(database):
+                retained_staged_connections.append(connection)
+            return connection
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", retain_staged_connection)
+        try:
+            restored = backup_mod.restore_quick_snapshot(
+                snap_id, hermes_home=hermes_home
+            )
+            staged_sidecars = sorted(
+                path.name
+                for path in (hermes_home / "cron").iterdir()
+                if ".runtime.db.snap_restore." in path.name
+            )
+        finally:
+            for connection in retained_staged_connections:
+                connection.close()
+
+        assert restored is True
+        assert staged_sidecars == []
+        with jobs.use_cron_store(hermes_home):
+            recovered = jobs.get_job(created["id"])
+        assert recovered is not None
+        assert recovered["prompt"] == "snapshotted"
+
     def test_interrupted_cron_pair_restore_rolls_forward_from_runtime_journal(
         self, hermes_home, monkeypatch
     ):

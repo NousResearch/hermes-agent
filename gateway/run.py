@@ -24356,6 +24356,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source.platform, source.thread_id, event_message_id,
             reply_in_thread=_progress_reply_in_thread,
         )
+        # Relay Discord auto-thread lane: a channel-initiating message has no
+        # thread_id at ingest (the thread is born on the connector's FIRST
+        # send). The connector stamps prospective_thread_id (the anchor message
+        # id, == the id of the thread it will create) and auto-threads any
+        # outbound carrying that anchor as reply_to. Without it, the progress /
+        # tool-status bubble is sent flat (no thread, no anchor) and lands in
+        # the PARENT channel while the final reply threads — the search-status
+        # updates leaked outside the thread (staging repro 2026-08-02). Carry
+        # the anchor on the progress send so it routes into the SAME auto-thread.
+        _relay_prospective_thread_id = (
+            str(getattr(source, "prospective_thread_id", None))
+            if source.platform == Platform.DISCORD
+            and getattr(source, "delivered_via_upstream_relay", False)
+            and getattr(source, "prospective_thread_id", None)
+            and not source.thread_id
+            else None
+        )
         _progress_metadata = (
             self._thread_metadata_for_source(source, event_message_id)
             if _progress_thread_id == source.thread_id
@@ -24367,10 +24384,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_message_id=event_message_id,
             )
         ) if _progress_thread_id else None
+        if _progress_metadata is None and _relay_prospective_thread_id:
+            # No real thread yet, but the connector will auto-thread on the
+            # reply anchor; carry it so progress joins that thread.
+            _progress_metadata = {"reply_to_message_id": event_message_id}
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
         _progress_reply_to = (
             event_message_id
-            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
+            if (
+                source.platform in (Platform.FEISHU, Platform.MATTERMOST)
+                and source.thread_id
+                and event_message_id
+            )
+            or _relay_prospective_thread_id
             else None
         )
 
@@ -24491,6 +24517,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     reply_to_message_id=event_message_id,
                 )
             ) if _progress_thread_id else None
+            if _status_thread_metadata is None and _relay_prospective_thread_id:
+                # Relay Discord auto-thread lane (see _progress_metadata above):
+                # carry the reply anchor so status/interim bubbles route into
+                # the same connector-created thread as the final reply.
+                _status_thread_metadata = {
+                    "reply_to_message_id": event_message_id
+                }
 
         # Bridge extracted to TurnRunner._status_callback_sync; publish the
         # status wiring computed above onto the shared TurnContext at the

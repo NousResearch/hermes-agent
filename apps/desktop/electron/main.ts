@@ -267,6 +267,14 @@ const IS_WSL = isWslEnvironment()
 const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
 const APP_ROOT = app.getAppPath()
 
+// Chromium can leave a pooled HTTP/2 connection permanently poisoned after a
+// transient PING failure (`net::ERR_HTTP2_PING_FAILED`). Hermes then loses REST
+// and OAuth ws-ticket requests together even though fresh HTTP/1.1 requests and
+// WebSockets to the same gateway remain healthy. Electron doesn't expose a
+// per-session/per-origin HTTP/2 fallback, so keep Desktop's native network stack
+// on HTTP/1.1. WebSocket upgrades still work, and this must run before app ready.
+app.commandLine.appendSwitch('disable-http2')
+
 // Preload must be plain JS — Electron's sandbox can't run .ts, and tsx's
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
 // Dev (`npm run dev`) and prod both load the esbuild output from dist/.

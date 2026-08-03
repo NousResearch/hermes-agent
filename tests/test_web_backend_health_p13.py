@@ -111,13 +111,13 @@ def test_live_checks_use_http_not_docker(monkeypatch, fake_home):
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
         assert cmd[0] != "sudo"
-        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return type("Result", (), {"returncode": 0, "stdout": '{"ok": true, "count": 1}', "stderr": ""})()
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
     assert mod.check_searxng() == (True, "HTML search returned results")
     assert mod.check_groktoCrawl() == (True, "healthy (ok)")
-    assert mod.check_ddgs() == (True, "working")
+    assert mod.check_ddgs() == (True, "working (1 result)")
     assert len(calls) == 1
 
 

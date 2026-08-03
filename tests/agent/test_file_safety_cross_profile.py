@@ -12,6 +12,7 @@ afterwards that the second path belonged to a different profile.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,17 @@ def _set_active_home(monkeypatch, hermes_home: Path):
     """Point file_safety._hermes_home_path at a specific profile dir."""
     import agent.file_safety as fs
     monkeypatch.setattr(fs, "_hermes_home_path", lambda: hermes_home)
+
+
+def _set_strict_scope(monkeypatch, *allowed_paths: Path):
+    """Enable strict profile scope without loading the test process config."""
+    import agent.file_safety as fs
+
+    monkeypatch.setattr(
+        fs,
+        "_profile_scope_settings",
+        lambda: ("strict", tuple(allowed_paths)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -182,3 +194,115 @@ class TestGetCrossProfileWarning:
         # Must self-document as defense-in-depth so future reviewers
         # don't promote it to a hard block.
         assert "not a security boundary" in warn.lower()
+
+
+# ---------------------------------------------------------------------------
+# Strict profile file-tool scope
+# ---------------------------------------------------------------------------
+
+
+class TestStrictProfileScope:
+    def test_settings_read_strict_mode_and_absolute_allow_paths(self, monkeypatch, tmp_path):
+        import agent.file_safety as fs
+        import hermes_cli.config as config
+
+        shared_cache = tmp_path / "shared-cache"
+        monkeypatch.setattr(
+            config,
+            "load_config_readonly",
+            lambda: {
+                "agent": {
+                    "profile_scope": "strict",
+                    "profile_scope_allow": [str(shared_cache), "relative-path", 42],
+                }
+            },
+        )
+
+        assert fs._profile_scope_settings() == ("strict", (shared_cache.resolve(),))
+
+    def test_named_profile_denies_default_and_sibling_reads_and_writes(
+        self, fake_hermes, monkeypatch
+    ):
+        _set_active_home(monkeypatch, fake_hermes["security_home"])
+        _set_strict_scope(monkeypatch)
+        from agent.file_safety import get_read_block_error, get_write_denied_error
+
+        default_memory = fake_hermes["default_home"] / "memories" / "MEMORY.md"
+        sibling_skill = fake_hermes["coder_home"] / "skills" / "foo" / "SKILL.md"
+
+        for target in (default_memory, sibling_skill):
+            read_error = get_read_block_error(str(target))
+            write_error = get_write_denied_error(str(target))
+            assert read_error is not None
+            assert write_error is not None
+            assert "agent.profile_scope: strict" in read_error
+            assert "agent.profile_scope: strict" in write_error
+            assert "hermes-security" in read_error
+
+    def test_named_profile_keeps_own_tree_and_non_hermes_paths(self, fake_hermes, monkeypatch, tmp_path):
+        _set_active_home(monkeypatch, fake_hermes["security_home"])
+        _set_strict_scope(monkeypatch)
+        from agent.file_safety import get_read_block_error, get_write_denied_error
+
+        own_file = fake_hermes["security_home"] / "notes.md"
+        external_file = tmp_path / "project" / "notes.md"
+        assert get_read_block_error(str(own_file)) is None
+        assert get_write_denied_error(str(own_file)) is None
+        assert get_read_block_error(str(external_file)) is None
+        assert get_write_denied_error(str(external_file)) is None
+
+    def test_explicit_shared_root_is_allowed(self, fake_hermes, monkeypatch):
+        _set_active_home(monkeypatch, fake_hermes["security_home"])
+        shared_cache = fake_hermes["root"] / "cache"
+        _set_strict_scope(monkeypatch, shared_cache)
+        from agent.file_safety import get_read_block_error, get_write_denied_error
+
+        target = shared_cache / "index.json"
+        assert get_read_block_error(str(target)) is None
+        assert get_write_denied_error(str(target)) is None
+
+    def test_default_profile_strict_scope_denies_named_profiles(self, fake_hermes, monkeypatch):
+        _set_active_home(monkeypatch, fake_hermes["default_home"])
+        _set_strict_scope(monkeypatch)
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error(
+            str(fake_hermes["security_home"] / "skills" / "foo" / "SKILL.md")
+        ) is not None
+        assert get_read_block_error(str(fake_hermes["default_home"] / "config.yaml")) is None
+
+    def test_default_mode_preserves_existing_cross_profile_behavior(self, fake_hermes, monkeypatch):
+        _set_active_home(monkeypatch, fake_hermes["security_home"])
+        import agent.file_safety as fs
+
+        monkeypatch.setattr(fs, "_profile_scope_settings", lambda: ("none", ()))
+        target = fake_hermes["default_home"] / "memories" / "MEMORY.md"
+        assert fs.get_read_block_error(str(target)) is None
+
+    def test_file_tools_enforce_strict_scope_even_with_write_bypass(
+        self, fake_hermes, monkeypatch
+    ):
+        _set_active_home(monkeypatch, fake_hermes["security_home"])
+        _set_strict_scope(monkeypatch)
+        from tools.file_tools import read_file_tool, search_tool, write_file_tool
+
+        target = fake_hermes["default_home"] / "memories" / "MEMORY.md"
+        target.write_text("default profile memory\n", encoding="utf-8")
+        original = target.read_text(encoding="utf-8")
+
+        read_result = json.loads(read_file_tool(str(target), task_id="strict-read"))
+        search_result = json.loads(
+            search_tool("default", path=str(target), task_id="strict-search")
+        )
+        write_result = json.loads(
+            write_file_tool(
+                str(target),
+                "overwritten",
+                task_id="strict-write",
+                cross_profile=True,
+            )
+        )
+
+        for result in (read_result, search_result, write_result):
+            assert "agent.profile_scope: strict" in result["error"]
+        assert target.read_text(encoding="utf-8") == original

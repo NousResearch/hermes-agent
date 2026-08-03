@@ -650,6 +650,22 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 prev["tool_calls"] = prev_calls + new_calls
             elif prev_calls:
                 prev["tool_calls"] = prev_calls
+            else:
+                # Neither turn carries tool calls, but the surviving turn may
+                # still carry a stale ``tool_calls: []`` from the earlier
+                # message.  An empty array is semantically "no tool calls",
+                # yet strict OpenAI-compatible providers (DeepSeek v4,
+                # Moonshot/Kimi) reject it with HTTP 400 ("Invalid
+                # 'messages[N].tool_calls': empty array...").  Drop the key
+                # HERE, at the source: ``sanitize_api_messages`` only fixes
+                # the per-call wire copy, so a ``[]`` left on the repaired
+                # turn survives in the live/persisted trajectory returned to
+                # callers (gateway/WebUI transcripts, session resume,
+                # subagents, cron) and is replayed on the next turn — which
+                # is how #58755 kept reproducing after the chokepoint fix
+                # (#77921).  Popping is non-destructive: an empty array
+                # carries no information.
+                prev.pop("tool_calls", None)
             # Concatenate plain-text content; leave multimodal (list)
             # content on either side alone to avoid mangling attachment
             # blocks — fall back to keeping the existing content.

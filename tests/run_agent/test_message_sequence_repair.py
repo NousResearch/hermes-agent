@@ -356,6 +356,33 @@ def test_sanitize_drops_empty_tool_calls_array():
     assert assistant["content"] == "answer"
 
 
+def test_repair_drops_stale_empty_tool_calls_on_merged_assistant():
+    """repair_message_sequence must drop a stale ``tool_calls: []`` on the
+    surviving message of a consecutive-assistant merge (#77921).
+
+    The chokepoint sanitizer (sanitize_api_messages) only patches the per-call
+    wire copy — a ``[]`` left on the repaired live/persisted trajectory is
+    replayed on the next turn and 400s strict providers (DeepSeek v4). The
+    merge's union branches only ever set non-empty lists or leave the key
+    untouched, so the empty array survives into the persisted state."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        # surviving turn carries a stale empty tool_calls from an earlier pass
+        {"role": "assistant", "content": "first", "tool_calls": []},
+        {"role": "assistant", "content": "second"},
+    ]
+    # A dummy agent object is enough — repair only reads message roles/content.
+    agent = type("Agent", (), {})()
+    n = repair_message_sequence(agent, messages)
+    assert n >= 0
+    assistants = [m for m in messages if m.get("role") == "assistant"]
+    assert len(assistants) == 1
+    assert "tool_calls" not in assistants[0]
+    assert "second" in assistants[0]["content"]
+
+
 
 
 

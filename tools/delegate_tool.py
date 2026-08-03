@@ -1853,9 +1853,18 @@ def _build_child_agent(
     # same class of silent-drag the override_provider filter-clearing below
     # already prevents for OpenRouter routing preferences.  Predictability >
     # liveness for explicit pins: the pinned child fails loudly instead.
+    # An operator can additionally disable inheritance for children that keep
+    # the parent's primary provider/endpoint.
+    raw_inherit_fallback = delegation_cfg.get("inherit_fallback_providers", True)
+    if isinstance(raw_inherit_fallback, str):
+        inherit_fallback = raw_inherit_fallback.strip().lower() not in {
+            "false", "0", "no", "off",
+        }
+    else:
+        inherit_fallback = bool(raw_inherit_fallback)
     parent_fallback = (
         None
-        if override_provider
+        if override_provider or not inherit_fallback
         else (getattr(parent_agent, "_fallback_chain", None) or None)
     )
 

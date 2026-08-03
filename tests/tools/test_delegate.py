@@ -1868,7 +1868,7 @@ class TestSubagentApprovalCallback(unittest.TestCase):
 
 
 class TestFallbackModelInheritance(unittest.TestCase):
-    """Subagents must inherit the parent's fallback provider chain."""
+    """Subagent fallback inheritance follows delegation policy."""
 
     def test_child_inherits_fallback_chain(self):
         """_build_child_agent passes parent._fallback_chain as fallback_model."""
@@ -1891,6 +1891,58 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertEqual(kwargs["fallback_model"], [fallback_entry])
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"inherit_fallback_providers": False},
+    )
+    def test_child_can_disable_parent_fallback_chain(self, _mock_cfg):
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [
+            {"provider": "openai-codex", "model": "gpt-5.6-sol"}
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="stay on the delegated primary",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["fallback_model"])
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"inherit_fallback_providers": "off"},
+    )
+    def test_child_parses_string_false_for_fallback_inheritance(self, _mock_cfg):
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [
+            {"provider": "openai-codex", "model": "gpt-5.6-sol"}
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="stay on the delegated primary",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["fallback_model"])
 
     def test_child_gets_no_fallback_when_parent_chain_empty(self):
         """When parent._fallback_chain is empty, fallback_model is None."""

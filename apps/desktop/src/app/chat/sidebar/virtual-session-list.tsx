@@ -65,7 +65,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
   const virtualizer = useVirtualizer({
     count: listRows.length,
-    estimateSize: () => ROW_ESTIMATE_PX,
+    estimateSize: index => (listRows[index]?.kind === 'divider' ? 26 : ROW_ESTIMATE_PX),
     getItemKey: index => {
       const row = listRows[index]
 
@@ -74,6 +74,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     getScrollElement: () => scrollerRef.current,
     // jsdom-friendly default; the real rect takes over on first observe.
     initialRect: { height: 600, width: 240 },
+    gap: 1,
     overscan: OVERSCAN_ROWS
   })
 
@@ -142,7 +143,10 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   // just consume that context via useSortable.
   return (
     <div
-      className={cn('relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain', className)}
+      className={cn(
+        'relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain [overflow-anchor:none]',
+        className
+      )}
       ref={scrollerRef}
     >
       <div className="grid gap-px" style={{ paddingBottom: `${paddingBottom}px`, paddingTop: `${paddingTop}px` }}>

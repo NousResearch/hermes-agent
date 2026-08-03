@@ -690,7 +690,7 @@ async def resume_session_endpoint(request: Request, session_id: str, profile: Op
     it (e.g. a cron run).
     """
     _require_dashboard_admin(request)
-    db = _open_session_db_for_profile(profile)
+    db = _open_session_db_for_profile(profile, read_only=True)
     try:
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None

@@ -3119,14 +3119,50 @@ def test_gateway_session_peer_round_trip_and_recovery(db):
     assert recovered["id"] == "gw-session"
 
 
+def test_gateway_session_peer_fallback_isolated_by_profile(db):
+    """A named profile must not recover another profile's peer session."""
+    db.create_session(
+        "default-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        thread_id=None,
+        profile_name=None,
+    )
+    db.append_message("default-session", "user", "default history")
 
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:catgirl:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        profile_name="catgirl",
+    ) is None
 
+    db.create_session(
+        "catgirl-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:catgirl:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        thread_id=None,
+        profile_name="catgirl",
+    )
+    db.append_message("catgirl-session", "user", "catgirl history")
 
-
-
-
-
-
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:catgirl:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        profile_name="catgirl",
+    )
+    assert recovered["id"] == "catgirl-session"
 
 
 def test_find_session_by_origin_matching_rules(db):

@@ -2916,9 +2916,13 @@ class GatewaySlashCommandsMixin:
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         platform = event.source.platform
-        voice_key = self._voice_key(platform, chat_id)
+        voice_key = self._voice_key(
+            platform,
+            chat_id,
+            profile=event.source.profile,
+        )
 
-        adapter = self.adapters.get(platform)
+        adapter = self._adapter_for_source(event.source)
 
         if args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"

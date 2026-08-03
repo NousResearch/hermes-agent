@@ -9,8 +9,9 @@ same key. The fix prefixes keys with platform value: 'telegram:123' vs
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
@@ -19,6 +20,19 @@ from gateway.run import GatewayRunner
 class TestVoiceKeyHelper:
     """Test the _voice_key helper method."""
 
+    def test_voice_key_named_profile_isolated_without_changing_default_format(self):
+        runner = _make_runner()
+
+        assert runner._voice_key(
+            Platform.TELEGRAM,
+            "123",
+            profile="default",
+        ) == "telegram:123"
+        assert runner._voice_key(
+            Platform.TELEGRAM,
+            "123",
+            profile="catgirl",
+        ) == "catgirl:telegram:123"
 
     def test_voice_key_different_platforms_same_chat_id(self):
         """Same chat_id on different platforms yields different keys."""
@@ -89,6 +103,47 @@ class TestLegacyKeyMigration:
             assert any("Skipping legacy unprefixed voice mode key" in str(c) for c in warning_calls)
 
 
+class TestMultiplexVoiceInputRouting:
+    """Voice transcripts stay on the Discord adapter that received them."""
+
+    @pytest.mark.asyncio
+    async def test_named_profile_callback_dispatches_through_named_adapter(self):
+        runner = _make_runner()
+        runner.session_store = MagicMock()
+        runner._make_profile_message_handler = MagicMock(return_value=MagicMock())
+        runner._make_profile_fatal_error_handler = MagicMock(return_value=MagicMock())
+        runner._make_adapter_auth_check = MagicMock(return_value=MagicMock())
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner._is_duplicate_voice_transcript = MagicMock(return_value=False)
+
+        default_adapter = MagicMock()
+        default_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = default_adapter
+
+        named_adapter = MagicMock()
+        named_adapter.platform = Platform.DISCORD
+        named_adapter._voice_input_callback = None
+        named_adapter._voice_text_channels = {111: 123}
+        named_adapter._voice_sources = {}
+        named_adapter._client.get_channel.return_value = None
+        named_adapter._resolve_channel_prompt = MagicMock(return_value=None)
+        named_adapter.handle_message = AsyncMock()
+
+        runner._configure_profile_adapter(
+            named_adapter,
+            "catgirl",
+            Platform.DISCORD,
+        )
+        await named_adapter._voice_input_callback(111, 42, "Hello from named VC")
+
+        named_adapter.handle_message.assert_awaited_once()
+        default_adapter.handle_message.assert_not_awaited()
+        event = named_adapter.handle_message.await_args.args[0]
+        assert event.source.profile == "catgirl"
+        assert event.source.chat_id == "123"
+        assert event.source.user_id == "42"
+
+
 class TestSyncVoiceModeStateToAdapter:
     """Test _sync_voice_mode_state_to_adapter filters by platform."""
 
@@ -113,6 +168,28 @@ class TestSyncVoiceModeStateToAdapter:
 
         # Only telegram:123 should be in disabled_chats (mode="off" for telegram)
         assert mock_adapter._auto_tts_disabled_chats == {"123"}
+
+    def test_sync_named_profile_only_includes_its_own_voice_state(self):
+        runner = _make_runner()
+        runner._voice_mode = {
+            "telegram:123": "off",
+            "catgirl:telegram:123": "all",
+            "catgirl:telegram:456": "off",
+            "writer:telegram:789": "all",
+        }
+
+        mock_adapter = MagicMock()
+        mock_adapter.platform = Platform.TELEGRAM
+        mock_adapter._auto_tts_disabled_chats = set()
+        mock_adapter._auto_tts_enabled_chats = set()
+
+        runner._sync_voice_mode_state_to_adapter(
+            mock_adapter,
+            profile="catgirl",
+        )
+
+        assert mock_adapter._auto_tts_disabled_chats == {"456"}
+        assert mock_adapter._auto_tts_enabled_chats == {"123"}
 
 
 # ---------------------------------------------------------------------------

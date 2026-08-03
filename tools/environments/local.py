@@ -697,15 +697,20 @@ class LocalEnvironment(BaseEnvironment):
     is_local = True
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
-        """First-party ``BUZZ_*`` names present in the env, excluded from the shared
-        session snapshot. env_passthrough can never list them (it refuses blocklisted
-        names), so under a multiplexed gateway profile A's BUZZ_PRIVATE_KEY would land
-        in the snapshot and be sourced by profile B. Prefix-only and monotonic on
-        purpose: conservative even when the context-gated carve-out is inactive."""
+        """First-party ``BUZZ_*`` names and local identity vars, excluded from the
+        shared session snapshot. env_passthrough can never list them (it refuses
+        blocklisted names), so under a multiplexed gateway profile A's
+        BUZZ_PRIVATE_KEY or HOME would land in the snapshot and be sourced by
+        profile B. Prefix-only and monotonic on purpose: conservative even when
+        the context-gated carve-out is inactive. Identity names are exact
+        (``HOME`` / ``HERMES_HOME`` / ``HERMES_REAL_HOME``) so similarly
+        prefixed vars still persist across snapshots."""
         merged = dict(os.environ | self.env)
-        return tuple(sorted(
+        names = {"HOME", "HERMES_HOME", "HERMES_REAL_HOME"}
+        names.update(
             name for name in merged
-            if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
+            if isinstance(name, str) and _matches_terminal_first_party_prefix(name))
+        return tuple(sorted(names))
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)

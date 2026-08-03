@@ -1,6 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import logging
+import ntpath
 import os
 import platform
 import re
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
@@ -46,6 +48,46 @@ def _msys_to_windows_path(cwd: str) -> str:
     drive = m.group(1).upper()
     tail = (m.group(2) or "").replace('/', '\\')
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+
+
+def _resolve_local_initial_cwd(cwd: str) -> str:
+    """Resolve the local backend's initial cwd to an absolute host path.
+
+    ``TERMINAL_CWD`` can be populated from config.yaml before the terminal
+    backend is created.  If that value is relative and happens to match the
+    directory Hermes was already launched from (for example ``hermes-agent``
+    while the process cwd is ``~/.hermes/hermes-agent``), passing it through
+    unchanged makes the wrapper run ``cd hermes-agent`` *inside* the project
+    and fail with a confusing nested-path error.  Anchor relative local cwd
+    values once, up front, so both ``subprocess.Popen(cwd=...)`` and the
+    in-shell ``cd`` use the same absolute directory.
+    """
+    expanded = os.path.expanduser(cwd) if cwd else os.getcwd()
+    if _IS_WINDOWS:
+        expanded = _msys_to_windows_path(expanded)
+        # Use the Windows-aware check explicitly: when _IS_WINDOWS is
+        # patched in tests on a POSIX host, os.path.isabs would reject
+        # ``C:\Users\x`` and mangle it through the relative branch.
+        import ntpath
+        if ntpath.isabs(expanded):
+            return expanded
+    if os.path.isabs(expanded):
+        return expanded
+
+    candidate = os.path.abspath(expanded)
+    current = os.getcwd()
+
+    # Common recovery for config values like ``hermes-agent`` when Hermes was
+    # launched from that directory already.  ``os.path.abspath`` would point at
+    # a nonexistent nested ``./hermes-agent``; use the current directory instead.
+    if not os.path.isdir(candidate):
+        wanted_parts = Path(expanded).parts
+        current_parts = Path(current).parts
+        if wanted_parts and len(wanted_parts) <= len(current_parts):
+            if current_parts[-len(wanted_parts):] == wanted_parts:
+                return current
+
+    return candidate
 
 
 def _windows_to_msys_path(cwd: str) -> str:
@@ -95,11 +137,27 @@ def _quote_bash_path(path: str) -> str:
     return shlex.quote(_bash_safe_path(path))
 
 
+def _cwd_usable(path: str) -> bool:
+    """True when *path* is a directory this process can actually chdir into.
+
+    ``os.path.isdir`` alone is not enough: stat() on ``/root`` succeeds for a
+    non-root user (only ``/`` needs search permission), but
+    ``subprocess.Popen(cwd='/root')`` then dies with ``PermissionError:
+    [Errno 13] Permission denied: '/root'``. Seen in the wild when a
+    root-launched CLI session leaks ``/root`` into shared state that a
+    non-root gateway/cron process later reads (#65583) — every cron job's
+    terminal/file tool then fails on every command, forever. Checking
+    X_OK up front lets the caller fall back instead.
+    """
+    return os.path.isdir(path) and os.access(path, os.X_OK)
+
+
 def _resolve_safe_cwd(cwd: str) -> str:
-    """Return ``cwd`` if it exists as a directory, else the nearest existing
-    ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
-    path can't find any existing directory (effectively never on a healthy
-    filesystem, but cheap belt-and-braces).
+    """Return ``cwd`` if it exists as a directory this process can enter,
+    else the nearest existing accessible ancestor.  Falls back to
+    ``tempfile.gettempdir()`` only if walking up the path can't find any
+    usable directory (effectively never on a healthy filesystem, but cheap
+    belt-and-braces).
 
     On Windows, also normalizes Git Bash / MSYS-style POSIX paths
     (``/c/Users/x``) to native Windows form before the isdir check so a
@@ -108,16 +166,27 @@ def _resolve_safe_cwd(cwd: str) -> str:
 
     Used by ``_run_bash`` to recover when the configured cwd is gone — most
     commonly because a previous tool call deleted its own working directory
-    (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
-    raises ``FileNotFoundError`` before bash starts, wedging every subsequent
-    terminal call until the gateway restarts.
+    (issue #17558) — or inaccessible to this user, e.g. ``/root`` leaking
+    from a root-launched CLI session into a non-root gateway's cron jobs
+    (issue #65583).  Without this guard, ``subprocess.Popen(..., cwd=...)``
+    raises ``FileNotFoundError``/``PermissionError`` before bash starts,
+    wedging every subsequent terminal call until the gateway restarts.
     """
     cwd = _msys_to_windows_path(cwd) if _IS_WINDOWS else cwd
-    if cwd and os.path.isdir(cwd):
+    if cwd and _cwd_usable(cwd):
         return cwd
+    if cwd and os.path.isdir(cwd):
+        logger.warning(
+            "Configured terminal cwd %r exists but is not accessible to "
+            "this user (uid=%s) — falling back to the nearest usable "
+            "directory. If this is a gateway/cron process, check for "
+            "root-owned paths leaking into terminal.cwd / TERMINAL_CWD "
+            "(#65583).",
+            cwd, getattr(os, "getuid", lambda: "?")(),
+        )
     parent = os.path.dirname(cwd) if cwd else ""
     while parent:
-        if os.path.isdir(parent):
+        if _cwd_usable(parent):
             return parent
         next_parent = os.path.dirname(parent)
         if next_parent == parent:
@@ -247,6 +316,10 @@ def _build_provider_env_blocklist() -> frozenset:
         "GATEWAY_RELAY_ID",
         "GATEWAY_RELAY_SECRET",
         "GATEWAY_RELAY_DELIVERY_KEY",
+        "VERCEL_OIDC_TOKEN",
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
     })
     # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
     # owned by the user's Claude Code install (subscription OAuth), not a
@@ -383,9 +456,13 @@ def _inject_session_context_env(env: dict) -> None:
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
-        from tools.env_passthrough import is_env_passthrough as _is_passthrough
+        from tools.env_passthrough import (
+            is_env_passthrough as _is_passthrough,
+            resolve_passthrough_value as _resolve_passthrough_value,
+        )
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
+        _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
     sanitized: dict[str, str] = {}
 
@@ -394,8 +471,12 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             continue
         if _is_hermes_internal_secret(key):
             continue
-        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
-            sanitized[key] = value
+        passthrough = _is_passthrough(key)
+        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            continue
+        resolved = _resolve_passthrough_value(key, value) if passthrough else value
+        if resolved is not None:
+            sanitized[key] = resolved
 
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
@@ -405,8 +486,13 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             sanitized[real_key] = value
         elif _is_hermes_internal_secret(key):
             continue
-        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
-            sanitized[key] = value
+        else:
+            passthrough = _is_passthrough(key)
+            if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+                continue
+            resolved = _resolve_passthrough_value(key, value) if passthrough else value
+            if resolved is not None:
+                sanitized[key] = resolved
 
     _inject_context_hermes_home(sanitized)
 
@@ -422,7 +508,24 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     _apply_windows_msys_bash_env_defaults(sanitized)
 
+    sanitized = _scrub_delegated_child_kanban_env(sanitized)
+
     return sanitized
+
+
+def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
+    """Strip dispatcher-owned Kanban env from delegate_task child subprocesses."""
+    try:
+        from agent.delegation_context import (
+            is_delegated_child_process_context,
+            scrub_kanban_env,
+        )
+
+        if is_delegated_child_process_context():
+            return scrub_kanban_env(env)
+    except Exception:
+        pass
+    return env
 
 
 # Tier-1 secrets: stripped from EVERY spawned subprocess unconditionally —
@@ -544,6 +647,75 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # happen; single uniform policy across every spawn surface.
     _inject_session_context_env(env)
 
+    # Non-terminal subprocess helpers (browser, lazy-deps, TUI/ACP hosts, etc.)
+    # also need the delegate_task child lineage marker.  Otherwise a child
+    # context that later imports Kanban DB code in the spawned process would
+    # still see the parent's HERMES_HOME but lose the DB mutation guard.
+    env = _scrub_delegated_child_kanban_env(env)
+
+    return env
+
+
+def build_subprocess_env(
+    base: "Mapping[str, str] | None" = None,
+    *,
+    inherit_profile_home: bool = True,
+    scrub_secrets: bool = True,
+    extra: "Mapping[str, str] | None" = None,
+) -> dict[str, str]:
+    """Single factory for building a child-process environment.
+
+    Every spawn site in the codebase should build its env through this
+    function (or :func:`hermes_subprocess_env` for the model-driving-CLI
+    surface) instead of copying ``os.environ`` directly, so profile-home
+    propagation (``HERMES_HOME`` / subprocess ``HOME`` contract) and the
+    Hermes secret-scrub policy have a single owner.  History: ~11 separate
+    commits each fixed one more spawn site that missed profile-HOME or
+    secret-scrub propagation; this factory is the fix for the class.
+
+    Parameters:
+
+    * ``base`` — starting environment.  ``None`` (default) snapshots
+      ``os.environ``.  Pass an explicit mapping to build on a caller-prepared
+      env instead.
+    * ``scrub_secrets=True`` (default) — delegate to
+      :func:`_sanitize_subprocess_env`, the long-standing owner of the scrub
+      list (provider blocklist + ``_is_hermes_internal_secret`` dynamic
+      patterns + kanban/venv-marker/session-context guards) **and** of
+      ``HERMES_HOME`` / subprocess-HOME propagation.  On this path profile
+      home propagation is inherent — ``inherit_profile_home`` is ignored
+      (always applied), exactly matching today's sanitize semantics.
+    * ``scrub_secrets=False`` — preserve the base env content byte-for-byte
+      (no key is removed).  Use for children that intentionally receive
+      secrets (git credential flows, ``bws``/``op`` secret CLIs) or where
+      scrubbing could change behavior.  The site is still a win: it becomes
+      grep-able and future-fixable.
+    * ``inherit_profile_home`` — on the non-scrub path, when True, bridge the
+      context-local Hermes home override into ``HERMES_HOME`` and apply the
+      subprocess HOME contract (``hermes_constants.apply_subprocess_home_env``).
+      Pass False to keep the inherited env untouched (exact legacy
+      ``os.environ.copy()`` behavior).
+    * ``extra`` — applied **last** on the non-scrub path so explicit caller
+      overrides (e.g. a session-scoped ``HERMES_HOME``) always win.  On the
+      scrub path it is forwarded as ``_sanitize_subprocess_env``'s
+      ``extra_env`` (same force-prefix / blocklist handling as today).
+    """
+    if scrub_secrets:
+        # _sanitize_subprocess_env already performs HERMES_HOME override
+        # bridging + apply_subprocess_home_env unconditionally; delegating
+        # wholesale keeps one owner and zero drift.
+        return _sanitize_subprocess_env(
+            dict(base) if base is not None else os.environ.copy(),
+            dict(extra) if extra else None,
+        )
+
+    env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
+    if inherit_profile_home:
+        _inject_context_hermes_home(env)
+        from hermes_constants import apply_subprocess_home_env
+        apply_subprocess_home_env(env)
+    if extra:
+        env.update(extra)
     return env
 
 
@@ -613,8 +785,19 @@ def _find_bash() -> str:
             return candidate
 
     if candidates:
-        # Last resort: return the first path even if the probe failed, so the
-        # caller still sees the real bash error instead of "not found".
+        probe_details = "\n".join(
+            detail
+            for candidate in candidates
+            if (detail := _bash_probe_details_cache.get(candidate))
+        )
+        if _mandatory_aslr_enabled() is True or _looks_like_msys_spawn_failure(
+            probe_details
+        ):
+            raise RuntimeError(_git_bash_aslr_help(candidates[0], probe_details))
+
+        # Last resort for failures unrelated to the known MSYS/ASLR class:
+        # return the first path so the caller still sees the real bash error
+        # instead of the less useful "not found" message.
         return candidates[0]
 
     raise RuntimeError(
@@ -625,14 +808,100 @@ def _find_bash() -> str:
 
 
 _bash_starts_cache: dict[str, bool] = {}
+_bash_probe_details_cache: dict[str, str] = {}
+_mandatory_aslr_enabled_cache: "bool | None" = None
+
+_BASH_EXTERNAL_PROGRAM_PROBE = "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+
+
+def _looks_like_msys_spawn_failure(details: str) -> bool:
+    """Match Git-for-Windows child-launch failures associated with ASLR."""
+    lowered = details.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "dofork:",
+            "child_copy:",
+            "0xc0000142",
+            "0xc0000005",
+        )
+    )
+
+
+def _mandatory_aslr_enabled() -> "bool | None":
+    """Return Windows' system-wide ForceRelocateImages state when available."""
+    global _mandatory_aslr_enabled_cache
+    if _mandatory_aslr_enabled_cache is not None:
+        return _mandatory_aslr_enabled_cache
+
+    try:
+        powershell = shutil.which("powershell.exe") or "powershell.exe"
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-ProcessMitigation -System).Aslr.ForceRelocateImages.ToString()",
+            ],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=10,
+            creationflags=windows_hide_flags(),
+        )
+        if result.returncode != 0:
+            return None
+        value = (result.stdout or "").strip().upper()
+        if value == "ON":
+            _mandatory_aslr_enabled_cache = True
+            return True
+        if value in {"OFF", "NOTSET"}:
+            _mandatory_aslr_enabled_cache = False
+            return False
+    except Exception as exc:
+        logger.debug("Could not query Windows Mandatory ASLR state: %s", exc)
+    return None
+
+
+def _git_root_from_bash(bash: str) -> str:
+    """Resolve Git's root from either <root>/bin or <root>/usr/bin bash."""
+    bin_dir = ntpath.dirname(ntpath.normpath(bash))
+    if ntpath.basename(bin_dir).lower() != "bin":
+        return ntpath.dirname(bin_dir)
+    parent = ntpath.dirname(bin_dir)
+    if ntpath.basename(parent).lower() == "usr":
+        return ntpath.dirname(parent)
+    return parent
+
+
+def _git_bash_aslr_help(bash: str, details: str = "") -> str:
+    """Build the targeted per-program Mandatory-ASLR remediation."""
+    git_root = _git_root_from_bash(bash)
+    escaped_root = git_root.replace("'", "''")
+    detail_line = f"\nGit Bash probe output: {details[:500]}" if details else ""
+    return (
+        f"Git Bash at {bash} cannot launch required MSYS child processes while "
+        "Windows Mandatory ASLR (ForceRelocateImages) is enabled, or its output "
+        f"matches that Git-for-Windows failure class.{detail_line}\n"
+        "Reinstalling Git will not change the Windows mitigation policy. Open "
+        "PowerShell as Administrator and run:\n"
+        f"$gitRoot = '{escaped_root}'\n"
+        'Get-Item "$gitRoot\\bin\\bash.exe", "$gitRoot\\usr\\bin\\*.exe" '
+        "-ErrorAction SilentlyContinue | ForEach-Object { "
+        "Set-ProcessMitigation -Name $_.FullName -Disable ForceRelocateImages }\n"
+        "Then restart Hermes. If the override is blocked or later re-applied, "
+        "ask your Windows administrator to allow this per-program exception."
+    )
 
 
 def _bash_starts(bash: str) -> bool:
-    """True if *bash* can run a trivial non-login command.
+    """True if *bash* can launch external MSYS programs.
 
     Uses ``--noprofile --norc`` so a broken login post-install
     (``Directory \\drivers\\etc``) does not falsely condemn an otherwise
-    usable bash.  Cached per path for the process lifetime.
+    usable bash. The external ``true`` and ``cat`` calls are intentional:
+    a builtin-only ``exit 0`` probe misses Git-for-Windows fork/spawn failures
+    under system-wide Mandatory ASLR. Cached per path for the process lifetime.
     """
     cached = _bash_starts_cache.get(bash)
     if cached is not None:
@@ -640,17 +909,19 @@ def _bash_starts(bash: str) -> bool:
 
     try:
         result = subprocess.run(
-            [bash, "--noprofile", "--norc", "-c", "exit 0"],
+            [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=15,
             creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
         )
         ok = result.returncode == 0
         if not ok:
             combined = f"{result.stdout or ''}{result.stderr or ''}"
+            _bash_probe_details_cache[bash] = combined.strip()[:2000]
             logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
     except Exception as exc:
+        _bash_probe_details_cache[bash] = str(exc)[:2000]
         logger.debug("bash probe error for %s: %s", bash, exc)
         ok = False
 
@@ -869,6 +1140,34 @@ def _prepend_hermes_bin_dir(existing_path: str) -> str:
     return sep.join([bin_dir, *entries])
 
 
+def _managed_runtime_path_entries() -> list[str]:
+    """Return existing Hermes-managed runtime dirs for the terminal subshell PATH.
+
+    The terminal tool spawns a subshell whose PATH is the agent process's PATH
+    plus ``_SANE_PATH``. Neither carries the runtimes Hermes installs for
+    itself, so on a machine where Hermes provisioned its own toolchain a
+    command the agent runs resolves a system copy instead — or nothing at all:
+
+    - ``$HERMES_HOME/node`` (+ ``/bin``) — installed to satisfy the desktop and
+      browser toolchain. ``tools/browser_tool.py`` already does this for its own
+      subprocesses; the agent's shell deserves the same.
+    - ``$HERMES_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
+      and nothing has ever put that directory on PATH, so an install whose only
+      uv is the managed one looks uv-less to both the agent and the model.
+
+    Resolved per call rather than cached in a module constant because
+    ``get_hermes_home()`` is profile-scoped and a managed tree can appear
+    mid-process (``heal_hermes_managed_node``, a first browser install).
+    """
+    try:
+        from hermes_constants import get_hermes_home, iter_hermes_node_dirs
+
+        candidates = [*iter_hermes_node_dirs(), get_hermes_home() / "bin"]
+        return [str(d) for d in candidates if d.is_dir()]
+    except Exception:
+        return []
+
+
 def _append_missing_sane_path_entries(existing_path: str) -> str:
     """Return a normalised POSIX PATH with missing sane entries appended.
 
@@ -886,6 +1185,11 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
     - **Duplicates are collapsed** (first occurrence wins), so a caller PATH
       that already contains repeats is not propagated verbatim.
 
+    Hermes-managed runtime dirs are appended alongside the sane entries, not
+    prepended: a tool the user deliberately put on their own PATH still wins,
+    and the managed one only fills the gap where there would otherwise be
+    nothing.
+
     For a well-formed PATH (no empties, no duplicates) the leading segment is
     byte-identical to the input and ordering is preserved; only the missing
     sane entries are appended. On Windows this is a no-op passthrough (the
@@ -895,6 +1199,9 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
         return existing_path
 
     sane_entries = [entry for entry in _SANE_PATH.split(":") if entry]
+    sane_entries.extend(
+        entry for entry in _managed_runtime_path_entries() if entry not in sane_entries
+    )
     if not existing_path:
         return ":".join(sane_entries)
 
@@ -961,9 +1268,13 @@ def _path_env_key(run_env: dict) -> str | None:
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
-        from tools.env_passthrough import is_env_passthrough as _is_passthrough
+        from tools.env_passthrough import (
+            is_env_passthrough as _is_passthrough,
+            resolve_passthrough_value as _resolve_passthrough_value,
+        )
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
+        _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
     merged = dict(os.environ | env)
     run_env = {}
@@ -975,8 +1286,13 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif _is_hermes_internal_secret(k):
             continue
-        elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
-            run_env[k] = v
+        else:
+            passthrough = _is_passthrough(k)
+            if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+                continue
+            value = _resolve_passthrough_value(k, v) if passthrough else v
+            if value is not None:
+                run_env[k] = value
     path_key = _path_env_key(run_env)
     if path_key is not None:
         new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
@@ -1006,6 +1322,8 @@ def _make_run_env(env: dict) -> dict:
         run_env.pop(_marker, None)
 
     _apply_windows_msys_bash_env_defaults(run_env)
+
+    run_env = _scrub_delegated_child_kanban_env(run_env)
 
     return run_env
 
@@ -1101,10 +1419,11 @@ class LocalEnvironment(BaseEnvironment):
     CWD persists via file-based read after each command.
     """
 
+    _profile_scoped_passthrough = True
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
-        if cwd:
-            cwd = os.path.expanduser(cwd)
-        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        cwd = _resolve_local_initial_cwd(cwd)
+        super().__init__(cwd=cwd, timeout=timeout, env=env)
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -1314,31 +1633,14 @@ class LocalEnvironment(BaseEnvironment):
                 pass
 
     def _update_cwd(self, result: dict):
-        """Read CWD from temp file (local-only, no round-trip needed).
+        """Update cwd from the stdout marker emitted by the wrapped command.
 
-        Skip the assignment when the path no longer exists as a directory —
-        ``pwd -P`` on a deleted cwd can leave a stale value in the marker
-        file, and propagating it would re-wedge the next ``Popen``.  The
-        ``_run_bash`` recovery path will resolve a safe fallback if needed.
-
-        On Windows, the value written by Git Bash's ``pwd -P`` is in
-        MSYS form (``/c/Users/x``). Translate it to native Windows form
-        before validating with ``os.path.isdir`` and before storing on
-        ``self.cwd``; otherwise the isdir check rejects every valid
-        result and ``_run_bash`` later prints a misleading "cwd is
-        missing" warning on every command.
+        The base command wrapper already appends ``pwd -P`` to stdout inside a
+        session-specific marker, so the local backend can share the same parser
+        as remote backends instead of re-reading the temp file it just wrote.
+        ``_extract_cwd_from_output`` keeps the local Windows normalization and
+        stale-path rollback semantics intact.
         """
-        try:
-            with open(self._cwd_file, encoding="utf-8") as f:
-                cwd_path = f.read().strip()
-            if _IS_WINDOWS:
-                cwd_path = _msys_to_windows_path(cwd_path)
-            if cwd_path and os.path.isdir(cwd_path):
-                self.cwd = cwd_path
-        except (OSError, FileNotFoundError):
-            pass
-
-        # Still strip the marker from output so it's not visible
         self._extract_cwd_from_output(result)
 
     def _extract_cwd_from_output(self, result: dict):

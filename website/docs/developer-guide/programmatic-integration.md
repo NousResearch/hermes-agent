@@ -28,7 +28,8 @@ Full lifecycle, event bridge, and approval flow: [ACP Internals](./acp-internals
 
 ```bash
 hermes acp                  # serve ACP on stdio
-hermes acp --bootstrap      # print install snippet for an ACP-capable IDE
+hermes acp --check          # verify ACP dependencies and adapter imports
+hermes acp --setup          # interactive provider/model setup for ACP terminal auth
 ```
 
 ---
@@ -95,10 +96,35 @@ POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/stop          Interrupt the run
 GET  /v1/capabilities            Machine-readable feature flags
 GET  /v1/models                  Lists hermes-agent
+GET  /api/model/options          Provider-aware picker inventory
 GET  /health, /health/detailed
 ```
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
+
+### Model catalog surfaces
+
+The OpenAI-compatible API intentionally keeps `GET /v1/models` minimal: it is
+the compatibility endpoint frontends expect, not the full Hermes provider/model
+picker catalog.
+
+If an external control plane needs Hermes' curated provider rows, per-model
+pricing, or capability hints, use one of the authenticated picker surfaces:
+
+- API server REST: `GET /api/model/options` with the API-server bearer key
+- Dashboard backend REST: `GET /api/model/options` with `X-Hermes-Session-Token`
+- TUI gateway RPC: `model.options`
+
+Those surfaces share the same payload builder and the same custom-provider
+probe policy:
+
+- Normal open: probe only the current custom provider so offline saved
+  endpoints do not stall the picker.
+- Explicit refresh (`refresh=1` or `refresh: true`): bust the provider-model
+  cache and probe all saved custom providers so live catalogs repopulate fully.
+
+Use `/v1/models` for OpenAI-client compatibility. Use `/api/model/options` or
+`model.options` when you are building a Hermes-aware model picker.
 
 ---
 
@@ -118,7 +144,7 @@ Mid-session model switching works on every surface — it's the `/model` slash c
 - **CLI / TUI:** `/model claude-sonnet-4` or `/model openrouter:anthropic/claude-sonnet-4.6`
 - **TUI gateway RPC:** `command.dispatch` with `{"command": "/model claude-sonnet-4"}`
 - **ACP:** the IDE sends the slash command as a prompt; the agent dispatches it
-- **API server:** include a `model` field in the request body or set `X-Hermes-Model`
+- **API server:** include a `model` field in the request body
 
 Provider-aware resolution (the same model name picks the right format for whatever provider you're on) is built in. See `hermes_cli/model_switch.py`.
 

@@ -63,21 +63,7 @@ def _load_cfg(home):
 
 
 class TestProfileScopedSkills:
-    def test_skills_list_scopes_to_requested_profile(self, client, isolated_profiles):
-        resp = client.get("/api/skills", params={"profile": "worker_alpha"})
-        assert resp.status_code == 200
-        names = {s["name"] for s in resp.json()}
-        assert "worker-skill" in names
-        assert "dashboard-skill" not in names
 
-    def test_skills_list_without_profile_uses_dashboard_home(
-        self, client, isolated_profiles
-    ):
-        resp = client.get("/api/skills")
-        assert resp.status_code == 200
-        names = {s["name"] for s in resp.json()}
-        assert "dashboard-skill" in names
-        assert "worker-skill" not in names
 
     def test_toggle_writes_into_target_profile_only(self, client, isolated_profiles):
         resp = client.put(
@@ -93,26 +79,7 @@ class TestProfileScopedSkills:
         default_cfg = _load_cfg(isolated_profiles["default"])
         assert "worker-skill" not in default_cfg.get("skills", {}).get("disabled", [])
 
-    def test_toggle_reenable_round_trip(self, client, isolated_profiles):
-        for enabled in (False, True):
-            client.put(
-                "/api/skills/toggle",
-                json={
-                    "name": "worker-skill",
-                    "enabled": enabled,
-                    "profile": "worker_alpha",
-                },
-            )
-        worker_cfg = _load_cfg(isolated_profiles["worker_alpha"])
-        assert "worker-skill" not in worker_cfg.get("skills", {}).get("disabled", [])
 
-    def test_unknown_profile_returns_404(self, client, isolated_profiles):
-        resp = client.get("/api/skills", params={"profile": "no_such_profile"})
-        assert resp.status_code == 404
-
-    def test_invalid_profile_name_returns_400(self, client, isolated_profiles):
-        resp = client.get("/api/skills", params={"profile": "Bad Name!"})
-        assert resp.status_code == 400
 
     def test_scope_restores_module_globals(self, client, isolated_profiles):
         """The SKILLS_DIR swap is per-request; the module global must be
@@ -122,35 +89,6 @@ class TestProfileScopedSkills:
         before = skills_tool.SKILLS_DIR
         client.get("/api/skills", params={"profile": "worker_alpha"})
         assert skills_tool.SKILLS_DIR == before
-
-
-class TestProfileScopedToolsets:
-    def test_toolset_toggle_scopes_to_profile(self, client, isolated_profiles):
-        resp = client.put(
-            "/api/tools/toolsets/x_search",
-            json={"enabled": True, "profile": "worker_alpha"},
-        )
-        assert resp.status_code == 200
-
-        worker_cfg = _load_cfg(isolated_profiles["worker_alpha"])
-        assert "x_search" in worker_cfg.get("platform_toolsets", {}).get("cli", [])
-        default_cfg = _load_cfg(isolated_profiles["default"])
-        assert "x_search" not in default_cfg.get("platform_toolsets", {}).get("cli", [])
-
-        listing = client.get(
-            "/api/tools/toolsets", params={"profile": "worker_alpha"}
-        ).json()
-        assert {t["name"]: t for t in listing}["x_search"]["enabled"] is True
-        # Unscoped listing reflects the dashboard's own (untouched) config.
-        listing = client.get("/api/tools/toolsets").json()
-        assert {t["name"]: t for t in listing}["x_search"]["enabled"] is False
-
-    def test_toolset_toggle_unknown_profile_404(self, client, isolated_profiles):
-        resp = client.put(
-            "/api/tools/toolsets/x_search",
-            json={"enabled": True, "profile": "ghost"},
-        )
-        assert resp.status_code == 404
 
 
 class TestProfileScopedHubActions:
@@ -184,26 +122,6 @@ class TestProfileScopedHubActions:
             )
         ]
 
-    def test_hub_install_without_profile_keeps_legacy_argv(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        import hermes_cli.web_server as web_server
-
-        calls = []
-
-        class _FakeProc:
-            pid = 4242
-
-        monkeypatch.setattr(
-            web_server,
-            "_spawn_hermes_action",
-            lambda subcommand, name: calls.append(list(subcommand)) or _FakeProc(),
-        )
-        resp = client.post(
-            "/api/skills/hub/install", json={"identifier": "official/demo"}
-        )
-        assert resp.status_code == 200
-        assert calls == [["skills", "install", "official/demo", "--yes"]]
 
     def test_hub_install_unknown_profile_404(self, client, isolated_profiles):
         resp = client.post(

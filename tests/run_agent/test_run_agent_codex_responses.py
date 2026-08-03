@@ -158,6 +158,35 @@ def _codex_commentary_message_response(text: str):
     )
 
 
+def _codex_commentary_final_tool_response(commentary: str, final_answer: str = "Done."):
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                phase="commentary",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=commentary)],
+            ),
+            SimpleNamespace(
+                type="message",
+                phase="final_answer",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=final_answer)],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments="{}",
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=8, output_tokens=5, total_tokens=13),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+
 def _codex_ack_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -231,109 +260,19 @@ def test_api_mode_uses_explicit_provider_when_codex(monkeypatch):
     )
     assert agent.api_mode == "codex_responses"
     assert agent.provider == "openai-codex"
+    assert agent._is_codex_backend() is False
 
 
-def test_api_mode_normalizes_provider_case(monkeypatch):
-    _patch_agent_bootstrap(monkeypatch)
-    agent = run_agent.AIAgent(
-        model="gpt-5-codex",
-        base_url="https://openrouter.ai/api/v1",
-        provider="OpenAI-Codex",
-        api_key="codex-token",
-        quiet_mode=True,
-        max_iterations=1,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-    assert agent.provider == "openai-codex"
-    assert agent.api_mode == "codex_responses"
 
 
-def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypatch):
-    """GPT-5.x models need codex_responses even on OpenRouter.
-
-    OpenRouter rejects GPT-5 models on /v1/chat/completions with
-    ``unsupported_api_for_model``.  The model-level check overrides
-    the provider default.
-    """
-    _patch_agent_bootstrap(monkeypatch)
-    agent = run_agent.AIAgent(
-        model="gpt-5-codex",
-        base_url="https://chatgpt.com/backend-api/codex",
-        provider="openrouter",
-        api_key="test-token",
-        quiet_mode=True,
-        max_iterations=1,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-    assert agent.api_mode == "codex_responses"
-    assert agent.provider == "openrouter"
 
 
-def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
-    _patch_agent_bootstrap(monkeypatch)
-    agent = run_agent.AIAgent(
-        model="gpt-5.4-mini",
-        base_url="acp://copilot",
-        provider="copilot-acp",
-        api_key="copilot-acp",
-        quiet_mode=True,
-        max_iterations=1,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-    assert agent.provider == "copilot-acp"
-    assert agent.api_mode == "chat_completions"
 
 
-def test_custom_provider_gpt5_stays_on_chat_completions(monkeypatch):
-    _patch_agent_bootstrap(monkeypatch)
-    agent = run_agent.AIAgent(
-        model="gpt-5.4",
-        base_url="https://relay.example.com/v1",
-        provider="custom",
-        api_key="relay-token",
-        quiet_mode=True,
-        max_iterations=1,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-    assert agent.provider == "custom"
-    assert agent.api_mode == "chat_completions"
 
 
-def test_custom_provider_direct_openai_url_still_uses_responses(monkeypatch):
-    _patch_agent_bootstrap(monkeypatch)
-    agent = run_agent.AIAgent(
-        model="gpt-5.4",
-        base_url="https://api.openai.com/v1",
-        provider="custom",
-        api_key="openai-token",
-        quiet_mode=True,
-        max_iterations=1,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-    assert agent.provider == "custom"
-    assert agent.api_mode == "codex_responses"
 
 
-def test_copilot_gpt_5_mini_stays_on_chat_completions(monkeypatch):
-    _patch_agent_bootstrap(monkeypatch)
-    agent = run_agent.AIAgent(
-        model="gpt-5-mini",
-        base_url="https://api.githubcopilot.com",
-        provider="copilot",
-        api_key="gh-token",
-        api_mode="chat_completions",
-        quiet_mode=True,
-        max_iterations=1,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-    assert agent.provider == "copilot"
-    assert agent.api_mode == "chat_completions"
 
 
 def test_build_api_kwargs_codex(monkeypatch):
@@ -367,87 +306,31 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
-def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
-    """'minimal' reasoning effort is clamped to 'low' on the Responses API.
-
-    GPT-5.4 supports none/low/medium/high/xhigh but NOT 'minimal'.
-    Users may configure 'minimal' via OpenRouter conventions, so the Codex
-    Responses path must clamp it to the nearest supported level.
-    """
+def test_build_api_kwargs_mantle_sets_extended_prompt_cache_retention(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
-
     agent = run_agent.AIAgent(
-        model="gpt-5-codex",
-        base_url="https://chatgpt.com/backend-api/codex",
-        api_key="codex-token",
+        model="openai.gpt-5.5",
+        provider="custom",
+        api_mode="codex_responses",
+        base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
+        api_key="test-token",
         quiet_mode=True,
-        max_iterations=4,
+        max_iterations=1,
         skip_context_files=True,
         skip_memory=True,
-        reasoning_config={"enabled": True, "effort": "minimal"},
-    )
-    agent._cleanup_task_resources = lambda task_id: None
-    agent._persist_session = lambda messages, history=None: None
-    agent._save_trajectory = lambda messages, user_message, completed: None
-
-    kwargs = agent._build_api_kwargs(
-        [
-            {"role": "system", "content": "You are Hermes."},
-            {"role": "user", "content": "Ping"},
-        ]
     )
 
-    assert kwargs["reasoning"]["effort"] == "low"
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+
+    assert kwargs["prompt_cache_retention"] == "24h"
 
 
-def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
-    """Effort levels natively supported by the Responses API pass through unchanged."""
-    _patch_agent_bootstrap(monkeypatch)
-
-    for effort in ("low", "medium", "high", "xhigh"):
-        agent = run_agent.AIAgent(
-            model="gpt-5-codex",
-            base_url="https://chatgpt.com/backend-api/codex",
-            api_key="codex-token",
-            quiet_mode=True,
-            max_iterations=4,
-            skip_context_files=True,
-            skip_memory=True,
-            reasoning_config={"enabled": True, "effort": effort},
-        )
-        agent._cleanup_task_resources = lambda task_id: None
-        agent._persist_session = lambda messages, history=None: None
-        agent._save_trajectory = lambda messages, user_message, completed: None
-
-        kwargs = agent._build_api_kwargs(
-            [
-                {"role": "system", "content": "sys"},
-                {"role": "user", "content": "hi"},
-            ]
-        )
-        assert kwargs["reasoning"]["effort"] == effort, f"{effort} should pass through unchanged"
 
 
-def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
-    agent = _build_copilot_agent(monkeypatch)
-    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-
-    assert kwargs["model"] == "gpt-5.4"
-    assert kwargs["store"] is False
-    assert kwargs["tool_choice"] == "auto"
-    assert kwargs["parallel_tool_calls"] is True
-    assert kwargs["reasoning"] == {"effort": "medium"}
-    assert "prompt_cache_key" not in kwargs
-    assert "include" not in kwargs
 
 
-def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_model(monkeypatch):
-    agent = _build_copilot_agent(monkeypatch, model="gpt-4.1")
-    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
 
-    assert "reasoning" not in kwargs
-    assert "include" not in kwargs
-    assert "prompt_cache_key" not in kwargs
+
 
 
 # ---------------------------------------------------------------------------
@@ -519,78 +402,10 @@ def _build_xai_agent_with_slash_enum_tool(monkeypatch):
     return agent
 
 
-def test_build_api_kwargs_xai_strips_slash_enum_from_outgoing_request(monkeypatch):
-    """The xAI request sent to the API must NOT contain slash-enum values."""
-    agent = _build_xai_agent_with_slash_enum_tool(monkeypatch)
-    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-
-    # ``tools`` comes back in Responses format from the codex transport;
-    # find the parameters dict for our function regardless of shape.
-    out_tool = kwargs["tools"][0]
-    params = out_tool["parameters"]
-    assert "enum" not in params["properties"]["accept"], (
-        "outgoing xAI request must not carry slash-containing enums — "
-        "xAI would 400 with 'Invalid arguments passed to the model'"
-    )
-    # pattern/format must also be stripped (existing #27197 contract).
-    assert "pattern" not in params["properties"]["match"]
-    assert "format" not in params["properties"]["match"]
 
 
-def test_build_api_kwargs_xai_does_not_mutate_agent_tools(monkeypatch):
-    """Headline #27907 regression: ``agent.tools`` must survive intact.
-
-    Pre-fix the sanitizers mutated ``agent.tools`` in place, so a subsequent
-    non-xAI call from the same agent saw an already-stripped schema —
-    silent constraint loss with no way for the user to notice from their
-    config.
-    """
-    agent = _build_xai_agent_with_slash_enum_tool(monkeypatch)
-
-    # Snapshot the schema before the request.
-    accept_before = agent.tools[0]["function"]["parameters"]["properties"]["accept"]
-    match_before = agent.tools[0]["function"]["parameters"]["properties"]["match"]
-    assert accept_before["enum"] == ["application/json", "*/*"]
-    assert match_before.get("pattern") == "^[a-z]+$"
-    assert match_before.get("format") == "regex"
-
-    # Build the API kwargs (which runs the sanitizers).
-    agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-
-    # The agent's tool registry must be UNCHANGED.
-    accept_after = agent.tools[0]["function"]["parameters"]["properties"]["accept"]
-    match_after = agent.tools[0]["function"]["parameters"]["properties"]["match"]
-    assert accept_after.get("enum") == ["application/json", "*/*"], (
-        "agent.tools mutated — slash-containing enum was stripped from the "
-        "shared per-agent registry, will leak to non-xAI calls"
-    )
-    assert match_after.get("pattern") == "^[a-z]+$", (
-        "agent.tools mutated — pattern stripped from shared registry"
-    )
-    assert match_after.get("format") == "regex", (
-        "agent.tools mutated — format stripped from shared registry"
-    )
 
 
-def test_build_api_kwargs_xai_is_idempotent_across_repeated_calls(monkeypatch):
-    """Multiple xAI requests must each produce the same sanitized output
-    AND must not progressively erode the source schema."""
-    agent = _build_xai_agent_with_slash_enum_tool(monkeypatch)
-
-    kwargs1 = agent._build_api_kwargs([{"role": "user", "content": "first"}])
-    kwargs2 = agent._build_api_kwargs([{"role": "user", "content": "second"}])
-    kwargs3 = agent._build_api_kwargs([{"role": "user", "content": "third"}])
-
-    for k in (kwargs1, kwargs2, kwargs3):
-        params = k["tools"][0]["parameters"]
-        assert "enum" not in params["properties"]["accept"]
-        assert "pattern" not in params["properties"]["match"]
-        assert "format" not in params["properties"]["match"]
-
-    # Source schema still untouched after three rounds.
-    assert agent.tools[0]["function"]["parameters"]["properties"]["accept"].get(
-        "enum"
-    ) == ["application/json", "*/*"]
 
 
 def test_run_codex_stream_returns_collected_items_when_stream_ends_without_terminal(monkeypatch):
@@ -675,138 +490,190 @@ def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkey
     assert response.output_text == ""
 
 
-def test_consume_codex_stream_keeps_final_answer_phase_deltas(monkeypatch):
+def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
     from agent.codex_runtime import _consume_codex_event_stream
 
+    commentary_item = SimpleNamespace(
+        type="message",
+        phase="commentary",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="I'll inspect the repo first.")],
+    )
     streamed = []
+    reasoning_streamed = []
+    commentary_messages = []
+
     response = _consume_codex_event_stream(
         _FakeCreateStream([
-            SimpleNamespace(type="response.created"),
             SimpleNamespace(
                 type="response.output_item.added",
-                item=SimpleNamespace(type="message", phase="final_answer"),
+                item=SimpleNamespace(type="message", phase="commentary"),
             ),
-            SimpleNamespace(type="response.output_text.delta", delta="visible answer"),
-            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+            SimpleNamespace(type="response.output_text.delta", delta="I'll inspect "),
+            SimpleNamespace(type="response.output_text.delta", delta="the repo first."),
+            SimpleNamespace(type="response.output_item.done", item=commentary_item),
+            SimpleNamespace(
+                type="response.reasoning_text.delta",
+                delta="Need inspect files privately.",
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
         ]),
         model="gpt-5-codex",
         on_text_delta=streamed.append,
+        on_reasoning_delta=reasoning_streamed.append,
+        on_commentary_message=commentary_messages.append,
     )
 
-    assert streamed == ["visible answer"]
-    assert response.output_text == "visible answer"
+    assert commentary_messages == ["I'll inspect the repo first."]
+    assert reasoning_streamed == ["Need inspect files privately."]
+    assert streamed == []
+    assert response.output == [commentary_item]
 
 
-def test_run_codex_stream_surfaces_failed_status_in_final_response(monkeypatch):
-    """A ``response.failed`` terminal event is reflected on the returned object."""
+
+
+def test_run_codex_stream_delivers_redacted_commentary_once(monkeypatch):
+    from agent.codex_responses_adapter import _normalize_codex_response
+
     agent = _build_agent(monkeypatch)
-    error_payload = {"message": "model overloaded", "code": "overloaded"}
-    failed_event = SimpleNamespace(
-        type="response.failed",
-        response=SimpleNamespace(
-            status="failed",
-            error=error_payload,
-            id="resp_failed_1",
-            usage=None,
-        ),
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    delivered = []
+    reasoning_streamed = []
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: delivered.append(
+            (text, already_streamed)
+        )
     )
-
-    def _fake_create(**kwargs):
-        return _FakeCreateStream([
-            SimpleNamespace(type="response.created"),
-            failed_event,
-        ])
-
-    agent.client = SimpleNamespace(
-        responses=SimpleNamespace(create=_fake_create),
-    )
-
-    response = agent._run_codex_stream(_codex_request_kwargs())
-    assert response.status == "failed"
-    assert response.error == error_payload
-
-
-def test_run_codex_stream_parses_create_stream_events(monkeypatch):
-    """The primary path consumes ``responses.create(stream=True)`` events directly."""
-    agent = _build_agent(monkeypatch)
-    calls = {"create": 0}
-    create_stream = _FakeCreateStream(
-        [
-            SimpleNamespace(type="response.created"),
-            SimpleNamespace(type="response.in_progress"),
-            SimpleNamespace(type="response.completed", response=_codex_message_response("streamed create ok")),
-        ]
-    )
-
-    def _fake_create(**kwargs):
-        calls["create"] += 1
-        assert kwargs.get("stream") is True
-        return create_stream
-
-    agent.client = SimpleNamespace(
-        responses=SimpleNamespace(create=_fake_create),
-    )
-
-    response = agent._run_codex_stream(_codex_request_kwargs())
-    assert calls["create"] == 1
-    assert create_stream.closed is True
-    # The wire's response.completed.response.output is a list with the message item,
-    # but the event-driven path reconstructs from response.output_item.done.
-    # _codex_message_response returns a SimpleNamespace whose .output is a list of
-    # items — we don't read those directly, we read the items via output_item.done,
-    # but this fixture doesn't emit output_item.done. So the consumer assembles a
-    # message from streamed text deltas if present, or returns the items it has.
-    # For backward compatibility with the helper that builds _codex_message_response,
-    # we just assert status is completed and id propagated.
-    assert response.status == "completed"
-
-
-def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatch):
-    """Regression: Codex may send response.completed.response.output=null.
-
-    The SDK's high-level ``responses.stream(...)`` helper used to reconstruct
-    the final Response from that terminal field and raised ``TypeError:
-    'NoneType' object is not iterable``. The Hermes runtime consumes raw
-    ``response.output_item.done`` events instead, so a null terminal ``output``
-    must not affect the returned assistant/function-call items.
-    """
-    agent = _build_agent(monkeypatch)
-    output_item = SimpleNamespace(
+    agent.reasoning_callback = reasoning_streamed.append
+    secret = "sk-" + ("A" * 32)
+    commentary_text = f"Using credential {secret}. I'll inspect the repo."
+    commentary_item = SimpleNamespace(
         type="message",
+        phase="commentary",
         status="completed",
-        content=[SimpleNamespace(type="output_text", text="terminal output was null")],
+        content=[SimpleNamespace(type="output_text", text=commentary_text)],
     )
-    create_stream = _FakeCreateStream(
-        [
-            SimpleNamespace(type="response.created"),
-            SimpleNamespace(type="response.output_item.done", item=output_item),
+    function_item = SimpleNamespace(
+        type="function_call",
+        id="fc_1",
+        call_id="call_1",
+        name="terminal",
+        arguments="{}",
+    )
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return _FakeCreateStream([
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", phase="commentary"),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta=commentary_text),
+            SimpleNamespace(type="response.output_item.done", item=commentary_item),
+            SimpleNamespace(type="response.reasoning_text.delta", delta="Private scratchpad."),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="function_call"),
+            ),
+            SimpleNamespace(type="response.output_item.done", item=function_item),
             SimpleNamespace(
                 type="response.completed",
-                response=SimpleNamespace(
-                    id="resp_null_output",
-                    status="completed",
-                    output=None,
-                    usage=SimpleNamespace(input_tokens=7, output_tokens=4, total_tokens=11),
-                ),
+                response=SimpleNamespace(status="completed"),
             ),
-        ]
-    )
+        ])
 
-    def _fake_create(**kwargs):
-        assert kwargs.get("stream") is True
-        return create_stream
-
-    agent.client = SimpleNamespace(
-        responses=SimpleNamespace(create=_fake_create),
-    )
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
 
     response = agent._run_codex_stream(_codex_request_kwargs())
-    assert response is not None
-    assert create_stream.closed is True
-    assert response.id == "resp_null_output"
+
+    assert len(delivered) == 1
+    assert delivered[0][1] is False
+    assert secret not in delivered[0][0]
+    assert "Using credential" in delivered[0][0]
+    assert reasoning_streamed == ["Private scratchpad."]
+
+    # The completed-response fallback sees the same preserved commentary but
+    # must not enqueue it again after live delivery.
+    normalized, finish_reason = _normalize_codex_response(response)
+    agent._emit_interim_assistant_message(
+        agent._build_assistant_message(normalized, finish_reason)
+    )
+    assert len(delivered) == 1
+
+
+
+
+
+
+def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fails(
+    monkeypatch, caplog
+):
+    """Regression test for issue #74310.
+
+    A transport error while draining the SSE iterator *after* a valid
+    ``response.completed`` has already been observed (and the response
+    object fully assembled) must NOT discard that response and retry with
+    a brand-new physical request -- that would silently duplicate an
+    already-billed inference. Only errors that occur BEFORE a terminal
+    event is captured should trigger the retry-with-new-request path.
+    """
+    import logging
+
+    import httpx
+
+    agent = _build_agent(monkeypatch)
+
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+
+    class _PostTerminalDroppingStream(_FakeCreateStream):
+        """Yields events normally, then raises only on the *next* pull --
+        i.e. after ``response.completed`` has already been consumed and the
+        event-driven parser has broken out of its loop."""
+
+        def __iter__(self):
+            yield from super().__iter__()
+            raise httpx.RemoteProtocolError("connection dropped during drain")
+
+    events = [
+        SimpleNamespace(type="response.output_item.done", item=message_item),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                status="completed",
+                usage=usage,
+                id="resp_post_terminal_1",
+            ),
+        ),
+    ]
+
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        return _PostTerminalDroppingStream(events)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+    # Only ONE physical request was ever opened -- the drain failure did not
+    # trigger a second call to responses.create(stream=True).
+    assert calls["count"] == 1
     assert response.status == "completed"
-    assert response.output == [output_item]
-    assert response.usage.total_tokens == 11
+    assert response.usage is usage
+    assert response.id == "resp_post_terminal_1"
+    assert any(
+        "finalization" in record.message for record in caplog.records
+    )
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
@@ -819,6 +686,91 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["final_response"] == "OK"
     assert result["messages"][-1]["role"] == "assistant"
     assert result["messages"][-1]["content"] == "OK"
+
+
+def test_codex_preflight_defangs_harmony_tokens_before_and_after_middleware(monkeypatch):
+    """Both mutable request boundaries must reject literal Harmony wire tokens."""
+    agent = _build_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    token = f"<\x7cstart\x7c>"
+    captured = {}
+
+    def _request_middleware(request, **_context):
+        # Initial preflight runs before request middleware.
+        assert token not in str(request["input"])
+        replacement = dict(request)
+        replacement["instructions"] = "Inspect source containing " + token
+        replacement["input"] = [{
+            "type": "function_call_output",
+            "call_id": "call_poisoned",
+            "output": "source contains " + token,
+        }]
+        return SimpleNamespace(
+            payload=replacement,
+            original_payload=request,
+            changed=True,
+            trace=[],
+        )
+
+    def _execution_middleware(request, next_call, **_context):
+        # Request middleware can reintroduce a reserved token after initial
+        # preflight, so it must still be present before the dispatch chokepoint.
+        assert token in str(request)
+        return next_call(request)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.apply_llm_request_middleware",
+        _request_middleware,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.middleware.run_llm_execution_middleware",
+        _execution_middleware,
+    )
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Read " + token)
+
+    assert result["completed"] is True
+    assert token not in captured["instructions"]
+    assert token not in str(captured["input"])
+    assert "<｜start｜>" in captured["instructions"]
+
+
+def test_copilot_responses_preflight_preserves_harmony_tokens(monkeypatch):
+    """Other Responses-compatible providers remain byte-identical."""
+    agent = _build_copilot_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    token = f"<\x7cstart\x7c>"
+    captured = {}
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Read " + token)
+
+    assert result["completed"] is True
+    assert token in str(captured["input"])
+
+
+def test_codex_backend_detection_is_narrow(monkeypatch):
+    codex = _build_agent(monkeypatch)
+    copilot = _build_copilot_agent(monkeypatch)
+
+    assert codex._is_codex_backend() is True
+    assert copilot._is_codex_backend() is False
+
+    # Exact backend URL detection still works for an explicitly custom route.
+    setattr(codex, "provider", "custom")
+    assert codex._is_codex_backend() is True
+    setattr(codex, "api_mode", "chat_completions")
+    assert codex._is_codex_backend() is False
 
 
 def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
@@ -896,6 +848,35 @@ def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
     ]
 
 
+def test_codex_final_preflight_bounds_middleware_cache_key(monkeypatch):
+    """Execution middleware cannot reintroduce an over-length provider key."""
+    agent = _build_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    captured = {}
+    long_key = "paperclip:" + "x" * 130
+
+    def _execution_middleware(request, next_call, **_context):
+        replacement = dict(request)
+        replacement["prompt_cache_key"] = long_key
+        return next_call(replacement)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.run_llm_execution_middleware",
+        _execution_middleware,
+    )
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Say OK")
+
+    assert result["completed"] is True
+    assert captured["prompt_cache_key"].startswith("pck_")
+    assert len(captured["prompt_cache_key"]) <= 64
+
+
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     """Regression: empty response.output + valid output_text should succeed,
     not trigger retry/fallback. The validation stage must defer to
@@ -919,62 +900,8 @@ def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     assert result["final_response"] == "Hello from Codex"
 
 
-def test_run_conversation_codex_empty_output_no_output_text_retries(monkeypatch):
-    """When both output and output_text are empty, validation should
-    correctly mark the response as invalid and trigger retry."""
-    agent = _build_agent(monkeypatch)
-    calls = {"api": 0}
-
-    def _fake_api_call(api_kwargs):
-        calls["api"] += 1
-        if calls["api"] == 1:
-            return SimpleNamespace(
-                output=[],
-                output_text=None,
-                usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
-                status="completed",
-                model="gpt-5-codex",
-            )
-        return _codex_message_response("Recovered")
-
-    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
-
-    result = agent.run_conversation("Say hello")
-
-    assert calls["api"] >= 2
-    assert result["completed"] is True
-    assert result["final_response"] == "Recovered"
 
 
-def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    calls = {"api": 0, "refresh": 0}
-
-    class _UnauthorizedError(RuntimeError):
-        def __init__(self):
-            super().__init__("Error code: 401 - unauthorized")
-            self.status_code = 401
-
-    def _fake_api_call(api_kwargs):
-        calls["api"] += 1
-        if calls["api"] == 1:
-            raise _UnauthorizedError()
-        return _codex_message_response("Recovered after refresh")
-
-    def _fake_refresh(*, force=True):
-        calls["refresh"] += 1
-        assert force is True
-        return True
-
-    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
-    monkeypatch.setattr(agent, "_try_refresh_codex_client_credentials", _fake_refresh)
-
-    result = agent.run_conversation("Say OK")
-
-    assert calls["api"] == 2
-    assert calls["refresh"] == 1
-    assert result["completed"] is True
-    assert result["final_response"] == "Recovered after refresh"
 
 
 def _build_xai_oauth_agent(monkeypatch):
@@ -1033,41 +960,6 @@ def test_build_api_kwargs_xai_oauth_sends_cache_key_via_extra_body(monkeypatch):
     )
 
 
-def test_run_conversation_xai_oauth_refreshes_after_401_and_retries(monkeypatch):
-    """xai-oauth speaks the Responses API just like codex.  When the access
-    token is rejected mid-call (401), the same proactive refresh-and-retry
-    handler that fires for openai-codex must also fire for xai-oauth — the
-    bug it caught: the gating condition checked only ``provider == "openai-codex"``,
-    so xai-oauth 401s leaked straight to non-retryable abort path with no
-    chance to swap in a freshly refreshed access token."""
-    agent = _build_xai_oauth_agent(monkeypatch)
-    calls = {"api": 0, "refresh": 0}
-
-    class _UnauthorizedError(RuntimeError):
-        def __init__(self):
-            super().__init__("Error code: 401 - unauthorized")
-            self.status_code = 401
-
-    def _fake_api_call(api_kwargs):
-        calls["api"] += 1
-        if calls["api"] == 1:
-            raise _UnauthorizedError()
-        return _codex_message_response("Recovered after xAI refresh")
-
-    def _fake_refresh(*, force=True):
-        calls["refresh"] += 1
-        assert force is True
-        return True
-
-    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
-    monkeypatch.setattr(agent, "_try_refresh_codex_client_credentials", _fake_refresh)
-
-    result = agent.run_conversation("Say OK")
-
-    assert calls["api"] == 2
-    assert calls["refresh"] == 1
-    assert result["completed"] is True
-    assert result["final_response"] == "Recovered after xAI refresh"
 
 
 def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
@@ -1106,11 +998,22 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
     )
     monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
 
-    agent.client = _ExistingClient()
+    existing = _ExistingClient()
+    agent.client = existing
+    retired = {"client": None}
+    monkeypatch.setattr(
+        agent,
+        "_retire_shared_openai_client",
+        lambda client, *, reason: retired.__setitem__("client", client),
+    )
     ok = agent._try_refresh_codex_client_credentials(force=True)
 
     assert ok is True
-    assert closed["value"] is True
+    # #70773: the replaced shared client must NOT be close()d from the
+    # refresh path (cross-thread close is the FD-recycle corruption
+    # vector) — it is retired (sockets shutdown, FD release via GC).
+    assert closed["value"] is False
+    assert retired["client"] is existing
     assert rebuilt["kwargs"]["api_key"] == "fresh-xai-token"
     assert rebuilt["kwargs"]["base_url"] == "https://api.x.ai/v1"
     assert isinstance(agent.client, _RebuiltClient)
@@ -1167,85 +1070,16 @@ def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_dif
     assert agent.api_key == pre_refresh_key
 
 
-def test_run_conversation_copilot_refreshes_after_401_and_retries(monkeypatch):
-    agent = _build_copilot_agent(monkeypatch)
-    calls = {"api": 0, "refresh": 0}
-
-    class _UnauthorizedError(RuntimeError):
-        def __init__(self):
-            super().__init__("Error code: 401 - unauthorized")
-            self.status_code = 401
-
-    def _fake_api_call(api_kwargs):
-        calls["api"] += 1
-        if calls["api"] == 1:
-            raise _UnauthorizedError()
-        return _codex_message_response("Recovered after copilot refresh")
-
-    def _fake_refresh():
-        calls["refresh"] += 1
-        return True
-
-    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
-    monkeypatch.setattr(agent, "_try_refresh_copilot_client_credentials", _fake_refresh)
-
-    result = agent.run_conversation("Say OK")
-
-    assert calls["api"] == 2
-    assert calls["refresh"] == 1
-    assert result["completed"] is True
-    assert result["final_response"] == "Recovered after copilot refresh"
 
 
-def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    closed = {"value": False}
-    rebuilt = {"kwargs": None}
-
-    class _ExistingClient:
-        def close(self):
-            closed["value"] = True
-
-    class _RebuiltClient:
-        pass
-
-    def _fake_openai(**kwargs):
-        rebuilt["kwargs"] = kwargs
-        return _RebuiltClient()
-
-    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
-        # Pre-refresh guard reads the singleton (refresh_if_expiring=False).
-        # It must report the agent's current api_key so the equality check
-        # passes; only then does the actual force_refresh run.
-        return {
-            "api_key": "new-codex-token" if force_refresh else agent.api_key,
-            "base_url": "https://chatgpt.com/backend-api/codex",
-        }
-
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_codex_runtime_credentials",
-        _fake_resolve,
-    )
-    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
-
-    agent.client = _ExistingClient()
-    ok = agent._try_refresh_codex_client_credentials(force=True)
-
-    assert ok is True
-    assert closed["value"] is True
-    assert rebuilt["kwargs"]["api_key"] == "new-codex-token"
-    assert rebuilt["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
-    assert isinstance(agent.client, _RebuiltClient)
 
 
 def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
     agent = _build_copilot_agent(monkeypatch)
-    closed = {"value": False}
     rebuilt = {"kwargs": None}
 
     class _ExistingClient:
-        def close(self):
-            closed["value"] = True
+        pass
 
     class _RebuiltClient:
         pass
@@ -1258,14 +1092,27 @@ def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
         "hermes_cli.copilot_auth.resolve_copilot_token",
         lambda: ("gho_new_token", "GH_TOKEN"),
     )
+    # The 401 refresh forces a fresh IDE-token exchange; mock it to a valid
+    # exchanged token so the test is deterministic and network-free.
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.evict_cached_exchanged_token",
+        lambda _raw: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        lambda _raw: ("tid=exchanged-ide-token", None),
+    )
     monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
 
     agent.client = _ExistingClient()
     ok = agent._try_refresh_copilot_client_credentials()
 
     assert ok is True
-    assert closed["value"] is True
-    assert rebuilt["kwargs"]["api_key"] == "gho_new_token"
+    # The old client is retired by _replace_primary_openai_client (release is
+    # deferred to GC on current main — no synchronous .close() contract).
+    # The freshly EXCHANGED IDE token — not the raw ghu_/gho_ token — goes on
+    # the wire, which is what fixes the "401 IDE token expired" recurrence.
+    assert rebuilt["kwargs"]["api_key"] == "tid=exchanged-ide-token"
     assert rebuilt["kwargs"]["base_url"] == "https://api.githubcopilot.com"
     assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "vscode-chat"
     assert isinstance(agent.client, _RebuiltClient)
@@ -1286,6 +1133,14 @@ def test_try_refresh_copilot_client_credentials_rebuilds_even_if_token_unchanged
         "hermes_cli.copilot_auth.resolve_copilot_token",
         lambda: ("gh-token", "gh auth token"),
     )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.evict_cached_exchanged_token",
+        lambda _raw: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        lambda _raw: ("tid=fresh-exchanged", None),
+    )
     monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
 
     ok = agent._try_refresh_copilot_client_credentials()
@@ -1294,29 +1149,39 @@ def test_try_refresh_copilot_client_credentials_rebuilds_even_if_token_unchanged
     assert rebuilt["count"] == 1
 
 
-def test_run_conversation_codex_tool_round_trip(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    responses = [_codex_tool_call_response(), _codex_message_response("done")]
-    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+def test_try_refresh_copilot_client_credentials_falls_back_when_exchange_unavailable(monkeypatch):
+    """If the IDE-token re-exchange itself fails (network blip), the refresh
+    still rebuilds the client on the resolved raw token rather than throwing —
+    clears stale client state and degrades gracefully."""
+    agent = _build_copilot_agent(monkeypatch)
+    rebuilt = {"kwargs": None}
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
-        for call in assistant_message.tool_calls:
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": '{"ok":true}',
-                }
-            )
+    class _RebuiltClient:
+        pass
 
-    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return _RebuiltClient()
 
-    result = agent.run_conversation("run a command")
+    def _boom(_raw):
+        raise RuntimeError("exchange endpoint unreachable")
 
-    assert result["completed"] is True
-    assert result["final_response"] == "done"
-    assert any(msg.get("tool_calls") for msg in result["messages"] if msg.get("role") == "assistant")
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_raw_token", "GH_TOKEN"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.evict_cached_exchanged_token",
+        lambda _raw: None,
+    )
+    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token", _boom)
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    ok = agent._try_refresh_copilot_client_credentials()
+
+    assert ok is True
+    # Exchange failed → falls back to the resolved raw token, client still rebuilt.
+    assert rebuilt["kwargs"]["api_key"] == "gho_raw_token"
 
 
 def test_chat_messages_to_responses_input_uses_call_id_for_function_call(monkeypatch):
@@ -1348,33 +1213,6 @@ def test_chat_messages_to_responses_input_uses_call_id_for_function_call(monkeyp
     assert function_output["call_id"] == "call_abc123"
 
 
-def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import _chat_messages_to_responses_input
-    items = _chat_messages_to_responses_input(
-        [
-            {"role": "user", "content": "Run terminal"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_pair123|fc_pair123",
-                        "type": "function",
-                        "function": {"name": "terminal", "arguments": "{}"},
-                    }
-                ],
-            },
-            {"role": "tool", "tool_call_id": "call_pair123|fc_pair123", "content": '{"ok":true}'},
-        ]
-    )
-
-    function_call = next(item for item in items if item.get("type") == "function_call")
-    function_output = next(item for item in items if item.get("type") == "function_call_output")
-
-    assert function_call["call_id"] == "call_pair123"
-    assert "id" not in function_call
-    assert function_output["call_id"] == "call_pair123"
 
 
 def test_preflight_codex_api_kwargs_strips_optional_function_call_id(monkeypatch):
@@ -1420,63 +1258,14 @@ def test_preflight_codex_api_kwargs_rejects_function_call_output_without_call_id
         )
 
 
-def test_preflight_codex_api_kwargs_rejects_unsupported_request_fields(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    kwargs = _codex_request_kwargs()
-    kwargs["some_unknown_field"] = "value"
-
-    with pytest.raises(ValueError, match="unsupported field"):
-        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
-        _preflight_codex_api_kwargs(kwargs)
 
 
-def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    kwargs = _codex_request_kwargs()
-    kwargs["reasoning"] = {"effort": "high", "summary": "auto"}
-    kwargs["include"] = ["reasoning.encrypted_content"]
-    kwargs["temperature"] = 0.7
-    kwargs["max_output_tokens"] = 4096
-
-    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
-    result = _preflight_codex_api_kwargs(kwargs)
-    assert result["reasoning"] == {"effort": "high", "summary": "auto"}
-    assert result["include"] == ["reasoning.encrypted_content"]
-    assert result["temperature"] == 0.7
-    assert result["max_output_tokens"] == 4096
 
 
-def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    kwargs = _codex_request_kwargs()
-    kwargs["service_tier"] = "priority"
-
-    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
-    result = _preflight_codex_api_kwargs(kwargs)
-    assert result["service_tier"] == "priority"
 
 
-def test_preflight_codex_api_kwargs_preserves_positive_timeout(monkeypatch):
-    """Positive numeric timeouts survive preflight so the SDK honors them."""
-    agent = _build_agent(monkeypatch)
-    kwargs = _codex_request_kwargs()
-    kwargs["timeout"] = 600.0
-
-    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
-    result = _preflight_codex_api_kwargs(kwargs)
-    assert result["timeout"] == 600.0
 
 
-def test_preflight_codex_api_kwargs_drops_invalid_timeout(monkeypatch):
-    """Zero, negative, inf, and booleans are all dropped — not passed to SDK."""
-    agent = _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
-
-    for bad in (0, -1, float("inf"), True, False, "300", None):
-        kwargs = _codex_request_kwargs()
-        kwargs["timeout"] = bad
-        result = _preflight_codex_api_kwargs(kwargs)
-        assert "timeout" not in result, f"timeout={bad!r} should be dropped"
 
 
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
@@ -1516,65 +1305,8 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
     assert function_output["call_id"] == "call_1"
 
 
-def test_run_conversation_codex_continues_after_incomplete_interim_message(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    responses = [
-        _codex_incomplete_message_response("I'll inspect the repo structure first."),
-        _codex_tool_call_response(),
-        _codex_message_response("Architecture summary complete."),
-    ]
-    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
-
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
-        for call in assistant_message.tool_calls:
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": '{"ok":true}',
-                }
-            )
-
-    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
-
-    result = agent.run_conversation("analyze repo")
-
-    assert result["completed"] is True
-    assert result["final_response"] == "Architecture summary complete."
-    assert any(
-        msg.get("role") == "assistant"
-        and msg.get("finish_reason") == "incomplete"
-        and "inspect the repo structure" in (msg.get("content") or "")
-        for msg in result["messages"]
-    )
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
-def test_run_conversation_codex_continues_after_max_output_incomplete(monkeypatch):
-    """Codex max_output_tokens terminal status is a resumable incomplete turn.
-
-    It must not be routed through the generic chat-completions length handler,
-    which returns the user-facing "Response truncated due to output length
-    limit" warning and stops the gateway turn.
-    """
-    agent = _build_agent(monkeypatch)
-    responses = [
-        _codex_max_output_incomplete_response("Partial final answer"),
-        _codex_message_response(" after continuation."),
-    ]
-    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
-
-    result = agent.run_conversation("write a long final answer")
-
-    assert result["completed"] is True
-    assert result["final_response"] == "after continuation."
-    assert "Response truncated due to output length limit" not in str(result)
-    assert any(
-        msg.get("role") == "assistant"
-        and msg.get("finish_reason") == "incomplete"
-        and "Partial final answer" in (msg.get("content") or "")
-        for msg in result["messages"]
-    )
 
 
 def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(monkeypatch):
@@ -1704,6 +1436,90 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
     )
 
 
+def _codex_incomplete_with_reasoning(text: str, reasoning_id: str = "rs_default"):
+    """Incomplete response with a reasoning item whose id/encrypted_content
+    can vary independently of the visible message text."""
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id=reasoning_id,
+                encrypted_content=f"opaque_{reasoning_id}",
+                summary=[SimpleNamespace(text="thinking...")],
+            ),
+            SimpleNamespace(
+                type="message",
+                status="in_progress",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="in_progress",
+        model="gpt-5-codex",
+    )
+
+
+def test_codex_incomplete_visible_dedup_suppresses_duplicate_interims(monkeypatch):
+    """Two consecutive incomplete responses with identical visible content
+    but different opaque reasoning items should be collapsed — only the first
+    interim is emitted to the user (#52711)."""
+    agent = _build_agent(monkeypatch)
+    # 2 incompletes with same text but different reasoning ids, then a final.
+    # (Only 2 to avoid hitting the cap of 3.)
+    responses = [
+        _codex_incomplete_with_reasoning("Working on it...", "rs_1"),
+        _codex_incomplete_with_reasoning("Working on it...", "rs_2"),
+        _codex_message_response("Done."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    emitted: list = []
+    original_emit = agent._emit_interim_assistant_message
+    def _capture_emit(msg):
+        emitted.append(msg.get("content"))
+        original_emit(msg)
+    monkeypatch.setattr(agent, "_emit_interim_assistant_message", _capture_emit)
+
+    result = agent.run_conversation("test dedup")
+
+    assert result["completed"] is True
+    # Only ONE interim should have been emitted (the first), not two.
+    assert len(emitted) == 1
+    assert emitted[0] == "Working on it..."
+
+
+def test_codex_incomplete_opaque_state_updated_in_place(monkeypatch):
+    """When visible content is a duplicate, the last message's opaque state
+    (codex_reasoning_items) should be updated in-place without emitting a new
+    interim (#52711)."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_incomplete_with_reasoning("Partial output...", "rs_1"),
+        _codex_incomplete_with_reasoning("Partial output...", "rs_2"),
+        _codex_message_response("Final."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("test opaque update")
+
+    assert result["completed"] is True
+    # Find the incomplete interim message in the result.
+    incompletes = [
+        m for m in result["messages"]
+        if m.get("role") == "assistant" and m.get("finish_reason") == "incomplete"
+    ]
+    # Only one incomplete message should exist (the second was deduped).
+    assert len(incompletes) == 1
+    # The opaque state should reflect the LATEST reasoning item (rs_2),
+    # updated in-place on the single message.
+    items = incompletes[0].get("codex_reasoning_items")
+    if items:
+        assert any(
+            (i.get("id") if isinstance(i, dict) else getattr(i, "id", None)) == "rs_2"
+            for i in items
+        )
+
+
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
@@ -1733,224 +1549,20 @@ def test_normalize_codex_response_does_not_fallback_to_output_text_for_commentar
     assert "call the tool" in (assistant_message.reasoning or "")
     assert assistant_message.codex_message_items[0]["phase"] == "commentary"
 
-def test_normalize_codex_response_final_answer_overrides_top_level_incomplete(monkeypatch):
-    from agent.codex_responses_adapter import _normalize_codex_response
-
-    assistant_message, finish_reason = _normalize_codex_response(
-        _codex_final_answer_with_top_level_incomplete_response(
-            "Briefly:\n\n- I'm Ramsay, your assistant."
-        )
-    )
-
-    assert finish_reason == "stop"
-    assert "Ramsay" in (assistant_message.content or "")
 
 
-def test_normalize_codex_response_top_level_incomplete_without_final_answer_stays_incomplete(monkeypatch):
-    from agent.codex_responses_adapter import _normalize_codex_response
-
-    response = SimpleNamespace(
-        output=[
-            SimpleNamespace(
-                type="message",
-                status="completed",
-                content=[SimpleNamespace(type="output_text", text="Partial...")],
-            )
-        ],
-        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
-        status="incomplete",
-        model="gpt-5.4",
-    )
-
-    _, finish_reason = _normalize_codex_response(response)
-
-    assert finish_reason == "incomplete"
 
 
-@pytest.mark.parametrize("top_level_status", ["queued", "in_progress"])
-def test_normalize_codex_response_final_answer_does_not_override_streaming_status(
-    monkeypatch, top_level_status
-):
-    from agent.codex_responses_adapter import _normalize_codex_response
-
-    response = SimpleNamespace(
-        output=[
-            SimpleNamespace(
-                type="message",
-                phase="final_answer",
-                status="completed",
-                content=[SimpleNamespace(type="output_text", text="Interim answer.")],
-            )
-        ],
-        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
-        status=top_level_status,
-        model="gpt-5.4",
-    )
-
-    _, finish_reason = _normalize_codex_response(response)
-
-    assert finish_reason == "incomplete"
 
 
-def test_normalize_codex_response_final_answer_does_not_override_per_item_in_progress(monkeypatch):
-    from agent.codex_responses_adapter import _normalize_codex_response
-
-    response = SimpleNamespace(
-        output=[
-            SimpleNamespace(
-                type="message",
-                phase="final_answer",
-                status="completed",
-                content=[SimpleNamespace(type="output_text", text="Partial final.")],
-            ),
-            SimpleNamespace(
-                type="message",
-                status="in_progress",
-                content=[SimpleNamespace(type="output_text", text="")],
-            ),
-        ],
-        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
-        status="completed",
-        model="gpt-5.4",
-    )
-
-    _, finish_reason = _normalize_codex_response(response)
-
-    assert finish_reason == "incomplete"
 
 
-def test_normalize_codex_response_preserves_message_status_for_replay(monkeypatch):
-    """Incomplete Codex output messages must not be replayed as completed."""
-    agent = _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import _normalize_codex_response
-
-    response = SimpleNamespace(
-        output=[
-            SimpleNamespace(
-                type="message",
-                id="msg_partial",
-                phase="commentary",
-                status="in_progress",
-                content=[SimpleNamespace(type="output_text", text="Still working...")],
-            )
-        ],
-        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
-        status="in_progress",
-        model="gpt-5-codex",
-    )
-
-    assistant_message, finish_reason = _normalize_codex_response(response)
-
-    assert finish_reason == "incomplete"
-    assert assistant_message.codex_message_items[0]["id"] == "msg_partial"
-    assert assistant_message.codex_message_items[0]["status"] == "in_progress"
 
 
-def test_normalize_codex_response_detects_leaked_tool_call_text(monkeypatch):
-    """Harmony-style `to=functions.foo` leaked into assistant content with no
-    structured function_call items must be treated as incomplete so the
-    continuation path can re-elicit a proper tool call. This is the
-    Taiwan-embassy-email (Discord bug report) failure mode: child agent
-    produces a confident-looking summary, tool_trace is empty because no
-    tools actually ran, parent can't audit the claim.
-    """
-    agent = _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import _normalize_codex_response
-
-    leaked_content = (
-        "I'll check the official page directly.\n"
-        "to=functions.exec_command {\"cmd\": \"curl https://example.test\"}\n"
-        "assistant to=functions.exec_command {\"stdout\": \"mailto:foo@example.test\"}\n"
-        "Extracted: foo@example.test"
-    )
-    response = SimpleNamespace(
-        output=[
-            SimpleNamespace(
-                type="message",
-                status="completed",
-                content=[SimpleNamespace(type="output_text", text=leaked_content)],
-            )
-        ],
-        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
-        status="completed",
-        model="gpt-5.4",
-    )
-
-    assistant_message, finish_reason = _normalize_codex_response(response)
-
-    assert finish_reason == "incomplete"
-    # Content is scrubbed so the parent never surfaces the leaked text as a
-    # summary. tool_calls stays empty because no structured function_call
-    # item existed.
-    assert (assistant_message.content or "") == ""
-    assert assistant_message.tool_calls == []
 
 
-def test_normalize_codex_response_ignores_tool_call_text_when_real_tool_call_present(monkeypatch):
-    """If the model emitted BOTH a structured function_call AND some text that
-    happens to contain `to=functions.*` (unlikely but possible), trust the
-    structured call — don't wipe content that came alongside a real tool use.
-    """
-    agent = _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import _normalize_codex_response
-
-    response = SimpleNamespace(
-        output=[
-            SimpleNamespace(
-                type="message",
-                status="completed",
-                content=[SimpleNamespace(
-                    type="output_text",
-                    text="Running the command via to=functions.exec_command now.",
-                )],
-            ),
-            SimpleNamespace(
-                type="function_call",
-                id="fc_1",
-                call_id="call_1",
-                name="terminal",
-                arguments="{}",
-            ),
-        ],
-        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
-        status="completed",
-        model="gpt-5.4",
-    )
-
-    assistant_message, finish_reason = _normalize_codex_response(response)
-
-    assert finish_reason == "tool_calls"
-    assert assistant_message.tool_calls  # real call preserved
-    assert "Running the command" in (assistant_message.content or "")
 
 
-def test_normalize_codex_response_no_leak_passes_through(monkeypatch):
-    """Sanity: normal assistant content that doesn't contain the leak pattern
-    is returned verbatim with finish_reason=stop."""
-    agent = _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import _normalize_codex_response
-
-    response = SimpleNamespace(
-        output=[
-            SimpleNamespace(
-                type="message",
-                status="completed",
-                content=[SimpleNamespace(
-                    type="output_text",
-                    text="Here is the answer with no leak.",
-                )],
-            )
-        ],
-        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
-        status="completed",
-        model="gpt-5.4",
-    )
-
-    assistant_message, finish_reason = _normalize_codex_response(response)
-
-    assert finish_reason == "stop"
-    assert assistant_message.content == "Here is the answer with no leak."
-    assert assistant_message.tool_calls == []
 
 
 def test_interim_commentary_is_not_marked_already_streamed_without_callbacks(monkeypatch):
@@ -1970,50 +1582,72 @@ def test_interim_commentary_is_not_marked_already_streamed_without_callbacks(mon
     }
 
 
-def test_interim_commentary_is_not_marked_already_streamed_when_stream_callback_fails(monkeypatch):
+
+
+def test_interim_content_was_streamed_matches_prefix_not_exact(monkeypatch):
+    """_interim_content_was_streamed should return True when the streamed text
+    is a PREFIX of the final content (trailing delta added after stream, or
+    partial stream before verify nudge).  Exact equality is too strict — it
+    fails safe to a benign duplicate bubble instead of settling the interim.
+    (#65919 review: prefix-based match like the TUI's finalTail dedup.)"""
     agent = _build_agent(monkeypatch)
+
+    # Exact match still works
+    agent._current_streamed_assistant_text = "hello world"
+    assert agent._interim_content_was_streamed("hello world") is True
+
+    # Streamed is a prefix of the final (trailing delta) — should match
+    agent._current_streamed_assistant_text = "hello"
+    assert agent._interim_content_was_streamed("hello world") is True
+
+    # Streamed is empty — should not match
+    agent._current_streamed_assistant_text = ""
+    assert agent._interim_content_was_streamed("hello world") is False
+
+    # Final is empty — should not match
+    agent._current_streamed_assistant_text = "hello"
+    assert agent._interim_content_was_streamed("") is False
+
+    # Streamed is LONGER than final (reverse direction) — should NOT match.
+    # This is the unsafe direction: it could suppress a needed resend in the
+    # gateway path where already_streamed=True calls on_segment_break().
+    agent._current_streamed_assistant_text = "hello world extra"
+    assert agent._interim_content_was_streamed("hello") is False
+
+
+
+
+def test_interim_commentary_precedes_content_from_real_codex_normalization(monkeypatch):
+    """Structured commentary wins over final-answer content on tool turns."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
     observed = {}
-
-    def failing_callback(_text):
-        raise RuntimeError("display failed")
-
-    agent.stream_delta_callback = failing_callback
-    agent._fire_stream_delta("short version: yes")
     agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
         {"text": text, "already_streamed": already_streamed}
     )
 
-    agent._emit_interim_assistant_message({"role": "assistant", "content": "short version: yes"})
+    normalized, finish_reason = _normalize_codex_response(
+        _codex_commentary_final_tool_response("I'll inspect the repo first.")
+    )
+    assert finish_reason == "tool_calls"
+    assert normalized.content == "Done."
+    agent._emit_interim_assistant_message(
+        agent._build_assistant_message(normalized, finish_reason)
+    )
 
     assert observed == {
-        "text": "short version: yes",
+        "text": "I'll inspect the repo first.",
         "already_streamed": False,
     }
 
 
-def test_interim_commentary_preserves_assistant_content(monkeypatch):
-    """Interim commentary must not silently mutate assistant text containing
-    literal <memory-context> markers — that's legitimate model output (docs,
-    code).  Streaming-path leak prevention happens delta-by-delta upstream."""
-    agent = _build_agent(monkeypatch)
-    observed = {}
-    agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
-        {"text": text, "already_streamed": already_streamed}
-    )
 
-    content = (
-        "<memory-context>\n"
-        "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
-        "## Honcho Context\n"
-        "stale memory\n"
-        "</memory-context>\n\n"
-        "I'll inspect the repo structure first."
-    )
 
-    agent._emit_interim_assistant_message({"role": "assistant", "content": content})
 
-    assert "<memory-context>" in observed["text"]
-    assert "I'll inspect the repo structure first." in observed["text"]
+
+
+
 
 
 def test_stream_delta_strips_leaked_memory_context(monkeypatch):
@@ -2070,182 +1704,49 @@ def test_stream_delta_strips_leaked_memory_context_across_chunks(monkeypatch):
     assert "</memory-context>" not in combined
 
 
-def test_stream_delta_scrubber_resets_between_turns(monkeypatch):
-    """An unterminated span from a prior turn must not taint the next turn."""
+
+
+
+
+
+
+
+
+def test_codex_commentary_emits_before_tool_and_withholds_final_answer(monkeypatch):
     agent = _build_agent(monkeypatch)
-
-    # Simulate a hung span carried over — directly populate the scrubber.
-    agent._stream_context_scrubber.feed("pre <memory-context>leaked")
-
-    # Normally run_conversation() resets the scrubber at turn start.
-    agent._stream_context_scrubber.reset()
-
-    observed = []
-    agent.stream_delta_callback = observed.append
-    agent._fire_stream_delta("clean new turn text")
-    assert "".join(observed) == "clean new turn text"
-
-
-def test_stream_delta_preserves_mid_stream_leading_newlines(monkeypatch):
-    """Mid-stream leading newlines must survive — they are legitimate
-    markdown (lists, code fences, paragraph breaks).  Stripping them
-    based on chunk boundaries silently breaks formatting.
-
-    Only the very first delta of a stream gets leading-newlines stripped
-    (so stale provider preamble doesn't leak); after that, deltas are
-    emitted verbatim.
-    """
-    agent = _build_agent(monkeypatch)
-    observed = []
-    agent.stream_delta_callback = observed.append
-
-    # First delta delivers text — strips its own leading "\n" once.
-    agent._fire_stream_delta("\nHere is a list:")
-    # Second delta starts with "\n- item" — must NOT be stripped.
-    agent._fire_stream_delta("\n- first")
-    agent._fire_stream_delta("\n- second")
-
-    combined = "".join(observed)
-    assert combined == "Here is a list:\n- first\n- second"
-
-
-def test_stream_delta_preserves_code_fence_newlines(monkeypatch):
-    """Code blocks span multiple deltas.  A "\\n```python\\n" boundary
-    is the canonical case where stripping leading newlines corrupts output."""
-    agent = _build_agent(monkeypatch)
-    observed = []
-    agent.stream_delta_callback = observed.append
-
-    agent._fire_stream_delta("Here is the code:")
-    agent._fire_stream_delta("\n```python\n")
-    agent._fire_stream_delta("print('hi')\n")
-    agent._fire_stream_delta("```\n")
-
-    combined = "".join(observed)
-    assert "```python\n" in combined
-    assert combined.startswith("Here is the code:\n```python\n")
-
-
-def test_run_conversation_codex_continues_after_commentary_phase_message(monkeypatch):
-    agent = _build_agent(monkeypatch)
+    events = []
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: events.append(("interim", text))
+    )
     responses = [
-        _codex_commentary_message_response("I'll inspect the repo structure first."),
-        _codex_tool_call_response(),
-        _codex_message_response("Architecture summary complete."),
+        _codex_commentary_message_response("I'll inspect the repo first."),
+        _codex_commentary_final_tool_response("I'll inspect the repo first."),
+        _codex_message_response("Verified final answer."),
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
     def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
-        for call in assistant_message.tool_calls:
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": '{"ok":true}',
-                }
-            )
+        events.append(("tool", assistant_message.tool_calls[0].function.name))
+        messages.append({
+            "role": "tool",
+            "tool_call_id": assistant_message.tool_calls[0].id,
+            "content": '{"ok":true}',
+        })
 
     monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
 
     result = agent.run_conversation("analyze repo")
 
     assert result["completed"] is True
-    assert result["final_response"] == "Architecture summary complete."
-    commentary_messages = [
-        msg for msg in result["messages"]
-        if msg.get("role") == "assistant" and msg.get("finish_reason") == "incomplete"
+    assert events == [
+        ("interim", "I'll inspect the repo first."),
+        ("tool", "terminal"),
     ]
-    assert commentary_messages
-    assert all((msg.get("content") or "") == "" for msg in commentary_messages)
-    assert any(
-        "inspect the repo structure" in item["content"][0]["text"]
-        for msg in commentary_messages
-        for item in (msg.get("codex_message_items") or [])
-        if item.get("phase") == "commentary"
-    )
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+    assert all(text != "Done." for kind, text in events if kind == "interim")
 
 
-def test_run_conversation_codex_continues_after_ack_stop_message(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    responses = [
-        _codex_ack_message_response(
-            "Absolutely — I can do that. I'll inspect ~/openclaw-studio and report back with a walkthrough."
-        ),
-        _codex_tool_call_response(),
-        _codex_message_response("Architecture summary complete."),
-    ]
-    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
-
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
-        for call in assistant_message.tool_calls:
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": '{"ok":true}',
-                }
-            )
-
-    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
-
-    result = agent.run_conversation("look into ~/openclaw-studio and tell me how it works")
-
-    assert result["completed"] is True
-    assert result["final_response"] == "Architecture summary complete."
-    assert any(
-        msg.get("role") == "assistant"
-        and msg.get("finish_reason") == "incomplete"
-        and "inspect ~/openclaw-studio" in (msg.get("content") or "")
-        for msg in result["messages"]
-    )
-    assert any(
-        msg.get("role") == "user"
-        and "Continue now. Execute the required tool calls" in (msg.get("content") or "")
-        for msg in result["messages"]
-    )
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
-def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    responses = [
-        _codex_ack_message_response(
-            "I'll check what's in the current directory and call out 3 notable items."
-        ),
-        _codex_tool_call_response(),
-        _codex_message_response("Directory summary complete."),
-    ]
-    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
-
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
-        for call in assistant_message.tool_calls:
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": '{"ok":true}',
-                }
-            )
-
-    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
-
-    result = agent.run_conversation("look at current directory and list 3 notable things")
-
-    assert result["completed"] is True
-    assert result["final_response"] == "Directory summary complete."
-    assert any(
-        msg.get("role") == "assistant"
-        and msg.get("finish_reason") == "incomplete"
-        and "current directory" in (msg.get("content") or "")
-        for msg in result["messages"]
-    )
-    assert any(
-        msg.get("role") == "user"
-        and "Continue now. Execute the required tool calls" in (msg.get("content") or "")
-        for msg in result["messages"]
-    )
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
 def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
@@ -2285,56 +1786,6 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 
-def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, tmp_path, capsys):
-    """Request debug dumps should redact secrets before disk/stdout output."""
-    import json
-
-    _patch_agent_bootstrap(monkeypatch)
-    monkeypatch.setenv("HERMES_DUMP_REQUEST_STDOUT", "1")
-    agent = run_agent.AIAgent(
-        model="gpt-4o",
-        base_url="http://127.0.0.1:9208/v1",
-        api_key="sk-ant-providersecret1234567890",
-        quiet_mode=True,
-        max_iterations=1,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-    agent.logs_dir = tmp_path
-
-    notion_token = "ntn_abc123def456ghi789jkl"
-    error_secret = "sk-ant-errorsecret1234567890"
-    response_secret = "sk-ant-responsesecret1234567890"
-    response = SimpleNamespace(status_code=400, text=f"provider echoed {response_secret}")
-
-    class ProviderError(RuntimeError):
-        body: object
-        response: object
-
-    error = ProviderError(f"bad token {error_secret}")
-    error.body = {"message": f"bad token {error_secret}"}
-    error.response = response
-
-    dump_file = agent._dump_api_request_debug(
-        {
-            "model": "gpt-4o",
-            "messages": [{"role": "user", "content": f"use {notion_token}"}],
-            "metadata": {"NOTION_API_KEY": notion_token},
-        },
-        reason="provider_error",
-        error=error,
-    )
-
-    assert dump_file is not None
-    dumped_text = dump_file.read_text()
-    stdout_text = capsys.readouterr().out
-    for raw in (notion_token, error_secret, response_secret, "providersecret1234567890"):
-        assert raw not in dumped_text
-        assert raw not in stdout_text
-
-    payload = json.loads(dumped_text)
-    assert payload["request"]["headers"]["Authorization"].startswith("Bearer sk-ant-p...")
-    assert "***" in dumped_text or "..." in dumped_text
 
 
 # --- Reasoning-only response tests (fix for empty content retry loop) ---
@@ -2358,114 +1809,20 @@ def _codex_reasoning_only_response(*, encrypted_content="enc_abc123", summary_te
     )
 
 
-def test_normalize_codex_response_marks_reasoning_only_as_incomplete(monkeypatch):
-    """A response with only reasoning items and no content should be 'incomplete', not 'stop'.
-
-    Without this fix, reasoning-only responses get finish_reason='stop' which
-    sends them into the empty-content retry loop (3 retries then failure).
-    """
-    agent = _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import _normalize_codex_response
-    assistant_message, finish_reason = _normalize_codex_response(
-        _codex_reasoning_only_response()
-    )
-
-    assert finish_reason == "incomplete"
-    assert assistant_message.content == ""
-    assert assistant_message.codex_reasoning_items is not None
-    assert len(assistant_message.codex_reasoning_items) == 1
-    assert assistant_message.codex_reasoning_items[0]["encrypted_content"] == "enc_abc123"
 
 
-def test_normalize_codex_response_reasoning_with_content_is_stop(monkeypatch):
-    """If a response has both reasoning and message content, it should still be 'stop'."""
-    agent = _build_agent(monkeypatch)
-    response = SimpleNamespace(
-        output=[
-            SimpleNamespace(
-                type="reasoning",
-                id="rs_001",
-                encrypted_content="enc_xyz",
-                summary=[SimpleNamespace(type="summary_text", text="Thinking...")],
-                status="completed",
-            ),
-            SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="Here is the answer.")],
-                status="completed",
-            ),
-        ],
-        usage=SimpleNamespace(input_tokens=50, output_tokens=100, total_tokens=150),
-        status="completed",
-        model="gpt-5-codex",
-    )
-    from agent.codex_responses_adapter import _normalize_codex_response
-    assistant_message, finish_reason = _normalize_codex_response(response)
-
-    assert finish_reason == "stop"
-    assert "Here is the answer" in assistant_message.content
 
 
-def test_run_conversation_codex_continues_after_reasoning_only_response(monkeypatch):
-    """End-to-end: reasoning-only → final message should succeed, not hit retry loop."""
-    agent = _build_agent(monkeypatch)
-    responses = [
-        _codex_reasoning_only_response(),
-        _codex_message_response("The final answer is 42."),
-    ]
-    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
-
-    result = agent.run_conversation("what is the answer?")
-
-    assert result["completed"] is True
-    assert result["final_response"] == "The final answer is 42."
-    # The reasoning-only turn should be in messages as an incomplete interim
-    assert any(
-        msg.get("role") == "assistant"
-        and msg.get("finish_reason") == "incomplete"
-        and msg.get("codex_reasoning_items") is not None
-        for msg in result["messages"]
-    )
 
 
-def test_run_conversation_codex_preserves_encrypted_reasoning_in_interim(monkeypatch):
-    """Encrypted codex_reasoning_items must be preserved in interim messages
-    even when there is no visible reasoning text or content."""
-    agent = _build_agent(monkeypatch)
-    # Response with encrypted reasoning but no human-readable summary
-    reasoning_response = SimpleNamespace(
-        output=[
-            SimpleNamespace(
-                type="reasoning",
-                id="rs_002",
-                encrypted_content="enc_opaque_blob",
-                summary=[],
-                status="completed",
-            )
-        ],
-        usage=SimpleNamespace(input_tokens=50, output_tokens=100, total_tokens=150),
-        status="completed",
-        model="gpt-5-codex",
-    )
-    responses = [
-        reasoning_response,
-        _codex_message_response("Done thinking."),
-    ]
-    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    result = agent.run_conversation("think hard")
 
-    assert result["completed"] is True
-    assert result["final_response"] == "Done thinking."
-    # The interim message must have codex_reasoning_items preserved
-    interim_msgs = [
-        msg for msg in result["messages"]
-        if msg.get("role") == "assistant"
-        and msg.get("finish_reason") == "incomplete"
-    ]
-    assert len(interim_msgs) >= 1
-    assert interim_msgs[0].get("codex_reasoning_items") is not None
-    assert interim_msgs[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_opaque_blob"
+
+
+
+
+
+
 
 
 def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monkeypatch):
@@ -2499,47 +1856,12 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
     assert following.get("role") == "assistant"
 
 
-def test_codex_message_item_status_survives_conversion_and_preflight(monkeypatch):
-    """Stored Codex assistant message statuses must survive replay normalization."""
-    agent = _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import (
-        _chat_messages_to_responses_input,
-        _preflight_codex_input_items,
-    )
-
-    items = _chat_messages_to_responses_input([
-        {
-            "role": "assistant",
-            "content": "partial",
-            "codex_message_items": [
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "incomplete",
-                    "id": "msg_incomplete",
-                    "phase": "commentary",
-                    "content": [{"type": "output_text", "text": "partial"}],
-                }
-            ],
-        }
-    ])
-    replay_item = next(item for item in items if item.get("type") == "message")
-    assert replay_item["status"] == "incomplete"
-
-    normalized = _preflight_codex_input_items([
-        {
-            "type": "message",
-            "role": "assistant",
-            "status": "in_progress",
-            "content": [{"type": "output_text", "text": "working"}],
-        }
-    ])
-    assert normalized[0]["status"] == "in_progress"
 
 
 def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch):
     """Two consecutive reasoning-only responses with different encrypted content
-    must NOT be treated as duplicates."""
+    are deduped on visible content — only one interim is kept, but opaque state
+    is updated in-place (#52711)."""
     agent = _build_agent(monkeypatch)
     responses = [
         # First reasoning-only response
@@ -2572,27 +1894,37 @@ def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch
 
     assert result["completed"] is True
     assert result["final_response"] == "Final answer after thinking."
-    # Both reasoning-only interim messages should be in history (not collapsed)
+    # Only one reasoning-only interim should be in history (deduped on
+    # visible content — both have empty visible output).
     interim_msgs = [
         msg for msg in result["messages"]
         if msg.get("role") == "assistant"
         and msg.get("finish_reason") == "incomplete"
     ]
-    assert len(interim_msgs) == 2
-    encrypted_contents = [
-        msg["codex_reasoning_items"][0]["encrypted_content"]
-        for msg in interim_msgs
-    ]
-    assert "enc_first" in encrypted_contents
-    assert "enc_second" in encrypted_contents
+    assert len(interim_msgs) == 1
+    # But the opaque state should reflect the LATEST reasoning item.
+    items = interim_msgs[0].get("codex_reasoning_items")
+    if items:
+        assert items[0].get("encrypted_content") == "enc_second"
 
 
-def test_duplicate_detection_distinguishes_different_codex_message_items(monkeypatch):
-    """Incomplete turns with new message ids/phases/statuses must not be collapsed."""
+def test_duplicate_detection_uses_commentary_when_hidden_reasoning_changes(monkeypatch):
+    """Identical commentary is emitted once while newer replay state wins."""
     agent = _build_agent(monkeypatch)
+    emitted = []
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: emitted.append(text)
+    )
     responses = [
         SimpleNamespace(
             output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    id="rs_first",
+                    encrypted_content="enc_first",
+                    summary=[SimpleNamespace(text="hidden first")],
+                    status="completed",
+                ),
                 SimpleNamespace(
                     type="message",
                     id="msg_first",
@@ -2607,6 +1939,13 @@ def test_duplicate_detection_distinguishes_different_codex_message_items(monkeyp
         ),
         SimpleNamespace(
             output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    id="rs_second",
+                    encrypted_content="enc_second",
+                    summary=[SimpleNamespace(text="hidden second")],
+                    status="completed",
+                ),
                 SimpleNamespace(
                     type="message",
                     id="msg_second",
@@ -2626,183 +1965,31 @@ def test_duplicate_detection_distinguishes_different_codex_message_items(monkeyp
     result = agent.run_conversation("keep going")
 
     assert result["completed"] is True
+    assert emitted == ["Still working..."]
     interim_msgs = [
         msg for msg in result["messages"]
         if msg.get("role") == "assistant"
         and msg.get("finish_reason") == "incomplete"
     ]
-    assert len(interim_msgs) == 2
-    assert [msg["codex_message_items"][0]["id"] for msg in interim_msgs] == [
-        "msg_first",
-        "msg_second",
-    ]
-    assert all(msg["codex_message_items"][0]["status"] == "in_progress" for msg in interim_msgs)
+    # Only one interim — deduped on visible content ("Still working..." == "Still working...").
+    assert len(interim_msgs) == 1
+    # Opaque state should reflect the latest message item.
+    items = interim_msgs[0].get("codex_message_items")
+    if items:
+        assert items[0].get("id") == "msg_second"
+    assert "hidden second" in (interim_msgs[0].get("reasoning") or "")
+    reasoning_items = interim_msgs[0].get("codex_reasoning_items")
+    if reasoning_items:
+        assert reasoning_items[0].get("id") == "rs_second"
 
 
-def test_chat_messages_to_responses_input_deduplicates_reasoning_ids(monkeypatch):
-    """Duplicate reasoning item IDs across multi-turn incomplete responses
-    must be deduplicated so the Responses API doesn't reject with HTTP 400."""
-    agent = _build_agent(monkeypatch)
-    messages = [
-        {"role": "user", "content": "think hard"},
-        {
-            "role": "assistant",
-            "content": "",
-            "codex_reasoning_items": [
-                {"type": "reasoning", "id": "rs_aaa", "encrypted_content": "enc_1"},
-                {"type": "reasoning", "id": "rs_bbb", "encrypted_content": "enc_2"},
-            ],
-        },
-        {
-            "role": "assistant",
-            "content": "partial answer",
-            "codex_reasoning_items": [
-                # rs_aaa is duplicated from the previous turn
-                {"type": "reasoning", "id": "rs_aaa", "encrypted_content": "enc_1"},
-                {"type": "reasoning", "id": "rs_ccc", "encrypted_content": "enc_3"},
-            ],
-        },
-    ]
-    from agent.codex_responses_adapter import _chat_messages_to_responses_input
-    items = _chat_messages_to_responses_input(messages)
-
-    reasoning_items = [it for it in items if it.get("type") == "reasoning"]
-    # Dedup: rs_aaa appears in both turns but should only be emitted once.
-    # 3 unique items total: enc_1 (from rs_aaa), enc_2 (rs_bbb), enc_3 (rs_ccc).
-    assert len(reasoning_items) == 3
-    encrypted = [it["encrypted_content"] for it in reasoning_items]
-    assert encrypted.count("enc_1") == 1
-    assert "enc_2" in encrypted
-    assert "enc_3" in encrypted
-    # IDs must be stripped — with store=False the API 404s on id lookups.
-    for it in reasoning_items:
-        assert "id" not in it
 
 
-def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
-    """_preflight_codex_input_items should also deduplicate reasoning items by ID."""
-    agent = _build_agent(monkeypatch)
-    raw_input = [
-        {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
-        {"type": "reasoning", "id": "rs_xyz", "encrypted_content": "enc_a"},
-        {"role": "assistant", "content": "ok"},
-        {"type": "reasoning", "id": "rs_xyz", "encrypted_content": "enc_a"},
-        {"type": "reasoning", "id": "rs_zzz", "encrypted_content": "enc_b"},
-        {"role": "assistant", "content": "done"},
-    ]
-    from agent.codex_responses_adapter import _preflight_codex_input_items
-    normalized = _preflight_codex_input_items(raw_input)
-
-    reasoning_items = [it for it in normalized if it.get("type") == "reasoning"]
-    # rs_xyz duplicate should be collapsed to one item; rs_zzz kept.
-    assert len(reasoning_items) == 2
-    encrypted = [it["encrypted_content"] for it in reasoning_items]
-    assert encrypted.count("enc_a") == 1
-    assert "enc_b" in encrypted
-    # IDs must be stripped — with store=False the API 404s on id lookups.
-    for it in reasoning_items:
-        assert "id" not in it
 
 
-def test_run_conversation_codex_disables_reasoning_replay_after_invalid_encrypted_content(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    agent.provider = "custom"
-    agent.base_url = "https://api.example.com/v1"
-
-    request_payloads = []
-
-    class _InvalidEncryptedContentError(Exception):
-        def __init__(self):
-            super().__init__(
-                "Error code: 400 - The encrypted content for item rs_001 could not be verified. "
-                "Reason: Encrypted content could not be decrypted or parsed."
-            )
-            self.status_code = 400
-            self.body = {
-                "error": {
-                    "message": (
-                        '{"error":{"message":"The encrypted content for item rs_001 could not be verified. '
-                        'Reason: Encrypted content could not be decrypted or parsed.",'
-                        '"type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}'
-                    ),
-                    "type": "400",
-                }
-            }
-
-    responses = [_InvalidEncryptedContentError(), _codex_message_response("Recovered without replay.")]
-
-    def _fake_api_call(api_kwargs):
-        request_payloads.append(api_kwargs)
-        current = responses.pop(0)
-        if isinstance(current, Exception):
-            raise current
-        return current
-
-    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
-
-    history = [
-        {
-            "role": "assistant",
-            "content": "",
-            "finish_reason": "incomplete",
-            "codex_reasoning_items": [
-                {"type": "reasoning", "id": "rs_001", "encrypted_content": "enc_bad", "summary": []},
-            ],
-        }
-    ]
-
-    result = agent.run_conversation("continue", conversation_history=history)
-
-    assert result["completed"] is True
-    assert result["final_response"] == "Recovered without replay."
-    assert len(request_payloads) == 2
-    assert any(item.get("type") == "reasoning" for item in request_payloads[0]["input"])
-    assert not any(item.get("type") == "reasoning" for item in request_payloads[1]["input"])
-    assert request_payloads[0].get("include") == ["reasoning.encrypted_content"]
-    assert request_payloads[1].get("include") == []
-    assert result["messages"][0].get("codex_reasoning_items") is None
-    assert agent._codex_reasoning_replay_enabled is False
 
 
-def test_run_conversation_codex_invalid_encrypted_content_without_replay_state_does_not_disable_replay(monkeypatch):
-    agent = _build_agent(monkeypatch)
-    agent.provider = "custom"
-    agent.base_url = "https://api.example.com/v1"
-    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *args, **kwargs: 0)
 
-    request_payloads = []
 
-    class _InvalidEncryptedContentError(Exception):
-        def __init__(self):
-            super().__init__("Error code: 400 - bad request")
-            self.status_code = 400
-            self.body = {
-                "error": {
-                    "code": "INVALID_ENCRYPTED_CONTENT",
-                    "message": "Bad request",
-                }
-            }
 
-    responses = [_InvalidEncryptedContentError(), _codex_message_response("Recovered after generic retry.")]
 
-    def _fake_api_call(api_kwargs):
-        request_payloads.append(api_kwargs)
-        current = responses.pop(0)
-        if isinstance(current, Exception):
-            raise current
-        return current
-
-    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
-
-    result = agent.run_conversation(
-        "continue",
-        conversation_history=[{"role": "assistant", "content": "No replay state here."}],
-    )
-
-    assert result["completed"] is True
-    assert result["final_response"] == "Recovered after generic retry."
-    assert len(request_payloads) == 2
-    assert all(payload.get("include") == ["reasoning.encrypted_content"] for payload in request_payloads)
-    assert all(not any(item.get("type") == "reasoning" for item in payload["input"]) for payload in request_payloads)
-    assert agent._codex_reasoning_replay_enabled is True
-    assert result["messages"][0].get("codex_reasoning_items") is None

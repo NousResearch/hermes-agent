@@ -6,6 +6,8 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
+import time
+import importlib.util
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from hermes_cli.nous_account import (
 )
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
+from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
@@ -58,6 +61,13 @@ def _format_iso_timestamp(value) -> str:
     except Exception:
         return value
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _format_relative_ts(ts: float) -> str:
+    """Format an epoch timestamp as a short relative age for status output."""
+    from hermes_cli.timefmt import relative_time
+
+    return relative_time(ts)
 
 
 def _configured_model_label(config: dict) -> str:
@@ -194,12 +204,14 @@ def show_status(args):
 
     try:
         from hermes_cli.auth import (
-            get_nous_auth_status,
+            get_nous_auth_status_local,
             get_codex_auth_status,
             get_qwen_auth_status,
             get_minimax_oauth_auth_status,
         )
-        nous_status = get_nous_auth_status()
+        # Read-only display: use the refresh-free snapshot so `hermes status`
+        # never performs an OAuth refresh or burns a single-use refresh token.
+        nous_status = get_nous_auth_status_local()
         codex_status = get_codex_auth_status()
         qwen_status = get_qwen_auth_status()
         minimax_status = get_minimax_oauth_auth_status()
@@ -427,6 +439,23 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    elif terminal_env == "vercel_sandbox":
+        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME") or terminal_cfg.get("vercel_runtime") or "node24"
+        persist = os.getenv("TERMINAL_CONTAINER_PERSISTENT")
+        if persist is None:
+            persist_enabled = bool(terminal_cfg.get("container_persistent", True))
+        else:
+            persist_enabled = persist.lower() in {"1", "true", "yes", "on"}
+        auth_status = describe_vercel_auth()
+        sdk_ok = importlib.util.find_spec("vercel") is not None
+        sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[vercel]')"
+        print(f"  Runtime:      {runtime}")
+        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
+        print(f"  Auth:         {check_mark(auth_status.ok)} {auth_status.label}")
+        for line in auth_status.detail_lines:
+            print(f"  Auth detail:  {line}")
+        print(f"  Persistence:  {'snapshot filesystem' if persist_enabled else 'ephemeral filesystem'}")
+        print("  Processes:    live processes do not survive cleanup, snapshots, or sandbox recreation")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
@@ -529,7 +558,9 @@ def show_status(args):
     if jobs_file.exists():
         import json
         try:
-            with open(jobs_file, encoding="utf-8") as f:
+            # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
+            # may leave a UTF-8 BOM that plain utf-8 json.load rejects.
+            with open(jobs_file, encoding="utf-8-sig") as f:
                 data = json.load(f)
                 jobs = data.get("jobs", [])
                 enabled_jobs = [j for j in jobs if j.get("enabled", True)]
@@ -548,20 +579,29 @@ def show_status(args):
     # Gateway session count: state.db is the source of truth (#9006);
     # fall back to sessions.json for pre-migration installs.
     _session_count = None
+    _gateway_rows = []
     try:
         from hermes_state import SessionDB
         _db = SessionDB()
         try:
             _lister = getattr(_db, "list_gateway_sessions", None)
             if callable(_lister):
-                _session_count = len(_lister(active_only=True))
+                _gateway_rows = _lister(active_only=True) or []
+                _session_count = len(_gateway_rows)
         finally:
             _db.close()
     except Exception:
         _session_count = None
+        _gateway_rows = []
 
     if _session_count is not None and _session_count > 0:
         print(f"  Active:       {_session_count} session(s)")
+        freshest = max(
+            (float(r.get("last_active") or 0) for r in _gateway_rows),
+            default=0.0,
+        )
+        if freshest > 0:
+            print(f"  Last activity:{_format_relative_ts(freshest):>13}")
     else:
         sessions_file = get_hermes_home() / "sessions" / "sessions.json"
         if sessions_file.exists():
@@ -578,6 +618,40 @@ def show_status(args):
                 print("  Active:       (error reading sessions file)")
         else:
             print(f"  Active:       {_session_count if _session_count is not None else 0}")
+
+    # Slot usage, only when max_concurrent_sessions is set. The cap is shared
+    # across CLI, desktop/TUI and the messaging gateway, so the surface that
+    # gets rejected is rarely the one holding the slots — without this the only
+    # way to find out is reading runtime/active_sessions.json by hand.
+    try:
+        from hermes_cli.active_sessions import (
+            active_session_registry_snapshot,
+            format_age,
+            resolve_max_concurrent_sessions,
+        )
+
+        _cap = resolve_max_concurrent_sessions(config)
+    except Exception:
+        _cap = None
+    if _cap:
+        try:
+            _held = active_session_registry_snapshot()
+        except Exception:
+            _held = []
+        _full = len(_held) >= _cap
+        print(
+            "  Slots:        "
+            + color(
+                f"{len(_held)}/{_cap} in use", Colors.YELLOW if _full else Colors.GREEN
+            )
+        )
+        _now = time.time()
+        for _entry in sorted(_held, key=lambda e: e.get("started_at") or 0):
+            _age = format_age(_now - float(_entry.get("started_at") or _now))
+            print(
+                f"                {_entry.get('surface') or 'unknown':<17} "
+                f"{_entry.get('session_id') or '?':<24} {_age}"
+            )
 
     # =========================================================================
     # Deep checks

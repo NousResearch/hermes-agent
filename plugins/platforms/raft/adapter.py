@@ -692,7 +692,9 @@ class RaftAdapter(BasePlatformAdapter):
     def _validate_bridge_token(self, token: str) -> bool:
         if not self._bridge_token or not token:
             return False
-        return hmac.compare_digest(token, self._bridge_token)
+        # Compare as bytes: compare_digest raises TypeError on a str with
+        # non-ASCII characters, and the token is a raw request header.
+        return hmac.compare_digest(token.encode(), self._bridge_token.encode())
 
     async def _accept_wake(self, payload: Dict[str, Any]) -> bool:
         if not self._message_handler:

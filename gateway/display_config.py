@@ -58,6 +58,16 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Live working-state status on platforms whose typing indicator renders
+    # text (Slack's assistant status line). Values:
+    #   "full" / true  -> verb + argument preview ("is running pytest…")
+    #   "verb"         -> verb only ("is running…") — keeps file paths and
+    #                     commands out of shared channels
+    #   "off" / false  -> static text (typing_status_text or "is thinking...")
+    # Independent of tool_progress: works even when progress bubbles are off
+    # (Slack's default), and costs no extra API calls — the existing typing
+    # refresh cadence just renders different text.
+    "live_status": "full",
 }
 
 # ---------------------------------------------------------------------------
@@ -130,7 +140,12 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
     # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
-    "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
+    "slack":           {
+        **_TIER_MEDIUM,
+        "tool_progress": "off",
+        "long_running_notifications": False,
+        "busy_ack_detail": False,
+    },
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
     "feishu":          _TIER_MEDIUM,
@@ -144,6 +159,13 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # status update as a separate message. Promote to TIER_MEDIUM once
     # Cloud's edit_message lands.
     "whatsapp_cloud":  _TIER_LOW,
+    # Photon (managed iMessage over the gRPC sidecar) and BlueBubbles are both
+    # permanent-message iMessage inboxes with no message-edit support, so both
+    # stay TIER_LOW. This keeps tool progress, interim scratch commentary,
+    # "still working" heartbeats, and busy-ack iteration detail out of the
+    # user's iMessage thread. Without this entry Photon inherited the noisy
+    # global ("all") defaults and compacted/narrated on nearly every turn.
+    "photon":          _TIER_LOW,
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
     "wecom":           _TIER_LOW,
@@ -263,6 +285,18 @@ def _normalise(setting: str, value: Any) -> Any:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
+    if setting == "live_status":
+        # Tri-state: "full" (verb + preview), "verb" (verb only), "off".
+        if value is True:
+            return "full"
+        if value is False:
+            return "off"
+        val = str(value).strip().lower()
+        if val in {"true", "1", "yes", "on", "all"}:
+            return "full"
+        if val in {"false", "0", "no"}:
+            return "off"
+        return val if val in {"full", "verb", "off"} else "full"
     if setting == "tool_progress_grouping":
         val = str(value).lower()
         return val if val in ("accumulate", "separate") else "accumulate"

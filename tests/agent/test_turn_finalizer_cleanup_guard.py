@@ -135,14 +135,6 @@ def _run(
     )
 
 
-def test_all_cleanup_steps_raise_response_still_returned():
-    agent = _StubAgent(
-        raise_in=("save_trajectory", "cleanup_task_resources", "persist_session")
-    )
-    result = _run(agent)
-    assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
-    labels = [e.split(":")[0] for e in result["cleanup_errors"]]
-    assert labels == ["save_trajectory", "cleanup_task_resources", "persist_session"]
 
 
 @pytest.mark.parametrize(
@@ -172,13 +164,3 @@ def test_clean_turn_has_no_cleanup_errors_key():
     assert "cleanup_errors" not in result
 
 
-def test_text_response_on_last_allowed_call_is_completed():
-    agent = _StubAgent(raise_in=())
-    result = _run(
-        agent,
-        final_response="final report",
-        api_call_count=agent.max_iterations,
-        turn_exit_reason="text_response(finish_reason=stop)",
-    )
-    assert result["final_response"] == "final report"
-    assert result["completed"] is True

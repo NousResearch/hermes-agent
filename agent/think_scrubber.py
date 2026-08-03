@@ -208,19 +208,29 @@ class StreamingThinkScrubber:
         discarded — leaking partial reasoning is worse than a
         truncated answer.  Otherwise the held-back partial-tag tail is
         emitted verbatim (it turned out not to be a real tag prefix).
+
+        Always treats the next ``feed()`` as a fresh stream boundary.
+        Intra-turn retries (thinking-only prefill, empty-response
+        retry) flush then stream again without calling ``reset()``;
+        leaving ``_last_emitted_ended_newline`` False made a new
+        stream's opening ``<think>`` look mid-line and leak into the
+        visible reply.
         """
         if self._in_block:
             self._buf = ""
             self._in_block = False
+            # Next feed() is a new stream — start-of-stream is a boundary.
+            self._last_emitted_ended_newline = True
             return ""
         tail = self._buf
         self._buf = ""
+        # Same for the non-block path: do NOT derive the boundary flag
+        # from the flushed tail (e.g. a held-back '<').  End-of-stream
+        # means the next feed() starts a new model response.
+        self._last_emitted_ended_newline = True
         if not tail:
             return ""
-        tail = self._strip_orphan_close_tags(tail)
-        if tail:
-            self._last_emitted_ended_newline = tail.endswith("\n")
-        return tail
+        return self._strip_orphan_close_tags(tail)
 
     # ── internal helpers ───────────────────────────────────────────────
 

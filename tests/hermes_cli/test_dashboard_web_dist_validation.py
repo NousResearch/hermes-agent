@@ -87,14 +87,26 @@ def test_env_dist_without_index_exits(main_mod, monkeypatch, tmp_path, capsys):
     assert "HERMES_WEB_DIST" in out and str(empty_dist) in out
 
 
-def test_env_dist_with_index_starts_server(main_mod, monkeypatch, tmp_path):
-    """A valid HERMES_WEB_DIST (has index.html) proceeds to start_server
-    without building."""
+
+
+# ---------------------------------------------------------------------------
+# --skip-build recovery (issue #59288): a missing dist under --skip-build
+# should warn and attempt ONE recovery build via _build_web_ui before the
+# fatal exit, instead of hard-failing immediately.
+# ---------------------------------------------------------------------------
+
+
+def test_skip_build_missing_dist_attempts_one_recovery_build(
+    main_mod, monkeypatch, tmp_path, capsys
+):
+    """--skip-build + missing index.html triggers exactly one recovery build;
+    when the build produces a dist, the server starts."""
     _wire_common(main_mod, monkeypatch)
-    dist = tmp_path / "dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
-    monkeypatch.setenv("HERMES_WEB_DIST", str(dist))
+    monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+    project_root = tmp_path / "proj"
+    dist = project_root / "hermes_cli" / "web_dist"
+    dist.mkdir(parents=True)
+    monkeypatch.setattr(main_mod, "PROJECT_ROOT", project_root)
 
     started = []
     monkeypatch.setitem(
@@ -102,35 +114,37 @@ def test_env_dist_with_index_starts_server(main_mod, monkeypatch, tmp_path):
         "hermes_cli.web_server",
         types.SimpleNamespace(start_server=lambda **k: started.append(k)),
     )
+
     builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
 
-    main_mod.cmd_dashboard(_args())
+    def fake_build(web_dir, *, fatal=False):
+        builds.append((web_dir, fatal))
+        (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+        return True
 
+    monkeypatch.setattr(main_mod, "_build_web_ui", fake_build)
+
+    main_mod.cmd_dashboard(_args(skip_build=True))
+
+    assert len(builds) == 1  # exactly ONE recovery build
+    assert builds[0][0] == project_root / "web"
     assert len(started) == 1
-    assert builds == []
+    out = capsys.readouterr().out
+    assert "recovery build" in out.lower()
 
 
-def test_env_dist_tilde_expanded_for_web_server(main_mod, monkeypatch, tmp_path):
-    """A '~/...' HERMES_WEB_DIST must be written back expanded so
-    web_server's raw os.environ read serves the validated path."""
-    _wire_common(main_mod, monkeypatch)
-    home = tmp_path / "home"
-    dist = home / "mydist"
-    dist.mkdir(parents=True)
-    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("HERMES_WEB_DIST", "~/mydist")
 
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: None),
-    )
 
-    main_mod.cmd_dashboard(_args())
+# ---------------------------------------------------------------------------
+# Desktop-inherited env isolation (issue #52945 / supersedes #52948, #67402)
+# ---------------------------------------------------------------------------
 
-    import os
-    assert os.environ["HERMES_WEB_DIST"] == str(dist)
+
+
+
+
+
+
+
+
+

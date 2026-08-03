@@ -1,7 +1,7 @@
 """Regression tests for clarify replies while a gateway session is busy."""
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -85,3 +85,5 @@ async def test_active_session_routes_typed_choice_clarify_reply_to_runner_not_bu
     adapter._message_handler.assert_awaited_once_with(event)
     adapter._busy_session_handler.assert_not_awaited()
     assert adapter._pending_messages == {}
+
+

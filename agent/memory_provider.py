@@ -34,10 +34,48 @@ Optional hooks (override to opt in):
 from __future__ import annotations
 
 import logging
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# Prompts that carry no semantic signal — trivial acknowledgements, greetings,
+# slash commands, empty input. Single source of truth shared by the core
+# per-turn prefetch gate (agent/turn_context.py, run_agent.py) and provider-
+# side classifiers (plugins/memory/honcho) so the two can never drift apart.
+# The alternation is anchored and may only be followed by whitespace or
+# punctuation, so words that merely START with a trivial word ("k8s", "yolo",
+# "note", "hindsight") do NOT match, while trailing-punctuation variants
+# ("hi!", "hey.", "thanks :)", "done???") do.
+TRIVIAL_PROMPT_RE = re.compile(
+    r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
+    r'hi|hey|hello|yo|sup|'
+    r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)'
+    r'[\s!?.:;,"' + "'" + r'~\u2018\u2019\u201c\u201d\u2014\u2013\u2026()\[\]{}<>*&^%$#@!+=`\u00a0]*$',
+    re.IGNORECASE,
+)
+
+
+def is_trivial_prompt(text: Optional[str]) -> bool:
+    """Return True if a user prompt is too trivial to warrant memory recall.
+
+    Empty/whitespace-only input, slash commands, and bare greetings or
+    acknowledgements (with optional trailing punctuation) all count as
+    trivial. Callers use this to skip memory-provider prefetch/injection
+    on turns that carry no semantic signal — saving a blocking network
+    round-trip and preventing stale user-model context from derailing
+    one-word replies.
+    """
+    if not text:
+        return True
+    stripped = text.strip()
+    if not stripped:
+        return True
+    if stripped.startswith("/"):
+        return True
+    return bool(TRIVIAL_PROMPT_RE.match(stripped))
 
 
 class MemoryProvider(ABC):
@@ -253,6 +291,10 @@ class MemoryProvider(ABC):
           required:    True if required (default: False)
           default:     default value (optional)
           choices:     list of valid values (optional)
+          type:        text, integer, number, or boolean (optional)
+          minimum:     numeric lower bound for integer/number fields (optional)
+          maximum:     numeric upper bound for integer/number fields (optional)
+          step:        numeric input step for Dashboard rendering (optional)
           url:         URL where user can get this credential (optional)
           env_var:     explicit env var name for secrets (default: auto-generated)
 

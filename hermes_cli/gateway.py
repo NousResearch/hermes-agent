@@ -1504,7 +1504,7 @@ def kill_gateway_processes(
     return killed
 
 
-def _reap_unsupervised_gateway_orphans() -> bool:
+def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool:
     """Kill no-supervisor gateway orphans the pidfile/runtime record can't see.
 
     On WSL/no-systemd hosts the manual restart fallback runs the gateway
@@ -1517,6 +1517,10 @@ def _reap_unsupervised_gateway_orphans() -> bool:
     running gateway — gating on ``supports_systemd_services()`` keeps the
     orphan-aware scan from killing live management processes there.
 
+    Args:
+        extra_exclude: Additional PIDs to skip (e.g. a PID already killed by
+            the caller so the sweep doesn't send a redundant SIGTERM/SIGKILL).
+
     Returns True if at least one orphan was reaped.
     """
     try:
@@ -1528,6 +1532,8 @@ def _reap_unsupervised_gateway_orphans() -> bool:
     from gateway.status import _pid_exists, write_planned_stop_marker
 
     own = {os.getpid()}
+    if extra_exclude:
+        own |= extra_exclude
     try:
         # find_gateway_pids() includes no-supervisor `gateway restart` runtimes
         # for the current profile when no systemd supervisor is present.
@@ -1583,6 +1589,12 @@ def stop_profile_gateway() -> bool:
     a live orphan still holds the webhook port. In that case fall back to the
     orphan-aware process scan so the replacement reaps the prior instance
     instead of stacking a duplicate on the same port (#51325).
+
+    Even when the pid file is valid and points to the current gateway, older
+    orphans may linger from prior restarts that overwrote the pid file before
+    the old process exited. After killing the recorded PID, also sweep for
+    any remaining orphans so each restart produces at most one live gateway
+    (#75936).
     """
     try:
         from gateway.status import get_running_pid, remove_pid_file
@@ -1620,6 +1632,16 @@ def stop_profile_gateway() -> bool:
 
     if get_running_pid() is None:
         remove_pid_file()
+
+    # Also reap any orphans from prior restarts whose PIDs were overwritten
+    # in the pid file before they exited (#75936).  Exclude the PID we just
+    # killed so the sweep doesn't double-kill a process that's still tearing
+    # down — _reap_unsupervised_gateway_orphans already excludes our own PID.
+    try:
+        _reap_unsupervised_gateway_orphans(extra_exclude={pid} if pid else None)
+    except Exception as exc:
+        logger.debug("orphan reap after stop_profile_gateway failed: %s", exc)
+
     return True
 
 
@@ -2525,10 +2547,17 @@ def _detect_venv_dir() -> Path | None:
 def get_python_path() -> str:
     venv = _detect_venv_dir()
     if venv is not None:
-        if is_windows():
-            venv_python = venv / "Scripts" / "python.exe"
-        else:
-            venv_python = venv / "bin" / "python"
+        try:
+            from hermes_constants import venv_python_path
+        except ImportError:
+            # Update-boundary: a gateway restarted mid-update can hold a
+            # hermes_constants cached from before this symbol existed. See
+            # _reload_hermes_constants() in hermes_cli/managed_uv.py.
+            from hermes_cli.managed_uv import _reload_hermes_constants
+
+            venv_python_path = _reload_hermes_constants().venv_python_path
+
+        venv_python = venv_python_path(venv, windows=is_windows())
         if venv_python.exists():
             return str(venv_python)
     return sys.executable
@@ -2750,6 +2779,56 @@ def _systemd_watchdog_service_fields(
     return "notify", f"NotifyAccess=main\nWatchdogSec={seconds}s\n"
 
 
+def _append_node_dir_for_service(
+    path_entries: list[str], hermes_root: Path | None = None
+) -> None:
+    """Add the Node directory a generated service unit should use to *path_entries*.
+
+    The Hermes-managed Node under ``$HERMES_HOME/node`` goes first when it
+    exists. A bare ``shutil.which("node")`` cannot be trusted on its own here:
+    a service unit is written once and then survives reboots, so resolving a
+    system Node that happens to be ahead on the installing shell's PATH bakes
+    the wrong interpreter in permanently — the exact failure the desktop
+    backend spawn was fixed for. Managed dirs are profile-scoped, so each
+    profile's unit still names its own Node.
+
+    *hermes_root* is the Hermes home the unit will run against. System units
+    installed via sudo MUST pass the **target user's** home: probing the
+    default (the calling user's — root's — tree) would bake root's Node into
+    the target user's unit. The probe swallows OSError: an unreadable
+    candidate dir (hardened home) means "skip the rung", not "crash the
+    generator".
+
+    PATH lookup remains the fallback rung for installs with no managed Node.
+    """
+    from hermes_constants import iter_hermes_node_dirs
+
+    for directory in iter_hermes_node_dirs(hermes_root):
+        entry = str(directory)
+        try:
+            present = directory.is_dir()
+        except OSError:
+            present = False
+        if present and entry not in path_entries:
+            path_entries.append(entry)
+
+    resolved_node = shutil.which("node")
+    if not resolved_node:
+        return
+
+    # Use the directory where ``node`` is *found on PATH*, NOT the symlink's
+    # resolved target. ``~/.local/bin/node`` is often a symlink into a
+    # specific profile's node install (e.g. profiles/jarvis/node/bin/node);
+    # calling .resolve() here would chase that symlink and bake one profile's
+    # node path into *every* profile's service unit. That cross-profile leak
+    # makes systemd_unit_is_current() perpetually false, so each gateway
+    # rewrites its unit + daemon-reload on every boot. Using the symlink's own
+    # parent keeps the generated unit profile-agnostic.
+    resolved_node_dir = str(Path(resolved_node).parent)
+    if resolved_node_dir not in path_entries:
+        path_entries.append(resolved_node_dir)
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
@@ -2757,19 +2836,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
 
     path_entries = _build_service_path_dirs()
-    resolved_node = shutil.which("node")
-    if resolved_node:
-        # Use the directory where ``node`` is *found on PATH*, NOT the
-        # symlink's resolved target. ``~/.local/bin/node`` is often a symlink
-        # into a specific profile's node install (e.g. profiles/jarvis/node/
-        # bin/node); calling .resolve() here would chase that symlink and bake
-        # one profile's node path into *every* profile's service unit. That
-        # cross-profile leak makes systemd_unit_is_current() perpetually false,
-        # so each gateway rewrites its unit + daemon-reload on every boot. Using
-        # the symlink's own parent keeps the generated unit profile-agnostic.
-        resolved_node_dir = str(Path(resolved_node).parent)
-        if resolved_node_dir not in path_entries:
-            path_entries.append(resolved_node_dir)
+    if not system:
+        # System units append the managed Node dirs later, once the TARGET
+        # user's Hermes home is known — probing here would stat the calling
+        # (sudo → root's) tree and bake the wrong user's Node into the unit.
+        _append_node_dir_for_service(path_entries)
 
     common_bin_paths = [
         "/usr/local/sbin",
@@ -2803,6 +2874,17 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         working_dir = str(hermes_home) if hermes_home else _remap_path_for_user(working_dir, home_dir)
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
+        # Managed Node for the TARGET user's tree (see the skip above): probe
+        # the remapped hermes_home, not the calling user's. Prepend — the
+        # managed Node must outrank remapped shell-PATH entries, matching the
+        # user-unit ordering where it's appended before PATH capture.
+        _target_node_entries: list[str] = []
+        _append_node_dir_for_service(
+            _target_node_entries, Path(hermes_home) if hermes_home else None
+        )
+        path_entries = [
+            e for e in _target_node_entries if e not in path_entries
+        ] + path_entries
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(_build_wsl_interop_paths(path_entries))
         path_entries.extend(common_bin_paths)
@@ -3962,17 +4044,7 @@ def generate_launchd_plist() -> str:
     # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
     # so it's explicitly in PATH even if the user's shell PATH changes later.
     priority_dirs = _build_service_path_dirs()
-    resolved_node = shutil.which("node")
-    if resolved_node:
-        # Use the directory where ``node`` is *found on PATH*, NOT the symlink's
-        # resolved target. ``~/.local/bin/node`` is often a symlink into a
-        # specific profile's node install; calling .resolve() would chase it and
-        # bake one profile's path into every profile's service definition,
-        # breaking profile isolation and causing perpetual unit rewrites. See
-        # the matching fix in generate_systemd_unit().
-        resolved_node_dir = str(Path(resolved_node).parent)
-        if resolved_node_dir not in priority_dirs:
-            priority_dirs.append(resolved_node_dir)
+    _append_node_dir_for_service(priority_dirs)
     sane_path = ":".join(
         dict.fromkeys(
             priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]

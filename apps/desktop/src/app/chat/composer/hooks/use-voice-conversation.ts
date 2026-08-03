@@ -287,8 +287,7 @@ export function useVoiceConversation({
       // start — don't auto-start the next sentence, the user chose to stop.
       const stoppedByUser =
         stoppedDuringSetup ||
-        (speechStartSequenceRef.current > 0 &&
-          $voicePlayback.get().sequence > speechStartSequenceRef.current)
+        (speechStartSequenceRef.current > 0 && $voicePlayback.get().sequence > speechStartSequenceRef.current)
 
       speechStartSequenceRef.current = 0
 

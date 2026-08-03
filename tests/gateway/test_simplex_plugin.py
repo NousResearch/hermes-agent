@@ -162,6 +162,72 @@ async def test_send_group():
 
 
 # ---------------------------------------------------------------------------
+# 7b. Channel directory enumeration (list_channels)
+# ---------------------------------------------------------------------------
+
+
+def _adapter_with_ws():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._ws = AsyncMock()
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_list_channels_contacts_and_groups():
+    adapter = _adapter_with_ws()
+
+    async def fake_send_command(command, timeout=30.0):
+        if command == "/contacts":
+            return {
+                "contacts": [
+                    {"contactId": 1, "localDisplayName": "alice"},
+                    {"contactId": 2, "profile": {"displayName": "bob"}},
+                    "garbage",
+                ]
+            }
+        if command == "/groups":
+            return {
+                "groups": [
+                    {"groupId": 7, "localDisplayName": "friends"},
+                    # [groupInfo, groupSummary] pair form
+                    [{"groupId": 9, "groupProfile": {"displayName": "work"}}, {}],
+                ]
+            }
+        return None
+
+    adapter._send_command = fake_send_command
+    channels = await adapter.list_channels()
+
+    assert {"id": "alice", "name": "alice", "type": "dm"} in channels
+    assert {"id": "bob", "name": "bob", "type": "dm"} in channels
+    assert {"id": "group:7", "name": "friends", "type": "group"} in channels
+    assert {"id": "group:9", "name": "work", "type": "group"} in channels
+
+
+@pytest.mark.asyncio
+async def test_list_channels_returns_none_when_disconnected():
+    """None (not []) so the directory falls back to session discovery."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    assert adapter._ws is None
+    assert await adapter.list_channels() is None
+
+
+@pytest.mark.asyncio
+async def test_list_channels_returns_none_on_contacts_timeout():
+    adapter = _adapter_with_ws()
+
+    async def fake_send_command(command, timeout=30.0):
+        return None  # daemon unresponsive
+
+    adapter._send_command = fake_send_command
+    assert await adapter.list_channels() is None
+
+
+# ---------------------------------------------------------------------------
 # 8. Inbound: filter own-echo by corrId prefix
 # ---------------------------------------------------------------------------
 

@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -229,6 +230,36 @@ def _write_disk_cache(data: dict[str, Any]) -> None:
         logger.info("model catalog cache write failed: %s", exc)
 
 
+# Stale-while-revalidate machinery: at most one background manifest refresh
+# in flight per process. The refreshed manifest lands on disk; the NEXT
+# get_catalog() call picks it up via the mtime check.
+_catalog_swr_lock = threading.Lock()
+_catalog_swr_inflight = False
+
+
+def _spawn_catalog_swr_refresh(url: str) -> None:
+    """Refresh the catalog manifest off-thread (fire-and-forget, deduped)."""
+    global _catalog_swr_inflight
+    with _catalog_swr_lock:
+        if _catalog_swr_inflight:
+            return
+        _catalog_swr_inflight = True
+
+    def _refresh() -> None:
+        global _catalog_swr_inflight
+        try:
+            fetched = _fetch_manifest_with_fallback(url, DEFAULT_FETCH_TIMEOUT)
+            if fetched is not None:
+                _write_disk_cache(fetched)
+        except Exception:
+            logger.debug("catalog SWR refresh failed", exc_info=True)
+        finally:
+            with _catalog_swr_lock:
+                _catalog_swr_inflight = False
+
+    threading.Thread(target=_refresh, daemon=True, name="model-catalog-swr").start()
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -266,6 +297,16 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
     if not force_refresh and disk_fresh and disk_data is not None:
         _catalog_cache = disk_data
         _catalog_cache_source_mtime = disk_mtime
+        return disk_data
+
+    # Stale-while-revalidate: an expired disk copy is served immediately and
+    # refreshed off-thread, so interactive surfaces (the /model picker calls
+    # this via get_curated_nous_model_ids on every open) never block on the
+    # manifest fetch. Only a cold cache (no disk copy at all) still blocks.
+    if not force_refresh and disk_data is not None:
+        _catalog_cache = disk_data
+        _catalog_cache_source_mtime = disk_mtime
+        _spawn_catalog_swr_refresh(cfg["url"])
         return disk_data
 
     # Need to (re)fetch. If it fails, fall back to any stale disk copy.

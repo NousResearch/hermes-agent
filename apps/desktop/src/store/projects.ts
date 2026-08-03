@@ -16,7 +16,15 @@ import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gatewa
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
-import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
+import {
+  $currentCwd,
+  $selectedStoredSessionId,
+  $sessions,
+  idsShareLineage,
+  sessionMatchesStoredId,
+  workspaceCwdForNewSession
+} from '@/store/session'
+import { $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -191,12 +199,19 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
   }
 }
 
-// The cwd a NEW chat should start in. The "active project" is just an atom
-// ($projectScope) — so when you're inside a project, a new session (cmd-n, the
-// trunk "+") starts at that project's root (its primary repo = the default-branch
-// checkout) instead of inheriting whatever unrelated worktree the live cwd
-// drifted into. Outside a project it falls back to the plain default (detached),
-// so a bare new chat shows no branch.
+// The cwd a NEW chat should start in.
+//
+// Priority (first hit wins):
+//   1. Explicit sidebar project scope (drilled into a project / Home bucket)
+//   2. The FOCUSED session's workspace — so ⌘N / ⌘T from a chat that's already
+//      in a project/worktree stay there without requiring a sidebar drill-in
+//   3. Configured default project dir / remote remembered cwd (detached otherwise)
+//
+// The "active project" is just an atom ($projectScope) — so when you're inside
+// a project, a new session (cmd-n, the trunk "+") starts at that project's root
+// (its primary repo = the default-branch checkout). Outside a project it used
+// to fall straight to the plain default (detached), which dropped the workspace
+// of the chat you were looking at — that's the case (2) covers.
 export function resolveNewSessionCwd(): string {
   const scope = $projectScope.get()
 
@@ -214,7 +229,56 @@ export function resolveNewSessionCwd(): string {
     }
   }
 
+  // Inherit the focused chat's workspace. ⌘N/⌘T from a session that already
+  // has a project/pwd should stay there — drilling into the sidebar project
+  // is the uncommon path, not the requirement.
+  const focusedCwd = focusedSessionWorkspaceCwd()
+
+  if (focusedCwd) {
+    return focusedCwd
+  }
+
   return workspaceCwdForNewSession()
+}
+
+/** Live workspace of the session the user is looking at (tile or primary). */
+function focusedSessionWorkspaceCwd(): string {
+  const focusedStoredId = $focusedStoredSessionId.get()
+  const state = $focusedSessionState.get()
+
+  // Prefer the live runtime slice when it belongs to the focused chat
+  // (agent can relocate mid-turn). Cold tabs / mid-switch lag fall through
+  // to the stored session row.
+  const stateCwd = state?.cwd?.trim() || ''
+  const stateStoredId = state?.storedSessionId?.trim() || ''
+
+  if (
+    stateCwd &&
+    (!focusedStoredId ||
+      !stateStoredId ||
+      stateStoredId === focusedStoredId ||
+      idsShareLineage(focusedStoredId, stateStoredId, $sessions.get()))
+  ) {
+    return stateCwd
+  }
+
+  if (focusedStoredId) {
+    const row = $sessions.get().find(s => sessionMatchesStoredId(s, focusedStoredId))
+    const rowCwd = row?.cwd?.trim() || ''
+
+    if (rowCwd) {
+      return rowCwd
+    }
+
+    // Focused a real session with no workspace → stay detached. Do NOT fall
+    // through to `$currentCwd` (it may still hold a remembered path from an
+    // earlier chat and would re-attach a project the user left).
+    return ''
+  }
+
+  // No focused stored session: primary draft. The composer atom is the draft's
+  // workspace target (set by startFreshSession / startSessionInWorkspace).
+  return $currentCwd.get().trim()
 }
 
 const underPath = (parent: string, child: string): boolean =>

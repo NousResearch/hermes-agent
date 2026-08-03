@@ -46,7 +46,7 @@ class TestHooksList:
     def test_empty_config(self, tmp_path):
         with patch("hermes_cli.config.load_config", return_value={}):
             out = _run(SimpleNamespace(hooks_action="list"))
-        assert "No shell hooks configured" in out
+        assert "No shell hooks or outbound webhooks configured" in out
 
     def test_shows_configured_and_consent_status(self, tmp_path):
         script = _hook_script(

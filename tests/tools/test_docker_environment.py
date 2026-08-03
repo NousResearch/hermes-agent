@@ -1,4 +1,5 @@
 import logging
+import os
 from io import StringIO
 import subprocess
 
@@ -53,6 +54,7 @@ def _make_dummy_env(**kwargs):
         run_as_host_user=kwargs.get("run_as_host_user", False),
         extra_args=kwargs.get("extra_args", []),
         persist_across_processes=kwargs.get("persist_across_processes", True),
+        shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
     )
 
 
@@ -219,6 +221,140 @@ def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
     # must win and a blank "MY_SECRET=" flag must never be emitted.
     assert "MY_SECRET=value_from_dotenv" in args
     assert "MY_SECRET=" not in args
+
+
+def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):
+    """Docker forwarding must resolve the routed profile's secret scope."""
+    from agent import secret_scope as ss
+
+    env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
+    monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-routed-profile"})
+    try:
+        args = env._build_init_env_args()
+    finally:
+        ss.reset_secret_scope(token)
+        ss.set_multiplex_active(False)
+
+    assert "SERVICE_TOKEN=token-for-routed-profile" in args
+    assert "SERVICE_TOKEN=token-for-default" not in args
+
+
+def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
+    """A missing routed secret must not reintroduce the process env value."""
+    from agent import secret_scope as ss
+
+    env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
+    monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({})
+    try:
+        args = env._build_init_env_args()
+    finally:
+        ss.reset_secret_scope(token)
+        ss.set_multiplex_active(False)
+
+    assert "SERVICE_TOKEN=token-for-default" not in args
+    assert "SERVICE_TOKEN" not in args
+
+
+def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
+    """Shared Docker containers must refresh and clear profile-scoped values."""
+    from agent import secret_scope as ss
+
+    env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
+    monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    calls = []
+    monkeypatch.setattr(
+        docker_env,
+        "_popen_bash",
+        lambda cmd, stdin_data=None: calls.append((cmd, stdin_data)) or object(),
+    )
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-profile-a"})
+    try:
+        env._run_bash("printf '%s' \"$SERVICE_TOKEN\"")
+    finally:
+        ss.reset_secret_scope(token)
+
+    token = ss.set_secret_scope({})
+    try:
+        env._run_bash("printf '%s' \"${SERVICE_TOKEN-unset}\"")
+    finally:
+        ss.reset_secret_scope(token)
+        ss.set_multiplex_active(False)
+
+    first_cmd = calls[0][0]
+    assert "SERVICE_TOKEN=token-for-profile-a" in first_cmd
+    second_cmd = calls[1][0]
+    assert "SERVICE_TOKEN=token-for-profile-a" not in second_cmd
+    assert "unset SERVICE_TOKEN" in second_cmd[-1]
+
+
+def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, tmp_path):
+    """The shared snapshot must not resurrect an explicit forward-only value."""
+    from agent import secret_scope as ss
+
+    env = _make_execute_only_env(forward_env=["EXPLICIT_TOKEN"])
+    env.cwd = str(tmp_path)
+    env._snapshot_path = str(tmp_path / "snapshot.sh")
+    env._cwd_file = str(tmp_path / "cwd.txt")
+    env._snapshot_passthrough_names = set()
+    (tmp_path / "snapshot.sh").write_text(
+        "export EXPLICIT_TOKEN=stale-from-previous-profile\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EXPLICIT_TOKEN", "token-for-default")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+
+    def _run_fake_docker_exec(cmd, stdin_data=None):
+        """Execute the generated docker exec command in a real local bash."""
+        container_index = cmd.index(env._container_id)
+        child_env = os.environ.copy()
+        index = 2
+        while index < container_index:
+            assert cmd[index] == "-e"
+            key, value = cmd[index + 1].split("=", 1)
+            child_env[key] = value
+            index += 2
+        assert cmd[container_index + 1 : container_index + 3] == ["bash", "-c"]
+        return subprocess.Popen(
+            ["bash", "-c", cmd[container_index + 3]],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env,
+        )
+
+    monkeypatch.setattr(docker_env, "_popen_bash", _run_fake_docker_exec)
+    ss.set_multiplex_active(True)
+
+    try:
+        for scope, expected in (
+            ({"EXPLICIT_TOKEN": "token-for-profile-a"}, "token-for-profile-a"),
+            ({"EXPLICIT_TOKEN": "token-for-profile-b"}, "token-for-profile-b"),
+            ({}, "unset"),
+        ):
+            scope_token = ss.set_secret_scope(scope)
+            try:
+                result = env.execute("printf '%s' \"${EXPLICIT_TOKEN-unset}\"")
+            finally:
+                ss.reset_secret_scope(scope_token)
+
+            assert result["returncode"] == 0
+            assert result["output"] == expected
+            assert "EXPLICIT_TOKEN=" not in (
+                tmp_path / "snapshot.sh"
+            ).read_text(encoding="utf-8")
+    finally:
+        ss.set_multiplex_active(False)
 
 
 # ── docker_env tests ──────────────────────────────────────────────
@@ -1282,3 +1418,73 @@ def test_execute_does_not_recover_on_ordinary_failure(monkeypatch):
     result = env.execute("badcmd")
     assert result.get("returncode") == 127
     assert "command not found" in result.get("output", "")
+
+
+# ── /dev/shm size tests (ported from nanocoai/nanoclaw#2748) ─────────────────
+
+
+def _shm_run_args(calls):
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    return run_calls[0][0]
+
+
+def test_shm_size_default_applied(monkeypatch):
+    """Docker's 64 MB /dev/shm default breaks Chromium and PyTorch DataLoader
+    workers; the sandbox must raise it by default."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env()
+
+    run_args = _shm_run_args(calls)
+    assert "--shm-size" in run_args
+    assert run_args[run_args.index("--shm-size") + 1] == docker_env._DEFAULT_SHM_SIZE
+
+
+def test_shm_size_custom_value(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(shm_size="256m")
+
+    run_args = _shm_run_args(calls)
+    assert run_args[run_args.index("--shm-size") + 1] == "256m"
+
+
+@pytest.mark.parametrize("opt_out", ["", "0", "  ", None])
+def test_shm_size_opt_out_omits_flag(monkeypatch, opt_out):
+    """Empty / '0' / None fall back to Docker's built-in default (no flag)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(shm_size=opt_out)
+
+    run_args = _shm_run_args(calls)
+    assert "--shm-size" not in run_args
+    assert not any(isinstance(a, str) and a.startswith("--shm-size=") for a in run_args)
+
+
+@pytest.mark.parametrize("extra", [["--shm-size", "4g"], ["--shm-size=4g"]])
+def test_shm_size_skipped_when_user_sets_it_via_extra_args(monkeypatch, extra):
+    """A user-supplied --shm-size in docker_extra_args must win unambiguously:
+    our default is skipped rather than relying on flag-ordering behavior."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(extra_args=list(extra))
+
+    run_args = _shm_run_args(calls)
+    joined = " ".join(run_args)
+    assert joined.count("--shm-size") == 1, joined
+    assert "4g" in joined
+
+
+def test_extra_args_set_shm_size_helper():
+    assert docker_env._extra_args_set_shm_size(["--shm-size", "2g"]) is True
+    assert docker_env._extra_args_set_shm_size(["--shm-size=2g"]) is True
+    assert docker_env._extra_args_set_shm_size(["--memory", "512m"]) is False
+    assert docker_env._extra_args_set_shm_size([]) is False
+    assert docker_env._extra_args_set_shm_size(None) is False
+    # non-string entries must not crash (config.yaml can be malformed)
+    assert docker_env._extra_args_set_shm_size([42, None, "--shm-size=1g"]) is True

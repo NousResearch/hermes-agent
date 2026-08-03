@@ -308,6 +308,40 @@ class TestCheckAvailable:
         monkeypatch.setenv("HASS_TOKEN", "")
         assert _check_ha_available() is False
 
+    def test_multiplex_scope_does_not_fall_back_to_another_profile(self, monkeypatch):
+        from agent import secret_scope
+
+        monkeypatch.setenv("HASS_TOKEN", "default-profile-token")
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            assert _check_ha_available() is False
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_multiplex_scope_supplies_profile_url_and_token(self, monkeypatch):
+        from agent import secret_scope
+        from tools.homeassistant_tool import _get_config
+
+        monkeypatch.setattr("tools.homeassistant_tool._HASS_URL", "")
+        monkeypatch.setattr("tools.homeassistant_tool._HASS_TOKEN", "")
+        monkeypatch.setenv("HASS_URL", "http://default-profile:8123")
+        monkeypatch.setenv("HASS_TOKEN", "default-profile-token")
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({
+            "HASS_URL": "http://secondary-profile:8123/",
+            "HASS_TOKEN": "secondary-profile-token",
+        })
+        try:
+            assert _get_config() == (
+                "http://secondary-profile:8123",
+                "secondary-profile-token",
+            )
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
 
 # ---------------------------------------------------------------------------
 # Auth headers

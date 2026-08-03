@@ -9,11 +9,13 @@ reports exactly what was skipped and why.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -346,26 +348,120 @@ def resolve_secret_input(value: Any, env: Optional[Dict[str, str]] = None) -> Op
     return None
 
 
+class ConfigReadError(RuntimeError):
+    """An existing config file is present but cannot be read or parsed.
+
+    Signals that a read-modify-write round trip must be abandoned: the caller
+    has no idea what the file holds, so writing a merged result back would
+    replace real settings with only the keys it merged.
+    """
+
+
 def load_yaml_file(path: Path) -> Dict[str, Any]:
+    """Load a YAML mapping, distinguishing "absent" from "unreadable".
+
+    Every config.yaml caller here reads the file, merges a section into it and
+    writes the whole mapping straight back.  Collapsing a present-but-unreadable
+    file to ``{}`` therefore destroys it: a YAML syntax error, a permission
+    problem or a broken mount would make the migration replace every setting
+    the user had with only the section it merged, and still report ``migrated``.
+
+    - Absent, or present but empty -> ``{}``; first-time creation still works.
+    - Present but unreadable, unparseable, or not a mapping -> raise
+      :class:`ConfigReadError` so the caller refuses and leaves the file
+      byte-identical.
+
+    ``yaml is None`` (PyYAML not installed) still yields ``{}``: nothing can be
+    written in that state either, since :func:`dump_yaml_file` raises.
+    """
     if yaml is None or not path.exists():
         return {}
     try:
         # errors="replace" means read_text() cannot raise UnicodeDecodeError;
         # OSError covers races like the file disappearing or being unreadable.
-        data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace"))
-    except (yaml.YAMLError, OSError):
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: the existing file cannot be read "
+            f"({exc}). Fix the file permissions or move it aside first."
+        ) from exc
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: the existing file is not valid YAML "
+            f"({exc}). Fix it with `hermes config edit` (or move it aside), then "
+            f"re-run the migration."
+        ) from exc
+    # An empty file parses to None — a legitimate state with nothing to lose.
+    if data is None:
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: expected the existing file to hold a "
+            f"YAML mapping but found {type(data).__name__}. Fix it with "
+            f"`hermes config edit` (or move it aside), then re-run the migration."
+        )
+    return data
 
 
 def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
+    """Write ``data`` as YAML via temp file + fsync + atomic rename.
+
+    Only ever reached after :func:`load_yaml_file` has successfully read the
+    same path, so the mapping being written is the real file's content plus the
+    merged section — never a silently-empty stand-in.  Writing atomically means
+    an interrupted migration cannot leave a truncated config.yaml behind.
+
+    Inlined rather than importing ``utils.atomic_write_text``: this script is
+    standalone and runs with only the stdlib on its path.  The symlink and
+    cross-device handling mirrors ``utils.atomic_replace``: a plain
+    ``os.replace`` onto a symlinked config.yaml would replace the *link* with a
+    regular file, silently detaching managed deployments that symlink
+    ``~/.hermes/config.yaml`` into a dotfiles repo or profile package.
+    """
     if yaml is None:
         raise RuntimeError("PyYAML is required to update Hermes config.yaml")
     ensure_parent(path)
-    path.write_text(
-        yaml.safe_dump(data, sort_keys=False, allow_unicode=False),
-        encoding="utf-8",
+    target = os.path.realpath(str(path)) if os.path.islink(str(path)) else str(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(target) or ".", prefix=".tmp_", suffix=".yaml"
     )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(yaml.safe_dump(data, sort_keys=False, allow_unicode=False))
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.replace(tmp_path, target)
+        except OSError as exc:
+            # Cross-device or bind-mount deployments cannot rename into place.
+            if exc.errno not in (errno.EXDEV, errno.EBUSY):
+                raise
+            shutil.copyfile(tmp_path, target)
+            try:
+                shutil.copystat(tmp_path, target)
+            except OSError:
+                pass
+            # fsync the copied target so the durability claim holds on the
+            # cross-device path too (mirrors utils.atomic_replace, including
+            # its swallow — a failed fsync must not report the already-copied
+            # write as failed).
+            try:
+                target_fd = os.open(target, os.O_RDONLY)
+                try:
+                    os.fsync(target_fd)
+                finally:
+                    os.close(target_fd)
+            except OSError:
+                pass
+            os.unlink(tmp_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def parse_env_file(path: Path) -> Dict[str, str]:
@@ -783,7 +879,14 @@ class Migrator:
                     # ws_path is outside source_root — use it as custom workspace
                     self._custom_workspace = ws_path
 
-        config = load_yaml_file(self.target_root / "config.yaml")
+        # Read-only probe for the memory limits, during construction — nothing
+        # is written from here, so an unreadable config just falls back to the
+        # defaults.  Every path that WRITES config.yaml refuses separately (see
+        # run_if_selected), so this cannot become a silent overwrite.
+        try:
+            config = load_yaml_file(self.target_root / "config.yaml")
+        except ConfigReadError:
+            config = {}
         mem_cfg = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
         self.memory_limit = int(mem_cfg.get("memory_char_limit", DEFAULT_MEMORY_CHAR_LIMIT))
         self.user_limit = int(mem_cfg.get("user_char_limit", DEFAULT_USER_CHAR_LIMIT))
@@ -1001,7 +1104,24 @@ class Migrator:
                 option_label=meta["label"],
             )
             return
-        func()
+        try:
+            func()
+        except ConfigReadError as exc:
+            # The destination config.yaml is present but unreadable, so this
+            # step cannot merge into it.  Record the refusal against the
+            # config path — record() then flips _config_apply_blocked, and the
+            # remaining config-mutating options short-circuit above instead of
+            # each rediscovering the same unreadable file.  The file itself is
+            # left byte-identical.
+            meta = MIGRATION_OPTION_METADATA[option_id]
+            self.record(
+                option_id,
+                None,
+                self.target_root / "config.yaml",
+                STATUS_ERROR,
+                str(exc),
+                option_label=meta["label"],
+            )
 
     def build_report(self) -> Dict[str, Any]:
         summary: Dict[str, int] = {

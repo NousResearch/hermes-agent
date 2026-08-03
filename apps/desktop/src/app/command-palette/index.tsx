@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 
 import {
   HUD_HEADING,
@@ -13,7 +13,6 @@ import {
   HUD_SURFACE,
   HUD_TEXT
 } from '@/app/floating-hud'
-import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
@@ -52,7 +51,6 @@ import {
   SlidersHorizontal,
   Starmap,
   Sun,
-  Terminal,
   Users,
   Wrench,
   Zap
@@ -67,7 +65,7 @@ import {
   closeCommandPalette,
   setCommandPaletteOpen
 } from '@/store/command-palette'
-import { $bindings } from '@/store/keybinds'
+import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
 import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
@@ -328,7 +326,9 @@ const PaletteRow = memo(function PaletteRow({
   const Icon = item.icon
   // The row's live keybind, else a static modifier-variant hint (⌘↵). One slot,
   // so every downstream `ml-auto` fallback below keeps working unchanged.
-  const combo = (item.action ? bindings[item.action]?.[0] : undefined) ?? item.comboHint
+  // `bindingsFor`, not a raw lookup: a plugin's action is contributed after
+  // $bindings was seeded, so its combo only resolves through the fallback chain.
+  const combo = (item.action ? bindingsFor(item.action, bindings)[0] : undefined) ?? item.comboHint
   // While ⌘/⌃ is held, a row with a modifier variant previews it: the label
   // swaps to the variant's copy so Enter reads as what it will actually do.
   const modPreview = modHeld && Boolean(item.modLabel)
@@ -389,6 +389,7 @@ type NonConfigSettingsLabel =
   | 'keysSettings'
   | 'keysTools'
   | 'mcp'
+  | 'plugins'
   | 'providerAccounts'
   | 'providerApiKeys'
 
@@ -422,6 +423,12 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
     keywords: ['gateway', 'proxy', 'server', 'webhook', 'env', 'egress proxy', 'iron proxy'],
     labelKey: 'keysSettings',
     tab: 'keys&kview=settings'
+  },
+  {
+    icon: Package,
+    keywords: ['plugins', 'extensions', 'desktop plugins', 'addon', 'add-on'],
+    labelKey: 'plugins',
+    tab: 'plugins'
   },
   { icon: Archive, keywords: ['history', 'archived'], labelKey: 'archivedChats', tab: 'sessions' },
   { icon: Info, keywords: ['version', 'about'], labelKey: 'about', tab: 'about' }
@@ -762,14 +769,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
                 }
               ]
             : []),
-          {
-            action: 'view.showTerminal',
-            icon: Terminal,
-            id: 'nav-terminal',
-            keywords: ['terminal', 'shell', 'console'],
-            label: t.keybinds.actions['view.showTerminal'],
-            run: () => setTerminalTakeover(true)
-          },
           {
             action: 'nav.settings',
             icon: Settings,

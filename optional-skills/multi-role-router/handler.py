@@ -276,7 +276,7 @@ If the message is a continuation of the current topic, respond with the current 
 Valid role names: {", ".join(roles.keys())}"""
 
 
-def _call_auxiliary_llm(prompt: str, aux_cfg: Dict[str, Any], config: Dict[str, Any]) -> Optional[str]:
+async def _call_auxiliary_llm(prompt: str, aux_cfg: Dict[str, Any], config: Dict[str, Any]) -> Optional[str]:
     """Call the auxiliary LLM and return the raw text response, or None on failure."""
     # Prefer the gateway-internal auxiliary_client (fast, handles all providers)
     try:
@@ -296,7 +296,8 @@ def _call_auxiliary_llm(prompt: str, aux_cfg: Dict[str, Any], config: Dict[str, 
         logger.warning("[multi-role-router] auxiliary_client call failed: %s", exc)
         return None
 
-    # Direct HTTP fallback (used when the hook runs outside the gateway process)
+    # Direct HTTP fallback (used when the hook runs outside the gateway process).
+    # Uses httpx.AsyncClient so this coroutine does not block the event loop.
     model_section = config.get("model", {})
     if not isinstance(model_section, dict):
         model_section = {}
@@ -328,8 +329,8 @@ def _call_auxiliary_llm(prompt: str, aux_cfg: Dict[str, Any], config: Dict[str, 
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        with httpx.Client(timeout=aux_cfg.get("timeout", 15)) as client:
-            r = client.post(f"{base_url}/chat/completions", json=payload, headers=headers)
+        async with httpx.AsyncClient(timeout=aux_cfg.get("timeout", 15)) as client:
+            r = await client.post(f"{base_url}/chat/completions", json=payload, headers=headers)
         r.raise_for_status()
         data = r.json()
         content = data["choices"][0]["message"]["content"]
@@ -339,7 +340,7 @@ def _call_auxiliary_llm(prompt: str, aux_cfg: Dict[str, Any], config: Dict[str, 
         return None
 
 
-def _classify_message(
+async def _classify_message(
     message: str,
     current_role: str,
     history: List[Dict[str, str]],
@@ -350,7 +351,7 @@ def _classify_message(
     """Return the best role name for *message*, defaulting to current_role on any failure."""
     prompt = _build_classifier_prompt(roles, current_role, history, message)
     try:
-        raw = _call_auxiliary_llm(prompt, aux_cfg, config)
+        raw = await _call_auxiliary_llm(prompt, aux_cfg, config)
     except Exception:
         logger.warning("[multi-role-router] LLM call failed, keeping current role", exc_info=True)
         return current_role
@@ -420,6 +421,15 @@ async def handle(event_type: str, context: Dict[str, Any]) -> Optional[Dict[str,
 
     roles = _get_roles(config)
     aux_cfg = _get_auxiliary_config(config)
+    # NOTE (TOCTOU): _load_meta() is called here without _META_LOCK.  This is a
+    # deliberate trade-off: the gateway invokes message:pre_route hooks serially
+    # (one hook at a time per turn), so concurrent writes to meta.yaml from this
+    # hook are not possible in normal operation.  The only writer is
+    # _update_meta_session(), which runs under _META_LOCK.  A concurrent turn on
+    # a different session could race, but hermes-agent's single-agent-per-session
+    # model means turns for the same user are also serialised.  If this hook is
+    # ever invoked from a multi-threaded context, load current_role and history
+    # inside _META_LOCK instead.
     meta = _load_meta()
 
     current_role: str = meta.get("current_role", "default")
@@ -432,7 +442,7 @@ async def handle(event_type: str, context: Dict[str, Any]) -> Optional[Dict[str,
     # Classify
     # ------------------------------------------------------------------
     try:
-        target_role = _classify_message(
+        target_role = await _classify_message(
             message=message,
             current_role=current_role,
             history=history,

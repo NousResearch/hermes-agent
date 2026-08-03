@@ -21591,6 +21591,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self.hooks.emit_collect("message:pre_route", _pre_route_ctx),
                 timeout=5.0,
             )
+        except asyncio.TimeoutError:
+            logger.warning("message:pre_route hook timed out after 5s")
+            _pre_route_results = []
         except Exception:
             logger.warning("message:pre_route hook emit failed", exc_info=True)
             _pre_route_results = []

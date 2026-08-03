@@ -209,7 +209,11 @@ class TestGetRoles:
 
 
 class TestParseRole:
-    """Test the role-name parsing inside _classify_message."""
+    """Test the role-name parsing inside _classify_message.
+
+    _classify_message is async (it awaits _call_auxiliary_llm), so all tests
+    here use @pytest.mark.asyncio and patch _call_auxiliary_llm with AsyncMock.
+    """
 
     def _roles(self):
         return {
@@ -219,11 +223,11 @@ class TestParseRole:
             "default": {"description": "general"},
         }
 
-    def _classify(self, raw_response: str, current: str = "default") -> str:
+    async def _classify(self, raw_response, current: str = "default") -> str:
         with patch.object(
-            multi_role_router_handler, "_call_auxiliary_llm", return_value=raw_response
+            multi_role_router_handler, "_call_auxiliary_llm", new=AsyncMock(return_value=raw_response)
         ):
-            return _classify_message(
+            return await _classify_message(
                 message="anything",
                 current_role=current,
                 history=[],
@@ -232,25 +236,30 @@ class TestParseRole:
                 config={},
             )
 
-    def test_exact_match(self):
-        assert self._classify("code-worker") == "code-worker"
+    @pytest.mark.asyncio
+    async def test_exact_match(self):
+        assert await self._classify("code-worker") == "code-worker"
 
-    def test_fuzzy_match_in_longer_response(self):
-        assert self._classify("I think code-worker fits best.") == "code-worker"
+    @pytest.mark.asyncio
+    async def test_fuzzy_match_in_longer_response(self):
+        assert await self._classify("I think code-worker fits best.") == "code-worker"
 
-    def test_longest_match_wins_over_substring(self):
+    @pytest.mark.asyncio
+    async def test_longest_match_wins_over_substring(self):
         """ops-worker must win over ops when both are present in response."""
-        result = self._classify("ops-worker is the best fit")
+        result = await self._classify("ops-worker is the best fit")
         assert result == "ops-worker"
 
-    def test_unrecognised_response_returns_current_role(self):
-        assert self._classify("banana-role") == "default"
+    @pytest.mark.asyncio
+    async def test_unrecognised_response_returns_current_role(self):
+        assert await self._classify("banana-role") == "default"
 
-    def test_none_response_returns_current_role(self):
+    @pytest.mark.asyncio
+    async def test_none_response_returns_current_role(self):
         with patch.object(
-            multi_role_router_handler, "_call_auxiliary_llm", return_value=None
+            multi_role_router_handler, "_call_auxiliary_llm", new=AsyncMock(return_value=None)
         ):
-            result = _classify_message(
+            result = await _classify_message(
                 message="anything",
                 current_role="ops-worker",
                 history=[],
@@ -260,8 +269,9 @@ class TestParseRole:
             )
         assert result == "ops-worker"
 
-    def test_whitespace_only_response_returns_current(self):
-        assert self._classify("   ") == "default"
+    @pytest.mark.asyncio
+    async def test_whitespace_only_response_returns_current(self):
+        assert await self._classify("   ") == "default"
 
 
 # ---------------------------------------------------------------------------

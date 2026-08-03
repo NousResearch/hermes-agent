@@ -72,6 +72,7 @@ hermes cron create "0 */12 * * *" \
   --name "teams-pipeline-maintain-subscriptions" \
   --no-agent \
   --script maintain-teams-subscriptions.sh \
+  --target scheduler \
   --deliver local
 ```
 

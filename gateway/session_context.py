@@ -36,8 +36,9 @@ needs to replace the import + call site:
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
 """
 
+from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Iterator
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
 # When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
@@ -94,6 +95,12 @@ _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", defaul
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 
+# Per-session cron marker. Unlike the process-global legacy env var, this is
+# scoped to one cron job / inbound session. _UNSET preserves the legacy env
+# fallback for CLI/tests; "1" marks cron; "" explicitly marks non-cron and
+# masks any leaked process env value.
+_CRON_SESSION: ContextVar = ContextVar("HERMES_CRON_SESSION", default=_UNSET)
+
 # Whether the current session's delivery channel can route an ASYNC completion
 # back to the agent AFTER the current turn ends (i.e. wake a fresh turn).
 #
@@ -134,6 +141,7 @@ _VAR_MAP = {
     "HERMES_UI_SESSION_ID": _SESSION_UI_SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "HERMES_SESSION_PROFILE": _SESSION_PROFILE,
+    "HERMES_CRON_SESSION": _CRON_SESSION,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
@@ -148,11 +156,51 @@ def set_current_session_id(session_id: str) -> None:
     reconstructing the entire agent. Tools still consult
     ``get_session_env("HERMES_SESSION_ID")`` with an ``os.environ`` fallback,
     so both storage paths must move together when the active session changes.
+
+    Delegated subagent children are the exception: they are constructed inside
+    the parent process within ``delegated_child_context()``, and their
+    ``AIAgent.__init__`` calls this same helper. Writing a child's internal
+    session id to ``os.environ`` (process-global) would clobber the parent's
+    ``HERMES_SESSION_ID`` for the rest of the process — leaking the child id
+    into parent tools and subprocesses spawned after the child was built. The
+    ContextVar write below is task-local and safe for concurrent children; only
+    the process-global ``os.environ`` mirror is suppressed for delegated
+    children. Root agents (CLI, gateway, cron) keep both paths.
     """
     import os
 
-    os.environ["HERMES_SESSION_ID"] = session_id
     _SESSION_ID.set(session_id)
+
+    # Skip the process-global os.environ write for delegated children. The
+    # child's own tools and subprocesses still resolve their id through the
+    # ContextVar (task-local), while the parent's process-wide env keeps the
+    # parent's session identity. See HermesPRDelegationSessionContext task.
+    try:
+        from agent.delegation_context import is_delegated_child_context
+
+        if is_delegated_child_context():
+            return
+    except Exception:
+        pass
+
+    os.environ["HERMES_SESSION_ID"] = session_id
+
+
+@contextmanager
+def scoped_current_session_id(session_id: str | None = None) -> Iterator[None]:
+    """Bind a task-local session id and restore the prior value on exit.
+
+    With ``session_id=None`` this acts as a save/restore boundary around code
+    that may call :func:`set_current_session_id` itself (notably delegated
+    ``AIAgent`` construction).  It intentionally never mutates ``os.environ``.
+    """
+    previous = _SESSION_ID.get()
+    if session_id is not None:
+        _SESSION_ID.set(session_id)
+    try:
+        yield
+    finally:
+        _SESSION_ID.set(previous)
 
 
 def set_session_vars(
@@ -171,6 +219,7 @@ def set_session_vars(
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
+    cron_session: Any = _UNSET,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -186,6 +235,10 @@ def set_session_vars(
     background completion back to the agent after the turn ends (see
     ``_SESSION_ASYNC_DELIVERY`` / ``async_delivery_supported``). Stateless
     request/response adapters (the API server) pass ``False``.
+
+    ``cron_session`` is tri-state: ``_UNSET`` preserves legacy
+    ``os.environ["HERMES_CRON_SESSION"]`` fallback, ``"1"`` marks a cron job,
+    and ``""`` explicitly marks a non-cron session while masking leaked env.
     """
     # Mark the session-context machinery engaged for this process. The
     # subprocess-env bridge uses this to switch from "os.environ fallback" to
@@ -206,6 +259,7 @@ def set_session_vars(
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
+        _CRON_SESSION.set(cron_session),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
     try:
@@ -242,6 +296,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
         _SESSION_PROFILE,
+        _CRON_SESSION,
     ):
         var.set("")
     # Reset async-delivery capability to the "never set" sentinel rather than a
@@ -350,6 +405,7 @@ NON_MESSAGING_SESSION_SURFACES = frozenset(
         "codex",
         "desktop",
         "gateway",
+        "kanban",
         "local",
         "msgraph_webhook",
         "tool",

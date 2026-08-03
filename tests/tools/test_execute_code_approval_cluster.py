@@ -24,6 +24,7 @@ import pytest
 
 from tools import approval as A
 from tools.thread_context import propagate_context_to_thread
+from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +123,8 @@ def gw_session(monkeypatch):
     with A._lock:
         A._gateway_queues.pop(session_key, None)
         A._gateway_notify_cbs.pop(session_key, None)
+        A._permanent_approved.discard("execute_code")
+        A._session_approved.get(session_key, set()).discard("execute_code")
     try:
         yield session_key
     finally:
@@ -178,6 +181,39 @@ def test_guard_headless_local_approved(monkeypatch):
 
 
 def test_guard_cron_deny_blocks(monkeypatch):
+    monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "deny")
+    tokens = set_session_vars(cron_session="1")
+    try:
+        res = A.check_execute_code_guard("import os", "local")
+    finally:
+        clear_session_vars(tokens)
+    assert res["approved"] is False
+    assert res["outcome"] == "blocked"
+
+
+def test_guard_explicit_non_cron_masks_leaked_env(monkeypatch):
+    monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "deny")
+    tokens = set_session_vars(cron_session="")
+    try:
+        res = A.check_execute_code_guard("import os", "local")
+    finally:
+        clear_session_vars(tokens)
+        reset_session_vars()
+    assert res["approved"] is True
+
+
+def test_guard_legacy_env_cron_still_blocks(monkeypatch):
+    reset_session_vars()
     monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)

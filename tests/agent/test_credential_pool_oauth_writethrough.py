@@ -233,3 +233,87 @@ def test_codex_pool_refresh_holds_auth_store_lock_across_post(monkeypatch, tmp_p
     # The invariant: the single-use token POST ran inside the auth-store lock.
     assert lock_held["during_post"] is True
 
+
+def test_write_through_fires_on_every_refresh_not_just_first(
+    profile_and_root, monkeypatch
+):
+    """Write-through to root must fire on the 2nd, 3rd, … refresh too (#74339).
+
+    The old key-presence check decided write-through on whether the *profile*
+    store had ``providers.<id>`` BEFORE the save — a key that
+    ``_store_provider_state()`` unconditionally created.  Net effect: first
+    refresh → write-through fires; every later refresh → silently disabled
+    because the profile now "owned" the block, even though it never
+    performed its own OAuth grant.
+
+    The fix skips ``_store_provider_state`` entirely when the grant was
+    resolved from root, so the profile never accrues a shadowing key and
+    ``_load_provider_state_with_source`` always resolves from root.
+    """
+    profile_path, root_path = profile_and_root
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": "root-ac", "refresh_token": "root-rf"}
+                }
+            },
+        },
+    )
+
+    provider = "openai-codex"
+    # After patching A's module-level attributes, the bare-name imports in
+    # credential_pool.py still hold references to the original functions
+    # (``from X import Y`` creates a local binding that does not update when
+    # ``X.Y`` is reassigned).  Patch CP's bindings separately so the
+    # ``_sync_device_code_entry_to_auth_store`` method — whose __globals__
+    # are ``agent.credential_pool.__dict__`` — sees the mocked paths.
+    monkeypatch.setattr(CP, "_global_auth_file_path", lambda: root_path)
+    monkeypatch.setattr(CP, "_same_path", lambda a, b: a == b)
+    # Let _write_through_provider_state_to_global_root run for real so it
+    # persists the rotated token pair to the root auth.json — the test
+    # asserts the on-disk values after each refresh.
+
+    # ---- REFRESH 1 ----
+    _write_store(profile_path, {"version": 1})
+    entry1 = _entry(
+        provider, id="c1", access_token="ac1", refresh_token="rf1"
+    )
+    pool1 = CredentialPool(provider, [entry1])
+    pool1._sync_device_code_entry_to_auth_store(entry1)
+
+    # Verify root was updated with the rotated tokens from refresh 1.
+    root_store = _read_store(root_path)
+    root_tokens = root_store["providers"]["openai-codex"]["tokens"]
+    assert root_tokens["access_token"] == "ac1"
+    assert root_tokens["refresh_token"] == "rf1"
+
+    # After refresh 1 the profile should NOT have a providers.openai-codex
+    # block (the fix skipped _store_provider_state because the grant came
+    # from root).  This prevents the self-sealing that broke refresh 2+.
+    profile_store = _read_store(profile_path)
+    assert "openai-codex" not in profile_store.get("providers", {}), (
+        "profile must NOT accrue a shadowing providers.<id> block when the "
+        "grant was resolved from root — that key would disable write-through "
+        "on the next refresh (#74339)"
+    )
+
+    # ---- REFRESH 2 (same scenario, rotated tokens) ----
+    entry2 = _entry(
+        provider, id="c2", access_token="ac2", refresh_token="rf2"
+    )
+    pool2 = CredentialPool(provider, [entry2])
+    pool2._sync_device_code_entry_to_auth_store(entry2)
+
+    # Verify root was updated with the rotated tokens from refresh 2.
+    # The old key-presence check would have silently skipped this write.
+    root_store = _read_store(root_path)
+    root_tokens = root_store["providers"]["openai-codex"]["tokens"]
+    assert root_tokens["access_token"] == "ac2", (
+        "refresh 2: root must carry the rotated token pair. "
+        "The old code self-disabled write-through here (#74339)"
+    )
+    assert root_tokens["refresh_token"] == "rf2"
+

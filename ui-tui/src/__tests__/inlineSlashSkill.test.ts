@@ -64,6 +64,28 @@ describe('completionRequestForInput — inline skill references', () => {
     })
   })
 
+  it('completes a second slash in a line that starts with a command', () => {
+    // Only the first slash is an invocation. Routing the whole line to the
+    // completer offered nothing, so `/work /cle` went dead while
+    // `do /work then /cle` completed fine.
+    expect(completionRequestForInput('/work /cle')).toMatchObject({
+      method: 'complete.slash',
+      params: { text: '/cle' },
+      replaceFrom: 7,
+      skillsOnly: true
+    })
+  })
+
+  it('leaves a command own arguments to the command', () => {
+    for (const input of ['/personality alic', '/cron ad', '/details ']) {
+      expect(completionRequestForInput(input)).toEqual({
+        method: 'complete.slash',
+        params: { text: input },
+        replaceFrom: 1
+      })
+    }
+  })
+
   it('routes a real mid-message path to path completion, not skills', () => {
     expect(completionRequestForInput('open src/foo/ba')).toMatchObject({ method: 'complete.path' })
     expect(completionRequestForInput('open /usr/lo')).toMatchObject({ method: 'complete.path' })

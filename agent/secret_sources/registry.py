@@ -32,7 +32,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, MutableMapping, Optional
 
 from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION,
@@ -40,6 +40,8 @@ from agent.secret_sources.base import (
     FetchResult,
     SecretSource,
     is_valid_env_name,
+    reset_source_environment,
+    set_source_environment,
 )
 
 logger = logging.getLogger(__name__)
@@ -196,7 +198,8 @@ def _reset_registry_for_tests() -> None:
 
 
 def _fetch_with_timeout(
-    source: SecretSource, cfg: dict, home_path: Path
+    source: SecretSource, cfg: dict, home_path: Path,
+    environ: MutableMapping[str, str],
 ) -> FetchResult:
     """Run source.fetch() under a wall-clock budget; never raises.
 
@@ -211,7 +214,14 @@ def _fetch_with_timeout(
         max_workers=1, thread_name_prefix=f"secret-src-{source.name}"
     )
     try:
-        future = executor.submit(source.fetch, cfg, home_path)
+        def _fetch() -> FetchResult:
+            token = set_source_environment(environ)
+            try:
+                return source.fetch(cfg, home_path)
+            finally:
+                reset_source_environment(token)
+
+        future = executor.submit(_fetch)
         try:
             result = future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
@@ -321,7 +331,7 @@ def _profile_alias_target(var: str, profile: str) -> Optional[str]:
 
 
 def apply_all(secrets_cfg: dict, home_path: Path,
-              environ: Optional[Dict[str, str]] = None) -> ApplyReport:
+              environ: Optional[MutableMapping[str, str]] = None) -> ApplyReport:
     """Fetch from every enabled source and apply the merged result to env.
 
     ``environ`` defaults to ``os.environ``; injectable for tests.
@@ -376,7 +386,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     for source in ordered:
         cfg = secrets_cfg.get(source.name)
         cfg = cfg if isinstance(cfg, dict) else {}
-        result = _fetch_with_timeout(source, cfg, home_path)
+        result = _fetch_with_timeout(source, cfg, home_path, env)
         fetches.append((source, cfg, result))
         try:
             for var in source.protected_env_vars(cfg):

@@ -9,6 +9,7 @@ const SOURCE_LABELS: Record<string, string> = {
   discord: 'Discord',
   email: 'Email',
   gateway: 'Gateway',
+  kanban: 'Kanban',
   local: 'Local',
   matrix: 'Matrix',
   mattermost: 'Mattermost',
@@ -42,7 +43,7 @@ const SOURCE_ALIASES: Record<string, string[]> = {
 // platform. A handoff *from* one of these isn't a platform origin worth a badge.
 // Exported so the recents fetch can keep these in the main list while the
 // messaging fetch excludes them.
-export const LOCAL_SESSION_SOURCE_IDS = ['cli', 'codex', 'desktop', 'gateway', 'local', 'tui']
+export const LOCAL_SESSION_SOURCE_IDS = ['cli', 'codex', 'desktop', 'gateway', 'kanban', 'local', 'tui']
 const LOCAL_SOURCE_IDS = new Set(LOCAL_SESSION_SOURCE_IDS)
 
 // External messaging platforms that each get their own self-managed sidebar

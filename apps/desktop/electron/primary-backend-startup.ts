@@ -10,8 +10,7 @@ export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, C
 }
 
 export type PrimaryBackendStartupResult<RuntimeBackend, Connection> =
-  | { kind: 'local'; backend: RuntimeBackend }
-  | { kind: 'remote'; connection: Connection }
+  { kind: 'local'; backend: RuntimeBackend } | { kind: 'remote'; connection: Connection }
 
 export class FirstRunSetupResetError extends Error {
   readonly firstRunSetupReset = true

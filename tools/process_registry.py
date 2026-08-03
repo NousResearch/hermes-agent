@@ -29,6 +29,7 @@ Usage:
     process_registry.kill(session.id)
 """
 
+import codecs
 import json
 import logging
 import os
@@ -960,6 +961,14 @@ class ProcessRegistry:
         lazy reconcile in poll()/wait() remains the safety net.
         """
         first_chunk = True
+        # Incremental decoder: raw pipe reads can split a multibyte UTF-8
+        # character across two read1() chunks. A stateless per-chunk
+        # ``bytes.decode(errors="replace")`` turns both halves into U+FFFD
+        # mojibake. The incremental decoder holds the partial sequence until
+        # the continuation bytes arrive — same treatment the foreground path
+        # already has in ``tools/environments/base.py::_wait_for_process``.
+        # (Ported from openclaw/openclaw#112325.)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _append_chunk(chunk: str):
             nonlocal first_chunk
@@ -1007,7 +1016,9 @@ class ProcessRegistry:
                         raw = raw_read(4096)
                         if not raw:
                             break  # true EOF — all writers closed
-                        _append_chunk(raw.decode("utf-8", errors="replace"))
+                        chunk = decoder.decode(raw)
+                        if chunk:
+                            _append_chunk(chunk)
                         idle_after_exit = 0
                     elif proc.poll() is not None:
                         # Direct child is gone and the pipe was idle for
@@ -1024,7 +1035,9 @@ class ProcessRegistry:
                         raw = raw_read(4096)
                         if not raw:
                             break
-                        chunk = raw.decode("utf-8", errors="replace")
+                        chunk = decoder.decode(raw)
+                        if not chunk:
+                            continue  # partial multibyte sequence — wait for more bytes
                     else:
                         # Fallback for mocked/alternate streams without a buffered raw
                         # interface. This may be less "live", but keeps compatibility.
@@ -1036,6 +1049,15 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
+            # Flush any bytes still pending in the incremental decoder (a
+            # truncated multibyte sequence at EOF becomes one U+FFFD instead
+            # of being dropped silently).
+            try:
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    _append_chunk(tail)
+            except Exception:
+                pass
             # Always reap the child to prevent zombie processes.
             try:
                 session.process.wait(timeout=5)
@@ -1108,25 +1130,42 @@ class ProcessRegistry:
     def _pty_reader_loop(self, session: ProcessSession):
         """Background thread: read output from a PTY process."""
         pty = session._pty
+        # PTY reads can split a multibyte UTF-8 character across chunks just
+        # like pipe reads — hold partial sequences until the rest arrives.
+        # (Ported from openclaw/openclaw#112325.)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+        def _append_text(text: str):
+            with session._lock:
+                session.output_buffer += text
+                if len(session.output_buffer) > session.max_output_chars:
+                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
+            self._check_watch_patterns(session, text)
+            self._emit_output(session, text)
+
         try:
             while pty.isalive():
                 try:
                     chunk = pty.read(4096)
                     if chunk:
-                        # ptyprocess returns bytes
-                        text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
-                        with session._lock:
-                            session.output_buffer += text
-                            if len(session.output_buffer) > session.max_output_chars:
-                                session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                        self._check_watch_patterns(session, text)
-                        self._emit_output(session, text)
+                        # ptyprocess returns bytes; pywinpty returns str
+                        text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
+                        if text:
+                            _append_text(text)
                 except EOFError:
                     break
                 except Exception:
                     break
         except Exception as e:
             logger.debug("PTY stdout reader ended: %s", e)
+
+        # Flush any partial multibyte sequence held by the decoder.
+        try:
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                _append_text(tail)
+        except Exception:
+            pass
 
         # Process exited
         try:
@@ -1559,11 +1598,32 @@ class ProcessRegistry:
             "status": "timeout",
             "command": session.command,
             "output": strip_ansi(session.output_buffer[-1000:]),
+            # A wait window elapsing is NOT a failure — 511 exact-duplicate
+            # process calls in a production window show models re-issuing
+            # identical waits after misreading this result as an error.
+            "process_running": True,
         }
-        if timeout_note:
-            result["timeout_note"] = timeout_note
+        uptime = time.time() - session.started_at if session.started_at else None
+        base_note = (
+            f"Wait window of {effective_timeout}s elapsed — the process is "
+            "still running. This is not an error."
+        )
+        if uptime is not None:
+            base_note += f" Uptime: {int(uptime)}s."
+        if session.notify_on_complete:
+            base_note += (
+                " notify_on_complete is set: you will be notified on exit — "
+                "do more work instead of waiting again."
+            )
         else:
-            result["timeout_note"] = f"Waited {effective_timeout}s, process still running"
+            base_note += (
+                " Poll again later or use terminal(background=true, "
+                "notify_on_complete=true) next time for automatic notification."
+            )
+        if timeout_note:
+            result["timeout_note"] = f"{timeout_note}. {base_note}"
+        else:
+            result["timeout_note"] = base_note
         return result
 
     def kill_process(
@@ -1578,7 +1638,10 @@ class ProcessRegistry:
         ``consume_output`` is true for explicit tool/RPC kills because their
         caller observes the returned output. Bulk cleanup passes false: it
         discards each result and therefore must not suppress an autonomous
-        output-bearing completion notification.
+        output-bearing completion notification. Exception: abandoned-turn
+        reaping (``kill_started_since``) is bulk cleanup that deliberately
+        passes true — a killed abandoned process must not enqueue a synthetic
+        follow-up that revives work the timeout/interrupt stopped.
         """
         from tools.ansi_strip import strip_ansi
 
@@ -1890,20 +1953,64 @@ class ProcessRegistry:
         with self._lock:
             return any(not s.exited for s in self._running.values())
 
-    def kill_all(self, task_id: str = None) -> int:
+    def snapshot_running_ids(self, task_id: str) -> frozenset[str]:
+        """Capture running process IDs owned by ``task_id``.
+
+        Gateway turns use this as a boundary marker: if a turn times out, only
+        processes absent from its starting snapshot belong to the abandoned
+        turn. Older session processes must survive because background tasks
+        intentionally span successful turns.
+        """
+        with self._lock:
+            return frozenset(
+                s.id
+                for s in self._running.values()
+                if s.task_id == task_id and not s.exited
+            )
+
+    def kill_started_since(
+        self,
+        task_id: str,
+        baseline_ids,
+        *,
+        source: str,
+    ) -> int:
+        """Kill processes created for ``task_id`` after a prior snapshot.
+
+        ``consume_output`` is forced on: abandoned-turn output must not
+        enqueue a synthetic follow-up that revives work the timeout
+        deliberately stopped.
+        """
+        return self.kill_all(
+            task_id,
+            exclude_ids=frozenset(baseline_ids or ()),
+            source=source,
+            consume_output=True,
+        )
+
+    def kill_all(
+        self,
+        task_id: Optional[str] = None,
+        *,
+        exclude_ids: frozenset = frozenset(),
+        source: str = "kill_all",
+        consume_output: bool = False,
+    ) -> int:
         """Kill all running processes, optionally filtered by task_id. Returns count killed."""
         with self._lock:
             targets = [
                 s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and not s.exited
+                if (task_id is None or s.task_id == task_id)
+                and s.id not in exclude_ids
+                and not s.exited
             ]
 
         killed = 0
         for session in targets:
             result = self.kill_process(
                 session.id,
-                source="kill_all",
-                consume_output=False,
+                source=source,
+                consume_output=consume_output,
             )
             if result.get("status") in {"killed", "already_exited"}:
                 killed += 1

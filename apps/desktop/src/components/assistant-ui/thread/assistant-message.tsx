@@ -71,6 +71,13 @@ export const AssistantMessage: FC<{
   // ChatMessage.interim).
   const isInterim = useAuiState(s => s.message.metadata?.custom?.interim === true)
 
+  // The thinking/stall indicator belongs to the TAIL of the thread, period. A
+  // stale pending bubble mid-transcript (a turn that ended without its settle
+  // event, a steer race) must never show one — a spinner above a later user
+  // message reads as the agent answering out of order. Booleans are stable
+  // across token flushes, so this selector adds no streaming re-renders.
+  const isLastMessage = useAuiState(s => s.thread.messages[s.thread.messages.length - 1]?.id === s.message.id)
+
   // Preview targets only materialize once the turn completes — while running
   // the selector returns '' (stable), so per-token flushes skip the regex
   // scan and the re-render it would cause.
@@ -124,7 +131,7 @@ export const AssistantMessage: FC<{
       >
         {/* Todos render in the composer status stack now, not inline. */}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
-        {isPlaceholder ? <ResponseLoadingIndicator /> : isRunning && <StreamStallIndicator />}
+        {isLastMessage && (isPlaceholder ? <ResponseLoadingIndicator /> : isRunning && <StreamStallIndicator />)}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {previewTargets.map(target => (

@@ -1861,6 +1861,42 @@ def _model_name_suggests_kimi(model: str) -> bool:
     return lower.startswith("kimi") or "moonshot" in lower
 
 
+_KIMI_K3_MODEL_RE = re.compile(r"(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)")
+
+
+def is_kimi_k3_model(model: str | None) -> bool:
+    """Return True for Kimi K3-family model identifiers.
+
+    Matches ``k3`` (Kimi Coding bare slug), ``k3-256k`` (Coding-plan
+    variant), ``kimi-k3``, ``kimi-k3-cot``, ``moonshotai/kimi-k3`` and
+    similar spellings, without matching K2.x names (``kimi-k2.6`` …).
+
+    K3 is the only Kimi family whose API documents top-level
+    ``reasoning_effort`` values ``low`` / ``high`` / ``max`` (server
+    default ``max``); K2.x uses the ``thinking`` toggle instead.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    return _KIMI_K3_MODEL_RE.search(name) is not None
+
+
+def normalize_kimi_reasoning_effort(
+    model: str | None, effort: str | None
+) -> str | None:
+    """Map Hermes effort tiers to Kimi's family-specific wire values."""
+    normalized = (effort or "").strip().lower()
+    if not is_kimi_k3_model(model):
+        return normalized if normalized in {"low", "medium", "high"} else None
+    if normalized == "low":
+        return "low"
+    if normalized in {"medium", "high"}:
+        return "high"
+    if normalized in {"xhigh", "ultra", "max"}:
+        return "max"
+    return None
+
+
 def _model_name_suggests_minimax_m3(model: str) -> bool:
     """Return True if the model name looks like MiniMax M3.
 

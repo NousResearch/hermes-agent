@@ -12,6 +12,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
+from agent.model_metadata import is_kimi_k3_model, normalize_kimi_reasoning_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -389,7 +390,10 @@ class ChatCompletionsTransport(ProviderTransport):
         elif anthropic_max_out is not None:
             api_kwargs["max_tokens"] = anthropic_max_out
 
-        # Kimi: top-level reasoning_effort (unless thinking disabled)
+        # Kimi: top-level reasoning_effort (unless thinking disabled).
+        # K3 models additionally accept "max" (K3 documents low/high/max,
+        # server default max); K2.x stays on low/medium/high only.
+        _kimi_thinking_off = False
         if is_kimi:
             _kimi_thinking_off = bool(
                 reasoning_config
@@ -399,9 +403,11 @@ class ChatCompletionsTransport(ProviderTransport):
             if not _kimi_thinking_off:
                 _kimi_effort = "medium"
                 if reasoning_config and isinstance(reasoning_config, dict):
-                    _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
-                        _kimi_effort = _e
+                    _mapped_effort = normalize_kimi_reasoning_effort(
+                        model, reasoning_config.get("effort")
+                    )
+                    if _mapped_effort is not None:
+                        _kimi_effort = _mapped_effort
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
         # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)
@@ -458,8 +464,9 @@ class ChatCompletionsTransport(ProviderTransport):
                         {"id": "pareto-router", "min_coding_score": _pareto_score_f}
                     ]
 
-        # Kimi extra_body.thinking
-        if is_kimi:
+        # K3 effort and thinking controls are mutually exclusive. Preserve the
+        # historical thinking shape for non-K3 Kimi models.
+        if is_kimi and (_kimi_thinking_off or not is_kimi_k3_model(model)):
             _kimi_thinking_enabled = True
             if reasoning_config and isinstance(reasoning_config, dict):
                 if reasoning_config.get("enabled") is False:

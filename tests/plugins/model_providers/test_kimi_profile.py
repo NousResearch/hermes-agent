@@ -77,6 +77,46 @@ class TestKimiReasoningWireShape:
         assert extra_body == {"thinking": {"type": "disabled"}}
         assert top_level == {}
 
+    @pytest.mark.parametrize("model", ["k3", "k3-256k", "kimi-k3", "kimi/kimi-k3-0711"])
+    def test_k3_models_accept_max_effort(self, kimi_profile, model):
+        """K3's API documents reasoning_effort low/high/max — "max" must be
+        forwarded verbatim for K3-family models, not dropped to thinking."""
+        extra_body, top_level = kimi_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"},
+            model=model,
+        )
+        assert top_level == {"reasoning_effort": "max"}
+        assert "thinking" not in extra_body
+
+    @pytest.mark.parametrize("model", ["kimi-k2-turbo-preview", "kimi-k2.6", None, ""])
+    def test_non_k3_models_reject_max_effort(self, kimi_profile, model):
+        """K2.x and unknown models stay on low/medium/high — "max" falls back
+        to the thinking toggle rather than sending an invalid effort."""
+        extra_body, top_level = kimi_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"},
+            model=model,
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {}
+
+    @pytest.mark.parametrize("effort", ["xhigh", "ultra"])
+    def test_k3_models_map_stronger_hermes_efforts_to_max(
+        self, kimi_profile, effort
+    ):
+        extra_body, top_level = kimi_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="k3-256k",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "max"}
+
+    def test_k3_maps_medium_to_supported_high(self, kimi_profile):
+        extra_body, top_level = kimi_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"}, model="k3"
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "high"}
+
 
     @pytest.mark.parametrize(
         "reasoning_config",

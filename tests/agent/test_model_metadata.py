@@ -286,6 +286,28 @@ class TestDefaultContextLengths:
                     ) == 1_048_576
 
 
+class TestIsKimiK3Model:
+    """``is_kimi_k3_model`` gates K3-only wire behavior (reasoning_effort=max)."""
+
+    @pytest.mark.parametrize(
+        "model",
+        ["k3", "k3-256k", "kimi-k3", "kimi-k3-cot", "moonshotai/kimi-k3", "Kimi-K3", "kimi/kimi-k3-0711"],
+    )
+    def test_k3_family_matches(self, model):
+        from agent.model_metadata import is_kimi_k3_model
+
+        assert is_kimi_k3_model(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        ["kimi-k2.6", "kimi-k2-turbo-preview", "kimi-k2-thinking", "moonshotai/kimi-k2.6", None, "", "gpt-5.6"],
+    )
+    def test_non_k3_models_do_not_match(self, model):
+        from agent.model_metadata import is_kimi_k3_model
+
+        assert is_kimi_k3_model(model) is False
+
+
     def test_xai_oauth_grok_build_uses_xai_models_dev_context(self):
         """xAI OAuth should share the xAI provider metadata path.
 

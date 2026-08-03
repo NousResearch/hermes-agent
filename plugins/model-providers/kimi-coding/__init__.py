@@ -14,6 +14,21 @@ from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, ProviderProfile
 
 
+def _normalize_kimi_reasoning_effort(
+    model: str | None, effort: str | None
+) -> str | None:
+    """Delegate to the shared Kimi effort policy lazily.
+
+    Imported at call time: ``agent.model_metadata`` pulls in heavy agent
+    machinery that is still initializing while provider plugins load, so a
+    module-level import here creates a circular-import failure at plugin
+    discovery.
+    """
+    from agent.model_metadata import normalize_kimi_reasoning_effort
+
+    return normalize_kimi_reasoning_effort(model, effort)
+
+
 def _is_confirmed_kimi_coding_url(base_url: str) -> bool:
     """Return True only for Kimi Code's canonical HTTPS API surfaces."""
     try:
@@ -86,8 +101,12 @@ class KimiProfile(ProviderProfile):
 
         # Enabled: prefer an explicit effort; only fall back to extra_body
         # thinking when no recognized effort is requested.
-        effort = (reasoning_config.get("effort") or "").strip().lower()
-        if effort in {"low", "medium", "high"}:
+        # K3 models additionally accept "max" (K3 documents low/high/max,
+        # server default max); K2.x stays on low/medium/high only.
+        effort = _normalize_kimi_reasoning_effort(
+            context.get("model"), reasoning_config.get("effort")
+        )
+        if effort is not None:
             top_level["reasoning_effort"] = effort
         else:
             extra_body["thinking"] = {"type": "enabled"}

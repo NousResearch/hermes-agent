@@ -537,3 +537,57 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
         eb = kw.get("extra_body")
         assert eb and "tags" in eb
 
+
+class TestChatCompletionsKimiLegacyReasoningEffort:
+    """Legacy (profile-less) Kimi path: K3 forwards "max", K2.x clamps."""
+
+    def _build(self, transport, model, effort):
+        return transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            is_kimi=True,
+            reasoning_config={"enabled": True, "effort": effort},
+            base_url="https://api.kimi.com/coding",
+        )
+
+    @pytest.mark.parametrize("model", ["k3", "k3-256k", "kimi-k3", "moonshotai/kimi-k3"])
+    def test_k3_models_forward_max_effort(self, transport, model):
+        kw = self._build(transport, model, "max")
+        assert kw["reasoning_effort"] == "max"
+        assert "thinking" not in kw.get("extra_body", {})
+
+    @pytest.mark.parametrize("effort", ["xhigh", "ultra"])
+    def test_k3_models_map_stronger_efforts_to_max(self, transport, effort):
+        kw = self._build(transport, "k3", effort)
+        assert kw["reasoning_effort"] == "max"
+        assert "thinking" not in kw.get("extra_body", {})
+
+    def test_k3_maps_medium_to_supported_high(self, transport):
+        kw = self._build(transport, "k3", "medium")
+        assert kw["reasoning_effort"] == "high"
+        assert "thinking" not in kw.get("extra_body", {})
+
+    @pytest.mark.parametrize("model", ["kimi-k2.6", "kimi-k2-turbo-preview"])
+    def test_k2_models_clamp_max_to_medium(self, transport, model):
+        kw = self._build(transport, model, "max")
+        assert kw["reasoning_effort"] == "medium"
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+    @pytest.mark.parametrize("effort", ["low", "medium", "high"])
+    def test_documented_efforts_pass_for_all_kimi(self, transport, effort):
+        kw = self._build(transport, "kimi-k2.6", effort)
+        assert kw["reasoning_effort"] == effort
+
+    def test_thinking_disabled_omits_effort(self, transport):
+        kw = transport.build_kwargs(
+            model="k3-256k",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            is_kimi=True,
+            reasoning_config={"enabled": False},
+            base_url="https://api.kimi.com/coding",
+        )
+        assert "reasoning_effort" not in kw
+        assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+

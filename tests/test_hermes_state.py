@@ -3835,6 +3835,38 @@ class TestApplyDatabasePragmas:
             assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == before
         finally:
             conn.close()
+
+    def test_ignores_non_integer_performance_values(self, tmp_path, monkeypatch):
+        """Garbage cache_size/mmap_size/temp_store values must be rejected."""
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            before = {
+                name: conn.execute(f"PRAGMA {name}").fetchone()[0]
+                for name in ("cache_size", "mmap_size", "temp_store")
+            }
+            self._patch_cfg(
+                monkeypatch,
+                {
+                    "database": {
+                        "cache_size": "big",
+                        "mmap_size": [256],
+                        "temp_store": "ram please",
+                    }
+                },
+            )
+            apply_database_pragmas(conn, db_label="test.db")
+            after = {
+                name: conn.execute(f"PRAGMA {name}").fetchone()[0]
+                for name in ("cache_size", "mmap_size", "temp_store")
+            }
+            assert after == before
+        finally:
+            conn.close()
+
+
 class TestInsightsToolCallIndex:
     """The Insights assistant tool-call scan has a predicate-aligned index.
 
@@ -4017,3 +4049,113 @@ class TestFtsRebuildFinishWithoutTrigram:
             assert db.search_messages("zebra")
         finally:
             db.close()
+
+
+
+class TestPerformancePragmasEndToEnd:
+    """E2E guard for PR #71755: config-gated cache_size / mmap_size /
+    temp_store must reach EVERY connection type (writer, read-only
+    cross-profile attach, WAL per-thread reader) — and default installs
+    (no ``database:`` keys) must see byte-identical SQLite defaults.
+
+    NOTE: SQLite's compiled-in default for ``cache_size`` is already
+    ``-2000``, so the configured value here is ``-16000`` — a value the
+    test can actually discriminate from the default (a reverted prod
+    change must FAIL this test, not accidentally pass it).
+    """
+
+    PRAGMAS = ("cache_size", "mmap_size", "temp_store")
+    CONFIGURED = {"cache_size": -16000, "mmap_size": 1048576, "temp_store": 2}
+
+    @staticmethod
+    def _read(conn):
+        return {
+            name: conn.execute(f"PRAGMA {name}").fetchone()[0]
+            for name in ("cache_size", "mmap_size", "temp_store")
+        }
+
+    @staticmethod
+    def _sqlite_defaults(tmp_path):
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / "baseline.db"))
+        try:
+            return {
+                name: conn.execute(f"PRAGMA {name}").fetchone()[0]
+                for name in ("cache_size", "mmap_size", "temp_store")
+            }
+        finally:
+            conn.close()
+
+    def _fresh_home(self, tmp_path, monkeypatch, config_text=None):
+        import hermes_state
+
+        # Local venvs may bundle a WAL-reset-vulnerable SQLite (e.g. 3.46.0),
+        # which would silently disable WAL and skip the per-thread reader
+        # path. Force WAL eligibility so _get_read_conn is truly exercised
+        # (established pattern used by the WAL tests above).
+        monkeypatch.setattr(
+            hermes_state,
+            "is_sqlite_wal_reset_vulnerable",
+            lambda version_info=None: False,
+        )
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        if config_text is not None:
+            (home / "config.yaml").write_text(config_text)
+        return home
+
+    def test_configured_pragmas_reach_all_connection_types(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_state import SessionDB
+
+        home = self._fresh_home(
+            tmp_path,
+            monkeypatch,
+            "database:\n"
+            "  cache_size: -16000\n"
+            "  temp_store: 2\n"
+            "  mmap_size: 1048576\n",
+        )
+        db_path = home / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            # Writer connection.
+            assert self._read(db._conn) == self.CONFIGURED
+            # WAL per-thread reader.
+            rconn = db._get_read_conn()
+            assert rconn is not None, "WAL reader expected on local filesystem"
+            assert self._read(rconn) == self.CONFIGURED
+        finally:
+            db.close()
+
+        # Read-only cross-profile attach.
+        ro = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert self._read(ro._conn) == self.CONFIGURED
+        finally:
+            ro.close()
+
+    def test_defaults_unchanged_without_config(self, tmp_path, monkeypatch):
+        """No database: keys in config.yaml → SQLite defaults untouched."""
+        from hermes_state import SessionDB
+
+        defaults = self._sqlite_defaults(tmp_path)
+        home = self._fresh_home(tmp_path, monkeypatch, config_text=None)
+        db_path = home / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            assert self._read(db._conn) == defaults
+            rconn = db._get_read_conn()
+            if rconn is not None:
+                assert self._read(rconn) == defaults
+        finally:
+            db.close()
+
+        ro = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert self._read(ro._conn) == defaults
+        finally:
+            ro.close()

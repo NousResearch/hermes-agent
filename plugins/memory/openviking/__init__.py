@@ -29,6 +29,7 @@ import atexit
 import errno
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -898,7 +899,7 @@ def _normalize_openviking_url(url: str) -> str:
     # could attach Hermes to an unrelated deployment and forward credentials to
     # a destination the user did not configure.
     try:
-        check_url = candidate if "://" in candidate else f"http://{candidate}"
+        check_url = candidate
         if _openviking_endpoint_is_always_blocked(check_url):
             raise _OpenVikingEndpointError(
                 "OpenViking endpoint "
@@ -1265,8 +1266,8 @@ def _validate_openviking_reachability(endpoint: str) -> tuple[bool, str]:
 
 
 def _validate_openviking_auth(values: dict) -> tuple[bool, str]:
-    endpoint = _normalize_openviking_url(values.get("endpoint"))
     try:
+        endpoint = _normalize_openviking_url(values.get("endpoint"))
         client = _VikingClient(
             endpoint,
             _clean_config_value(values.get("api_key")),
@@ -1281,8 +1282,8 @@ def _validate_openviking_auth(values: dict) -> tuple[bool, str]:
 
 
 def _validate_openviking_root_access(values: dict) -> tuple[bool, str]:
-    endpoint = _normalize_openviking_url(values.get("endpoint"))
     try:
+        endpoint = _normalize_openviking_url(values.get("endpoint"))
         client = _VikingClient(
             endpoint,
             _clean_config_value(values.get("api_key")),
@@ -1332,7 +1333,10 @@ def _validate_openviking_setup_values(
     *,
     require_api_key: bool = False,
 ) -> tuple[bool, str, Optional[str]]:
-    endpoint = _normalize_openviking_url(values.get("endpoint"))
+    try:
+        endpoint = _normalize_openviking_url(values.get("endpoint"))
+    except _OpenVikingEndpointError as exc:
+        return False, str(exc), None
     api_key = _clean_config_value(values.get("api_key"))
     if require_api_key and not api_key:
         return False, "Remote OpenViking configs require an API key.", None
@@ -3620,7 +3624,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if isinstance(value, bool):
                 raise ValueError
             numeric = float(value)
-            if not numeric.is_integer() or not float("-inf") < numeric < float("inf"):
+            if not numeric.is_integer():
                 raise ValueError
             parsed = int(numeric)
         except (TypeError, ValueError, OverflowError):
@@ -3643,7 +3647,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if isinstance(value, bool):
                 raise ValueError
             parsed = float(value)
-            if not float("-inf") < parsed < float("inf"):
+            if not math.isfinite(parsed):
                 raise ValueError
         except (TypeError, ValueError, OverflowError):
             cls._warn_invalid_setting_once(source, value, default)

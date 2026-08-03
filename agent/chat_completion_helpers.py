@@ -1712,11 +1712,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         current_provider = (getattr(agent, "provider", "") or "").strip().lower()
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
-            # Exponential backoff: 30min → 1h → 2h → 4h cap
+            # Exponential backoff: keep upstream's 60s first-hit cooldown and
+            # escalate on CONSECUTIVE rate-limits: 60s → 2m → 4m → 8m → ... →
+            # 4h cap. The first 429 must NOT bench the primary for half an
+            # hour — fast primary restore is the common case; escalation only
+            # punishes providers that keep 429ing.
             # Counter is reset by restore_primary_runtime on successful restore.
             backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
             agent._rate_limit_backoff_count = backoff_count + 1
-            backoff_seconds = min(1800 * (2 ** backoff_count), 14400)
+            backoff_seconds = min(60 * (2 ** backoff_count), 14400)
             agent._rate_limited_until = time.monotonic() + backoff_seconds
             logging.info(
                 "Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d)",

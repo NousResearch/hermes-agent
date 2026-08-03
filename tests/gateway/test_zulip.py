@@ -4887,6 +4887,38 @@ class TestZulipZformPrompts:
         self.adapter._build_send_client = MagicMock(return_value=self.adapter._client)
         self.adapter._client.send_message.return_value = {"result": "success", "id": 9200}
 
+    def test_send_exec_approval_accepts_gateway_contract_kwargs(self):
+        """Stay callable with every kwarg gateway/run.py passes.
+
+        Upstream added ``allow_session`` to the button-approval contract.
+        Accepting the kwarg is required even when the default is True — a
+        missing parameter makes ``send_exec_approval`` raise TypeError, the
+        gateway logs a button failure, and Zulip falls back to plain text
+        (no zform buttons).  Guard the full call signature here so future
+        upstream contract drift fails this test instead of production UX.
+        """
+        import inspect
+
+        from plugins.platforms.zulip.adapter import ZulipAdapter
+
+        params = inspect.signature(ZulipAdapter.send_exec_approval).parameters
+        # gateway/run.py::_approval_notify_sync keyword set (keep in sync).
+        required = {
+            "chat_id",
+            "command",
+            "session_key",
+            "description",
+            "metadata",
+            "allow_permanent",
+            "allow_session",
+            "smart_denied",
+        }
+        missing = required - set(params)
+        assert not missing, (
+            f"ZulipAdapter.send_exec_approval missing gateway kwargs {sorted(missing)}; "
+            "button approvals will TypeError and fall back to plain text"
+        )
+
     def _approval_send_side_effect(self):
         """Return distinct message ids for the command body then the zform prompt."""
         counter = {"n": 9200}
@@ -4999,6 +5031,29 @@ class TestZulipZformPrompts:
         replies = [choice["reply"] for choice in widget["extra_data"]["choices"]]
         assert replies == ["/approve", "/approve session", "/deny"]
         prompt = self.adapter._client.send_message.call_args_list[1][0][0]["content"]
+        assert "`/approve always`" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_omits_session_when_disallowed(self):
+        """allow_session=False should leave only one-shot approval and deny."""
+        self.adapter._client.send_message.side_effect = self._approval_send_side_effect()
+        result = await self.adapter.send_exec_approval(
+            chat_id="42:ops",
+            command="rm -rf /tmp/example",
+            session_key="zulip:42:ops:alice@example.com",
+            description="one-shot only",
+            allow_permanent=True,
+            allow_session=False,
+        )
+
+        assert result.success is True
+        widget = json.loads(
+            self.adapter._client.send_message.call_args_list[1][0][0]["widget_content"]
+        )
+        replies = [choice["reply"] for choice in widget["extra_data"]["choices"]]
+        assert replies == ["/approve", "/deny"]
+        prompt = self.adapter._client.send_message.call_args_list[1][0][0]["content"]
+        assert "`/approve session`" not in prompt
         assert "`/approve always`" not in prompt
 
     @pytest.mark.asyncio

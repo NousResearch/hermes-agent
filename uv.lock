@@ -1938,7 +1938,7 @@ requires-dist = [
     { name = "vercel", marker = "extra == 'vercel'", specifier = "==0.7.2" },
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
-    { name = "zulip", marker = "extra == 'zulip'", specifier = "==0.9.0" },
+    { name = "zulip", marker = "extra == 'zulip'", specifier = "==0.9.1" },
 ]
 provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "zulip", "matrix", "wecom", "cli", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
@@ -4972,7 +4972,7 @@ wheels = [
 
 [[package]]
 name = "zulip"
-version = "0.9.0"
+version = "0.9.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -4980,7 +4980,7 @@ dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7e/85/754c025bf7e5ff2622b89c555ff3e1ecc3dd501874745a7ec2c3b59fc743/zulip-0.9.0.tar.gz", hash = "sha256:7a14149e5d9e3fcc53b13e998719fd1f6ccb8289bc60fccbaa1aafcd0a9d0843", size = 134624, upload-time = "2023-11-15T00:28:39.338Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/74/3fbf8dab5035724f32c7c8c39a20f1e5b1a081fa8bfe4883d8f64d560999/zulip-0.9.1.tar.gz", hash = "sha256:abeba4147625107f690bb633143fdf36cd665fe037b3871011fd4b1e3dc081e8", size = 149751, upload-time = "2025-09-30T22:01:44.693Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/db/ed/81e42dbfe0dd538f60514d0e4849b872d949a1caa7a2c80bbe6aa4c1bae9/zulip-0.9.0-py3-none-any.whl", hash = "sha256:a315db3e990c6b94aef323540b7f386485e8fc359dbd26af526c20dbe9068217", size = 289297, upload-time = "2023-11-15T00:28:33.172Z" },
+    { url = "https://files.pythonhosted.org/packages/58/41/0507da59eae2ebb4641895a189eb6438b76610c06c65aa06310b755d3aa7/zulip-0.9.1-py3-none-any.whl", hash = "sha256:37682bad54714a53f9286586a534c2e13217b2bbddf0b4e71c60ef67d43b9043", size = 332200, upload-time = "2025-09-30T22:01:40.154Z" },
 ]

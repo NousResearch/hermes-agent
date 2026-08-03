@@ -1061,6 +1061,7 @@ class ZulipAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Render a dangerous-command approval prompt as Zulip zform buttons.
@@ -1076,7 +1077,9 @@ class ZulipAdapter(BasePlatformAdapter):
             (``/approve``, optional ``/approve session`` / ``/approve always``,
             and ``/deny``).  ``session_key`` is accepted for interface parity
             with other rich-button adapters; the resolver remains session-scoped
-            in ``tools.approval`` just like the plain-text fallback.
+            in ``tools.approval`` just like the plain-text fallback.  When
+            allow_session is false, only one-shot approval and deny are offered;
+            Session and Always are omitted.
 
             The full command is sent as its own message first so long scripts
             stay readable.  The zform choices are then attached to a short
@@ -1113,7 +1116,7 @@ class ZulipAdapter(BasePlatformAdapter):
         choices: List[Dict[str, Any]] = [
             {"short_name": "Once", "long_name": "Approve once", "reply": "/approve"},
         ]
-        if not smart_denied:
+        if not smart_denied and allow_session:
             text_choices.append("`/approve session`")
             choices.append(
                 {

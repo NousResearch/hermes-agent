@@ -5280,17 +5280,40 @@ class AIAgent:
         worker performs the SDK-level close from its own context — the same
         ownership contract the OpenAI-wire path already uses.
 
-        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock,
-        1M-beta drop) but returns a fresh client instead of swapping the shared
-        one.
+        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock +
+        Vertex, 1M-beta drop) but returns a fresh client instead of swapping
+        the shared one. The provider dispatch MUST stay in sync with
+        ``_rebuild_anthropic_client``: this client is what actually carries
+        every in-flight request, so a provider that is special-cased there but
+        not here silently regresses to a direct-Anthropic client pointed at a
+        non-Anthropic base_url.
         """
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
         _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
-        if getattr(self, "provider", None) == "bedrock":
+        _provider = getattr(self, "provider", None)
+        if _provider == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
             client = build_anthropic_bedrock_client(region)
+        elif _provider == "vertex":
+            # Claude-on-Vertex — same dispatch as ``_rebuild_anthropic_client``.
+            # Only reachable when api_mode resolved to anthropic_messages
+            # (Gemini on Vertex uses chat_completions and never builds an
+            # Anthropic client). Project + region were stashed on the agent
+            # during init from the runtime dict.
+            #
+            # Without this branch the ``else`` below builds a direct Anthropic
+            # client whose base_url is the display-only Vertex publisher URL,
+            # so the SDK POSTs to ``…/publishers/anthropic/v1/messages``
+            # instead of ``…/publishers/anthropic/models/<model>:rawPredict``
+            # and every call 404s.
+            from agent.anthropic_vertex_adapter import build_anthropic_vertex_client
+            client = build_anthropic_vertex_client(
+                getattr(self, "_vertex_project_id", None),
+                getattr(self, "_vertex_region", None) or "global",
+                timeout=get_provider_request_timeout(self.provider, self.model),
+            )
         else:
             from agent.anthropic_adapter import build_anthropic_client
             client = build_anthropic_client(

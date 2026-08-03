@@ -512,6 +512,69 @@ class TestSessionLifecycle:
             db.close()
 
 
+class TestContextWindowPersistence:
+    """context_window / context_used columns in update_token_counts."""
+
+    def test_absolute_update_persists_both_fields(self, db):
+        db.create_session("s1", source="cli")
+        db.update_token_counts(
+            "s1", input_tokens=100, output_tokens=50, api_call_count=1,
+            absolute=True,
+            context_window=128_000, context_used=45_000,
+        )
+        row = db.get_session("s1")
+        assert row["context_window"] == 128_000
+        assert row["context_used"] == 45_000
+
+    def test_incremental_update_persists_context(self, db):
+        db.create_session("s1", source="cli")
+        db.update_token_counts(
+            "s1", input_tokens=100, output_tokens=50, api_call_count=1,
+            context_window=128_000, context_used=45_000,
+        )
+        row = db.get_session("s1")
+        assert row["context_window"] == 128_000
+        assert row["context_used"] == 45_000
+
+    def test_subsequent_update_without_context_does_not_clobber(self, db):
+        """COALESCE no-clobber: an update without context values preserves
+        the previous reading."""
+        db.create_session("s1", source="cli")
+        db.update_token_counts(
+            "s1", input_tokens=100, output_tokens=50, api_call_count=1,
+            context_window=128_000, context_used=45_000,
+        )
+        # Second update with no context_window / context_used
+        db.update_token_counts(
+            "s1", input_tokens=50, output_tokens=25, api_call_count=1,
+        )
+        row = db.get_session("s1")
+        assert row["context_window"] == 128_000
+        assert row["context_used"] == 45_000
+
+    def test_context_defaults_to_zero_fresh_session(self, db):
+        """A newly created session should have context_window=0, context_used=0."""
+        db.create_session("s1", source="cli")
+        row = db.get_session("s1")
+        assert row["context_window"] == 0
+        assert row["context_used"] == 0
+
+    def test_incremental_context_overwrites_prior_values(self, db):
+        """A later incremental update WITH context values should overwrite."""
+        db.create_session("s1", source="cli")
+        db.update_token_counts(
+            "s1", input_tokens=100, output_tokens=50, api_call_count=1,
+            context_window=128_000, context_used=45_000,
+        )
+        db.update_token_counts(
+            "s1", input_tokens=200, output_tokens=100, api_call_count=1,
+            context_window=256_000, context_used=120_000,
+        )
+        row = db.get_session("s1")
+        assert row["context_window"] == 256_000
+        assert row["context_used"] == 120_000
+
+
 # =========================================================================
 # Message storage
 # =========================================================================

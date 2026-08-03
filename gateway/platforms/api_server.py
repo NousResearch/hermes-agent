@@ -3334,8 +3334,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return default
         return min(parsed, maximum)
 
-    @staticmethod
-    def _session_response(session: Dict[str, Any]) -> Dict[str, Any]:
+    def _session_response(self, session: Dict[str, Any]) -> Dict[str, Any]:
         """Return a stable, client-safe session representation."""
         safe_keys = (
             "id", "source", "user_id", "model", "title", "started_at", "ended_at",
@@ -3354,6 +3353,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # callers only need to know whether those snapshots exist.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
         payload["has_model_config"] = bool(session.get("model_config"))
+        # Live context-window occupancy, persisted per session by the agent's
+        # own loop (context_window_usage / update_token_counts) from the same
+        # source the desktop uses (agent.context_compressor). 0 means "unknown"
+        # (no measured occupancy yet) — never a fabricated reading.
+        payload["context_window"] = int(session.get("context_window") or 0)
+        payload["context_used"] = int(session.get("context_used") or 0)
         return payload
 
     @staticmethod

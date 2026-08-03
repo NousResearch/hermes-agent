@@ -16,7 +16,14 @@ import { persistString, storedString } from '@/lib/storage'
 
 const KEY = 'hermes.desktop.translucency.v1'
 
-const clamp = (n: number): number => Math.min(100, Math.max(0, Math.round(n)))
+// Slider bounds — mirror `electron/window-opacity.ts` (TRANSLUCENCY_MIN / MAX)
+// so the control and the main-process clamp agree on the same range. The step
+// is renderer-only: the main process takes any integer in range.
+export const TRANSLUCENCY_MIN = 0
+export const TRANSLUCENCY_MAX = 100
+export const TRANSLUCENCY_STEP = 1
+
+const clamp = (n: number): number => Math.min(TRANSLUCENCY_MAX, Math.max(TRANSLUCENCY_MIN, Math.round(n)))
 
 const read = (): number => {
   const n = Number(storedString(KEY))

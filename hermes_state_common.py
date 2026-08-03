@@ -102,7 +102,57 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
     )
 
 
-SCHEMA_VERSION = 23
+def _sql_session_last_active(alias: str = "s") -> str:
+    """SQL expression for session recency used by list/status surfaces.
+
+    Freshest of ``last_activity_at`` (mid-turn agent activity heartbeat) and
+    the latest message timestamp, then fall back to ``started_at``.
+
+    Must not prefer a stale heartbeat over a newer message: durable
+    heartbeats are rate-limited (~60s), so after a turn writes messages
+    ``last_activity_at`` can lag ``MAX(messages.timestamp)``.
+    """
+    msg_max = (
+        f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m "
+        f"WHERE _act_m.session_id = {alias}.id)"
+    )
+    return (
+        f"COALESCE("
+        f"(SELECT MAX(_act_v.v) FROM ("
+        f"SELECT {alias}.last_activity_at AS v "
+        f"UNION ALL "
+        f"SELECT {msg_max}"
+        f") _act_v), "
+        f"{alias}.started_at)"
+    )
+
+
+def _sql_session_last_active_by_id(session_id_expr: str) -> str:
+    """Same freshest-of expression keyed by a session-id SQL expression."""
+    msg_max = (
+        f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m "
+        f"WHERE _act_m.session_id = {session_id_expr})"
+    )
+    activity = (
+        f"(SELECT last_activity_at FROM sessions _act_s "
+        f"WHERE _act_s.id = {session_id_expr})"
+    )
+    started = (
+        f"(SELECT started_at FROM sessions _act_s "
+        f"WHERE _act_s.id = {session_id_expr})"
+    )
+    return (
+        f"COALESCE("
+        f"(SELECT MAX(_act_v.v) FROM ("
+        f"SELECT {activity} AS v "
+        f"UNION ALL "
+        f"SELECT {msg_max}"
+        f") _act_v), "
+        f"{started})"
+    )
+
+
+SCHEMA_VERSION = 24
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -174,6 +224,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    last_activity_at REAL,
+    last_activity_description TEXT,
+    last_activity_provenance TEXT,
     api_call_count INTEGER DEFAULT 0,
     handoff_state TEXT,
     handoff_platform TEXT,
@@ -283,6 +336,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);

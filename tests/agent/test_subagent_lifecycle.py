@@ -24,9 +24,15 @@ class FakeChild:
         self.provider = "test"
         self.model = "test-model"
         self.interrupted = False
+        self.interrupt_kind = None
 
     def interrupt(self, _reason):
         self.interrupted = True
+        self.interrupt_kind = "soft"
+
+    def hard_interrupt(self, _reason):
+        self.interrupted = True
+        self.interrupt_kind = "hard"
 
 
 @pytest.fixture
@@ -74,6 +80,17 @@ def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):
     other_parent = SimpleNamespace(session_id="different-parent")
     other_service = SubagentLifecycleService(lambda: other_parent)
     assert other_service.status(handle).state is SubagentState.UNKNOWN
+
+
+def test_cancel_uses_explicit_hard_interrupt(lifecycle):
+    handle = lifecycle.launch(SubagentLaunchRequest(goal="x"))
+    record = lifecycle._record(handle)
+    assert record is not None and record.agent is not None
+
+    assert lifecycle.cancel(handle, reason="explicit user cancel").accepted
+
+    assert record.agent.interrupt_kind == "hard"
+    lifecycle.wait(handle, timeout_seconds=1)
 
 
 

@@ -64,6 +64,58 @@ def _unicode_normalize(text: str) -> str:
     return text
 
 
+def is_already_applied(content: str, old_string: str, new_string: str) -> bool:
+    """Return True when the requested edit is already present in the file.
+
+    Production trajectory mining shows the most common patch failure is a
+    re-send of an edit that already landed (old_string == new_string, or
+    old_string gone while new_string is present) — the model's intent is
+    "make the file contain this text", and it already does. Callers use
+    this to convert those errors into an explicit success-shaped no-op so
+    the model moves on instead of re-reading and re-patching.
+
+    Deliberately conservative:
+    - new_string must be non-trivial (>= 8 chars stripped) — a tiny target
+      matching by coincidence must not mask a genuine typo'd edit;
+    - new_string must appear EXACTLY in the content (no fuzzy matching —
+      approximate presence is not proof the edit landed);
+    - when old_string differs from new_string, old_string must be GONE
+      (still-present old text means the edit is at best half-applied).
+    """
+    if not new_string or len(new_string.strip()) < 8:
+        return False
+    if new_string not in content:
+        return False
+    if old_string == new_string:
+        return True
+    return old_string not in content
+
+
+def _format_match_locations(content: str, matches: List[Tuple[int, int]],
+                            cap: int = 5) -> str:
+    """Render up to ``cap`` match positions as 'L<line>: <snippet>' rows.
+
+    Gives the model the information it needs to disambiguate an ambiguous
+    old_string in ONE follow-up (add neighboring context, or choose
+    replace_all) instead of re-reading the file to find the occurrences.
+    """
+    rows = []
+    for start, _end in matches[:cap]:
+        line_no = content.count("\n", 0, start) + 1
+        line_start = content.rfind("\n", 0, start) + 1
+        line_end = content.find("\n", line_start)
+        if line_end == -1:
+            line_end = len(content)
+        snippet = content[line_start:line_end].strip()
+        if len(snippet) > 80:
+            snippet = snippet[:77] + "..."
+        rows.append(f"  L{line_no}: {snippet}")
+    extra = len(matches) - cap
+    if extra > 0:
+        rows.append(f"  ... and {extra} more")
+    return "\n".join(rows)
+
+
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                             replace_all: bool = False) -> Tuple[str, int, Optional[str], Optional[str]]:
     """
@@ -119,9 +171,11 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         if matches:
             # Found matches with this strategy
             if len(matches) > 1 and not replace_all:
+                locations = _format_match_locations(content, matches)
                 return content, 0, None, (
                     f"Found {len(matches)} matches for old_string. "
-                    f"Provide more context to make it unique, or use replace_all=True."
+                    f"Provide more context to make it unique, or use replace_all=True. "
+                    f"Matches:\n{locations}"
                 )
 
             # replace_all with a similarity-based strategy would overwrite
@@ -941,6 +995,20 @@ def _map_normalized_positions(original: str, normalized: str,
     return original_matches
 
 
+def _visualize_whitespace(line: str) -> str:
+    """Render leading whitespace visibly (→ = tab, · = space).
+
+    Only the leading run is visualized — interior spacing is rarely the
+    culprit and full visualization makes lines unreadable.
+    """
+    i = 0
+    prefix = []
+    while i < len(line) and line[i] in (" ", "\t"):
+        prefix.append("→" if line[i] == "\t" else "·")
+        i += 1
+    return "".join(prefix) + line[i:]
+
+
 def find_closest_lines(old_string: str, content: str, context_lines: int = 2, max_results: int = 3) -> str:
     """Find lines in content most similar to old_string for "did you mean?" feedback.
 
@@ -1000,7 +1068,23 @@ def find_closest_lines(old_string: str, content: str, context_lines: int = 2, ma
     if not parts:
         return ""
 
-    return "\n---\n".join(parts)
+    result = "\n---\n".join(parts)
+
+    # Whitespace diagnosis (pattern from crush's diagnoseMismatch): when the
+    # best candidate line matches the anchor after stripping but differs in
+    # raw text, the failure is whitespace-shaped. Show BOTH lines with
+    # leading whitespace made visible so the model can copy the file's
+    # exact indentation instead of guessing again.
+    best_line = content_lines[top[0][1]]
+    if best_line.strip() == anchor and best_line != old_lines[0]:
+        result += (
+            "\n\nWhitespace difference detected (→ = tab, · = space):\n"
+            f"  file has: {_visualize_whitespace(best_line)}\n"
+            f"  you sent: {_visualize_whitespace(old_lines[0])}\n"
+            "Use the exact whitespace shown in 'file has'."
+        )
+
+    return result
 
 
 def format_no_match_hint(error: Optional[str], match_count: int,

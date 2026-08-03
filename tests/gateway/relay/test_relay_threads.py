@@ -349,6 +349,68 @@ def test_relay_channel_lane_shape_gate():
 
 
 @pytest.mark.asyncio
+async def test_relay_auto_thread_info_prefers_prospective_thread_id():
+    """When the connector stamps prospective_thread_id, the rename lane uses it
+    directly (deterministic, per-thread) and does NOT consult the per-chat
+    send-result cache — the empty initial-name marker defers no-clobber to the
+    connector's own created-name guard."""
+    from types import SimpleNamespace
+
+    adapter, _ = _adapter()
+    # Poison the per-chat cache with a DIFFERENT (stale sibling) thread to prove
+    # the prospective id wins and the cache is not read.
+    adapter._auto_thread_by_chat["chan-parent"] = ("th-STALE", "old words")
+    runner = _mk_runner_stub()(adapter)
+    src = SimpleNamespace(
+        **{**_relay_channel_source().__dict__, "prospective_thread_id": "th-B"}
+    )
+    assert runner._relay_auto_thread_info(src) == ("th-B", "")
+
+
+@pytest.mark.asyncio
+async def test_sibling_threads_in_one_channel_each_rename_to_own_thread():
+    """Two auto-threads spawned from the SAME parent channel must each rename
+    to their OWN thread id. Before the prospective_thread_id fix the per-chat
+    cache held one slot, so only the first thread renamed (staging repro
+    2026-08-02: thread A renamed, sibling thread B stuck at raw text)."""
+    from types import SimpleNamespace
+
+    adapter, _ = _adapter()
+    renames: list = []
+
+    async def rename_thread(
+        thread_id,
+        name,
+        *,
+        only_if_current_name=None,
+        prefer_connector_created=False,
+        parent_chat_id=None,
+    ):
+        renames.append((thread_id, name, prefer_connector_created, parent_chat_id))
+        return True
+
+    adapter.rename_thread = rename_thread  # type: ignore[method-assign]
+    runner = _mk_runner_stub()(adapter)
+    base = _relay_channel_source().__dict__
+
+    # A and B share the parent channel but carry distinct prospective thread ids.
+    src_a = SimpleNamespace(**{**base, "prospective_thread_id": "th-A"})
+    src_b = SimpleNamespace(**{**base, "prospective_thread_id": "th-B"})
+    await runner._rename_discord_auto_thread_for_session_title(
+        src_a, "sessA", "Sea Shanty Draft"
+    )
+    await runner._rename_discord_auto_thread_for_session_title(
+        src_b, "sessB", "Exotic Short Story"
+    )
+    # Each renamed ITS OWN thread, via the connector-owned guard, passing the
+    # parent channel id for tenant discriminator resolution.
+    assert renames == [
+        ("th-A", "Sea Shanty Draft", True, "chan-parent"),
+        ("th-B", "Exotic Short Story", True, "chan-parent"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_title_rename_polls_feedback_that_arrives_late():
     """The auto-title races delivery: feedback lands AFTER the rename lane
     starts. The lane must poll the adapter cache and still rename."""

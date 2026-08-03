@@ -2656,6 +2656,16 @@ def _(rid, params: dict) -> dict:
         home_token = (
             set_hermes_home_override(parent_home) if parent_home else None
         )
+        # The home override alone only moves config/skills/memory; credentials
+        # resolve through get_secret(), which without a scope falls through to
+        # process os.environ — the LAUNCH profile's .env. Install the parent's
+        # secret scope for the build, exactly as session.create/resume do
+        # (#67605), so the branched agent authenticates as its own profile.
+        secret_token = (
+            set_secret_scope(build_profile_secret_scope(Path(parent_home)))
+            if parent_home
+            else None
+        )
         try:
             tokens = _set_session_context(new_key)
             try:
@@ -2680,6 +2690,8 @@ def _(rid, params: dict) -> dict:
                 profile_home=parent_home,
             )
         finally:
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
             if home_token is not None:
                 reset_hermes_home_override(home_token)
         if new_sid in _sessions:
@@ -2749,8 +2761,10 @@ def _(rid, params: dict) -> dict:
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-    if should_interrupt and hasattr(session["agent"], "interrupt"):
-        session["agent"].interrupt()
+    if should_interrupt:
+        from agent.interrupt_compat import request_hard_interrupt
+
+        request_hard_interrupt(session["agent"])
     if not run_thread_alive:
         with session["history_lock"]:
             if session.get("running"):

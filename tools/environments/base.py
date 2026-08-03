@@ -53,8 +53,19 @@ _UNBOUNDED_CAPTURE_CHARS = 2**63 - 1
 
 
 class _BoundedOutputCollector:
-    """Retain a bounded 40/60 head-tail window of streamed text."""
-    def __init__(self, max_chars: int):
+    """Retain a bounded 40/60 head-tail window of streamed text.
+
+    When ``spill_path`` is set, the collector also tees the FULL stream to
+    that file once eviction begins (up to ``_SPILL_CAP_CHARS``), so a
+    truncated foreground result is recoverable without re-running the
+    command. Memory stays bounded either way — the spill is disk-only.
+    """
+
+    # Hard ceiling on spill file size. Beyond this the file stops growing
+    # (marker appended); protects disk from pathological runaway output.
+    _SPILL_CAP_CHARS = 5_000_000
+
+    def __init__(self, max_chars: int, spill_path: "Path | None" = None):
         self.max_chars = max(1, int(max_chars))
         self._head_limit = int(self.max_chars * 0.4)
         self._tail_limit = self.max_chars - self._head_limit
@@ -64,6 +75,47 @@ class _BoundedOutputCollector:
         self._tail_chars = 0
         self._total_chars = 0
         self._lock = threading.Lock()
+        self._spill_path = spill_path
+        self._spill_fh: IO[str] | None = None
+        self._spill_chars = 0
+        self._spill_capped = False
+
+    def _maybe_spill(self, text: str) -> None:
+        """Tee ``text`` to the spill file (opened lazily on first overflow)."""
+        if self._spill_path is None or self._spill_capped:
+            return
+        try:
+            if self._spill_fh is None:
+                self._spill_path.parent.mkdir(parents=True, exist_ok=True)
+                self._spill_fh = open(self._spill_path, "w", encoding="utf-8", errors="replace")
+                # Backfill everything retained so far so the file holds the
+                # stream from byte 0, not just from the overflow point.
+                backlog = "".join(self._head) + "".join(self._tail)
+                self._spill_fh.write(backlog)
+                self._spill_chars = len(backlog)
+            budget = self._SPILL_CAP_CHARS - self._spill_chars
+            if budget <= 0 or len(text) > budget:
+                self._spill_fh.write(text[:max(0, budget)])
+                self._spill_fh.write("\n... [spill capped at 5,000,000 chars] ...\n")
+                self._spill_capped = True
+            else:
+                self._spill_fh.write(text)
+            self._spill_chars += len(text)
+        except OSError:
+            # Disk trouble must never break command execution.
+            self._spill_capped = True
+
+    def close_spill(self) -> "str | None":
+        """Close the spill file and return its path if it was used."""
+        with self._lock:
+            if self._spill_fh is None:
+                return None
+            try:
+                self._spill_fh.close()
+            except OSError:
+                pass
+            self._spill_fh = None
+            return str(self._spill_path)
 
     @property
     def buffered_chars(self) -> int:
@@ -80,6 +132,13 @@ class _BoundedOutputCollector:
             return
         with self._lock:
             text_len = len(text)
+            # Spill tee: activates at the first overflow (backfilling what's
+            # retained so far), then mirrors every subsequent chunk.
+            if self._spill_path is not None and (
+                self._spill_fh is not None
+                or self._total_chars + text_len > self.max_chars
+            ):
+                self._maybe_spill(text)
             self._total_chars += text_len
             start = 0
 
@@ -150,7 +209,14 @@ def set_activity_callback(cb: Callable[[str], None] | None) -> None:
     _activity_callback_local.callback = cb
 
 
-def _get_activity_callback() -> Callable[[str], None] | None:
+def get_activity_callback() -> Callable[[str], None] | None:
+    """Return the thread-local activity callback (see ``set_activity_callback``).
+
+    Public accessor for callers outside this module that need to capture the
+    calling thread's callback before handing work to another thread (the
+    callback is thread-local, so a freshly spawned thread cannot read it
+    back) — e.g. the manual cron-run heartbeat (#76502).
+    """
     return getattr(_activity_callback_local, "callback", None)
 
 
@@ -172,7 +238,7 @@ def touch_activity_if_due(
         return
     state["last_touch"] = now
     try:
-        cb = _get_activity_callback()
+        cb = get_activity_callback()
         if cb:
             elapsed = int(now - state["start"])
             cb(f"{label} ({elapsed}s elapsed)")
@@ -402,7 +468,7 @@ def _cwd_marker(session_id: str) -> str:
 # as the Python-side contract for the exclusion set; the dump path unsets by
 # name/prefix instead of grepping declare lines (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
-    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_)"
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION)"
 )
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -853,7 +919,26 @@ class BaseEnvironment(ABC):
             # segment, no eviction) so behavior matches the historical
             # accumulate-everything semantics.
             capture_limit = _UNBOUNDED_CAPTURE_CHARS
-        output = _BoundedOutputCollector(capture_limit)
+        spill_path = None
+        if bounded_capture:
+            # Foreground terminal path: tee overflow to a spill file so a
+            # truncated result is recoverable without re-running (the file
+            # only gets created if output actually exceeds the cap).
+            try:
+                spill_dir = get_hermes_home() / "cache" / "terminal-output"
+                spill_path = spill_dir / f"out-{int(time.time())}-{os.getpid()}-{id(proc) & 0xffff:x}.log"
+                # Opportunistic cleanup of spills older than 7 days.
+                if spill_dir.is_dir():
+                    cutoff = time.time() - 7 * 86400
+                    for old in spill_dir.glob("out-*.log"):
+                        try:
+                            if old.stat().st_mtime < cutoff:
+                                old.unlink()
+                        except OSError:
+                            pass
+            except Exception:
+                spill_path = None
+        output = _BoundedOutputCollector(capture_limit, spill_path=spill_path)
 
         # Non-blocking drain via select().
         #
@@ -997,7 +1082,7 @@ class BaseEnvironment(ABC):
         _iter_count = 0
         _last_heartbeat = _now
         _last_interrupt_state = False
-        _cb_was_none = _get_activity_callback() is None
+        _cb_was_none = get_activity_callback() is None
         if _DEBUG_INTERRUPT:
             logger.info(
                 "[interrupt-debug] _wait_for_process ENTER tid=%s pid=%s "
@@ -1020,10 +1105,11 @@ class BaseEnvironment(ABC):
                         )
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
-                    return {
-                        "output": output.render(suffix="\n[Command interrupted]"),
-                        "returncode": 130,
-                    }
+                    return self._finalize_wait_result(
+                        output,
+                        output.render(suffix="\n[Command interrupted]"),
+                        130,
+                    )
                 if time.monotonic() > deadline:
                     if _DEBUG_INTERRUPT:
                         logger.info(
@@ -1034,12 +1120,13 @@ class BaseEnvironment(ABC):
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
                     timeout_msg = f"\n[Command timed out after {timeout}s]"
-                    return {
-                        "output": output.render(suffix=timeout_msg).lstrip()
+                    return self._finalize_wait_result(
+                        output,
+                        output.render(suffix=timeout_msg).lstrip()
                         if output.total_chars == 0
                         else output.render(suffix=timeout_msg),
-                        "returncode": 124,
-                    }
+                        124,
+                    )
                 # Periodic activity touch so the gateway knows we're alive
                 touch_activity_if_due(_activity_state, "terminal command running")
 
@@ -1047,7 +1134,7 @@ class BaseEnvironment(ABC):
                 # the activity-callback state (thread-local, can get clobbered
                 # by nested tool calls or executor thread reuse).
                 if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
-                    _cb_now_none = _get_activity_callback() is None
+                    _cb_now_none = get_activity_callback() is None
                     logger.info(
                         "[interrupt-debug] _wait_for_process HEARTBEAT "
                         "tid=%s pid=%s iter=%d elapsed=%.0fs "
@@ -1113,7 +1200,18 @@ class BaseEnvironment(ABC):
                 proc.returncode,
             )
 
-        return {"output": output.render(), "returncode": proc.returncode}
+        return self._finalize_wait_result(output, output.render(), proc.returncode)
+
+    @staticmethod
+    def _finalize_wait_result(collector: "_BoundedOutputCollector",
+                              rendered: str, returncode: int | None) -> dict:
+        """Assemble a wait result, attaching spill metadata when overflow occurred."""
+        result = {"output": rendered, "returncode": returncode}
+        spill = collector.close_spill()
+        if spill:
+            result["output_total_chars"] = collector.total_chars
+            result["full_output_path"] = spill
+        return result
 
     def _kill_process(self, proc: ProcessHandle):
         """Terminate a process. Subclasses may override for process-group kill."""

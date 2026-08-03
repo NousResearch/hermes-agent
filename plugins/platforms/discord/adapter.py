@@ -838,34 +838,37 @@ class VoiceReceiver:
     @staticmethod
     def pcm_to_wav(pcm_data: bytes, output_path: str,
                    src_rate: int = 48000, src_channels: int = 2):
-        """Convert raw PCM to 16kHz mono WAV via ffmpeg."""
-        with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as f:
-            f.write(pcm_data)
-            pcm_path = f.name
-        try:
-            from hermes_cli._subprocess_compat import windows_hide_flags
+        """Convert raw PCM to 16kHz mono WAV via ffmpeg.
 
-            subprocess.run(
-                [
-                    resolve_ffmpeg_executable(), "-y", "-loglevel", "error",
-                    "-f", "s16le",
-                    "-ar", str(src_rate),
-                    "-ac", str(src_channels),
-                    "-i", pcm_path,
-                    "-ar", "16000",
-                    "-ac", "1",
-                    output_path,
-                ],
-                check=True,
-                timeout=10,
-                stdin=subprocess.DEVNULL,
-                creationflags=windows_hide_flags(),
-            )
-        finally:
-            try:
-                os.unlink(pcm_path)
-            except OSError:
-                pass
+        The PCM is fed straight to ffmpeg's stdin, which avoids staging it in a
+        temp file on every utterance. The WAV is still written to *output_path*
+        rather than captured from stdout: ffmpeg cannot seek on a pipe, so a
+        piped WAV carries placeholder (0xFFFFFFFF) RIFF/data sizes that make
+        strict readers misreport the length.
+        """
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        subprocess.run(
+            [
+                resolve_ffmpeg_executable(), "-y", "-loglevel", "error",
+                "-f", "s16le",
+                "-ar", str(src_rate),
+                "-ac", str(src_channels),
+                "-i", "pipe:0",
+                "-ar", "16000",
+                "-ac", "1",
+                output_path,
+            ],
+            input=pcm_data,
+            check=True,
+            timeout=10,
+            # Capture ffmpeg's -loglevel error output so a failure's
+            # CalledProcessError carries the actual message (parity with
+            # tools/transcription_tools' ffmpeg call sites) instead of
+            # "returned non-zero exit status N" with stderr detached.
+            stderr=subprocess.PIPE,
+            creationflags=windows_hide_flags(),
+        )
 
 
 def _read_dm_role_auth_guild() -> Optional[int]:
@@ -2952,6 +2955,36 @@ class DiscordAdapter(BasePlatformAdapter):
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
 
+    @staticmethod
+    def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":
+        """ids-built reply reference — no fetch_message round trip.
+
+        Discord resolves message_reference from the ids alone, and
+        fail_if_not_exists=False keeps sends to deleted targets working
+        exactly as the fetched form did (a dead target degrades to the
+        send-side 10008 retry instead of a fetch failure).
+        """
+        return discord.MessageReference(
+            message_id=int(message_id),
+            channel_id=getattr(channel, "id", None),
+            guild_id=getattr(getattr(channel, "guild", None), "id", None),
+            fail_if_not_exists=False,
+        )
+
+    def _reply_reference_for_send(self, reply_to, channel):
+        """Reply anchor for send paths, honoring reply_to_mode.
+
+        Mirrors telegram's _reply_to_message_id_for_send: raw reply_to in,
+        platform send-time anchor out, ``off`` mode suppressed.
+        """
+        if not reply_to or self._reply_to_mode == "off":
+            return None
+        try:
+            return self._message_reference_from_ids(reply_to, channel)
+        except (ValueError, TypeError) as e:
+            logger.debug("Could not build reply-to reference: %s", e)
+            return None
+
     async def send(
         self,
         chat_id: str,
@@ -3010,17 +3043,8 @@ class DiscordAdapter(BasePlatformAdapter):
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             message_ids = []
-            reference = None
-
-            if reply_to and self._reply_to_mode != "off":
-                try:
-                    ref_msg = await channel.fetch_message(int(reply_to))
-                    if hasattr(ref_msg, "to_reference"):
-                        reference = ref_msg.to_reference(fail_if_not_exists=False)
-                    else:
-                        reference = ref_msg
-                except Exception as e:
-                    logger.debug("Could not fetch reply-to message: %s", e)
+            # Build the reference from ids — no fetch_message round trip.
+            reference = self._reply_reference_for_send(reply_to, channel)
 
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
@@ -3261,7 +3285,7 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(chat_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
-            msg = await channel.fetch_message(int(message_id))
+            msg = channel.get_partial_message(int(message_id))
             formatted = self.format_message(content)
 
             _preview_key = (str(chat_id), str(message_id))
@@ -3401,6 +3425,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     reference = prev_msg.to_reference(fail_if_not_exists=False)
                 except Exception:
                     reference = None
+            elif getattr(prev_msg, "id", None):
+                # Duck-typed prior message without to_reference (real
+                # discord.py PartialMessage HAS to_reference, so this is
+                # belt-and-suspenders): build the reference from ids so
+                # overflow continuations stay threaded.
+                reference = self._message_reference_from_ids(prev_msg.id, channel)
             try:
                 sent = await channel.send(content=chunk, reference=reference)
             except Exception as send_err:
@@ -3696,16 +3726,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
             filename = os.path.basename(audio_path)
 
-            reference = None
-            if reply_to and self._reply_to_mode != "off":
-                try:
-                    ref_msg = await channel.fetch_message(int(reply_to))
-                    if hasattr(ref_msg, "to_reference"):
-                        reference = ref_msg.to_reference(fail_if_not_exists=False)
-                    else:
-                        reference = ref_msg
-                except Exception as e:
-                    logger.debug("Could not fetch voice reply-to message: %s", e)
+            # ids-only reference — same no-fetch rationale as the text path.
+            reference = self._reply_reference_for_send(reply_to, channel)
 
             with open(audio_path, "rb") as f:
                 file_data = f.read()
@@ -4462,7 +4484,18 @@ class DiscordAdapter(BasePlatformAdapter):
                     transcript=transcript,
                 )
         except Exception as e:
-            logger.warning("Voice input processing failed: %s", e, exc_info=True)
+            # CalledProcessError from pcm_to_wav carries ffmpeg's captured
+            # stderr — surface it, or the log only says "exit status N".
+            _ff_err = getattr(e, "stderr", None)
+            if _ff_err:
+                if isinstance(_ff_err, bytes):
+                    _ff_err = _ff_err.decode("utf-8", "replace")
+                logger.warning(
+                    "Voice input processing failed: %s (ffmpeg: %s)",
+                    e, _ff_err.strip(), exc_info=True,
+                )
+            else:
+                logger.warning("Voice input processing failed: %s", e, exc_info=True)
         finally:
             try:
                 os.unlink(wav_path)
@@ -9467,7 +9500,14 @@ async def _standalone_send(
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
 
-    token = (getattr(pconfig, "token", None) or os.getenv("DISCORD_BOT_TOKEN", "")).strip()
+    token = (getattr(pconfig, "token", None) or "").strip()
+    if not token:
+        # Profile-scoped read: under multiplex the process env may hold a
+        # different profile's bot token, so honor the secret scope's verdict
+        # (scoped miss ⇒ no token; unscoped multiplex ⇒ UnscopedSecretError).
+        from agent.secret_scope import get_secret
+
+        token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
         return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
 

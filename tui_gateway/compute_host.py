@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from agent.interrupt_compat import request_hard_interrupt
+
 
 def now_ns() -> int:
     return time.perf_counter_ns()
@@ -37,7 +39,7 @@ class SpikeAgent:
     def clear_interrupt(self) -> None:
         self._interrupt.clear()
 
-    def interrupt(self) -> None:
+    def interrupt(self, *, hard_cancel: bool = False) -> None:
         self._interrupt.set()
 
     def run_conversation(
@@ -257,7 +259,7 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         spike = self._sessions.get(sid)
         if spike is not None:
-            spike.agent.interrupt()
+            request_hard_interrupt(spike.agent)
             self.emit(
                 {
                     "type": "interrupt.ack",
@@ -276,8 +278,8 @@ class ComputeHost:
                 self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": False})
                 return
             agent = session.get("agent")
-            if agent is not None and hasattr(agent, "interrupt"):
-                agent.interrupt()
+            if agent is not None:
+                request_hard_interrupt(agent)
             with session.get("history_lock", threading.Lock()):
                 session["_turn_cancel_requested"] = True
                 session["queued_prompt"] = None

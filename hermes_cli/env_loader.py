@@ -512,7 +512,48 @@ def load_hermes_dotenv(
     _apply_external_secret_sources(home_path)
     _apply_managed_env()
 
+    # config.yaml is the documented source of truth for terminal.* settings,
+    # but the dotenv loads above run with override=True — so a stale
+    # TERMINAL_ENV=docker left in ~/.hermes/.env (e.g. written by an older
+    # `hermes setup` before the user switched terminal.backend in config.yaml)
+    # silently wins again on every reload. Startup launchers bridge
+    # config→env once, but long-lived processes (gateway per-turn reload,
+    # cron standalone runs) call load_hermes_dotenv() repeatedly and used to
+    # flip the effective backend back to the stale .env value mid-session
+    # (#29186, #67323). Re-apply config.yaml's explicit terminal keys last so
+    # the documented config path always wins. Runs after _apply_managed_env()
+    # so the merged config (which already carries the managed overlay) is
+    # what lands in the env.
+    _reapply_terminal_config_bridge(home_path)
+
     return loaded
+
+
+def _reapply_terminal_config_bridge(home_path: Path) -> None:
+    """Re-assert config.yaml's explicit ``terminal.*`` keys over reloaded .env.
+
+    Delegates to ``hermes_cli.config.apply_terminal_config_to_env`` — the
+    single shared bridge (same one terminal_tool's fallback and the TUI/
+    dashboard launchers use) — so key coverage, explicit-keys-only override
+    semantics, cwd placeholder handling, and the managed-scope overlay can't
+    drift from the other bridge sites. Only keys the user actually wrote in
+    config.yaml's ``terminal`` section override env values; a config.yaml
+    without a terminal section leaves .env/shell selections untouched.
+
+    Scoped to the process HERMES_HOME: the shared bridge reads the
+    process-global config, so re-applying it for a *different* profile's
+    ``load_hermes_dotenv(hermes_home=...)`` call would bridge the wrong
+    profile's config. Fail-open — a config problem must never break dotenv
+    loading (the historical env-driven behavior still applies).
+    """
+    try:
+        if Path(home_path).resolve() != _process_hermes_home().resolve():
+            return
+        from hermes_cli.config import apply_terminal_config_to_env
+
+        apply_terminal_config_to_env(env=None)
+    except Exception:  # noqa: BLE001 — early bootstrap / malformed config
+        pass
 
 
 def _apply_managed_env() -> None:

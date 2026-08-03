@@ -41,6 +41,7 @@ import time
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -85,7 +86,7 @@ def _load_config() -> dict:
 
     config = {
         "mode": os.environ.get("MEM0_MODE", "platform"),
-        "api_key": os.environ.get("MEM0_API_KEY", ""),
+        "api_key": get_secret("MEM0_API_KEY", ""),
         "host": os.environ.get("MEM0_HOST", ""),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "oss": {},

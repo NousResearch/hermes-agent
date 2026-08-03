@@ -1,0 +1,7 @@
+name: deja-recall
+version: "0.1.0"
+description: "Local deterministic lexical recall from persisted Hermes sessions"
+author: "NousResearch"
+hooks:
+  - pre_llm_call
+  - on_session_finalize

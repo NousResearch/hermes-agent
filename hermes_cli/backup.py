@@ -1522,11 +1522,17 @@ def _create_quick_snapshot_locked(
     # cron snapshot. Copy both while holding the same profile-local lock that
     # guards every cron mutation, otherwise a writer can commit between the
     # JSON copy and SQLite backup and create a torn restore point.
+    #
+    # Write into staging_dir (not snap_dir): everything in this snapshot,
+    # cron pair included, must land in the one directory that gets published
+    # atomically via os.replace(staging_dir, snap_dir) below. Writing the
+    # pair straight into snap_dir would create it non-empty ahead of time,
+    # and os.replace onto an existing non-empty directory fails outright.
     cron_pair = ("cron/jobs.json", "cron/runtime.db")
     with _quick_cron_store_lock(home):
         _snapshot_cron_pair(
             home=home,
-            snap_dir=snap_dir,
+            snap_dir=staging_dir,
             max_file_size=max_file_size,
             manifest=manifest,
             failed_dbs=failed_dbs,

@@ -129,6 +129,7 @@ def test_shared_snapshot_does_not_persist_profile_identity(tmp_path):
             "HOME": str(canonical_home),
             "HERMES_HOME": str(canonical_hermes),
             "HERMES_REAL_HOME": str(canonical_real_home),
+            "HERMES_HOME_BACKUP": "owner-backup",
         },
     )
     try:
@@ -138,23 +139,27 @@ def test_shared_snapshot_does_not_persist_profile_identity(tmp_path):
         result = env.execute(
             f'export HOME="{poisoned_home}"; '
             f'export HERMES_HOME="{poisoned_hermes}"; '
-            f'export HERMES_REAL_HOME="{poisoned_real_home}"; true'
+            f'export HERMES_REAL_HOME="{poisoned_real_home}"; '
+            'export HERMES_HOME_BACKUP="foreign-backup"; true'
         )
         assert result.get("returncode") == 0
 
         observed = env.execute(
-            'printf "%s\\n%s\\n%s\\n" "$HOME" "$HERMES_HOME" "$HERMES_REAL_HOME"'
+            'printf "%s\\n%s\\n%s\\n%s\\n" '
+            '"$HOME" "$HERMES_HOME" "$HERMES_REAL_HOME" "$HERMES_HOME_BACKUP"'
         )
         assert observed.get("returncode") == 0
-        assert observed.get("output", "").splitlines()[:3] == [
+        assert observed.get("output", "").splitlines()[:4] == [
             str(canonical_home),
             str(canonical_hermes),
             str(canonical_real_home),
+            "foreign-backup",
         ]
 
         snapshot = open(env._snapshot_path, encoding="utf-8").read()
         assert "foreign-home" not in snapshot
         assert "foreign-real-home" not in snapshot
+        assert "foreign-backup" in snapshot
     finally:
         env.cleanup()
         secret_scope.set_multiplex_active(previous_multiplex)

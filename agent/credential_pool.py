@@ -2395,7 +2395,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             # All-sources suppression gate BEFORE any work — including the
             # `gh auth token` subprocess spawn.  resolve_copilot_token()
             # shells out (~30ms), and the exchange retries 3x with backoff
-            # (~13s worst case); a user who suppressed every copilot source
+            # (~35s worst case); a user who suppressed every copilot source
             # (hermes auth remove copilot gh_cli) must not pay either on
             # every pool load (model picker open, /model, agent startup).
             # Enumerating the full source space here matches what
@@ -2406,11 +2406,17 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                 return changed, active_sources
             token, source = resolve_copilot_token()
             if token:
-                source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
+                # ``resolve_copilot_token`` returns exactly "gh auth token"
+                # for the CLI path; env-sourced tokens return the var name.
+                # Match exactly — a substring test classifies GH_TOKEN and
+                # GITHUB_TOKEN as gh_cli, silently bypassing a user's
+                # per-env-var suppression.
+                source_name = "gh_cli" if source == "gh auth token" else f"env:{source}"
                 # Per-source suppression gate (a user may suppress only the
                 # gh CLI path and keep an env var, or vice versa) BEFORE the
-                # network exchange.  The exchange retries 3x with backoff
-                # (~13s worst case), so a source the user already suppressed
+                # network exchange.  The exchange retries 3x with 10s
+                # timeouts and 4.5s total backoff (~35s worst case), so a
+                # source the user already suppressed
                 # must not burn that dead time just to have the entry
                 # discarded afterwards.  Same early-gate pattern every other
                 # singleton branch uses.

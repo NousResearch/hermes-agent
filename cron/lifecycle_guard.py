@@ -714,6 +714,38 @@ def _resolve_script_directory(script_path: str) -> Optional[str]:
     return None
 
 
+_BINARY_MAGICS = (
+    b"\x7fELF",              # ELF — Linux/BSD executables and shared objects
+    b"\xfe\xed\xfa\xce",     # Mach-O 32-bit
+    b"\xfe\xed\xfa\xcf",     # Mach-O 64-bit
+    b"\xce\xfa\xed\xfe",     # Mach-O 32-bit, byte-swapped
+    b"\xcf\xfa\xed\xfe",     # Mach-O 64-bit, byte-swapped
+    b"\xca\xfe\xba\xbe",     # Mach-O universal ("fat") binary
+    b"MZ",                   # PE/COFF — Windows .exe/.dll
+    b"!<arch>",              # static archive (.a)
+    b"\x1f\x8b",             # gzip
+    b"PK\x03\x04",           # zip (also .jar/.whl/.egg)
+)
+
+
+def _has_binary_magic(data: bytes) -> bool:
+    """Return True when *data* starts with a known compiled-binary signature.
+
+    Deliberately narrower than "contains a NUL byte": a shell script that
+    happens to hold a NUL is still executed by ``bash``, so treating every
+    NUL-bearing file as an unscannable binary lets a padded script bypass the
+    lifecycle scan entirely.
+
+    A shebang always wins — an interpreted script is never a binary, however
+    odd its payload. File extensions are deliberately *not* consulted: a
+    suffixless shell script must still be scanned (and, if oversized, still
+    fail closed).
+    """
+    if data.startswith(b"#!"):
+        return False
+    return data.startswith(_BINARY_MAGICS)
+
+
 def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     """Return ``(text, unsafe)`` using bounded, regular-file-only reads.
 
@@ -779,16 +811,25 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         return None, False
     finally:
         os.close(descriptor)
-    # A NUL byte in the first chunk means this is a binary (ELF/Mach-O/
-    # PE), not a shell script — scanning its decoded contents would
-    # tokenize machine code and feed junk paths into the recursion
-    # (including a `ValueError: embedded null byte` from Path.resolve,
-    # #76762). Treat it as "nothing to scan" rather than unsafe: a binary
-    # executed by the user is not a referenced *shell script*.
-    if b"\x00" in data:
+    # Identify binaries by MAGIC NUMBER, not by the mere presence of a NUL.
+    #
+    # "contains a NUL" and "is a compiled binary" are different questions, and
+    # the gap between them is a guard bypass: `bash` executes a *text* script
+    # straight past an embedded NUL, so a single pad byte in a shell script made
+    # the scan skip a file that still runs its lifecycle command. Match on the
+    # signature instead (ELF/Mach-O/PE/static archive/compressed), and treat a
+    # NUL-bearing *text* file as a script whose NULs are stripped before
+    # scanning — stripping can only splice tokens together, never apart, so it
+    # fails closed.
+    if _has_binary_magic(data):
         return None, False
+    # Check the size BEFORE stripping: stripping shrinks the buffer, so doing it
+    # first would let an oversized file slip under the threshold and skip this
+    # fail-closed branch.
     if len(data) > _MAX_REFERENCED_SCRIPT_BYTES:
         return None, True
+    if b"\x00" in data:
+        data = data.replace(b"\x00", b"")
     return data.decode("utf-8", errors="replace"), False
 
 

@@ -879,6 +879,24 @@ class TestLifecycleGuardModule:
             is True
         )
 
+    def test_nul_padded_script_is_still_scanned(self, tmp_path):
+        """A NUL byte in a *text* script must not disable the scan.
+
+        The #76762 binary check treated any NUL in the first chunk as "compiled
+        binary, nothing to scan" — but ``bash`` executes a text script straight
+        past an embedded NUL, so one pad byte bypassed the guard entirely while
+        the script still ran its lifecycle command.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "padded.sh"
+        script.write_bytes(b"#!/bin/bash\n# pad\x00\nhermes gateway restart\n")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(f"bash {script}")
+            is True
+        )
+
     def test_source_builtin_sourced_script_is_scanned(self, tmp_path):
         """The `source` spelling must stay blocked (it already was)."""
         from cron.lifecycle_guard import (
@@ -901,6 +919,84 @@ class TestLifecycleGuardModule:
         script.write_text("#!/bin/bash\nexport PATH=/usr/bin:$PATH\n")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
+            is False
+        )
+
+    def test_nul_padded_script_without_shebang_is_scanned(self, tmp_path):
+        """Same bypass without a shebang — bash still runs it, so still scan.
+
+        Keying the fix on a leading ``#!`` alone is insufficient: a shebang-less
+        file with a NUL on any line but the first executes normally.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "padded_noshebang.sh"
+        script.write_bytes(b"# ok\n# pad\x00\nhermes gateway restart\n")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(f"bash {script}")
+            is True
+        )
+
+    def test_elf_binary_is_not_scanned_as_script(self, tmp_path):
+        """#76762 must stay fixed: a real binary is nothing-to-scan, no crash.
+
+        Its decoded machine code must never be tokenized as shell text, and the
+        guard must not fail closed on an innocent interpreter invocation.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        binary = tmp_path / "tool"
+        binary.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 64 + b"/usr/bin/x\x00")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(f"{binary} --version")
+            is False
+        )
+
+    def test_macho_binary_is_not_scanned_as_script(self, tmp_path):
+        """Same for Mach-O, including the universal/fat signature (macOS)."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        for name, magic in (
+            ("macho64", b"\xcf\xfa\xed\xfe"),
+            ("machofat", b"\xca\xfe\xba\xbe"),
+        ):
+            binary = tmp_path / name
+            binary.write_bytes(magic + b"\x00" * 64)
+            assert (
+                contains_gateway_lifecycle_command_or_referenced_script(
+                    f"{binary} --version"
+                )
+                is False
+            )
+
+    def test_oversized_nul_bearing_text_still_fails_closed(self, tmp_path):
+        """An oversized *text* script must keep failing closed.
+
+        Stripping NULs must not let a too-large file skip the size guard — the
+        binary check runs first, the size check still applies afterwards.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "huge.sh"
+        script.write_bytes(b"#!/bin/bash\n# \x00" + b"x" * (1024 * 1024 + 64) + b"\n")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(f"bash {script}")
+            is True
+        )
+
+    def test_clean_script_without_lifecycle_command_not_blocked(self, tmp_path):
+        """Sanity: the change must not false-block innocent scripts."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "safe.sh"
+        script.write_bytes(b"#!/bin/bash\necho hello\n")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(f"bash {script}")
             is False
         )
 

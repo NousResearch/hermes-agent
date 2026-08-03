@@ -2461,6 +2461,9 @@ class MessageEvent:
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+    # Per-attachment text-inlining contract. None/absent preserves the legacy
+    # assumption that text/* adapters already injected content into ``text``.
+    media_text_inlined: List[Optional[bool]] = field(default_factory=list)
     
     # Reply context
     reply_to_message_id: Optional[str] = None
@@ -2845,10 +2848,22 @@ def merge_pending_message_event(
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)
         incoming_has_media = bool(event.media_urls)
+        incoming_inline_flags: List[Optional[bool]] = []
+        if incoming_has_media:
+            existing_inline_flags = list(getattr(existing, "media_text_inlined", []) or [])
+            existing_inline_flags.extend(
+                [None] * max(0, len(existing.media_urls) - len(existing_inline_flags))
+            )
+            incoming_inline_flags = list(getattr(event, "media_text_inlined", []) or [])
+            incoming_inline_flags.extend(
+                [None] * max(0, len(event.media_urls) - len(incoming_inline_flags))
+            )
+            existing.media_text_inlined = existing_inline_flags
 
         if existing_is_photo and incoming_is_photo:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             _invalidate_pending_stt_cache(existing)
@@ -2858,6 +2873,7 @@ def merge_pending_message_event(
             if incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+                existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 if existing.text:
                     existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)

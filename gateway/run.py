@@ -3531,11 +3531,18 @@ def _build_media_placeholder(event) -> str:
     return "\n".join(parts)
 
 
-def _build_document_context_note(display_name: str, agent_path: str, mtype: str) -> str:
+def _build_document_context_note(
+    display_name: str,
+    agent_path: str,
+    mtype: str,
+    *,
+    content_inlined: bool = True,
+) -> str:
     """Context note prepended to a user turn when they attach a document.
 
-    Text documents (``text/*``) have their content inlined upstream by the
-    platform adapter, so the note just confirms that and records the path.
+    Text documents (``text/*``) are usually inlined upstream by the platform
+    adapter. ``content_inlined=False`` records adapters that cache the file
+    without injecting its content, so the note tells the agent to read it.
 
     Binary documents (PDF, DOCX, XLSX, …) cannot be inlined as text. The note
     must tell the agent to *extract* the text itself before answering — earlier
@@ -3543,11 +3550,17 @@ def _build_document_context_note(display_name: str, agent_path: str, mtype: str)
     model into punting back to the user, which is why attached PDFs/DOCX looked
     "unreadable" to the agent even though it has the tools to read them.
     """
-    if mtype.startswith("text/"):
+    if mtype.startswith("text/") and content_inlined:
         return (
             f"[The user sent a text document: '{display_name}'. "
             f"Its content has been included below. "
             f"The file is also saved at: {agent_path}]"
+        )
+    if mtype.startswith("text/"):
+        return (
+            f"[The user sent a text document: '{display_name}'. It is saved at: {agent_path}. "
+            f"Its content is not inlined here. Read the cached file yourself before answering "
+            f"when the user's request involves its contents.]"
         )
     return (
         f"[The user sent a document: '{display_name}'. It is saved at: {agent_path}. "
@@ -17831,6 +17844,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_id=event.message_id,
                 media_urls=list(getattr(event, "media_urls", []) or []),
                 media_types=list(getattr(event, "media_types", []) or []),
+                media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
                 reply_to_message_id=event.reply_to_message_id,
                 reply_to_text=event.reply_to_text,
                 reply_to_author_id=event.reply_to_author_id,
@@ -19658,12 +19672,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # mis-routed here as an image and the provider 400s.
                 if _event_media_is_image(event, i):
                     image_paths.append(path)
-                # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT
-                # MessageType.VOICE = voice message (Opus/OGG) — always STT
-                if event.message_type == MessageType.AUDIO:
-                    audio_file_paths.append(path)
-                elif not _pending_stt_prepared and _event_media_is_stt_input(event, i):
-                    audio_paths.append(path)
+                # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT.
+                # Mixed DOCUMENT events also preserve audio as a file path instead of
+                # dropping it or treating it as a voice note.
+                if _event_media_is_audio(event, i):
+                    if event.message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
+                        audio_file_paths.append(path)
+                    elif not _pending_stt_prepared and _event_media_is_stt_input(event, i):
+                        audio_paths.append(path)
                 if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
                     video_paths.append(path)
 
@@ -19835,7 +19851,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
                 agent_path = to_agent_visible_cache_path(path)
 
-                context_note = _build_document_context_note(display_name, agent_path, mtype)
+                inline_flags = getattr(event, "media_text_inlined", None) or []
+                inline_flag = inline_flags[i] if i < len(inline_flags) else None
+                context_note = _build_document_context_note(
+                    display_name,
+                    agent_path,
+                    mtype,
+                    content_inlined=inline_flag is not False,
+                )
                 message_text = f"{context_note}\n\n{message_text}"
 
         # Discord: surface the triggering message id per-turn on the user

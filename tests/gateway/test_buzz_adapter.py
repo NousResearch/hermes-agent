@@ -2,11 +2,14 @@
 
 import asyncio
 import base64
+import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from gateway.platforms.base import CachedMedia, MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 from gateway.platforms.base import MessageType
 
@@ -659,6 +662,626 @@ class TestPollingDedupe:
         # Poll 2: identical response — the seen-id set must de-dupe
         await adapter._poll_channel(CHANNEL)
         assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_malformed_attachment_url_does_not_abort_following_event(self, adapter):
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        malformed = _event("malformed-attachment", content="background chatter", created_at=159)
+        malformed["tags"].append([
+            "imeta",
+            "url https://[invalid/media.bin",
+            "m application/octet-stream",
+            "x " + "a" * 64,
+            "size 1",
+            "filename invalid.bin",
+        ])
+        valid = _event("following-valid", content="@Chip still there?", created_at=160)
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [malformed, valid])
+        adapter._run_cli = cli
+
+        await adapter._poll_channel(CHANNEL)
+
+        assert [item["message_id"] for item in adapter._dispatched] == ["following-valid"]
+
+    @pytest.mark.asyncio
+    async def test_addressed_attachment_is_cached_and_dispatched_to_agent(self, adapter):
+        attachment = CachedMedia(
+            path="/agent/cache/doc_handoff.txt",
+            media_type="text/plain",
+            kind="document",
+            display_name="handoff.txt",
+        )
+        adapter._download_attachment = AsyncMock(return_value=attachment)
+        adapter._user_names[OTHER_PUBKEY] = "Other"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        event = _event("attachment-event", content="@Chip inspect this", created_at=160)
+        event["tags"].append([
+            "imeta",
+            "url https://test.relay/media/abc.bin",
+            "m text/plain",
+            "x " + "a" * 64,
+            "size 12",
+            "filename handoff.txt",
+        ])
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        adapter._download_attachment.assert_awaited_once()
+        dispatched = adapter._dispatched[-1]
+        assert dispatched["media_urls"] == [attachment.path]
+        assert dispatched["media_types"] == ["text/plain"]
+        assert dispatched["message_type"] is MessageType.DOCUMENT
+        assert attachment.context_note() not in dispatched["text"]
+        assert dispatched["raw_message"] is event
+
+
+class TestInboundAttachments:
+
+    def test_imeta_total_declared_bytes_are_bounded(self):
+        event = _event("bounded", content="@Chip files")
+        per_file_size = 6 * 1024 * 1024
+        for index in range(4):
+            event["tags"].append([
+                "imeta",
+                f"url https://test.relay/media/{index}.bin",
+                "m application/octet-stream",
+                "x " + format(index + 1, "064x"),
+                f"size {per_file_size}",
+                f"filename {index}.bin",
+            ])
+
+        attachments = BuzzAdapter._imeta_attachments(event)
+
+        assert len(attachments) == 3
+        assert sum(item["size"] for item in attachments) <= 20 * 1024 * 1024
+
+    @pytest.mark.asyncio
+    async def test_download_caches_only_exact_size_and_sha256(self, monkeypatch):
+        import httpx
+
+        payload = b"verified Buzz attachment"
+        digest = hashlib.sha256(payload).hexdigest()
+        real_async_client = httpx.AsyncClient
+
+        def handler(request):
+            assert request.url.host == "test.relay"
+            return httpx.Response(
+                200,
+                content=payload,
+                headers={"content-length": str(len(payload))},
+            )
+
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda **kwargs: real_async_client(
+                transport=httpx.MockTransport(handler),
+                **kwargs,
+            ),
+        )
+        adapter = _make_adapter()
+
+        cached = await adapter._download_attachment({
+            "url": "https://test.relay/media/verified.bin",
+            "sha256": digest,
+            "size": len(payload),
+            "filename": "verified.txt",
+            "mime_type": "text/plain",
+        })
+
+        assert cached is not None
+        assert cached.kind == "document"
+        assert cached.media_type == "text/plain"
+        assert Path(cached.path).read_bytes() == payload
+
+    @pytest.mark.asyncio
+    async def test_download_rejects_untrusted_attachment_host_before_network(self, monkeypatch):
+        import httpx
+
+        def must_not_create_client(**kwargs):
+            raise AssertionError("network client must not be created")
+
+        monkeypatch.setattr(httpx, "AsyncClient", must_not_create_client)
+        adapter = _make_adapter()
+
+        cached = await adapter._download_attachment({
+            "url": "https://untrusted.example/media/file.bin",
+            "sha256": "a" * 64,
+            "size": 12,
+            "filename": "file.bin",
+            "mime_type": "application/octet-stream",
+        })
+
+        assert cached is None
+
+    @pytest.mark.asyncio
+    async def test_download_rejects_unconfigured_nondefault_port_before_network(self, monkeypatch):
+        import httpx
+
+        def must_not_create_client(**kwargs):
+            raise AssertionError("network client must not be created")
+
+        monkeypatch.setattr(httpx, "AsyncClient", must_not_create_client)
+        adapter = _make_adapter()
+
+        cached = await adapter._download_attachment({
+            "url": "https://test.relay:8443/media/file.bin",
+            "sha256": "a" * 64,
+            "size": 12,
+            "filename": "file.bin",
+            "mime_type": "application/octet-stream",
+        })
+
+        assert cached is None
+
+    @pytest.mark.asyncio
+    async def test_download_allows_explicitly_configured_nondefault_port(self, monkeypatch):
+        import httpx
+
+        payload = b"x"
+        real_async_client = httpx.AsyncClient
+
+        def handler(request):
+            assert request.url.port == 8443
+            return httpx.Response(200, content=payload, headers={"content-length": "1"})
+
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda **kwargs: real_async_client(
+                transport=httpx.MockTransport(handler),
+                **kwargs,
+            ),
+        )
+        adapter = _make_adapter({"attachment_hosts": ["test.relay:8443"]})
+
+        cached = await adapter._download_attachment({
+            "url": "https://test.relay:8443/media/file.bin",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": 1,
+            "filename": "file.bin",
+            "mime_type": "application/octet-stream",
+        })
+
+        assert cached is not None
+
+    @pytest.mark.asyncio
+    async def test_unaddressed_channel_attachment_is_not_downloaded(self):
+        adapter = _make_adapter()
+        adapter._download_attachment = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        event = _event("unaddressed-attachment", content="shared file")
+        event["tags"].append([
+            "imeta",
+            "url https://test.relay/media/file.bin",
+            "m application/octet-stream",
+            "x " + "a" * 64,
+            "size 12",
+            "filename file.bin",
+        ])
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        adapter._download_attachment.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_attachment_download_is_visible_to_agent(self):
+        adapter = _make_adapter()
+        adapter._download_attachment = AsyncMock(return_value=None)
+        adapter._user_names[OTHER_PUBKEY] = "Other"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        dispatched = []
+
+        async def capture(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        event = _event("failed-attachment", content="@Chip inspect this")
+        event["tags"].append([
+            "imeta",
+            "url https://test.relay/media/file.bin",
+            "m application/octet-stream",
+            "x " + "a" * 64,
+            "size 12",
+            "filename file.bin",
+        ])
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        assert "could not be downloaded" in dispatched[-1]["text"]
+        assert dispatched[-1]["media_urls"] == []
+
+    @pytest.mark.asyncio
+    async def test_dispatch_builds_document_message_event_with_cached_path(self):
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+
+        await adapter._dispatch_message(
+            text="inspect",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="Other",
+            message_id="document-event",
+            created_at=1000,
+            media_urls=["/agent/cache/doc_report.pdf"],
+            media_types=["application/pdf"],
+            message_type=MessageType.DOCUMENT,
+            raw_message={"id": "document-event"},
+        )
+
+        call = adapter.handle_message.await_args
+        assert call is not None
+        dispatched_event = call.args[0]
+        assert dispatched_event.message_type is MessageType.DOCUMENT
+        assert dispatched_event.media_urls == ["/agent/cache/doc_report.pdf"]
+        assert dispatched_event.media_types == ["application/pdf"]
+        assert dispatched_event.media_text_inlined == [False]
+        assert dispatched_event.raw_message == {"id": "document-event"}
+
+    def test_imeta_sanitizes_filename_and_rejects_incomplete_metadata(self):
+        event = _event("metadata", content="@Chip files")
+        event["tags"].extend([
+            [
+                "imeta",
+                "url https://test.relay/media/valid.bin",
+                "m text/plain",
+                "x " + "a" * 64,
+                "size 12",
+                "filename ../../private/report.txt",
+            ],
+            [
+                "imeta",
+                "url http://test.relay/media/insecure.bin",
+                "x " + "b" * 64,
+                "size 12",
+                "filename insecure.bin",
+            ],
+            [
+                "imeta",
+                "url https://test.relay/media/no-hash.bin",
+                "size 12",
+                "filename no-hash.bin",
+            ],
+        ])
+
+        attachments = BuzzAdapter._imeta_attachments(event)
+
+        assert len(attachments) == 1
+        assert attachments[0]["filename"] == "report.txt"
+
+    @pytest.mark.asyncio
+    async def test_attachment_only_dm_is_downloaded_and_dispatched(self):
+        adapter = _make_adapter()
+        attachment = CachedMedia(
+            path="/agent/cache/doc_attachment.bin",
+            media_type="application/octet-stream",
+            kind="document",
+            display_name="attachment.bin",
+        )
+        adapter._download_attachment = AsyncMock(return_value=attachment)
+        adapter._user_names[OTHER_PUBKEY] = "Other"
+        adapter._channel_state[DM_CHANNEL] = {
+            "chat_type": "dm",
+            "last_ts": 0,
+            "seen": {},
+        }
+        dispatched = []
+
+        async def capture(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        event = _event("attachment-only", content="")
+        event["tags"].append([
+            "imeta",
+            "url https://test.relay/media/file.bin",
+            "m application/octet-stream",
+            "x " + "a" * 64,
+            "size 12",
+            "filename attachment.bin",
+        ])
+
+        await adapter._handle_event(
+            DM_CHANNEL,
+            adapter._channel_state[DM_CHANNEL],
+            event,
+        )
+
+        adapter._download_attachment.assert_awaited_once()
+        assert dispatched[-1]["media_urls"] == [attachment.path]
+        assert dispatched[-1]["message_type"] is MessageType.DOCUMENT
+
+    def test_imeta_bounds_filename_to_filesystem_safe_utf8_length(self):
+        event = _event("long-name", content="@Chip file")
+        event["tags"].append([
+            "imeta",
+            "url https://test.relay/media/file.bin",
+            "m application/octet-stream",
+            "x " + "a" * 64,
+            "size 1",
+            "filename " + ("é" * 180) + ".pdf",
+        ])
+
+        filename = BuzzAdapter._imeta_attachments(event)[0]["filename"]
+
+        assert len(filename.encode("utf-8")) <= 120
+        assert filename.endswith(".pdf")
+
+    @pytest.mark.asyncio
+    async def test_cache_write_failure_is_treated_as_failed_attachment(self, monkeypatch):
+        import httpx
+
+        payload = b"x"
+        digest = hashlib.sha256(payload).hexdigest()
+        real_async_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda **kwargs: real_async_client(
+                transport=httpx.MockTransport(
+                    lambda _request: httpx.Response(
+                        200,
+                        content=payload,
+                        headers={"content-length": "1"},
+                    )
+                ),
+                **kwargs,
+            ),
+        )
+        monkeypatch.setattr(
+            _buzz_mod,
+            "cache_media_bytes",
+            MagicMock(side_effect=OSError(36, "File name too long")),
+        )
+        adapter = _make_adapter()
+
+        cached = await adapter._download_attachment({
+            "url": "https://test.relay/media/file.bin",
+            "sha256": digest,
+            "size": 1,
+            "filename": "file.bin",
+            "mime_type": "application/octet-stream",
+        })
+
+        assert cached is None
+
+    @pytest.mark.asyncio
+    async def test_download_has_total_deadline(self, monkeypatch):
+        import httpx
+
+        payload = b"x"
+        real_async_client = httpx.AsyncClient
+
+        async def slow_handler(_request):
+            await asyncio.sleep(0.05)
+            return httpx.Response(200, content=payload, headers={"content-length": "1"})
+
+        monkeypatch.setattr(_buzz_mod, "_ATTACHMENT_DOWNLOAD_TIMEOUT", 0.01)
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda **kwargs: real_async_client(
+                transport=httpx.MockTransport(slow_handler),
+                **kwargs,
+            ),
+        )
+        adapter = _make_adapter()
+
+        cached = await adapter._download_attachment({
+            "url": "https://test.relay/media/file.bin",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": 1,
+            "filename": "file.bin",
+            "mime_type": "application/octet-stream",
+        })
+
+        assert cached is None
+
+    @pytest.mark.asyncio
+    async def test_multiple_mixed_attachments_use_document_semantics(self):
+        adapter = _make_adapter()
+        adapter._user_names[OTHER_PUBKEY] = "Other"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        cached = [
+            CachedMedia("/cache/image.png", "image/png", "image", "image.png"),
+            CachedMedia("/cache/audio.mp3", "audio/mpeg", "audio", "audio.mp3"),
+        ]
+        adapter._cache_inbound_attachments = AsyncMock(return_value=cached)
+        dispatched = []
+
+        async def capture(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        event = _event("mixed", content="@Chip inspect")
+        for index, mime_type in enumerate(("image/png", "audio/mpeg")):
+            event["tags"].append([
+                "imeta",
+                f"url https://test.relay/media/{index}.bin",
+                f"m {mime_type}",
+                "x " + format(index + 1, "064x"),
+                "size 1",
+                f"filename {index}.bin",
+            ])
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        assert dispatched[-1]["message_type"] is MessageType.DOCUMENT
+        assert dispatched[-1]["media_types"] == ["image/png", "audio/mpeg"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "payload", "headers", "declared_size", "expected_digest"),
+        [
+            (302, b"", {}, 1, "a" * 64),
+            (200, b"x", {"content-length": "invalid"}, 1, hashlib.sha256(b"x").hexdigest()),
+            (200, b"x", {}, 2, hashlib.sha256(b"x").hexdigest()),
+            (200, b"xx", {}, 1, hashlib.sha256(b"xx").hexdigest()),
+            (200, b"x", {}, 1, "a" * 64),
+        ],
+    )
+    async def test_download_rejects_invalid_response_or_integrity(
+        self,
+        monkeypatch,
+        status,
+        payload,
+        headers,
+        declared_size,
+        expected_digest,
+    ):
+        import httpx
+
+        real_async_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda **kwargs: real_async_client(
+                transport=httpx.MockTransport(
+                    lambda _request: httpx.Response(status, content=payload, headers=headers)
+                ),
+                **kwargs,
+            ),
+        )
+        adapter = _make_adapter()
+
+        cached = await adapter._download_attachment({
+            "url": "https://test.relay/media/file.bin",
+            "sha256": expected_digest,
+            "size": declared_size,
+            "filename": "file.bin",
+            "mime_type": "application/octet-stream",
+        })
+
+        assert cached is None
+
+    def test_imeta_rejects_url_credentials_and_fragments_and_caps_items(self):
+        event = _event("url-safety", content="@Chip files")
+        event["tags"].extend([
+            [
+                "imeta",
+                "url https://user:password@test.relay/media/private.bin",
+                "x " + "a" * 64,
+                "size 1",
+                "filename private.bin",
+            ],
+            [
+                "imeta",
+                "url https://test.relay/media/fragment.bin#hidden",
+                "x " + "b" * 64,
+                "size 1",
+                "filename fragment.bin",
+            ],
+        ])
+        for index in range(6):
+            event["tags"].append([
+                "imeta",
+                f"url https://test.relay/media/{index}.bin",
+                "x " + format(index + 1, "064x"),
+                "size 1",
+                f"filename {index}.bin",
+            ])
+
+        attachments = BuzzAdapter._imeta_attachments(event)
+
+        assert len(attachments) == 4
+        assert all("@" not in item["url"] and "#" not in item["url"] for item in attachments)
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_sender_attachment_is_not_downloaded(self):
+        adapter = _make_adapter()
+        adapter._allowed_pubkeys = {"f" * 64}
+        adapter._download_attachment = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        event = _event("unauthorized-attachment", content="@Chip inspect")
+        event["tags"].append([
+            "imeta",
+            "url https://test.relay/media/file.bin",
+            "m application/octet-stream",
+            "x " + "a" * 64,
+            "size 1",
+            "filename file.bin",
+        ])
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        adapter._download_attachment.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "mime_type", "expected_type"),
+        [
+            ("image", "image/png", MessageType.PHOTO),
+            ("video", "video/mp4", MessageType.VIDEO),
+            ("audio", "audio/mpeg", MessageType.AUDIO),
+            ("document", "application/pdf", MessageType.DOCUMENT),
+        ],
+    )
+    async def test_homogeneous_attachment_kind_sets_message_type(
+        self,
+        kind,
+        mime_type,
+        expected_type,
+    ):
+        adapter = _make_adapter()
+        adapter._user_names[OTHER_PUBKEY] = "Other"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        cached = CachedMedia(
+            f"/cache/file-{kind}",
+            mime_type,
+            kind,
+            f"file-{kind}",
+        )
+        adapter._cache_inbound_attachments = AsyncMock(return_value=[cached])
+        dispatched = []
+
+        async def capture(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        event = _event(f"homogeneous-{kind}", content="@Chip inspect")
+        event["tags"].append([
+            "imeta",
+            f"url https://test.relay/media/{kind}",
+            f"m {mime_type}",
+            "x " + "a" * 64,
+            "size 1",
+            f"filename file-{kind}",
+        ])
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        assert dispatched[-1]["message_type"] is expected_type
 
 
 # ── Mention gating / DMs / authorization ──────────────────────────────────

@@ -465,8 +465,15 @@ def _get_configured_bws_token_env() -> str:
 
 
 def _is_credential_shaped_password(key: str) -> bool:
-    """True for ``*_PASSWORD`` env names (credential-shaped, not in the
+    """True for password-class env names (credential-shaped, not in the
     static blocklist which only names exact vars like ``EMAIL_PASSWORD``).
+
+    Matches the same class the execute_code sandbox scrubs by substring
+    (``code_execution_tool.py``): ``*_PASSWORD`` names plus the bare
+    ``PASSWORD``, ``PGPASSWORD`` and ``*_PWD`` variants (``MYSQL_PWD``) —
+    but never ``PWD`` itself, which is the shell's working-directory
+    variable.  The terminal path must be at least as protective as the
+    sandbox for the same secret class.
 
     Stripped by default on every spawn path — a ``DB_PASSWORD`` /
     ``POSTGRES_PASSWORD`` / ``REDIS_PASSWORD`` value has no business in a
@@ -475,7 +482,8 @@ def _is_credential_shaped_password(key: str) -> bool:
     needs the value still receives it via ``env_passthrough``); on the
     non-terminal surface it is stripped unconditionally.
     """
-    return key.upper().endswith("_PASSWORD")
+    upper = key.upper()
+    return "PASSWORD" in upper or (upper.endswith("_PWD") and upper != "PWD")
 
 
 def _inject_context_hermes_home(env: dict) -> None:

@@ -795,7 +795,7 @@ slashCmd.core.copy.clipboardFailed: "클립보드 복사에 실패했어요 — 
 slashCmd.core.copy.copied: "클립보드에 복사했어요"
 slashCmd.core.copy.copiedCharsOne: "{0}자 복사했어요"
 slashCmd.core.copy.copiedCharsOther: "{0}자 복사했어요"
-slashCmd.core.copy.failed: "복사 실패: {0}"
+slashCmd.core.copy.copiedTmuxBuffer: "tmux 버퍼에 복사했어요"
 slashCmd.core.copy.nothingToCopy: "복사할 내용이 없어요 — 먼저 대화를 시작하세요"
 slashCmd.core.copy.sentOsc52: "OSC52 복사 시퀀스를 보냈어요 (터미널 지원 필요)"
 slashCmd.core.copy.usage: "사용법: /copy [번호]"

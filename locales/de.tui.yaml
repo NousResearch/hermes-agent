@@ -795,7 +795,7 @@ slashCmd.core.copy.clipboardFailed: "Kopieren in die Zwischenablage fehlgeschlag
 slashCmd.core.copy.copied: "in die Zwischenablage kopiert"
 slashCmd.core.copy.copiedCharsOne: "{0} Zeichen kopiert"
 slashCmd.core.copy.copiedCharsOther: "{0} Zeichen kopiert"
-slashCmd.core.copy.failed: "Kopieren fehlgeschlagen: {0}"
+slashCmd.core.copy.copiedTmuxBuffer: "in den tmux-Puffer kopiert"
 slashCmd.core.copy.nothingToCopy: "nichts zu kopieren — starten Sie zuerst eine Konversation"
 slashCmd.core.copy.sentOsc52: "OSC52-Kopiersequenz gesendet (Terminal-Unterstützung erforderlich)"
 slashCmd.core.copy.usage: "Verwendung: /copy [Nummer]"

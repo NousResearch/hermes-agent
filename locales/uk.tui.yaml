@@ -795,7 +795,7 @@ slashCmd.core.copy.clipboardFailed: "не вдалося скопіювати в
 slashCmd.core.copy.copied: "скопійовано в буфер обміну"
 slashCmd.core.copy.copiedCharsOne: "скопійовано {0} символ"
 slashCmd.core.copy.copiedCharsOther: "скопійовано символів: {0}"
-slashCmd.core.copy.failed: "не вдалося скопіювати: {0}"
+slashCmd.core.copy.copiedTmuxBuffer: "скопійовано в буфер tmux"
 slashCmd.core.copy.nothingToCopy: "нема що копіювати — спочатку почніть розмову"
 slashCmd.core.copy.sentOsc52: "надіслано послідовність копіювання OSC52 (потрібна підтримка терміналом)"
 slashCmd.core.copy.usage: "використання: /copy [номер]"

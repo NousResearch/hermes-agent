@@ -795,7 +795,7 @@ slashCmd.core.copy.clipboardFailed: "falló la copia al portapapeles — prueba 
 slashCmd.core.copy.copied: "copiado al portapapeles"
 slashCmd.core.copy.copiedCharsOne: "{0} carácter copiado"
 slashCmd.core.copy.copiedCharsOther: "{0} caracteres copiados"
-slashCmd.core.copy.failed: "falló la copia: {0}"
+slashCmd.core.copy.copiedTmuxBuffer: "copiado al búfer de tmux"
 slashCmd.core.copy.nothingToCopy: "nada que copiar — inicia una conversación primero"
 slashCmd.core.copy.sentOsc52: "secuencia de copia OSC52 enviada (requiere soporte de la terminal)"
 slashCmd.core.copy.usage: "uso: /copy [número]"

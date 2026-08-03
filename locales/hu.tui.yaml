@@ -795,7 +795,7 @@ slashCmd.core.copy.clipboardFailed: "a vágólapra másolás nem sikerült — a
 slashCmd.core.copy.copied: "vágólapra másolva"
 slashCmd.core.copy.copiedCharsOne: "{0} karakter másolva"
 slashCmd.core.copy.copiedCharsOther: "{0} karakter másolva"
-slashCmd.core.copy.failed: "a másolás nem sikerült: {0}"
+slashCmd.core.copy.copiedTmuxBuffer: "tmux-pufferbe másolva"
 slashCmd.core.copy.nothingToCopy: "nincs mit másolni — először kezdj egy beszélgetést"
 slashCmd.core.copy.sentOsc52: "OSC52 másolási szekvencia elküldve (terminál-támogatás szükséges)"
 slashCmd.core.copy.usage: "használat: /copy [szám]"

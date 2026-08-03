@@ -78,7 +78,7 @@ export const slashCmdCoreEn = {
       nothingToCopy: 'nothing to copy — start a conversation first',
       sentOsc52: 'sent OSC52 copy sequence (terminal support required)',
       copied: 'copied to clipboard',
-      failed: (error: string) => `copy failed: ${error}`
+      copiedTmuxBuffer: 'copied to tmux buffer'
     },
     paste: {
       usage: 'usage: /paste'

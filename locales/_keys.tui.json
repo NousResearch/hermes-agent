@@ -775,7 +775,7 @@
   "slashCmd.core.copy.copied",
   "slashCmd.core.copy.copiedCharsOne",
   "slashCmd.core.copy.copiedCharsOther",
-  "slashCmd.core.copy.failed",
+  "slashCmd.core.copy.copiedTmuxBuffer",
   "slashCmd.core.copy.nothingToCopy",
   "slashCmd.core.copy.sentOsc52",
   "slashCmd.core.copy.usage",

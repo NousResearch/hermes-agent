@@ -795,7 +795,7 @@ slashCmd.core.copy.clipboardFailed: "クリップボードへのコピーに失�
 slashCmd.core.copy.copied: "クリップボードにコピーしました"
 slashCmd.core.copy.copiedCharsOne: "{0} 文字をコピーしました"
 slashCmd.core.copy.copiedCharsOther: "{0} 文字をコピーしました"
-slashCmd.core.copy.failed: "コピーに失敗しました: {0}"
+slashCmd.core.copy.copiedTmuxBuffer: "tmux のバッファにコピーしました"
 slashCmd.core.copy.nothingToCopy: "コピーするものがありません — まず会話を始めてください"
 slashCmd.core.copy.sentOsc52: "OSC52 コピーシーケンスを送信しました (ターミナル側の対応が必要)"
 slashCmd.core.copy.usage: "使い方: /copy [番号]"

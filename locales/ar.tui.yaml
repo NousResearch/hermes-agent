@@ -795,7 +795,7 @@ slashCmd.core.copy.clipboardFailed: "فشل النسخ إلى الحافظة —
 slashCmd.core.copy.copied: "تم النسخ إلى الحافظة"
 slashCmd.core.copy.copiedCharsOne: "تم نسخ {0} حرف"
 slashCmd.core.copy.copiedCharsOther: "تم نسخ {0} من الأحرف"
-slashCmd.core.copy.failed: "فشل النسخ: {0}"
+slashCmd.core.copy.copiedTmuxBuffer: "تم النسخ إلى مخزن tmux المؤقت"
 slashCmd.core.copy.nothingToCopy: "لا شيء للنسخ — ابدأ محادثة أولًا"
 slashCmd.core.copy.sentOsc52: "أُرسل تسلسل النسخ OSC52 (يتطلب دعم الطرفية)"
 slashCmd.core.copy.usage: "الاستخدام: /copy [رقم]"

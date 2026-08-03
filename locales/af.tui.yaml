@@ -795,7 +795,7 @@ slashCmd.core.copy.clipboardFailed: "kopieer na knipbord het misluk — probeer 
 slashCmd.core.copy.copied: "na knipbord gekopieer"
 slashCmd.core.copy.copiedCharsOne: "{0} karakter gekopieer"
 slashCmd.core.copy.copiedCharsOther: "{0} karakters gekopieer"
-slashCmd.core.copy.failed: "kopieer het misluk: {0}"
+slashCmd.core.copy.copiedTmuxBuffer: "na tmux-buffer gekopieer"
 slashCmd.core.copy.nothingToCopy: "niks om te kopieer nie — begin eers 'n gesprek"
 slashCmd.core.copy.sentOsc52: "OSC52-kopieerreeks gestuur (terminaalondersteuning vereis)"
 slashCmd.core.copy.usage: "gebruik: /copy [nommer]"

@@ -795,7 +795,7 @@ slashCmd.core.copy.clipboardFailed: "复制到剪贴板失败 — 可尝试设�
 slashCmd.core.copy.copied: "已复制到剪贴板"
 slashCmd.core.copy.copiedCharsOne: "已复制 {0} 个字符"
 slashCmd.core.copy.copiedCharsOther: "已复制 {0} 个字符"
-slashCmd.core.copy.failed: "复制失败：{0}"
+slashCmd.core.copy.copiedTmuxBuffer: "已复制到 tmux 缓冲区"
 slashCmd.core.copy.nothingToCopy: "没有可复制的内容 — 请先开始对话"
 slashCmd.core.copy.sentOsc52: "已发送 OSC52 复制序列（需要终端支持）"
 slashCmd.core.copy.usage: "用法：/copy [number]"

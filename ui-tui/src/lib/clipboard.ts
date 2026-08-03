@@ -1,6 +1,10 @@
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 
+import { type ClipboardResult, setTerminalClipboard } from '@hermes/ink'
+
+import { isRemoteShell } from './platform.js'
+
 const execFileAsync = promisify(execFile)
 const CLIPBOARD_MAX_BUFFER = 4 * 1024 * 1024
 
@@ -199,4 +203,50 @@ export async function writeClipboardText(
   }
 
   return false
+}
+
+interface CopyTextDependencies {
+  env?: NodeJS.ProcessEnv
+  writeNative?: (text: string) => Promise<boolean>
+  writeSequence?: (sequence: string) => unknown
+  writeTerminal?: (text: string) => Promise<ClipboardResult>
+}
+
+type CopyTextResult = Pick<ClipboardResult, 'path' | 'success'>
+
+/**
+ * Copy text through the TUI's single clipboard policy. Local sessions prefer
+ * the confirmed native writer; remote sessions and native failures reuse
+ * Ink's tmux/OSC 52 terminal transports.
+ */
+export async function copyTextToClipboard(
+  text: string,
+  dependencies: CopyTextDependencies = {}
+): Promise<CopyTextResult> {
+  const env = dependencies.env ?? process.env
+  const writeNative = dependencies.writeNative ?? (value => writeClipboardText(value, process.platform, spawn, env))
+  const writeSequence = dependencies.writeSequence ?? (sequence => process.stdout.write(sequence))
+  const writeTerminal = dependencies.writeTerminal ?? setTerminalClipboard
+
+  if (!isRemoteShell(env)) {
+    try {
+      if (await writeNative(text)) {
+        return { path: 'native', success: true }
+      }
+    } catch {
+      // Fall through to terminal-owned transports.
+    }
+  }
+
+  try {
+    const result = await writeTerminal(text)
+
+    if (result.sequence) {
+      writeSequence(result.sequence)
+    }
+
+    return { path: result.path, success: result.success }
+  } catch {
+    return { path: null, success: false }
+  }
 }

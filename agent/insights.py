@@ -99,6 +99,29 @@ class InsightsEngine:
         """
         self.db = db
         self._conn = db._conn
+        # INDEXED BY is a hard dependency (SQLite errors on a missing index).
+        # A read-only open of a state.db written by an older version skips
+        # schema init and lacks the partial index — probe once and fall back
+        # to the unpinned variants (identical rows, optimizer-chosen plan).
+        try:
+            self._has_assistant_calls_index = bool(
+                self._conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+                    (self._MESSAGES_ASSISTANT_CALLS_INDEX,),
+                ).fetchone()
+            )
+        except sqlite3.Error:
+            self._has_assistant_calls_index = False
+        if not self._has_assistant_calls_index:
+            _strip = f" INDEXED BY {self._MESSAGES_ASSISTANT_CALLS_INDEX}"
+            self._GET_TOOL_CALLS_WITH_SOURCE = (
+                self._GET_TOOL_CALLS_WITH_SOURCE.replace(_strip, "")
+            )
+            self._GET_TOOL_CALLS_ALL = self._GET_TOOL_CALLS_ALL.replace(_strip, "")
+            self._GET_SKILL_CALLS_WITH_SOURCE = (
+                self._GET_SKILL_CALLS_WITH_SOURCE.replace(_strip, "")
+            )
+            self._GET_SKILL_CALLS_ALL = self._GET_SKILL_CALLS_ALL.replace(_strip, "")
 
     def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
         """
@@ -200,11 +223,14 @@ class InsightsEngine:
     # is deterministic on a freshly initialized state.db (before ANALYZE has
     # run) for BOTH the unfiltered and source-filtered branches — without the
     # hint the optimizer falls back to ``idx_messages_session_active`` for the
-    # source-filtered probe and scans each session's non-tool-call rows.  Safe
-    # because the index is declared in ``SCHEMA_SQL`` (created by every
-    # read-write ``SessionDB._init_schema``); every ``InsightsEngine`` caller
-    # opens a read-write ``SessionDB`` — read-only attachments (which skip
-    # schema init) are never used for insights.
+    # source-filtered probe and scans each session's non-tool-call rows.
+    #
+    # The pin is a HARD dependency: SQLite raises ``no such index`` when the
+    # named index is absent. That happens in practice — the web dashboard's
+    # usage analytics open the DB ``read_only=True`` (skipping
+    # ``_init_schema``), so a state.db created by an older writer has no
+    # partial index yet. ``__init__`` probes for the index once and falls
+    # back to the unpinned (still-correct, just optimizer-chosen) variants.
     _MESSAGES_ASSISTANT_CALLS_INDEX = "idx_messages_assistant_calls_by_session"
     _GET_TOOL_CALLS_WITH_SOURCE = (
         "SELECT m.tool_calls"

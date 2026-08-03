@@ -452,16 +452,26 @@ class TestInsightsPopulated:
         assert any(t["tool_name"] == "search_files" for t in tools_cli)
         assert isinstance(skills, list) and isinstance(skills_cli, list)
 
-    def test_indexed_by_requires_the_index_to_exist(self, populated_db):
-        """INDEXED BY is a hard dependency: if the index were ever missing the
-        query fails loudly rather than silently degrading. This documents why
-        every InsightsEngine caller must open a read-write SessionDB."""
+    def test_missing_index_falls_back_to_unpinned_queries(self, populated_db):
+        """INDEXED BY would be a hard error if the index is missing — which
+        happens on read-only opens of a state.db written by an older version
+        (web dashboard analytics). The engine must probe and fall back to the
+        unpinned variants instead of crashing, returning identical rows."""
+        engine_pinned = InsightsEngine(populated_db)
+        tools_before = engine_pinned._get_tool_usage(0.0)
+
         populated_db._conn.execute(f"DROP INDEX IF EXISTS {self._INDEX}")
         populated_db._conn.commit()
-        with pytest.raises(sqlite3.OperationalError, match="no such index"):
-            populated_db._conn.execute(
-                InsightsEngine._GET_TOOL_CALLS_ALL, (0.0,)
-            ).fetchall()
+
+        engine = InsightsEngine(populated_db)
+        assert engine._has_assistant_calls_index is False
+        assert "INDEXED BY" not in engine._GET_TOOL_CALLS_ALL
+        tools_after = engine._get_tool_usage(0.0)
+        assert sorted(t["tool_name"] for t in tools_after) == sorted(
+            t["tool_name"] for t in tools_before
+        )
+        # And with the index present, the pin stays.
+        assert "INDEXED BY" in InsightsEngine._GET_TOOL_CALLS_ALL
 
 
 # =========================================================================

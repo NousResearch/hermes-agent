@@ -9694,14 +9694,36 @@ def _run_prompt_submit(
                             # marker inserted mid-turn (#76870).  If so the
                             # agent output is still valid — merge it into the
                             # current history that now contains the marker.
+                            #
+                            # _append_model_switch_marker strips prior markers
+                            # in-place then appends a new one, so the delta
+                            # is NOT a simple tail-slice — we must compare
+                            # content, not indices.
                             current_history = list(session["history"])
-                            added = current_history[len(history):]
+                            history_no_markers = [
+                                e for e in history if not _is_model_switch_marker(e)
+                            ]
+                            current_no_markers = [
+                                e for e in current_history if not _is_model_switch_marker(e)
+                            ]
                             model_switch_only = (
-                                len(added) >= 1
-                                and all(_is_model_switch_marker(e) for e in added)
+                                current_no_markers == history_no_markers
+                                and any(
+                                    _is_model_switch_marker(e)
+                                    for e in current_history
+                                )
                             )
                             if model_switch_only:
-                                new_messages = result["messages"][len(history):]
+                                # The agent's new messages start after the
+                                # turn-start history.  Guard against
+                                # auto-compression making result["messages"]
+                                # shorter than history (#77274 review).
+                                if len(result["messages"]) > len(history):
+                                    new_messages = result["messages"][len(history):]
+                                else:
+                                    # Compression rebound the messages list —
+                                    # use the full result as the base.
+                                    new_messages = list(result["messages"])
                                 session["history"] = current_history + new_messages
                                 session["history_version"] = current_version + 1
                             else:

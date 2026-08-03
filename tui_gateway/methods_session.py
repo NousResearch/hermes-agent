@@ -2649,15 +2649,22 @@ def _(rid, params: dict) -> dict:
                     else None
                 ),
             )
-            for msg in history:
-                db.append_message(
-                    session_id=new_key,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    # Preserve the parent's original message timestamps —
-                    # branch copies are history, not new activity (9d73006ad).
-                    timestamp=msg.get("timestamp"),
-                )
+            # Copy the whole parent history in ONE transaction — a branch
+            # seed can be hundreds of rows, and per-row transactions were
+            # the write-amplification pattern removed in #23254.
+            db.append_messages_batch(
+                new_key,
+                [
+                    {
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content"),
+                        # Preserve the parent's original message timestamps —
+                        # branch copies are history, not new activity (9d73006ad).
+                        "timestamp": msg.get("timestamp"),
+                    }
+                    for msg in history
+                ],
+            )
             db.set_session_title(new_key, title)
         except Exception as e:
             if lease is not None:

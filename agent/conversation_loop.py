@@ -6383,9 +6383,12 @@ def run_conversation(
                         _clear_warn()
                     agent._safe_print("  ⟳ compacting context…")
                     _post_tool_input = messages
+                    # Route the overhead-aware _real_tokens (computed above) into compression, not
+                    # the bare last_prompt_tokens — which is 0 in the no-usage fallback, hiding the
+                    # true request size from the engine's overflow guard (upstream PR #77169 review).
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
-                        approx_tokens=agent.context_compressor.last_prompt_tokens,
+                        approx_tokens=_real_tokens,
                         task_id=effective_task_id,
                     )
                     if (

@@ -9689,24 +9689,37 @@ def _run_prompt_submit(
                             session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
                         else:
-                            # History mutated externally during the turn
-                            # (undo/compress/retry/rollback now guard on
-                            # session.running, but this is the defensive
-                            # backstop for any path that slips past).
-                            # Surface the desync rather than silently
-                            # dropping the agent's output — the UI can
-                            # show the response and warn that it was
-                            # not persisted.
-                            print(
-                                f"[tui_gateway] prompt.submit: history_version mismatch "
-                                f"(expected={history_version} current={current_version}) — "
-                                f"agent output NOT written to session history",
-                                file=sys.stderr,
+                            # History mutated externally during the turn.
+                            # Check if the only mutation was a model-switch
+                            # marker inserted mid-turn (#76870).  If so the
+                            # agent output is still valid — merge it into the
+                            # current history that now contains the marker.
+                            current_history = list(session["history"])
+                            added = current_history[len(history):]
+                            model_switch_only = (
+                                len(added) >= 1
+                                and all(_is_model_switch_marker(e) for e in added)
                             )
-                            status_note = (
-                                "History changed during this turn — the response above is visible "
-                                "but was not saved to session history."
-                            )
+                            if model_switch_only:
+                                new_messages = result["messages"][len(history):]
+                                session["history"] = current_history + new_messages
+                                session["history_version"] = current_version + 1
+                            else:
+                                # Genuine desync (undo/compress/retry/rollback).
+                                # Surface the desync rather than silently
+                                # dropping the agent's output — the UI can
+                                # show the response and warn that it was
+                                # not persisted.
+                                print(
+                                    f"[tui_gateway] prompt.submit: history_version mismatch "
+                                    f"(expected={history_version} current={current_version}) — "
+                                    f"agent output NOT written to session history",
+                                    file=sys.stderr,
+                                )
+                                status_note = (
+                                    "History changed during this turn — the response above is visible "
+                                    "but was not saved to session history."
+                                )
 
                 # If auto-compression fired inside run_conversation(), agent.session_id
                 # may have rotated. Sync session_key before downstream title/goal/finalize

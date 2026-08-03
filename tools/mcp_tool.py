@@ -4821,9 +4821,28 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         _server_connecting.discard(server_name)
         _clear_connect_failure(server_name)
         _lazy_server_configs.pop(server_name, None)
-        _lazy_server_fingerprints.pop(server_name, None)
-        _lazy_server_tool_names.pop(server_name, None)
+        stale_fingerprint = _lazy_server_fingerprints.pop(server_name, None)
+        cached_names = _lazy_server_tool_names.pop(server_name, None) or []
         server = _servers.get(server_name)
+        live_names = set(
+            getattr(server, "_registered_tool_names", []) or []
+        )
+    # Stale-cache reconciliation: the cached manifest may advertise tools
+    # the live server no longer serves. Deregister those phantoms so the
+    # model stops seeing tools that can never succeed.
+    phantom_names = [n for n in cached_names if n not in live_names]
+    if phantom_names:
+        from tools.registry import registry
+
+        for tool_name in phantom_names:
+            registry.deregister(tool_name)
+            _forget_mcp_tool_server(tool_name)
+        logger.info(
+            "MCP server '%s': deregistered %d phantom cached tool(s) not "
+            "served live (stale schema-cache fingerprint %s): %s",
+            server_name, len(phantom_names), stale_fingerprint,
+            ", ".join(phantom_names),
+        )
     return server is not None and server.session is not None
 
 
@@ -6061,6 +6080,9 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             raw.get("description") or "",
             raw_schema if isinstance(raw_schema, dict) else {},
         )
+        # Defense-in-depth: the cache file is user-writable JSON, so run the
+        # same injection scan the eager discovery path applies.
+        _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
         schema = _convert_mcp_schema(name, mcp_tool)
         registry_name = schema["name"]
         existing_toolset = registry.get_toolset_for_tool(registry_name)

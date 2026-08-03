@@ -24,7 +24,7 @@ _cache_lock = threading.Lock()
 def _cache_path() -> Path:
     from hermes_constants import get_hermes_home
 
-    return get_hermes_home() / _CACHE_FILENAME
+    return get_hermes_home() / "cache" / _CACHE_FILENAME
 
 
 def config_fingerprint(config: dict) -> str:
@@ -55,11 +55,12 @@ def _load_all() -> Dict[str, Any]:
 
 
 def _save_all(data: Dict[str, Any]) -> None:
-    path = _cache_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    from utils import atomic_json_write
+
+    # Cache dir + 0o600: sibling precedent in tools/registry.py
+    # _save_discovery_cache; the cache file is trusted input on the lazy
+    # registration path, so keep it user-only.
+    atomic_json_write(_cache_path(), data, mode=0o600)
 
 
 def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
@@ -85,13 +86,19 @@ def write_cache_entry(
     utility_tools: Optional[List[dict]] = None,
 ) -> None:
     """Persist tool schemas after a successful live connect."""
+    entry = {
+        "fingerprint": fingerprint,
+        "tools": tools,
+        "utility_tools": utility_tools or [],
+    }
     with _cache_lock:
         data = _load_all()
-        data[server_name] = {
-            "fingerprint": fingerprint,
-            "tools": tools,
-            "utility_tools": utility_tools or [],
-        }
+        # Write-through fires on every registration (reconnects,
+        # list_changed refreshes); skip the load-all+rewrite churn when the
+        # entry is byte-identical to what is already on disk.
+        if data.get(server_name) == entry:
+            return
+        data[server_name] = entry
         _save_all(data)
 
 

@@ -143,6 +143,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Speech-to-text providers ──────────────────────────────────────────
     "stt.mistral": ("mistralai==2.4.8",),
+    "stt.gladia": ("gladiaio-sdk==1.0.5",),
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
         "sounddevice==0.5.5",

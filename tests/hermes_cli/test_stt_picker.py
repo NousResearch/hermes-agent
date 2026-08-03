@@ -55,11 +55,11 @@ class TestSttCategory:
 
 
 class TestConfigWrites:
-    def test_write_provider_config_sets_stt_provider(self):
+    def test_write_provider_config_sets_gladia(self):
         config = {}
-        prov = _stt_provider_named("Groq")
+        prov = _stt_provider_named("Gladia")
         _write_provider_config(prov, config, managed_feature=None)
-        assert config["stt"]["provider"] == "groq"
+        assert config["stt"]["provider"] == "gladia"
         assert config["stt"]["use_gateway"] is False
 
 

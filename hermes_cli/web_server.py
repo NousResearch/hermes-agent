@@ -910,6 +910,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "ElevenLabs Scribe model",
         "options": ["scribe_v2", "scribe_v1"],
     },
+    "stt.gladia.model": {
+        "type": "select",
+        "description": "Gladia pre-recorded STT model",
+        "options": ["solaria-1", "solaria-3"],
+    },
     "display.skin": {
         "type": "select",
         "description": "CLI visual theme",

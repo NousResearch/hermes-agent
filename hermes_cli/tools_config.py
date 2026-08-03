@@ -467,6 +467,15 @@ TOOL_CATEGORIES = {
                 ],
                 "stt_provider": "elevenlabs",
             },
+            {
+                "name": "Gladia",
+                "badge": "paid",
+                "tag": "solaria — pre-recorded STT via gladiaio-sdk",
+                "env_vars": [
+                    {"key": "GLADIA_API_KEY", "prompt": "Gladia API key", "url": "https://app.gladia.io/"},
+                ],
+                "stt_provider": "gladia",
+            },
             # Mistral Voxtral STT intentionally omitted — mistralai PyPI
             # package quarantined (malicious 2.4.6 release, 2026-05-12).
             # Restore alongside the dashboard stt.provider option.

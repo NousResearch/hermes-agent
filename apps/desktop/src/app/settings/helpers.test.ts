@@ -195,7 +195,7 @@ describe('settings helpers', () => {
 
     it('renders a dropdown for the STT provider including xAI (Grok)', () => {
       const opts = enumOptionsFor('stt.provider', 'local', config)
-      expect(opts).toEqual(['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'])
+      expect(opts).toEqual(['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'gladia'])
     })
 
     it('renders dropdowns for per-backend model/device sub-fields', () => {

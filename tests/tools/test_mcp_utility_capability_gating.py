@@ -30,6 +30,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
+
 def _make_init_result(*, resources: bool, prompts: bool):
     """Build a fake ``InitializeResult`` whose ``capabilities`` sub-object
     matches a server that advertises exactly the given capability set.
@@ -93,6 +94,14 @@ class TestCapabilityGatedRegistration:
         selected = _select_utility_schemas("res-only", server, {})
         assert _handler_keys(selected) == {"list_resources", "read_resource"}
 
+    def test_prompts_only_server_gets_prompt_stubs_only(self):
+        from tools.mcp_tool import _select_utility_schemas
+
+        server = _make_fake_server(
+            initialize_result=_make_init_result(resources=False, prompts=True)
+        )
+        selected = _select_utility_schemas("prompt-only", server, {})
+        assert _handler_keys(selected) == {"list_prompts", "get_prompt"}
 
     def test_fully_capable_server_gets_all_four_stubs(self):
         from tools.mcp_tool import _select_utility_schemas

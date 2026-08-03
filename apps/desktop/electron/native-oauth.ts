@@ -194,31 +194,6 @@ export function parseTokenResponse(body: any): NativeTokenSet {
 }
 
 /**
- * Validate a token set loaded from the encrypted local store.
- *
- * The stored representation is already normalized as NativeTokenSet and
- * therefore uses camelCase. Gateway token responses use snake_case and
- * remain handled separately by parseTokenResponse().
- */
-export function parseStoredTokenSet(body: any): NativeTokenSet {
-  const accessToken = String(body?.accessToken || '')
-
-  if (!accessToken) {
-    throw new Error('Stored token set missing accessToken')
-  }
-
-  const expiresAt = Number(body?.expiresAt)
-
-  return {
-    accessToken,
-    refreshToken: String(body?.refreshToken || ''),
-    expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
-    provider: String(body?.provider || ''),
-    userId: String(body?.userId || '')
-  }
-}
-
-/**
  * True when a stored token set is at/near expiry and should be refreshed
  * before use. `skewSeconds` refreshes slightly early to avoid a race where
  * the token expires in flight (mirrors the server's 60s cookie floor).

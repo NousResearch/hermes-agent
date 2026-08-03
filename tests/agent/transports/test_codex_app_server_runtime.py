@@ -62,7 +62,21 @@ class TestMaybeApplyCodexAppServerRuntime:
         )
         assert got == "codex_app_server"
 
+    def test_opt_in_rewrites_openai_codex(self) -> None:
+        got = _maybe_apply_codex_app_server_runtime(
+            provider="openai-codex",
+            api_mode="codex_responses",
+            model_cfg={"openai_runtime": "codex_app_server"},
+        )
+        assert got == "codex_app_server"
 
+    def test_case_insensitive(self) -> None:
+        got = _maybe_apply_codex_app_server_runtime(
+            provider="openai",
+            api_mode="chat_completions",
+            model_cfg={"openai_runtime": "Codex_App_Server"},
+        )
+        assert got == "codex_app_server"
 
     @pytest.mark.parametrize(
         "provider",
@@ -92,8 +106,26 @@ class TestMaybeApplyCodexAppServerRuntime:
 class TestCodexAppServerModule:
     """Module-surface tests for the JSON-RPC speaker. Don't require codex CLI."""
 
+    def test_module_imports(self) -> None:
+        from agent.transports import codex_app_server
 
+        assert codex_app_server.MIN_CODEX_VERSION >= (0, 1, 0)
+        assert callable(codex_app_server.parse_codex_version)
+        assert callable(codex_app_server.check_codex_binary)
 
+    def test_parse_codex_version_valid(self) -> None:
+        from agent.transports.codex_app_server import parse_codex_version
+
+        assert parse_codex_version("codex-cli 0.130.0") == (0, 130, 0)
+        assert parse_codex_version("codex-cli 1.2.3 (extra metadata)") == (1, 2, 3)
+        assert parse_codex_version("codex 99.0.1\n") == (99, 0, 1)
+
+    def test_parse_codex_version_invalid(self) -> None:
+        from agent.transports.codex_app_server import parse_codex_version
+
+        assert parse_codex_version("nope") is None
+        assert parse_codex_version("") is None
+        assert parse_codex_version(None) is None  # type: ignore[arg-type]
 
     def test_check_binary_handles_missing_executable(self) -> None:
         from agent.transports.codex_app_server import check_codex_binary
@@ -340,3 +372,9 @@ class TestSpawnEnvSecretStripping:
         env = self._capture_spawn_env(monkeypatch)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"
 
+    def test_home_still_preserved_through_helper(self, monkeypatch):
+        """Regression guard: routing through hermes_subprocess_env must not
+        rewrite HOME (codex's shell tool spawns gh/git/aws that need it)."""
+        monkeypatch.setenv("HOME", "/users/alice")
+        env = self._capture_spawn_env(monkeypatch)
+        assert env.get("HOME") == "/users/alice"

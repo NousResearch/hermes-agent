@@ -1,14 +1,14 @@
 ---
-title: "Meme Generation — Create meme PNGs from templates with Pillow text overlay"
+title: "Meme Generation — Generate real meme images by picking a template and overlaying text with Pillow"
 sidebar_label: "Meme Generation"
-description: "Create meme PNGs from templates with Pillow text overlay"
+description: "Generate real meme images by picking a template and overlaying text with Pillow"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Meme Generation
 
-Create meme PNGs from templates with Pillow text overlay.
+Generate real meme images by picking a template and overlaying text with Pillow. Produces actual .png meme files.
 
 ## Skill metadata
 
@@ -21,7 +21,7 @@ Create meme PNGs from templates with Pillow text overlay.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `creative`, `memes`, `humor`, `images` |
-| Related skills | [`ascii-art`](/docs/user-guide/skills/bundled/creative/creative-ascii-art) |
+| Related skills | [`ascii-art`](/docs/user-guide/skills/bundled/creative/creative-ascii-art), `generative-widgets` |
 
 ## Reference: full SKILL.md
 

@@ -1,7 +1,7 @@
 ---
-title: "Docx — Create, read, edit Word .docx documents and templates"
+title: "Docx — Create, read, edit Word"
 sidebar_label: "Docx"
-description: "Create, read, edit Word .docx documents and templates"
+description: "Create, read, edit Word"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}

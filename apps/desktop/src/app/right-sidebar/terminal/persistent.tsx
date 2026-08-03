@@ -2,8 +2,6 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
-
 import { $terminalTakeover } from '../store'
 
 import { ensureTerminal } from './terminals'
@@ -85,23 +83,8 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
 
     let prev: Rect | null = null
     let frame = 0
-    let stopped = false
-    let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
 
-    const rendererPaused = () => pauseController?.isPaused() ?? document.visibilityState === 'hidden'
-
-    const cancelFrame = () => {
-      if (frame !== 0) {
-        window.cancelAnimationFrame(frame)
-        frame = 0
-      }
-    }
-
-    const measure = (): boolean => {
-      if (rendererPaused()) {
-        return false
-      }
-
+    const tick = () => {
       const r = slot.getBoundingClientRect()
       // floor top/left + ceil right/bottom: overlay always covers the slot's
       // full pixel footprint, so half-pixel rects can't leak page bg through.
@@ -116,80 +99,14 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
         if (next.width > 0 && next.height > 0) {
           setReady(true)
         }
-
-        return true
       }
 
-      return false
+      frame = requestAnimationFrame(tick)
     }
 
-    const scheduleMeasure = () => {
-      if (stopped || rendererPaused() || frame !== 0) {
-        return
-      }
+    tick()
 
-      frame = window.requestAnimationFrame(() => {
-        frame = 0
-
-        if (measure()) {
-          scheduleMeasure()
-        }
-      })
-    }
-
-    const handleVisibilityChange = () => {
-      if (rendererPaused()) {
-        cancelFrame()
-
-        return
-      }
-
-      scheduleMeasure()
-    }
-
-    const observer =
-      typeof ResizeObserver === 'undefined'
-        ? null
-        : new ResizeObserver(() => {
-            scheduleMeasure()
-          })
-
-    const positionObserver =
-      typeof MutationObserver === 'undefined'
-        ? null
-        : new MutationObserver(() => {
-            scheduleMeasure()
-          })
-
-    pauseController = createRendererLoopPauseController(handleVisibilityChange)
-
-    if (measure()) {
-      scheduleMeasure()
-    }
-
-    observer?.observe(slot)
-
-    for (let node: HTMLElement | null = slot; node; node = node.parentElement) {
-      positionObserver?.observe(node, {
-        attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'data-state'],
-        attributes: true,
-        childList: true,
-        subtree: true
-      })
-    }
-
-    window.addEventListener('resize', scheduleMeasure)
-    window.addEventListener('scroll', scheduleMeasure, true)
-
-    return () => {
-      stopped = true
-      cancelFrame()
-      observer?.disconnect()
-      positionObserver?.disconnect()
-      window.removeEventListener('resize', scheduleMeasure)
-      window.removeEventListener('scroll', scheduleMeasure, true)
-      pauseController?.dispose()
-    }
+    return () => cancelAnimationFrame(frame)
   }, [slot])
 
   const visible = Boolean(rect && rect.width > 0 && rect.height > 0)
@@ -207,7 +124,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     zIndex: 4,
     // Match the live skin surface so the header strip (transparent) and body
     // read as one cohesive pane instead of revealing a near-black slab behind.
-    backgroundColor: 'var(--ui-terminal-surface-background)',
+    backgroundColor: 'var(--ui-editor-surface-background)',
     contain: 'layout size paint'
   }
 

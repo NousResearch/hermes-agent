@@ -348,8 +348,6 @@ discord:
     limit: 100                    # Global scan cap per reconnect
     max_dispatches: 10            # Recovery dispatch cap per reconnect
   channel_prompts: {}             # Per-channel ephemeral system prompts
-  voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
-  voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -577,19 +575,6 @@ display:
   tool_progress_command: true
 ```
 
-#### `display.reasoning_style`
-
-**Type:** string — **Default (Discord):** `"subtext"` — **Values:** `code`, `blockquote`, `subtext`
-
-Controls how the model's reasoning block is rendered when reasoning display is enabled. Discord defaults to `subtext`, which uses Discord's native `-# ` small grey metadata text so reasoning stays visually secondary to the answer. `blockquote` renders it as a `>` quote, and `code` (the default on other platforms) uses a fenced code block. Long reasoning is collapsed to the first 15 lines.
-
-```yaml
-display:
-  platforms:
-    discord:
-      reasoning_style: subtext   # code | blockquote | subtext
-```
-
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the Discord platform's `extra` block:
@@ -774,8 +759,6 @@ discord:
 ```
 
 Notes:
-- Set `voice_channel_inactivity_timeout_seconds: 0` if you want the bot to remain in the voice channel until an explicit `/voice leave` or manual disconnect. The default preserves the historical 300-second idle auto-leave.
-- `voice_playback_timeout_seconds` is a floor, not a hard cap for long TTS. Hermes probes the generated audio duration and waits for `duration + 30s` when that is longer than the configured floor.
 - The acknowledgement fires at most once per turn, only when the bot is in a voice channel and the mixer is active. It uses your configured TTS provider.
 - `ambient_path` accepts any file `ffmpeg` can decode; it's looped seamlessly. Leave it empty to use the built-in synthesised pad (no asset needed).
 - All settings live in `config.yaml` (not `.env`) — they're behavioral, not secrets.

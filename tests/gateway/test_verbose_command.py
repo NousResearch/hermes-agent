@@ -103,4 +103,105 @@ class TestVerboseCommand:
         assert "not enabled" in result.lower()
         assert "tool_progress_command" in result
 
+    @pytest.mark.asyncio
+    async def test_cycles_through_all_modes(self, tmp_path, monkeypatch):
+        """Calling /verbose repeatedly cycles through all tool-progress visibility modes."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "display:\n  tool_progress_command: true\n  tool_progress: 'off'\n",
+            encoding="utf-8",
+        )
 
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        runner = _make_runner()
+
+        # off -> new -> all -> verbose -> log -> off
+        expected = ["new", "all", "verbose", "log", "off"]
+        for mode in expected:
+            result = await runner._handle_verbose_command(_make_event())
+            saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            actual = saved["display"]["platforms"]["telegram"]["tool_progress"]
+            assert actual == mode, \
+                f"Expected {mode}, got {actual}"
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_platform_default_when_no_tool_progress_set(self, tmp_path, monkeypatch):
+        """When tool_progress is not in config, starts from platform default then cycles.
+
+        Telegram's tier-1 preset overrides ``tool_progress`` to ``"off"`` so the
+        platform stays final-answer-first by default on mobile inboxes.  The
+        first ``/verbose`` invocation therefore cycles ``off → new``.
+        """
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "display:\n  tool_progress_command: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        result = await runner._handle_verbose_command(_make_event())
+
+        # Telegram platform default is "off" → cycles to "new"
+        assert "NEW" in result
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["display"]["platforms"]["telegram"]["tool_progress"] == "new"
+
+    @pytest.mark.asyncio
+    async def test_per_platform_isolation(self, tmp_path, monkeypatch):
+        """Cycling /verbose on Telegram doesn't change Slack's setting.
+
+        Without a global tool_progress, each platform uses its built-in
+        default — Telegram = 'off' (tier-1 inbox override), Slack = 'off'
+        (quiet Slack default). Both cycle to 'new' on first /verbose.
+        """
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        # No global tool_progress → built-in platform defaults apply
+        config_path.write_text(
+            "display:\n  tool_progress_command: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        runner = _make_runner()
+
+        # Cycle on Telegram
+        await runner._handle_verbose_command(
+            _make_event(platform=Platform.TELEGRAM)
+        )
+        # Cycle on Slack
+        await runner._handle_verbose_command(
+            _make_event(platform=Platform.SLACK)
+        )
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        platforms = saved["display"]["platforms"]
+        # Telegram: off -> new (platform default = off, tier-1 inbox override)
+        assert platforms["telegram"]["tool_progress"] == "new"
+        # Slack: off -> new (first /verbose cycle from quiet default)
+        assert platforms["slack"]["tool_progress"] == "new"
+
+    @pytest.mark.asyncio
+    async def test_no_config_file_returns_disabled(self, tmp_path, monkeypatch):
+        """When config.yaml doesn't exist, command reports disabled."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        # No config.yaml
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        result = await runner._handle_verbose_command(_make_event())
+        assert "not enabled" in result.lower()
+
+    def test_verbose_is_in_gateway_known_commands(self):
+        """The /verbose command is recognized by the gateway dispatch."""
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        assert "verbose" in GATEWAY_KNOWN_COMMANDS

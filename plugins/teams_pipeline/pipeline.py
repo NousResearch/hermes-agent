@@ -15,8 +15,6 @@ from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 
-from agent.secret_scope import get_secret
-
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_home
 from plugins.teams_pipeline.meetings import (
@@ -111,7 +109,7 @@ class NotionWriter:
     API_VERSION = "2025-09-03"
 
     def __init__(self, *, api_key: str | None = None, transport: httpx.AsyncBaseTransport | None = None) -> None:
-        self.api_key = (api_key or get_secret("NOTION_API_KEY", "") or "").strip()
+        self.api_key = (api_key or os.getenv("NOTION_API_KEY", "")).strip()
         self._transport = transport
 
     async def write_summary(
@@ -207,7 +205,7 @@ class LinearWriter:
     API_URL = "https://api.linear.app/graphql"
 
     def __init__(self, *, api_key: str | None = None, transport: httpx.AsyncBaseTransport | None = None) -> None:
-        self.api_key = (api_key or get_secret("LINEAR_API_KEY", "") or "").strip()
+        self.api_key = (api_key or os.getenv("LINEAR_API_KEY", "")).strip()
         self._transport = transport
 
     async def write_summary(

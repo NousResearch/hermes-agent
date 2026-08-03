@@ -75,6 +75,17 @@ async def test_group_message_dropped_without_mention(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_group_message_passes_and_strips_wake_word(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch, extra={"require_mention": True})
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_group_payload("Hermes what's the weather"))
+    assert len(captured) == 1
+    # Leading wake word stripped before dispatch.
+    assert captured[0].text == "what's the weather"
+
+
+@pytest.mark.asyncio
 async def test_dm_never_gated(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch, extra={"require_mention": True})
     captured = _capture(adapter, monkeypatch)
@@ -82,6 +93,16 @@ async def test_dm_never_gated(monkeypatch: pytest.MonkeyPatch) -> None:
     await adapter._dispatch_inbound(_dm_payload("no wake word here"))
     assert len(captured) == 1
     assert captured[0].text == "no wake word here"
+
+
+@pytest.mark.asyncio
+async def test_require_mention_off_passes_group_messages(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)  # require_mention defaults off
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_group_payload("plain group chatter"))
+    assert len(captured) == 1
+    assert captured[0].text == "plain group chatter"
 
 
 def test_custom_mention_patterns_from_config(monkeypatch: pytest.MonkeyPatch) -> None:

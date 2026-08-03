@@ -62,3 +62,31 @@ def test_env_override_is_respected():
         assert _slack_dedup_ttl_seconds() == 120.0
 
 
+def test_invalid_env_falls_back_to_default():
+    with patch.dict(os.environ, {"SLACK_DEDUP_TTL_SECONDS": "not-a-number"}, clear=True):
+        assert _slack_dedup_ttl_seconds() >= 1800.0
+    with patch.dict(os.environ, {"SLACK_DEDUP_TTL_SECONDS": "0"}, clear=True):
+        assert _slack_dedup_ttl_seconds() >= 1800.0
+
+
+def test_redelivery_six_minutes_later_is_suppressed():
+    """A replay 6 min after first processing must be treated as duplicate."""
+    dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
+    event_ts = "1733382960.001500"
+
+    # First delivery — recorded now.
+    assert dedup.is_duplicate(event_ts) is False
+    # Simulate the entry being stamped 6 minutes ago (reconnect redelivery gap).
+    dedup._seen[event_ts] = time.time() - 360
+    # Redelivery of the SAME event must still be caught.
+    assert dedup.is_duplicate(event_ts) is True
+
+
+def test_old_default_300s_would_have_missed_it():
+    """Pins the regression: the prior 300s window let the replay through."""
+    dedup = MessageDeduplicator(ttl_seconds=300)
+    event_ts = "1733382960.001500"
+    assert dedup.is_duplicate(event_ts) is False
+    dedup._seen[event_ts] = time.time() - 360  # 6 min ago, past 300s TTL
+    # Demonstrates the bug: replay treated as new → second reply.
+    assert dedup.is_duplicate(event_ts) is False

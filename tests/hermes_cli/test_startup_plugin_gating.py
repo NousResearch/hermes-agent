@@ -32,7 +32,6 @@ from hermes_cli.main import (
     _BUILTIN_SUBCOMMANDS,
     _first_positional_argv,
     _plugin_cli_discovery_needed,
-    _resolve_deferred_platform_cli_command,
 )
 
 
@@ -69,118 +68,113 @@ def _live_subcommand_names() -> set[str]:
 # ── _first_positional_argv ─────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (["hermes"], None),
+        (["hermes", "--help"], None),
+        (["hermes", "-h"], None),
+        (["hermes", "--version"], None),
+        (["hermes", "-w"], None),
+        # -p / --profile is stripped from sys.argv by
+        # _apply_profile_override() at import time, so it never reaches
+        # _first_positional_argv. We test with just -w / --tui here.
+        (["hermes", "-w", "--tui"], None),
+        (["hermes", "version"], "version"),
+        (["hermes", "--tui", "chat"], "chat"),
+        (["hermes", "-w", "logs"], "logs"),
+        (["hermes", "chat", "hello world"], "chat"),
+        (["hermes", "gateway", "run"], "gateway"),
+        # Top-level value-taking flags: the value should be skipped.
+        (["hermes", "-m", "gpt5", "chat"], "chat"),
+        (["hermes", "--model", "gpt5", "chat", "hi"], "chat"),
+        (["hermes", "-m", "gpt5", "--provider", "openai", "chat"], "chat"),
+        (["hermes", "-z", "hello world"], None),
+        (["hermes", "-z", "hello", "chat"], "chat"),
+        (["hermes", "--model=gpt5", "chat"], "chat"),     # inline form
+        (["hermes", "--", "chat"], "chat"),               # -- terminator
+        (["hermes", "-w", "--"], None),
+        # Unknown positional after skipped flags → plugin-cmd candidate.
+        (["hermes", "some-plugin-cmd"], "some-plugin-cmd"),
+        (["hermes", "-m", "gpt5", "some-plugin-cmd"], "some-plugin-cmd"),
+    ],
+)
+def test_first_positional_argv(argv, expected):
+    with patch.object(sys, "argv", argv):
+        assert _first_positional_argv() == expected
 
 
 # ── _plugin_cli_discovery_needed ───────────────────────────────────────────
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["hermes"],                          # bare → chat
+        ["hermes", "--help"],                # top-level help
+        ["hermes", "-h"],
+        ["hermes", "version"],               # known built-in
+        ["hermes", "logs"],
+        ["hermes", "gateway", "run"],
+        ["hermes", "--tui"],
+        ["hermes", "-w", "--tui"],
+        ["hermes", "chat", "hi"],
+        ["hermes", "help"],                  # accepted built-in-ish
+        ["hermes", "-m", "gpt5", "chat"],    # flag-value-skipping
+    ],
+)
+def test_discovery_skipped_for_builtins(argv):
+    with patch.object(sys, "argv", argv):
+        assert _plugin_cli_discovery_needed() is False
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["hermes", "meet", "join"],          # potential google_meet plugin
+        ["hermes", "honcho", "status"],      # potential memory plugin
+        ["hermes", "unknown-subcmd"],
+    ],
+)
+def test_discovery_runs_for_unknown_positional(argv):
+    with patch.object(sys, "argv", argv):
+        assert _plugin_cli_discovery_needed() is True
+
+
 # ── _BUILTIN_SUBCOMMANDS ↔ argparse registration parity ────────────────────
 
 
+def test_builtin_set_covers_every_registered_subcommand():
+    """Every subcommand registered in main() must appear in the set.
 
-
-# ── _resolve_deferred_platform_cli_command (issue #54678) ──────────────────
-
-
-def test_deferred_platform_cli_resolution_targets_matching_platform():
-    """The slow path must import the deferred platform whose name matches the
-    invoked command, so its register_cli_command side effect fires.
-
-    Photon registers ``hermes photon`` only when its adapter module is
-    imported; on the unknown-command slow path the platform is still a
-    deferred entry, so without this resolution step the CLI command stays
-    absent and argparse rejects ``photon`` (issue #54678).
+    Missing entries cause a slow-path regression (correctness stays
+    fine — discovery just runs unnecessarily).
     """
-    from hermes_cli import main as _main
-
-    class _FakeRegistry:
-        def __init__(self):
-            self.resolved: list[str] = []
-
-        def get(self, name):
-            self.resolved.append(name)
-            return None
-
-    fake = _FakeRegistry()
-    fake_module = type(sys)("gateway.platform_registry")
-    fake_module.platform_registry = fake
-    with patch.dict(sys.modules, {"gateway.platform_registry": fake_module}):
-        _resolve_deferred_platform_cli_command("photon")
-
-    assert fake.resolved == ["photon"]
+    live = _live_subcommand_names()
+    # "help" is synthetic — an argparse-implicit convenience we include
+    # in the set so ``hermes help <cmd>`` skips discovery; it won't show
+    # up as a subparser in the --help output.
+    declared = _BUILTIN_SUBCOMMANDS - {"help"}
+    missing_from_declaration = live - declared
+    assert not missing_from_declaration, (
+        f"_BUILTIN_SUBCOMMANDS is missing these live subcommands: "
+        f"{sorted(missing_from_declaration)}. Add them to "
+        f"hermes_cli/main.py::_BUILTIN_SUBCOMMANDS so plugin discovery "
+        f"can be skipped when the user targets them."
+    )
 
 
-def test_deferred_platform_loader_registers_cli_command_before_parser_table():
-    """Fake deferred loader must resolve through real registry + register CLI
-    before argparse builds plugin command subparsers (issue #54678 review).
+def test_builtin_set_has_no_phantom_entries():
+    """No entry in the set should refer to a subcommand that no longer exists.
 
-    Existing unit tests mock ``platform_registry.get`` and only assert the
-    helper calls it. This regression exercises the full chain hermes-sweeper
-    asked for:
-
-    1. a deferred platform loader is pending on a real ``PlatformRegistry``
-    2. that loader materializes a ``register_cli_command`` side effect on the
-       plugin manager (no Photon SDK import)
-    3. ``_resolve_deferred_platform_cli_command`` runs the pending loader
-    4. the registered command is present on the manager *and* visible as an
-       argparse subparser/choice after the same construction path ``main()``
-       uses for plugin CLI commands
+    A phantom entry means plugin discovery gets incorrectly skipped for
+    a name that — if a plugin actually registered it — would fail to
+    parse. Keeps the set honest.
     """
-    import argparse
-
-    from gateway.platform_registry import PlatformRegistry
-    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-
-    mgr = PluginManager()
-    manifest = PluginManifest(name="fake-photon-platform")
-    command_name = "fakephoton"
-
-    def _fake_loader():
-        # Mirrors what a real platform adapter does on import: register its
-        # top-level hermes <name> CLI command via PluginContext.
-        ctx = PluginContext(manifest, mgr)
-        ctx.register_cli_command(
-            name=command_name,
-            help="Fake deferred platform CLI (test-only)",
-            setup_fn=lambda p: None,
-            description="Hermetic stand-in for deferred platform CLI registration",
-        )
-
-    registry = PlatformRegistry()
-    registry.register_deferred(command_name, _fake_loader)
-
-    # Precondition: deferred is known, but CLI command is not yet registered.
-    assert registry.is_registered(command_name)
-    assert command_name not in mgr._cli_commands
-    assert command_name in registry._deferred
-
-    fake_module = type(sys)("gateway.platform_registry")
-    fake_module.platform_registry = registry
-    with patch.dict(sys.modules, {"gateway.platform_registry": fake_module}):
-        _resolve_deferred_platform_cli_command(command_name)
-
-    # Loader resolution must promote deferred -> concrete and fire CLI register.
-    assert command_name not in registry._deferred
-    assert command_name in mgr._cli_commands
-    cmd_info = mgr._cli_commands[command_name]
-    assert cmd_info["name"] == command_name
-    assert cmd_info["plugin"] == "fake-photon-platform"
-
-    # Same parser-table assembly main() uses after reading _cli_commands.
-    parser = argparse.ArgumentParser(prog="hermes")
-    subparsers = parser.add_subparsers(dest="command")
-    for info in mgr._cli_commands.values():
-        plugin_parser = subparsers.add_parser(
-            info["name"],
-            help=info["help"],
-            description=info.get("description", ""),
-        )
-        info["setup_fn"](plugin_parser)
-        if info.get("handler_fn") is not None:
-            plugin_parser.set_defaults(func=info["handler_fn"])
-
-    # argparse surface: choices + parse success.
-    choices = getattr(subparsers, "choices", None) or {}
-    assert command_name in choices
-    parsed = parser.parse_args([command_name])
-    assert parsed.command == command_name
+    live = _live_subcommand_names()
+    allowed_synthetic = {"help"}
+    phantom = _BUILTIN_SUBCOMMANDS - live - allowed_synthetic
+    assert not phantom, (
+        f"_BUILTIN_SUBCOMMANDS has entries that are not registered as "
+        f"top-level subparsers: {sorted(phantom)}"
+    )

@@ -12,7 +12,6 @@ import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
 import { fuzzyRank } from "@/lib/fuzzy";
 import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
-import { modelSearchText } from "@/lib/model-search-text";
 
 /**
  * Two-stage model picker modal.
@@ -218,22 +217,15 @@ export function ModelPickerDialog(props: Props) {
   // Fuzzy-ranked providers: match on name + slug + the provider's model ids so
   // typing a model name surfaces its provider (preserves the prior behaviour
   // where a model match also revealed its provider).
-  //
-  // With no query, float providers that actually have models to the top
-  // (stable within each group). A fresh install lists ~40 providers and only
-  // a couple are configured — burying "OpenRouter · 37 models" under a wall
-  // of "0 models" rows made the picker feel broken.
-  const filteredProviders = useMemo(() => {
-    const ranked = fuzzyRank(
-      providers,
-      trimmedQuery,
-      (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`,
-    ).map((r) => r.item);
-    if (trimmedQuery) return ranked;
-    const withModels = ranked.filter((p) => (p.models ?? []).length > 0);
-    const withoutModels = ranked.filter((p) => (p.models ?? []).length === 0);
-    return [...withModels, ...withoutModels];
-  }, [providers, trimmedQuery]);
+  const filteredProviders = useMemo(
+    () =>
+      fuzzyRank(
+        providers,
+        trimmedQuery,
+        (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`,
+      ).map((r) => r.item),
+    [providers, trimmedQuery],
+  );
 
   // A query that matched the SELECTED provider by name/slug (not its models)
   // located that provider — it shouldn't also hide that provider's models
@@ -247,18 +239,16 @@ export function ModelPickerDialog(props: Props) {
   );
 
   // Fuzzy-ranked models carrying the matched character positions so the model
-  // list can highlight why each entry matched. modelSearchText adds aliases
-  // for brand-less wire ids (e.g. Kimi Coding `k3` ↔ search "kimi").
+  // list can highlight why each entry matched.
   const filteredModels = useMemo(
     () =>
       fuzzyRank(
         models,
         queryMatchesSelectedProviderOnly ? "" : trimmedQuery,
-        modelSearchText,
+        (m) => m,
       ).map((r) => ({
         model: r.item,
-        // Positions may land in alias suffixes — keep only in-id highlights.
-        positions: r.positions.filter((i) => i >= 0 && i < r.item.length),
+        positions: r.positions,
       })),
     [models, trimmedQuery, queryMatchesSelectedProviderOnly],
   );

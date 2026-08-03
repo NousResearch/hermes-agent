@@ -56,7 +56,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     compressor = MagicMock()
 
     def _compress_with_overlap(*_a, **_kw):
-        time.sleep(0.2)  # match fork test sleep so threads reliably overlap
+        time.sleep(0.25)  # match fork test sleep so threads reliably overlap
         return [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
             {"role": "user", "content": "tail"},
@@ -84,6 +84,50 @@ _MESSAGES = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+def test_concurrent_compressions_do_not_alias_sessions(tmp_path: Path) -> None:
+    """Five distinct sessions compressing in parallel must each produce a unique
+    post-compression session_id; no two agents must end up sharing an id.
+
+    Without per-session locking there is no cross-session aliasing anyway (each
+    agent generates its own timestamp + uuid suffix), but this test makes the
+    invariant explicit and would catch any regression where session_id generation
+    became shared state (e.g. a module-level counter or a shared random seed).
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+
+    n = 5
+    parent_ids = [f"DISTINCT_PARENT_{i:02d}" for i in range(n)]
+    for sid in parent_ids:
+        db.create_session(sid, source="discord")
+
+    agents = [_build_agent_with_db(db, sid) for sid in parent_ids]
+    errors: list[Exception] = []
+
+    def run(agent):
+        try:
+            agent._compress_context(_MESSAGES, "sys", approx_tokens=120_000)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(a,), name=f"session-{i}") for i, a in enumerate(agents)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+
+    assert not errors, f"Compression raised exceptions: {errors}"
+
+    # Every agent must have rotated to a new, unique session_id.
+    new_ids = [a.session_id for a in agents]
+    assert all(sid not in parent_ids for sid in new_ids), (
+        "At least one agent did not rotate its session_id during compression. "
+        f"parent_ids={parent_ids}  new_ids={new_ids}"
+    )
+    assert len(set(new_ids)) == n, (
+        f"Post-compression session_ids are not unique: {new_ids}. "
+        "Two agents aliased to the same id — cross-session contamination."
+    )
 
 
 def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:

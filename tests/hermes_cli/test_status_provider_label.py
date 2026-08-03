@@ -19,6 +19,16 @@ def test_config_base_url_labels_custom():
     assert "OpenRouter" not in label
 
 
+def test_env_base_url_labels_custom():
+    label = _label_with({"model": {}}, env_base_url="http://localhost:1234/v1")
+    assert "OpenRouter" not in label
+
+
+def test_no_base_url_stays_openrouter():
+    label = _label_with({"model": {}})
+    assert "OpenRouter" in label
+
+
 def test_blank_base_url_stays_openrouter():
     label = _label_with({"model": {"base_url": "   "}})
     assert "OpenRouter" in label

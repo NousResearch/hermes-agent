@@ -48,3 +48,10 @@ class TestBinaryDocumentNote:
         assert "ask the user" not in note.lower()
         assert "paste" in note.lower()
 
+    def test_binary_note_distinct_from_text_note(self):
+        text_note = _build_document_context_note("a.txt", "/c/a.txt", "text/plain")
+        pdf_note = _build_document_context_note("a.pdf", "/c/a.pdf", "application/pdf")
+        assert text_note != pdf_note
+        # The text path claims content is inlined; the binary path must not.
+        assert "included below" in text_note
+        assert "included below" not in pdf_note

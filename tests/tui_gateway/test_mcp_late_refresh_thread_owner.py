@@ -68,6 +68,33 @@ def test_entry_in_flight_sees_startup_thread(clean_discovery_globals):
     assert entry.mcp_discovery_in_flight() is False
 
 
+def test_entry_join_waits_on_startup_thread(clean_discovery_globals):
+    """join_mcp_discovery must report not-done while the startup thread runs."""
+    stop = threading.Event()
+    t = _alive_thread(stop)
+    startup._mcp_discovery_thread = t
+
+    assert entry.join_mcp_discovery(timeout=0.1) is False
+
+    stop.set()
+    t.join(timeout=2.0)
+    assert entry.join_mcp_discovery(timeout=2.0) is True
+
+
+def test_entry_in_flight_still_sees_own_thread(clean_discovery_globals):
+    """stdio TUI surface: discovery thread lives on tui_gateway.entry (unchanged)."""
+    stop = threading.Event()
+    entry._mcp_discovery_thread = _alive_thread(stop)
+    try:
+        assert startup._mcp_discovery_thread is None
+        assert entry.mcp_discovery_in_flight() is True
+    finally:
+        stop.set()
+        entry._mcp_discovery_thread.join(timeout=2.0)
+
+    assert entry.mcp_discovery_in_flight() is False
+
+
 def test_no_mcp_threads_not_in_flight(clean_discovery_globals):
     """No discovery anywhere → not in flight, join reports done immediately."""
     assert entry.mcp_discovery_in_flight() is False

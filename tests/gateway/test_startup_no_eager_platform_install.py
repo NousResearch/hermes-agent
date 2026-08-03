@@ -69,3 +69,32 @@ def test_unconfigured_platform_is_not_probed_for_install(isolated_registry):
     assert not config.platforms.get(Platform.DISCORD, PlatformConfig()).enabled
 
 
+def test_configured_platform_is_still_installed_and_enabled(isolated_registry):
+    # is_connected reports "credentials present" → check_fn must run (so the
+    # SDK is verified/installed) and the platform is auto-enabled, exactly as
+    # before the fix.
+    check_fn = MagicMock(return_value=True)
+    _register_fake_platform(
+        "discord", check_fn=check_fn, is_connected=lambda cfg: True
+    )
+
+    config = GatewayConfig()
+    _apply_env_overrides(config)
+
+    check_fn.assert_called_once()
+    assert config.platforms[Platform.DISCORD].enabled is True
+
+
+def test_failed_install_does_not_enable_configured_platform(isolated_registry):
+    # Credentials present but the SDK genuinely cannot be installed/imported
+    # (check_fn returns False) → platform must not be enabled.
+    check_fn = MagicMock(return_value=False)
+    _register_fake_platform(
+        "discord", check_fn=check_fn, is_connected=lambda cfg: True
+    )
+
+    config = GatewayConfig()
+    _apply_env_overrides(config)
+
+    check_fn.assert_called_once()
+    assert not config.platforms.get(Platform.DISCORD, PlatformConfig()).enabled

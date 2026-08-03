@@ -23,7 +23,7 @@ def validate_within_dir(path: Path, root: Path) -> Optional[str]:
 
         error = validate_within_dir(user_path, allowed_root)
         if error:
-            return tool_error(error)
+            return json.dumps({"error": error})
     """
     try:
         resolved = path.resolve()

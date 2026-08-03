@@ -78,6 +78,9 @@ class TestValidation:
         with pytest.raises(BlueprintFillError, match="invalid time"):
             fill_blueprint(get_blueprint("morning-brief"), {"time": "25:99"})
 
+    def test_bad_enum_rejected_and_names_slot(self):
+        with pytest.raises(BlueprintFillError, match="not allowed"):
+            fill_blueprint(get_blueprint("news-digest"), {"count": "42"})
 
     def test_deliver_slot_accepts_any_platform(self):
         # deliver is a non-strict enum: its options are suggestions, the real
@@ -132,11 +135,23 @@ class TestRenderers:
         assert cmd.startswith("/blueprint morning-brief")
         assert "time=08:00" in cmd
 
+    def test_slash_command_quotes_freetext(self):
+        cmd = blueprint_slash_command(
+            get_blueprint("custom-reminder"), {"what": "drink water", "time": "10:00"}
+        )
+        assert '"drink water"' in cmd
 
     def test_deeplink_shape(self):
         url = blueprint_deeplink(get_blueprint("morning-brief"), {"time": "07:15"})
         assert url.startswith("hermes://blueprint/morning-brief?")
         assert "time=07" in url
+
+    def test_catalog_entry_has_all_surfaces(self):
+        entry = blueprint_catalog_entry(get_blueprint("morning-brief"))
+        assert entry["command"].startswith("/blueprint")
+        assert entry["appUrl"].startswith("hermes://")
+        assert entry["scheduleHuman"]
+        assert "fields" in entry
 
 
 @pytest.fixture
@@ -171,6 +186,18 @@ class TestCommandHandler:
         # the schedule template is handed to the agent to build the cron expr
         assert "* * *" in res.agent_seed
 
+    def test_name_match_is_forgiving(self, isolated_home):
+        from hermes_cli.blueprint_cmd import handle_blueprint_command, match_blueprint
+
+        # prefix match
+        r, cands = match_blueprint("morning")
+        assert r is not None and r.key == "morning-brief"
+        # fuzzy / typo
+        r2, _ = match_blueprint("mornning-brief")
+        assert r2 is not None and r2.key == "morning-brief"
+        # a forgiving name still seeds the agent
+        res = handle_blueprint_command("morning")
+        assert res.agent_seed is not None
 
     def test_fill_creates_job(self, isolated_home):
         from hermes_cli.blueprint_cmd import handle_blueprint_command
@@ -182,6 +209,20 @@ class TestCommandHandler:
         assert len(jobs) == 1
         assert (jobs[0].get("schedule_display") or jobs[0].get("schedule")) == "30 7 * * *"
         assert jobs[0].get("deliver") == "telegram"
+
+    def test_unknown_blueprint(self, isolated_home):
+        from hermes_cli.blueprint_cmd import handle_blueprint_command
+
+        res = handle_blueprint_command("zzz-nope-nothing")
+        assert "No automation blueprint" in res.text
+        assert res.agent_seed is None
+
+    def test_bad_value_names_slot(self, isolated_home):
+        from hermes_cli.blueprint_cmd import handle_blueprint_command
+
+        res = handle_blueprint_command("morning-brief time=99:99")
+        assert "Can't set up" in res.text and "time" in res.text
+        assert res.agent_seed is None
 
 
 class TestDocsGenerator:

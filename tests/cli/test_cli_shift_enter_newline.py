@@ -43,6 +43,15 @@ def test_install_registers_all_three_sequences():
         assert ANSI_SEQUENCES[seq] == (Keys.Escape, Keys.ControlM)
 
 
+def test_install_overwrites_stock_modifyotherkeys_shift_enter():
+    """Stock prompt_toolkit maps `\\x1b[27;2;13~` to plain Keys.ControlM —
+    i.e. it drops the Shift modifier and treats Shift+Enter like Enter,
+    which is the bug this helper exists to fix. The install must overwrite
+    that entry."""
+    seq = "\x1b[27;2;13~"
+    ANSI_SEQUENCES[seq] = Keys.ControlM
+    install_shift_enter_alias()
+    assert ANSI_SEQUENCES[seq] == (Keys.Escape, Keys.ControlM)
 
 
 def test_install_returns_zero_when_already_correct():
@@ -62,6 +71,11 @@ def test_csi_u_shift_enter_parses_as_alt_enter():
     )
 
 
+def test_modify_other_keys_shift_enter_parses_as_alt_enter():
+    """xterm modifyOtherKeys=2 Shift+Enter must parse identically to Alt+Enter."""
+    alt_enter = _parse("\x1b\r")
+    shift_enter = _parse("\x1b[27;2;13~")
+    assert shift_enter == alt_enter
 
 
 def test_plain_enter_remains_distinct_from_alt_enter():

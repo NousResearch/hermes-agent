@@ -151,6 +151,29 @@ def test_scan_sessions_default_scans_all_history_not_first_200(plugin_api):
     assert result["scan_meta"]["sessions_total"] == 500
 
 
+def test_scan_sessions_explicit_positive_limit_is_honored(plugin_api):
+    """Callers can still pass a small limit for smoke tests."""
+    fake_db = _FakeSessionDB(session_count=500)
+    _install_fake_session_db(plugin_api, fake_db)
+
+    result = plugin_api.scan_sessions(limit=10)
+
+    assert fake_db.last_limit == 10
+    assert len(result["sessions"]) == 10
+
+
+def test_scan_sessions_zero_or_negative_limit_means_unlimited(plugin_api):
+    """``limit=0`` and ``limit=-1`` both map to the unlimited path."""
+    fake_db = _FakeSessionDB(session_count=300)
+    _install_fake_session_db(plugin_api, fake_db)
+
+    plugin_api.scan_sessions(limit=0)
+    assert fake_db.last_limit == -1
+
+    plugin_api.scan_sessions(limit=-1)
+    assert fake_db.last_limit == -1
+
+
 def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugin_api):
     """First-ever evaluate_all with no cache returns a pending placeholder
     immediately and kicks off a background scan thread. Cold scans on
@@ -198,6 +221,58 @@ def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugi
     second = plugin_api.evaluate_all()
     assert second["scan_meta"]["mode"] != "pending"
     assert second["scan_meta"].get("sessions_total") == 50
+
+
+def test_evaluate_all_stale_cache_serves_stale_and_refreshes_in_background(plugin_api):
+    """When the snapshot is on-disk but older than TTL, evaluate_all returns
+    the stale data immediately and kicks a background refresh. Users don't
+    stare at a loading spinner every time TTL expires.
+    """
+    fake_db = _FakeSessionDB(session_count=10, scan_delay=2.0)
+    _install_fake_session_db(plugin_api, fake_db)
+    stale_generated_at = int(time.time()) - plugin_api.SNAPSHOT_TTL_SECONDS - 60
+    stale_payload = {
+        "achievements": [],
+        "sessions": [],
+        "aggregate": {},
+        "scan_meta": {"mode": "full", "sessions_total": 1, "sessions_rescanned": 1, "sessions_reused": 0},
+        "error": None,
+        "unlocked_count": 0,
+        "discovered_count": 0,
+        "secret_count": 0,
+        "total_count": 0,
+        "generated_at": stale_generated_at,
+    }
+    plugin_api.save_snapshot(stale_payload)
+
+    t0 = time.time()
+    result = plugin_api.evaluate_all()
+    elapsed = time.time() - t0
+
+    assert elapsed < 1.0, f"evaluate_all blocked for {elapsed:.2f}s serving stale data"
+    assert result["generated_at"] == stale_generated_at
+
+    # Background scan should be running or have completed.
+    thread = plugin_api._BACKGROUND_SCAN_THREAD
+    assert thread is not None
+    thread.join(timeout=5)
+
+    fresh = plugin_api.evaluate_all()
+    assert fresh["generated_at"] >= stale_generated_at
+
+
+def test_evaluate_all_force_runs_synchronously(plugin_api):
+    """Manual /rescan (force=True) blocks the caller — users clicking
+    the rescan button expect up-to-date data when the call returns.
+    """
+    fake_db = _FakeSessionDB(session_count=25)
+    _install_fake_session_db(plugin_api, fake_db)
+
+    result = plugin_api.evaluate_all(force=True)
+
+    # Synchronous — snapshot is fresh on return.
+    assert result["scan_meta"].get("sessions_total") == 25
+    assert result["scan_meta"]["mode"] in {"full", "incremental"}
 
 
 def test_start_background_scan_is_idempotent_while_running(plugin_api):

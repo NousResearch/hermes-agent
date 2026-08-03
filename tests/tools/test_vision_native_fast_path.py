@@ -38,6 +38,23 @@ class TestSupportsMediaInToolResults:
     def test_openrouter_yes(self):
         assert _supports_media_in_tool_results("openrouter", "anthropic/claude-opus-4.6") is True
 
+    def test_nous_yes(self):
+        assert _supports_media_in_tool_results("nous", "anthropic/claude-sonnet-4.6") is True
+
+    def test_openai_chat_yes(self):
+        assert _supports_media_in_tool_results("openai", "gpt-5.4") is True
+
+    def test_openai_codex_yes(self):
+        assert _supports_media_in_tool_results("openai-codex", "gpt-5-codex") is True
+
+    def test_gemini_3_yes(self):
+        assert _supports_media_in_tool_results("google", "gemini-3-flash-preview") is True
+
+    def test_gemini_2_no(self):
+        assert _supports_media_in_tool_results("google", "gemini-2.5-pro") is False
+
+    def test_unknown_provider_conservative_no(self):
+        assert _supports_media_in_tool_results("brand-new-provider", "any-model") is False
 
     def test_empty_provider_no(self):
         assert _supports_media_in_tool_results("", "anything") is False
@@ -94,6 +111,26 @@ class TestVisionAnalyzeNative:
         url = next(p["image_url"]["url"] for p in parts if p.get("type") == "image_url")
         assert url.startswith("data:image/")
 
+    def test_missing_file_returns_error_string(self, tmp_path):
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(tmp_path / "nope.png"), "?")
+        )
+        # tool_error returns a JSON string, not the multimodal envelope
+        assert isinstance(result, str)
+        parsed = json.loads(result)
+        assert parsed.get("success") is False
+        # Unified resolver: local backend reports a clean not-found.
+        err = parsed.get("error", "").lower()
+        assert "image file not found" in err or "no active sandbox" in err
+
+    def test_empty_image_url_returns_error(self):
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native("", "?")
+        )
+        assert isinstance(result, str)
+        parsed = json.loads(result)
+        assert parsed.get("success") is False
+        assert "image_url is required" in parsed.get("error", "")
 
     def test_file_url_scheme_resolves(self, tmp_path):
         img = tmp_path / "t.png"
@@ -173,6 +210,25 @@ class TestHandleVisionAnalyzeFastPath:
             f"Expected multimodal envelope, got {type(result).__name__}: {str(result)[:200]}"
         assert result.get("_multimodal") is True
 
+    def test_non_vision_main_model_falls_through_to_aux(self, tmp_path, monkeypatch):
+        """Non-vision main model → fast path skipped, aux LLM path attempted."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        async def _aux_sentinel(*args, **kwargs):
+            return '{"sentinel": "aux-path"}'
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("openrouter", "qwen/qwen3-coder")
+        try:
+            with patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel):
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
+            "Fast path fired for non-vision model; should have fallen through to aux LLM"
 
     def test_fast_path_disabled_for_unsupported_provider(self, tmp_path, monkeypatch):
         """Even with vision-capable model, unknown provider → fall through."""

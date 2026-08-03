@@ -46,4 +46,29 @@ class TestClearStaleOpenaiBaseUrl:
         assert result == "http://localhost:11434/v1", \
             f"Expected OPENAI_BASE_URL to be preserved, got: {result!r}"
 
+    def test_noop_when_no_openai_base_url(self, monkeypatch):
+        """No error when OPENAI_BASE_URL is not set."""
+        from hermes_cli.main import _clear_stale_openai_base_url
 
+        _write_provider("openrouter")
+        # Ensure it's not set
+        save_env_value("OPENAI_BASE_URL", "")
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+        # Should not raise
+        _clear_stale_openai_base_url()
+
+    def test_noop_when_provider_empty(self, monkeypatch):
+        """No cleanup when provider is not set in config."""
+        from hermes_cli.main import _clear_stale_openai_base_url
+
+        cfg = load_config()
+        cfg.pop("model", None)
+        save_config(cfg)
+        save_env_value("OPENAI_BASE_URL", "http://localhost:11434/v1")
+
+        _clear_stale_openai_base_url()
+
+        result = get_env_value("OPENAI_BASE_URL")
+        assert result == "http://localhost:11434/v1", \
+            "Should not clear when provider is not configured"

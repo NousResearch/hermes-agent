@@ -15,7 +15,8 @@ const SYSTEM_SANS =
   '"Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, ' +
   EMOJI_FALLBACK
 
-const SYSTEM_MONO = 'Menlo, Monaco, "SF Mono", "Courier Prime", monospace, ' + EMOJI_FALLBACK
+const SYSTEM_MONO =
+  '"Cascadia Code", "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace, ' + EMOJI_FALLBACK
 
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
 
@@ -91,7 +92,7 @@ export const nousTheme: DesktopTheme = {
   },
   typography: {
     fontSans: SYSTEM_SANS,
-    fontMono: SYSTEM_MONO,
+    fontMono: `"Courier Prime", ${SYSTEM_MONO}`,
     fontUrl: 'https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap'
   }
 }

@@ -1,14 +1,14 @@
 ---
-title: "Stable Diffusion Image Generation — Text-to-image generation, inpainting, and img2img"
+title: "Stable Diffusion Image Generation"
 sidebar_label: "Stable Diffusion Image Generation"
-description: "Text-to-image generation, inpainting, and img2img"
+description: "State-of-the-art text-to-image generation with Stable Diffusion models via HuggingFace Diffusers"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Stable Diffusion Image Generation
 
-Text-to-image generation, inpainting, and img2img.
+State-of-the-art text-to-image generation with Stable Diffusion models via HuggingFace Diffusers. Use when generating images from text prompts, performing image-to-image translation, inpainting, or building custom diffusion pipelines.
 
 ## Skill metadata
 

@@ -1,45 +1,54 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { $rightRailActiveTabId, PREVIEW_PANE_ID } from './layout'
+import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_PREVIEW_TAB_ID } from './layout'
 import { $paneOpen } from './panes'
 import {
+  $filePreviewTabs,
+  $filePreviewTarget,
   $previewServerRestart,
   $previewServerRestartStatus,
-  $previewTabs,
   $previewTarget,
+  $sessionPreviewRegistry,
   beginPreviewServerRestart,
+  clearSessionPreviewRegistry,
   closeActiveRightRailTab,
-  closePreviewForSource,
-  closeRightRail,
-  closeRightRailTab,
-  openPreview,
-  previewTabId,
+  dismissPreviewTarget,
+  getSessionPreviewRecord,
   type PreviewTarget,
-  progressPreviewServerRestart
+  progressPreviewServerRestart,
+  setCurrentSessionPreviewTarget
 } from './preview'
+import { $activeSessionId, $selectedStoredSessionId } from './session'
 
-function fileTarget(source: string): PreviewTarget {
-  return { kind: 'file', label: source, path: source, previewKind: 'html', source, url: `file://${source}` }
+function previewTarget(source: string): PreviewTarget {
+  return {
+    kind: 'file',
+    label: source,
+    path: source,
+    previewKind: 'html',
+    source,
+    url: `file://${source}`
+  }
 }
 
-function urlTarget(source: string): PreviewTarget {
-  return { kind: 'url', label: source, source, url: source }
-}
-
-function artifactTarget(id: string): PreviewTarget {
-  return { kind: 'artifact', label: id, source: id, url: id }
+function withRenderMode(target: PreviewTarget, renderMode: PreviewTarget['renderMode']): PreviewTarget {
+  return { ...target, renderMode }
 }
 
 describe('preview store', () => {
   beforeEach(() => {
     $previewServerRestart.set(null)
-    closeRightRail()
+    $activeSessionId.set('session-1')
+    $selectedStoredSessionId.set(null)
     window.localStorage.clear()
+    clearSessionPreviewRegistry()
   })
 
   afterEach(() => {
     $previewServerRestart.set(null)
-    closeRightRail()
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+    clearSessionPreviewRegistry()
     window.localStorage.clear()
   })
 
@@ -55,82 +64,75 @@ describe('preview store', () => {
     expect(statuses).toEqual(['idle', 'running'])
   })
 
-  it('opens the pane and fronts the new tab', () => {
-    openPreview(fileTarget('/work/demo.html'), 'tool-result')
+  it('persists registered previews and dismissal per session', () => {
+    const target = previewTarget('/work/demo.html')
 
+    setCurrentSessionPreviewTarget(target, 'tool-result')
+
+    expect($previewTarget.get()).toEqual(withRenderMode(target, 'preview'))
     expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
-    expect($rightRailActiveTabId.get()).toBe('file:file:///work/demo.html')
-    expect($previewTarget.get()?.path).toBe('/work/demo.html')
-  })
+    expect(getSessionPreviewRecord('session-1')?.normalized).toEqual(withRenderMode(target, 'preview'))
+    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toContain('/work/demo.html')
 
-  it('gives every kind of target its own tab, side by side', () => {
-    openPreview(fileTarget('/work/demo.html'), 'file-browser')
-    openPreview(urlTarget('http://localhost:5174'), 'tool-result')
-    openPreview(artifactTarget('session-1:dashboard'))
+    dismissPreviewTarget()
 
-    expect($previewTabs.get().map(tab => tab.target.kind)).toEqual(['file', 'url', 'artifact'])
-  })
-
-  it('re-fronts an existing tab instead of duplicating it, refreshing its target', () => {
-    openPreview({ ...fileTarget('/work/demo.html'), label: 'old' }, 'file-browser')
-    openPreview({ ...fileTarget('/work/demo.html'), label: 'new' }, 'file-browser')
-
-    expect($previewTabs.get()).toHaveLength(1)
-    expect($previewTarget.get()?.label).toBe('new')
-  })
-
-  // Browsing to an HTML file means "let me read it"; a tool or link handing you
-  // one means "run it". Same road, different render mode on the target.
-  it('renders browsed html as source and handed-over html live', () => {
-    openPreview(fileTarget('/work/browsed.html'), 'file-browser')
-    expect($previewTarget.get()?.renderMode).toBe('source')
-
-    openPreview(fileTarget('/work/handed.html'), 'tool-result')
-    expect($previewTarget.get()?.renderMode).toBe('preview')
-  })
-
-  it('falls back to a neighbouring tab when the active one closes, and shuts the pane on the last', () => {
-    openPreview(fileTarget('/work/one.html'), 'file-browser')
-    openPreview(fileTarget('/work/two.html'), 'file-browser')
-
-    closeRightRailTab(previewTabId(fileTarget('/work/two.html')))
-
-    expect($previewTarget.get()?.path).toBe('/work/one.html')
-    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
-
-    expect(closeActiveRightRailTab()).toBe(true)
     expect($previewTarget.get()).toBeNull()
-    expect($rightRailActiveTabId.get()).toBeNull()
     expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(false)
+    expect(getSessionPreviewRecord('session-1')).toBeNull()
+    expect($sessionPreviewRegistry.get()['session-1']?.[0]?.dismissedAt).toEqual(expect.any(Number))
+
+    setCurrentSessionPreviewTarget(target, 'tool-result')
+
+    expect(getSessionPreviewRecord('session-1')?.dismissedAt).toBeUndefined()
   })
 
-  it('reports nothing to close when the rail is empty, so the shortcut falls through', () => {
-    expect(closeActiveRightRailTab()).toBe(false)
+  it('replaces the session preview instead of keeping a back stack', () => {
+    const first = previewTarget('/work/first.html')
+    const second = previewTarget('/work/second.html')
+
+    setCurrentSessionPreviewTarget(first, 'tool-result')
+    setCurrentSessionPreviewTarget(second, 'tool-result')
+
+    expect($sessionPreviewRegistry.get()['session-1']).toHaveLength(1)
+    expect(getSessionPreviewRecord('session-1')?.normalized).toEqual(withRenderMode(second, 'preview'))
+
+    dismissPreviewTarget()
+
+    expect($previewTarget.get()).toBeNull()
+    expect(getSessionPreviewRecord('session-1')).toBeNull()
+    expect($sessionPreviewRegistry.get()['session-1']?.map(record => record.normalized.url)).toEqual([
+      'file:///work/second.html'
+    ])
   })
 
-  it('closes by the raw source the composer rows were handed', () => {
-    openPreview(urlTarget('http://localhost:5174'), 'tool-result')
+  it('keeps file inspection separate from live preview', () => {
+    const target = previewTarget('/work/demo.html')
+    const preview = previewTarget('/work/live.html')
 
-    expect(closePreviewForSource('http://localhost:5174')).toBe(true)
-    expect($previewTabs.get()).toHaveLength(0)
-    expect(closePreviewForSource('http://localhost:5174')).toBe(false)
+    setCurrentSessionPreviewTarget(preview, 'tool-result')
+
+    setCurrentSessionPreviewTarget(target, 'manual')
+
+    expect($filePreviewTarget.get()).toEqual(withRenderMode(target, 'source'))
+    expect($previewTarget.get()).toEqual(withRenderMode(preview, 'preview'))
+    expect(getSessionPreviewRecord('session-1')?.normalized).toEqual(withRenderMode(preview, 'preview'))
+
+    closeActiveRightRailTab()
+
+    expect($filePreviewTarget.get()).toBeNull()
+    expect($previewTarget.get()).toEqual(withRenderMode(preview, 'preview'))
   })
 
-  it('persists file and url tabs but never artifacts, whose content is memory-only', () => {
-    openPreview(fileTarget('/work/demo.html'), 'file-browser')
-    openPreview(urlTarget('http://localhost:5174'), 'tool-result')
-    openPreview(artifactTarget('session-1:dashboard'))
+  it('keeps file tabs when a live preview opens', () => {
+    const file = previewTarget('/work/file.html')
+    const live = previewTarget('/work/live.html')
 
-    const stored = window.localStorage.getItem('hermes.desktop.previewTabs.v2') ?? ''
+    setCurrentSessionPreviewTarget(file, 'manual')
+    setCurrentSessionPreviewTarget(live, 'tool-result')
 
-    expect(stored).toContain('/work/demo.html')
-    expect(stored).toContain('localhost:5174')
-    expect(stored).not.toContain('dashboard')
-  })
-
-  it('strips inline image bytes rather than pushing megabytes into storage', () => {
-    openPreview({ ...fileTarget('/work/shot.png'), dataUrl: 'data:image/png;base64,AAAA', previewKind: 'image' })
-
-    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2') ?? '').not.toContain('base64')
+    expect($filePreviewTabs.get().map(tab => tab.target)).toEqual([withRenderMode(file, 'source')])
+    expect($filePreviewTarget.get()).toBeNull()
+    expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
+    expect($previewTarget.get()).toEqual(withRenderMode(live, 'preview'))
   })
 })

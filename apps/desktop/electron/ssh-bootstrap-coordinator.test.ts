@@ -28,7 +28,6 @@ test('sshConfigFingerprint covers scope and every connection field', () => {
     port: 2222,
     keyPath: '/other',
     remoteHermesPath: '/other-hermes',
-    remoteProfile: 'default',
     effectiveConfigFingerprint: 'changed-config'
   })) {
     assert.notEqual(base, sshConfigFingerprint('', { ...config, [field]: value }))

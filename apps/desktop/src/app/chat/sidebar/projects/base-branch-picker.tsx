@@ -119,7 +119,7 @@ export function BaseBranchPicker({
             <span className="shrink-0">{parts.after}</span>
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="z-(--z-modal-popover) min-w-(--radix-popover-trigger-width) p-0">
+        <PopoverContent align="start" className="z-[140] min-w-(--radix-popover-trigger-width) p-0">
           <Command filter={(searchValue, search) => (searchValue.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}>
             <CommandInput autoFocus placeholder={p.baseBranchPlaceholder} />
             <CommandList className="max-h-64">

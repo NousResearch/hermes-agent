@@ -64,3 +64,10 @@ def test_unlinked_task_unchanged(kanban_conn):
     assert task.branch_name is None
 
 
+def test_unknown_project_id_falls_back_gracefully(kanban_conn):
+    # A project id that doesn't resolve must not crash task creation; the task
+    # is created as-is (scratch) and project_id stays unset.
+    tid = kb.create_task(kanban_conn, title="x", project_id="does-not-exist")
+    task = kb.get_task(kanban_conn, tid)
+    assert task.workspace_kind == "scratch"
+    assert task.project_id is None

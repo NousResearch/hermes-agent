@@ -231,14 +231,194 @@ MUTATING_CONFIRMATION_SMOKE_COMMANDS = [
 ]
 
 
+def test_console_parses_bare_and_hermes_prefixed_commands(_isolate_hermes_home):
+    engine = HermesConsoleEngine()
+
+    bare = engine.execute("config path")
+    prefixed = engine.execute("hermes config path")
+
+    assert bare.status == "ok"
+    assert prefixed.status == "ok"
+    assert bare.output == prefixed.output
+    assert bare.output.endswith("config.yaml")
 
 
+def test_console_status_hides_cli_next_step_footer(
+    monkeypatch: pytest.MonkeyPatch,
+    _isolate_hermes_home,
+):
+    import hermes_cli.status as status_mod
+
+    def fake_show_status(_args):
+        print("◆ Sessions")
+        print("Active: 3 session(s)")
+        print()
+        rule = "\u2500" * 60
+        print(f"\x1b[2m{rule}\x1b[0m")
+        print("\x1b[2m  Run 'hermes doctor' for detailed diagnostics\x1b[0m")
+        print("\x1b[2m  Run 'hermes setup' to configure\x1b[0m")
+        print()
+
+    monkeypatch.setattr(status_mod, "show_status", fake_show_status)
+
+    result = HermesConsoleEngine().execute("status")
+
+    assert result.status == "ok"
+    assert "Sessions" in result.output
+    assert "Active: 3 session(s)" in result.output
+    assert "hermes doctor" not in result.output
+    assert "hermes setup" not in result.output
+    assert "\u2500" not in result.output
 
 
+def test_console_status_hides_osc_linked_cli_next_step_footer(
+    monkeypatch: pytest.MonkeyPatch,
+    _isolate_hermes_home,
+):
+    import hermes_cli.status as status_mod
+
+    def osc_link(text: str) -> str:
+        return f"\x1b]8;;https://example.test\x1b\\{text}\x1b]8;;\x1b\\"
+
+    def fake_show_status(_args):
+        print("◆ Sessions")
+        print("Active: 3 session(s)")
+        print()
+        print(osc_link("\u2500" * 60))
+        print(osc_link("  Run 'hermes doctor' for detailed diagnostics"))
+        print(osc_link("  Run 'hermes setup' to configure"))
+        print()
+
+    monkeypatch.setattr(status_mod, "show_status", fake_show_status)
+
+    result = HermesConsoleEngine().execute("status")
+
+    assert result.status == "ok"
+    assert "Sessions" in result.output
+    assert "Active: 3 session(s)" in result.output
+    assert "hermes doctor" not in result.output
+    assert "hermes setup" not in result.output
+    assert "https://example.test" not in result.output
+    assert "\u2500" not in result.output
 
 
+def test_console_help_uses_cli_subcommand_summaries():
+    help_text = HermesConsoleEngine().help_text()
+
+    assert "skills list" in help_text
+    assert "List installed skills" in help_text
+    assert "Show all tools and their enabled/disabled status" in help_text
+    assert "Remove an MCP server" in help_text
+    assert "Check pet setup + terminal graphics support" in help_text
+    assert "Run `hermes skills list`" not in help_text
+    assert "Run `hermes tools list`" not in help_text
 
 
+def test_console_help_table_keeps_long_summaries_compact():
+    help_text = HermesConsoleEngine().help_text()
+
+    slack_line = next(
+        line for line in help_text.splitlines() if line.strip().startswith("slack manifest")
+    )
+
+    assert len(slack_line) <= 112
+    assert slack_line.endswith("...")
+
+
+def test_console_help_for_command_uses_cli_summary():
+    help_text = HermesConsoleEngine().help_text("skills list")
+
+    assert help_text == "skills list\nList installed skills"
+
+
+def test_console_registry_covers_non_admin_cli_surface():
+    registered = set(HermesConsoleEngine().commands)
+
+    missing = EXPECTED_CONSOLE_COMMANDS - registered
+
+    assert missing == set()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "sessions delete abc123",
+        "sessions prune --older-than 1",
+        "chat",
+        "--cli",
+        "--tui",
+        "oneshot hello",
+        "model",
+        "setup",
+
+        "fallback add",
+        "moa configure",
+        "claw migrate",
+        "gateway restart",
+        "gateway start",
+        "gateway stop",
+        "dashboard",
+        "serve",
+        "proxy start",
+        "mcp serve",
+        "skills config",
+        "skills publish ./skill",
+        "completion bash",
+        "acp",
+        "update",
+        "uninstall",
+        "gui",
+        "desktop",
+        "login",
+        "logout",
+        "--tui",
+        "logs | cat",
+        "config show > out.txt",
+    ],
+)
+def test_console_rejects_destructive_and_shell_like_commands(line):
+    result = HermesConsoleEngine().execute(line)
+
+    assert result.status == "error"
+    assert result.output
+
+
+@pytest.mark.parametrize("line", MUTATING_CONFIRMATION_SMOKE_COMMANDS)
+def test_mutating_console_commands_require_confirmation(line):
+    result = HermesConsoleEngine().execute(line)
+
+    assert result.status == "confirm_required"
+    assert result.confirmation_message
+
+
+def test_help_lists_supported_commands_and_not_full_cli():
+    result = HermesConsoleEngine().execute("help")
+
+    assert result.status == "ok"
+    assert "sessions list" in result.output
+    assert "config set" in result.output
+    assert "dashboard" not in result.output
+    assert "gateway restart" not in result.output
+
+
+def test_config_set_requires_confirmation_then_writes(_isolate_hermes_home):
+    engine = HermesConsoleEngine()
+
+    # Use a schema-known key path. Since #34067, `config set` refuses unknown
+    # top-level keys, so this flow test must target a valid path (telegram is a
+    # PlatformConfig-shaped dict that accepts arbitrary child keys).
+    pending = engine.execute("config set telegram.test true")
+    assert pending.status == "confirm_required"
+
+    from hermes_cli.config import read_raw_config
+
+    assert read_raw_config() == {}
+
+    result = engine.execute("config set telegram.test true", confirmed=True)
+
+    assert result.status == "ok"
+    assert "telegram.test" in result.output
+    assert read_raw_config()["telegram"]["test"] is True
 
 
 def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home):
@@ -309,3 +489,34 @@ def test_repl_runs_non_interactive_lines_without_prompts(_isolate_hermes_home):
     assert stderr.getvalue() == ""
 
 
+def test_repl_refuses_non_interactive_confirmation(_isolate_hermes_home):
+    stdin = io.StringIO("config set console.test true\n")
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    code = run_console_repl(
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        interactive=False,
+    )
+
+    assert code == 1
+    assert "Confirmation required" in stderr.getvalue()
+
+
+def test_main_console_subcommand_smoke(_isolate_hermes_home):
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "console"],
+        cwd=Path(__file__).resolve().parents[2],
+        input="help\nexit\n",
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "Hermes Console" in result.stdout

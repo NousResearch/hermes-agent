@@ -55,6 +55,20 @@ class TestRewriteSkillRefsNoop:
         # Early return: we don't even scan when there's nothing to apply.
         assert report["jobs_scanned"] == 0
 
+    def test_jobs_exist_but_no_match(self, cron_env):
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        job = create_job(prompt="", schedule="every 1h", skills=["foo"])
+        report = rewrite_skill_refs(
+            consolidated={"unrelated": "umbrella"},
+            pruned=["other"],
+        )
+        assert report["jobs_updated"] == 0
+        assert report["jobs_scanned"] == 1
+        # Job untouched
+        loaded = get_job(job["id"])
+        assert loaded["skills"] == ["foo"]
+
 
 class TestRewriteSkillRefsConsolidation:
     """Consolidated skills should be replaced with their umbrella target."""
@@ -154,6 +168,16 @@ class TestRewriteSkillRefsPruning:
         loaded = get_job(job["id"])
         assert loaded["skills"] == []
         assert loaded["skill"] is None
+
+    def test_pruned_report_records_drops(self, cron_env):
+        from cron.jobs import create_job, rewrite_skill_refs
+
+        create_job(prompt="", schedule="every 1h", skills=["keep", "stale"])
+        report = rewrite_skill_refs(consolidated={}, pruned=["stale"])
+
+        entry = report["rewrites"][0]
+        assert entry["dropped"] == ["stale"]
+        assert entry["mapped"] == {}
 
 
 class TestRewriteSkillRefsMixed:

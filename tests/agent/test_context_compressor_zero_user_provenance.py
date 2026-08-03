@@ -145,6 +145,21 @@ Vind de bestanden.
     assert "invented user attribution" in compressor._last_summary_error
 
 
+def test_zero_user_prompt_anchors_source_language_and_exact_sentinel(compressor):
+    captured_prompt = ""
+
+    def fake_call_llm(**kwargs):
+        nonlocal captured_prompt
+        captured_prompt = kwargs["messages"][0]["content"]
+        return _response(_valid_zero_user_summary())
+
+    with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+        result = compressor._generate_summary(_assistant_tool_turns(0, 2))
+
+    assert result == f"{SUMMARY_PREFIX}\n{_valid_zero_user_summary().strip()}"
+    assert "dominant language of the source turns" in captured_prompt
+    assert _NO_USER_TASK_SENTINEL in captured_prompt
+    assert "Do not write \"User asked:\"" in captured_prompt
 
 
 def test_zero_user_provenance_survives_iterative_compaction(compressor):
@@ -268,13 +283,94 @@ def test_compress_context_todo_snapshot_stays_synthetic_across_two_boundaries(
     db.close()
 
 
+def test_continuation_user_marker_is_not_reused_as_real_provenance():
+    todo_snapshot = f"{TODO_INJECTION_HEADER}\n- [ ] inspect. Inspect artifacts (pending)"
+    compressed = [{"role": "assistant", "content": "Scheduled work completed."}]
+
+    _ensure_compressed_has_user_turn(
+        [{"role": "user", "content": todo_snapshot}],
+        compressed,
+    )
+
+    assert compressed[-1] == {
+        "role": "user",
+        "content": COMPRESSION_CONTINUATION_USER_CONTENT,
+    }
+    projected = [{"role": row["role"], "content": row["content"]} for row in compressed]
+    assert ContextCompressor._transcript_has_real_user_turn(projected) is False
 
 
+def test_continuation_markers_are_not_human_anchors():
+    from agent.conversation_compression import _is_real_user_message
+
+    legacy = (
+        "Continue from the compressed conversation context above. "
+        "This marker exists because the compacted transcript contained "
+        "no preserved user turn."
+    )
+    assert not _is_real_user_message(
+        {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT}
+    )
+    assert not _is_real_user_message({"role": "user", "content": legacy})
 
 
+def test_static_fallback_does_not_attribute_synthetic_rows_to_user(compressor):
+    todo_snapshot = f"{TODO_INJECTION_HEADER}\n- [ ] inspect. Inspect artifacts (pending)"
+    fallback = compressor._build_static_fallback_summary(
+        [
+            {"role": "user", "content": todo_snapshot},
+            {
+                "role": "user",
+                "content": COMPRESSION_CONTINUATION_USER_CONTENT,
+            },
+            *_assistant_tool_turns(0, 2),
+        ]
+    )
+
+    assert _NO_USER_TASK_SENTINEL in fallback
+    assert "User asked:" not in fallback
+    assert "INTERNAL CONTEXT:" in fallback
 
 
+def test_zero_user_deterministic_fallback_uses_same_provenance(compressor):
+    messages = _assistant_tool_turns(0, 12)
+
+    with patch.object(compressor, "_generate_summary", return_value=None):
+        result = compressor.compress(messages, current_tokens=90_000)
+
+    handoff = next(
+        message
+        for message in result
+        if message.get(COMPRESSED_SUMMARY_METADATA_KEY)
+    )
+    assert _NO_USER_TASK_SENTINEL in handoff["content"]
+    assert "User asked:" not in handoff["content"]
+    assert handoff[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] is False
 
 
+def test_real_user_turn_sets_provenance_true(compressor):
+    messages = [
+        {"role": "user", "content": "Please inspect the build artifacts."},
+        *_assistant_tool_turns(0, 12),
+    ]
+    summary = f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nUser asked: 'Please inspect the build artifacts.'"
+
+    with patch.object(compressor, "_generate_summary", return_value=summary):
+        result = compressor.compress(messages, current_tokens=90_000)
+
+    handoff = next(
+        message
+        for message in result
+        if message.get(COMPRESSED_SUMMARY_METADATA_KEY)
+    )
+    assert handoff[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] is True
 
 
+def test_session_boundaries_clear_summary_provenance(compressor):
+    compressor._summary_has_user_turn = False
+    compressor.on_session_reset()
+    assert compressor._summary_has_user_turn is None
+
+    compressor._summary_has_user_turn = True
+    compressor.on_session_end("cron-session", [])
+    assert compressor._summary_has_user_turn is None

@@ -24,8 +24,38 @@ class TestStripImagesPreservesAlternation:
             {"role": "assistant", "content": "hi"},
         ]
 
+    def test_string_content_untouched(self):
+        """String content passes through — only list content is inspected."""
+        msgs = [{"role": "user", "content": "just text"}]
+        changed = _strip_images_from_messages(msgs)
+        assert changed is False
+        assert msgs[0]["content"] == "just text"
 
+    def test_strips_image_url_part_preserves_text(self):
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+        }]
+        changed = _strip_images_from_messages(msgs)
+        assert changed is True
+        assert msgs[0]["content"] == [{"type": "text", "text": "describe"}]
 
+    def test_strips_all_recognized_image_types(self):
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hi"},
+                {"type": "image_url", "image_url": {}},
+                {"type": "image", "source": {}},
+                {"type": "input_image", "image_url": "http://x"},
+            ],
+        }]
+        changed = _strip_images_from_messages(msgs)
+        assert changed is True
+        assert msgs[0]["content"] == [{"type": "text", "text": "hi"}]
 
     def test_tool_message_with_all_images_replaced_not_deleted(self):
         """CRITICAL: tool messages must NEVER be deleted — their tool_call_id
@@ -83,6 +113,22 @@ class TestStripImagesPreservesAlternation:
         assert msgs[2]["content"] == [{"type": "text", "text": "Captured 1024x768"}]
         assert msgs[2]["tool_call_id"] == "call_1"
 
+    def test_image_only_user_message_dropped(self):
+        """Synthetic image-only user messages (gateway injection pattern) are
+        safe to drop — no tool_call_id linkage to preserve."""
+        msgs = [
+            {"role": "user", "content": "what's in this?"},
+            {"role": "assistant", "content": "I'll check."},
+            {
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": "data:..."}}],
+            },
+        ]
+        changed = _strip_images_from_messages(msgs)
+        assert changed is True
+        # Synthetic image-only user message dropped
+        assert len(msgs) == 2
+        assert msgs[-1]["role"] == "assistant"
 
     def test_multiple_tool_messages_all_preserved(self):
         """Parallel tool calls: each tool_call_id must retain a paired message."""
@@ -112,7 +158,18 @@ class TestStripImagesPreservesAlternation:
         assert len(tool_msgs) == 2
         assert {m["tool_call_id"] for m in tool_msgs} == {"c1", "c2"}
 
+    def test_returns_false_when_nothing_changed(self):
+        msgs = [
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": "hello"},
+        ]
+        assert _strip_images_from_messages(msgs) is False
 
+    def test_handles_non_dict_entries_gracefully(self):
+        msgs = [None, "not a dict", {"role": "user", "content": "ok"}]
+        # Must not raise
+        changed = _strip_images_from_messages(msgs)
+        assert changed is False
 
 
 class TestImageRejectionPhraseIsolation:
@@ -158,7 +215,72 @@ class TestImageRejectionPhraseIsolation:
         for body in bodies:
             assert self._matches(body) is False, f"false positive on: {body}"
 
+    def test_context_overflow_does_not_trip(self):
+        bodies = [
+            "This model's maximum context length is 200000 tokens.",
+            "Request too large: max tokens per request is 200000",
+            "The input exceeds the context window.",
+        ]
+        for body in bodies:
+            assert self._matches(body) is False, f"false positive on: {body}"
 
+    def test_rate_limit_does_not_trip(self):
+        bodies = [
+            "rate limit reached for requests",
+            "You exceeded your current quota",
+        ]
+        for body in bodies:
+            assert self._matches(body) is False
 
+    def test_real_image_rejection_bodies_trip(self):
+        """Positive cases — real-world error wordings that should trigger."""
+        bodies = [
+            "Only 'text' content type is supported.",
+            "Bad request: multimodal is not supported by this model",
+            "This model does not support images",
+            "vision is not supported on this endpoint",
+            "model does not support image input",
+            # ChatGPT-account Codex backend (issue #23570) — rejects
+            # data:image/...base64 URLs in input_image fields. Without this
+            # match the agent cascaded into compression / context-too-large
+            # recovery instead of just stripping the images.
+            "Invalid 'input[56].content[1].image_url'. Expected a valid URL, but got a value with an invalid format.",
+            # OpenRouter 404 when no upstream endpoint for the model accepts
+            # image input — issue #21160. The exact wording from the report.
+            "HTTP 404: No endpoints found that support image input",
+        ]
+        for body in bodies:
+            assert self._matches(body) is True, f"false negative on: {body}"
 
+    def test_openrouter_data_policy_no_endpoints_does_not_trip(self):
+        """OpenRouter has several 'no endpoints ...' 404 bodies. Only the
+        image-input one is an image rejection — the guardrail / data-policy
+        variants (agent/error_classifier.py) are about routing restrictions,
+        not vision, and must route to their own handler, not get their images
+        stripped.
+        """
+        bodies = [
+            "No endpoints available matching your guardrail restrictions",
+            "No endpoints available matching your data policy",
+            "No endpoints found matching your data policy",
+        ]
+        for body in bodies:
+            assert self._matches(body) is False, f"false positive on: {body}"
 
+    def test_codex_data_url_rejection_does_not_false_match_other_url_errors(self):
+        """The narrow 'image_url'. expected' phrase (keyed on the
+        field-path apostrophe used in the Codex Responses error format)
+        must NOT trip on URL validation errors that aren't about
+        image_url specifically. See issue #23570 for the original error.
+        """
+        bodies = [
+            # Generic URL validation errors — should NOT trip
+            "Invalid webhook_url. Must be a valid URL.",
+            "Expected a valid URL but got an empty string.",
+            "redirect_uri does not look like a valid URL.",
+            # An image_url error worded differently — also should not trip
+            # the narrow phrase (a separate phrase would be needed)
+            "image_url field cannot be empty",
+        ]
+        for body in bodies:
+            assert self._matches(body) is False, f"false positive on: {body}"

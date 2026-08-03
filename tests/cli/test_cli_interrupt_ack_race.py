@@ -154,6 +154,46 @@ def test_unacknowledged_interrupt_message_is_requeued_not_dropped():
     assert agent.clear_calls >= 1
 
 
+def test_acknowledged_interrupt_still_requeues_message():
+    """The pre-existing path (result carries interrupted=True) still works."""
+    cli = _make_cli()
+
+    class _AckAgent(_StubAgent):
+        def run_conversation(self, **kwargs):
+            # Wait until the monitor loop delivers the interrupt.
+            for _ in range(100):
+                if self._interrupt_requested:
+                    break
+                time.sleep(0.05)
+            return {
+                "final_response": "partial work",
+                "messages": [{"role": "assistant", "content": "partial work"}],
+                "api_calls": 1,
+                "completed": False,
+                "interrupted": True,
+                "interrupt_message": self._interrupt_message,
+                "partial": True,
+            }
+
+    agent = _AckAgent(cli.session_id)
+    cli.agent = agent
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+    cli._interrupt_queue.put("redirect please")
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        cli.chat("original")
+
+    queued = []
+    while not cli._pending_input.empty():
+        queued.append(cli._pending_input.get_nowait())
+    assert any("redirect please" in str(q) for q in queued)
+    assert cli._last_turn_interrupted is True
 
 
 def test_chat_persists_clean_input_when_a_queued_note_changes_api_message():
@@ -414,6 +454,89 @@ def test_chat_clears_previous_turn_persistence_override_before_staging():
     assert agent.staged_message == {"role": "user", "content": "new prompt"}
 
 
+def test_chat_close_does_not_persist_previous_turn_override(tmp_path, monkeypatch):
+    """A close after input staging writes the new prompt, not old API-only text."""
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    cli = _make_cli()
+    session_id = cli.session_id
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id=session_id, source="cli")
+    prefix = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    for message in prefix:
+        db.append_message(
+            session_id=session_id,
+            role=message["role"],
+            content=message["content"],
+        )
+
+    agent = object.__new__(AIAgent)
+    agent._session_db = db
+    agent._session_db_created = True
+    agent.session_id = session_id
+    agent.platform = "cli"
+    agent.model = "test-model"
+    agent._session_messages = []
+    agent._last_flushed_db_idx = 0
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
+    agent._persist_disabled = False
+    agent._cached_system_prompt = "test system prompt"
+    agent._session_init_model_config = None
+    agent._parent_session_id = None
+    agent._session_json_enabled = False
+    agent._pending_cli_user_message = None
+    agent._session_persist_lock = threading.RLock()
+    agent._persist_user_message_idx = len(prefix)
+    agent._persist_user_message_override = "previous clean prompt"
+    agent._persist_user_message_timestamp = 123.0
+    agent._active_children = []
+    agent._interrupt_requested = False
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _block_run(**_kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return {
+            "final_response": "done",
+            "messages": prefix + [{"role": "assistant", "content": "done"}],
+            "api_calls": 1,
+            "completed": True,
+            "partial": True,
+            "response_previewed": True,
+        }
+
+    agent.run_conversation = _block_run
+    cli.agent = agent
+    cli.conversation_history = list(prefix)
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        chat_thread = threading.Thread(target=lambda: cli.chat("new prompt"))
+        chat_thread.start()
+        assert entered.wait(timeout=5)
+        cli._persist_active_session_before_close()
+        release.set()
+        chat_thread.join(timeout=10)
+
+    assert not chat_thread.is_alive()
+    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+        "old prompt",
+        "old answer",
+        "new prompt",
+    ]
 
 
 def test_close_waits_for_atomic_cli_staging_before_snapshot(tmp_path, monkeypatch):

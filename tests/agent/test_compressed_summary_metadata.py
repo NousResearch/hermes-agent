@@ -112,6 +112,19 @@ class TestClassifySummaryContent:
         assert ContextCompressor.classify_summary_content(content) == "standalone"
         assert ContextCompressor._is_context_summary_content(content) is True
 
+    def test_legacy_and_historical_prefixes_are_standalone(self):
+        from agent.context_compressor import (
+            LEGACY_SUMMARY_PREFIX,
+            _HISTORICAL_SUMMARY_PREFIXES,
+        )
+
+        assert ContextCompressor.classify_summary_content(
+            LEGACY_SUMMARY_PREFIX + " body"
+        ) == "standalone"
+        for prefix in _HISTORICAL_SUMMARY_PREFIXES:
+            assert ContextCompressor.classify_summary_content(
+                prefix + " body"
+            ) == "standalone"
 
     def test_merged_tail_summary(self):
         from agent.context_compressor import (
@@ -131,7 +144,19 @@ class TestClassifySummaryContent:
         assert ContextCompressor.classify_summary_content(merged) == "merged"
         assert ContextCompressor._is_context_summary_content(merged) is True
 
+    def test_plain_messages_classify_none(self):
+        assert ContextCompressor.classify_summary_content("just a question") is None
+        assert ContextCompressor.classify_summary_content("") is None
+        assert ContextCompressor.classify_summary_content(None) is None
 
+    def test_delimiter_without_summary_prefix_is_none(self):
+        """A message merely quoting the merged delimiter (e.g. a user pasting
+        logs) is not a summary unless a handoff prefix follows it."""
+        from agent.context_compressor import _MERGED_SUMMARY_DELIMITER
+
+        content = "look at this:\n" + _MERGED_SUMMARY_DELIMITER + "\nnot a summary"
+        assert ContextCompressor.classify_summary_content(content) is None
+        assert ContextCompressor._is_context_summary_content(content) is False
 
 
 class TestClassifyAgreesWithPredicatesOnLiveEmissions:

@@ -47,6 +47,198 @@ def test_is_session_expired_detects_session_not_found():
     assert _is_session_expired_error(RuntimeError("Unknown session: abc123")) is True
 
 
+def test_is_session_expired_detects_session_terminated():
+    """Remote Playwright MCP reports transport loss as ``Session terminated``."""
+    from tools.mcp_tool import _is_session_expired_error
+
+    assert _is_session_expired_error(RuntimeError("Session terminated")) is True
+
+
+def test_is_session_expired_detects_stale_pipe_and_closed_transport_variants():
+    """Stdio/AnyIO stale-pipe failures usually surface as closed-resource
+    or broken-pipe text, not an HTTP session-expired JSON-RPC error."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(RuntimeError("ClosedResourceError")) is True
+    assert _is_session_expired_error(RuntimeError("closed resource in MCP child")) is True
+    assert _is_session_expired_error(RuntimeError("transport is closed")) is True
+    assert _is_session_expired_error(RuntimeError("Broken pipe while writing request")) is True
+    assert _is_session_expired_error(RuntimeError("End of file from MCP server")) is True
+
+
+def test_is_session_expired_is_case_insensitive():
+    """Match uses lower-cased comparison so servers that emit the
+    message in different cases (SDK formatter quirks) still trigger."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(RuntimeError("INVALID OR EXPIRED SESSION")) is True
+    assert _is_session_expired_error(RuntimeError("Session Expired")) is True
+
+
+def test_is_session_expired_rejects_unrelated_errors():
+    """Narrow scope: only the specific session-expired markers trigger.
+    A regular RuntimeError / ValueError does not."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(RuntimeError("Tool failed to execute")) is False
+    assert _is_session_expired_error(ValueError("Missing parameter")) is False
+    assert _is_session_expired_error(Exception("Connection refused")) is False
+    # 401 is handled by the sibling _is_auth_error path, not here.
+    assert _is_session_expired_error(RuntimeError("401 Unauthorized")) is False
+
+
+def test_is_session_expired_rejects_interrupted_error():
+    """InterruptedError is the user-cancel signal — must never route
+    through the session-reconnect path."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(InterruptedError()) is False
+    assert _is_session_expired_error(InterruptedError("Invalid or expired session")) is False
+
+
+def test_is_session_expired_detects_message_less_anyio_transport_failures():
+    """Recognized stream failures have no text for marker matching."""
+    from anyio import BrokenResourceError, EndOfStream
+    from tools.mcp_tool import _is_session_expired_error
+
+    assert _is_session_expired_error(BrokenResourceError()) is True
+    assert _is_session_expired_error(EndOfStream()) is True
+
+
+def test_is_session_expired_detects_wrapped_closed_resource():
+    """AnyIO task groups may wrap a message-less transport close."""
+    from anyio import ClosedResourceError
+    from tools.mcp_tool import _is_session_expired_error
+
+    exc = ExceptionGroup("MCP transport failed", [ClosedResourceError()])
+    assert _is_session_expired_error(exc) is True
+
+
+def test_is_session_expired_rejects_mixed_group_with_user_interruption():
+    """Cancellation anywhere in the tree takes precedence over transport loss."""
+    from anyio import ClosedResourceError
+    from tools.mcp_tool import _is_session_expired_error
+
+    exc = ExceptionGroup(
+        "cancelled MCP transport",
+        [InterruptedError("cancel"), ClosedResourceError()],
+    )
+    assert _is_session_expired_error(exc) is False
+
+
+def test_is_session_expired_finds_closed_resource_beyond_recursion_limit():
+    """The full classifier must handle arbitrarily deep transport wrappers."""
+    import sys
+
+    from anyio import ClosedResourceError
+    from tools.mcp_tool import _is_session_expired_error
+
+    class NestedException(Exception):
+        exceptions: tuple[BaseException, ...]
+
+    exc = ClosedResourceError()
+    for _ in range(sys.getrecursionlimit() + 100):
+        wrapper = NestedException("wrapped")
+        wrapper.exceptions = (exc,)
+        exc = wrapper
+
+    assert _is_session_expired_error(exc) is True
+
+
+def test_is_session_expired_handles_cyclic_graph_without_transport_error():
+    """A cyclic non-transport graph must terminate and classify false."""
+    from tools.mcp_tool import _is_session_expired_error
+
+    class CyclicException(Exception):
+        exceptions: tuple[BaseException, ...]
+
+    first = CyclicException("first")
+    second = CyclicException("second")
+    first.exceptions = (second,)
+    second.exceptions = (first,)
+
+    assert _is_session_expired_error(first) is False
+
+
+def test_is_session_expired_finds_transport_error_in_cyclic_graph():
+    """Cycle detection must not prevent scanning reachable transport errors."""
+    from anyio import ClosedResourceError
+    from tools.mcp_tool import _is_session_expired_error
+
+    class CyclicException(Exception):
+        exceptions: tuple[BaseException, ...]
+
+    first = CyclicException("first")
+    second = CyclicException("second")
+    first.exceptions = (second, ClosedResourceError())
+    second.exceptions = (first,)
+
+    assert _is_session_expired_error(first) is True
+
+
+def test_is_session_expired_rejects_empty_message():
+    """Bare exceptions with no message shouldn't match."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(RuntimeError("")) is False
+    assert _is_session_expired_error(Exception()) is False
+
+
+def test_is_session_expired_follows_cause_chain():
+    """A transport close reachable only via ``__cause__`` must classify."""
+    from anyio import ClosedResourceError
+    from tools.mcp_tool import _is_session_expired_error
+
+    try:
+        try:
+            raise ClosedResourceError()
+        except ClosedResourceError as inner:
+            raise RuntimeError("MCP request failed") from inner
+    except RuntimeError as exc:
+        assert _is_session_expired_error(exc) is True
+
+
+def test_is_session_expired_follows_context_chain():
+    """Implicit ``__context__`` chaining must also be scanned."""
+    from anyio import BrokenResourceError
+    from tools.mcp_tool import _is_session_expired_error
+
+    try:
+        try:
+            raise BrokenResourceError()
+        except BrokenResourceError:
+            raise RuntimeError("while handling transport write")
+    except RuntimeError as exc:
+        assert _is_session_expired_error(exc) is True
+
+
+def test_is_session_expired_interruption_in_cause_chain_wins():
+    """User cancellation buried in the chain overrides transport signals."""
+    from anyio import ClosedResourceError
+    from tools.mcp_tool import _is_session_expired_error
+
+    root = InterruptedError("cancel")
+    mid = ClosedResourceError()
+    mid.__cause__ = root
+    top = RuntimeError("transport is closed")
+    top.__cause__ = mid
+    assert _is_session_expired_error(top) is False
+
+
+def test_is_session_expired_handles_cyclic_cause_context_chain():
+    """Cycles through __cause__/__context__ must terminate (visited set)."""
+    from tools.mcp_tool import _is_session_expired_error
+
+    a = RuntimeError("a")
+    b = RuntimeError("b")
+    a.__cause__ = b
+    b.__context__ = a  # cycle back through the other link
+    assert _is_session_expired_error(a) is False
+
+    from anyio import ClosedResourceError
+
+    c = RuntimeError("c")
+    d = ClosedResourceError()
+    c.__cause__ = d
+    d.__context__ = c  # cycle, but transport error is reachable
+    assert _is_session_expired_error(c) is True
+
+
 def test_is_session_expired_traversal_is_budget_bounded():
     """Pathologically long chains stop at the node budget without spinning."""
     import tools.mcp_tool as mcp_mod
@@ -207,6 +399,58 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
         mcp_tool._server_breaker_opened_at.pop("resumed", None)
 
 
+def test_call_tool_handler_reconnects_on_session_expired(monkeypatch, tmp_path):
+    """Reporter's exact repro: call_tool raises "Invalid or expired
+    session", handler triggers reconnect, retries once, and returns
+    the retry's successful JSON (not the generic error)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    server, reconnect_flag = _install_stub_server("wpcom")
+    mcp_tool._servers["wpcom"] = server
+    mcp_tool._server_error_counts.pop("wpcom", None)
+
+    # First call raises session-expired; second call (post-reconnect)
+    # returns a proper MCP tool result.
+    call_count = {"n": 0}
+
+    async def _call_sequence(*a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("Invalid params: Invalid or expired session")
+        # Second call: mimic the MCP SDK's structured success response.
+        result = MagicMock()
+        result.isError = False
+        result.content = [MagicMock(type="text", text="tool completed")]
+        result.structuredContent = None
+        return result
+
+    server.session.call_tool = _call_sequence
+
+    try:
+        handler = _make_tool_handler("wpcom", "wpcom-mcp-content-authoring", 10.0)
+        out = handler({"slug": "hello"})
+        parsed = json.loads(out)
+        # Retry succeeded — no error surfaced to caller.
+        assert "error" not in parsed, (
+            f"Expected retry to succeed after reconnect; got: {parsed}"
+        )
+        # _reconnect_event was signalled exactly once.
+        assert reconnect_flag.is_set(), (
+            "Handler did not trigger transport reconnect on session-expired "
+            "error — the reconnect flow is the whole point of this fix."
+        )
+        # Exactly 2 call attempts (original + one retry).
+        assert call_count["n"] == 2, (
+            f"Expected 1 original + 1 retry = 2 calls; got {call_count['n']}"
+        )
+    finally:
+        mcp_tool._servers.pop("wpcom", None)
+        mcp_tool._server_error_counts.pop("wpcom", None)
+
+
 def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     """Regression for long-lived HTTP/stream MCP sessions.
 
@@ -285,6 +529,43 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
         mcp_tool._server_breaker_opened_at.pop("hindsight", None)
 
 
+def test_call_tool_handler_non_session_expired_error_falls_through(
+    monkeypatch, tmp_path
+):
+    """Preserved-behaviour canary: a non-session-expired exception must
+    NOT trigger reconnect — it must fall through to the generic error
+    path so the caller sees the real failure."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    server, reconnect_flag = _install_stub_server("srv")
+    mcp_tool._servers["srv"] = server
+    mcp_tool._server_error_counts.pop("srv", None)
+
+    async def _raises(*a, **kw):
+        raise RuntimeError("Tool execution failed — unrelated error")
+
+    server.session.call_tool = _raises
+
+    try:
+        handler = _make_tool_handler("srv", "mytool", 10.0)
+        out = handler({"arg": "v"})
+        parsed = json.loads(out)
+        # Generic error path surfaced the failure.
+        assert "MCP call failed" in parsed.get("error", "")
+        # Reconnect was NOT triggered for this unrelated failure.
+        assert not reconnect_flag.is_set(), (
+            "Reconnect must not fire for non-session-expired errors — "
+            "this would cause spurious transport churn on every tool "
+            "failure."
+        )
+    finally:
+        mcp_tool._servers.pop("srv", None)
+        mcp_tool._server_error_counts.pop("srv", None)
+
+
 def test_session_expired_handler_returns_none_without_loop(monkeypatch):
     """Defensive: if the MCP loop isn't running (cold start / shutdown
     race), the handler must fall through cleanly instead of hanging
@@ -328,6 +609,38 @@ def test_session_expired_handler_returns_none_without_server_record():
         "tools/call",
     )
     assert out is None
+
+
+def test_session_expired_handler_returns_none_when_retry_also_fails(
+    monkeypatch, tmp_path
+):
+    """If the retry after reconnect also raises, fall through to the
+    generic error path (don't loop forever, don't mask the second
+    failure)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _handle_session_expired_and_retry
+
+    server, _ = _install_stub_server("srv-retry-fail")
+    mcp_tool._servers["srv-retry-fail"] = server
+
+    def _retry_raises():
+        raise RuntimeError("retry blew up too")
+
+    try:
+        out = _handle_session_expired_and_retry(
+            "srv-retry-fail",
+            RuntimeError("Invalid or expired session"),
+            _retry_raises,
+            "tools/call",
+        )
+        assert out is None, (
+            "When the retry itself fails, the handler must return None "
+            "so the caller's generic error path runs — no retry loop."
+        )
+    finally:
+        mcp_tool._servers.pop("srv-retry-fail", None)
 
 
 # ---------------------------------------------------------------------------

@@ -98,9 +98,9 @@ def get_provider(name: str) -> Optional[WebSearchProvider]:
 def _read_config_key(*path: str) -> Optional[str]:
     """Resolve a dotted config key from ``config.yaml``. Returns None on miss."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_cli.config import load_config
 
-        cfg = load_config_readonly()
+        cfg = load_config()
         cur = cfg
         for segment in path:
             if not isinstance(cur, dict):

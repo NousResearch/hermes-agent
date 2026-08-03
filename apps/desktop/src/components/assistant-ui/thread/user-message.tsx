@@ -3,9 +3,7 @@ import { type FC, type ReactNode, useCallback, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
-import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
-import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
@@ -15,13 +13,6 @@ import { StopFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
-
-/** True when the user has a live text highlight (drag-select / triple-click). */
-export function hasTextSelection(): boolean {
-  const selection = window.getSelection()
-
-  return Boolean(selection && !selection.isCollapsed && selection.toString().length > 0)
-}
 
 export function StickyHumanMessageContainer({
   attachments,
@@ -153,17 +144,6 @@ export const UserMessage: FC<{
     return messageAttachmentRefs(custom.attachmentRefs)
   })
 
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'user')
-
-  const pickEmoji = useCallback(
-    (emoji: null | string) => {
-      setPickerOpen(false)
-      react(emoji)
-    },
-    [react]
-  )
-
   // Sticky human bubbles clamp to ~2 lines with a soft fade so a long prompt
   // doesn't dominate the viewport while the response streams underneath; the
   // clamp lifts on hover / focus (see styles.css). We measure the *unclamped*
@@ -277,135 +257,84 @@ export const UserMessage: FC<{
       >
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
-            <ReactionPicker
-              onOpenChange={setPickerOpen}
-              onSelect={pickEmoji}
-              open={pickerOpen}
-              selected={shownReactions.find(reaction => reaction.author === 'user')?.emoji}
-            >
-              <div
-                className="relative w-full"
-                onContextMenu={
-                  // Right-click is the desktop stand-in for iOS touch-and-hold —
-                  // but only when there's nothing selected. A live highlight
-                  // keeps the native Copy menu (and ⌘C) instead of the picker.
-                  readOnly || !reactionsEnabled
-                    ? undefined
-                    : event => {
-                        if (hasTextSelection()) {
-                          return
-                        }
+            <div className="relative w-full">
+              {readOnly ? (
+                // Spectator transcript: clicking only toggles the clamp so the
+                // full prompt is readable — never opens an edit composer.
+                <button
+                  aria-expanded={bodyClamped ? expanded : undefined}
+                  className={cn(bubbleClassName, !bodyClamped && 'cursor-default')}
+                  onClick={() => {
+                    if (!bodyClamped) {
+                      return
+                    }
 
-                        event.preventDefault()
-                        setPickerOpen(true)
-                      }
-                }
-              >
-                {readOnly ? (
-                  // Spectator transcript: clicking only toggles the clamp so the
-                  // full prompt is readable — never opens an edit composer.
+                    triggerHaptic('selection')
+                    setExpanded(value => !value)
+                  }}
+                  title={bodyClamped ? (expanded ? t.common.collapse : copy.expandMessage) : undefined}
+                  type="button"
+                >
+                  {bubbleContent}
+                </button>
+              ) : (
+                // Always editable — clicking opens the edit composer even while a
+                // turn streams; sending the edit reverts (interrupt + rewind).
+                <ActionBarPrimitive.Edit asChild>
                   <button
-                    aria-expanded={bodyClamped ? expanded : undefined}
-                    className={cn(bubbleClassName, !bodyClamped && 'cursor-default')}
-                    onClick={() => {
-                      // Drag-select ends on mouseup→click; don't collapse the
-                      // clamp just because the highlight finished.
-                      if (hasTextSelection() || !bodyClamped) {
-                        return
-                      }
-
-                      triggerHaptic('selection')
-                      setExpanded(value => !value)
-                    }}
-                    title={bodyClamped ? (expanded ? t.common.collapse : copy.expandMessage) : undefined}
+                    aria-label={copy.editMessage}
+                    className={bubbleClassName}
+                    onClick={() => triggerHaptic('selection')}
+                    onPointerDown={() => notifyThreadEditOpen()}
+                    title={copy.editMessage}
                     type="button"
                   >
                     {bubbleContent}
                   </button>
-                ) : (
-                  // Always editable — clicking opens the edit composer even while a
-                  // turn streams; sending the edit reverts (interrupt + rewind).
-                  // A live text highlight wins: finishing a drag-select must not
-                  // open the editor and throw the selection away.
-                  <ActionBarPrimitive.Edit asChild>
+                </ActionBarPrimitive.Edit>
+              )}
+              {(showStop || showRestore) && (
+                <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
+                  {showStop ? (
                     <button
-                      aria-label={copy.editMessage}
-                      className={bubbleClassName}
+                      aria-label={copy.stop}
+                      className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
                       onClick={event => {
-                        if (hasTextSelection()) {
-                          event.preventDefault()
-                          event.stopPropagation()
-
-                          return
-                        }
-
-                        triggerHaptic('selection')
+                        event.preventDefault()
+                        event.stopPropagation()
+                        void onCancel?.()
                       }}
-                      onPointerDown={() => {
-                        if (hasTextSelection()) {
-                          return
-                        }
-
-                        notifyThreadEditOpen()
-                      }}
-                      title={copy.editMessage}
+                      title={copy.stop}
                       type="button"
                     >
-                      {bubbleContent}
+                      {StopGlyph}
                     </button>
-                  </ActionBarPrimitive.Edit>
-                )}
-                {(showStop || showRestore) && (
-                  <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
-                    {showStop ? (
-                      <button
-                        aria-label={copy.stop}
-                        className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
-                        onClick={event => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          void onCancel?.()
-                        }}
-                        title={copy.stop}
-                        type="button"
-                      >
-                        {StopGlyph}
-                      </button>
-                    ) : (
-                      <button
-                        aria-label={copy.restoreCheckpoint}
-                        className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
-                        onClick={event => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          triggerHaptic('selection')
-                          onRequestRestoreConfirm?.(messageId, {
-                            text: messageText,
-                            userOrdinal: runtimeUserOrdinal
-                          })
-                        }}
-                        onPointerDown={event => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                        }}
-                        title={copy.restoreFromHere}
-                        type="button"
-                      >
-                        <Codicon name="discard" size="0.875rem" />
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </ReactionPicker>
-            {/* Below the bubble, same register as the assistant action row:
-                same emoji size, same vertical padding, right-aligned to the
-                sent bubble. Overlaying the corner read badly in practice. */}
-            <ReactionBadge
-              className="justify-end gap-1.5 py-1.5 pr-1.5"
-              onRetract={() => react(null)}
-              reactions={shownReactions}
-            />
+                  ) : (
+                    <button
+                      aria-label={copy.restoreCheckpoint}
+                      className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
+                      onClick={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        triggerHaptic('selection')
+                        onRequestRestoreConfirm?.(messageId, {
+                          text: messageText,
+                          userOrdinal: runtimeUserOrdinal
+                        })
+                      }}
+                      onPointerDown={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                      }}
+                      title={copy.restoreFromHere}
+                      type="button"
+                    >
+                      <Codicon name="discard" size="0.875rem" />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
             <BranchPickerPrimitive.Root
               className={cn(
                 'checkpoint-container flex items-center gap-1 pb-0 pt-1 pl-1.5 text-[0.75rem] leading-none text-(--ui-text-tertiary)',

@@ -18,6 +18,25 @@ class TestBasicExecution:
         output = handle.stdout.read()
         assert "hello world" in output
 
+    def test_nonzero_exit_code(self):
+        def exec_fn():
+            return ("error occurred", 42)
+
+        handle = _ThreadedProcessHandle(exec_fn)
+        handle.wait(timeout=5)
+
+        assert handle.returncode == 42
+        output = handle.stdout.read()
+        assert "error occurred" in output
+
+    def test_exception_in_exec_fn(self):
+        def exec_fn():
+            raise RuntimeError("boom")
+
+        handle = _ThreadedProcessHandle(exec_fn)
+        handle.wait(timeout=5)
+
+        assert handle.returncode == 1
 
     def test_empty_output(self):
         def exec_fn():
@@ -70,6 +89,14 @@ class TestCancelFn:
         handle.kill()
         assert called.is_set()
 
+    def test_cancel_fn_none_is_safe(self):
+        def exec_fn():
+            return ("ok", 0)
+
+        handle = _ThreadedProcessHandle(exec_fn, cancel_fn=None)
+        handle.kill()  # should not raise
+        handle.wait(timeout=5)
+        assert handle.returncode == 0
 
     def test_cancel_fn_exception_swallowed(self):
         def cancel():
@@ -95,6 +122,15 @@ class TestStdoutPipe:
         assert len(lines) == 3
         assert lines[0] == "line1\n"
 
+    def test_stdout_iterable(self):
+        def exec_fn():
+            return ("a\nb\nc\n", 0)
+
+        handle = _ThreadedProcessHandle(exec_fn)
+        handle.wait(timeout=5)
+
+        collected = list(handle.stdout)
+        assert len(collected) == 3
 
     def test_unicode_output(self):
         def exec_fn():

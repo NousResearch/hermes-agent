@@ -79,6 +79,25 @@ def test_slack_declares_inchannel_capability():
 
 # --- surface resolver ------------------------------------------------------
 
+def test_surface_defaults_to_thread():
+    adapter = _make_adapter({})
+    assert adapter._cron_continuable_surface() == "thread"
+
+
+def test_surface_in_channel_opts_in():
+    adapter = _make_adapter({"cron_continuable_surface": "in_channel"})
+    assert adapter._cron_continuable_surface() == "in_channel"
+
+
+def test_surface_in_channel_case_and_whitespace_insensitive():
+    adapter = _make_adapter({"cron_continuable_surface": "  In_Channel  "})
+    assert adapter._cron_continuable_surface() == "in_channel"
+
+
+def test_surface_explicit_thread():
+    adapter = _make_adapter({"cron_continuable_surface": "thread"})
+    assert adapter._cron_continuable_surface() == "thread"
+
 
 def test_surface_unrecognised_value_coerces_to_thread():
     """Fail safe: any value that isn't 'in_channel' resolves to 'thread'."""
@@ -99,6 +118,17 @@ def test_warns_when_in_channel_without_flat_reply(caplog):
     assert matched
 
 
+def test_warns_when_in_channel_with_reply_in_thread_true(caplog):
+    """Explicit reply_in_thread: true alongside in_channel → still warn."""
+    adapter = _make_adapter(
+        {"cron_continuable_surface": "in_channel", "reply_in_thread": True}
+    )
+    with caplog.at_level(logging.WARNING):
+        adapter._warn_if_inchannel_without_flat_reply("Acme")
+    assert any("cron_continuable_surface=in_channel" in r.message
+               for r in caplog.records)
+
+
 def test_no_warning_when_properly_paired(caplog):
     """in_channel + reply_in_thread: false is the correct pairing → silent."""
     adapter = _make_adapter(
@@ -110,3 +140,10 @@ def test_no_warning_when_properly_paired(caplog):
                    for r in caplog.records)
 
 
+def test_no_warning_when_surface_is_thread(caplog):
+    """Default thread surface never warns about the pairing."""
+    adapter = _make_adapter({"reply_in_thread": True})
+    with caplog.at_level(logging.WARNING):
+        adapter._warn_if_inchannel_without_flat_reply("Acme")
+    assert not any("cron_continuable_surface=in_channel" in r.message
+                   for r in caplog.records)

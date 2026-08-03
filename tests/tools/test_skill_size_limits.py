@@ -45,6 +45,14 @@ class TestValidateContentSize:
     def test_within_limit(self):
         assert _validate_content_size("a" * 1000) is None
 
+    def test_at_limit(self):
+        assert _validate_content_size("a" * MAX_SKILL_CONTENT_CHARS) is None
+
+    def test_over_limit(self):
+        err = _validate_content_size("a" * (MAX_SKILL_CONTENT_CHARS + 1))
+        assert err is not None
+        assert "100,001" in err
+        assert "100,000" in err
 
     def test_custom_label(self):
         err = _validate_content_size("a" * (MAX_SKILL_CONTENT_CHARS + 1), label="references/api.md")
@@ -59,6 +67,11 @@ class TestCreateSkillSizeLimit:
         result = json.loads(skill_manage(action="create", name="small-skill", content=content))
         assert result["success"] is True
 
+    def test_create_over_limit(self, isolate_skills):
+        content = _make_skill_content(MAX_SKILL_CONTENT_CHARS + 100)
+        result = json.loads(skill_manage(action="create", name="huge-skill", content=content))
+        assert result["success"] is False
+        assert "100,000" in result["error"]
 
     def test_create_at_limit(self, isolate_skills):
         # Content at exactly the limit should succeed
@@ -105,6 +118,27 @@ class TestPatchSkillSizeLimit:
         assert result["success"] is False
         assert "100,000" in result["error"]
 
+    def test_patch_that_reduces_size_on_oversized_skill(self, isolate_skills, tmp_path):
+        """Patches that shrink an already-oversized skill should succeed."""
+        # Manually create an oversized skill (simulating hand-placed)
+        skill_dir = tmp_path / "skills" / "bloated"
+        skill_dir.mkdir(parents=True)
+        oversized = _make_skill_content(MAX_SKILL_CONTENT_CHARS + 5000)
+        oversized = oversized.replace("name: test-skill", "name: bloated")
+        (skill_dir / "SKILL.md").write_text(oversized, encoding="utf-8")
+        assert len(oversized) > MAX_SKILL_CONTENT_CHARS
+
+        # Patch that removes content to bring it under the limit.
+        # Use replace_all to replace the repeated x's with a shorter string.
+        result = json.loads(skill_manage(
+            action="patch",
+            name="bloated",
+            old_string="x" * 100,
+            new_string="y",
+            replace_all=True,
+        ))
+        # Should succeed because the result is well within limits
+        assert result["success"] is True
 
     def test_patch_supporting_file_size_limit(self, isolate_skills):
         """Patch on a supporting file also checks size."""

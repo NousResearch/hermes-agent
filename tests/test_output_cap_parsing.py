@@ -15,8 +15,19 @@ class TestParseOpenRouterOutputCap:
         # available output = 200000 - 150000 - 40000 = 10000
         assert parse_available_output_tokens_from_error(msg) == 10000
 
+    def test_anthropic_format_still_works(self):
+        msg = ("max_tokens: 32768 > context_window: 200000 - "
+               "input_tokens: 190000 = available_tokens: 10000")
+        assert parse_available_output_tokens_from_error(msg) == 10000
 
+    def test_non_output_cap_error_returns_none(self):
+        assert parse_available_output_tokens_from_error("some unrelated 400 error") is None
 
+    def test_breakdown_with_no_room_returns_none(self):
+        # ctx - text - tool <= 0 -> None (don't return a non-positive cap)
+        msg = ("maximum context length is 1000 tokens "
+               "(900 of text input, 200 of tool input, 0 in the output)")
+        assert parse_available_output_tokens_from_error(msg) is None
 
 
 class TestParseCharBasedOutputCap:
@@ -48,6 +59,12 @@ class TestParseCharBasedOutputCap:
         assert available is not None
         assert available + (chars + 2) // 3 <= ctx
 
+    def test_char_based_no_room_returns_none(self):
+        # Prompt larger than the window (in tokens) -> not an output-cap fix;
+        # let the prompt-too-long / compression path handle it.
+        msg = ("maximum context length is 1000 tokens. However, you requested "
+               "1000 output tokens and your prompt contains 9000 characters.")
+        assert parse_available_output_tokens_from_error(msg) is None
 
 
 class TestParseDashScopeOutputCap:
@@ -78,6 +95,9 @@ class TestIsOutputCapError:
             "Range of max_tokens should be [1, 65536]"
         ) is True
 
+    def test_unknown_numeric_max_tokens_cap_is_output_cap(self):
+        # Provider we don't yet parse a number from, but clearly an output cap.
+        assert is_output_cap_error("Invalid value: max_tokens should be <= 8192") is True
 
     def test_anthropic_available_tokens_is_output_cap(self):
         assert is_output_cap_error(
@@ -125,6 +145,12 @@ class TestParseVllmTokenBasedOutputCap:
         # available output = 131072 - 65537 = 65535
         assert parse_available_output_tokens_from_error(self._VLLM_MSG) == 65535
 
+    def test_vllm_without_at_least_qualifier(self):
+        # Some versions omit the "at least" hedge.
+        msg = ("This model's maximum context length is 131072 tokens. However, "
+               "you requested 4096 output tokens and your prompt contains "
+               "100000 input tokens, for a total of 104096 tokens.")
+        assert parse_available_output_tokens_from_error(msg) == 31072
 
     def test_vllm_retry_fits_inside_window(self):
         # The retried cap plus the reported input must fit in the window.
@@ -132,3 +158,11 @@ class TestParseVllmTokenBasedOutputCap:
         assert available is not None
         assert available + 65537 <= 131072
 
+    def test_vllm_input_alone_exceeds_window_returns_none(self):
+        # Input >= window -> lowering the output cap cannot help; the caller
+        # must fall through to the compression path.
+        msg = ("This model's maximum context length is 131072 tokens. However, "
+               "you requested 1024 output tokens and your prompt contains at "
+               "least 140000 input tokens, for a total of at least 141024 "
+               "tokens.")
+        assert parse_available_output_tokens_from_error(msg) is None

@@ -58,7 +58,7 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   }
 }
 
-function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate {
+function toPayload(form: EndpointForm): CustomEndpointUpdate {
   const contextLength = Number.parseInt(form.contextLength, 10)
 
   return {
@@ -69,8 +69,7 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
     api_key: form.apiKey.trim() || undefined,
     context_length: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
     discover_models: form.discoverModels,
-    make_default: form.makeDefault,
-    models: models?.length ? models : undefined
+    make_default: form.makeDefault
   }
 }
 
@@ -126,7 +125,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleSave() {
     try {
       setSaving(true)
-      const response = await saveCustomEndpoint(toPayload(form, discoveredModels))
+      const response = await saveCustomEndpoint(toPayload(form))
       setEndpoints(response.endpoints)
       const saved = response.endpoints.find(endpoint => endpoint.id === response.id)
 

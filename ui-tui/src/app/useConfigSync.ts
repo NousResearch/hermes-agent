@@ -275,7 +275,6 @@ export const applyDisplay = (
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
-    focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
     mouseTracking: normalizeMouseTracking(d),

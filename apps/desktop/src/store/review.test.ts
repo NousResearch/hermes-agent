@@ -13,7 +13,6 @@ import {
   $reviewMaxChurn,
   $reviewOpen,
   $reviewRevertTarget,
-  $reviewScopeCwd,
   $reviewSelectedPath,
   $reviewShipBusy,
   $reviewShipInfo,
@@ -93,7 +92,6 @@ beforeEach(() => {
   $reviewShipBusy.set(false)
   $reviewCommitMsgBusy.set(false)
   $reviewRevertTarget.set(undefined)
-  $reviewScopeCwd.set(null)
   $currentCwd.set('/repo')
 })
 
@@ -241,58 +239,23 @@ describe('view state', () => {
     const review = stubReview()
     openReview()
     expect($reviewOpen.get()).toBe(true)
-    expect($reviewScopeCwd.get()).toBeNull()
     // openReview fires refreshReview + refreshShipInfo without awaiting.
     await Promise.resolve()
     await Promise.resolve()
-    expect(review.list).toHaveBeenCalledWith('/repo', 'uncommitted', null)
+    expect(review.list).toHaveBeenCalled()
   })
 
-  it('openReview pins the pane to a tile worktree when scoped', async () => {
-    const review = stubReview({
-      list: vi.fn(async () => ({ files: [file('tile.ts')] }))
-    })
-
-    openReview('/tile-worktree')
-    expect($reviewOpen.get()).toBe(true)
-    expect($reviewScopeCwd.get()).toBe('/tile-worktree')
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(review.list).toHaveBeenCalledWith('/tile-worktree', 'uncommitted', null)
-  })
-
-  it('closeReview closes the pane, clears selection, and drops scope', () => {
+  it('closeReview closes the pane and clears the selection', () => {
     stubReview()
     $reviewOpen.set(true)
-    $reviewScopeCwd.set('/tile-worktree')
     $reviewSelectedPath.set('a.ts')
     $reviewDiff.set('x')
 
     closeReview()
 
     expect($reviewOpen.get()).toBe(false)
-    expect($reviewScopeCwd.get()).toBeNull()
     expect($reviewSelectedPath.get()).toBeNull()
     expect($reviewDiff.get()).toBeNull()
-  })
-
-  it('scoped pane ignores main-pane cwd changes', async () => {
-    const review = stubReview({
-      list: vi.fn(async (cwd: string) => ({ files: [file(cwd === '/tile' ? 'tile.ts' : 'main.ts')] }))
-    })
-
-    openReview('/tile')
-    await Promise.resolve()
-    await Promise.resolve()
-    review.list.mockClear()
-
-    // Main session hops repos; the pane is still pinned to the tile.
-    $currentCwd.set('/somewhere-else')
-    await Promise.resolve()
-    await Promise.resolve()
-
-    expect($reviewScopeCwd.get()).toBe('/tile')
-    expect(review.list).not.toHaveBeenCalled()
   })
 })
 

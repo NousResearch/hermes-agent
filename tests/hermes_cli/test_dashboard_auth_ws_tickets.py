@@ -47,6 +47,10 @@ class TestMintAndConsume:
         ticket = mint_ticket(user_id="u1", provider="nous")
         assert len(ticket) >= 32
 
+    def test_ticket_values_are_unique(self):
+        seen = {mint_ticket(user_id="u1", provider="x") for _ in range(50)}
+        assert len(seen) == 50
+
 
 # ---------------------------------------------------------------------------
 # Single-use
@@ -63,6 +67,10 @@ class TestSingleUse:
     def test_unknown_ticket_rejected(self):
         with pytest.raises(TicketInvalid, match="unknown"):
             consume_ticket("nope-never-minted")
+
+    def test_empty_ticket_rejected(self):
+        with pytest.raises(TicketInvalid):
+            consume_ticket("")
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +98,16 @@ class TestTTL:
         clock["now"] += TTL_SECONDS + 1
         with pytest.raises(TicketInvalid, match="expired"):
             consume_ticket(ticket)
+
+    def test_at_exact_ttl_boundary_still_valid(self, monkeypatch):
+        clock = {"now": 1_000_000}
+        monkeypatch.setattr(ws_tickets.time, "time", lambda: clock["now"])
+
+        ticket = mint_ticket(user_id="u1", provider="stub")
+        clock["now"] += TTL_SECONDS  # exactly at boundary; expires_at == now
+        # Implementation: ``expires_at < now`` (strict), so == passes.
+        info = consume_ticket(ticket)
+        assert info["user_id"] == "u1"
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +170,43 @@ class TestConcurrency:
 
 
 class TestInternalCredential:
+    def test_minted_once_is_stable(self):
+        """Successive calls return the same process-lifetime value."""
+        first = ws_tickets.internal_ws_credential()
+        second = ws_tickets.internal_ws_credential()
+        assert first == second
+        assert len(first) >= 32  # token_urlsafe(32)
 
+    def test_round_trip_identity(self):
+        cred = ws_tickets.internal_ws_credential()
+        info = ws_tickets.consume_internal_credential(cred)
+        assert info["user_id"] == ws_tickets.INTERNAL_USER_ID
+        assert info["provider"] == ws_tickets.INTERNAL_PROVIDER
 
+    def test_multi_use(self):
+        """Unlike a single-use ticket, the credential survives repeated consume."""
+        cred = ws_tickets.internal_ws_credential()
+        for _ in range(5):
+            assert (
+                ws_tickets.consume_internal_credential(cred)["provider"]
+                == ws_tickets.INTERNAL_PROVIDER
+            )
+
+    def test_rejected_before_mint(self):
+        """With nothing minted yet, any value is rejected (expected is None)."""
+        # autouse _reset leaves _internal_credential == None at test start.
+        with pytest.raises(TicketInvalid):
+            ws_tickets.consume_internal_credential("anything")
+
+    def test_empty_value_rejected(self):
+        ws_tickets.internal_ws_credential()  # mint so expected is non-None
+        with pytest.raises(TicketInvalid):
+            ws_tickets.consume_internal_credential("")
+
+    def test_wrong_value_rejected(self):
+        ws_tickets.internal_ws_credential()
+        with pytest.raises(TicketInvalid):
+            ws_tickets.consume_internal_credential("not-the-credential")
 
     def test_reset_clears_and_remints(self):
         first = ws_tickets.internal_ws_credential()

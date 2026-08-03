@@ -18,27 +18,26 @@
     "lint:diagrams": "ascii-guard lint --exclude-code-blocks docs"
   },
   "dependencies": {
-    "@docusaurus/core": "3.10.2",
-    "@docusaurus/plugin-client-redirects": "3.10.2",
-    "@docusaurus/preset-classic": "3.10.2",
-    "@docusaurus/theme-mermaid": "3.10.2",
-    "@easyops-cn/docusaurus-search-local": "0.55.2",
-    "@mdx-js/react": "3.1.1",
-    "clsx": "2.1.1",
-    "prism-react-renderer": "2.3.0",
-    "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "@docusaurus/core": "3.9.2",
+    "@docusaurus/plugin-client-redirects": "3.9.2",
+    "@docusaurus/preset-classic": "3.9.2",
+    "@docusaurus/theme-mermaid": "^3.9.2",
+    "@easyops-cn/docusaurus-search-local": "^0.55.1",
+    "@mdx-js/react": "^3.0.0",
+    "clsx": "^2.0.0",
+    "prism-react-renderer": "^2.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@docusaurus/module-type-aliases": "3.10.2",
-    "@docusaurus/tsconfig": "3.10.2",
-    "@docusaurus/types": "3.10.2",
-    "typescript": "6.0.3"
+    "@docusaurus/module-type-aliases": "3.9.2",
+    "@docusaurus/tsconfig": "3.9.2",
+    "@docusaurus/types": "3.9.2",
+    "typescript": "^6.0.3"
   },
   "overrides": {
-    "serialize-javascript": "7.0.7",
-    "uuid": "14.0.1",
-    "minimatch": "10.2.6"
+    "serialize-javascript": "^7.0.5",
+    "uuid": "^14.0.0"
   },
   "browserslist": {
     "production": [
@@ -53,11 +52,6 @@
     ]
   },
   "engines": {
-    "node": ">=20.0",
-    "npm": ">=11.17.0"
-  },
-  "allowScripts": {
-    "core-js@3.49.0": true,
-    "core-js-pure@3.49.0": true
+    "node": ">=20.0"
   }
 }

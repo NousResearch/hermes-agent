@@ -74,6 +74,116 @@ class TestPatchFailureEscalation:
                 f"Escalating hint fired too early on attempt {_i + 1}: {hint!r}"
             )
 
+    def test_third_consecutive_failure_escalates(self, hermes_home, tmp_path, fresh_tracker):
+        from tools.file_tools import _handle_patch
+
+        target = tmp_path / "f.py"
+        target.write_text("def foo():\n    return 1\n")
+
+        last_hint = ""
+        for _i in range(3):
+            result = _handle_patch(
+                {
+                    "mode": "replace",
+                    "path": str(target),
+                    "old_string": f"DOES_NOT_EXIST_{_i}_FOOFOOFOO",
+                    "new_string": "x",
+                },
+                task_id="esc_t2",
+            )
+            d = json.loads(result)
+            last_hint = d.get("_hint", "") or ""
+
+        assert "failure #3" in last_hint, repr(last_hint)
+        assert "Stop retrying" in last_hint
+        assert "write_file" in last_hint, (
+            "Escalating hint should mention write_file fallback"
+        )
+
+    def test_success_clears_failure_counter(self, hermes_home, tmp_path, fresh_tracker):
+        from tools.file_tools import _handle_patch
+
+        target = tmp_path / "f.py"
+        target.write_text("def foo():\n    return 1\n")
+
+        # Three failures: counter at 3.
+        for _i in range(3):
+            _handle_patch(
+                {
+                    "mode": "replace",
+                    "path": str(target),
+                    "old_string": f"GHOST_{_i}_ABCABC",
+                    "new_string": "x",
+                },
+                task_id="esc_t3",
+            )
+
+        # Successful patch: clears the counter.
+        result = _handle_patch(
+            {
+                "mode": "replace",
+                "path": str(target),
+                "old_string": "return 1",
+                "new_string": "return 99",
+            },
+            task_id="esc_t3",
+        )
+        d = json.loads(result)
+        assert not d.get("error"), d
+
+        # Next failure should be back to "attempt 1" — generic hint only.
+        result = _handle_patch(
+            {
+                "mode": "replace",
+                "path": str(target),
+                "old_string": "STILL_GHOST_XYZ",
+                "new_string": "x",
+            },
+            task_id="esc_t3",
+        )
+        d = json.loads(result)
+        hint = d.get("_hint", "") or ""
+        assert "failure #" not in hint, (
+            f"Counter should have been reset after success: {hint!r}"
+        )
+
+    def test_different_paths_have_independent_counters(
+        self, hermes_home, tmp_path, fresh_tracker
+    ):
+        from tools.file_tools import _handle_patch
+
+        a = tmp_path / "a.py"
+        a.write_text("x = 1\n")
+        b = tmp_path / "b.py"
+        b.write_text("y = 2\n")
+
+        # Three failures on a.py.
+        for _i in range(3):
+            _handle_patch(
+                {
+                    "mode": "replace",
+                    "path": str(a),
+                    "old_string": f"NONE_A_{_i}_ZZZ",
+                    "new_string": "x",
+                },
+                task_id="esc_t4",
+            )
+
+        # One failure on b.py — should NOT inherit a.py's count.
+        result = _handle_patch(
+            {
+                "mode": "replace",
+                "path": str(b),
+                "old_string": "NONE_B_ZZZ",
+                "new_string": "x",
+            },
+            task_id="esc_t4",
+        )
+        d = json.loads(result)
+        hint = d.get("_hint", "") or ""
+        assert "failure #" not in hint, (
+            f"b.py's hint inherited a.py's count: {hint!r}"
+        )
 
     def test_different_tasks_have_independent_counters(
         self, hermes_home, tmp_path, fresh_tracker

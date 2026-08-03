@@ -30,6 +30,11 @@ def _make_cli_stub():
 
 
 class TestCliSkinPromptIntegration:
+    def test_default_prompt_fragments_use_default_symbol(self):
+        cli = _make_cli_stub()
+
+        set_active_skin("default")
+        assert cli._get_tui_prompt_fragments() == [("class:prompt", "❯ ")]
 
     def test_ares_prompt_fragments_use_skin_symbol(self):
         cli = _make_cli_stub()
@@ -44,6 +49,12 @@ class TestCliSkinPromptIntegration:
         set_active_skin("ares")
         assert cli._get_tui_prompt_fragments() == [("class:sudo-prompt", "🔑 ⚔ ")]
 
+    def test_icon_only_skin_symbol_still_visible_in_special_states(self):
+        cli = _make_cli_stub()
+        cli._secret_state = {"response_queue": object()}
+
+        with patch("hermes_cli.skin_engine.get_active_prompt_symbol", return_value="⚔ "):
+            assert cli._get_tui_prompt_fragments() == [("class:sudo-prompt", "🔑 ⚔ ")]
 
     def test_build_tui_style_dict_uses_skin_overrides(self):
         cli = _make_cli_stub()
@@ -81,6 +92,14 @@ class TestCliSkinPromptIntegration:
 
 
 class TestCompactBannerSkinIntegration:
+    def test_default_compact_banner_keeps_legacy_nous_hermes_branding(self):
+        set_active_skin("default")
+
+        with patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=90)), \
+             patch.dict(_build_compact_banner.__globals__, {"format_banner_version_label": lambda: "Hermes Agent v0.1.0 (test)"}):
+            banner = _build_compact_banner()
+
+        assert "NOUS HERMES" in banner
 
     def test_poseidon_compact_banner_uses_skin_branding_instead_of_nous_hermes(self):
         set_active_skin("poseidon")
@@ -104,6 +123,14 @@ class TestCompactBannerSkinIntegration:
         assert skin.get_color("banner_title") in banner
         assert skin.get_color("banner_dim") in banner
 
+    def test_compact_banner_shows_version_label(self):
+        set_active_skin("default")
+
+        with patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=90)), \
+             patch.dict(_build_compact_banner.__globals__, {"format_banner_version_label": lambda: "Hermes Agent v1.0 (test) · upstream abc12345"}):
+            banner = _build_compact_banner()
+
+        assert "upstream abc12345" in banner
 
 
 class TestAnsiRichTextHelper:
@@ -111,3 +138,6 @@ class TestAnsiRichTextHelper:
         text = _rich_text_from_ansi("[notatag] literal")
         assert text.plain == "[notatag] literal"
 
+    def test_strips_ansi_but_keeps_plain_text(self):
+        text = _rich_text_from_ansi("\x1b[31mred\x1b[0m")
+        assert text.plain == "red"

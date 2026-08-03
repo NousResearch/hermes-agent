@@ -86,6 +86,25 @@ def _credential_headers() -> dict[str, str]:
     }
 
 
+def test_url_origin_normalizes_default_ports_and_trailing_dot():
+    assert url_origin("https://EXAMPLE.test./models") == (
+        "https",
+        "example.test",
+        443,
+    )
+    assert url_origin("https://example.test:443/other") == (
+        "https",
+        "example.test",
+        443,
+    )
+    assert url_origin("http://example.test") != url_origin("https://example.test")
+    assert url_origin("https://example.test:0") == (
+        "https",
+        "example.test",
+        0,
+    )
+    with pytest.raises(ValueError):
+        url_origin("https://example.test:not-a-port")
 
 
 def test_cross_host_redirect_drops_arbitrary_credentials_on_wire():
@@ -140,8 +159,67 @@ def test_same_host_different_port_drops_credentials_on_wire():
     assert "cf-access-client-secret" not in headers
 
 
+def test_same_origin_redirect_preserves_headers_on_wire():
+    server = _server()
+    _RecordingHandler.requests = []
+    _RecordingHandler.redirect_status = 302
+    _RecordingHandler.redirect_to = f"http://127.0.0.1:{server.server_port}/sink"
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/redirect",
+            headers=_credential_headers(),
+        )
+        with open_credentialed_url(request, timeout=3) as response:
+            response.read()
+    finally:
+        server.shutdown()
+
+    _, headers = _RecordingHandler.requests[-1]
+    assert headers["authorization"] == "Bearer secret"
+    assert headers["cf-access-client-secret"] == "cloudflare-secret"
 
 
+def test_scheme_downgrade_is_cross_origin():
+    request = urllib.request.Request(
+        "https://models.example.test/models", headers=_credential_headers()
+    )
+    handler = SafeCredentialRedirectHandler(request.full_url)
+    redirected = handler.redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "http://models.example.test/models",
+    )
+    assert redirected is not None
+    headers = {name.lower(): value for name, value in redirected.header_items()}
+    assert "authorization" not in headers
+    assert "cf-access-client-secret" not in headers
+
+
+def test_post_302_uses_urllib_semantics_and_drops_credentials():
+    request = urllib.request.Request(
+        "https://models.example.test/load",
+        data=b"{}",
+        headers={**_credential_headers(), "Content-Type": "application/json"},
+        method="POST",
+    )
+    handler = SafeCredentialRedirectHandler(request.full_url)
+    redirected = handler.redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "https://other.example.test/load",
+    )
+    assert redirected is not None
+    assert redirected.get_method() == "GET"
+    assert redirected.data is None
+    headers = {name.lower(): value for name, value in redirected.header_items()}
+    assert "authorization" not in headers
+    assert "content-type" not in headers
 
 
 def test_post_307_remains_rejected_by_urllib():
@@ -183,8 +261,62 @@ def test_explicit_opener_factory_is_instrumentable_without_security_bypass():
     assert calls == [("https://models.example.test/models", 7)]
 
 
+def test_installed_custom_opener_policy_is_preserved(monkeypatch):
+    opened = []
+
+    class FooHandler(urllib.request.BaseHandler):
+        def foo_open(self, request):
+            opened.append(request.full_url)
+            return _Response(b"custom")
+
+    installed = urllib.request.build_opener(FooHandler())
+    installed.addheaders = [
+        ("X-Trace-Policy", "installed"),
+        ("User-agent", "enterprise-client"),
+    ]
+    monkeypatch.setattr(urllib.request, "_opener", installed)
+
+    from hermes_cli.urllib_security import _secure_opener_from_installed_policy
+
+    secured = _secure_opener_from_installed_policy(
+        "foo://models.example.test/catalog"
+    )
+    assert secured.addheaders == []
+    assert getattr(secured, "_hermes_initial_addheaders") == installed.addheaders
+
+    request = urllib.request.Request(
+        "foo://models.example.test/catalog", headers={"Authorization": "secret"}
+    )
+    with open_credentialed_url(request, timeout=3) as response:
+        assert response.read() == b"custom"
+    request_headers = {
+        name.lower(): value for name, value in request.header_items()
+    }
+    assert request_headers["x-trace-policy"] == "installed"
+    assert request_headers["user-agent"] == "enterprise-client"
+    assert opened == ["foo://models.example.test/catalog"]
 
 
+def test_installed_proxy_handler_is_preserved(monkeypatch):
+    installed = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"https": "http://proxy.example.test:8443"})
+    )
+    monkeypatch.setattr(urllib.request, "_opener", installed)
+
+    from hermes_cli.urllib_security import _secure_opener_from_installed_policy
+
+    secured = _secure_opener_from_installed_policy(
+        "https://models.example.test/catalog"
+    )
+    proxy_handlers = [
+        handler
+        for handler in getattr(secured, "handlers", ())
+        if isinstance(handler, urllib.request.ProxyHandler)
+    ]
+    assert proxy_handlers
+    assert getattr(proxy_handlers[0], "proxies", {}) == {
+        "https": "http://proxy.example.test:8443"
+    }
 
 
 def test_installed_request_processor_cannot_resurrect_cross_origin_secret(
@@ -395,3 +527,35 @@ def test_azure_anthropic_probe_drops_api_key_and_bearer_on_redirect():
     assert "api-key" not in headers
 
 
+def test_lmstudio_load_post_drops_bearer_on_redirect(monkeypatch):
+    from hermes_cli import models
+
+    sink = _server()
+    source = ThreadingHTTPServer(("127.0.0.1", 0), _LmStudioSourceHandler)
+    Thread(target=source.serve_forever, daemon=True).start()
+    _RecordingHandler.requests = []
+    _LmStudioSourceHandler.redirect_to = f"http://localhost:{sink.server_port}/sink"
+    monkeypatch.setattr(
+        models,
+        "_lmstudio_fetch_raw_models",
+        lambda **_kwargs: [
+            {"id": "model", "max_context_length": 8192, "loaded_instances": []}
+        ],
+    )
+    try:
+        loaded = models.ensure_lmstudio_model_loaded(
+            "model",
+            f"http://127.0.0.1:{source.server_port}",
+            api_key="lm-secret",
+            target_context_length=4096,
+            timeout=3,
+        )
+    finally:
+        source.shutdown()
+        sink.shutdown()
+
+    assert loaded == 4096
+    method, headers = _RecordingHandler.requests[-1]
+    assert method == "GET"
+    assert "authorization" not in headers
+    assert "content-type" not in headers

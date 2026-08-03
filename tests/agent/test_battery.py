@@ -32,12 +32,36 @@ def _fake_psutil(percent, plugged):
     return mod
 
 
+def test_read_battery_no_psutil(monkeypatch):
+    # Force the import inside read_battery to fail.
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    status = read_battery(use_cache=False)
+    assert status.available is False
+    assert status.percent is None
 
 
+def test_read_battery_no_battery(monkeypatch):
+    mod = types.ModuleType("psutil")
+    mod.sensors_battery = lambda: None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "psutil", mod)
+
+    status = read_battery(use_cache=False)
+    assert status.available is False
 
 
+def test_read_battery_reads_and_clamps(monkeypatch):
+    monkeypatch.setitem(sys.modules, "psutil", _fake_psutil(87.6, False))
+    status = read_battery(use_cache=False)
+    assert status.available is True
+    assert status.percent == 88  # rounded
+    assert status.plugged is False
 
 
+def test_read_battery_clamps_out_of_range(monkeypatch):
+    monkeypatch.setitem(sys.modules, "psutil", _fake_psutil(150, True))
+    status = read_battery(use_cache=False)
+    assert status.percent == 100
+    assert status.plugged is True
 
 
 def test_read_battery_caches(monkeypatch):
@@ -75,6 +99,9 @@ def test_battery_category_thresholds(percent, plugged, expected):
     assert battery_category(status) == expected
 
 
+def test_battery_category_unavailable_is_dim():
+    assert battery_category(BatteryStatus(available=False)) == "dim"
+    assert battery_category(BatteryStatus(available=True, percent=None)) == "dim"
 
 
 def test_format_and_glyph():

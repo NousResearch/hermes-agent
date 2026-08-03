@@ -71,10 +71,71 @@ class TestClassifySandboxMirrorTarget:
         assert result["inner_path"] == inner
         assert backend in result["mirror_root"]
 
+    def test_path_outside_sandbox_returns_none(self, tmp_path):
+        """A plain Hermes path is not a mirror."""
+        from agent.file_safety import classify_sandbox_mirror_target
 
+        target = tmp_path / ".hermes" / "profiles" / "group1" / "SOUL.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# real SOUL\n")
 
+        assert classify_sandbox_mirror_target(str(target)) is None
 
+    def test_sandboxes_segment_without_home_hermes_returns_none(self, tmp_path):
+        """A ``sandboxes/`` directory unrelated to Hermes-state mirroring (e.g.
+        the sandbox workspace itself) is not flagged."""
+        from agent.file_safety import classify_sandbox_mirror_target
 
+        target = (
+            tmp_path
+            / "sandboxes" / "docker" / "task-42" / "workspace" / "main.py"
+        )
+        target.parent.mkdir(parents=True)
+        target.write_text("print('hi')\n")
+
+        assert classify_sandbox_mirror_target(str(target)) is None
+
+    def test_sandboxes_segment_with_home_but_no_hermes_returns_none(self, tmp_path):
+        """``sandboxes/<backend>/<task>/home/anything-not-hermes`` is not a mirror."""
+        from agent.file_safety import classify_sandbox_mirror_target
+
+        target = (
+            tmp_path
+            / "sandboxes" / "docker" / "task-42" / "home" / ".bashrc"
+        )
+        target.parent.mkdir(parents=True)
+        target.write_text("alias ll='ls -la'\n")
+
+        assert classify_sandbox_mirror_target(str(target)) is None
+
+    def test_truncated_sandbox_path_returns_none(self, tmp_path):
+        """``…/sandboxes/<backend>/<task>`` without ``home/.hermes/<thing>`` is not a mirror."""
+        from agent.file_safety import classify_sandbox_mirror_target
+
+        target = tmp_path / "sandboxes" / "docker" / "task-42"
+        target.mkdir(parents=True)
+
+        assert classify_sandbox_mirror_target(str(target)) is None
+
+    def test_non_existent_path_still_classifies_by_shape(self, tmp_path):
+        """Detection is path-shape only — it must not require the file to exist
+        (the agent is about to CREATE the mirror file, that's the bug)."""
+        from agent.file_safety import classify_sandbox_mirror_target
+
+        target = (
+            tmp_path
+            / "profiles" / "group1"
+            / "sandboxes" / "docker" / "default" / "home" / ".hermes"
+            / "profiles" / "group1" / "SOUL.md"
+        )
+        # Parent directory exists so .resolve() doesn't strip the tail
+        # under strict mode, but the file itself does NOT exist.
+        target.parent.mkdir(parents=True)
+        assert not target.exists()
+
+        result = classify_sandbox_mirror_target(str(target))
+        assert result is not None
+        assert result["inner_path"] == "profiles/group1/SOUL.md"
 
 
 # ---------------------------------------------------------------------------

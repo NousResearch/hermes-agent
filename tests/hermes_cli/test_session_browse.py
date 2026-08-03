@@ -46,6 +46,9 @@ class TestSessionBrowsePicker:
         assert result is None
         assert "No sessions found" in capsys.readouterr().out
 
+    def test_returns_none_when_no_sessions(self, capsys):
+        result = _session_browse_picker([])
+        assert result is None
 
     def test_fallback_mode_valid_selection(self):
         """When curses is unavailable, fallback numbered list should work."""
@@ -66,6 +69,125 @@ class TestSessionBrowsePicker:
 
         assert result == sessions[1]["id"]
 
+    def test_fallback_mode_cancel_q(self):
+        """Entering 'q' in fallback mode cancels."""
+        sessions = _make_sessions(3)
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "curses":
+                raise ImportError("no curses")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            with patch("builtins.input", return_value="q"):
+                result = _session_browse_picker(sessions)
+
+        assert result is None
+
+    def test_fallback_mode_cancel_empty(self):
+        """Entering empty string in fallback mode cancels."""
+        sessions = _make_sessions(3)
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "curses":
+                raise ImportError("no curses")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            with patch("builtins.input", return_value=""):
+                result = _session_browse_picker(sessions)
+
+        assert result is None
+
+    def test_fallback_mode_invalid_then_valid(self):
+        """Invalid selection followed by valid one works."""
+        sessions = _make_sessions(3)
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "curses":
+                raise ImportError("no curses")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            with patch("builtins.input", side_effect=["99", "1"]):
+                result = _session_browse_picker(sessions)
+
+        assert result == sessions[0]["id"]
+
+    def test_fallback_mode_keyboard_interrupt(self):
+        """KeyboardInterrupt in fallback mode returns None."""
+        sessions = _make_sessions(3)
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "curses":
+                raise ImportError("no curses")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            with patch("builtins.input", side_effect=KeyboardInterrupt):
+                result = _session_browse_picker(sessions)
+
+        assert result is None
+
+    def test_fallback_displays_all_sessions(self, capsys):
+        """Fallback mode should display all session entries."""
+        sessions = _make_sessions(4)
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "curses":
+                raise ImportError("no curses")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            with patch("builtins.input", return_value="q"):
+                _session_browse_picker(sessions)
+
+        output = capsys.readouterr().out
+        # All 4 entries should be shown
+        assert "1." in output
+        assert "2." in output
+        assert "3." in output
+        assert "4." in output
+
+    def test_fallback_shows_title_over_preview(self, capsys):
+        """When a session has a title, show it instead of the preview."""
+        sessions = [{
+            "id": "test_001",
+            "source": "cli",
+            "title": "My Cool Project",
+            "preview": "some preview text",
+            "last_active": time.time(),
+        }]
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "curses":
+                raise ImportError("no curses")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            with patch("builtins.input", return_value="q"):
+                _session_browse_picker(sessions)
+
+        output = capsys.readouterr().out
+        assert "My Cool Project" in output
 
     def test_fallback_shows_preview_when_no_title(self, capsys):
         """When no title, show preview."""
@@ -91,6 +213,31 @@ class TestSessionBrowsePicker:
 
         output = capsys.readouterr().out
         assert "Hello world test message" in output
+
+    def test_fallback_shows_id_when_no_title_or_preview(self, capsys):
+        """When neither title nor preview, show session ID."""
+        sessions = [{
+            "id": "test_003_fallback",
+            "source": "cli",
+            "title": None,
+            "preview": "",
+            "last_active": time.time(),
+        }]
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "curses":
+                raise ImportError("no curses")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            with patch("builtins.input", return_value="q"):
+                _session_browse_picker(sessions)
+
+        output = capsys.readouterr().out
+        assert "test_003_fallback" in output
 
 
 # ─── Curses-based picker (mocked curses) ────────────────────────────────────
@@ -120,13 +267,38 @@ class TestCursesBrowse:
                 with patch("curses.has_colors", return_value=False):
                     return _session_browse_picker(sessions)
 
+    def test_enter_selects_first_session(self):
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [10])  # Enter key
+        assert result == sessions[0]["id"]
 
+    def test_down_then_enter_selects_second(self):
+        import curses
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [curses.KEY_DOWN, 10])
+        assert result == sessions[1]["id"]
+
+    def test_down_down_enter_selects_third(self):
+        import curses
+        sessions = _make_sessions(5)
+        result = self._run_with_keys(sessions, [curses.KEY_DOWN, curses.KEY_DOWN, 10])
+        assert result == sessions[2]["id"]
+
+    def test_up_wraps_to_last(self):
+        import curses
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [curses.KEY_UP, 10])
+        assert result == sessions[2]["id"]
 
     def test_escape_cancels(self):
         sessions = _make_sessions(3)
         result = self._run_with_keys(sessions, [27])  # Esc
         assert result is None
 
+    def test_q_cancels(self):
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [ord('q')])
+        assert result is None
 
     def test_type_to_filter_then_enter(self):
         """Typing characters filters the list, Enter selects from filtered."""
@@ -140,11 +312,70 @@ class TestCursesBrowse:
         result = self._run_with_keys(sessions, keys)
         assert result == "s2"
 
+    def test_filter_no_match_enter_does_nothing(self):
+        """When filter produces no results, Enter shouldn't select."""
+        sessions = _make_sessions(3)
+        keys = [ord(c) for c in "zzzznonexistent"] + [10]
+        result = self._run_with_keys(sessions, keys)
+        assert result is None
 
+    def test_backspace_removes_filter_char(self):
+        """Backspace removes the last character from the filter."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Alpha", "preview": "", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "Beta", "preview": "", "last_active": time.time()},
+        ]
+        # Type "Bet", backspace, backspace, backspace (clears filter), then Enter (selects first)
+        keys = [ord('B'), ord('e'), ord('t'), 127, 127, 127, 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s1"
 
+    def test_escape_clears_filter_first(self):
+        """First Esc clears the search text, second Esc exits."""
+        sessions = _make_sessions(3)
+        # Type "ab" then Esc (clears filter) then Enter (selects first)
+        keys = [ord('a'), ord('b'), 27, 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == sessions[0]["id"]
 
+    def test_filter_matches_preview(self):
+        """Typing should match against session preview text."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": None, "preview": "Set up Minecraft server", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": None, "preview": "Review PR 438", "last_active": time.time()},
+        ]
+        keys = [ord(c) for c in "Mine"] + [10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s1"
 
+    def test_filter_matches_source(self):
+        """Typing a source name should filter by source."""
+        sessions = [
+            {"id": "s1", "source": "telegram", "title": "TG session", "preview": "", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "CLI session", "preview": "", "last_active": time.time()},
+        ]
+        keys = [ord(c) for c in "telegram"] + [10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s1"
 
+    def test_q_quits_when_no_filter_active(self):
+        """When no search text is active, 'q' should quit (not filter)."""
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [ord('q')])
+        assert result is None
+
+    def test_q_types_into_filter_when_filter_active(self):
+        """When search text is already active, 'q' should add to filter, not quit."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "the sequel", "preview": "", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "other thing", "preview": "", "last_active": time.time()},
+        ]
+        # Type "se" first (activates filter, matches "the sequel")
+        # Then type "q" — should add 'q' to filter (filter="seq"), NOT quit
+        # "seq" still matches "the sequel" → Enter selects it
+        keys = [ord('s'), ord('e'), ord('q'), 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s1"  # "the sequel" matches "seq"
 
 
 # ─── Argument parser registration ──────────────────────────────────────────
@@ -181,6 +412,35 @@ class TestSessionBrowseArgparse:
 
 # ─── Integration: cmd_sessions browse action ────────────────────────────────
 
+class TestCmdSessionsBrowse:
+    """Integration tests for the 'browse' action in cmd_sessions."""
+
+    def test_browse_no_sessions_prints_message(self, capsys):
+        """When no sessions exist, _session_browse_picker returns None and prints message."""
+        result = _session_browse_picker([])
+        assert result is None
+        output = capsys.readouterr().out
+        assert "No sessions found" in output
+
+    def test_browse_with_source_filter(self):
+        """The --source flag should be passed to list_sessions_rich."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "CLI only", "preview": "", "last_active": time.time()},
+        ]
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "curses":
+                raise ImportError("no curses")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            with patch("builtins.input", return_value="1"):
+                result = _session_browse_picker(sessions)
+
+        assert result == "s1"
 
 
 # ─── Edge cases ──────────────────────────────────────────────────────────────
@@ -188,6 +448,71 @@ class TestSessionBrowseArgparse:
 class TestEdgeCases:
     """Edge case handling for the session browser."""
 
+    def test_sessions_with_missing_fields(self):
+        """Sessions with missing optional fields should not crash."""
+        sessions = [
+            {"id": "minimal_001", "source": "cli"},  # No title, preview, last_active
+        ]
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "curses":
+                raise ImportError("no curses")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            with patch("builtins.input", return_value="1"):
+                result = _session_browse_picker(sessions)
+
+        assert result == "minimal_001"
+
+    def test_single_session(self):
+        """A single session in the list should work fine."""
+        sessions = [
+            {"id": "only_one", "source": "cli", "title": "Solo", "preview": "", "last_active": time.time()},
+        ]
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "curses":
+                raise ImportError("no curses")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            with patch("builtins.input", return_value="1"):
+                result = _session_browse_picker(sessions)
+
+        assert result == "only_one"
+
+    def test_long_title_truncated_in_fallback(self, capsys):
+        """Very long titles should be truncated in fallback mode."""
+        sessions = [{
+            "id": "long_title_001",
+            "source": "cli",
+            "title": "A" * 100,
+            "preview": "",
+            "last_active": time.time(),
+        }]
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "curses":
+                raise ImportError("no curses")
+            return original_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            with patch("builtins.input", return_value="q"):
+                _session_browse_picker(sessions)
+
+        output = capsys.readouterr().out
+        # Title should be truncated to 50 chars with "..."
+        assert "..." in output
 
     def test_relative_time_formatting(self, capsys):
         """Verify various time deltas format correctly."""

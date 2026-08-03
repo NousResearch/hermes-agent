@@ -18,13 +18,13 @@ vi.mock('@/i18n', () => ({
     t: {
       sidebar: {
         row: {
+          actionsFor: (title: string) => `Actions for ${title}`,
           ageMin: 'm',
           ageNow: 'now',
           backgroundRunning: 'Running in background',
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
           needsInput: 'Needs input',
-          sessionActions: 'Session actions',
           sessionRunning: 'Running',
           waitingForAnswer: 'Waiting for answer'
         }
@@ -88,11 +88,21 @@ vi.mock('@/store/windows', async importOriginal => {
   }
 })
 
-// SessionActionsMenu open behavior is covered in session-actions-menu.test.tsx
-// against the real component. Stub it here so this file stays focused on the
-// row chrome (handoff avatar tip, etc.).
+// SessionActionsMenu owns the Tip-around-DropdownMenuTrigger composition
+// itself now (see session-actions-menu.test.tsx, which exercises that real,
+// unmocked end-to-end) — testing it again here via the mock would just
+// duplicate that coverage and silently stop testing anything the moment the
+// mock's shape drifts from the real component's props (as happened when
+// `tooltip` was introduced). This file only needs to confirm session-row
+// wires the right tooltip text into the `tooltip` prop, so the mock renders
+// it in a way we can assert on directly instead of re-deriving Tip's
+// internal DOM structure.
 vi.mock('./session-actions-menu', () => ({
-  SessionActionsMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SessionActionsMenu: ({ children, tooltip }: { children: React.ReactNode; tooltip?: string }) => (
+    <div data-testid="session-actions-menu" data-tooltip={tooltip}>
+      {children}
+    </div>
+  ),
   SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>
 }))
 
@@ -117,7 +127,7 @@ const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"
 const noop = vi.fn()
 
 describe('SidebarSessionRow', () => {
-  it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {
+  it('wires the actions kebab tooltip text through to SessionActionsMenu', () => {
     render(
       <SidebarSessionRow
         isPinned={false}
@@ -131,8 +141,9 @@ describe('SidebarSessionRow', () => {
       />
     )
 
-    const kebab = screen.getByRole('button', { name: 'Session actions' })
-    expect(tipTrigger(kebab)).toBeNull()
+    expect(screen.getByTestId('session-actions-menu').getAttribute('data-tooltip')).toBe(
+      'Actions for Hermes doctor health check results'
+    )
   })
 
   it('does not render a handoff avatar for a locally-started session', () => {

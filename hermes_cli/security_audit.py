@@ -411,14 +411,14 @@ def _osv_fetch_details(vuln_ids: Iterable[str]) -> dict[str, Vulnerability]:
 # ─── Orchestration ────────────────────────────────────────────────────────────
 
 
-def _discover_components(
+def run_audit(
     *,
     skip_venv: bool = False,
     skip_plugins: bool = False,
     skip_mcp: bool = False,
     hermes_home: Optional[Path] = None,
-) -> list[Component]:
-    """Discover all scannable components across the enabled sources."""
+) -> list[Finding]:
+    """Discover components, query OSV, return findings sorted by severity desc."""
     home = hermes_home or Path(get_hermes_home())
     components: list[Component] = []
     if not skip_venv:
@@ -427,30 +427,6 @@ def _discover_components(
         components.extend(_discover_plugins(home))
     if not skip_mcp:
         components.extend(_discover_mcp())
-    return components
-
-
-def run_audit(
-    *,
-    skip_venv: bool = False,
-    skip_plugins: bool = False,
-    skip_mcp: bool = False,
-    hermes_home: Optional[Path] = None,
-    components: Optional[list[Component]] = None,
-) -> list[Finding]:
-    """Query OSV for the given (or freshly discovered) components.
-
-    ``components`` lets callers that already ran discovery (e.g. for a
-    component count) reuse it instead of scanning the venv/plugins/MCP
-    config a second time.
-    """
-    if components is None:
-        components = _discover_components(
-            skip_venv=skip_venv,
-            skip_plugins=skip_plugins,
-            skip_mcp=skip_mcp,
-            hermes_home=hermes_home,
-        )
 
     if not components:
         return []
@@ -533,6 +509,19 @@ def _render_json(findings: list[Finding], total_components: int) -> str:
     return json.dumps(payload, indent=2)
 
 
+def _count_components(
+    *, skip_venv: bool, skip_plugins: bool, skip_mcp: bool, hermes_home: Path
+) -> int:
+    total = 0
+    if not skip_venv:
+        total += len(_discover_venv())
+    if not skip_plugins:
+        total += len(_discover_plugins(hermes_home))
+    if not skip_mcp:
+        total += len(_discover_mcp())
+    return total
+
+
 # ─── CLI entrypoint ───────────────────────────────────────────────────────────
 
 
@@ -552,10 +541,9 @@ def cmd_security_audit(args: argparse.Namespace) -> int:
         )
         return 2
 
-    components = _discover_components(
+    total = _count_components(
         skip_venv=skip_venv, skip_plugins=skip_plugins, skip_mcp=skip_mcp, hermes_home=home
     )
-    total = len(components)
     if total == 0:
         msg = "No components discovered (everything skipped, or empty environment)."
         if output_json:
@@ -570,7 +558,6 @@ def cmd_security_audit(args: argparse.Namespace) -> int:
             skip_plugins=skip_plugins,
             skip_mcp=skip_mcp,
             hermes_home=home,
-            components=components,
         )
     except RuntimeError as exc:
         print(f"audit failed: {exc}", file=sys.stderr)

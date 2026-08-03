@@ -65,13 +65,9 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
-          node-version: 26
+          node-version: 22
           cache: npm
           cache-dependency-path: website/package-lock.json
-
-      - name: grab npm 12
-        run: |
-          npm i -g npm@12
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:

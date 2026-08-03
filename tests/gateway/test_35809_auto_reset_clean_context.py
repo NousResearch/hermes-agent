@@ -197,3 +197,25 @@ class TestAutoResetLoadsCleanContext:
         # The old transcript is still searchable, not destroyed.
         assert len(store.load_transcript(bloated_sid)) == 120
 
+    def test_clean_context_survives_gateway_restart(self, tmp_path):
+        """The fresh, empty session must still be the one loaded after a
+        gateway restart (sessions.json + state.db round-trip)."""
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        bloated_sid = entry.session_id
+        store._db.create_session(
+            session_id=bloated_sid, source="telegram", user_id="u1"
+        )
+        store._db.replace_messages(bloated_sid, _bloat(120))
+
+        new_entry = store.reset_session(entry.session_key)
+        new_sid = new_entry.session_id
+
+        # Simulate restart: drop in-memory index, reload from disk.
+        store._loaded = False
+        store._entries.clear()
+
+        reloaded = store.get_or_create_session(source)
+        assert reloaded.session_id == new_sid
+        assert store.load_transcript(reloaded.session_id) == []

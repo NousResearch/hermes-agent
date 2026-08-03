@@ -65,6 +65,14 @@ def test_plugin_ctx_exposes_register_dashboard_auth_provider():
     assert hasattr(ctx, "register_dashboard_auth_provider")
 
 
+def test_plugin_ctx_register_dashboard_auth_provider_happy_path():
+    ctx = _make_ctx()
+    ctx.register_dashboard_auth_provider(_Stub())
+    p = get_provider("stub")
+    assert p is not None
+    assert p.display_name == "Stub IdP"
+
+
 def test_plugin_ctx_silently_ignores_non_provider(caplog):
     """Mirror image_gen behaviour: log warning, leave registry empty.
 

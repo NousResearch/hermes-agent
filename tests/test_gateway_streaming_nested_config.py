@@ -28,6 +28,11 @@ class TestStreamingConfigNested:
         assert cfg.streaming.enabled is True
         assert cfg.streaming.transport == "draft"
 
+    def test_nested_gateway_streaming(self):
+        """Regression for #25676."""
+        cfg = _load_with_yaml_dict({"gateway": {"streaming": {"enabled": True, "transport": "draft"}}})
+        assert cfg.streaming.enabled is True
+        assert cfg.streaming.transport == "draft"
 
     def test_top_level_takes_precedence(self):
         cfg = _load_with_yaml_dict({
@@ -60,7 +65,22 @@ class TestStreamingModeAlias:
         assert sc.enabled is True
         assert sc.transport == "edit"
 
+    def test_mode_off_disables_streaming(self):
+        from gateway.config import StreamingConfig
 
+        sc = StreamingConfig.from_dict({"mode": "off"})
+        assert sc.enabled is False
+        assert sc.transport == "off"
+
+    def test_mode_with_extra_keys_still_enables(self):
+        """Real-world block: mode plus unrelated preloader_frames."""
+        from gateway.config import StreamingConfig
+
+        sc = StreamingConfig.from_dict(
+            {"mode": "auto", "preloader_frames": ["a", "b"]}
+        )
+        assert sc.enabled is True
+        assert sc.transport == "auto"
 
     def test_explicit_enabled_overrides_mode(self):
         from gateway.config import StreamingConfig
@@ -70,6 +90,17 @@ class TestStreamingModeAlias:
         # transport still resolves from mode
         assert sc.transport == "auto"
 
+    def test_transport_selects_transport_but_mode_controls_enabled(self):
+        """``transport`` picks HOW to stream; ``mode`` is the enable alias.
+
+        With ``mode: off`` the master switch is off even though ``transport``
+        selects the draft path — ``enabled`` is inferred from ``mode`` only.
+        """
+        from gateway.config import StreamingConfig
+
+        sc = StreamingConfig.from_dict({"mode": "off", "transport": "draft"})
+        assert sc.transport == "draft"
+        assert sc.enabled is False
 
     def test_empty_block_stays_disabled(self):
         from gateway.config import StreamingConfig
@@ -77,6 +108,15 @@ class TestStreamingModeAlias:
         sc = StreamingConfig.from_dict({})
         assert sc.enabled is False
 
+    def test_transport_only_does_not_enable(self):
+        """``streaming.enabled`` is the documented master switch, so a bare
+        ``transport`` must not flip streaming on by itself."""
+        from gateway.config import StreamingConfig
+
+        sc = StreamingConfig.from_dict({"transport": "edit"})
+        assert sc.enabled is False
+        # transport is still recorded so it takes effect once streaming is on.
+        assert sc.transport == "edit"
 
 
 class TestStreamingYamlBooleanQuirk:
@@ -104,6 +144,13 @@ class TestStreamingYamlBooleanQuirk:
         assert sc.enabled is True
         assert sc.transport == "auto"
 
+    def test_transport_bare_off_boolean_normalizes(self):
+        from gateway.config import StreamingConfig
+
+        # transport alone never enables, but the token must still normalize.
+        sc = StreamingConfig.from_dict({"transport": False})
+        assert sc.enabled is False
+        assert sc.transport == "off"
 
     def test_loader_normalizes_bare_yaml_off(self):
         """End-to-end through load_gateway_config(): unquoted ``mode: off``
@@ -112,3 +159,8 @@ class TestStreamingYamlBooleanQuirk:
         assert cfg.streaming.enabled is False
         assert cfg.streaming.transport == "off"
 
+    def test_loader_nested_mode_enables(self):
+        """Nested gateway.streaming.mode alias enables through the loader."""
+        cfg = _load_with_yaml_dict({"gateway": {"streaming": {"mode": "edit"}}})
+        assert cfg.streaming.enabled is True
+        assert cfg.streaming.transport == "edit"

@@ -115,3 +115,29 @@ def test_profile_create_then_gateway_start(
     _wait_for_want_state(container_name, want_up=False)
 
 
+def test_profile_delete_stops_gateway(
+    built_image: str, container_name: str,
+) -> None:
+    """Deleting a profile should stop its gateway and remove the s6
+    service slot."""
+    start_container(built_image, container_name, cmd="sleep 120")
+
+    _sh(container_name, f"hermes profile create {PROFILE}")
+    _sh(container_name, f"hermes -p {PROFILE} gateway start", timeout=60)
+    _wait_for_want_state(container_name, want_up=True)
+
+    r = _sh(
+        container_name,
+        f"hermes profile delete {PROFILE} --yes",
+        timeout=30,
+    )
+    assert r.returncode == 0, f"profile delete failed: {r.stderr}"
+
+    # Poll for slot removal instead of a fixed sleep.
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        r = _sh(container_name, f"test -d /run/service/gateway-{PROFILE}")
+        if r.returncode != 0:
+            break
+        time.sleep(0.5)
+    assert r.returncode != 0, "s6 service slot still present after profile delete"

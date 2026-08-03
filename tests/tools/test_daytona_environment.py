@@ -118,6 +118,19 @@ class TestCwdResolution:
         env = make_env(home_dir="/home/testuser")
         assert env.cwd == "/home/testuser"
 
+    def test_tilde_cwd_resolves_home(self, make_env):
+        env = make_env(cwd="~", home_dir="/home/testuser")
+        assert env.cwd == "/home/testuser"
+
+    def test_explicit_cwd_not_overridden(self, make_env):
+        env = make_env(cwd="/workspace", home_dir="/root")
+        assert env.cwd == "/workspace"
+
+    def test_home_detection_failure_keeps_default_cwd(self, make_env):
+        sb = _make_sandbox()
+        sb.process.exec.side_effect = RuntimeError("exec failed")
+        env = make_env(sandbox=sb)
+        assert env.cwd == "/home/daytona"  # keeps constructor default
 
     def test_empty_home_keeps_default_cwd(self, make_env):
         env = make_env(home_dir="")
@@ -138,6 +151,32 @@ class TestPersistence:
         env._mock_client.get.assert_called_once_with("hermes-mytask")
         env._mock_client.create.assert_not_called()
 
+    def test_persistent_resumes_legacy_via_list(self, make_env, daytona_sdk):
+        legacy = _make_sandbox(sandbox_id="sb-legacy")
+        legacy.process.exec.return_value = _make_exec_response(result="/root")
+        env = make_env(
+            get_side_effect=daytona_sdk.DaytonaError("not found"),
+            list_return=iter([legacy]),
+            persistent=True,
+            task_id="mytask",
+        )
+        legacy.start.assert_called_once()
+        env._mock_client.list.assert_called_once_with(
+            labels={"hermes_task_id": "mytask"}, limit=1)
+        env._mock_client.create.assert_not_called()
+
+    def test_persistent_creates_new_when_none_found(self, make_env, daytona_sdk):
+        env = make_env(
+            get_side_effect=daytona_sdk.DaytonaError("not found"),
+            persistent=True,
+            task_id="mytask",
+        )
+        env._mock_client.create.assert_called_once()
+        # Verify the name and labels were passed to CreateSandboxFromImageParams
+        # by checking get() was called with the right sandbox name
+        env._mock_client.get.assert_called_with("hermes-mytask")
+        env._mock_client.list.assert_called_with(
+            labels={"hermes_task_id": "mytask"}, limit=1)
 
     def test_non_persistent_skips_lookup(self, make_env):
         env = make_env(persistent=False)
@@ -157,6 +196,16 @@ class TestCleanup:
         env.cleanup()
         sb.stop.assert_called_once()
 
+    def test_non_persistent_cleanup_deletes_sandbox(self, make_env):
+        env = make_env(persistent=False)
+        sb = env._sandbox
+        env.cleanup()
+        env._mock_client.delete.assert_called_once_with(sb)
+
+    def test_cleanup_idempotent(self, make_env):
+        env = make_env(persistent=True)
+        env.cleanup()
+        env.cleanup()  # should not raise
 
     def test_cleanup_swallows_errors(self, make_env):
         env = make_env(persistent=True)
@@ -184,6 +233,71 @@ class TestExecute:
         result = env.execute("echo hello")
         assert "hello" in result["output"]
         assert result["returncode"] == 0
+
+    def test_sdk_timeout_passed_to_exec(self, make_env):
+        """SDK native timeout is passed to sandbox.process.exec()."""
+        sb = _make_sandbox()
+        sb.process.exec.side_effect = [
+            _make_exec_response(result="/root"),
+            _make_exec_response(result="", exit_code=0),  # init_session
+            _make_exec_response(result="ok", exit_code=0),
+        ]
+        sb.state = "started"
+        env = make_env(sandbox=sb, timeout=42)
+
+        env.execute("echo hello")
+        # The exec call should receive timeout= kwarg (SDK native timeout)
+        call_args = sb.process.exec.call_args_list[-1]
+        assert call_args[1]["timeout"] == 42
+        # The command should NOT have a shell `timeout` prefix
+        cmd = call_args[0][0]
+        assert not cmd.startswith("timeout ")
+
+    def test_timeout_returns_exit_code_124(self, make_env):
+        """SDK-level timeout surfaces as exit code 124 via _wait_for_process."""
+        sb = _make_sandbox()
+        sb.process.exec.side_effect = [
+            _make_exec_response(result="/root"),
+            _make_exec_response(result="", exit_code=0),  # init_session
+            _make_exec_response(result="", exit_code=124),  # actual cmd
+        ]
+        sb.state = "started"
+        env = make_env(sandbox=sb)
+
+        result = env.execute("sleep 300", timeout=5)
+        assert result["returncode"] == 124
+
+    def test_nonzero_exit_code(self, make_env):
+        sb = _make_sandbox()
+        sb.process.exec.side_effect = [
+            _make_exec_response(result="/root"),
+            _make_exec_response(result="", exit_code=0),  # init_session
+            _make_exec_response(result="not found", exit_code=127),
+        ]
+        sb.state = "started"
+        env = make_env(sandbox=sb)
+
+        result = env.execute("bad_cmd")
+        assert result["returncode"] == 127
+
+    def test_stdin_data_wraps_heredoc(self, make_env):
+        sb = _make_sandbox()
+        sb.process.exec.side_effect = [
+            _make_exec_response(result="/root"),
+            _make_exec_response(result="", exit_code=0),  # init_session
+            _make_exec_response(result="ok", exit_code=0),
+        ]
+        sb.state = "started"
+        env = make_env(sandbox=sb)
+
+        env.execute("python3", stdin_data="print('hi')")
+        # Check that the command passed to exec contains heredoc markers
+        # Base class uses HERMES_STDIN_ prefix for heredoc delimiters
+        call_args = sb.process.exec.call_args_list[-1]
+        cmd = call_args[0][0]
+        assert "HERMES_STDIN_" in cmd
+        assert "print" in cmd
+        assert "hi" in cmd
 
 
     def test_daytona_error_triggers_retry(self, make_env, daytona_sdk):
@@ -215,6 +329,9 @@ class TestResourceConversion:
         env = make_env(memory=5120)
         assert self._get_resources_kwargs(daytona_sdk)["memory"] == 5
 
+    def test_disk_converted_to_gib(self, make_env, daytona_sdk):
+        env = make_env(disk=10240)
+        assert self._get_resources_kwargs(daytona_sdk)["disk"] == 10
 
     def test_small_values_clamped_to_1(self, make_env, daytona_sdk):
         env = make_env(memory=100, disk=100)

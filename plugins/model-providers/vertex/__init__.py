@@ -69,7 +69,7 @@ vertex = VertexProfile(
     env_vars=(),  # OAuth2 via service account / ADC — not a static key env var
     base_url="https://aiplatform.googleapis.com",  # real base_url computed at runtime
     auth_type="vertex",
-    default_aux_model="google/gemini-3.6-flash",
+    default_aux_model="google/gemini-3-flash-preview",
 )
 
 register_provider(vertex)

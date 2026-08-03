@@ -28,6 +28,68 @@ class TestGatewayPerModelReasoningConfig:
         assert result["enabled"] is True
         assert result["effort"] == "xhigh"
 
+    def test_global_fallback_when_no_override(self, monkeypatch):
+        """Global reasoning_effort applies when no per-model override matches."""
+        fake_cfg = {
+            "model": {"default": "gpt-5"},
+            "agent": {
+                "reasoning_effort": "high",
+                "reasoning_overrides": {
+                    "anthropic/claude-opus-4.5": "xhigh",
+                },
+            },
+        }
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
+
+        result = gateway_run.GatewayRunner._load_reasoning_config()
+        assert result is not None
+        assert result["effort"] == "high"
+
+    def test_spelling_tolerant_match_in_gateway(self, monkeypatch):
+        """Override matches even with different spelling (dots vs dashes)."""
+        fake_cfg = {
+            "model": {"default": "claude-opus-4-5"},
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": {
+                    "claude-opus-4.5": "xhigh",  # key has dots, model has dashes
+                },
+            },
+        }
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
+
+        result = gateway_run.GatewayRunner._load_reasoning_config()
+        assert result is not None
+        assert result["effort"] == "xhigh"
+
+    def test_no_overrides_dict(self, monkeypatch):
+        """Works fine when reasoning_overrides key is absent."""
+        fake_cfg = {
+            "model": {"default": "gpt-5"},
+            "agent": {
+                "reasoning_effort": "low",
+            },
+        }
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
+
+        result = gateway_run.GatewayRunner._load_reasoning_config()
+        assert result is not None
+        assert result["effort"] == "low"
+
+    def test_empty_overrides(self, monkeypatch):
+        """Empty overrides dict falls back to global."""
+        fake_cfg = {
+            "model": {"default": "gpt-5"},
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": {},
+            },
+        }
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
+
+        result = gateway_run.GatewayRunner._load_reasoning_config()
+        assert result is not None
+        assert result["effort"] == "medium"
 
     def test_global_fallback_with_yaml_false(self, monkeypatch):
         """YAML boolean False must reach parse_reasoning_effort uncoerced.
@@ -82,3 +144,33 @@ class TestGatewaySessionEffectiveModel:
         assert result_default is not None
         assert result_default["effort"] == "low"
 
+    def test_resolve_session_reasoning_forwards_model(self, monkeypatch):
+        """_resolve_session_reasoning_config passes the effective model through
+        (and session-scoped /reasoning overrides still win over it)."""
+        fake_cfg = {
+            "model": {"default": "gpt-5"},
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": {"claude-opus-4.5": "xhigh"},
+            },
+        }
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
+
+        runner = object.__new__(gateway_run.GatewayRunner)
+        runner._session_reasoning_overrides = {}
+
+        # No session override → per-model override for the effective model.
+        result = runner._resolve_session_reasoning_config(
+            session_key="agent:main:telegram:private:1", model="claude-opus-4.5"
+        )
+        assert result is not None
+        assert result["effort"] == "xhigh"
+
+        # Session-scoped /reasoning override still wins over per-model.
+        runner._session_reasoning_overrides = {
+            "agent:main:telegram:private:1": {"enabled": True, "effort": "minimal"}
+        }
+        result = runner._resolve_session_reasoning_config(
+            session_key="agent:main:telegram:private:1", model="claude-opus-4.5"
+        )
+        assert result == {"enabled": True, "effort": "minimal"}

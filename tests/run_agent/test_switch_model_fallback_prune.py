@@ -78,6 +78,15 @@ def test_switch_with_empty_chain_stays_empty():
     assert agent._fallback_model is None
 
 
+def test_switch_initializes_missing_fallback_attrs():
+    agent = _make_agent([])
+    del agent._fallback_chain
+    del agent._fallback_model
+
+    _switch_to_anthropic(agent)
+
+    assert agent._fallback_chain == []
+    assert agent._fallback_model is None
 
 
 def test_switch_within_same_provider_preserves_chain():

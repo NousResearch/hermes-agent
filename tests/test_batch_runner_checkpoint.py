@@ -62,6 +62,12 @@ class TestSaveCheckpoint:
         result = json.loads(runner.checkpoint_file.read_text())
         assert result["completed_prompts"] == [42]
 
+    def test_without_lock(self, runner):
+        data = {"run_name": "test", "completed_prompts": [99]}
+        runner._save_checkpoint(data, lock=None)
+
+        result = json.loads(runner.checkpoint_file.read_text())
+        assert result["completed_prompts"] == [99]
 
     def test_creates_parent_dirs(self, tmp_path):
         runner_deep = BatchRunner.__new__(BatchRunner)
@@ -83,6 +89,9 @@ class TestSaveCheckpoint:
 class TestLoadCheckpoint:
     """Verify _load_checkpoint reads existing data or returns defaults."""
 
+    def test_returns_empty_when_no_file(self, runner):
+        result = runner._load_checkpoint()
+        assert result.get("completed_prompts", []) == []
 
     def test_loads_existing_checkpoint(self, runner):
         data = {"run_name": "test_run", "completed_prompts": [5, 10, 15],

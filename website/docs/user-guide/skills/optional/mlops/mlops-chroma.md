@@ -1,14 +1,14 @@
 ---
-title: "Chroma — Embedding database for RAG and semantic search"
+title: "Chroma — Open-source embedding database for AI applications"
 sidebar_label: "Chroma"
-description: "Embedding database for RAG and semantic search"
+description: "Open-source embedding database for AI applications"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Chroma
 
-Embedding database for RAG and semantic search.
+Open-source embedding database for AI applications. Store embeddings and metadata, perform vector and full-text search, filter by metadata. Simple 4-function API. Scales from notebooks to production clusters. Use for semantic search, RAG applications, or document retrieval. Best for local development and open-source projects.
 
 ## Skill metadata
 

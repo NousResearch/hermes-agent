@@ -46,6 +46,25 @@ def test_image_trusts_own_mime_over_photo_message_type():
     assert _event_media_is_image(evt, 1) is False
 
 
+def test_unknown_mime_falls_back_to_photo_message_type():
+    # Platforms that don't populate media_types rely on the message-level type.
+    evt = _evt(["/c/photo.jpg"], [""], MessageType.PHOTO)
+    assert _event_media_is_image(evt, 0) is True
+
+
+def test_audio_classified_per_attachment():
+    evt = _evt(["/c/clip.ogg", "/c/shot.png"], ["audio/ogg", "image/png"], MessageType.PHOTO)
+    assert _event_media_is_audio(evt, 0) is True
+    assert _event_media_is_audio(evt, 1) is False
+    assert _event_media_is_image(evt, 1) is True
+
+
+def test_video_classified_per_attachment():
+    evt = _evt(["/c/movie.mp4", "/c/notes.md"], ["video/mp4", "text/markdown"], MessageType.PHOTO)
+    assert _event_media_is_video(evt, 0) is True
+    assert _event_media_is_video(evt, 1) is False
+
+
 # ─── _build_media_placeholder ────────────────────────────────────────────────
 
 
@@ -57,3 +76,7 @@ def test_placeholder_document_in_photo_message_is_not_an_image():
     assert "[User sent a file: /c/brief.md]" in out
 
 
+def test_placeholder_image_with_unknown_mime_uses_photo_fallback():
+    evt = _evt(["/c/photo.jpg"], [""], MessageType.PHOTO)
+    out = _build_media_placeholder(evt)
+    assert "[User sent an image: /c/photo.jpg]" in out

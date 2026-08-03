@@ -10,7 +10,7 @@ Two data sources:
 2. The unified Hermes Skills Index at ``website/static/api/skills-index.json``,
    built twice daily by ``scripts/build_skills_index.py`` (workflow
    ``.github/workflows/skills-index.yml``). Covers skills.sh, ClawHub, browse.sh,
-   LobeHub, well-known endpoints, and the GitHub taps
+   LobeHub, Claude Marketplace, well-known endpoints, and the GitHub taps
    (openai/skills, anthropics/skills, huggingface/skills, VoltAgent, etc.).
 
 Legacy fallback: if the unified index is missing AND ``skills/index-cache/``
@@ -82,6 +82,7 @@ UNIFIED_SOURCE_LABELS = {
     "clawhub": "ClawHub",
     "browse-sh": "browse.sh",
     "lobehub": "LobeHub",
+    "claude-marketplace": "Claude Marketplace",
     "well-known": "Well-Known",
     "github": "GitHub",  # default for non-named GitHub taps
 }
@@ -105,6 +106,7 @@ GITHUB_TAP_LABELS = {
 LEGACY_SOURCE_LABELS = {
     "anthropics_skills": "Anthropic",
     "openai_skills": "OpenAI",
+    "claude_marketplace": "Claude Marketplace",
     "lobehub": "LobeHub",
 }
 
@@ -182,6 +184,8 @@ def _install_command(source: str, identifier: str, name: str) -> str:
         return f"hermes skills install {identifier}"
     if src == "lobehub":
         return f"hermes skills install {identifier}"
+    if src == "claude-marketplace":
+        return f"hermes skills install {identifier}"
     if src == "github":
         return f"hermes skills install {identifier}"
     if src == "well-known":
@@ -211,7 +215,8 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
     # GitHub-backed taps (openai/anthropic/nvidia/hf/gstack/VoltAgent/...):
     # identifier is "owner/repo/<path...>" — link to the directory on GitHub.
     if src in {"github", "openai", "anthropic", "huggingface", "nvidia",
-               "gstack", "voltagent", "minimax"}:
+               "gstack", "voltagent", "minimax", "claude marketplace",
+               "claude-marketplace"}:
         parts = [p for p in identifier.split("/") if p]
         if len(parts) >= 2:
             owner, repo = parts[0], parts[1]
@@ -221,15 +226,9 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
         return ""
 
     if src == "clawhub":
-        # identifier is a bare slug (the "clawhub/" prefix is added at install time).
-        # ClawHub URLs require the owner handle: https://clawhub.ai/{owner}/skills/{slug}.
-        # Without the owner we cannot build a valid URL — return "" rather than
-        # a broken link (the card will simply omit the "View source" button).
+        # identifier is a bare slug (the "clawhub/" prefix is added at install time)
         slug = identifier[len("clawhub/"):] if identifier.startswith("clawhub/") else identifier
-        owner = extra.get("owner", "") if isinstance(extra, dict) else ""
-        if owner:
-            return f"https://clawhub.ai/{owner}/skills/{slug}"
-        return ""
+        return f"https://clawhub.ai/skills/{slug}"
 
     if src in {"skills.sh", "skills-sh"}:
         # "skills-sh/owner/repo/skill" -> the skills.sh detail page

@@ -77,7 +77,27 @@ class TestBillingTriggersClientErrorAbort:
             "credential-pool rotation and provider fallback have failed — see #31273."
         )
 
+    def test_rate_limit_still_retries(self):
+        """Sanity check: rate_limit must still fall through to backoff retry."""
+        from agent.error_classifier import FailoverReason
 
+        # 429 / transient 402 / rate-limited usage: must NOT abort,
+        # because Retry-After backoff and pool rotation are the right
+        # recovery paths.
+        assert not self._mirror_is_client_error(
+            classified_retryable=True,
+            classified_reason=FailoverReason.rate_limit,
+        )
+
+    def test_local_validation_error_still_aborts(self):
+        """Sanity check: bare ValueError/TypeError still abort."""
+        from agent.error_classifier import FailoverReason
+
+        assert self._mirror_is_client_error(
+            classified_retryable=True,
+            classified_reason=FailoverReason.unknown,
+            is_local_validation_error=True,
+        )
 
     def test_context_overflow_still_falls_through_to_compression(self):
         """Sanity check: context-overflow must NOT be classified as
@@ -91,3 +111,37 @@ class TestBillingTriggersClientErrorAbort:
         )
 
 
+class TestSourceStillHasBillingExclusionRemoved:
+    """Belt-and-suspenders: the production source must actually omit
+    ``FailoverReason.billing`` from the ``is_client_error`` exclusion
+    set.  Protects against an accidental re-introduction.
+    """
+
+    def test_conversation_loop_omits_billing_from_client_error_exclusion(self):
+        import inspect
+        from agent import conversation_loop
+
+        src = inspect.getsource(conversation_loop)
+
+        # Locate the is_client_error block and inspect its exclusion set.
+        marker = "is_client_error = ("
+        assert marker in src, (
+            "agent/conversation_loop.py must define is_client_error — "
+            "the bug-fix anchor for #31273 has moved or been renamed."
+        )
+        idx = src.index(marker)
+        # Window large enough to span the full predicate (~30 lines).
+        window = src[idx:idx + 2000]
+
+        assert "FailoverReason.rate_limit" in window, (
+            "is_client_error exclusion set has changed shape — re-verify "
+            "that FailoverReason.billing is still NOT in it (#31273)."
+        )
+        assert "FailoverReason.billing" not in window, (
+            "FailoverReason.billing must NOT appear in the is_client_error "
+            "exclusion set — see #31273.  Billing (HTTP 402) is non-retryable "
+            "by the time control reaches this block: credential-pool rotation "
+            "and provider fallback have both already had their chance to "
+            "continue the loop.  Re-adding it causes runaway token spend on "
+            "depleted balances."
+        )

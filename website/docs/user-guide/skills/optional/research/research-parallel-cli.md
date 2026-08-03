@@ -1,14 +1,14 @@
 ---
-title: "Parallel Cli — Agent-native web search, deep research, and enrichment"
+title: "Parallel Cli"
 sidebar_label: "Parallel Cli"
-description: "Agent-native web search, deep research, and enrichment"
+description: "Optional vendor skill for Parallel CLI — agent-native web search, extraction, deep research, enrichment, FindAll, and monitoring"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Parallel Cli
 
-Agent-native web search, deep research, and enrichment.
+Optional vendor skill for Parallel CLI — agent-native web search, extraction, deep research, enrichment, FindAll, and monitoring. Prefer JSON output and non-interactive flows.
 
 ## Skill metadata
 

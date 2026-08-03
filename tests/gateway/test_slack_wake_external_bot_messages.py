@@ -128,6 +128,20 @@ async def test_wake_decision_returns_false_when_not_thread_reply():
 
 
 @pytest.mark.asyncio
+async def test_wake_decision_returns_false_when_all_four_checks_miss():
+    """All four checks miss (no bot-message, no mention, no session, no
+    bot-authored root) → wake decision is False."""
+    adapter = _make_adapter(bot_authored_root=False)
+    wake = await adapter._should_wake_on_unmentioned_message(
+        event_thread_ts=THREAD_TS,
+        channel_id=CHANNEL_ID,
+        user_id=USER_ID,
+        is_thread_reply=True,
+    )
+    assert wake is False
+
+
+@pytest.mark.asyncio
 async def test_wake_decision_returns_true_when_bot_authored_thread_root():
     """The new behavior (#63530): a human reply in a thread whose root was
     authored by the bot via direct chat.postMessage (outside gateway send)
@@ -146,9 +160,102 @@ async def test_wake_decision_returns_true_when_bot_authored_thread_root():
     )
 
 
+@pytest.mark.asyncio
+async def test_wake_decision_returns_true_when_legacy_check_1_hits():
+    """Regression guard: _bot_message_ts hit still wakes (additive check)."""
+    adapter = _make_adapter(bot_authored_root=False)
+    adapter._bot_message_ts = {THREAD_TS}
+    wake = await adapter._should_wake_on_unmentioned_message(
+        event_thread_ts=THREAD_TS,
+        channel_id=CHANNEL_ID,
+        user_id=USER_ID,
+        is_thread_reply=True,
+    )
+    assert wake is True
+
+
+@pytest.mark.asyncio
+async def test_wake_decision_returns_true_when_legacy_check_2_hits():
+    """Regression guard: _mentioned_threads hit still wakes (additive)."""
+    adapter = _make_adapter(bot_authored_root=False)
+    adapter._mentioned_threads = {THREAD_TS}
+    wake = await adapter._should_wake_on_unmentioned_message(
+        event_thread_ts=THREAD_TS,
+        channel_id=CHANNEL_ID,
+        user_id=USER_ID,
+        is_thread_reply=True,
+    )
+    assert wake is True
+
+
+@pytest.mark.asyncio
+async def test_wake_decision_returns_true_when_legacy_check_3_hits():
+    """Regression guard: an active session still wakes (additive)."""
+    adapter = _make_adapter(bot_authored_root=False)
+    adapter._has_active_session_for_thread = lambda **kw: True
+    wake = await adapter._should_wake_on_unmentioned_message(
+        event_thread_ts=THREAD_TS,
+        channel_id=CHANNEL_ID,
+        user_id=USER_ID,
+        is_thread_reply=True,
+    )
+    assert wake is True
+
+
 # ---------------------------------------------------------------------------
 # _bot_authored_thread_root — the API-derived, restart-surviving check
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bot_authored_thread_root_true_from_cache():
+    """Cache hit whose parent_user_id matches the bot's user_id → True."""
+    adapter = _make_adapter()
+    adapter._thread_context_cache = {
+        f"{CHANNEL_ID}:{THREAD_TS}:": _ThreadContextCache(
+            content="[Thread context — prior messages...]",
+            fetched_at=0,
+            message_count=1,
+            parent_text="triage analysis",
+            parent_user_id=BOT_USER_ID,
+        ),
+    }
+
+    result = await SlackAdapter._bot_authored_thread_root(
+        adapter, CHANNEL_ID, THREAD_TS
+    )
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_bot_authored_thread_root_false_for_human_authored_root():
+    """A human-authored root must return False even on a cache hit — guards
+    against waking on any thread reply just because the cache is warm."""
+    adapter = _make_adapter()
+    adapter._thread_context_cache = {
+        f"{CHANNEL_ID}:{THREAD_TS}:": _ThreadContextCache(
+            content="[Thread context — prior messages...]",
+            fetched_at=0,
+            message_count=1,
+            parent_text="someone else's message",
+            parent_user_id="U_other_user",
+        ),
+    }
+
+    result = await SlackAdapter._bot_authored_thread_root(
+        adapter, CHANNEL_ID, THREAD_TS
+    )
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_bot_authored_thread_root_false_on_empty_thread_ts():
+    """Defensive: empty thread_ts short-circuits to False without any
+    cache lookup or network call."""
+    adapter = _make_adapter()
+    result = await SlackAdapter._bot_authored_thread_root(adapter, CHANNEL_ID, "")
+    assert result is False
+    adapter._fetch_thread_context.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -178,6 +285,18 @@ async def test_bot_authored_thread_root_fetches_on_cache_miss():
     )
     assert result is True
     adapter._fetch_thread_context.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_bot_authored_thread_root_false_when_fetch_fails():
+    """Fetch failure (empty result, nothing cached) → False, no wake."""
+    adapter = _make_adapter()
+    adapter._fetch_thread_context = AsyncMock(return_value="")
+
+    result = await SlackAdapter._bot_authored_thread_root(
+        adapter, CHANNEL_ID, THREAD_TS
+    )
+    assert result is False
 
 
 @pytest.mark.asyncio

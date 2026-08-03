@@ -38,6 +38,16 @@ class TestGetHermesHomeProfileWarning:
         assert result == tmp_path / ".hermes"
         assert "HERMES_HOME fallback" not in capsys.readouterr().err
 
+    def test_default_active_profile_no_warning(
+        self, fresh_constants, tmp_path, capsys
+    ):
+        """active_profile=default → still no warning, returns ~/.hermes."""
+        hermes_dir = tmp_path / ".hermes"
+        hermes_dir.mkdir()
+        (hermes_dir / "active_profile").write_text("default\n")
+        result = fresh_constants.get_hermes_home()
+        assert result == tmp_path / ".hermes"
+        assert "HERMES_HOME fallback" not in capsys.readouterr().err
 
     def test_named_profile_unset_home_warns_once(
         self, fresh_constants, tmp_path, capsys
@@ -92,3 +102,15 @@ class TestGetHermesHomeProfileWarning:
         # Shouldn't crash; shouldn't warn either (can't tell what profile was intended)
         assert "HERMES_HOME fallback" not in capsys.readouterr().err
 
+    def test_empty_active_profile_no_warning(
+        self, fresh_constants, tmp_path, capsys
+    ):
+        """Empty active_profile file → treated as default, no warning."""
+        hermes_dir = tmp_path / ".hermes"
+        hermes_dir.mkdir()
+        (hermes_dir / "active_profile").write_text("")
+
+        result = fresh_constants.get_hermes_home()
+
+        assert result == tmp_path / ".hermes"
+        assert "HERMES_HOME fallback" not in capsys.readouterr().err

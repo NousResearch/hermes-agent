@@ -25,6 +25,11 @@ class TestToolsSlashNoSubcommand:
             cli_obj._handle_tools_command("/tools")
         mock_show.assert_called_once()
 
+    def test_unknown_subcommand_falls_back_to_show_tools(self):
+        cli_obj = _make_cli()
+        with patch.object(cli_obj, "show_tools") as mock_show:
+            cli_obj._handle_tools_command("/tools foobar")
+        mock_show.assert_called_once()
 
 
 # ── /tools list ─────────────────────────────────────────────────────────────
@@ -41,6 +46,13 @@ class TestToolsSlashList:
         out = capsys.readouterr().out
         assert "web" in out
 
+    def test_list_does_not_modify_enabled_toolsets(self):
+        """List is read-only — self.enabled_toolsets must not change."""
+        cli_obj = _make_cli(["web", "memory"])
+        with patch("hermes_cli.tools_config.load_config",
+                   return_value={"platform_toolsets": {"cli": ["web"]}}):
+            cli_obj._handle_tools_command("/tools list")
+        assert cli_obj.enabled_toolsets == {"web", "memory"}
 
 
 # ── /tools disable (session reset) ──────────────────────────────────────────
@@ -61,6 +73,18 @@ class TestToolsSlashDisableWithReset:
         mock_reset.assert_called_once()
         assert "web" not in cli_obj.enabled_toolsets
 
+    def test_disable_does_not_prompt_for_confirmation(self):
+        """Disable no longer uses input() — it applies directly."""
+        cli_obj = _make_cli(["web", "memory"])
+        with patch("hermes_cli.tools_config.load_config",
+                   return_value={"platform_toolsets": {"cli": ["web", "memory"]}}), \
+             patch("hermes_cli.tools_config.save_config"), \
+             patch("hermes_cli.tools_config._get_platform_tools", return_value={"memory"}), \
+             patch("hermes_cli.config.load_config", return_value={}), \
+             patch.object(cli_obj, "new_session"), \
+             patch("builtins.input") as mock_input:
+            cli_obj._handle_tools_command("/tools disable web")
+        mock_input.assert_not_called()
 
     def test_disable_always_resets_session(self):
         """Even without a confirmation prompt, disable always resets the session."""
@@ -74,6 +98,11 @@ class TestToolsSlashDisableWithReset:
             cli_obj._handle_tools_command("/tools disable web")
         mock_reset.assert_called_once()
 
+    def test_disable_missing_name_prints_usage(self, capsys):
+        cli_obj = _make_cli()
+        cli_obj._handle_tools_command("/tools disable")
+        out = capsys.readouterr().out
+        assert "Usage" in out
 
 
 # ── /tools enable (session reset) ───────────────────────────────────────────

@@ -95,3 +95,84 @@ def test_per_provider_max_output_tokens_fallback(isolated_home):
     assert kw["max_tokens"] == 12000
 
 
+def test_global_max_tokens_beats_per_provider(isolated_home):
+    """The documented global model.max_tokens wins over a provider cap."""
+    write_cfg, fresh_gateway = isolated_home
+    write_cfg(
+        """
+        model:
+          default: glm-5.1
+          provider: mylocal
+          max_tokens: 16384
+        providers:
+          mylocal:
+            api: http://localhost:11434/v1
+            api_key: sk-test
+            default_model: glm-5.1
+            max_output_tokens: 12000
+        """
+    )
+    grun = fresh_gateway()
+    kw = grun._resolve_runtime_agent_kwargs()
+    assert kw["max_tokens"] == 16384
+
+
+def test_env_override_beats_everything(isolated_home, monkeypatch):
+    """HERMES_MAX_TOKENS is the internal override mechanism (highest priority)."""
+    write_cfg, fresh_gateway = isolated_home
+    monkeypatch.setenv("HERMES_MAX_TOKENS", "2048")
+    write_cfg(
+        """
+        model:
+          default: glm-5.1
+          provider: mylocal
+          max_tokens: 16384
+        providers:
+          mylocal:
+            api: http://localhost:11434/v1
+            api_key: sk-test
+            default_model: glm-5.1
+            max_output_tokens: 12000
+        """
+    )
+    grun = fresh_gateway()
+    kw = grun._resolve_runtime_agent_kwargs()
+    assert kw["max_tokens"] == 2048
+
+
+def test_no_config_leaves_max_tokens_none(isolated_home):
+    """No cap configured anywhere -> max_tokens is None (no spurious limit)."""
+    write_cfg, fresh_gateway = isolated_home
+    write_cfg(
+        """
+        model:
+          default: glm-5.1
+          provider: openrouter
+        """
+    )
+    grun = fresh_gateway()
+    kw = grun._resolve_runtime_agent_kwargs()
+    assert kw["max_tokens"] is None
+
+
+def test_lift_helper_accepts_alias_and_rejects_garbage(isolated_home):
+    """_lift_max_output_tokens accepts both keys, ignores non-positive/non-int."""
+    write_cfg, _ = isolated_home
+    write_cfg("model:\n  provider: openrouter\n")
+    for mod in list(sys.modules.keys()):
+        if mod.startswith("hermes_cli"):
+            del sys.modules[mod]
+    rp = importlib.import_module("hermes_cli.runtime_provider")
+
+    out: dict = {}
+    rp._lift_max_output_tokens({"max_output_tokens": 8192}, out)
+    assert out["max_output_tokens"] == 8192
+
+    out = {}
+    rp._lift_max_output_tokens({"max_tokens": 4096}, out)
+    assert out["max_output_tokens"] == 4096
+
+    for bad in ({"max_output_tokens": 0}, {"max_output_tokens": "x"}, {}):
+        out = {}
+        rp._lift_max_output_tokens(bad, out)
+        assert "max_output_tokens" not in out

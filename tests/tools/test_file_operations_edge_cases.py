@@ -33,6 +33,30 @@ class TestIsLikelyBinary:
         sample = "Hello, world!\nThis is a normal text file.\n"
         assert ops._is_likely_binary("unknown.xyz", content_sample=sample) is False
 
+    def test_binary_content_returns_true(self, ops):
+        """Content with >30% non-printable characters should be classified as binary."""
+        # 500 NUL bytes + 500 printable = 50% non-printable → binary
+        # Use .xyz extension (not in BINARY_EXTENSIONS) to ensure content analysis runs
+        sample = "\x00" * 500 + "a" * 500
+        assert ops._is_likely_binary("data.xyz", content_sample=sample) is True
+
+    def test_no_content_sample_returns_false(self, ops):
+        """When no content sample is provided and extension is unknown → not binary."""
+        assert ops._is_likely_binary("mystery_file") is False
+
+    def test_none_content_sample_returns_false(self, ops):
+        """Explicit ``None`` content_sample should behave the same as missing."""
+        assert ops._is_likely_binary("mystery_file", content_sample=None) is False
+
+    def test_empty_string_content_sample_returns_false(self, ops):
+        """Empty string is falsy, so content analysis should be skipped → not binary."""
+        assert ops._is_likely_binary("mystery_file", content_sample="") is False
+
+    def test_threshold_boundary(self, ops):
+        """Exactly 30% non-printable should NOT trigger binary classification (> 0.30, not >=)."""
+        # 300 NUL bytes + 700 printable = 30.0% → should be False (uses strict >)
+        sample = "\x00" * 300 + "a" * 700
+        assert ops._is_likely_binary("data.xyz", content_sample=sample) is False
 
     def test_just_above_threshold(self, ops):
         """301/1000 = 30.1% non-printable → should be binary."""
@@ -148,11 +172,42 @@ class TestCheckLintInproc:
         assert not result.skipped
         assert result.output == ""
 
+    def test_python_inproc_syntax_error(self, ops):
+        """Invalid Python content fails with SyntaxError + line info."""
+        result = ops._check_lint("/tmp/bad.py", content="def foo(:\n    pass\n")
+        assert result.success is False
+        assert "SyntaxError" in result.output
+        assert "line" in result.output.lower()
+
+    def test_python_inproc_content_explicit(self, ops):
+        """When content is passed explicitly, the file is not re-read."""
+        with patch.object(ops, "_exec") as mock_exec:
+            result = ops._check_lint("/tmp/explicit.py", content="y = 2\n")
+            # _exec must not have been called — content was supplied
+            mock_exec.assert_not_called()
+        assert result.success is True
 
     def test_json_inproc_clean(self, ops):
         result = ops._check_lint("/tmp/a.json", content='{"a": 1}')
         assert result.success is True
 
+    def test_json_inproc_error(self, ops):
+        result = ops._check_lint("/tmp/b.json", content='{"a": 1')
+        assert result.success is False
+        assert "JSONDecodeError" in result.output
+
+    def test_yaml_inproc_clean(self, ops):
+        result = ops._check_lint("/tmp/a.yaml", content="a: 1\nb: 2\n")
+        assert result.success is True
+
+    def test_yaml_inproc_error(self, ops):
+        result = ops._check_lint("/tmp/b.yaml", content='key: "unclosed\n')
+        assert result.success is False
+        assert "YAMLError" in result.output
+
+    def test_toml_inproc_clean(self, ops):
+        result = ops._check_lint("/tmp/a.toml", content='[section]\nk = "v"\n')
+        assert result.success is True
 
     def test_toml_inproc_error(self, ops):
         result = ops._check_lint("/tmp/b.toml", content='[section\nk = "v"')
@@ -177,6 +232,24 @@ class TestCheckLintDelta:
             assert wrapped.call_count == 1
         assert r.success is True
 
+    def test_new_file_reports_all_errors(self, ops):
+        """No pre-content means no delta refinement — all post errors surface."""
+        r = ops._check_lint_delta("/tmp/new.py", pre_content=None, post_content="def x(:\n")
+        assert r.success is False
+        assert "SyntaxError" in r.output
+
+    def test_broken_file_becomes_good(self, ops):
+        """Post-clean short-circuits without any delta refinement."""
+        r = ops._check_lint_delta("/tmp/fix.py", pre_content="def x(:\n", post_content="def x():\n    pass\n")
+        assert r.success is True
+
+    def test_introduces_new_error_filters_pre(self, ops):
+        """Delta filter drops pre-existing errors, surfaces only new ones."""
+        pre = 'def a(:\n    pass\n'  # line 1 broken
+        post = 'def a():\n    pass\n\ndef b(:\n    pass\n'  # line 1 fixed, line 4 broken
+        r = ops._check_lint_delta("/tmp/d.py", pre_content=pre, post_content=post)
+        assert r.success is False
+        assert "New lint errors" in r.output or "line 4" in r.output
 
     def test_pre_existing_remains_flagged_but_not_new(self, ops):
         """Single-error parsers (ast) may miss that post is OK — be cautious."""
@@ -258,6 +331,31 @@ class TestSearchContextParsing:
 
         assert parsed == ("dir/file-12-name.py", 8, "context here")
 
+    def test_search_with_rg_context_handles_filename_with_dash_digits(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        with patch.object(ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(
+                exit_code=0,
+                stdout="dir/file-12-name.py-8-context here\n",
+            )
+            result = ops._search_with_rg(
+                "needle",
+                path=".",
+                file_glob=None,
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=1,
+            )
+
+        assert result.error is None
+        assert result.total_count == 1
+        assert result.matches[0].path == "dir/file-12-name.py"
+        assert result.matches[0].line_number == 8
+        assert result.matches[0].content == "context here"
 
     def test_search_with_grep_context_handles_filename_with_dash_digits(self):
         env = MagicMock()

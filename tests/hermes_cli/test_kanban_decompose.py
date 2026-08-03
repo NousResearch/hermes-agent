@@ -113,6 +113,112 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="just one thing", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Tightened title",
+        "body": "**Goal**\nDo the thing.",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "fallback"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is False
+    assert outcome.new_title == "Tightened title"
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    # specify path with no parents -> recompute_ready flips to 'ready'
+    assert task.status == "ready"
+    assert task.title == "Tightened title"
+    assert task.assignee == "fallback"
+
+
+def test_decompose_fanout_false_preserves_existing_assignee(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="already routed",
+            assignee="engineer",
+            triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Tightened title",
+        "body": "Keep existing lane.",
+        "assignee": "fallback",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "fallback"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.assignee == "engineer"
+    assert task.title == "Tightened title"
+
+
+def test_decompose_fanout_false_uses_valid_llm_assignee(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="route me", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Tightened title",
+        "body": "Route to specialist.",
+        "assignee": "engineer",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "fallback"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.assignee == "engineer"
+
+
 def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="route me safely", triage=True)
@@ -145,6 +251,66 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     assert task.assignee == "fallback"
 
 
+def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="x", triage=True)
+
+    # Roster only has 'orchestrator' and 'fallback'; LLM picks 'made_up'.
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test",
+        "tasks": [
+            {"title": "do X", "body": "", "assignee": "made_up", "parents": []},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with patch.dict(
+            "os.environ", {}, clear=False,
+        ), _patch_aux_client(llm_payload), _patch_extra_body(), \
+            patch(
+                "hermes_cli.kanban_decompose._load_config",
+                return_value={
+                    "kanban": {
+                        "orchestrator_profile": "orchestrator",
+                        "default_assignee": "fallback",
+                    }
+                },
+            ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 1
+    with kb.connect() as conn:
+        child = kb.get_task(conn, outcome.child_ids[0])
+    # 'made_up' wasn't in roster, so assignee rewritten to 'fallback'
+    assert child.assignee == "fallback"
+
+
+def test_decompose_handles_malformed_llm_json(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="x", triage=True)
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client("not json at all, sorry"), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "malformed JSON" in outcome.reason
+
+
 def test_decompose_returns_false_when_task_not_triage(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="x")  # ready, not triage
@@ -161,3 +327,25 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+def test_decompose_no_aux_client_configured(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="x", triage=True)
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        # call_llm raises RuntimeError when no provider is configured; the
+        # decomposer must convert that into a failed outcome, not a crash.
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            side_effect=RuntimeError("No LLM provider configured"),
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    # call_llm's no-provider RuntimeError surfaces via the LLM-error branch.
+    assert "LLM error" in outcome.reason

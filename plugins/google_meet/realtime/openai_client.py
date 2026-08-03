@@ -262,7 +262,7 @@ class RealtimeSpeaker:
         if not self.queue_path.exists():
             return []
         out: list[dict] = []
-        for line in self.queue_path.read_text(encoding="utf-8").splitlines():
+        for line in self.queue_path.read_text().splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -281,10 +281,10 @@ class RealtimeSpeaker:
         if not remaining:
             # Keep the file but empty — consumers may be watching for
             # new writes via mtime, and delete-then-recreate is a race.
-            self.queue_path.write_text("", encoding="utf-8")
+            self.queue_path.write_text("")
             return
         self.queue_path.write_text(
-            "\n".join(json.dumps(e) for e in remaining) + "\n", encoding="utf-8"
+            "\n".join(json.dumps(e) for e in remaining) + "\n"
         )
 
     def _append_processed(self, entry: dict, result: dict) -> None:

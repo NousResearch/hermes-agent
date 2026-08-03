@@ -63,3 +63,20 @@ def test_stage2_discovers_chromium_binary(
     )
 
 
+def test_stage2_browser_path_accessible_to_hermes_user(
+    built_image: str, container_name: str,
+) -> None:
+    """The discovered browser binary must be accessible to the
+    unprivileged hermes user (UID 10000), since that's who runs
+    agent-browser subprocesses."""
+    start_container(built_image, container_name)
+
+    r = docker_exec_sh(
+        container_name,
+        'path="$(cat /run/s6/container_environment/AGENT_BROWSER_EXECUTABLE_PATH)" '
+        '&& test -r "$path" && test -x "$path"',
+        timeout=10,
+    )
+    assert r.returncode == 0, (
+        f"browser binary not readable+executable by hermes user: {r.stderr}"
+    )

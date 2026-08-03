@@ -16,12 +16,7 @@ import {
   setupMockBackend,
   waitForAppReady,
 } from './fixtures'
-import {
-  createBackgroundReleaseHandle,
-  restartMockServer,
-  SIDEBAR_CROSS_TEXTS,
-  SIDEBAR_TEXTS,
-} from './mock-server'
+import { SIDEBAR_CROSS_TEXTS, SIDEBAR_TEXTS, restartMockServer } from './mock-server'
 
 /** Background-running dot aria-label (from i18n en.ts). */
 const BG_DOT_LABEL = 'Background task running'
@@ -181,30 +176,21 @@ test.describe('sidebar states — cross-session dot transition', () => {
   test.describe.configure({ mode: 'serial' })
 
   let fixture: MockBackendFixture
-  // Keeps the background process alive until this test releases it, so the
-  // "still running after the turn finished" state can't expire on its own.
-  const bgRelease = createBackgroundReleaseHandle()
 
   test.beforeAll(async () => {
     restartMockServer()
-    fixture = await setupMockBackend({
-      mockServer: { backgroundReleasePath: bgRelease.path },
-    })
+    fixture = await setupMockBackend()
     await waitForAppReady(fixture, 120_000)
   })
 
   test.afterAll(async () => {
-    // Release first so the process exits even if the test failed early,
-    // then drop the sentinel file.
-    bgRelease.release()
     await fixture?.cleanup()
-    bgRelease.cleanup()
   })
 
   test('background dot transitions to finished when viewing another session', async () => {
     const page = fixture.page
 
-    // Start a turn whose background process runs until we release it.
+    // Start a turn with a long background process (sleep 5).
     const composer = page.locator('[contenteditable="true"]').first()
     await composer.waitFor({ state: 'visible', timeout: 10_000 })
     await composer.click()
@@ -226,9 +212,8 @@ test.describe('sidebar states — cross-session dot transition', () => {
       { timeout: 90_000 },
     )
 
-    // The background dot must still be visible: the turn is done but the
-    // process is held open by the sentinel, so this is a stable state rather
-    // than a window we have to catch in time.
+    // The background dot should still be visible (sleep 5 hasn't finished yet,
+    // or auto-dismiss hasn't fired).
     const bgDuringTurn = await page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
     expect(bgDuringTurn, 'background dot should still be visible after turn completes').toBeGreaterThan(0)
 
@@ -240,9 +225,8 @@ test.describe('sidebar states — cross-session dot transition', () => {
     await page.locator('button:has-text("New session")').first().click()
     await page.waitForTimeout(2000)
 
-    // Now let the background process finish. The session A dot should
-    // transition away from "background running".
-    bgRelease.release()
+    // Now wait for the background process to finish (sleep 5 + auto-dismiss).
+    // The session A dot should transition away from "background running".
     await expect
       .poll(
         () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),

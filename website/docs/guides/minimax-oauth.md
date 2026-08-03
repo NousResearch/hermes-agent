@@ -170,7 +170,7 @@ hermes --provider minimax-oauth
 
 Both models support up to 200,000 tokens of context.
 
-`MiniMax-M2.7` is also used automatically as the auxiliary model for vision and delegation tasks when `minimax-oauth` is the primary provider.
+`MiniMax-M2.7-highspeed` is also used automatically as the auxiliary model for vision and delegation tasks when `minimax-oauth` is the primary provider.
 
 ## Troubleshooting
 

@@ -1,5 +1,5 @@
 import type { AppendMessage } from '@assistant-ui/react'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 
@@ -12,7 +12,6 @@ import {
   isSessionBusyError,
   isSessionIdCandidate,
   isSessionNotFoundError,
-  readFileDataUrlForAttach,
   renderRpcResult,
   slashStatusText,
   visibleUserIndexAtOrdinal,
@@ -84,32 +83,6 @@ describe('friendlyRemoteAttachError', () => {
   it('passes non-cap errors through', () => {
     const original = new Error('something else')
     expect(friendlyRemoteAttachError(original, 'pic.png')).toBe(original)
-  })
-})
-
-describe('readFileDataUrlForAttach', () => {
-  it('prefers the attachment-specific desktop reader over the preview reader', async () => {
-    const previewReader = vi.fn(async () => 'preview')
-    const attachmentReader = vi.fn(async () => 'data:application/zip;base64,UEs=')
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { readFileDataUrl: previewReader, readFileDataUrlForAttach: attachmentReader }
-    })
-
-    await expect(readFileDataUrlForAttach('/tmp/archive.zip')).resolves.toBe('data:application/zip;base64,UEs=')
-    expect(attachmentReader).toHaveBeenCalledWith('/tmp/archive.zip')
-    expect(previewReader).not.toHaveBeenCalled()
-  })
-
-  it('falls back to the preview reader on older shells', async () => {
-    const previewReader = vi.fn(async () => 'data:text/plain;base64,YQ==')
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { readFileDataUrl: previewReader }
-    })
-
-    await expect(readFileDataUrlForAttach('/tmp/note.txt')).resolves.toBe('data:text/plain;base64,YQ==')
-    expect(previewReader).toHaveBeenCalledWith('/tmp/note.txt')
   })
 })
 

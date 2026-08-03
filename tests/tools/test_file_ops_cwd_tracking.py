@@ -18,6 +18,7 @@ Fix: _exec() now prefers the LIVE ``env.cwd`` over the init-time
 from __future__ import annotations
 
 
+
 from tools.file_operations import ShellFileOperations
 
 
@@ -86,6 +87,51 @@ class TestShellFileOpsCwdTracking:
             "Stale ops.cwd leaked through — _exec must prefer env.cwd."
         )
 
+    def test_patch_replace_targets_live_cwd_not_init_cwd(self, tmp_path):
+        """The exact bug reported: patch lands in wrong dir after cd."""
+        dir_a = tmp_path / "main"
+        dir_b = tmp_path / "worktree"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        (dir_a / "t.txt").write_text("shared text\n")
+        (dir_b / "t.txt").write_text("shared text\n")
+
+        env = _FakeEnv(start_cwd=str(dir_a))
+        ops = ShellFileOperations(env, cwd=str(dir_a))
+
+        # Emulate user cd'ing into the worktree
+        env.execute(f"cd {dir_b}")
+        assert env.cwd == str(dir_b)
+
+        # Patch with a RELATIVE path — must target the worktree, not main
+        result = ops.patch_replace("t.txt", "shared text\n", "PATCHED\n")
+        assert result.success is True
+
+        assert (dir_b / "t.txt").read_text() == "PATCHED\n", (
+            "patch must land in the live-cwd dir (worktree)"
+        )
+        assert (dir_a / "t.txt").read_text() == "shared text\n", (
+            "patch must NOT land in the init-time dir (main)"
+        )
+
+    def test_explicit_cwd_arg_still_wins(self, tmp_path):
+        """An explicit cwd= arg to _exec must override both env.cwd and self.cwd."""
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_c = tmp_path / "c"
+        for d in (dir_a, dir_b, dir_c):
+            d.mkdir()
+        (dir_a / "target.txt").write_text("from-a\n")
+        (dir_b / "target.txt").write_text("from-b\n")
+        (dir_c / "target.txt").write_text("from-c\n")
+
+        env = _FakeEnv(start_cwd=str(dir_a))
+        ops = ShellFileOperations(env, cwd=str(dir_a))
+        env.execute(f"cd {dir_b}")
+
+        # Explicit cwd=dir_c should win over env.cwd (dir_b) and self.cwd (dir_a)
+        result = ops._exec("cat target.txt", cwd=str(dir_c))
+        assert "from-c" in result.stdout
 
     def test_env_without_cwd_attribute_falls_back_to_self_cwd(self, tmp_path):
         """Backends without a cwd attribute still work via init-time cwd."""

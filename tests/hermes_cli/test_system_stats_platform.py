@@ -15,6 +15,19 @@ def test_windows_11_build_displays_as_windows_11():
     assert info["platform"] == "Windows-11-10.0.26200-SP0"
 
 
+def test_windows_10_build_keeps_windows_10_label():
+    info = _display_system_platform(
+        system="Windows",
+        release="10",
+        version="10.0.19045",
+        platform_label="Windows-10-10.0.19045-SP0",
+    )
+
+    assert info["os"] == "Windows"
+    assert info["os_release"] == "10"
+    assert info["platform"] == "Windows-10-10.0.19045-SP0"
+
+
 def test_non_windows_platform_unchanged():
     info = _display_system_platform(
         system="Linux",

@@ -25,21 +25,124 @@ class TestIsThinkingOnlyAssistant:
         msg = {"role": "assistant", "content": "Hello there"}
         assert not AIAgent._is_thinking_only_assistant(msg)
 
+    def test_assistant_with_tool_calls_is_not_thinking_only(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "let me use a tool",
+            "tool_calls": [{"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}],
+        }
+        assert not AIAgent._is_thinking_only_assistant(msg)
 
+    def test_empty_content_plus_reasoning_is_thinking_only(self):
+        msg = {"role": "assistant", "content": "", "reasoning": "thinking..."}
+        assert AIAgent._is_thinking_only_assistant(msg)
 
+    def test_none_content_plus_reasoning_content_is_thinking_only(self):
+        msg = {"role": "assistant", "content": None, "reasoning_content": "thinking..."}
+        assert AIAgent._is_thinking_only_assistant(msg)
 
+    def test_whitespace_only_content_plus_reasoning_is_thinking_only(self):
+        msg = {"role": "assistant", "content": "   \n\n  ", "reasoning": "r"}
+        assert AIAgent._is_thinking_only_assistant(msg)
 
+    def test_empty_content_no_reasoning_is_not_thinking_only(self):
+        # If there's no reasoning either, this is just an empty turn — let
+        # other sanitizers handle it (orphan-tool-pair, etc.). We only care
+        # about the specific thinking-only case.
+        msg = {"role": "assistant", "content": ""}
+        assert not AIAgent._is_thinking_only_assistant(msg)
 
+    def test_list_content_all_thinking_blocks_is_thinking_only(self):
+        # Anthropic-native shape
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "...", "signature": "sig"},
+            ],
+            "reasoning": "...",
+        }
+        assert AIAgent._is_thinking_only_assistant(msg)
 
+    def test_list_content_with_real_text_is_not_thinking_only(self):
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "..."},
+                {"type": "text", "text": "Hi there"},
+            ],
+            "reasoning": "...",
+        }
+        assert not AIAgent._is_thinking_only_assistant(msg)
 
+    def test_list_content_with_tool_use_block_is_not_thinking_only(self):
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "..."},
+                {"type": "tool_use", "id": "tu1", "name": "terminal", "input": {}},
+            ],
+        }
+        assert not AIAgent._is_thinking_only_assistant(msg)
 
+    def test_list_content_thinking_plus_whitespace_text_is_thinking_only(self):
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "..."},
+                {"type": "text", "text": "   "},
+            ],
+            "reasoning": "...",
+        }
+        assert AIAgent._is_thinking_only_assistant(msg)
 
+    def test_reasoning_details_list_form_detected(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "reasoning_details": [{"type": "thinking", "text": "..."}],
+        }
+        assert AIAgent._is_thinking_only_assistant(msg)
 
+    def test_codex_reasoning_items_list_form_detected(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob"}
+            ],
+        }
+        assert AIAgent._is_thinking_only_assistant(msg)
 
+    def test_codex_reasoning_items_with_visible_text_is_not_thinking_only(self):
+        msg = {
+            "role": "assistant",
+            "content": "Visible answer",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob"}
+            ],
+        }
+        assert not AIAgent._is_thinking_only_assistant(msg)
 
+    def test_empty_codex_reasoning_items_list_is_not_thinking_only(self):
+        msg = {"role": "assistant", "content": "", "codex_reasoning_items": []}
+        assert not AIAgent._is_thinking_only_assistant(msg)
 
+    def test_non_reasoning_codex_items_are_not_thinking_only(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [None, "x", {"type": "other"}],
+        }
+        assert not AIAgent._is_thinking_only_assistant(msg)
 
+    def test_user_message_never_thinking_only(self):
+        assert not AIAgent._is_thinking_only_assistant({"role": "user", "content": ""})
 
+    def test_tool_message_never_thinking_only(self):
+        assert not AIAgent._is_thinking_only_assistant(
+            {"role": "tool", "content": "", "tool_call_id": "x"}
+        )
 
     def test_non_dict_returns_false(self):
         assert not AIAgent._is_thinking_only_assistant(None)
@@ -65,6 +168,16 @@ class TestDropThinkingOnlyAndMergeUsers:
         # Should return the original list untouched (identity) when no changes.
         assert out is msgs
 
+    def test_drops_thinking_only_between_user_messages_and_merges(self):
+        msgs = [
+            {"role": "user", "content": "help me with X"},
+            {"role": "assistant", "content": "", "reasoning": "let me think"},
+            {"role": "user", "content": "ok continue"},
+        ]
+        out = AIAgent._drop_thinking_only_and_merge_users(msgs)
+        assert len(out) == 1
+        assert out[0]["role"] == "user"
+        assert out[0]["content"] == "help me with X\n\nok continue"
 
     def test_preserves_alternation_after_drop(self):
         msgs = [
@@ -79,7 +192,27 @@ class TestDropThinkingOnlyAndMergeUsers:
         assert out[0]["content"] == "u1\n\nu2"
         assert out[1]["content"] == "real reply"
 
+    def test_does_not_merge_when_drop_leaves_non_adjacent_users(self):
+        # Thinking-only at end of conversation — no trailing user to merge
+        msgs = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "", "reasoning": "..."},
+        ]
+        out = AIAgent._drop_thinking_only_and_merge_users(msgs)
+        assert [m["role"] for m in out] == ["user", "assistant", "user"]
 
+    def test_multiple_thinking_only_in_sequence_collapses(self):
+        msgs = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "", "reasoning": "r1"},
+            {"role": "assistant", "content": "", "reasoning": "r2"},
+            {"role": "user", "content": "u2"},
+        ]
+        out = AIAgent._drop_thinking_only_and_merge_users(msgs)
+        assert len(out) == 1
+        assert out[0]["content"] == "u1\n\nu2"
 
     def test_does_not_touch_stored_messages_original_list_unmutated(self):
         original_first_user = {"role": "user", "content": "u1"}
@@ -121,6 +254,18 @@ class TestDropThinkingOnlyAndMergeUsers:
             {"type": "text", "text": "second"},
         ]
 
+    def test_merge_mixed_string_and_list_content(self):
+        msgs = [
+            {"role": "user", "content": "plain text"},
+            {"role": "assistant", "content": "", "reasoning": "..."},
+            {"role": "user", "content": [{"type": "text", "text": "block text"}]},
+        ]
+        out = AIAgent._drop_thinking_only_and_merge_users(msgs)
+        assert len(out) == 1
+        assert out[0]["content"] == [
+            {"type": "text", "text": "plain text"},
+            {"type": "text", "text": "block text"},
+        ]
 
     def test_system_messages_ignored_by_pass(self):
         msgs = [

@@ -40,6 +40,18 @@ class TestHonchoClientConfigAutoEnable:
         assert cfg.api_key == "test-api-key-12345"
         assert cfg.enabled is False  # Respects explicit setting
 
+    def test_respects_explicit_enabled_true(self, tmp_path):
+        """When enabled is explicitly True, should be enabled."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "apiKey": "test-api-key-12345",
+            "enabled": True,
+        }))
+
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+
+        assert cfg.api_key == "test-api-key-12345"
+        assert cfg.enabled is True
 
     def test_disabled_when_no_api_key_and_no_explicit_enabled(self, tmp_path):
         """When no API key and enabled not set, should be disabled."""
@@ -59,6 +71,20 @@ class TestHonchoClientConfigAutoEnable:
             if env_key:
                 os.environ["HONCHO_API_KEY"] = env_key
 
+    def test_auto_enables_with_env_var_api_key(self, tmp_path, monkeypatch):
+        """When API key is in env var (not config), should auto-enable."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "workspace": "test",
+            # No apiKey in config
+        }))
+
+        monkeypatch.setenv("HONCHO_API_KEY", "env-api-key-67890")
+
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+
+        assert cfg.api_key == "env-api-key-67890"
+        assert cfg.enabled is True  # Auto-enabled from env var API key
 
     def test_from_env_always_enabled(self, monkeypatch):
         """from_env() should always set enabled=True."""
@@ -69,6 +95,15 @@ class TestHonchoClientConfigAutoEnable:
         assert cfg.api_key == "env-test-key"
         assert cfg.enabled is True
 
+    def test_falls_back_to_env_when_no_config_file(self, tmp_path, monkeypatch):
+        """When config file doesn't exist, should fall back to from_env()."""
+        nonexistent = tmp_path / "nonexistent.json"
+        monkeypatch.setenv("HONCHO_API_KEY", "fallback-key")
+
+        cfg = HonchoClientConfig.from_global_config(config_path=nonexistent)
+
+        assert cfg.api_key == "fallback-key"
+        assert cfg.enabled is True  # from_env() sets enabled=True
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
@@ -93,6 +128,14 @@ def test_save_config_sets_owner_only_permissions(tmp_path, monkeypatch):
 
 
 class TestLatencyFlagResolution:
+    def test_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('HONCHO_BASE_URL', raising=False)
+        config_path = tmp_path / 'config.json'
+        config_path.write_text(json.dumps({'apiKey': 'k'}))
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        assert cfg.query_rewrite is False
+        assert cfg.first_turn_base_wait == 3.0
+        assert cfg.first_turn_dialectic_wait == 2.0
 
     def test_host_block_wins(self, tmp_path, monkeypatch):
         monkeypatch.delenv('HONCHO_BASE_URL', raising=False)
@@ -123,3 +166,9 @@ class TestLatencyFlagResolution:
         cfg = HonchoClientConfig.from_global_config(config_path=config_path)
         assert cfg.timeout == 5.0
 
+    def test_timeout_falls_back_to_global(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('HONCHO_TIMEOUT', raising=False)
+        config_path = tmp_path / 'config.json'
+        config_path.write_text(json.dumps({'apiKey': 'k', 'timeout': 30}))
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        assert cfg.timeout == 30.0

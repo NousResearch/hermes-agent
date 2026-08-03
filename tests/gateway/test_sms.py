@@ -20,6 +20,20 @@ from gateway.config import Platform, PlatformConfig
 class TestSmsConfigLoading:
     """Verify _apply_env_overrides wires SMS correctly."""
 
+    def test_env_overrides_create_sms_config(self):
+        from gateway.config import load_gateway_config
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest123",
+            "TWILIO_AUTH_TOKEN": "token_abc",
+            "TWILIO_PHONE_NUMBER": "+15551234567",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            assert Platform.SMS in config.platforms
+            pc = config.platforms[Platform.SMS]
+            assert pc.enabled is True
+            assert pc.api_key == "token_abc"
 
     def test_env_overrides_set_home_channel(self):
         from gateway.config import load_gateway_config
@@ -62,6 +76,13 @@ class TestSmsFormatAndTruncate:
             adapter._from_number = "+15550001111"
         return adapter
 
+    def test_strips_bold(self):
+        adapter = self._make_adapter()
+        assert adapter.format_message("**hello**") == "hello"
+
+    def test_strips_italic(self):
+        adapter = self._make_adapter()
+        assert adapter.format_message("*world*") == "world"
 
     def test_strips_code_blocks(self):
         adapter = self._make_adapter()
@@ -69,6 +90,17 @@ class TestSmsFormatAndTruncate:
         assert "```" not in result
         assert "print('hi')" in result
 
+    def test_strips_inline_code(self):
+        adapter = self._make_adapter()
+        assert adapter.format_message("`code`") == "code"
+
+    def test_strips_headers(self):
+        adapter = self._make_adapter()
+        assert adapter.format_message("## Title") == "Title"
+
+    def test_strips_links(self):
+        adapter = self._make_adapter()
+        assert adapter.format_message("[click](https://example.com)") == "click"
 
     def test_collapses_newlines(self):
         adapter = self._make_adapter()
@@ -99,7 +131,19 @@ class TestSmsEchoPrevention:
 # ── Requirements check ─────────────────────────────────────────────
 
 class TestSmsRequirements:
+    def test_check_sms_requirements_missing_sid(self):
+        from plugins.platforms.sms.adapter import check_sms_requirements
 
+        env = {"TWILIO_AUTH_TOKEN": "tok"}
+        with patch.dict(os.environ, env, clear=True):
+            assert check_sms_requirements() is False
+
+    def test_check_sms_requirements_missing_token(self):
+        from plugins.platforms.sms.adapter import check_sms_requirements
+
+        env = {"TWILIO_ACCOUNT_SID": "ACtest"}
+        with patch.dict(os.environ, env, clear=True):
+            assert check_sms_requirements() is False
 
     def test_check_sms_requirements_both_set(self):
         from plugins.platforms.sms.adapter import check_sms_requirements
@@ -125,6 +169,23 @@ class TestSmsRequirements:
 class TestWebhookHostConfig:
     """Verify SMS_WEBHOOK_HOST env var and default."""
 
+    def test_default_host_is_localhost(self):
+        from plugins.platforms.sms.adapter import DEFAULT_WEBHOOK_HOST
+        assert DEFAULT_WEBHOOK_HOST == "127.0.0.1"
+
+    def test_host_from_env(self):
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+            "SMS_WEBHOOK_HOST": "127.0.0.1",
+        }
+        with patch.dict(os.environ, env):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+            assert adapter._webhook_host == "127.0.0.1"
 
     def test_webhook_url_from_env(self):
         from plugins.platforms.sms.adapter import SmsAdapter
@@ -134,6 +195,20 @@ class TestWebhookHostConfig:
             "TWILIO_AUTH_TOKEN": "tok",
             "TWILIO_PHONE_NUMBER": "+15550001111",
             "SMS_WEBHOOK_URL": "https://example.com/webhooks/twilio",
+        }
+        with patch.dict(os.environ, env):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+            assert adapter._webhook_url == "https://example.com/webhooks/twilio"
+
+    def test_webhook_url_stripped(self):
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+            "SMS_WEBHOOK_URL": "  https://example.com/webhooks/twilio  ",
         }
         with patch.dict(os.environ, env):
             pc = PlatformConfig(enabled=True, api_key="tok")
@@ -161,6 +236,19 @@ class TestStartupGuard:
             adapter = SmsAdapter(pc)
         return adapter
 
+    @pytest.mark.asyncio
+    async def test_refuses_start_without_webhook_url(self):
+        adapter = self._make_adapter()
+        result = await adapter.connect()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_missing_webhook_url_is_non_retryable(self):
+        adapter = self._make_adapter()
+        await adapter.connect()
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert "sms_missing_webhook_url" == adapter.fatal_error_code
 
     @pytest.mark.asyncio
     async def test_missing_phone_number_is_non_retryable(self):
@@ -194,6 +282,37 @@ class TestStartupGuard:
             result = await adapter.connect()
             assert result is True
             assert adapter.has_fatal_error is False
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_insecure_flag_allows_start_without_url(self):
+        mock_session = AsyncMock()
+        with patch.dict(os.environ, {"SMS_INSECURE_NO_SIGNATURE": "true"}), \
+             patch("aiohttp.web.AppRunner") as mock_runner_cls, \
+             patch("aiohttp.web.TCPSite") as mock_site_cls, \
+             patch("aiohttp.ClientSession", return_value=mock_session):
+            mock_runner_cls.return_value.setup = AsyncMock()
+            mock_runner_cls.return_value.cleanup = AsyncMock()
+            mock_site_cls.return_value.start = AsyncMock()
+            adapter = self._make_adapter()
+            result = await adapter.connect()
+            assert result is True
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_webhook_url_allows_start(self):
+        mock_session = AsyncMock()
+        with patch("aiohttp.web.AppRunner") as mock_runner_cls, \
+             patch("aiohttp.web.TCPSite") as mock_site_cls, \
+             patch("aiohttp.ClientSession", return_value=mock_session):
+            mock_runner_cls.return_value.setup = AsyncMock()
+            mock_runner_cls.return_value.cleanup = AsyncMock()
+            mock_site_cls.return_value.start = AsyncMock()
+            adapter = self._make_adapter(
+                extra_env={"SMS_WEBHOOK_URL": "https://example.com/webhooks/twilio"}
+            )
+            result = await adapter.connect()
+            assert result is True
             await adapter.disconnect()
 
 
@@ -248,6 +367,32 @@ class TestTwilioSignatureValidation:
         sig = _compute_twilio_signature("wrong_token", url, params)
         assert adapter._validate_twilio_signature(url, params, sig) is False
 
+    def test_params_sorted_by_key(self):
+        """Signature must be computed with params sorted alphabetically."""
+        adapter = self._make_adapter()
+        url = "https://example.com/webhooks/twilio"
+        params = {"Zebra": "last", "Alpha": "first", "Middle": "mid"}
+        sig = _compute_twilio_signature("test_token_secret", url, params)
+        assert adapter._validate_twilio_signature(url, params, sig) is True
+
+    def test_empty_param_values_included(self):
+        """Blank values must be included in signature computation."""
+        adapter = self._make_adapter()
+        url = "https://example.com/webhooks/twilio"
+        params = {"From": "+15551234567", "Body": "", "SmsStatus": "received"}
+        sig = _compute_twilio_signature("test_token_secret", url, params)
+        assert adapter._validate_twilio_signature(url, params, sig) is True
+
+    def test_url_matters(self):
+        """Different URLs produce different signatures."""
+        adapter = self._make_adapter()
+        params = {"Body": "hello"}
+        sig = _compute_twilio_signature(
+            "test_token_secret", "https://a.com/webhooks/twilio", params
+        )
+        assert adapter._validate_twilio_signature(
+            "https://b.com/webhooks/twilio", params, sig
+        ) is False
 
     def test_port_variant_443_matches_without_port(self):
         """Signature for https URL with :443 validates against URL without port."""
@@ -258,6 +403,39 @@ class TestTwilioSignatureValidation:
         )
         assert adapter._validate_twilio_signature(
             "https://example.com/webhooks/twilio", params, sig
+        ) is True
+
+    def test_port_variant_without_port_matches_443(self):
+        """Signature for https URL without port validates against URL with :443."""
+        adapter = self._make_adapter()
+        params = {"From": "+15551234567", "Body": "hello"}
+        sig = _compute_twilio_signature(
+            "test_token_secret", "https://example.com/webhooks/twilio", params
+        )
+        assert adapter._validate_twilio_signature(
+            "https://example.com:443/webhooks/twilio", params, sig
+        ) is True
+
+    def test_non_standard_port_no_variant(self):
+        """Non-standard port must NOT match URL without port."""
+        adapter = self._make_adapter()
+        params = {"From": "+15551234567", "Body": "hello"}
+        sig = _compute_twilio_signature(
+            "test_token_secret", "https://example.com/webhooks/twilio", params
+        )
+        assert adapter._validate_twilio_signature(
+            "https://example.com:8080/webhooks/twilio", params, sig
+        ) is False
+
+    def test_port_variant_http_80(self):
+        """Port variant also works for http with port 80."""
+        adapter = self._make_adapter()
+        params = {"From": "+15551234567", "Body": "hello"}
+        sig = _compute_twilio_signature(
+            "test_token_secret", "http://example.com:80/webhooks/twilio", params
+        )
+        assert adapter._validate_twilio_signature(
+            "http://example.com/webhooks/twilio", params, sig
         ) is True
 
 
@@ -299,6 +477,15 @@ class TestWebhookSignatureEnforcement:
         resp = await adapter._handle_webhook(request)
         assert resp.status == 200
 
+    @pytest.mark.asyncio
+    async def test_insecure_flag_with_url_still_validates(self):
+        """When both SMS_WEBHOOK_URL and SMS_INSECURE_NO_SIGNATURE are set,
+        validation stays active (URL takes precedence)."""
+        adapter = self._make_adapter(webhook_url="https://example.com/webhooks/twilio")
+        body = b"From=%2B15551234567&To=%2B15550001111&Body=hello&MessageSid=SM123"
+        request = self._mock_request(body, headers={})
+        resp = await adapter._handle_webhook(request)
+        assert resp.status == 403
 
     @pytest.mark.asyncio
     async def test_missing_signature_returns_403(self):
@@ -308,6 +495,59 @@ class TestWebhookSignatureEnforcement:
         resp = await adapter._handle_webhook(request)
         assert resp.status == 403
 
+    @pytest.mark.asyncio
+    async def test_invalid_signature_returns_403(self):
+        adapter = self._make_adapter(webhook_url="https://example.com/webhooks/twilio")
+        body = b"From=%2B15551234567&To=%2B15550001111&Body=hello&MessageSid=SM123"
+        request = self._mock_request(body, headers={"X-Twilio-Signature": "invalid"})
+        resp = await adapter._handle_webhook(request)
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_valid_signature_returns_200(self):
+        webhook_url = "https://example.com/webhooks/twilio"
+        adapter = self._make_adapter(webhook_url=webhook_url)
+        params = {
+            "From": "+15551234567",
+            "To": "+15550001111",
+            "Body": "hello",
+            "MessageSid": "SM123",
+        }
+        sig = _compute_twilio_signature("test_token_secret", webhook_url, params)
+        body = b"From=%2B15551234567&To=%2B15550001111&Body=hello&MessageSid=SM123"
+        request = self._mock_request(body, headers={"X-Twilio-Signature": sig})
+        resp = await adapter._handle_webhook(request)
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_port_variant_signature_returns_200(self):
+        """Signature computed with :443 should pass when URL configured without port."""
+        webhook_url = "https://example.com/webhooks/twilio"
+        adapter = self._make_adapter(webhook_url=webhook_url)
+        params = {
+            "From": "+15551234567",
+            "To": "+15550001111",
+            "Body": "hello",
+            "MessageSid": "SM123",
+        }
+        sig = _compute_twilio_signature(
+            "test_token_secret", "https://example.com:443/webhooks/twilio", params
+        )
+        body = b"From=%2B15551234567&To=%2B15550001111&Body=hello&MessageSid=SM123"
+        request = self._mock_request(body, headers={"X-Twilio-Signature": sig})
+        resp = await adapter._handle_webhook(request)
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_webhook_rejects_oversized_body_via_content_length(self):
+        """POST with Content-Length exceeding 64 KiB returns 413 before reading."""
+        adapter = self._make_adapter(webhook_url="")
+        body = b"From=%2B15551234567&To=%2B15550001111&Body=hello&MessageSid=SM123"
+        request = self._mock_request(body, content_length=65_537)
+        resp = await adapter._handle_webhook(request)
+        assert resp.status == 413
+        # request.read must NOT have been called — we bailed on Content-Length
+        request.read.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_webhook_rejects_oversized_body_via_read_length(self):

@@ -245,17 +245,17 @@ class WebhookRouteProcessor:
             argv = [sys.executable, str(path)]
 
         try:
-            from tools.environments.local import build_subprocess_env
+            from tools.environments.local import _sanitize_subprocess_env
 
             popen_kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
             result = subprocess.run(
                 argv,
                 input=json.dumps(payload),
                 capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
+                text=True,
                 timeout=self.script_timeout_seconds,
                 cwd=str(path.parent),
-                env=build_subprocess_env(),
+                env=_sanitize_subprocess_env(os.environ.copy()),
                 **popen_kwargs,
             )
         except subprocess.TimeoutExpired:

@@ -48,12 +48,47 @@ def repo(tmp_path):
     return root
 
 
+def test_status_reports_branch_and_change_counts(client, repo):
+    body = client.get("/api/git/status", params={"path": str(repo)}).json()
+
+    assert body["branch"] == body["defaultBranch"]
+    assert body["branch"]
+    assert body["detached"] is False
+    # 1 tracked-modified + 1 untracked = 2 changed paths.
+    assert body["changed"] == 2
+    assert body["untracked"] == 1
+    # +1 (a.txt) folded with +2 (untracked new.py) since `git diff HEAD` skips untracked.
+    assert body["added"] == 3
+    assert {f["path"] for f in body["files"]} == {"a.txt", "new.py"}
 
 
+def test_status_returns_null_outside_repo(client, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    assert client.get("/api/git/status", params={"path": str(plain)}).json() is None
 
 
+def test_review_list_classifies_modified_and_untracked(client, repo):
+    body = client.get("/api/git/review/list", params={"path": str(repo)}).json()
+
+    files = {f["path"]: f for f in body["files"]}
+    assert files["a.txt"]["status"] == "M"
+    assert files["a.txt"]["added"] == 1
+    assert files["new.py"]["status"] == "?"
+    assert files["new.py"]["added"] == 2  # untracked insertions counted from disk
 
 
+def test_review_diff_shows_change_and_synthesizes_untracked(client, repo):
+    tracked = client.get(
+        "/api/git/review/diff", params={"path": str(repo), "file": "a.txt"}
+    ).json()["diff"]
+    assert "+three" in tracked
+
+    untracked = client.get(
+        "/api/git/review/diff", params={"path": str(repo), "file": "new.py"}
+    ).json()["diff"]
+    assert "print(1)" in untracked  # all-add diff for a file git doesn't track yet
 
 
 def test_stage_commit_roundtrip_clears_changes(client, repo):
@@ -71,8 +106,31 @@ def test_stage_commit_roundtrip_clears_changes(client, repo):
     assert after["untracked"] == 1
 
 
+def test_commit_with_nothing_staged_commits_all_changes(client, repo):
+    assert client.post(
+        "/api/git/review/commit", json={"path": str(repo), "message": "commit all", "push": False}
+    ).json() == {"ok": True}
+
+    assert client.get("/api/git/status", params={"path": str(repo)}).json()["changed"] == 0
 
 
+def test_worktrees_and_branch_lifecycle(client, repo):
+    worktrees = client.get("/api/git/worktrees", params={"path": str(repo)}).json()["worktrees"]
+    assert any(tree["isMain"] and tree["path"] == str(repo) for tree in worktrees)
+
+    added = client.post(
+        "/api/git/worktree/add", json={"path": str(repo), "branch": "feature/x"}
+    ).json()
+    assert added["branch"] == "feature/x"
+    assert Path(added["path"]).is_dir()
+
+    branches = client.get("/api/git/branches", params={"path": str(repo)}).json()["branches"]
+    assert any(b["name"] == "feature/x" and b["checkedOut"] for b in branches)
+
+    removed = client.post(
+        "/api/git/worktree/remove", json={"path": str(repo), "worktreePath": added["path"], "force": True}
+    ).json()
+    assert removed["removed"]
 
 
 def test_worktree_add_initializes_plain_folder(client, tmp_path):
@@ -96,6 +154,20 @@ def test_worktree_add_initializes_plain_folder(client, tmp_path):
     assert any(file["path"] == "notes.txt" and file["untracked"] for file in status["files"])
 
 
+def test_commit_context_includes_diff_and_untracked(client, repo):
+    body = client.get("/api/git/review/commit-context", params={"path": str(repo)}).json()
+
+    assert "+three" in body["diff"]
+    assert "new.py" in body["diff"]  # untracked files listed since they carry no diff
+
+
+def test_ship_info_degrades_without_gh(client, repo, monkeypatch):
+    monkeypatch.setattr(web_server._web_git.shutil, "which", lambda _name: None)
+
+    assert client.get("/api/git/review/ship-info", params={"path": str(repo)}).json() == {
+        "ghReady": False,
+        "pr": None,
+    }
 
 
 def test_git_endpoints_require_auth(repo):

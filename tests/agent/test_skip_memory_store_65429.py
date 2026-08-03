@@ -50,8 +50,19 @@ def test_skip_memory_with_memory_toolset_creates_store(monkeypatch, tmp_path):
     )
 
 
+def test_skip_memory_without_memory_toolset_has_no_store(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hm"))
+    agent = _make_agent(monkeypatch, enabled_toolsets=None, skip_memory=True)
+    assert agent._memory_store is None, (
+        "flush/background agent with skip_memory and no memory toolset must "
+        "have no built-in store"
+    )
 
 
+def test_memory_toolset_without_skip_memory_creates_store(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hm"))
+    agent = _make_agent(monkeypatch, enabled_toolsets=["memory"], skip_memory=False)
+    assert agent._memory_store is not None
 
 
 def test_skip_memory_memory_tool_handler_works_and_provider_skipped(

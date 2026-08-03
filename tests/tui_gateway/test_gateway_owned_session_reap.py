@@ -60,6 +60,15 @@ class TestFinalizeSkipsGatewaySessions:
 
         db.end_session.assert_not_called()
 
+    @patch("tui_gateway.server._get_db")
+    def test_tui_session_still_ended(self, mock_get_db):
+        db = MagicMock()
+        db.get_session.return_value = {"id": "sess_1", "source": "tui"}
+        mock_get_db.return_value = db
+
+        _finalize_session(_make_session(), end_reason="ws_orphan_reap")
+
+        db.end_session.assert_called_once_with("sess_1", "ws_orphan_reap")
 
     @patch("tui_gateway.server._get_db")
     def test_missing_row_still_ended(self, mock_get_db):

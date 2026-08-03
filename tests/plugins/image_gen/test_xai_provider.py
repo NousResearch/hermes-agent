@@ -54,6 +54,12 @@ class TestXAIImageGenProvider:
         provider = XAIImageGenProvider()
         assert provider.is_available() is True
 
+    def test_is_available_without_key(self, monkeypatch):
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        provider = XAIImageGenProvider()
+        assert provider.is_available() is False
 
     def test_list_models(self):
         from plugins.image_gen.xai import XAIImageGenProvider
@@ -96,7 +102,16 @@ class TestXAIImageGenProvider:
 
 
 class TestConfig:
+    def test_default_model(self):
+        from plugins.image_gen.xai import _resolve_model
 
+        model_id, meta = _resolve_model()
+        assert model_id == "grok-imagine-image"
+
+    def test_default_resolution(self):
+        from plugins.image_gen.xai import _resolve_resolution
+
+        assert _resolve_resolution() == "1k"
 
     def test_custom_model(self, monkeypatch):
         monkeypatch.setenv("XAI_IMAGE_MODEL", "grok-imagine-image")
@@ -141,6 +156,45 @@ class TestGenerate:
         assert result["provider"] == "xai"
         assert result["model"] == "grok-imagine-image"
 
+    def test_successful_url_response(self):
+        """xAI URL response is cached locally — #26942 contract.
+
+        Pre-fix this asserted ``result["image"] == "<the bare URL>"``, which
+        was exactly the bug: xAI's ``imgen.x.ai/xai-tmp-*`` URLs expire fast
+        and the gateway 404'd by ``send_photo`` time.  Post-fix the URL
+        bytes are downloaded at tool-completion and the result carries an
+        absolute filesystem path the gateway can upload from.
+        """
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"url": "https://imgen.x.ai/xai-tmp-imgen-test.jpeg"}],
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch(
+                 "plugins.image_gen.xai.save_url_image",
+                 return_value=Path("/tmp/xai_grok-imagine-image_20260524_000000_deadbeef.jpg"),
+             ) as mock_save_url:
+            provider = XAIImageGenProvider()
+            result = provider.generate(prompt="A cat playing piano")
+
+        assert result["success"] is True
+        assert result["image"].startswith("/"), (
+            f"URL response must be cached to an absolute path, got {result['image']!r}"
+        )
+        assert "imgen.x.ai" not in result["image"], (
+            "ephemeral xAI URL must not leak into result.image — caller will 404"
+        )
+        # The downloader should have been called exactly once with the URL
+        # and an xai-prefixed cache filename.
+        mock_save_url.assert_called_once()
+        call_args, call_kwargs = mock_save_url.call_args
+        assert call_args[0] == "https://imgen.x.ai/xai-tmp-imgen-test.jpeg"
+        assert call_kwargs.get("prefix", "").startswith("xai_")
 
     def test_url_response_falls_back_to_bare_url_when_download_fails(self):
         """If caching the URL fails (network blip, 404 in-flight), the
@@ -190,6 +244,26 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "api_error"
 
+    def test_api_error_preserves_real_response_status(self):
+        import requests as req_lib
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        response = req_lib.Response()
+        response.status_code = 401
+        response._content = json.dumps({"error": {"message": "Invalid API key"}}).encode()
+        response.headers["Content-Type"] = "application/json"
+
+        response.raise_for_status = MagicMock(
+            side_effect=req_lib.HTTPError(response=response)
+        )
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=response):
+            provider = XAIImageGenProvider()
+            result = provider.generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "xAI image generation failed (401): Invalid API key" in result["error"]
 
     def test_timeout(self):
         import requests as req_lib
@@ -279,6 +353,26 @@ class TestGenerate:
         assert result["error_type"] == "invalid_image_url"
         mock_post.assert_not_called()
 
+    def test_image_edit_accepts_public_https_url(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"url": "https://xai.image/edited.png"}]}
+
+        public_url = "https://files-cdn.x.ai/token/file_abc.png"
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen.xai.save_url_image", return_value="/tmp/edited.png"):
+            provider = XAIImageGenProvider()
+            result = provider.generate(
+                prompt="make the robot red",
+                image_url=public_url,
+            )
+
+        assert result["success"] is True
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert payload["image"] == {"url": public_url, "type": "image_url"}
 
     def test_multi_image_edit_rejects_bare_file_id_inputs(self):
         from plugins.image_gen.xai import XAIImageGenProvider
@@ -304,6 +398,18 @@ class TestGenerate:
         assert result["error_type"] == "invalid_image_url"
         mock_post.assert_not_called()
 
+    def test_multi_image_edit_rejects_more_than_three_sources(self):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        provider = XAIImageGenProvider()
+        result = provider.generate(
+            prompt="combine too many references",
+            image_url="file_1",
+            reference_image_urls=["file_2", "file_3", "file_4"],
+        )
+
+        assert result["success"] is False
+        assert result["error_type"] == "too_many_references"
 
     def test_storage_options_are_sent_by_default(self):
         from plugins.image_gen.xai import XAIImageGenProvider
@@ -403,4 +509,33 @@ class TestXAIImageFieldReadGuard:
         with pytest.raises(ValueError, match="credential store"):
             _xai_image_field(str(auth_json))
 
+    def test_xai_image_field_never_opens_blocked_credential(self, tmp_path, monkeypatch):
+        """Guard fires before open() — credential store never read into memory."""
+        import builtins
 
+        from plugins.image_gen.xai import _xai_image_field
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        auth_json = hermes_home / "auth.json"
+        auth_json.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        real_open = builtins.open
+        opened: list = []
+
+        def _spy_open(file, *a, **k):
+            opened.append(str(file))
+            return real_open(file, *a, **k)
+
+        monkeypatch.setattr(builtins, "open", _spy_open)
+        with pytest.raises(ValueError, match="credential store"):
+            _xai_image_field(str(auth_json))
+        assert str(auth_json) not in opened, "blocked credential must never be opened"
+
+    def test_xai_image_field_passthrough_url_not_blocked(self, monkeypatch):
+        """Negative control: remote URLs and data: URIs pass through unguarded."""
+        from plugins.image_gen.xai import _xai_image_field
+
+        assert _xai_image_field("https://example.com/pic.png")["url"] == "https://example.com/pic.png"
+        assert _xai_image_field("data:image/png;base64,eHl6")["url"].startswith("data:image/png")

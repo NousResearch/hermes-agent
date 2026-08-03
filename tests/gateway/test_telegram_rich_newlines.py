@@ -65,6 +65,58 @@ class TestRichMessageNewlineNormalization:
         # Single newlines converted to hard breaks
         assert "`/new` -- Start  \n`/model` -- Switch  \n`/reset` -- Reset" in md
 
+    def test_fenced_code_block_newlines_preserved(self, adapter):
+        """Newlines inside fenced code blocks must NOT gain trailing spaces."""
+        content = "Before\n```\ncode line 1\ncode line 2\n```\nAfter"
+        payload = adapter._rich_message_payload(content)
+        md = payload["markdown"]
+        # Code block content should be untouched
+        assert "```\ncode line 1\ncode line 2\n```" in md
+        # But the \n before ``` and after ``` should be hard breaks
+        assert "Before  \n```" in md
+        assert "```  \nAfter" in md
+
+    def test_realistic_command_output(self, adapter):
+        """Simulates /commands output: header + list items + nav line."""
+        lines = [
+            "📊 Commands (24 total, page 1/2)",
+            "",
+            "`/new` -- Start a new session",
+            "`/model` -- Switch model",
+            "`/stop` -- Stop the agent",
+            "",
+            "Use /commands 2 for next page | /commands 1 for prev",
+        ]
+        content = "\n".join(lines)
+        payload = adapter._rich_message_payload(content)
+        md = payload["markdown"]
+        # Header paragraph break preserved
+        assert "📊 Commands (24 total, page 1/2)\n\n" in md
+        # List items have hard breaks
+        assert "`/new` -- Start a new session  \n" in md
+        assert "`/model` -- Switch model  \n" in md
+        # Nav paragraph break preserved
+        assert "\n\nUse /commands 2" in md
+
+    def test_no_trailing_space_on_last_line(self, adapter):
+        """The final line should not get trailing spaces (no newline after it)."""
+        content = "Line 1\nLine 2"
+        payload = adapter._rich_message_payload(content)
+        md = payload["markdown"]
+        # No trailing spaces at end of string
+        assert md == "Line 1  \nLine 2"
+        assert not md.endswith("  ")
+
+    def test_empty_and_single_line_unchanged(self, adapter):
+        """Empty string and single-line content should pass through."""
+        assert adapter._rich_message_payload("")["markdown"] == ""
+        assert adapter._rich_message_payload("Single line")["markdown"] == "Single line"
+
+    def test_skip_entity_detection_flag_preserved(self, adapter):
+        """The skip_entity_detection flag must still work after normalization."""
+        payload = adapter._rich_message_payload("Line 1\nLine 2", skip_entity_detection=True)
+        assert payload.get("skip_entity_detection") is True
+
 
 class TestRichMessageTableProtection:
     """Hard-break injection must not corrupt GFM tables (rendered natively)."""
@@ -76,3 +128,22 @@ class TestRichMessageTableProtection:
         assert "  \n" not in md
         assert md == content
 
+    def test_text_around_table_still_gets_hard_breaks(self, adapter):
+        """Prose lines outside the table keep getting hard breaks."""
+        content = (
+            "Intro line one\n"
+            "Intro line two\n"
+            "| H1 | H2 |\n"
+            "|----|----|\n"
+            "| a | b |\n"
+            "Outro line"
+        )
+        md = adapter._rich_message_payload(content)["markdown"]
+        # Prose-to-prose newline becomes a hard break.
+        assert "Intro line one  \nIntro line two" in md
+        # Table rows stay bare.
+        assert "| H1 | H2 |\n|----|----|\n| a | b |" in md
+        # Prose lines around the table still hard-break; only the table's own
+        # header/delimiter/data-row newlines stay bare.
+        assert "Intro line two  \n| H1 | H2 |" in md
+        assert "| a | b |  \nOutro line" in md

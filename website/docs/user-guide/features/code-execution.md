@@ -293,4 +293,4 @@ Hermes always writes the script and the auto-generated `hermes_tools.py` RPC stu
 
 ## Platform Support
 
-Code execution is available on **Linux, macOS, and Windows**. On Linux and macOS the RPC channel uses a Unix domain socket; on Windows, where `AF_UNIX` is unreliable, Hermes automatically falls back to a loopback TCP socket for the sandbox RPC transport. Remote terminal backends (Docker/SSH/Modal/etc.) use a file-based RPC transport instead and additionally require Python 3 inside the backend.
+Code execution requires Unix domain sockets and is available on **Linux and macOS only**. It is automatically disabled on Windows — the agent falls back to regular sequential tool calls.

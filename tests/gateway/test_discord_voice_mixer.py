@@ -62,6 +62,68 @@ class TestVoiceMixerCore:
         assert any(p > 0 for p in peaks[10:])
         assert max(peaks) < int(32767 * 0.5)
 
+    def test_speech_audible_over_ambient_then_releases(self):
+        mx = vm.VoiceMixer(ambient_gain=0.2, duck_gain=0.05, duck_release_ms=200)
+        mx.set_ambient(vm.synth_ambient_pcm(seconds=0.5))
+        base = max(int(np.max(np.abs(np.frombuffer(mx.read(), dtype=np.int16))))
+                   for _ in range(10))
+        tone = (np.sin(2 * np.pi * 440 * np.arange(int(48000 * 0.4)) / 48000)
+                * 20000).astype(np.int16)
+        stereo = np.repeat(tone[:, None], 2, axis=1).reshape(-1).tobytes()
+        mx.play_speech(stereo, fade_in_ms=0)
+        assert mx.speech_active
+        speech_peak = max(int(np.max(np.abs(np.frombuffer(mx.read(), dtype=np.int16))))
+                          for _ in range(15))
+        assert speech_peak > base
+        # Drain past speech + release ramp; speech_active clears.
+        for _ in range(40):
+            mx.read()
+        assert not mx.speech_active
+
+    def test_clipping_prevents_int16_wraparound(self):
+        mx = vm.VoiceMixer()
+        loud = (np.ones(vm.SAMPLES_PER_FRAME * 2) * 30000).astype(np.int16).tobytes()
+        mx.play_speech(loud, fade_in_ms=0)
+        mx.play_speech(loud, fade_in_ms=0)
+        out = np.frombuffer(mx.read(), dtype=np.int16)
+        assert int(out.max()) == 32767     # clamped, not wrapped to negative
+        assert int(out.min()) >= -32768
+
+    def test_stop_speech_clears_in_flight(self):
+        mx = vm.VoiceMixer()
+        tone = (np.ones(48000) * 10000).astype(np.int16)
+        stereo = np.repeat(tone[:, None], 2, axis=1).reshape(-1).tobytes()
+        mx.play_speech(stereo)
+        assert mx.speech_active
+        mx.stop_speech()
+        mx.read()
+        assert not mx.speech_active
+
+    def test_set_ambient_none_clears(self):
+        mx = vm.VoiceMixer()
+        mx.set_ambient(vm.synth_ambient_pcm(seconds=0.5))
+        mx.set_ambient(None)
+        # No ambient, no speech -> silence.
+        assert mx.read() == vm.SILENCE_FRAME
+
+    def test_cleanup_silences(self):
+        mx = vm.VoiceMixer()
+        mx.set_ambient(vm.synth_ambient_pcm(seconds=0.5))
+        mx.cleanup()
+        assert mx.read() == vm.SILENCE_FRAME
+
+    def test_pcm_not_frame_aligned_is_padded(self):
+        # Odd-length PCM must be padded to whole frames (no IndexError, no click).
+        mx = vm.VoiceMixer()
+        mx.play_speech(b"\x01\x02\x03", fade_in_ms=0)  # 3 bytes << one frame
+        out = mx.read()
+        assert len(out) == vm.FRAME_SIZE
+
+    def test_synth_ambient_is_stereo_and_frame_aligned(self):
+        pcm = vm.synth_ambient_pcm(seconds=1.0)
+        assert len(pcm) % (vm.CHANNELS * vm.SAMPLE_WIDTH) == 0
+        assert len(pcm) % vm.FRAME_SIZE == 0
+
 
 # =====================================================================
 # Adapter integration
@@ -94,7 +156,14 @@ def _make_adapter(fx_cfg=None):
 
 
 class TestVoiceMixerActive:
+    def test_false_when_no_mixer(self):
+        adapter = _make_adapter()
+        assert adapter.voice_mixer_active(111) is False
 
+    def test_true_when_mixer_present(self):
+        adapter = _make_adapter()
+        adapter._voice_mixers[111] = object()
+        assert adapter.voice_mixer_active(111) is True
 
     def test_false_when_attr_missing(self):
         # Defensive getattr path (object.__new__ helper that forgot the attr).
@@ -134,25 +203,35 @@ class TestPlayInVoiceChannelMixerPath:
             ok = await adapter.play_in_voice_channel(111, "/tmp/x.mp3")
         assert ok is True
         mixer.play_speech.assert_called_once()
-        adapter._reset_voice_timeout.assert_called_once_with(111)
         # Legacy path must NOT have been used.
         vc.play.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_falls_back_when_decode_fails(self):
+        adapter = _make_adapter()
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        vc.is_playing.return_value = False
+        adapter._voice_clients[111] = vc
+        adapter._voice_mixers[111] = MagicMock()
+        adapter._reset_voice_timeout = MagicMock()
+        adapter._voice_receivers[111] = MagicMock()
 
-class TestLeadSilence:
-    """Warm-up lead silence prepended to speech so the first word isn't clipped
-    (issue #66827)."""
+        with patch.object(vm, "decode_to_pcm", return_value=None), \
+                patch("plugins.platforms.discord.adapter.discord") as mock_discord:
+            mock_discord.FFmpegPCMAudio.return_value = MagicMock()
+            mock_discord.PCMVolumeTransformer.return_value = MagicMock()
 
-    def test_bytes_empty_when_unset(self):
-        adapter = _make_adapter()  # default cfg has no lead_silence_ms
-        assert adapter._lead_silence_bytes() == b""
-
-
-    def test_bytes_length_matches_ms(self):
-        adapter = _make_adapter({"lead_silence_ms": 200})
-        lead = adapter._lead_silence_bytes()
-        assert lead == b"\x00" * (vm.BYTES_PER_MS * 200)
-        assert len(lead) == 200 * 192  # 48kHz stereo s16 -> 192 bytes/ms
+            # Make the legacy wait loop resolve immediately without leaving the
+            # real Event.wait() coroutine unawaited.
+            async def _fast(coro, *a, **k):
+                if hasattr(coro, "close"):
+                    coro.close()
+                return None
+            with patch("asyncio.wait_for", _fast):
+                ok = await adapter.play_in_voice_channel(111, "/tmp/x.mp3")
+        # Fell through to legacy path -> vc.play called.
+        assert vc.play.called
 
 
 class TestPlayAckInVoice:
@@ -162,4 +241,24 @@ class TestPlayAckInVoice:
         adapter._voice_mixers[111] = MagicMock()
         assert await adapter.play_ack_in_voice(111) is False
 
+    @pytest.mark.asyncio
+    async def test_noop_when_no_mixer(self):
+        adapter = _make_adapter()
+        assert await adapter.play_ack_in_voice(111) is False
 
+    @pytest.mark.asyncio
+    async def test_plays_speech_when_armed(self, tmp_path):
+        adapter = _make_adapter()
+        mixer = MagicMock()
+        adapter._voice_mixers[111] = mixer
+        adapter._reset_voice_timeout = MagicMock()
+
+        ack_file = tmp_path / "ack.mp3"
+        ack_file.write_bytes(b"id3")
+        import json as _json
+        with patch("tools.tts_tool.text_to_speech_tool",
+                   return_value=_json.dumps({"success": True, "file_path": str(ack_file)})), \
+                patch.object(vm, "decode_to_pcm", return_value=b"\x00" * vm.FRAME_SIZE):
+            ok = await adapter.play_ack_in_voice(111, phrase="Testing one two.")
+        assert ok is True
+        mixer.play_speech.assert_called_once()

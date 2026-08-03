@@ -4,10 +4,9 @@ import { useEffect, useRef } from 'react'
 import { playSpeechText } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
+import { $messages } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
-
-import { useComposerScope } from '../scope'
 
 interface AutoSpeakReply {
   id: string
@@ -41,9 +40,6 @@ export function useAutoSpeakReplies({
   sessionId
 }: UseAutoSpeakReplies) {
   const enabled = useStore($autoSpeakReplies)
-  // Wake on THIS composer's transcript: a tile subscribed to the primary's
-  // would never fire on its own replies (and would fire on someone else's).
-  const { $messages } = useComposerScope()
   const latest = useRef({ conversationActive, failureLabel, markSpoken, pendingReply })
   latest.current = { conversationActive, failureLabel, markSpoken, pendingReply }
 
@@ -87,5 +83,5 @@ export function useAutoSpeakReplies({
     const stops = [$messages.subscribe(speakLatest), $voicePlayback.listen(speakLatest)]
 
     return () => stops.forEach(f => f())
-  }, [$messages, enabled, sessionId])
+  }, [enabled, sessionId])
 }

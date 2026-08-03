@@ -6,10 +6,6 @@ import sys
 import threading
 from pathlib import Path
 
-import pytest
-
-from tui_gateway.compute_host import ComputeHost, HostSession
-
 
 def _stdout_queue(proc: subprocess.Popen) -> queue.Queue[dict]:
     out: queue.Queue[dict] = queue.Queue()
@@ -87,42 +83,3 @@ def test_compute_host_line_json_seed_turn_interrupt():
     finally:
         if proc.poll() is None:
             proc.kill()
-
-
-@pytest.mark.parametrize("kind", ["legacy", "hard-only", "dynamic-getattr"])
-def test_compute_host_interrupt_uses_explicit_stop_compatibility(kind):
-    calls = []
-
-    class _Legacy:
-        def interrupt(self):
-            calls.append("legacy")
-
-    class _HardOnly:
-        def hard_interrupt(self):
-            calls.append("hard")
-
-    class _Dynamic:
-        def interrupt(self):
-            calls.append("legacy")
-
-        def __getattr__(self, name):
-            if name == "hard_interrupt":
-                return lambda: calls.append("fabricated-hard")
-            raise AttributeError(name)
-
-    agent = {
-        "legacy": _Legacy(),
-        "hard-only": _HardOnly(),
-        "dynamic-getattr": _Dynamic(),
-    }[kind]
-    host = ComputeHost(heartbeat_secs=0)
-    host._sessions["s1"] = HostSession(sid="s1", agent=agent)
-    emitted = []
-    host.emit = emitted.append
-    try:
-        host._handle_interrupt({"sid": "s1", "request_id": "stop"})
-    finally:
-        host.close()
-
-    assert calls == ["hard" if kind == "hard-only" else "legacy"]
-    assert emitted[-1]["applied"] is True

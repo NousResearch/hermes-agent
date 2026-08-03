@@ -79,6 +79,60 @@ class TestPostDeliveryCallbackChaining:
         _invoke(cb)
         assert fired == ["A", "B", "C"]
 
+    def test_exception_in_one_callback_does_not_block_next(self, adapter):
+        fired = []
+
+        def boom():
+            raise ValueError("boom")
+
+        adapter.register_post_delivery_callback("s", boom)
+        adapter.register_post_delivery_callback("s", lambda: fired.append("survived"))
+        cb = adapter.pop_post_delivery_callback("s")
+        _invoke(cb)
+        assert fired == ["survived"]
+
+    def test_same_generation_chains(self, adapter):
+        fired = []
+        adapter.register_post_delivery_callback(
+            "s", lambda: fired.append("A"), generation=5
+        )
+        adapter.register_post_delivery_callback(
+            "s", lambda: fired.append("B"), generation=5
+        )
+        cb = adapter.pop_post_delivery_callback("s", generation=5)
+        _invoke(cb)
+        assert fired == ["A", "B"]
+
+    def test_stale_generation_registration_rejected(self, adapter):
+        """A registration with an older generation than the existing
+        entry is rejected — it doesn't clobber the newer run's slot."""
+        fired = []
+        adapter.register_post_delivery_callback(
+            "s", lambda: fired.append("gen7"), generation=7
+        )
+        adapter.register_post_delivery_callback(
+            "s", lambda: fired.append("stale_gen3"), generation=3
+        )
+        cb = adapter.pop_post_delivery_callback("s", generation=7)
+        _invoke(cb)
+        assert fired == ["gen7"]
+
+    def test_pop_at_wrong_generation_returns_none(self, adapter):
+        adapter.register_post_delivery_callback(
+            "s", lambda: None, generation=5
+        )
+        assert adapter.pop_post_delivery_callback("s", generation=99) is None
+        # Correct generation still finds it.
+        assert adapter.pop_post_delivery_callback("s", generation=5) is not None
+
+    def test_empty_session_key_is_noop(self, adapter):
+        adapter.register_post_delivery_callback("", lambda: None)
+        assert adapter._post_delivery_callbacks == {}
+
+    def test_non_callable_is_noop(self, adapter):
+        adapter.register_post_delivery_callback("s", "not-callable")  # type: ignore[arg-type]
+        assert adapter._post_delivery_callbacks == {}
+
 
 class TestPostDeliveryCallbackAsyncChaining:
     """When an async callback is chained, the wrapper must await it.
@@ -102,3 +156,18 @@ class TestPostDeliveryCallbackAsyncChaining:
         _invoke(cb)
         assert fired == ["sync", "async"]
 
+    def test_two_async_callbacks_both_awaited(self, adapter):
+        fired = []
+
+        def make(label):
+            async def _cb():
+                await asyncio.sleep(0)
+                fired.append(label)
+
+            return _cb
+
+        adapter.register_post_delivery_callback("s", make("A"))
+        adapter.register_post_delivery_callback("s", make("B"))
+        cb = adapter.pop_post_delivery_callback("s")
+        _invoke(cb)
+        assert fired == ["A", "B"]

@@ -46,6 +46,11 @@ def captured_hooks(monkeypatch):
         mgr._hooks = saved
 
 
+def test_hooks_are_registered_as_valid():
+    """The three lifecycle hook names are part of VALID_HOOKS."""
+    assert "kanban_task_claimed" in VALID_HOOKS
+    assert "kanban_task_completed" in VALID_HOOKS
+    assert "kanban_task_blocked" in VALID_HOOKS
 
 
 def test_claim_fires_hook(kanban_home, captured_hooks):
@@ -65,6 +70,46 @@ def test_claim_fires_hook(kanban_home, captured_hooks):
     assert kw["run_id"] is not None
 
 
+def test_complete_fires_hook_with_summary(kanban_home, captured_hooks):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="t", assignee="worker")
+        kb.claim_task(conn, tid)
+        assert kb.complete_task(conn, tid, summary="all done")
+    finally:
+        conn.close()
+    fired = [e for e in captured_hooks if e[0] == "kanban_task_completed"]
+    assert len(fired) == 1
+    kw = fired[0][1]
+    assert kw["task_id"] == tid
+    assert kw["summary"] == "all done"
+    assert kw["assignee"] == "worker"
+
+
+def test_block_fires_hook_with_reason(kanban_home, captured_hooks):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="t", assignee="worker")
+        kb.claim_task(conn, tid)
+        assert kb.block_task(conn, tid, reason="needs human")
+    finally:
+        conn.close()
+    fired = [e for e in captured_hooks if e[0] == "kanban_task_blocked"]
+    assert len(fired) == 1
+    kw = fired[0][1]
+    assert kw["task_id"] == tid
+    assert kw["reason"] == "needs human"
+
+
+def test_no_hook_on_failed_transition(kanban_home, captured_hooks):
+    """complete_task on an unclaimed/nonexistent task fires no hook."""
+    conn = kb.connect()
+    try:
+        # Completing a task that doesn't exist returns False without firing.
+        assert kb.complete_task(conn, "t_doesnotexist", summary="x") is False
+    finally:
+        conn.close()
+    assert [e for e in captured_hooks if e[0] == "kanban_task_completed"] == []
 
 
 def test_misbehaving_hook_does_not_break_transition(kanban_home, monkeypatch):

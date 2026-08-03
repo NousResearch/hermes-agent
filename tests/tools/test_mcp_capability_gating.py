@@ -37,6 +37,21 @@ class TestAdvertisesTools:
         task.initialize_result = _caps(tools=SimpleNamespace(listChanged=True))
         assert task._advertises_tools() is True
 
+    def test_false_for_prompt_only_server(self):
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(prompts=SimpleNamespace(listChanged=None))
+        assert task._advertises_tools() is False
+
+    def test_false_for_resource_only_server(self):
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(resources=SimpleNamespace())
+        assert task._advertises_tools() is False
+
+    def test_legacy_fallback_no_initialize_result(self):
+        """No captured capabilities → preserve old always-list_tools behavior."""
+        task = MCPServerTask("test")
+        assert task.initialize_result is None
+        assert task._advertises_tools() is True
 
     def test_legacy_fallback_no_capabilities_attr(self):
         task = MCPServerTask("test")
@@ -57,6 +72,18 @@ class TestDiscoverToolsGating:
         task.session.list_tools.assert_not_called()
         assert task._tools == []
 
+    async def test_calls_list_tools_for_tool_capable_server(self):
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        fake_tool = SimpleNamespace(name="echo")
+        task.session = SimpleNamespace(
+            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[fake_tool]))
+        )
+
+        await task._discover_tools()
+
+        task.session.list_tools.assert_awaited_once()
+        assert task._tools == [fake_tool]
 
     async def test_legacy_fallback_still_calls_list_tools(self):
         task = MCPServerTask("test")
@@ -122,6 +149,22 @@ class TestKeepaliveProbe:
         task.session.send_ping.assert_awaited_once()
         task.session.list_tools.assert_not_called()
 
+    async def test_keepalive_uses_ping_for_tool_capable_server(self):
+        """Keepalive uses ``ping`` even for tool-capable servers, so the probe
+        stays a few bytes regardless of tool count (no ``list_tools`` payload).
+        Tool-list changes still arrive via tools/list_changed notifications."""
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        task.session = SimpleNamespace(
+            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
+            send_ping=AsyncMock(),
+        )
+
+        reason = await self._run_one_keepalive_cycle(task)
+
+        assert reason == "shutdown"
+        task.session.send_ping.assert_awaited_once()
+        task.session.list_tools.assert_not_called()
 
     async def test_keepalive_uses_ping_legacy_fallback(self):
         """No captured capabilities → still pings (no spurious list_tools)."""
@@ -174,6 +217,9 @@ class TestKeepaliveInterval:
         from tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
         assert await self._captured_interval({}) == _DEFAULT_KEEPALIVE_INTERVAL
 
+    @pytest.mark.asyncio
+    async def test_configured_interval_honored(self):
+        assert await self._captured_interval({"keepalive_interval": 10}) == 10
 
     @pytest.mark.asyncio
     async def test_interval_clamped_to_floor(self):
@@ -199,6 +245,20 @@ class TestMethodNotFoundDetection:
         from tools.mcp_tool import _is_method_not_found_error
         assert _is_method_not_found_error(_mcp_error(-32601)) is True
 
+    def test_other_mcp_error_code_is_not_match(self):
+        from tools.mcp_tool import _is_method_not_found_error
+        # Invalid params (-32602) is a real error, NOT "ping unsupported".
+        assert _is_method_not_found_error(_mcp_error(-32602)) is False
+
+    def test_substring_fallback(self):
+        from tools.mcp_tool import _is_method_not_found_error
+        assert _is_method_not_found_error(Exception("Method not found")) is True
+
+    def test_unknown_method_phrasing_is_match(self):
+        # agentmemory's MCP server surfaces method-not-found as a plain
+        # "Unknown method: ping" string with no structural -32601 code (#50028).
+        from tools.mcp_tool import _is_method_not_found_error
+        assert _is_method_not_found_error(Exception("Unknown method: ping")) is True
 
     def test_unrelated_exception_is_not_match(self):
         from tools.mcp_tool import _is_method_not_found_error
@@ -226,6 +286,20 @@ class TestKeepaliveProbeFallback:
         task.session.list_tools.assert_not_called()
         assert task._ping_unsupported is False
 
+    async def test_falls_back_to_list_tools_on_method_not_found(self):
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=_mcp_error(-32601)),
+            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
+        )
+
+        await task._keepalive_probe()
+
+        # First cycle: ping tried, failed -32601, list_tools used as fallback.
+        task.session.send_ping.assert_awaited_once()
+        task.session.list_tools.assert_awaited_once()
+        assert task._ping_unsupported is True
 
     async def test_falls_back_on_unknown_method_string(self):
         """Regression for #50028: a server that surfaces method-not-found as a
@@ -244,6 +318,19 @@ class TestKeepaliveProbeFallback:
         task.session.list_tools.assert_awaited_once()
         assert task._ping_unsupported is True
 
+    async def test_latch_skips_ping_on_subsequent_cycles(self):
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=_mcp_error(-32601)),
+            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
+        )
+
+        await task._keepalive_probe()  # latches _ping_unsupported
+        await task._keepalive_probe()  # should NOT ping again
+
+        task.session.send_ping.assert_awaited_once()  # only the first cycle
+        assert task.session.list_tools.await_count == 2
 
     async def test_real_liveness_failure_propagates_not_swallowed(self):
         """A non-(-32601) ping error is a genuine connection failure: it must

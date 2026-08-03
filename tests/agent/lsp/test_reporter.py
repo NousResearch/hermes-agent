@@ -22,22 +22,68 @@ def _diag(line=0, col=0, sev=1, code="E001", source="ls", msg="oops"):
     }
 
 
+def test_format_diagnostic_uses_one_indexed_position():
+    line = format_diagnostic(_diag(line=4, col=2))
+    assert "[5:3]" in line  # +1 on both
 
 
+def test_format_diagnostic_includes_severity_label():
+    assert format_diagnostic(_diag(sev=1)).startswith("ERROR")
+    assert format_diagnostic(_diag(sev=2)).startswith("WARN")
+    assert format_diagnostic(_diag(sev=3)).startswith("INFO")
+    assert format_diagnostic(_diag(sev=4)).startswith("HINT")
 
 
+def test_format_diagnostic_includes_code_and_source():
+    line = format_diagnostic(_diag(code="X42", source="src"))
+    assert "[X42]" in line
+    assert "(src)" in line
 
 
+def test_format_diagnostic_omits_missing_optional_fields():
+    line = format_diagnostic(
+        {
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 0},
+            },
+            "severity": 1,
+            "message": "bare",
+        }
+    )
+    assert "[" not in line.split("]", 1)[1]  # no extra brackets after the position
+    assert "(" not in line
 
 
+def test_report_for_file_returns_empty_when_only_warnings():
+    """Default severity filter is ERROR-only."""
+    report = report_for_file("/x.py", [_diag(sev=2)])
+    assert report == ""
 
 
+def test_report_for_file_emits_block_with_errors():
+    diag = _diag(msg="real error")
+    report = report_for_file("/x.py", [diag])
+    assert "<diagnostics file=\"/x.py\">" in report
+    assert "real error" in report
+    assert "</diagnostics>" in report
 
 
+def test_report_for_file_caps_at_max_per_file():
+    diags = [_diag(line=i) for i in range(MAX_PER_FILE + 5)]
+    report = report_for_file("/x.py", diags)
+    assert "and 5 more" in report
 
 
+def test_report_for_file_respects_custom_severities():
+    diag = _diag(sev=2, msg="warn")
+    report = report_for_file("/x.py", [diag], severities=frozenset({1, 2}))
+    assert "warn" in report
 
 
+def test_truncate_below_limit_unchanged():
+    s = "abc" * 100
+    assert truncate(s, limit=4000) == s
 
 
 def test_truncate_above_limit_appends_marker():
@@ -66,6 +112,14 @@ def test_format_diagnostic_escapes_html_in_message():
     assert "&lt;tool_call&gt;" in line
 
 
+def test_format_diagnostic_collapses_newlines_in_message():
+    """Raw newlines in a message must not produce extra lines in the output."""
+    diag = _diag(msg="line one\nline two\rline three")
+    line = format_diagnostic(diag)
+    # Single-line output: no embedded newlines from the message field.
+    assert "\n" not in line
+    assert "\r" not in line
+    assert "line one line two line three" in line
 
 
 def test_format_diagnostic_caps_message_length():
@@ -89,6 +143,15 @@ def test_format_diagnostic_escapes_brackets_in_code_and_source():
     assert "&lt;/diagnostics&gt;" in line
 
 
+def test_format_diagnostic_drops_control_characters():
+    """Non-printable control bytes must be stripped from the output."""
+    # NUL, BEL, and a stray ESC — none belong in a single-line summary.
+    diag = _diag(msg="visible\x00\x07\x1bend")
+    line = format_diagnostic(diag)
+    assert "\x00" not in line
+    assert "\x07" not in line
+    assert "\x1b" not in line
+    assert "visibleend" in line
 
 
 def test_report_for_file_escapes_file_path_attribute():

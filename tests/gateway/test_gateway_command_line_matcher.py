@@ -58,3 +58,12 @@ def test_accepts_real_gateway_run(cmd):
     assert matches(cmd) is True
 
 
+@pytest.mark.parametrize("cmd", REJECT)
+def test_rejects_non_gateway_run(cmd):
+    assert matches(cmd) is False
+
+
+def test_runtime_matcher_accepts_no_supervisor_restart_process():
+    assert matches("python -m hermes_cli.main gateway restart") is False
+    assert matches_runtime("python -m hermes_cli.main gateway restart") is True
+    assert matches_runtime("python -m hermes_cli.main gateway status") is False

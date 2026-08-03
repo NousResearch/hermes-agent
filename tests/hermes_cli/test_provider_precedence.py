@@ -52,6 +52,14 @@ class TestProviderPrecedence:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
         assert resolve_provider("auto") == "openrouter"
 
+    def test_provider_specific_env_key_beats_stale_oauth(self, monkeypatch):
+        """A provider-specific env key (GLM) wins over a logged-in OAuth provider."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _login(monkeypatch, "anthropic")
+        _config(monkeypatch, {})
+        monkeypatch.setenv("GLM_API_KEY", "test-glm-key")
+        assert resolve_provider("auto") == "zai"
 
     def test_oauth_used_as_last_resort(self, monkeypatch):
         """With NO config provider and NO env keys, the logged-in OAuth provider
@@ -62,6 +70,11 @@ class TestProviderPrecedence:
         _config(monkeypatch, {})  # empty model config, no provider
         assert resolve_provider("auto") == "anthropic"
 
+    def test_explicit_request_unaffected(self, monkeypatch):
+        """An explicit requested provider short-circuits everything."""
+        _clear_provider_env(monkeypatch)
+        _login(monkeypatch, "anthropic")
+        assert resolve_provider("zai") == "zai"
 
     def test_warns_on_silent_oauth_fallthrough(self, monkeypatch, caplog):
         """A populated model dict lacking `provider` that falls through to OAuth
@@ -75,6 +88,18 @@ class TestProviderPrecedence:
             assert resolve_provider("auto") == "anthropic"
         assert any("no `provider` key" in r.message for r in caplog.records)
 
+    def test_warns_when_env_key_preempts_oauth(self, monkeypatch, caplog):
+        """When an exported API key preempts a logged-in OAuth provider, a WARN
+        makes the silent routing switch visible (#29285)."""
+        import logging
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _login(monkeypatch, "anthropic")           # OAuth into anthropic
+        _config(monkeypatch, {})
+        monkeypatch.setenv("GLM_API_KEY", "test-glm-key")  # unrelated key present
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+            assert resolve_provider("auto") == "zai"
+        assert any("preempting your" in r.message for r in caplog.records)
 
     def test_openrouter_pool_beats_stale_oauth(self, monkeypatch):
         """An OpenRouter credential-pool entry (no env var) wins over a logged-in

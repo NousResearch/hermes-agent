@@ -27,13 +27,12 @@ import { registry } from '@/contrib/registry'
 import { getLogs } from '@/hermes'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
-import { $previewTarget, openPreview } from '@/store/preview'
+import { $filePreviewTarget, $previewTarget, setCurrentSessionPreviewTarget } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 
 // ---------------------------------------------------------------------------
-// Logs — live agent-log tail. ⌘K-only chrome: the pane contribution exists
-// only while the "Toggle logs" palette command has it summoned ($logsOpen in
-// the controller) — never in a default layout, never a standing tab.
+// Logs — live agent-log tail. OPTIONAL chrome: not in any default layout,
+// hidden until the ⌘K "Toggle logs" command opens it ($logsOpen).
 // ---------------------------------------------------------------------------
 
 export function LogsPane() {
@@ -74,9 +73,10 @@ export const $restartPreviewServer = atom<((url: string, context?: string) => Pr
 
 export function PreviewRailPane() {
   const previewTarget = useStore($previewTarget)
+  const fileTarget = useStore($filePreviewTarget)
   const restartPreviewServer = useStore($restartPreviewServer)
 
-  if (!previewTarget) {
+  if (!previewTarget && !fileTarget) {
     return (
       <div className="grid h-full place-items-center px-4 text-center">
         <div className="flex flex-col items-center gap-1.5">
@@ -109,7 +109,7 @@ function previewFile(path: string) {
   void normalizeOrLocalPreviewTarget(path, $currentCwd.get() || undefined)
     .then(target => {
       if (target) {
-        openPreview(target, 'file-browser')
+        setCurrentSessionPreviewTarget(target, 'file-browser', path)
       }
     })
     .catch(() => undefined)

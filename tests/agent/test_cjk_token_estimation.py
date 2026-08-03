@@ -8,6 +8,9 @@ from agent.model_metadata import (
 )
 
 
+def test_cjk_text_is_not_estimated_as_four_chars_per_token():
+    assert estimate_tokens_rough("a" * 400) == 100
+    assert estimate_tokens_rough("가" * 400) >= 400
 
 
 def test_message_estimate_counts_korean_content_as_token_dense():
@@ -16,6 +19,11 @@ def test_message_estimate_counts_korean_content_as_token_dense():
     assert estimate_messages_tokens_rough(messages) >= 1000
 
 
+def test_compressor_tail_budget_uses_cjk_aware_message_estimate():
+    korean_msg = {"role": "assistant", "content": "가" * 2000}
+    english_msg = {"role": "assistant", "content": "a" * 2000}
+
+    assert _estimate_msg_budget_tokens(korean_msg) > _estimate_msg_budget_tokens(english_msg)
 
 
 def test_cjk_tail_does_not_expand_to_english_char_budget():
@@ -27,8 +35,6 @@ def test_cjk_tail_does_not_expand_to_english_char_budget():
             summary_target_ratio=0.2,
             quiet_mode=True,
         )
-        # Resolve while the mock is active (lazy init, #32221).
-        _ = compressor.context_length
 
     messages = [
         {"role": "user", "content": "head 1"},
@@ -77,5 +83,12 @@ def test_perf_gated_estimator_matches_per_char_reference():
         assert estimate_tokens_rough(text) == _reference_per_char_estimate(text), repr(text)
 
 
+def test_ascii_fast_path_keeps_classic_four_chars_per_token():
+    # Pure ASCII must be bit-identical to the historical (len+3)//4 rule.
+    for text in ("x", "xyz", "a" * 1000, "tool output\n" * 500):
+        assert estimate_tokens_rough(text) == (len(text) + 3) // 4
 
 
+def test_non_ascii_non_cjk_keeps_classic_rule():
+    text = "café résumé " * 40
+    assert estimate_tokens_rough(text) == (len(text) + 3) // 4

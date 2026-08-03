@@ -43,6 +43,14 @@ def test_format_message_passthrough_by_default(
     assert adapter.format_message(_MD) == _MD
 
 
+def test_format_message_strips_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_MARKDOWN", "false")
+    adapter = _make_adapter(monkeypatch)
+    assert adapter.format_message(_MD) == "bold and code"
+
+
 def test_supports_code_blocks_mirrors_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
     assert _make_adapter(monkeypatch).supports_code_blocks is True
@@ -64,6 +72,22 @@ async def test_sidecar_send_includes_markdown_format(
     assert path == "/send"
     assert body["format"] == "markdown"
     assert body["text"] == _MD  # passed through unstripped
+
+
+@pytest.mark.asyncio
+async def test_sidecar_send_omits_format_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Old-sidecar compat: the key is absent, not "text", when disabled."""
+    monkeypatch.setenv("PHOTON_MARKDOWN", "false")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    await adapter.send("+15551234567", _MD)
+
+    _, body = calls[0]
+    assert "format" not in body
+    assert body["text"] == "bold and code"
 
 
 @pytest.mark.asyncio

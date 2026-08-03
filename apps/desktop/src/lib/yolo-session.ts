@@ -1,5 +1,4 @@
-import { $gateway } from '@/store/gateway'
-import { $activeSessionId, setYoloActive } from '@/store/session'
+import { setYoloActive } from '@/store/session'
 
 export type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
@@ -45,32 +44,4 @@ export async function setGlobalYolo(requestGateway: GatewayRequester, enabled: b
   setYoloActive(active)
 
   return active
-}
-
-/**
- * Set YOLO to an explicit state from a surface that has no React context — the
- * ⌘K rows. `useSlashCommand` keeps its own `requestGateway` (it already holds
- * one, with the reconnect handling), so this reaches the active gateway
- * directly rather than growing a second requester abstraction.
- *
- * With no session yet the flag is armed locally; the session-create path
- * (use-session-actions) applies it on the first message, exactly as a bare
- * `/yolo` in a fresh draft does.
- */
-export async function setYoloEnabled(enabled: boolean): Promise<boolean> {
-  const sessionId = $activeSessionId.get()
-
-  if (!sessionId) {
-    setYoloActive(enabled)
-
-    return enabled
-  }
-
-  const gateway = $gateway.get()
-
-  if (!gateway) {
-    throw new Error('Hermes gateway unavailable')
-  }
-
-  return setSessionYolo((method, params) => gateway.request(method, params), sessionId, enabled)
 }

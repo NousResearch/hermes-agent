@@ -42,6 +42,24 @@ class TestCloudProviderCachePolicy:
         )
         assert browser_tool._get_cloud_provider() is None
 
+    def test_successful_cloud_resolution_caches_permanently(self, monkeypatch):
+        """A real provider instance must be cached and reused."""
+        fake_provider = Mock(name="BrowserUseProvider-instance")
+        factory = Mock(return_value=fake_provider)
+        monkeypatch.setattr(
+            browser_tool, "_PROVIDER_REGISTRY", {"browser-use": factory}
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"browser": {"cloud_provider": "browser-use"}},
+        )
+
+        assert browser_tool._get_cloud_provider() is fake_provider
+        assert browser_tool._cloud_provider_resolved is True
+
+        # Subsequent calls hit the cache; factory not called again.
+        assert browser_tool._get_cloud_provider() is fake_provider
+        assert factory.call_count == 1
 
     def test_no_credentials_yet_does_not_cache_none(self, monkeypatch):
         """Auto-detect path with no creds: must NOT poison the cache."""
@@ -72,6 +90,15 @@ class TestCloudProviderCachePolicy:
         assert browser_tool._get_cloud_provider() is healed
         assert browser_tool._cloud_provider_resolved is True
 
+    def test_config_read_failure_does_not_cache_none(self, monkeypatch):
+        """A raised config read must not pin the resolver to local mode."""
+        def boom():
+            raise OSError("config file locked")
+
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", boom)
+
+        assert browser_tool._get_cloud_provider() is None
+        assert browser_tool._cloud_provider_resolved is False
 
     def test_explicit_provider_instantiation_failure_does_not_cache(
         self, monkeypatch, caplog

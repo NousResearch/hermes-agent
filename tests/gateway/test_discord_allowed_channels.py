@@ -46,10 +46,25 @@ class TestDiscordAllowedChannelsWildcard(unittest.TestCase):
         """'*' should allow messages from any channel ID."""
         self.assertTrue(_channel_is_allowed("1234567890", "*"))
 
+    def test_wildcard_in_list_allows_any_channel(self):
+        """'*' mixed with other entries still allows any channel."""
+        self.assertTrue(_channel_is_allowed("9999999999", "111,*,222"))
 
     def test_exact_match_allowed(self):
         """Channel ID present in the explicit list is allowed."""
         self.assertTrue(_channel_is_allowed("1234567890", "1234567890,9876543210"))
+
+    def test_non_matching_channel_blocked(self):
+        """Channel ID absent from the explicit list is blocked."""
+        self.assertFalse(_channel_is_allowed("5555555555", "1234567890,9876543210"))
+
+    def test_empty_allowlist_allows_all(self):
+        """Empty DISCORD_ALLOWED_CHANNELS means no restriction."""
+        self.assertTrue(_channel_is_allowed("1234567890", ""))
+
+    def test_whitespace_only_entry_ignored(self):
+        """Entries that are only whitespace are stripped and ignored."""
+        self.assertFalse(_channel_is_allowed("1234567890", "  ,  "))
 
 
 class TestDiscordIgnoredChannelsWildcard(unittest.TestCase):
@@ -59,6 +74,15 @@ class TestDiscordIgnoredChannelsWildcard(unittest.TestCase):
         """'*' in ignored_channels silences the bot everywhere."""
         self.assertTrue(_channel_is_ignored("1234567890", "*"))
 
+    def test_empty_ignored_list_silences_nothing(self):
+        self.assertFalse(_channel_is_ignored("1234567890", ""))
+
+    def test_exact_match_is_ignored(self):
+        self.assertTrue(_channel_is_ignored("111", "111,222"))
+
+    def test_non_match_not_ignored(self):
+        self.assertFalse(_channel_is_ignored("333", "111,222"))
+
 
 class TestDiscordFreeResponseChannelsWildcard(unittest.TestCase):
     """Wildcard and channel-list behaviour for DISCORD_FREE_RESPONSE_CHANNELS."""
@@ -67,8 +91,14 @@ class TestDiscordFreeResponseChannelsWildcard(unittest.TestCase):
         """'*' in free_response_channels exempts every channel from mention-required."""
         self.assertTrue(_channel_is_free_response("1234567890", "*"))
 
+    def test_wildcard_in_list_applies_everywhere(self):
+        self.assertTrue(_channel_is_free_response("9999999999", "111,*,222"))
 
     def test_exact_match_is_free_response(self):
         self.assertTrue(_channel_is_free_response("111", "111,222"))
 
+    def test_non_match_not_free_response(self):
+        self.assertFalse(_channel_is_free_response("333", "111,222"))
 
+    def test_empty_list_no_free_response(self):
+        self.assertFalse(_channel_is_free_response("111", ""))

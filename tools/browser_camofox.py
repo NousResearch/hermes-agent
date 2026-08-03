@@ -36,7 +36,6 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import requests
 
-from agent.secret_scope import get_secret
 from hermes_cli.config import cfg_get, load_config, read_raw_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
@@ -83,7 +82,7 @@ def _get_command_timeout() -> int:
 
 def _auth_headers() -> Dict[str, str]:
     """Return Authorization header when CAMOFOX_API_KEY is set."""
-    key = (get_secret("CAMOFOX_API_KEY", "") or "").strip()
+    key = os.getenv("CAMOFOX_API_KEY", "").strip()
     if key:
         return {"Authorization": f"Bearer {key}"}
     return {}
@@ -91,7 +90,7 @@ def _auth_headers() -> Dict[str, str]:
 
 def get_camofox_url() -> str:
     """Return the configured Camofox server URL, or empty string."""
-    return (get_secret("CAMOFOX_URL", "") or "").rstrip("/")
+    return os.getenv("CAMOFOX_URL", "").rstrip("/")
 
 
 def _config_cdp_url() -> str:
@@ -192,15 +191,12 @@ def _camofox_identity_override(task_id: Optional[str], camofox_cfg: Dict[str, An
     so Hermes operates in the same browser profile instead of creating a
     separate private session.
     """
-    user_id = (
-        (get_secret("CAMOFOX_USER_ID", "") or "").strip()
-        or str(camofox_cfg.get("user_id") or "").strip()
-    )
+    user_id = os.getenv("CAMOFOX_USER_ID", "").strip() or str(camofox_cfg.get("user_id") or "").strip()
     if not user_id:
         return None
 
     session_key = (
-        (get_secret("CAMOFOX_SESSION_KEY", "") or "").strip()
+        os.getenv("CAMOFOX_SESSION_KEY", "").strip()
         or str(camofox_cfg.get("session_key") or "").strip()
         or f"task_{(task_id or 'default')[:16]}"
     )

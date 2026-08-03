@@ -76,8 +76,8 @@ class MyMemoryProvider(MemoryProvider):
 |--------|-----------|----------|
 | `system_prompt_block()` | System prompt assembly | Static provider info |
 | `prefetch(query, *, session_id="")` | Before each API call | Return recalled context |
-| `queue_prefetch(query, *, session_id="")` | After each turn | Pre-warm for next turn |
-| `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
+| `queue_prefetch(query)` | After each turn | Pre-warm for next turn |
+| `sync_turn(user, assistant, *, session_id="")` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |

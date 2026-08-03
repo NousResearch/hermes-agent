@@ -210,9 +210,11 @@ export function DetailPane({
             </Button>
           </Tip>
           {onClose && (
-            <Button aria-label={t.common.close} className={ICON_BUTTON} onClick={onClose} size="icon" variant="ghost">
-              <Codicon name="close" size="0.8125rem" />
-            </Button>
+            <Tip label={t.common.close}>
+              <Button aria-label={t.common.close} className={ICON_BUTTON} onClick={onClose} size="icon" variant="ghost">
+                <Codicon name="close" size="0.8125rem" />
+              </Button>
+            </Tip>
           )}
         </div>
       </header>

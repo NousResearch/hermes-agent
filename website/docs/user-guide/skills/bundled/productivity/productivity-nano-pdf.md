@@ -1,14 +1,14 @@
 ---
-title: "Nano Pdf — Edit text in existing PDFs via natural-language prompts"
+title: "Nano Pdf — Edit PDF text/typos/titles via nano-pdf CLI (NL prompts)"
 sidebar_label: "Nano Pdf"
-description: "Edit text in existing PDFs via natural-language prompts"
+description: "Edit PDF text/typos/titles via nano-pdf CLI (NL prompts)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Nano Pdf
 
-Edit text in existing PDFs via natural-language prompts.
+Edit PDF text/typos/titles via nano-pdf CLI (NL prompts).
 
 ## Skill metadata
 

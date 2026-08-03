@@ -117,68 +117,6 @@ export class RemoteLivenessTracker {
   }
 }
 
-export interface PooledRemoteEntry {
-  process?: unknown
-  remoteBaseUrl?: null | string
-}
-
-export interface RevalidatePooledRemoteBackendsOptions {
-  entries: Iterable<[string, PooledRemoteEntry]>
-  log: (message: string) => void
-  probe: (url: string, options: { timeoutMs: number }) => Promise<unknown>
-  stopBackend: (profile: string) => void
-  tracker: RemoteLivenessTracker
-}
-
-/**
- * Probe pooled REMOTE descriptors and drop the dead ones.
- *
- * A pooled entry backed by a remote host has no child process, so the 'exit'
- * handler that clears a dead local backend never fires, and the renderer's
- * keepalive touch keeps the idle reaper off it. Without this the pool serves a
- * descriptor for an unreachable host indefinitely.
- *
- * Entries share the primary's failure policy, keyed per base URL, so a profile
- * pointing at the same host as another does not burn the streak twice as fast.
- */
-export async function revalidatePooledRemoteBackends({
-  entries,
-  log,
-  probe,
-  stopBackend,
-  tracker
-}: RevalidatePooledRemoteBackendsOptions): Promise<{ dropped: string[] }> {
-  const remotes = [...entries].filter(([, entry]) => !entry.process && entry.remoteBaseUrl)
-  const dropped: string[] = []
-
-  await Promise.all(
-    remotes.map(async ([profile, entry]) => {
-      const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
-
-      try {
-        await probe(`${baseUrl}/api/status`, { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
-        tracker.recordSuccess(baseUrl)
-      } catch {
-        const failure = tracker.recordFailure(baseUrl)
-
-        if (!failure.shouldReset) {
-          log(
-            `Pooled remote backend for profile "${profile}" failed liveness probe (${failure.failures}/${REMOTE_LIVENESS_FAILURE_LIMIT}); keeping descriptor for retry.`
-          )
-
-          return
-        }
-
-        log(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
-        stopBackend(profile)
-        dropped.push(profile)
-      }
-    })
-  )
-
-  return { dropped }
-}
-
 /**
  * Probe the cached primary remote connection and apply the failure policy.
  * The caller owns single-flight coordination; identity checks here ensure an

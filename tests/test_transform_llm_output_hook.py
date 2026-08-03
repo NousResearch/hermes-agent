@@ -75,8 +75,32 @@ def test_hook_receives_expected_kwargs(tmp_path, monkeypatch):
     assert results == ["hello world|s1|anthropic/claude-sonnet-4.6|cli"]
 
 
+def test_first_non_empty_string_wins_semantics():
+    """Simulate the run_agent.py loop: first non-empty string replaces text."""
+    # The dispatch contract: invoke_hook returns a list; the caller walks
+    # it and stops at the first isinstance(_, str) and _.
+    hook_returns = [None, "", {"bad": True}, 123, "first-winner", "second"]
+
+    final_response = "original"
+    for _hook_result in hook_returns:
+        if isinstance(_hook_result, str) and _hook_result:
+            final_response = _hook_result
+            break
+
+    assert final_response == "first-winner"
 
 
+def test_empty_string_return_leaves_response_unchanged():
+    """Empty string must not replace the response (pass-through signal)."""
+    hook_returns = [""]
+
+    final_response = "original"
+    for _hook_result in hook_returns:
+        if isinstance(_hook_result, str) and _hook_result:
+            final_response = _hook_result
+            break
+
+    assert final_response == "original"
 
 
 def test_hook_exception_does_not_replace_response(tmp_path, monkeypatch):

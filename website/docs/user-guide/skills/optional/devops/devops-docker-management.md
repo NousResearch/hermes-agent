@@ -1,14 +1,14 @@
 ---
-title: "Docker Management — Manage Docker containers, images, volumes, and Compose"
+title: "Docker Management"
 sidebar_label: "Docker Management"
-description: "Manage Docker containers, images, volumes, and Compose"
+description: "Manage Docker containers, images, volumes, networks, and Compose stacks — lifecycle ops, debugging, cleanup, and Dockerfile optimization"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Docker Management
 
-Manage Docker containers, images, volumes, and Compose.
+Manage Docker containers, images, volumes, networks, and Compose stacks — lifecycle ops, debugging, cleanup, and Dockerfile optimization.
 
 ## Skill metadata
 

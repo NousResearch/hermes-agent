@@ -69,6 +69,16 @@ class TestEmitsOnRealProblems:
         # Points at the right escape hatch
         assert "venv" in line or "uv" in line
 
+    def test_missing_python3_is_named(self, monkeypatch):
+        """If python3 isn't installed at all, say so."""
+        monkeypatch.setattr(env_probe, "_python_version_of", lambda b: None)
+        monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
+        monkeypatch.setattr(env_probe, "_detect_pep668", lambda b: False)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: None)
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+
+        line = env_probe.get_environment_probe_line()
+        assert "python3=missing" in line
 
     def test_python_missing_but_python3_present(self, monkeypatch):
         """Common on Debian: only python3 exists, agent shouldn't type
@@ -98,6 +108,9 @@ class TestSkipsRemoteBackends:
         monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
         assert env_probe.get_environment_probe_line() == ""
 
+    def test_modal_returns_empty(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        assert env_probe.get_environment_probe_line() == ""
 
     def test_ssh_returns_empty(self, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "ssh")

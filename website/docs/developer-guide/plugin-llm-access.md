@@ -300,8 +300,7 @@ class PluginLlmCompleteResult:
     audit: Dict[str, Any]        # plugin_id, purpose, profile
 
 @dataclass
-class PluginLlmStructuredResult:
-    # same fields as PluginLlmCompleteResult, plus:
+class PluginLlmStructuredResult(PluginLlmCompleteResult):
     parsed: Optional[Any]        # JSON object when content_type == "json"
     content_type: str            # "json" or "text"
     # audit also carries schema_name when supplied

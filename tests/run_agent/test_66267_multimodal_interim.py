@@ -97,7 +97,45 @@ class TestBuildAssistantMessageMultimodal:
         assert isinstance(msg["content"], str)
         assert "answer after seeing the screenshot" in msg["content"]
 
+    def test_inline_think_in_list_content_is_extracted_and_stripped(self):
+        """Inline <think> inside a list content: reasoning captured, content clean."""
+        from agent.chat_completion_helpers import build_assistant_message
 
+        agent = _make_agent()
+        sdk_msg = SimpleNamespace(
+            content=[
+                {"type": "text", "text": "<think>hidden reasoning</think>visible answer"},
+            ],
+            tool_calls=None,
+            reasoning_content=None,
+            reasoning_details=None,
+            codex_reasoning_items=None,
+            codex_message_items=None,
+        )
+
+        msg = build_assistant_message(agent, sdk_msg, "stop")
+
+        assert "hidden reasoning" in (msg.get("reasoning") or "")
+        assert "<think>" not in msg["content"]
+        assert "visible answer" in msg["content"]
+
+    def test_str_content_still_works(self):
+        """Regression guard: plain string content is unchanged in behavior."""
+        from agent.chat_completion_helpers import build_assistant_message
+
+        agent = _make_agent()
+        sdk_msg = SimpleNamespace(
+            content="plain text answer",
+            tool_calls=None,
+            reasoning_content=None,
+            reasoning_details=None,
+            codex_reasoning_items=None,
+            codex_message_items=None,
+        )
+
+        msg = build_assistant_message(agent, sdk_msg, "stop")
+
+        assert msg["content"] == "plain text answer"
 
 
 # ---------------------------------------------------------------------------
@@ -187,3 +225,30 @@ class TestDuplicatePreviousInterimDedup:
         assert isinstance(previous_interim_visible, str)
         assert duplicate_previous_interim is False
 
+    def test_identical_assistant_interim_is_flagged_duplicate(self):
+        """Two identical incomplete assistant interim messages ARE duplicates."""
+        from run_agent import AIAgent
+
+        agent = _make_agent()
+        assistant_msg = {
+            "role": "assistant",
+            "content": "Let me check the repo first.",
+            "finish_reason": "incomplete",
+        }
+        previous_msg = {
+            "role": "assistant",
+            "content": "Let me check the repo first.",
+            "finish_reason": "incomplete",
+        }
+
+        current_interim_visible = AIAgent._interim_assistant_visible_text(agent, assistant_msg)
+        previous_interim_visible = AIAgent._interim_assistant_visible_text(agent, previous_msg)
+        duplicate_previous_interim = (
+            bool(current_interim_visible)
+            and isinstance(previous_msg, dict)
+            and previous_msg.get("role") == "assistant"
+            and previous_msg.get("finish_reason") == "incomplete"
+            and previous_interim_visible == current_interim_visible
+        )
+
+        assert duplicate_previous_interim is True

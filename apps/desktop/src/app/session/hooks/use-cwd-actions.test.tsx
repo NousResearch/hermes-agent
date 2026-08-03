@@ -37,6 +37,7 @@ function Harness({
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
   const actions = useCwdActions({
+    activeSessionId: activeSessionIdRef.current,
     activeSessionIdRef,
     requestGateway
   })

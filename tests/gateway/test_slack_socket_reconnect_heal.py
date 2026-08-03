@@ -232,6 +232,34 @@ class TestSocketModeTeardown:
         )
         assert task.done(), "the old socket task outlived teardown"
 
+    @pytest.mark.asyncio
+    async def test_sdk_background_tasks_do_not_outlive_teardown(self, adapter):
+        """Old-client background tasks must be cancelled even if close_async() fails.
+
+        SocketModeClient.close() cancels message_processor,
+        current_session_monitor and message_receiver only after disconnect()
+        returns, so a raising disconnect() leaves all three running. The adapter
+        logs and moves on, so it has to clean them up itself.
+        """
+        handler = _FakeHandler()
+        client = handler.client
+        client.close_should_raise = True
+        client.message_processor = asyncio.create_task(_spin())
+        client.current_session_monitor = asyncio.create_task(_spin())
+        client.message_receiver = asyncio.create_task(_spin())
+
+        _attach(adapter, handler)
+        await asyncio.sleep(0.01)
+
+        await adapter._stop_socket_mode_handler()
+        await asyncio.sleep(0.03)
+
+        for name in (
+            "message_processor",
+            "current_session_monitor",
+            "message_receiver",
+        ):
+            assert getattr(client, name).done(), f"{name} outlived teardown"
 
     @pytest.mark.asyncio
     async def test_client_tasks_are_dead_before_the_session_closes(self, adapter):
@@ -270,9 +298,65 @@ class TestSocketModeTeardown:
             f"{session.ws_connect_after_close} time(s)"
         )
 
+    @pytest.mark.asyncio
+    async def test_stop_clears_adapter_state(self, adapter):
+        """Teardown always drops its references, even when close_async() raises."""
+        handler = _FakeHandler()
+        handler.client.close_should_raise = True
+        _attach(adapter, handler)
+        await asyncio.sleep(0.01)
+
+        await adapter._stop_socket_mode_handler()
+
+        assert adapter._handler is None
+        assert adapter._socket_mode_task is None
+
 
 class TestSocketModeRestart:
+    @pytest.mark.asyncio
+    async def test_restart_stops_old_handler_before_starting_new_one(self, adapter):
+        """A reconnect must fully retire the old handler before replacing it."""
+        old = _FakeHandler()
+        old_task = _attach(adapter, old)
+        await asyncio.sleep(0.01)
 
+        started: list[str] = []
+
+        def _fake_start() -> None:
+            started.append("started")
+            assert old_task.done(), (
+                "the replacement handler was created while the old socket task "
+                "was still running"
+            )
+
+        with patch.object(adapter, "_start_socket_mode_handler", _fake_start):
+            await adapter._restart_socket_mode("transport disconnected")
+
+        await asyncio.sleep(0.03)
+
+        assert started == ["started"]
+        assert old.client.aiohttp_client_session.ws_connect_after_close == 0
+
+    @pytest.mark.asyncio
+    async def test_watchdog_restarts_when_socket_task_stops(self, adapter):
+        """The existing watchdog triggers still fire after the teardown change."""
+        done_task = MagicMock()
+        done_task.done.return_value = True
+        adapter._socket_mode_task = done_task
+
+        reasons: list[str] = []
+
+        async def _fake_restart(reason: str) -> None:
+            reasons.append(reason)
+            adapter._running = False
+
+        adapter._restart_socket_mode = _fake_restart
+        adapter._socket_transport_connected = AsyncMock(return_value=None)
+        adapter._socket_watchdog_interval_s = 0.01
+
+        await adapter._socket_watchdog_loop()
+
+        assert reasons == ["socket task stopped"]
 
     @pytest.mark.asyncio
     async def test_watchdog_restarts_when_transport_disconnected(self, adapter):

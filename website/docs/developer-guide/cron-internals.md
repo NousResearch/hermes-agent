@@ -114,7 +114,7 @@ The active provider is chosen by the `cron.provider` config key:
   historical in-process loop calling `scheduler.tick()` every 60 seconds. This
   is byte-identical to the pre-provider behavior.
 - **a named provider** (e.g. `chronos`, a managed-cron provider for
-  scale-to-zero deployments) → discovered from `plugins/cron_providers/<name>/` or
+  scale-to-zero deployments) → discovered from `plugins/cron/<name>/` or
   `$HERMES_HOME/plugins/<name>/`.
 
 If a named provider is missing, fails to load, or reports `is_available() ==

@@ -31,6 +31,23 @@ def _forum_message(chat_id=-100, is_forum=True):
 
 
 @pytest.mark.asyncio
+async def test_ensure_forum_commands_skips_non_forum():
+    adapter = _make_test_adapter()
+    msg = _forum_message(is_forum=False)
+    await adapter._ensure_forum_commands(msg)
+    adapter._bot.set_my_commands.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_forum_commands_skips_already_registered():
+    adapter = _make_test_adapter()
+    adapter._forum_command_registered.add(-100)
+    msg = _forum_message(is_forum=True)
+    await adapter._ensure_forum_commands(msg)
+    adapter._bot.set_my_commands.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_ensure_forum_commands_registers_once():
     adapter = _make_test_adapter()
     msg = _forum_message(chat_id=-123, is_forum=True)
@@ -65,6 +82,22 @@ async def test_ensure_forum_commands_registers_once():
     assert kwargs["scope"] is not None
     assert isinstance(kwargs["scope"].chat_id, int)
     assert kwargs["scope"].chat_id == -123
+
+
+@pytest.mark.asyncio
+async def test_ensure_forum_commands_handles_set_failure():
+    adapter = _make_test_adapter()
+    msg = _forum_message(chat_id=-456, is_forum=True)
+    adapter._bot.set_my_commands.side_effect = Exception("Telegram API error")
+
+    with patch("hermes_cli.commands.telegram_menu_commands") as mock_menu:
+        mock_menu.return_value = ([("new", "Start new session")], 0)
+        # Should NOT raise despite the API error
+        await adapter._ensure_forum_commands(msg)
+
+    # On failure we don't retry for this chat, so it's added to the set
+    # to avoid hammering a broken chat.
+    assert -456 not in adapter._forum_command_registered
 
 
 @pytest.mark.asyncio

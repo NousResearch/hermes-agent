@@ -84,6 +84,17 @@ def test_stale_chat_completions_overridden_on_openai_direct():
     assert result.api_mode == "codex_responses"
 
 
+def test_empty_api_mode_filled_on_openai_direct():
+    """An empty runtime api_mode on api.openai.com resolves to codex_responses."""
+    result = _run_openai_switch(
+        raw_input="gpt-5.6-sol",
+        runtime_api_mode="",  # empty — the earlier fill-if-empty subcase
+    )
+
+    assert result.success, f"switch_model failed: {result.error_message}"
+    assert result.api_mode == "codex_responses"
+
+
 def test_generic_endpoint_keeps_explicit_api_mode():
     """A generic (non-host-mandated) endpoint must NOT have its api_mode clobbered.
 

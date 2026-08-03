@@ -96,6 +96,71 @@ class TestMicrosoftGraphTokenProvider:
         assert second == "token-1"
         assert len(calls) == 1
 
+    async def test_refreshes_when_cached_token_is_expired(self):
+        calls: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(1)
+            expires_in = 0 if len(calls) == 1 else 3600
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": f"token-{len(calls)}",
+                    "expires_in": expires_in,
+                    "token_type": "Bearer",
+                },
+            )
+
+        provider = MicrosoftGraphTokenProvider(
+            GraphCredentials("tenant", "client", "secret"),
+            transport=httpx.MockTransport(handler),
+            skew_seconds=0,
+        )
+
+        first = await provider.get_access_token()
+        second = await provider.get_access_token()
+
+        assert first == "token-1"
+        assert second == "token-2"
+        assert len(calls) == 2
+
+    async def test_force_refresh_bypasses_cache(self):
+        calls: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(1)
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": f"token-{len(calls)}",
+                    "expires_in": 3600,
+                },
+            )
+
+        provider = MicrosoftGraphTokenProvider(
+            GraphCredentials("tenant", "client", "secret"),
+            transport=httpx.MockTransport(handler),
+        )
+
+        first = await provider.get_access_token()
+        second = await provider.get_access_token(force_refresh=True)
+
+        assert first == "token-1"
+        assert second == "token-2"
+        assert len(calls) == 2
+
+    async def test_invalid_token_response_raises(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"expires_in": 3600})
+
+        provider = MicrosoftGraphTokenProvider(
+            GraphCredentials("tenant", "client", "secret"),
+            transport=httpx.MockTransport(handler),
+        )
+
+        with pytest.raises(MicrosoftGraphTokenError) as exc:
+            await provider.get_access_token()
+        assert "access_token" in str(exc.value)
 
     async def test_http_error_includes_server_message(self):
         def handler(request: httpx.Request) -> httpx.Response:

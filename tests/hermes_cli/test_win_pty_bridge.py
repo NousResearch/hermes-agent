@@ -82,6 +82,8 @@ class TestWinPtyBridgeUnavailable:
 
 @windows_only
 class TestWinPtyBridgeSpawn:
+    def test_is_available_on_windows(self):
+        assert WinPtyBridge.is_available() is True
 
     def test_spawn_returns_bridge_with_pid(self):
         bridge = WinPtyBridge.spawn(["cmd.exe", "/c", "exit 0"])
@@ -99,6 +101,13 @@ class TestWinPtyBridgeSpawn:
 
 @windows_only
 class TestWinPtyBridgeIO:
+    def test_reads_child_stdout(self):
+        bridge = WinPtyBridge.spawn(["cmd.exe", "/c", "echo hermes-ok"])
+        try:
+            output = _read_until(bridge, b"hermes-ok")
+            assert b"hermes-ok" in output
+        finally:
+            bridge.close()
 
     def test_write_sends_to_child_stdin(self):
         # python -c reads stdin, echoes a marker, exits.  More reliable than
@@ -117,6 +126,12 @@ class TestWinPtyBridgeIO:
         finally:
             bridge.close()
 
+    def test_write_after_close_is_silent(self):
+        bridge = WinPtyBridge.spawn(["cmd.exe", "/c", "exit 0"])
+        bridge.close()
+        # Must not raise — the dashboard WebSocket reader sometimes writes
+        # a final keystroke after the user has already closed the tab.
+        bridge.write(b"ignored")
 
     def test_read_returns_none_after_child_exits(self):
         bridge = WinPtyBridge.spawn(["cmd.exe", "/c", "echo done"])
@@ -155,6 +170,21 @@ class TestWinPtyBridgeResize:
         finally:
             bridge.close()
 
+    def test_resize_clamps_garbage_dimensions(self):
+        # Mirror the POSIX clamp test: a broken winsize probe must never
+        # propagate to the ConPTY API.  131072 > unsigned short max — the
+        # bridge has to coerce it down without raising.
+        bridge = WinPtyBridge.spawn(
+            [sys.executable, "-c", "import time; time.sleep(1.0)"],
+            cols=80,
+            rows=24,
+        )
+        try:
+            bridge.resize(cols=131072, rows=1)  # must not raise
+            bridge.resize(cols=0, rows=-5)      # nor this
+            assert bridge.is_alive()
+        finally:
+            bridge.close()
 
     def test_resize_after_close_is_silent(self):
         bridge = WinPtyBridge.spawn(["cmd.exe", "/c", "exit 0"])
@@ -176,6 +206,17 @@ class TestClampDimension:
         assert _clamp(131072, _MAX_COLS) == _MAX_COLS
         assert _clamp(131072, _MAX_ROWS) == _MAX_ROWS
 
+    def test_floors_at_one(self):
+        from hermes_cli.win_pty_bridge import _MAX_COLS, _clamp
+
+        assert _clamp(0, _MAX_COLS) == 1
+        assert _clamp(-5, _MAX_COLS) == 1
+
+    def test_passes_through_sane_values(self):
+        from hermes_cli.win_pty_bridge import _MAX_COLS, _clamp
+
+        assert _clamp(80, _MAX_COLS) == 80
+        assert _clamp(2000, _MAX_COLS) == 2000
 
     def test_non_numeric_falls_back_to_min(self):
         from hermes_cli.win_pty_bridge import _MAX_COLS, _clamp
@@ -188,6 +229,13 @@ class TestClampDimension:
 
 @windows_only
 class TestWinPtyBridgeClose:
+    def test_close_is_idempotent(self):
+        bridge = WinPtyBridge.spawn(
+            [sys.executable, "-c", "import time; time.sleep(30)"]
+        )
+        bridge.close()
+        bridge.close()  # must not raise
+        assert not bridge.is_alive()
 
     def test_close_terminates_long_running_child(self):
         bridge = WinPtyBridge.spawn(
@@ -248,3 +296,20 @@ class TestWinPtyBridgeEnv:
         finally:
             bridge.close()
 
+    def test_spawn_defaults_term_when_not_set(self):
+        # The bridge should set TERM=xterm-256color when the caller's env
+        # doesn't already carry one — xterm.js expects ANSI/SGR sequences.
+        env = {k: v for k, v in os.environ.items() if k.upper() != "TERM"}
+        bridge = WinPtyBridge.spawn(
+            [
+                sys.executable,
+                "-c",
+                "import os; print('TERM=' + os.environ.get('TERM',''))",
+            ],
+            env=env,
+        )
+        try:
+            output = _read_until(bridge, b"TERM=")
+            assert b"TERM=xterm-256color" in output
+        finally:
+            bridge.close()

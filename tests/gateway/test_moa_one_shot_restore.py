@@ -29,6 +29,54 @@ def _make_event(moa_disable=False, moa_restore=None):
     return event
 
 
+def test_restore_reverts_to_previous_override():
+    """A one-shot turn restores the prior per-session model override."""
+    runner = _make_runner()
+    key = "agent:main:telegram:dm:123"
+    runner._session_model_overrides[key] = {"provider": "moa", "model": "default"}
+    event = _make_event(
+        moa_disable=True,
+        moa_restore={"provider": "openrouter", "model": "gpt-4"},
+    )
+
+    runner._restore_moa_one_shot(event, key)
+
+    assert runner._session_model_overrides[key] == {
+        "provider": "openrouter",
+        "model": "gpt-4",
+    }
+    runner._evict_cached_agent.assert_called_once_with(key)
+
+
+def test_restore_none_clears_override():
+    """If the user had no override before /moa, the MoA override is removed."""
+    runner = _make_runner()
+    key = "agent:main:discord:guild:456"
+    runner._session_model_overrides[key] = {"provider": "moa", "model": "default"}
+    event = _make_event(moa_disable=True, moa_restore=None)
+
+    runner._restore_moa_one_shot(event, key)
+
+    assert key not in runner._session_model_overrides
+    runner._evict_cached_agent.assert_called_once_with(key)
+
+
+def test_no_restore_for_non_one_shot_turn():
+    """Normal (non-MoA) turns must not touch model overrides or evict agents."""
+    runner = _make_runner()
+    key = "agent:main:slack:channel:789"
+    runner._session_model_overrides[key] = {"provider": "openrouter", "model": "gpt-4"}
+    event = _make_event()  # no _moa_disable_after_turn
+
+    runner._restore_moa_one_shot(event, key)
+
+    assert runner._session_model_overrides[key] == {
+        "provider": "openrouter",
+        "model": "gpt-4",
+    }
+    runner._evict_cached_agent.assert_not_called()
+
+
 def test_restore_runs_from_finally_even_when_turn_raises():
     """The whole point of the fix: a raising turn still reverts the override.
 

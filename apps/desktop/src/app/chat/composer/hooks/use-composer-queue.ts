@@ -106,9 +106,7 @@ export function useComposerQueue({
       entryId: entry.id,
       sessionKey: activeQueueSessionKey
     })
-    // Edit what the panel SHOWS. A queued `/skill` entry's text is the
-    // expanded skill body — never drop that into the composer.
-    loadIntoComposer(entry.displayText ?? entry.text, entry.attachments)
+    loadIntoComposer(entry.text, entry.attachments)
     triggerHaptic('selection')
     focusInput()
   }
@@ -137,7 +135,7 @@ export function useComposerQueue({
 
     if (next) {
       setQueueEditSnapshot({ ...queueEdit, entryId: next.id })
-      loadIntoComposer(next.displayText ?? next.text, next.attachments)
+      loadIntoComposer(next.text, next.attachments)
     } else {
       setQueueEditSnapshot(null)
       loadIntoComposer(queueEdit.draft, queueEdit.attachments)
@@ -215,7 +213,6 @@ export function useComposerQueue({
         const accepted = await Promise.resolve(
           onSubmit(entry.text, {
             attachments: entry.attachments,
-            ...(entry.displayText ? { displayText: entry.displayText } : {}),
             fromQueue: true,
             sessionId: drainRuntimeSessionId,
             storedSessionId: drainQueueSessionKey
@@ -325,7 +322,6 @@ export function useComposerQueue({
   // never churns, so a change there is a real session switch and must NOT
   // migrate; only the runtime-derived key (queueSessionKey falsy → key is
   // sessionId) churns on a backend bounce/resume of the same conversation.
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const prev = prevQueueKeyRef.current
     prevQueueKeyRef.current = activeQueueSessionKey

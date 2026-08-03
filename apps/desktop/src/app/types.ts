@@ -132,17 +132,12 @@ export interface SkillCommandDispatchResponse {
   type: 'skill'
   name: string
   message?: string
-  /** The invocation the UI renders (`/work fix the leak`). `message` is the
-   *  expanded skill body — model-facing scaffolding no surface may show. */
-  display?: string
 }
 
 export interface SendCommandDispatchResponse {
   type: 'send'
   message: string
   notice?: string
-  /** Set for a skill-bundle send: see SkillCommandDispatchResponse.display. */
-  display?: string
 }
 
 export interface PrefillCommandDispatchResponse {

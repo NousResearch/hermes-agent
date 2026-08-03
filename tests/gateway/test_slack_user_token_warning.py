@@ -91,3 +91,30 @@ def test_no_warning_when_bot_id_present(caplog):
     assert not any("authenticated as a USER" in r.message for r in caplog.records)
 
 
+def test_no_warning_when_user_id_unresolved(caplog):
+    # Nothing resolved (e.g. odd/empty response) — don't guess, stay silent.
+    adapter = _make_adapter()
+    resp = _DictAuthResponse(team_id="T1")
+    with caplog.at_level(logging.WARNING):
+        adapter._warn_if_not_bot_token(resp, "Acme")
+    assert not any("authenticated as a USER" in r.message for r in caplog.records)
+
+
+def test_warns_only_once_per_workspace(caplog):
+    adapter = _make_adapter()
+    resp = _DictAuthResponse(user_id="U_HUMAN")
+    with caplog.at_level(logging.WARNING):
+        adapter._warn_if_not_bot_token(resp, "Acme")
+        adapter._warn_if_not_bot_token(resp, "Acme")
+    warnings = [r for r in caplog.records if "authenticated as a USER" in r.message]
+    assert len(warnings) == 1
+
+
+def test_handles_attribute_only_response_shape(caplog):
+    # Response without dict .get(): values must be read off .data.
+    adapter = _make_adapter()
+    resp = _AttrAuthResponse({"user_id": "U_HUMAN", "user": "trevor"})
+    with caplog.at_level(logging.WARNING):
+        adapter._warn_if_not_bot_token(resp, "Acme")
+    assert any("authenticated as a USER" in r.message and "U_HUMAN" in r.message
+               for r in caplog.records)

@@ -53,6 +53,21 @@ def _run_inbound(adapter, chat_id="oc_chat"):
     return adapter._dispatch_inbound_event.call_args.args[0]
 
 
+def test_resolve_channel_prompt_exact_match():
+    adapter = _build_adapter({"channel_prompts": {"oc_chat": "Be terse."}})
+    assert adapter._resolve_channel_prompt("oc_chat") == "Be terse."
+
+
+def test_resolve_channel_prompt_parent_fallback():
+    adapter = _build_adapter({"channel_prompts": {"oc_parent": "Inherit me."}})
+    assert adapter._resolve_channel_prompt("oc_thread", "oc_parent") == "Inherit me."
+
+
+def test_resolve_channel_prompt_no_match_returns_none():
+    adapter = _build_adapter({"channel_prompts": {"oc_other": "Nope."}})
+    assert adapter._resolve_channel_prompt("oc_chat") is None
+
+
 def test_resolve_channel_prompt_missing_config_is_safe():
     # __new__ adapter without a config attribute (defensive getattr path).
     from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -67,3 +82,7 @@ def test_inbound_event_carries_channel_prompt():
     assert event.channel_prompt == "Feishu role prompt."
 
 
+def test_inbound_event_no_prompt_when_unconfigured():
+    adapter = _build_adapter({"channel_prompts": {"oc_other": "Different chat."}})
+    event = _run_inbound(adapter, chat_id="oc_chat")
+    assert event.channel_prompt is None

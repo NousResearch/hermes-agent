@@ -33,3 +33,14 @@ def test_does_not_resurrect_disconnected_platforms_from_session_history(tmp_path
     assert set(calls) <= {"telegram"}
 
 
+def test_connected_platform_still_uses_session_discovery(tmp_path):
+    cache_file = tmp_path / "channel_directory.json"
+
+    with patch(
+        "gateway.channel_directory._build_from_sessions",
+        return_value={"channels": []},
+    ) as mock_sessions, patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+        directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: object()}))
+
+    assert "telegram" in directory["platforms"]
+    mock_sessions.assert_any_call("telegram")

@@ -47,6 +47,37 @@ class TestTelegramWebhookSecretRequired:
             "and raise when the secret is empty — see GHSA-3vpc-7q5r-276h"
         )
 
+    def test_guard_raises_runtime_error(self):
+        """The guard raises RuntimeError (not a silent log) so operators
+        see the failure at startup."""
+        src = self._get_source()
+        # Between the "if not webhook_secret:" line and the next blank
+        # line block, we should see a RuntimeError being raised
+        guard_match = re.search(
+            r'if not webhook_secret:\s*\n\s*raise\s+RuntimeError\(',
+            src,
+        )
+        assert guard_match, (
+            "Missing webhook secret must raise RuntimeError — silent "
+            "fall-through was the original GHSA-3vpc-7q5r-276h bypass"
+        )
+
+    def test_guard_message_includes_advisory_link(self):
+        """The RuntimeError message should reference the advisory so
+        operators can read the full context."""
+        src = self._get_source()
+        assert "GHSA-3vpc-7q5r-276h" in src, (
+            "Guard error message must cite the advisory for operator context"
+        )
+
+    def test_guard_message_explains_remediation(self):
+        """The error should tell the operator how to fix it."""
+        src = self._get_source()
+        # Should mention how to generate a secret
+        assert "openssl rand" in src or "TELEGRAM_WEBHOOK_SECRET=" in src, (
+            "Guard error message should show operators how to set "
+            "TELEGRAM_WEBHOOK_SECRET"
+        )
 
     def test_polling_branch_has_no_secret_guard(self):
         """Polling mode (else-branch) must NOT require the webhook secret —

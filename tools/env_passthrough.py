@@ -15,8 +15,6 @@ Two sources feed the allowlist:
 
 Both ``code_execution_tool.py`` and ``tools/environments/local.py`` consult
 :func:`is_env_passthrough` before stripping a variable.
-When profile multiplexing is active, their forwarded values are resolved
-through the current profile's secret scope rather than the process environment.
 """
 
 from __future__ import annotations
@@ -179,45 +177,8 @@ def get_all_passthrough() -> frozenset[str]:
     return frozenset(_get_allowed()) | _load_config_passthrough()
 
 
-def resolve_passthrough_value(
-    name: str,
-    fallback: str | None = None,
-) -> str | None:
-    """Resolve an allowlisted variable without crossing profile boundaries.
-
-    ``fallback`` is the value the caller would have forwarded before profile
-    secret scopes existed (typically a snapshot of ``os.environ`` or the
-    current profile's ``.env``).  An active multiplex scope is authoritative:
-    a missing key returns ``None`` and never falls back to the process-global
-    environment.  An unscoped read while multiplexing is active raises the
-    fail-closed ``UnscopedSecretError`` from :mod:`agent.secret_scope`.
-
-    Outside multiplexing, an installed scope keeps the existing overlay
-    semantics and an unscoped caller keeps its already-resolved fallback.
-    """
-    from agent.secret_scope import (
-        _is_global_env,
-        current_secret_scope,
-        get_secret,
-        is_multiplex_active,
-    )
-
-    # Global terminal/runtime settings are not profile secrets.  ``fallback``
-    # is already the caller's effective value (including an explicit per-call
-    # override), so preserve it instead of replacing it with the process-wide
-    # value while a multiplex scope is active.
-    if _is_global_env(name) and fallback is not None:
-        return fallback
-
-    scope = current_secret_scope()
-    multiplex_active = is_multiplex_active()
-    if scope is None:
-        if multiplex_active:
-            return get_secret(name)
-        return fallback
-    return get_secret(name, None if multiplex_active else fallback)
-
-
 def clear_env_passthrough() -> None:
     """Reset the skill-scoped allowlist (e.g. on session reset)."""
     _get_allowed().clear()
+
+

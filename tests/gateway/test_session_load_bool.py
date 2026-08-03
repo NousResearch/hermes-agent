@@ -83,4 +83,44 @@ class TestSessionLoadBoolCorruption:
         assert "valid_key" in store._entries
         assert "bad_string" not in store._entries
 
+    def test_all_corrupted_entries_does_not_crash(self, tmp_path):
+        """Multiple corrupted entries must not produce an unhandled exception."""
+        data = {
+            "bad1": True,
+            "bad2": 42,
+            "bad3": "string",
+            "bad4": [1, 2, 3],
+        }
+        store = self._make_store(tmp_path, data)
+        store._ensure_loaded()
 
+        assert len(store._entries) == 0
+
+    def test_origin_not_dict_skipped(self, tmp_path):
+        """If origin is present but not a dict, from_dict must not crash."""
+        entry = self._valid_entry()
+        entry["origin"] = True  # bool instead of dict
+        data = {"key_with_bad_origin": entry}
+        store = self._make_store(tmp_path, data)
+        store._ensure_loaded()
+
+        # Entry should still load, just with origin=None
+        assert "key_with_bad_origin" in store._entries
+        assert store._entries["key_with_bad_origin"].origin is None
+
+    def test_typeerror_in_from_dict_caught(self, tmp_path):
+        """TypeError from from_dict must be caught, not escape to outer except."""
+        # An entry with a non-dict, non-bool value that could trigger TypeError
+        # in from_dict's datetime.fromisoformat or Platform() calls
+        entry = self._valid_entry()
+        entry["created_at"] = 12345  # int instead of ISO string
+        data = {
+            "bad_date": entry,
+            "valid_key": self._valid_entry(),
+        }
+        store = self._make_store(tmp_path, data)
+        store._ensure_loaded()
+
+        # The valid entry must still load despite the bad one
+        assert "valid_key" in store._entries
+        assert "bad_date" not in store._entries

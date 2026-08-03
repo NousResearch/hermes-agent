@@ -71,7 +71,7 @@ def _wire_channel(adapter, *, original_msg, send_side_effect=None):
 
     channel = SimpleNamespace(
         id=555,
-        get_partial_message=MagicMock(return_value=original_msg),
+        fetch_message=AsyncMock(return_value=original_msg),
         send=AsyncMock(side_effect=fake_send),
     )
     adapter._client = SimpleNamespace(
@@ -104,6 +104,13 @@ class TestEditMessageHappyPath:
         assert result.continuation_message_ids == ()
         assert edits == ["short reply"]
         assert sends == []  # no continuations for a short edit
+
+    @pytest.mark.asyncio
+    async def test_no_client_returns_failure(self):
+        adapter = _make_adapter()
+        adapter._client = None
+        result = await adapter.edit_message("555", "42", "x")
+        assert result.success is False
 
 
 # --------------------------------------------------------------------------- #
@@ -187,6 +194,32 @@ class TestSaturatedPreviewDedup:
         assert result.success is True
         assert len(edits) == 3
 
+    @pytest.mark.asyncio
+    async def test_content_shrinking_back_under_cap_clears_dedup_state(self):
+        """If mid-stream content shrinks back under the cap (e.g. a fresh
+        segment), stale saturation state must not mask the next real
+        oversized edit on this message id."""
+        adapter = _make_adapter()
+        edits = []
+        msg = SimpleNamespace(
+            id=42,
+            edit=AsyncMock(side_effect=lambda *, content: edits.append(content)),
+        )
+        channel, sends = _wire_channel(adapter, original_msg=msg)
+
+        await adapter.edit_message("555", "42", "x" * 2500, finalize=False)
+        assert len(edits) == 1
+
+        # Shrinks back under the cap — delivered in full, clears saturation.
+        await adapter.edit_message("555", "42", "short", finalize=False)
+        assert len(edits) == 2
+        assert edits[-1] == "short"
+
+        # Grows past the cap again with the SAME truncated text as before —
+        # must be delivered again since the dedup state was cleared.
+        await adapter.edit_message("555", "42", "x" * 2500, finalize=False)
+        assert len(edits) == 3
+
 
 # --------------------------------------------------------------------------- #
 # Final overflow — SPLIT and deliver every chunk
@@ -241,6 +274,76 @@ class TestFinalOverflowSplits:
         delivered = "".join(edits + [s["content"] for s in sends])
         assert "END_MARKER_XYZ" in delivered
 
+    @pytest.mark.asyncio
+    async def test_continuations_threaded_as_replies(self):
+        adapter = _make_adapter()
+        msg = SimpleNamespace(
+            id=42,
+            to_reference=MagicMock(return_value=SimpleNamespace(tag="orig")),
+            edit=AsyncMock(),
+        )
+        # Each sent continuation must also expose to_reference so the NEXT
+        # chunk can thread under it.
+        channel, sends = _wire_channel(
+            adapter,
+            original_msg=msg,
+            send_side_effect=lambda n, content, ref: SimpleNamespace(
+                id=9000 + n,
+                to_reference=MagicMock(return_value=SimpleNamespace(tag=f"c{n}")),
+            ),
+        )
+
+        result = await adapter.edit_message("555", "42", "z" * 6000, finalize=True)
+
+        assert result.success is True
+        # First continuation replies to the original message's reference.
+        assert sends[0]["reference"] is not None
+        # Later continuations reply to the previous continuation, not None.
+        for s in sends[1:]:
+            assert s["reference"] is not None
+
+    @pytest.mark.asyncio
+    async def test_first_chunk_edit_failure_propagates(self):
+        adapter = _make_adapter()
+        msg = SimpleNamespace(
+            id=42,
+            to_reference=MagicMock(return_value=object()),
+            edit=AsyncMock(side_effect=RuntimeError("hard edit failure")),
+        )
+        channel, sends = _wire_channel(adapter, original_msg=msg)
+
+        result = await adapter.edit_message("555", "42", "w" * 6000, finalize=True)
+
+        assert result.success is False
+        assert "hard edit failure" in (result.error or "")
+        assert sends == []  # never reached the continuation loop
+
+    @pytest.mark.asyncio
+    async def test_mid_continuation_failure_reports_partial(self):
+        adapter = _make_adapter()
+        msg = SimpleNamespace(
+            id=42,
+            to_reference=MagicMock(return_value=object()),
+            edit=AsyncMock(),
+        )
+
+        # First continuation succeeds; second fails both with and without ref.
+        def side(n, content, ref):
+            if n == 1:
+                return SimpleNamespace(id=9001, to_reference=MagicMock(return_value=object()))
+            raise RuntimeError("continuation send failed")
+
+        channel, sends = _wire_channel(adapter, original_msg=msg, send_side_effect=side)
+
+        result = await adapter.edit_message("555", "42", "k" * 6000, finalize=True)
+
+        # Partial delivery still reports success (don't drop chunks the user
+        # already saw) but flags partial_overflow so the consumer retries tail.
+        assert result.success is True
+        assert result.raw_response["partial_overflow"] is True
+        assert result.raw_response["delivered_chunks"] < result.raw_response["total_chunks"]
+        assert result.message_id == "9001"
+
 
 # --------------------------------------------------------------------------- #
 # Reactive overflow — Discord 50035 mid-edit triggers the same branch logic
@@ -278,6 +381,24 @@ class TestReactiveOverflowDetection:
         # Reactive split re-edited chunk 1 and may add continuations.
         assert len(edit_calls) >= 1
 
+    @pytest.mark.asyncio
+    async def test_unrelated_50035_is_not_treated_as_overflow(self):
+        adapter = _make_adapter()
+        msg = SimpleNamespace(
+            id=42,
+            edit=AsyncMock(side_effect=RuntimeError(
+                "400 Bad Request (error code: 50035): In message_reference: "
+                "Cannot reply to a system message"
+            )),
+        )
+        channel, sends = _wire_channel(adapter, original_msg=msg)
+
+        result = await adapter.edit_message("555", "42", "small", finalize=True)
+
+        # Not a length error → propagates as a normal failure, no split.
+        assert result.success is False
+        assert sends == []
+
 
 # --------------------------------------------------------------------------- #
 # Overflow detector helper
@@ -285,30 +406,15 @@ class TestReactiveOverflowDetection:
 
 
 class TestLengthOverflowDetector:
+    def test_matches_length_50035(self):
+        err = RuntimeError(
+            "error code: 50035 ... Must be 2000 or fewer in length."
+        )
+        assert DiscordAdapter._is_length_overflow_error(err) is True
 
     def test_ignores_non_length_50035(self):
         err = RuntimeError("error code: 50035: Cannot reply to a system message")
         assert DiscordAdapter._is_length_overflow_error(err) is False
 
-
-
-class TestPartialMessageContinuationReferences:
-    """When the edit target is a PartialMessage (no to_reference — the
-    no-fetch edit path), overflow continuations must still thread: the
-    adapter builds the reference from ids instead of silently dropping it."""
-
-    @pytest.mark.asyncio
-    async def test_continuations_threaded_with_ids_built_reference(self):
-        adapter = _make_adapter()
-        partial = SimpleNamespace(id=42, edit=AsyncMock())  # no to_reference
-        channel, sends = _wire_channel(adapter, original_msg=partial)
-
-        long_text = "chunk alpha " * 600  # > MAX_MESSAGE_LENGTH
-        result = await adapter.edit_message("555", "42", long_text, finalize=True)
-
-        assert result.success is True
-        assert len(sends) >= 1, "overflow should send continuations"
-        for call in sends:
-            assert call["reference"] is not None, (
-                "continuation lost its reply reference — the ids-built "
-                "fallback for PartialMessage regressed")
+    def test_ignores_other_errors(self):
+        assert DiscordAdapter._is_length_overflow_error(RuntimeError("timeout")) is False

@@ -1,14 +1,14 @@
 ---
-title: "3 Statement Model — Build integrated IS/BS/CF financial workbooks in Excel"
+title: "3 Statement Model"
 sidebar_label: "3 Statement Model"
-description: "Build integrated IS/BS/CF financial workbooks in Excel"
+description: "Build fully-integrated 3-statement models (IS, BS, CF) in Excel with working capital schedules, D&A roll-forwards, debt schedule, and the plugs that make cas..."
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # 3 Statement Model
 
-Build integrated IS/BS/CF financial workbooks in Excel.
+Build fully-integrated 3-statement models (IS, BS, CF) in Excel with working capital schedules, D&A roll-forwards, debt schedule, and the plugs that make cash and retained earnings tie. Pairs with excel-author.
 
 ## Skill metadata
 

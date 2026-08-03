@@ -33,7 +33,7 @@ Your request
           → Second 429 → rotate to next pool key
       → All keys exhausted → fallback_model (different provider)
   → 402 billing error?
-      → Immediately rotate to next pool key (1h cooldown)
+      → Immediately rotate to next pool key (24h cooldown)
   → 401 auth expired?
       → Try refreshing the token (OAuth)
       → Refresh failed → rotate to next pool key
@@ -141,17 +141,15 @@ The pool handles different errors differently:
 | Error | Behavior | Cooldown |
 |-------|----------|----------|
 | **429 Rate Limit** | Retry same key once (transient). Second consecutive 429 rotates to next key | 1 hour |
-| **402 Billing/Quota** | Immediately rotate to next key | 1 hour |
-| **401 Auth Expired** | Try refreshing the OAuth token first. Rotate only if refresh fails | 5 minutes |
+| **402 Billing/Quota** | Immediately rotate to next key | 24 hours |
+| **401 Auth Expired** | Try refreshing the OAuth token first. Rotate only if refresh fails | — |
 | **All keys exhausted** | Fall through to `fallback_model` if configured | — |
-
-Provider-supplied `reset_at` timestamps override these default cooldowns.
 
 The `has_retried_429` flag resets on every successful API call, so a single transient 429 doesn't trigger rotation.
 
 ## Custom Endpoint Pools
 
-Custom OpenAI-compatible endpoints (Together.ai, RunPod, local servers) get their own pools, keyed by the endpoint name from the `providers:` dict in config.yaml (or the legacy `custom_providers` list, which is auto-migrated).
+Custom OpenAI-compatible endpoints (Together.ai, RunPod, local servers) get their own pools, keyed by the endpoint name from `custom_providers` in config.yaml.
 
 When you set up a custom endpoint via `hermes model`, it auto-generates a name like "Together.ai" or "Local (localhost:8080)". This name becomes the pool key.
 

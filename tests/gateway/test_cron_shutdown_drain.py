@@ -45,3 +45,29 @@ async def test_await_thread_exit_lets_loop_scheduled_delivery_complete():
     assert worker_done.is_set()
 
 
+@pytest.mark.asyncio
+async def test_await_thread_exit_returns_false_on_timeout():
+    keep_alive = threading.Event()
+
+    def _spin():
+        keep_alive.wait(5)
+
+    thread = threading.Thread(target=_spin, daemon=True)
+    thread.start()
+    try:
+        exited = await gateway_run._await_thread_exit(thread, timeout=0.2, poll=0.02)
+        assert exited is False
+        assert thread.is_alive()
+    finally:
+        keep_alive.set()
+        thread.join(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_await_thread_exit_handles_none_and_dead_thread():
+    assert await gateway_run._await_thread_exit(None, timeout=1) is True
+
+    thread = threading.Thread(target=lambda: None, daemon=True)
+    thread.start()
+    thread.join(timeout=2)
+    assert await gateway_run._await_thread_exit(thread, timeout=1) is True

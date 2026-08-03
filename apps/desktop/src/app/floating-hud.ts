@@ -31,23 +31,3 @@ export const HUD_ITEM = 'gap-2 px-2 py-1'
 // heading via the universal-descendant variant.
 export const HUD_HEADING =
   '**:[[cmdk-group-heading]]:static **:[[cmdk-group-heading]]:bg-transparent **:[[cmdk-group-heading]]:px-2.5 **:[[cmdk-group-heading]]:pb-1 **:[[cmdk-group-heading]]:pt-2.5 **:[[cmdk-group-heading]]:text-[0.64rem] **:[[cmdk-group-heading]]:font-semibold **:[[cmdk-group-heading]]:uppercase **:[[cmdk-group-heading]]:tracking-[0.16em] **:[[cmdk-group-heading]]:text-(--theme-primary)'
-
-// A short note trailing a row's label — a version, a count, a live state. Sits
-// closer than the row's icon-to-label `gap-2` because it reads as a suffix of
-// the label, not as another item in the row.
-export const HUD_NOTE = '-ml-1'
-
-// `state` marks a note the row will CHANGE (a toggle's on/off) rather than a
-// passive fact. It keeps the label's own color so the pair reads as one phrase,
-// and earns its separation from a faint underline instead of going muted.
-//
-// That underline needs room, so `state` skips `truncate`: flex items are
-// blockified, which makes its `overflow: hidden` bite, and the app's global
-// 0.25rem underline offset (styles.css) already sits at the bottom edge of a
-// `text-xs` line box — together they clip the rule away entirely. Pulling the
-// offset to 2px keeps it inside the box; dropping truncate costs nothing
-// because these notes are one word.
-export const HUD_NOTE_VARIANT = {
-  muted: 'truncate text-muted-foreground/80',
-  state: 'shrink-0 underline decoration-current/50 underline-offset-2'
-} as const

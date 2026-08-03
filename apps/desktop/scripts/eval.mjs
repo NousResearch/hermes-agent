@@ -1,31 +1,6 @@
 // Simple eval helper — runs an expression and returns the result.value.
-//
-//   node scripts/eval.mjs "document.title"
-//   HERMES_DESKTOP_CDP_PORT=9333 node scripts/eval.mjs "document.title"
-//
-// Needs a renderer with a debugging port: launch `hgui` / `npm run dev` with
-// HERMES_DESKTOP_CDP_PORT set (see electron/dev-cdp.ts).
-const port = Number(process.env.HERMES_DESKTOP_CDP_PORT || 9222)
-let targets
-
-try {
-  targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json()
-} catch {
-  console.error(
-    `no renderer debugging port on 127.0.0.1:${port}. ` +
-      'Dev-server runs (`npm run dev` / `hgui`) open one automatically — check the app is running, ' +
-      'and that HERMES_DESKTOP_CDP_PORT is not set to "off" or another port.'
-  )
-  process.exit(1)
-}
-
-const t = targets.find((t) => t.url.includes('5174')) ?? targets.find((t) => t.type === 'page')
-
-if (!t) {
-  console.error(`no page target on 127.0.0.1:${port} (found ${targets.length} target(s))`)
-  process.exit(1)
-}
-
+const targets = await (await fetch('http://127.0.0.1:9222/json')).json()
+const t = targets.find((t) => t.url.includes('5174'))
 const ws = new WebSocket(t.webSocketDebuggerUrl)
 let id = 0
 const pending = new Map()

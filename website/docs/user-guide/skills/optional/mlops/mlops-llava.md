@@ -1,14 +1,14 @@
 ---
-title: "Llava — Vision-language chat: VQA, captioning, image dialogue"
+title: "Llava — Large Language and Vision Assistant"
 sidebar_label: "Llava"
-description: "Vision-language chat: VQA, captioning, image dialogue"
+description: "Large Language and Vision Assistant"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Llava
 
-Vision-language chat: VQA, captioning, image dialogue.
+Large Language and Vision Assistant. Enables visual instruction tuning and image-based conversations. Combines CLIP vision encoder with Vicuna/LLaMA language models. Supports multi-turn image chat, visual question answering, and instruction following. Use for vision-language chatbots or image understanding tasks. Best for conversational image analysis.
 
 ## Skill metadata
 

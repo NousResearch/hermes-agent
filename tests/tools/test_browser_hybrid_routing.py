@@ -48,12 +48,59 @@ class TestNavigationSessionKey:
         key = browser_tool._navigation_session_key("default", "http://localhost:3000/")
         assert key == "default::local"
 
+    def test_loopback_ipv4_routes_to_local_sidecar(self, monkeypatch):
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
+        key = browser_tool._navigation_session_key("default", "http://127.0.0.1:8080/")
+        assert key == "default::local"
 
     def test_rfc1918_lan_routes_to_local_sidecar(self, monkeypatch):
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
         key = browser_tool._navigation_session_key("default", "http://192.168.1.50:8000/")
         assert key == "default::local"
 
+    def test_ipv6_loopback_routes_to_local_sidecar(self, monkeypatch):
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
+        key = browser_tool._navigation_session_key("default", "http://[::1]:3000/")
+        assert key == "default::local"
+
+    def test_public_ip_literal_uses_bare_task_id(self, monkeypatch):
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
+        key = browser_tool._navigation_session_key("default", "https://8.8.8.8/")
+        assert key == "default"
+
+    def test_mdns_local_hostname_routes_to_sidecar(self, monkeypatch):
+        """``*.local`` mDNS / ``*.lan`` / ``*.internal`` hostnames route to sidecar."""
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
+        for host in ("raspberrypi.local", "printer.lan", "db.internal"):
+            key = browser_tool._navigation_session_key("default", f"http://{host}/")
+            assert key == "default::local", f"host {host!r} did not route to sidecar"
+
+    def test_no_cloud_provider_stays_on_bare_task_id(self, monkeypatch):
+        """When cloud provider is not configured, no hybrid routing happens."""
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
+        key = browser_tool._navigation_session_key("default", "http://localhost:3000/")
+        assert key == "default"
+
+    def test_camofox_mode_stays_on_bare_task_id(self, monkeypatch):
+        """Camofox is already local — no hybrid routing needed."""
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
+        key = browser_tool._navigation_session_key("default", "http://localhost:3000/")
+        assert key == "default"
+
+    def test_cdp_override_stays_on_bare_task_id(self, monkeypatch):
+        """A user-supplied CDP endpoint owns the whole session — no hybrid."""
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
+        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "ws://localhost:9222")
+        key = browser_tool._navigation_session_key("default", "http://localhost:3000/")
+        assert key == "default"
+
+    def test_feature_flag_off_disables_hybrid_routing(self, monkeypatch):
+        """``auto_local_for_private_urls: false`` keeps private URLs on cloud."""
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
+        monkeypatch.setattr(browser_tool, "_auto_local_for_private_urls", lambda: False)
+        key = browser_tool._navigation_session_key("default", "http://localhost:3000/")
+        assert key == "default"
 
     def test_none_task_id_defaults(self, monkeypatch):
         """``None`` task_id resolves to 'default'."""
@@ -69,6 +116,47 @@ class TestSessionKeyHelpers:
         assert not browser_tool._is_local_sidecar_key("default")
         assert not browser_tool._is_local_sidecar_key("my_task")
 
+    def test_last_session_key_falls_back_to_task_id(self, monkeypatch):
+        """Without a recorded last-active key, returns the bare task_id."""
+        monkeypatch.setattr(browser_tool, "_last_active_session_key", {})
+        assert browser_tool._last_session_key("default") == "default"
+        assert browser_tool._last_session_key("task-42") == "task-42"
+        assert browser_tool._last_session_key(None) == "default"
+
+    def test_last_session_key_returns_recorded_key(self, monkeypatch):
+        monkeypatch.setattr(
+            browser_tool,
+            "_last_active_session_key",
+            {"default": "default::local", "task-42": "task-42"},
+        )
+        monkeypatch.setattr(
+            browser_tool,
+            "_active_sessions",
+            {"default::local": {"session_name": "local_sess"}},
+        )
+        assert browser_tool._last_session_key("default") == "default::local"
+        assert browser_tool._last_session_key("task-42") == "task-42"
+        # Unknown task_id still falls back
+        assert browser_tool._last_session_key("other") == "other"
+
+    def test_last_session_key_drops_stale_sidecar_binding(self, monkeypatch):
+        """A cleaned last-active sidecar must not be silently resurrected."""
+        last_active = {"default": "default::local"}
+        monkeypatch.setattr(browser_tool, "_last_active_session_key", last_active)
+        monkeypatch.setattr(
+            browser_tool,
+            "_active_sessions",
+            {"default": {"session_name": "cloud_sess"}},
+        )
+
+        assert browser_tool._last_session_key("default") == "default"
+        assert last_active == {}
+
+    def test_last_session_key_keeps_bare_task_binding_without_active_session(self, monkeypatch):
+        """Bare task fallback preserves historical lazy-create behavior."""
+        monkeypatch.setattr(browser_tool, "_last_active_session_key", {"default": "default"})
+        monkeypatch.setattr(browser_tool, "_active_sessions", {})
+        assert browser_tool._last_session_key("default") == "default"
 
     def test_last_session_key_drops_mismatched_owner_metadata(self, monkeypatch):
         """Explicit ownership metadata prevents retargeting to another task's session."""
@@ -162,6 +250,23 @@ class TestCleanupHybridSessions:
         # last-active pointer dropped
         assert "default" not in browser_tool._last_active_session_key
 
+    def test_cleanup_reaps_only_primary_when_no_sidecar(self, monkeypatch):
+        """When no sidecar exists, only the primary is reaped."""
+        reaped = []
+
+        def _fake_cleanup_one(key):
+            reaped.append(key)
+
+        monkeypatch.setattr(browser_tool, "_cleanup_single_browser_session", _fake_cleanup_one)
+        monkeypatch.setattr(
+            browser_tool,
+            "_active_sessions",
+            {"default": {"session_name": "cloud_sess"}},
+        )
+
+        browser_tool.cleanup_browser("default")
+
+        assert reaped == ["default"]
 
     def test_cleanup_sidecar_directly_keeps_primary(self, monkeypatch):
         """Calling cleanup with a ``::local`` key reaps only the sidecar."""

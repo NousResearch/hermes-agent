@@ -28,6 +28,17 @@ def test_absolutize_resolves_relative(_preview):
     )
 
 
+def test_absolutize_leaves_absolute_unchanged(_preview):
+    # Idempotent: an already-absolute URL must NOT be double-prefixed.
+    url = "https://other.example/billing?topup=open"
+    assert _absolutize_portal_url(url) == url
+
+
+def test_absolutize_passthrough_empty(_preview):
+    assert _absolutize_portal_url(None) is None
+    assert _absolutize_portal_url("") == ""
+
+
 def test_raise_for_error_attaches_absolute_portal_url(_preview):
     # The 403 no_payment_method envelope carries a RELATIVE portalUrl; the raised
     # BillingError must expose it as ABSOLUTE so CLI + TUI render a clickable link.

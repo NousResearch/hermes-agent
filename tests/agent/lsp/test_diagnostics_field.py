@@ -22,12 +22,26 @@ from tools.file_operations import (
 # ---------------------------------------------------------------------------
 
 
+def test_writeresult_lsp_diagnostics_optional():
+    r = WriteResult()
+    assert r.lsp_diagnostics is None
 
 
+def test_writeresult_to_dict_omits_field_when_none():
+    r = WriteResult(bytes_written=10)
+    assert "lsp_diagnostics" not in r.to_dict()
 
 
+def test_writeresult_to_dict_includes_field_when_set():
+    r = WriteResult(bytes_written=10, lsp_diagnostics="<diagnostics>...</diagnostics>")
+    d = r.to_dict()
+    assert d["lsp_diagnostics"] == "<diagnostics>...</diagnostics>"
 
 
+def test_patchresult_to_dict_includes_field_when_set():
+    r = PatchResult(success=True, lsp_diagnostics="ERROR [1:1] thing")
+    d = r.to_dict()
+    assert d["lsp_diagnostics"] == "ERROR [1:1] thing"
 
 
 def test_patchresult_to_dict_omits_field_when_none():
@@ -35,6 +49,10 @@ def test_patchresult_to_dict_omits_field_when_none():
     assert "lsp_diagnostics" not in r.to_dict()
 
 
+def test_patchresult_to_dict_omits_field_when_empty_string():
+    """Empty string counts as falsy — agent shouldn't see an empty field."""
+    r = PatchResult(success=True, lsp_diagnostics="")
+    assert "lsp_diagnostics" not in r.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +80,31 @@ def test_lint_and_lsp_diagnostics_are_separate_channels():
 # ---------------------------------------------------------------------------
 
 
+def test_write_file_populates_lsp_diagnostics_when_layer_returns_block(tmp_path):
+    """When the LSP layer returns a non-empty block, write_file puts it
+    into the ``lsp_diagnostics`` field — NOT into ``lint.output``."""
+    fops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    target = tmp_path / "x.py"
+
+    block = "<diagnostics file=\"x.py\">\nERROR [1:1] problem\n</diagnostics>"
+
+    with patch.object(fops, "_maybe_lsp_diagnostics", return_value=block):
+        res = fops.write_file(str(target), "x = 1\n")
+
+    assert res.lsp_diagnostics == block
+    # Lint is the syntax check, which is clean for "x = 1" — must NOT
+    # have the LSP block folded into it.
+    assert res.lint == {"status": "ok", "output": ""}
 
 
+def test_write_file_lsp_diagnostics_none_when_layer_returns_empty(tmp_path):
+    fops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    target = tmp_path / "x.py"
+
+    with patch.object(fops, "_maybe_lsp_diagnostics", return_value=""):
+        res = fops.write_file(str(target), "x = 1\n")
+
+    assert res.lsp_diagnostics is None
 
 
 def test_write_file_skips_lsp_when_syntax_failed(tmp_path):

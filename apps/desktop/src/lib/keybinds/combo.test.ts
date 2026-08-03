@@ -32,50 +32,6 @@ describe('comboFromEvent — ctrl as a distinct modifier on macOS', () => {
     expect(comboFromEvent(keydown({ code: 'KeyK', ctrlKey: true }))).toBe('ctrl+k')
   })
 
-  it('uses layout-aware letters for Cmd shortcuts on non-QWERTY layouts', async () => {
-    const { comboFromEvent } = await loadCombo('MacIntel')
-
-    expect(comboFromEvent(keydown({ code: 'KeyI', key: 'c', metaKey: true }))).toBe('mod+c')
-    expect(comboFromEvent(keydown({ code: 'KeyI', key: 'C', metaKey: true, shiftKey: true }))).toBe('mod+shift+c')
-  })
-
-  it('keeps shifted punctuation anchored to the physical key token', async () => {
-    const { comboFromEvent } = await loadCombo('MacIntel')
-
-    expect(comboFromEvent(keydown({ code: 'Slash', key: '?', metaKey: true, shiftKey: true }))).toBe('mod+shift+/')
-  })
-
-  it('uses layout-aware punctuation for Cmd shortcuts on non-QWERTY layouts', async () => {
-    const { comboFromEvent } = await loadCombo('MacIntel')
-
-    // Dvorak puts "." on the physical QWERTY V key — ⌘. must still reach the
-    // command center rather than resolving to the physical token.
-    expect(comboFromEvent(keydown({ code: 'KeyV', key: '.', metaKey: true }))).toBe('mod+.')
-    expect(comboFromEvent(keydown({ code: 'KeyW', key: ',', metaKey: true }))).toBe('mod+,')
-    expect(comboFromEvent(keydown({ code: 'BracketLeft', key: '/', metaKey: true }))).toBe('mod+/')
-    // AZERTY reaches "," from the physical QWERTY M key.
-    expect(comboFromEvent(keydown({ code: 'KeyM', key: ',', metaKey: true }))).toBe('mod+,')
-  })
-
-  it("keeps digits physical so AZERTY's shifted number row still binds", async () => {
-    const { comboFromEvent } = await loadCombo('MacIntel')
-
-    // On AZERTY the unshifted "1" key types "&", and "1" only with Shift held.
-    // Both must resolve to the same `mod+1` the QWERTY user gets.
-    expect(comboFromEvent(keydown({ code: 'Digit1', key: '&', metaKey: true }))).toBe('mod+1')
-    expect(comboFromEvent(keydown({ code: 'Digit1', key: '1', metaKey: true }))).toBe('mod+1')
-  })
-
-  it('falls back to the physical key for glyphs we do not ship as tokens', async () => {
-    const { comboFromEvent } = await loadCombo('MacIntel')
-
-    // Option-modified glyphs, dead keys, and non-Latin scripts are not combo
-    // tokens, so the physical code keeps the binding reachable.
-    expect(comboFromEvent(keydown({ code: 'KeyK', key: '˚', metaKey: true, altKey: true }))).toBe('mod+alt+k')
-    expect(comboFromEvent(keydown({ code: 'KeyN', key: 'Dead', metaKey: true, altKey: true }))).toBe('mod+alt+n')
-    expect(comboFromEvent(keydown({ code: 'KeyK', key: 'л', metaKey: true }))).toBe('mod+k')
-  })
-
   it('treats Control as the "mod" accelerator off macOS', async () => {
     const { comboFromEvent } = await loadCombo('Win32')
 

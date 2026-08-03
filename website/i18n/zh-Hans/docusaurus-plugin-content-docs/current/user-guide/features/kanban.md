@@ -664,26 +664,6 @@ hermes kanban notify-unsubscribe t_abcd \
 
 订阅在任务达到 `done` 或 `archived` 后自动移除；无需清理。
 
-### 多 profile 部署：投递按 profile 归属
-
-在每个 profile 一个 gateway 的部署中（单一调度器，`writer`、`admin` 等各自
-运行独立的 gateway 进程 —— 参见[多 gateway 指南](https://github.com/NousResearch/hermes-agent/blob/main/docs/kanban/multi-gateway.md)），
-调度与投递的归属是分开的：
-
-- **调度保持单一所有者。** 只有一个 gateway 保持
-  `kanban.dispatch_in_gateway: true` 并运行调度器；其余 gateway 都设为
-  `false`。
-- **通知投递按 profile 归属。** 每个 gateway —— 包括非调度 gateway ——
-  都运行通知器，且只轮询标记了其所托管 profile 的订阅。从 `writer`
-  profile 的 Telegram 创建的任务，其 `completed`/`blocked` 消息由
-  `writer` gateway 投递，即使调度是由 `default` gateway 完成的。
-- **遗留订阅**（在 profile 标记之前创建、行上没有 `notifier_profile`
-  的订阅）只由实际持有调度器单例锁的 gateway 投递，因此两个 gateway
-  永远不会争抢它们。
-
-board 数据库中的原子化逐事件认领可防止跨 gateway 的重复投递。不需要中继、
-凭证共享或额外的调度器 —— 每个 profile gateway 只通过它自己的适配器投递。
-
 ## 运行记录 —— 每次尝试一行
 
 任务是一个逻辑工作单元；**运行**是执行它的一次尝试。当调度器认领一个就绪任务时，它在 `task_runs` 中创建一行，并将 `tasks.current_run_id` 指向它。当该尝试结束时 —— 完成、阻塞、崩溃、超时、启动失败、回收 —— 运行行以 `outcome` 关闭，任务的指针清除。被尝试三次的任务有三行 `task_runs`。

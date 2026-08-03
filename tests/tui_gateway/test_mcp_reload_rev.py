@@ -177,6 +177,56 @@ def test_follower_with_matching_rev_coalesces(reload_env, monkeypatch):
     assert calls["discover"] == 1
 
 
+def test_follower_with_newer_rev_reruns_full_reload(reload_env, monkeypatch):
+    """The race from the review: the leader loaded revision A, but this
+    follower was triggered by revision B. Coalescing would ack B against A's
+    registry — instead the follower must re-run the full reload."""
+    results, calls = _run_leader_follower(reload_env, monkeypatch, follower_rev="rev-b")
+
+    assert results["follower"]["result"]["status"] == "reloaded"
+    assert results["follower"]["result"].get("coalesced") is None
+    # Leader discovery + follower's own re-run.
+    assert calls["discover"] == 2
+
+
+def test_follower_behind_failed_leader_reruns(reload_env, monkeypatch):
+    """A failed leader never advances the generation — the follower re-runs
+    the full reload instead of acking over an empty/partial registry."""
+    calls, _ = reload_env
+
+    lock = _WaiterLock()
+    monkeypatch.setattr(srv, "_mcp_reload_lock", lock)
+
+    leader_in_discovery = threading.Event()
+    release_leader = threading.Event()
+
+    def _discover():
+        calls["discover"] += 1
+        if calls["discover"] == 1:
+            leader_in_discovery.set()
+            assert release_leader.wait(timeout=10)
+            raise RuntimeError("flapping server")
+
+    monkeypatch.setattr(mcp_tool, "discover_mcp_tools", _discover)
+
+    results: dict = {}
+    lt = threading.Thread(target=lambda: results.__setitem__("leader", _reload(rev="rev-a", rid=1)), daemon=True)
+    lt.start()
+    assert leader_in_discovery.wait(timeout=10)
+
+    ft = threading.Thread(target=lambda: results.__setitem__("follower", _reload(rev="rev-a", rid=2)), daemon=True)
+    ft.start()
+    assert lock.waiting.wait(timeout=10)
+    release_leader.set()
+
+    lt.join(timeout=10)
+    ft.join(timeout=10)
+
+    assert "error" in results["leader"]
+    assert results["follower"]["result"]["status"] == "reloaded"
+    assert calls["discover"] == 2
+
+
 def test_legacy_request_without_rev_still_coalesces_on_generation(reload_env, monkeypatch):
     """Manual /reload-mcp and older clients send no rev — generation-only
     coalescing (the pre-existing contract) still applies."""

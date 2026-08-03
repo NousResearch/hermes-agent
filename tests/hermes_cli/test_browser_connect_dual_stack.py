@@ -70,6 +70,10 @@ class TestDiscoverLocalCdpUrl:
         port = _free_port()
         assert discover_local_cdp_url(port, timeout=0.3) is None
 
+    def test_does_not_hang_on_non_cdp_squatter(self, ipv4_squatter):
+        """A TCP-accepting, HTTP-silent squatter must fail the probe within
+        the timeout instead of being mistaken for a browser."""
+        assert discover_local_cdp_url(ipv4_squatter, timeout=0.3) is None
 
     def test_finds_ipv6_only_endpoint(self, monkeypatch):
         """When only [::1] speaks CDP (IPv4 side squatted), discovery
@@ -82,10 +86,19 @@ class TestDiscoverLocalCdpUrl:
         monkeypatch.setattr(bc, "is_browser_debug_ready", _ready)
         assert bc.discover_local_cdp_url(9222) == "http://[::1]:9222"
 
+    def test_prefers_ipv4_when_both_answer(self, monkeypatch):
+        import hermes_cli.browser_connect as bc
+
+        monkeypatch.setattr(bc, "is_browser_debug_ready", lambda *_a, **_k: True)
+        assert bc.discover_local_cdp_url(9222) == "http://127.0.0.1:9222"
+
 
 class TestLocalPortInUse:
     def test_free_port_reports_unused(self):
         assert local_port_in_use(_free_port(), timeout=0.3) is False
+
+    def test_squatted_port_reports_used(self, ipv4_squatter):
+        assert local_port_in_use(ipv4_squatter, timeout=0.5) is True
 
 
 class TestFindFreeDebugPort:

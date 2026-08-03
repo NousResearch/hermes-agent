@@ -331,8 +331,6 @@ class TestGitHubCommentDelivery:
             ],
             capture_output=True,
             text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=30,
         )
         # Delivery info is retained after send() so interim status messages

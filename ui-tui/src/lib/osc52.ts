@@ -69,8 +69,5 @@ export async function readOsc52Clipboard(querier: null | OscQuerier, timeoutMs =
   return response ? parseOsc52ClipboardData(response.data) : null
 }
 
-export const writeOsc52Clipboard = (s: string) => {
-  const sequence = `${ESC}]52;c;${Buffer.from(s, 'utf8').toString('base64')}${BEL}`
-
-  return process.stdout.write(wrapForMultiplexer(sequence))
-}
+export const writeOsc52Clipboard = (s: string) =>
+  process.stdout.write(`\x1b]52;c;${Buffer.from(s, 'utf8').toString('base64')}\x07`)

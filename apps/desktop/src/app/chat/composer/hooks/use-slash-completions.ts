@@ -1,5 +1,4 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
-import { useStore } from '@nanostores/react'
 import { useCallback } from 'react'
 
 import type { HermesGateway } from '@/hermes'
@@ -11,15 +10,8 @@ import {
   type DesktopThemeCommandOption,
   filterDesktopCommandsCatalog,
   isDesktopSlashExtensionCommand,
-  isDesktopSlashSuggestion,
-  rankSkillCommands
+  isDesktopSlashSuggestion
 } from '@/lib/desktop-slash-commands'
-import {
-  $slashCompletionsEpoch,
-  cachedSlashCompletion,
-  hasCachedSlashCompletion,
-  peekCachedSlashCompletion
-} from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { $sessions } from '@/store/session'
 
@@ -71,7 +63,6 @@ export function useSlashCompletions(options: {
 } {
   const { gateway, skinThemes, activeSkin } = options
   const enabled = Boolean(gateway)
-  const epoch = useStore($slashCompletionsEpoch)
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
@@ -142,16 +133,14 @@ export function useSlashCompletions(options: {
 
       try {
         if (!query) {
-          const catalog = filterDesktopCommandsCatalog(
-            await cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
-          )
+          const catalog = filterDesktopCommandsCatalog(await gateway.request<CommandsCatalogLike>('commands.catalog'))
 
           // Prefer the categorized layout so the popover renders section headers
           // (Session, Tools & Skills, ...). Fall back to the flat list when the
           // backend didn't categorize.
           const sections = catalog.categories?.length ? catalog.categories : [{ name: '', pairs: catalog.pairs ?? [] }]
 
-          const items = sections.flatMap<CompletionEntry>(section =>
+          const items = sections.flatMap(section =>
             section.pairs.map(([command, meta]) => ({
               text: command,
               display: command,
@@ -160,32 +149,12 @@ export function useSlashCompletions(options: {
             }))
           )
 
-          // Skill commands reach us only through the flat `pairs` list — the
-          // backend categorizes registry commands but appends skills
-          // uncategorized, so the categorized layout alone drops every skill
-          // from the bare `/` list even though typing `/wo` offers them.
-          // Re-add the leftovers under one Skills header (which also gives them
-          // the skill pill accent and makes them offerable mid-message).
-          const categorized = new Set(items.map(item => item.text.toLowerCase()))
-          const skillRows: CompletionEntry[] = []
-
-          for (const [command, meta] of catalog.pairs ?? []) {
-            if (!categorized.has(command.toLowerCase()) && isDesktopSlashExtensionCommand(command)) {
-              skillRows.push({ text: command, display: command, group: 'Skills', meta })
-            }
-          }
-
-          // Browsing, not searching: rank the skills the user actually reaches
-          // for to the top and drop never-used built-ins entirely. Typing a
-          // query takes the other branch, where nothing is hidden.
-          items.push(...rankSkillCommands(skillRows, catalog.skills, { pruneUnusedBuiltins: true }))
-
           return { items, query }
         }
 
-        const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text })
-        )
+        const result = await gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
+          text
+        })
 
         // Arg-completion items (replace_from > 1) carry just the arg stub —
         // e.g. complete.slash returns `{text: "alice"}` for `/personality alic`
@@ -222,27 +191,9 @@ export function useSlashCompletions(options: {
         // Skills (stable within a group, preserving backend relevance order).
         const groupOrder = ['Commands', 'Skills', 'Options']
 
-        if (isArgCompletion) {
-          return { items: decorated, query }
-        }
-
-        // Rank the matched skills by use — `/re` should lead with the /research
-        // the user lives in, not the /research-paper-writing they've never
-        // opened. Nothing is pruned here: a typed query is a search, and a
-        // search that hides a match is broken. Usage rides along on the catalog
-        // response, which the popover has already fetched by the time anyone
-        // types; if it somehow hasn't, order falls back to the backend's.
-        const catalogSkills = peekCachedSlashCompletion<CommandsCatalogLike>('catalog')?.skills
-
-        const ranked = [
-          ...decorated.filter(item => item.group !== 'Skills'),
-          ...rankSkillCommands(
-            decorated.filter(item => item.group === 'Skills'),
-            catalogSkills
-          )
-        ]
-
-        const items = [...ranked].sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group))
+        const items = isArgCompletion
+          ? decorated
+          : [...decorated].sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group))
 
         return { items, query }
       } catch {
@@ -280,21 +231,5 @@ export function useSlashCompletions(options: {
     }
   }, [])
 
-  // Mirrors the fetcher's branching: the `/skin` and `/resume` arg stages are
-  // answered from client-side state, so they never wait on the network; every
-  // other query is served from the completion cache when it's still warm.
-  const isCached = useCallback(
-    (query: string) => {
-      const text = `/${query}`
-
-      if ((skinThemes && /^\/skin\s+/is.test(text)) || /^\/(?:resume|sessions|switch)\s+/is.test(text)) {
-        return true
-      }
-
-      return hasCachedSlashCompletion(query ? `slash:${text.toLowerCase()}` : 'catalog')
-    },
-    [skinThemes]
-  )
-
-  return useLiveCompletionAdapter({ enabled, epoch, fetcher, isCached, toItem })
+  return useLiveCompletionAdapter({ enabled, fetcher, toItem })
 }

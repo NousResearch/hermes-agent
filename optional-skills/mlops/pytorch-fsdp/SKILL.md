@@ -1,6 +1,6 @@
 ---
 name: pytorch-fsdp
-description: Fully sharded data-parallel training for large models.
+description: Expert guidance for Fully Sharded Data Parallel training with PyTorch FSDP - parameter sharding, mixed precision, CPU offloading, FSDP2
 version: 1.0.0
 author: Orchestra Research
 license: MIT

@@ -44,6 +44,14 @@ class FakeStdscr:
         self.timeouts.append(ms)
 
 
+def test_raw_csi_arrow_down_decodes_to_down():
+    # ESC [ B  -> down, NOT cancel
+    assert read_menu_key(FakeStdscr([27, ord("["), ord("B")])) == NAV_DOWN
+
+
+def test_raw_csi_arrow_up_decodes_to_up():
+    # ESC [ A  -> up
+    assert read_menu_key(FakeStdscr([27, ord("["), ord("A")])) == NAV_UP
 
 
 def test_raw_ss3_arrow_keys_decode():
@@ -52,8 +60,23 @@ def test_raw_ss3_arrow_keys_decode():
     assert read_menu_key(FakeStdscr([27, ord("O"), ord("A")])) == NAV_UP
 
 
+def test_translated_key_constants_still_work():
+    assert read_menu_key(FakeStdscr([curses.KEY_DOWN])) == NAV_DOWN
+    assert read_menu_key(FakeStdscr([curses.KEY_UP])) == NAV_UP
 
 
+def test_vim_keys():
+    assert read_menu_key(FakeStdscr([ord("j")])) == NAV_DOWN
+    assert read_menu_key(FakeStdscr([ord("k")])) == NAV_UP
+
+
+def test_lone_escape_is_cancel():
+    # ESC with no continuation byte (getch returns -1) -> genuine cancel.
+    assert read_menu_key(FakeStdscr([27])) == NAV_CANCEL
+
+
+def test_q_is_cancel():
+    assert read_menu_key(FakeStdscr([ord("q")])) == NAV_CANCEL
 
 
 def test_enter_variants_select():
@@ -62,5 +85,25 @@ def test_enter_variants_select():
     assert read_menu_key(FakeStdscr([curses.KEY_ENTER])) == NAV_SELECT
 
 
+def test_unhandled_csi_sequence_is_consumed_and_ignored():
+    # Delete key (ESC [ 3 ~): must be swallowed whole and map to NAV_NONE so
+    # its tail bytes don't leak into a subsequent input() call.
+    fake = FakeStdscr([27, ord("["), ord("3"), ord("~"), ord("X")])
+    assert read_menu_key(fake) == NAV_NONE
+    # The trailing 'X' (a genuinely separate keypress) must remain unconsumed.
+    assert fake.keys == [ord("X")]
 
 
+def test_home_end_csi_sequences_ignored():
+    # ESC [ H (Home) and ESC [ F (End) -> NAV_NONE, fully consumed.
+    assert read_menu_key(FakeStdscr([27, ord("["), ord("H")])) == NAV_NONE
+    assert read_menu_key(FakeStdscr([27, ord("["), ord("F")])) == NAV_NONE
+
+
+def test_escape_uses_short_timeout_then_restores_blocking():
+    fake = FakeStdscr([27, ord("["), ord("B")])
+    read_menu_key(fake)
+    # A short positive timeout is set to wait for the continuation byte, then
+    # blocking mode (-1) is restored.
+    assert fake.timeouts[0] > 0
+    assert fake.timeouts[-1] == -1

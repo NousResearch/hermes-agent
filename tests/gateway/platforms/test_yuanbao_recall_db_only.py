@@ -58,3 +58,31 @@ def test_recall_branch_a1_exact_id_match_round_trips_through_db(tmp_path, monkey
     assert target["content"] == "sensitive content"
 
 
+def test_recall_branch_a2_content_match_when_no_platform_id(tmp_path, monkeypatch):
+    """Rows that lack a platform_message_id (e.g. agent-processed @bot
+    messages) still match by content as a fallback."""
+    _pin_db(monkeypatch, tmp_path)
+
+    config = GatewayConfig()
+    store = SessionStore(sessions_dir=tmp_path, config=config)
+
+    sid = "test-yuanbao-recall-a2"
+    store._db.create_session(session_id=sid, source="yuanbao:group:G")
+    # No message_id on the dict — simulates an agent-processed message
+    # that did not carry the platform msg_id through.
+    store.append_to_transcript(sid, {
+        "role": "user",
+        "content": "sensitive content",
+        "timestamp": 1.0,
+    })
+
+    history = store.load_transcript(sid)
+    assert all("message_id" not in m for m in history)
+
+    # Branch A2: content match recovers the target.
+    target = next(
+        (m for m in history
+         if m.get("role") == "user" and m.get("content") == "sensitive content"),
+        None,
+    )
+    assert target is not None

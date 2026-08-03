@@ -313,18 +313,16 @@ model:
   context_length: 131072  # your model's actual context window
 ```
 
-Or for custom endpoints, add it per-model on the provider entry:
+Or for custom endpoints, add it per-model:
 
 ```yaml
-providers:
-  my-server:
-    api: "http://localhost:11434/v1"
+custom_providers:
+  - name: "My Server"
+    base_url: "http://localhost:11434/v1"
     models:
       qwen3.5:27b:
         context_length: 64000
 ```
-
-(Older configs use the legacy `custom_providers:` list — still supported and auto-migrated to `providers:`.)
 
 See [Context Length Detection](../integrations/providers.md#context-length-detection) for how auto-detection works and all override options.
 

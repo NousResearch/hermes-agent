@@ -53,6 +53,16 @@ def test_entry_calls_shared_harden_guard_before_heavy_imports():
     )
 
 
+def test_entry_does_not_reimplement_guard_inline():
+    """The old inline ``{'', '.'}`` strip lived in entry.py; the dedicated
+    helper now owns it.  Guard against the inline logic creeping back."""
+    source = _entry_source()
+    assert '{"", "."}' not in source and "{'', '.'}" not in source, (
+        "entry.py should delegate to hermes_bootstrap.harden_import_path, "
+        "not re-implement the sys.path strip inline"
+    )
+
+
 def test_guard_handles_absolute_cwd_path():
     """The #51286 case: the launch dir is on sys.path as its own absolute
     path, ahead of the Hermes root.  harden_import_path must relocate the

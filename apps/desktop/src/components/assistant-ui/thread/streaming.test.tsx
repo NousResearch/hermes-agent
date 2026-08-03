@@ -217,10 +217,7 @@ function assistantTodoMessage(
   } as ThreadMessage
 }
 
-function assistantImageMessage(
-  running = false,
-  result: unknown = { image: 'https://cdn.example/cat.png', success: true }
-): ThreadMessage {
+function assistantImageMessage(running = false): ThreadMessage {
   return {
     id: `assistant-image-${running ? 'running' : 'done'}`,
     role: 'assistant',
@@ -231,36 +228,10 @@ function assistantImageMessage(
         toolName: 'image_generate',
         args: { prompt: 'draw a cat' },
         argsText: JSON.stringify({ prompt: 'draw a cat' }),
-        ...(running ? {} : { result })
+        ...(running ? {} : { result: { image: 'https://cdn.example/cat.png', success: true } })
       }
     ],
     status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
-    createdAt,
-    metadata: {
-      unstable_state: null,
-      unstable_annotations: [],
-      unstable_data: [],
-      steps: [],
-      custom: {}
-    }
-  } as ThreadMessage
-}
-
-function assistantTerminalMessage(): ThreadMessage {
-  return {
-    id: 'assistant-terminal-1',
-    role: 'assistant',
-    content: [
-      {
-        type: 'tool-call',
-        toolCallId: 'terminal-1',
-        toolName: 'terminal',
-        args: { command: 'npm run check --workspace=apps/desktop' },
-        argsText: JSON.stringify({ command: 'npm run check --workspace=apps/desktop' }),
-        result: { exit_code: 0, stdout: 'all checks passed' }
-      }
-    ],
-    status: { type: 'complete', reason: 'stop' },
     createdAt,
     metadata: {
       unstable_state: null,
@@ -606,8 +577,7 @@ describe('assistant-ui streaming renderer', () => {
     const { container } = render(<ReasoningHarness />)
     const ui = within(container)
 
-    // Settled, so the header is past tense — a running block says "Thinking".
-    fireEvent.click(ui.getByRole('button', { name: /thought/i }))
+    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
 
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toBe(
       'The user is asking what this file is.'
@@ -663,33 +633,5 @@ describe('assistant-ui streaming renderer', () => {
     })
     expect(container.querySelector('[data-slot="aui_generated-image"]')).toBeTruthy()
     expect(screen.queryByRole('status', { name: /rendering image/i })).toBeNull()
-  })
-
-  it('uses the normal tool row for failed image generations instead of dropping their error payload', async () => {
-    const { container } = render(
-      <MessageHarness
-        message={assistantImageMessage(false, { error: 'FAL rejected the prompt', image: null, success: false })}
-      />
-    )
-
-    fireEvent.click(container.querySelector('[data-tool-row] button')!)
-
-    await waitFor(() => {
-      expect(container.textContent).toContain('FAL rejected the prompt')
-    })
-    expect(container.querySelector('[data-slot="aui_generated-image"]')).toBeNull()
-    expect(container.textContent).not.toContain('"success":false')
-  })
-
-  it('shows the command prompt and exit code for terminal calls', async () => {
-    const { container } = render(<MessageHarness message={assistantTerminalMessage()} />)
-
-    fireEvent.click(container.querySelector('[data-tool-row] button')!)
-
-    await waitFor(() => {
-      expect(container.textContent).toContain('$ npm run check --workspace=apps/desktop')
-      expect(container.textContent).toContain('exit 0')
-      expect(container.textContent).toContain('all checks passed')
-    })
   })
 })

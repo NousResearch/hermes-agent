@@ -20,6 +20,7 @@ import threading
 from unittest.mock import MagicMock
 
 
+
 def _make_runner():
     """Bare GatewayRunner wired with just the state the helper touches."""
     from gateway.run import GatewayRunner
@@ -49,6 +50,66 @@ class TestReleaseRunningAgentStateUnit:
         runner = _make_runner()
         runner._release_running_agent_state("missing")
         runner._release_running_agent_state("missing")  # still fine
+
+    def test_noop_on_empty_session_key(self):
+        """Empty string / None key is treated as a no-op."""
+        runner = _make_runner()
+        runner._running_agents[""] = "guard"
+        runner._release_running_agent_state("")
+        # Empty key not processed — guard value survives.
+        assert runner._running_agents[""] == "guard"
+
+    def test_preserves_other_sessions(self):
+        runner = _make_runner()
+        for k in ("a", "b", "c"):
+            runner._running_agents[k] = MagicMock()
+            runner._running_agents_ts[k] = 1.0
+            runner._busy_ack_ts[k] = 1.0
+
+        runner._release_running_agent_state("b")
+
+        assert set(runner._running_agents.keys()) == {"a", "c"}
+        assert set(runner._running_agents_ts.keys()) == {"a", "c"}
+        assert set(runner._busy_ack_ts.keys()) == {"a", "c"}
+
+    def test_handles_missing_busy_ack_attribute(self):
+        """Backward-compatible with older runners lacking _busy_ack_ts."""
+        runner = _make_runner()
+        del runner._busy_ack_ts  # simulate older version
+        runner._running_agents["k"] = MagicMock()
+        runner._running_agents_ts["k"] = 1.0
+
+        runner._release_running_agent_state("k")  # should not raise
+
+        assert "k" not in runner._running_agents
+        assert "k" not in runner._running_agents_ts
+
+    def test_concurrent_release_is_safe(self):
+        """Multiple threads releasing different keys concurrently."""
+        runner = _make_runner()
+        for i in range(50):
+            k = f"s{i}"
+            runner._running_agents[k] = MagicMock()
+            runner._running_agents_ts[k] = float(i)
+            runner._busy_ack_ts[k] = float(i)
+
+        def worker(keys):
+            for k in keys:
+                runner._release_running_agent_state(k)
+
+        threads = [
+            threading.Thread(target=worker, args=([f"s{i}" for i in range(start, 50, 5)],))
+            for start in range(5)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+            assert not t.is_alive()
+
+        assert runner._running_agents == {}
+        assert runner._running_agents_ts == {}
+        assert runner._busy_ack_ts == {}
 
 
 class TestNoMoreBareDeleteSites:
@@ -102,6 +163,45 @@ class TestSessionDbCloseOnShutdown:
     gateway (during --replace restart) tries to open the same file.
     """
 
+    def test_stop_impl_closes_both_session_dbs(self):
+        """Run the exact shutdown block that closes SessionDBs and verify
+        .close() was called on both holders."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+
+        runner_db = MagicMock()
+        store_db = MagicMock()
+
+        runner._db = runner_db
+        runner.session_store = MagicMock()
+        runner.session_store._db = store_db
+
+        # Replicate the exact production loop from _stop_impl.
+        for _db_holder in (runner, getattr(runner, "session_store", None)):
+            _db = getattr(_db_holder, "_db", None) if _db_holder else None
+            if _db is None or not hasattr(_db, "close"):
+                continue
+            _db.close()
+
+        runner_db.close.assert_called_once()
+        store_db.close.assert_called_once()
+
+    def test_shutdown_tolerates_missing_session_store(self):
+        """Gateway without a session_store attribute must not crash on shutdown."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._db = MagicMock()
+        # Deliberately no session_store attribute.
+
+        for _db_holder in (runner, getattr(runner, "session_store", None)):
+            _db = getattr(_db_holder, "_db", None) if _db_holder else None
+            if _db is None or not hasattr(_db, "close"):
+                continue
+            _db.close()
+
+        runner._db.close.assert_called_once()
 
     def test_shutdown_tolerates_close_raising(self):
         """A close() that raises must not prevent subsequent cleanup."""
@@ -160,3 +260,22 @@ class TestSessionResetZombieRace:
         assert key not in runner._running_agents_ts
         assert key not in runner._busy_ack_ts
 
+    def test_normal_completion_is_not_evicted_by_outer_release(self):
+        """Guarded release with the current generation succeeds; the outer
+        unconditional release that follows is a harmless no-op.
+        """
+        runner = _make_runner()
+        runner._session_run_generation = {}
+        key = "agent:main:telegram:private:2"
+
+        gen = runner._begin_session_run_generation(key)
+        runner._running_agents[key] = MagicMock()
+        runner._running_agents_ts[key] = 1.0
+        runner._busy_ack_ts[key] = 1.0
+
+        assert runner._release_running_agent_state(key, run_generation=gen) is True
+        assert key not in runner._running_agents
+        # Outer finally runs the unconditional release after — nothing stranded.
+        assert runner._release_running_agent_state(key) is True
+        assert key not in runner._running_agents_ts
+        assert key not in runner._busy_ack_ts

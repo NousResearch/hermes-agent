@@ -36,6 +36,14 @@ class TestGetExternalSkillsDirs:
             result = get_external_skills_dirs()
         assert result == []
 
+    def test_nonexistent_dir_skipped(self, hermes_home):
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n  external_dirs:\n    - /nonexistent/path\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import get_external_skills_dirs
+            result = get_external_skills_dirs()
+        assert result == []
 
     def test_valid_dir_returned(self, hermes_home, external_skills_dir):
         (hermes_home / "config.yaml").write_text(
@@ -47,9 +55,40 @@ class TestGetExternalSkillsDirs:
         assert len(result) == 1
         assert result[0] == external_skills_dir.resolve()
 
+    def test_duplicate_dirs_deduplicated(self, hermes_home, external_skills_dir):
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n    - {external_skills_dir}\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import get_external_skills_dirs
+            result = get_external_skills_dirs()
+        assert len(result) == 1
 
+    def test_local_skills_dir_excluded(self, hermes_home):
+        local_skills = hermes_home / "skills"
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {local_skills}\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import get_external_skills_dirs
+            result = get_external_skills_dirs()
+        assert result == []
 
+    def test_no_config_file(self, hermes_home):
+        # No config.yaml at all
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import get_external_skills_dirs
+            result = get_external_skills_dirs()
+        assert result == []
 
+    def test_string_value_converted_to_list(self, hermes_home, external_skills_dir):
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs: {external_skills_dir}\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import get_external_skills_dirs
+            result = get_external_skills_dirs()
+        assert len(result) == 1
 
 
 class TestGetAllSkillsDirs:

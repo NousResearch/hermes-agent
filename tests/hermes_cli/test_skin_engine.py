@@ -24,6 +24,17 @@ class TestSkinConfig:
         assert "banner_border" in skin.colors
         assert "agent_name" in skin.branding
 
+    def test_get_color_with_fallback(self):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin("default")
+        assert skin.get_color("banner_title") == "#FFD700"
+        assert skin.get_color("nonexistent", "#000") == "#000"
+
+    def test_get_branding_with_fallback(self):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin("default")
+        assert skin.get_branding("agent_name") == "Hermes Agent"
+        assert skin.get_branding("nonexistent", "fallback") == "fallback"
 
     def test_get_spinner_wings_empty_for_default(self):
         from hermes_cli.skin_engine import load_skin
@@ -56,11 +67,65 @@ class TestBuiltinSkins:
         assert isinstance(wings[0], tuple)
         assert len(wings[0]) == 2
 
+    def test_mono_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin("mono")
+        assert skin.name == "mono"
+        assert skin.get_color("banner_title") == "#e6edf3"
 
+    def test_slate_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin("slate")
+        assert skin.name == "slate"
+        assert skin.get_color("banner_title") == "#7eb8f6"
 
+    def test_daylight_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
 
+        skin = load_skin("daylight")
+        assert skin.name == "daylight"
+        assert skin.tool_prefix == "│"
+        assert skin.get_color("banner_title") == "#0F172A"
+        assert skin.get_color("status_bar_bg") == "#E5EDF8"
+        assert skin.get_color("voice_status_bg") == "#E5EDF8"
+        assert skin.get_color("completion_menu_bg") == "#F8FAFC"
+        assert skin.get_color("completion_menu_current_bg") == "#DBEAFE"
+        assert skin.get_color("completion_menu_meta_bg") == "#EEF2FF"
+        assert skin.get_color("completion_menu_meta_current_bg") == "#BFDBFE"
 
+    def test_warm_lightmode_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
 
+        skin = load_skin("warm-lightmode")
+        assert skin.name == "warm-lightmode"
+        assert skin.get_color("banner_text") == "#2C1810"
+        assert skin.get_color("completion_menu_bg") == "#F5EFE0"
+
+    def test_charizard_skin_has_dark_ember_completion_menu(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("charizard")
+        assert skin.name == "charizard"
+        assert skin.get_color("banner_dim") == "#C58A45"
+        assert skin.get_color("completion_menu_bg") == "#0B0503"
+        assert skin.get_color("completion_menu_current_bg") == "#4A1B07"
+        assert skin.get_color("completion_menu_meta_bg") == "#120806"
+        assert skin.get_color("completion_menu_meta_current_bg") == "#5A260D"
+        assert skin.get_color("selection_bg") == "#5A260D"
+
+    def test_unknown_skin_falls_back_to_default(self):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin("nonexistent_skin_xyz")
+        assert skin.name == "default"
+
+    def test_all_builtin_skins_have_complete_colors(self):
+        from hermes_cli.skin_engine import _BUILTIN_SKINS, _build_skin_config
+        required_keys = ["banner_border", "banner_title", "banner_accent",
+                         "banner_dim", "banner_text", "ui_accent"]
+        for name, data in _BUILTIN_SKINS.items():
+            skin = _build_skin_config(data)
+            for key in required_keys:
+                assert key in skin.colors, f"Skin '{name}' missing color '{key}'"
 
 
 class TestSkinManagement:
@@ -71,6 +136,10 @@ class TestSkinManagement:
         assert get_active_skin_name() == "ares"
         assert get_active_skin().name == "ares"
 
+    def test_get_active_skin_defaults(self):
+        from hermes_cli.skin_engine import get_active_skin
+        skin = get_active_skin()
+        assert skin.name == "default"
 
     def test_list_skins_includes_builtins(self):
         from hermes_cli.skin_engine import list_skins
@@ -86,7 +155,33 @@ class TestSkinManagement:
             assert "source" in s
             assert s["source"] == "builtin"
 
+    def test_init_skin_from_config(self):
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": {"skin": "ares"}})
+        assert get_active_skin_name() == "ares"
 
+    def test_init_skin_from_empty_config(self):
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({})
+        assert get_active_skin_name() == "default"
+
+    def test_init_skin_from_null_display(self):
+        """display: null should fall back to default, not crash."""
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": None})
+        assert get_active_skin_name() == "default"
+
+    def test_init_skin_from_non_dict_display(self):
+        """display: <non-dict> should fall back to default."""
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": "invalid"})
+        assert get_active_skin_name() == "default"
+
+        init_skin_from_config({"display": 42})
+        assert get_active_skin_name() == "default"
+
+        init_skin_from_config({"display": []})
+        assert get_active_skin_name() == "default"
 
 
 class TestUserSkins:
@@ -167,7 +262,15 @@ class TestUserSkins:
 
 
 class TestDisplayIntegration:
+    def test_get_skin_tool_prefix_default(self):
+        from agent.display import get_skin_tool_prefix
+        assert get_skin_tool_prefix() == "┊"
 
+    def test_get_skin_tool_prefix_custom(self):
+        from hermes_cli.skin_engine import set_active_skin
+        from agent.display import get_skin_tool_prefix
+        set_active_skin("ares")
+        assert get_skin_tool_prefix() == "╎"
 
     def test_tool_message_uses_skin_prefix(self):
         from hermes_cli.skin_engine import set_active_skin
@@ -177,9 +280,29 @@ class TestDisplayIntegration:
         assert msg.startswith("╎")
         assert "┊" not in msg
 
+    def test_tool_message_default_prefix(self):
+        from agent.display import get_cute_tool_message
+        msg = get_cute_tool_message("terminal", {"command": "ls"}, 0.5)
+        assert msg.startswith("┊")
+
 
 class TestCliBrandingHelpers:
+    def test_active_prompt_symbol_default(self):
+        from hermes_cli.skin_engine import get_active_prompt_symbol
 
+        assert get_active_prompt_symbol() == "❯ "
+
+    def test_active_prompt_symbol_ares(self):
+        from hermes_cli.skin_engine import set_active_skin, get_active_prompt_symbol
+
+        set_active_skin("ares")
+        assert get_active_prompt_symbol() == "⚔ "
+
+    def test_active_help_header_ares(self):
+        from hermes_cli.skin_engine import set_active_skin, get_active_help_header
+
+        set_active_skin("ares")
+        assert get_active_help_header() == "(⚔) Available Commands"
 
     def test_active_goodbye_ares(self):
         from hermes_cli.skin_engine import set_active_skin, get_active_goodbye

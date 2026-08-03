@@ -64,6 +64,24 @@ def _make_runner(history: list[dict[str, str]]):
 
 
 @pytest.mark.asyncio
+async def test_preview_reports_without_mutating():
+    runner = _make_runner(_make_history(3))
+    result = await runner._handle_compress_command(_make_event("/compress --preview"))
+    assert "no changes made" in result.lower()
+    assert "6 of 6" in result
+    runner.session_store.rewrite_transcript.assert_not_called()
+    runner.session_store.update_session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dry_run_alias_matches_preview():
+    runner = _make_runner(_make_history(3))
+    result = await runner._handle_compress_command(_make_event("/compress --dry-run"))
+    assert "no changes made" in result.lower()
+    runner.session_store.rewrite_transcript.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_preview_with_here_boundary():
     runner = _make_runner(_make_history(4))
     result = await runner._handle_compress_command(
@@ -71,6 +89,16 @@ async def test_preview_with_here_boundary():
     )
     assert "last 2 exchange" in result
     assert "4 of 8" in result
+    runner.session_store.rewrite_transcript.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_aggressive_returns_unsupported_note_without_mutating():
+    runner = _make_runner(_make_history(3))
+    result = await runner._handle_compress_command(
+        _make_event("/compress --aggressive")
+    )
+    assert "--aggressive is not supported" in result
     runner.session_store.rewrite_transcript.assert_not_called()
 
 
@@ -85,3 +113,8 @@ async def test_aggressive_dry_run_shows_preview_plus_note():
     runner.session_store.rewrite_transcript.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_preview_still_requires_enough_history():
+    runner = _make_runner(_make_history(1))  # only 2 messages
+    result = await runner._handle_compress_command(_make_event("/compress --preview"))
+    assert "not enough" in result.lower()

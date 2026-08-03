@@ -40,6 +40,26 @@ def test_managed_beats_user(homes):
     assert cfg_get(load_config(), "model", "default") == "managed/model"
 
 
+def test_managed_leaf_does_not_freeze_siblings(homes):
+    """D3/Q4: pinning model.default leaves model.fallback user-controlled."""
+    from hermes_cli.config import load_config, cfg_get
+
+    home, managed = homes
+    _write(home / "config.yaml", "model:\n  default: user/model\n  fallback: user/fb\n")
+    _write(managed / "config.yaml", "model:\n  default: managed/model\n")
+    cfg = load_config()
+    assert cfg_get(cfg, "model", "default") == "managed/model"
+    assert cfg_get(cfg, "model", "fallback") == "user/fb"  # sibling preserved
+
+
+def test_no_managed_config_is_unchanged(homes):
+    from hermes_cli.config import load_config, cfg_get
+
+    home, _ = homes
+    _write(home / "config.yaml", "model:\n  default: user/model\n")
+    assert cfg_get(load_config(), "model", "default") == "user/model"
+
+
 def test_managed_list_wins_wholesale(homes):
     """D3: a managed list value replaces the user's wholesale."""
     from hermes_cli.config import load_config, cfg_get
@@ -48,6 +68,17 @@ def test_managed_list_wins_wholesale(homes):
     _write(home / "config.yaml", "toolsets:\n  enabled: [a, b, c]\n")
     _write(managed / "config.yaml", "toolsets:\n  enabled: [x]\n")
     assert cfg_get(load_config(), "toolsets", "enabled") == ["x"]
+
+
+def test_editing_managed_file_invalidates_cache(homes):
+    from hermes_cli.config import load_config, cfg_get
+
+    home, managed = homes
+    _write(home / "config.yaml", "model:\n  default: user/model\n")
+    _write(managed / "config.yaml", "model:\n  default: managed/v1\n")
+    assert cfg_get(load_config(), "model", "default") == "managed/v1"
+    _write(managed / "config.yaml", "model:\n  default: managed/v2\n")
+    assert cfg_get(load_config(), "model", "default") == "managed/v2"
 
 
 def test_user_cannot_shadow_managed_literal_via_envref(homes, monkeypatch):

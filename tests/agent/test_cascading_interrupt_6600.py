@@ -32,6 +32,8 @@ import pytest
 from agent import chat_completion_helpers as cch
 
 
+class _FakeInterruptError(Exception):
+    """Stand-in for the transport error a force-close raises on the worker."""
 
 
 def _make_agent():
@@ -77,8 +79,59 @@ def test_non_streaming_cancel_does_not_surface_network_error():
     assert elapsed < 10.0, f"interrupt took {elapsed:.1f}s — should be near-instant (guarding the 30s+ hang)"
 
 
+def test_normal_transient_error_still_raises_when_not_cancelled():
+    """Regression guard: a real transport error with NO interrupt must still
+    surface to the caller (so the outer retry loop can recover)."""
+    agent = _make_agent()
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.side_effect = httpx.RemoteProtocolError(
+        "genuine network drop"
+    )
+    agent._create_request_openai_client.return_value = fake_client
+    agent._close_request_openai_client = MagicMock()
+    agent._abort_request_openai_client = MagicMock()
+    agent._interrupt_requested = False
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        cch.interruptible_api_call(agent, {"model": "x", "messages": []})
 
 
+def test_request_cancelled_token_is_request_local():
+    """The cancellation token must be created per call, not shared on the
+    agent — a stale worker from a previous turn must not see the next turn's
+    interrupt flag flip back to False and mistake its own forced error for a
+    network bug. We assert the helper reads agent._interrupt_requested at the
+    force-close site (request-local token set there), by confirming two
+    independent calls don't share cancellation state."""
+    agent = _make_agent()
+
+    # First call: interrupted.
+    fake_client_1 = MagicMock()
+
+    def _create_1(**kwargs):
+        agent._interrupt_requested = True
+        time.sleep(0.3)
+        raise httpx.RemoteProtocolError("forced close turn A")
+
+    fake_client_1.chat.completions.create.side_effect = _create_1
+    agent._create_request_openai_client.return_value = fake_client_1
+    agent._close_request_openai_client = MagicMock()
+    agent._abort_request_openai_client = MagicMock()
+
+    with pytest.raises(InterruptedError):
+        cch.interruptible_api_call(agent, {"model": "x", "messages": []})
+
+    # Second call: NOT interrupted (turn boundary cleared the flag). A genuine
+    # error must still surface — the previous call's cancellation must not leak.
+    agent._interrupt_requested = False
+    fake_client_2 = MagicMock()
+    fake_client_2.chat.completions.create.side_effect = httpx.RemoteProtocolError(
+        "genuine drop turn B"
+    )
+    agent._create_request_openai_client.return_value = fake_client_2
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        cch.interruptible_api_call(agent, {"model": "x", "messages": []})
 
 
 # ---------------------------------------------------------------------------
@@ -140,3 +193,32 @@ def test_anthropic_non_streaming_stale_aborts_request_client_not_shared():
     _wait_for_mock_call(agent._close_request_anthropic_client)
 
 
+def test_anthropic_non_streaming_interrupt_aborts_request_client_not_shared():
+    """Interrupted non-streaming Anthropic call: near-instant InterruptedError,
+    request-local client aborted from the poll thread, shared client untouched."""
+    agent = _make_anthropic_agent()
+
+    request_client = MagicMock()
+    agent._create_request_anthropic_client = MagicMock(return_value=request_client)
+    agent._abort_request_anthropic_client = MagicMock()
+    agent._close_request_anthropic_client = MagicMock()
+
+    def _create(_api_kwargs, *, client):
+        assert client is request_client
+        agent._interrupt_requested = True
+        time.sleep(1.0)
+        raise httpx.RemoteProtocolError("forced close would have happened")
+
+    agent._anthropic_messages_create = MagicMock(side_effect=_create)
+
+    t0 = time.time()
+    with pytest.raises(InterruptedError):
+        cch.interruptible_api_call(agent, {"model": "x", "messages": []})
+    elapsed = time.time() - t0
+
+    assert elapsed < 3.0, f"interrupt took {elapsed:.1f}s — should be near-instant"
+    agent._anthropic_client.close.assert_not_called()
+    agent._rebuild_anthropic_client.assert_not_called()
+    agent._abort_request_anthropic_client.assert_called_once_with(
+        request_client, reason="interrupt_abort"
+    )

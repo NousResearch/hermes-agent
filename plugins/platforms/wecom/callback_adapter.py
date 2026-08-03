@@ -51,12 +51,7 @@ from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
 
-# ``None`` → aiohttp/asyncio ``create_server`` binds one listening socket per
-# address family (IPv4 + IPv6). The old "0.0.0.0" default bound IPv4 ONLY and
-# was unreachable over IPv6-only private networks (e.g. Fly.io 6PN) — same
-# bug as the LINE adapter (NS-603) and gateway/platforms/webhook.py
-# (d542894ad). Pin a host via WECOM_CALLBACK_HOST or extra.host.
-DEFAULT_HOST = None
+DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8645
 DEFAULT_PATH = "/wecom/callback"
 # Cap pre-auth request bodies. WeCom callbacks are small encrypted XML
@@ -76,9 +71,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM_CALLBACK)
         extra = config.extra or {}
-        # Falsy host (None/"") collapses to the dual-stack default.
-        _raw_host = extra.get("host") or DEFAULT_HOST
-        self._host = str(_raw_host) if _raw_host else None
+        self._host = str(extra.get("host") or DEFAULT_HOST)
         self._port = int(extra.get("port") or DEFAULT_PORT)
         self._path = str(extra.get("path") or DEFAULT_PATH)
         self._apps: List[Dict[str, Any]] = self._normalize_apps(extra)

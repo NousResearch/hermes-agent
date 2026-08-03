@@ -49,10 +49,34 @@ class TestIsAuthErrorXaiOauth403:
         exc.status_code = 403
         assert self.is_auth_error(exc) is False
 
+    def test_401_status_code_is_auth_error(self):
+        """Existing 401 detection still works."""
+        exc = Exception("Unauthorized")
+        exc.status_code = 401
+        assert self.is_auth_error(exc) is True
 
+    def test_401_string_is_auth_error(self):
+        """Existing string-based 401 detection still works."""
+        exc = Exception("Error code: 401 - Unauthorized")
+        assert self.is_auth_error(exc) is True
 
+    def test_authentication_error_class_is_auth_error(self):
+        """Existing AuthenticationError class detection still works."""
+        exc_type = type("AuthenticationError", (Exception,), {})
+        exc = exc_type("auth failure")
+        assert self.is_auth_error(exc) is True
 
+    def test_permission_denied_without_bad_credentials_is_not_auth_error(self):
+        """403 PermissionDenied without bad-credentials should not be auth."""
+        exc = Exception("Error code: 403 - Permission denied")
+        exc.status_code = 403
+        assert self.is_auth_error(exc) is False
 
+    def test_500_is_not_auth_error(self):
+        """Server errors are not auth errors."""
+        exc = Exception("Error code: 500 - Internal server error")
+        exc.status_code = 500
+        assert self.is_auth_error(exc) is False
 
     def test_unauthenticated_without_bad_credentials_is_not_auth_error(self):
         """'unauthenticated' alone (without 'bad-credentials') should not match."""

@@ -139,4 +139,35 @@ class TestPreflightAcceptsArrayOutput:
         types = [p.get("type") for p in out["output"]]
         assert types == ["input_text", "input_image"]
 
+    def test_preflight_empty_array_becomes_empty_string(self):
+        # Defensive: an array with no valid parts shouldn't break the API call
+        raw = [
+            {
+                "type": "function_call",
+                "call_id": "call_x", "name": "vision_analyze", "arguments": "{}",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_x",
+                "output": [{"type": "garbage"}],  # all dropped
+            },
+        ]
+        normalized = _preflight_codex_input_items(raw)
+        out = [it for it in normalized if it.get("type") == "function_call_output"][0]
+        assert out["output"] == ""
 
+    def test_preflight_string_output_unchanged(self):
+        raw = [
+            {
+                "type": "function_call",
+                "call_id": "call_x", "name": "terminal", "arguments": "{}",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_x",
+                "output": "plain text output",
+            },
+        ]
+        normalized = _preflight_codex_input_items(raw)
+        out = [it for it in normalized if it.get("type") == "function_call_output"][0]
+        assert out["output"] == "plain text output"

@@ -52,3 +52,38 @@ async def test_interrupt_sets_only_target_session_event(adapter):
     assert ev_b.is_set() is False, "sibling session must be untouched"
 
 
+@pytest.mark.asyncio
+async def test_interrupt_unknown_session_is_noop(adapter):
+    # No active session for this key — must not raise.
+    await adapter.on_interrupt("agent:main:discord:group:nope:userZ", chat_id="nope")
+
+
+@pytest.mark.asyncio
+async def test_outbound_interrupt_reaches_connector(adapter):
+    """The gateway-side /stop egress: send_interrupt is carried to the connector
+    so it can forward down the socket owning the session_key."""
+    stub = adapter._transport
+    await stub.send_interrupt("agent:main:discord:group:chanA:userX", reason="stop")
+    assert stub.interrupts == [
+        {"session_key": "agent:main:discord:group:chanA:userX", "reason": "stop"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_connect_wires_inbound_interrupt_over_ws(adapter):
+    """WS-only inbound: connect() registers BOTH the inbound message handler AND
+    the interrupt_inbound handler on the transport, so a connector-delivered
+    interrupt_inbound frame (no HTTP receiver) reaches the right session."""
+    await adapter.connect()
+    stub = adapter._transport
+    # Both connector->gateway handlers are wired post-connect.
+    assert stub._inbound is not None
+    assert stub._interrupt_inbound is not None
+
+    key = "agent:main:discord:group:chanA:userX"
+    ev = asyncio.Event()
+    adapter._active_sessions[key] = ev
+
+    # Simulate the connector pushing an interrupt_inbound frame down the WS.
+    await stub.push_interrupt(key, chat_id="chanA")
+    assert ev.is_set() is True, "interrupt delivered over the WS must cancel the target turn"

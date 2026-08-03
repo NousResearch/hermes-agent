@@ -228,13 +228,13 @@ Note: `himalaya message write` without piped input opens `$EDITOR`. This works w
 
 ### Move/Copy Emails
 
-Move to folder (target folder comes first, then the message ID):
+Move to folder:
 
 ```bash
 himalaya message move "Archive" 42
 ```
 
-Copy to folder (target folder comes first, then the message ID):
+Copy to folder:
 
 ```bash
 himalaya message copy "Important" 42

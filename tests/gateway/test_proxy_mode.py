@@ -100,6 +100,15 @@ class TestGetProxyUrl:
         with patch("gateway.run._load_gateway_config", return_value={}):
             assert runner._get_proxy_url() is None
 
+    def test_reads_from_env_var(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://192.168.1.100:8642")
+        runner = _make_runner()
+        assert runner._get_proxy_url() == "http://192.168.1.100:8642"
+
+    def test_strips_trailing_slash(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642/")
+        runner = _make_runner()
+        assert runner._get_proxy_url() == "http://host:8642"
 
     def test_reads_from_config_yaml(self, monkeypatch):
         monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
@@ -108,8 +117,27 @@ class TestGetProxyUrl:
         with patch("gateway.run._load_gateway_config", return_value=cfg):
             assert runner._get_proxy_url() == "http://10.0.0.1:8642"
 
+    def test_env_var_overrides_config(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://env-host:8642")
+        runner = _make_runner()
+        cfg = {"gateway": {"proxy_url": "http://config-host:8642"}}
+        with patch("gateway.run._load_gateway_config", return_value=cfg):
+            assert runner._get_proxy_url() == "http://env-host:8642"
+
+    def test_empty_string_treated_as_unset(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "  ")
+        runner = _make_runner()
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            assert runner._get_proxy_url() is None
+
 
 class TestResolveProxyUrl:
+    def test_normalizes_socks_alias_from_all_proxy(self, monkeypatch):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:1080/")
+        assert resolve_proxy_url() == "socks5://127.0.0.1:1080/"
 
     def test_no_proxy_bypasses_matching_host(self, monkeypatch):
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
@@ -128,6 +156,15 @@ class TestResolveProxyUrl:
         monkeypatch.setenv("NO_PROXY", "149.154.160.0/20")
 
         assert resolve_proxy_url(target_hosts=["149.154.167.220"]) is None
+
+    def test_no_proxy_ignored_without_target(self, monkeypatch):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "*")
+
+        assert resolve_proxy_url() == "http://proxy.example:8080"
 
 
 class TestRunAgentProxyDispatch:
@@ -164,6 +201,27 @@ class TestRunAgentProxyDispatch:
         assert result["final_response"] == "Hello from remote!"
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
+
+    @pytest.mark.asyncio
+    async def test_run_agent_skips_proxy_when_not_configured(self, monkeypatch):
+        monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
+        runner = _make_runner()
+
+        runner._run_agent_via_proxy = AsyncMock()
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            try:
+                await runner._run_agent(
+                    message="hi",
+                    context_prompt="",
+                    history=[],
+                    source=_make_source(),
+                    session_id="test-session",
+                )
+            except Exception:
+                pass  # Expected — bare runner can't create a real agent
+
+        runner._run_agent_via_proxy.assert_not_called()
 
 
 class TestRunAgentViaProxy:
@@ -222,6 +280,29 @@ class TestRunAgentViaProxy:
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
 
+    @pytest.mark.asyncio
+    async def test_handles_http_error(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(status=401, error_text="Unauthorized: invalid API key")
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert "Proxy error (401)" in result["final_response"]
+        assert result["api_calls"] == 0
 
     @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):
@@ -253,6 +334,164 @@ class TestRunAgentViaProxy:
 
         assert "Proxy connection error" in result["final_response"]
 
+    @pytest.mark.asyncio
+    async def test_rejects_proxy_sse_without_line_boundary_after_buffer_cap(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        monkeypatch.setattr("gateway.run._GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS", 16)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(status=200, sse_chunks=[b"data: ", b"x" * 20])
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert "Proxy connection error" in result["final_response"]
+        assert "exceeded max buffer size" in result["final_response"]
+        assert result["api_calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_skips_tool_messages_in_history(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
+        )
+        session = _FakeSession(resp)
+
+        history = [
+            {"role": "user", "content": "search for X"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "tc1"}]},
+            {"role": "tool", "content": "search results...", "tool_call_id": "tc1"},
+            {"role": "assistant", "content": "Found results."},
+        ]
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    await runner._run_agent_via_proxy(
+                        message="tell me more",
+                        context_prompt="",
+                        history=history,
+                        source=source,
+                        session_id="test",
+                    )
+
+        # Only user and assistant with content should be forwarded
+        messages = session.captured_json["messages"]
+        roles = [m["role"] for m in messages]
+        assert "tool" not in roles
+        # assistant with None content should be skipped
+        assert all(m.get("content") for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_result_shape_matches_run_agent(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[b'data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n'],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[{"role": "user", "content": "prev"}, {"role": "assistant", "content": "ok"}],
+                        source=source,
+                        session_id="sess-123",
+                    )
+
+        # Required keys that callers depend on
+        assert "final_response" in result
+        assert result["final_response"] == "answer"
+        assert "messages" in result
+        assert "api_calls" in result
+        assert "tools" in result
+        assert "history_offset" in result
+        assert result["history_offset"] == 2  # len(history)
+        assert "session_id" in result
+        assert result["session_id"] == "sess-123"
+
+    @pytest.mark.asyncio
+    async def test_proxy_stale_generation_returns_empty_result(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+        runner._session_run_generation["test-key"] = 2
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"stale"}}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="sess-123",
+                        session_key="test-key",
+                        run_generation=1,
+                    )
+
+        assert result["final_response"] == ""
+        assert result["messages"] == []
+        assert result["api_calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_no_auth_header_without_key(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert "Authorization" not in session.captured_headers
 
     @pytest.mark.asyncio
     async def test_no_system_message_when_context_empty(self, monkeypatch):
@@ -295,3 +534,9 @@ class TestEnvVarRegistration:
         assert info["category"] == "messaging"
         assert info["password"] is False
 
+    def test_proxy_key_in_optional_env_vars(self):
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert "GATEWAY_PROXY_KEY" in OPTIONAL_ENV_VARS
+        info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_KEY"]
+        assert info["category"] == "messaging"
+        assert info["password"] is True

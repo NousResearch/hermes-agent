@@ -49,6 +49,9 @@ class TestRedactApprovalCommand:
         out = _redact_approval_command(raw)
         assert _FAKE_JWT not in out
 
+    def test_clean_command_passes_through_unchanged(self):
+        raw = "ls -la /tmp && echo hello"
+        assert _redact_approval_command(raw) == raw
 
     def test_forces_redaction_even_when_disabled(self, monkeypatch):
         """force=True must redact even if security.redact_secrets is off -- the
@@ -58,6 +61,10 @@ class TestRedactApprovalCommand:
         monkeypatch.setattr("agent.redact._REDACT_ENABLED", False, raising=False)
         out = _redact_approval_command(raw)
         assert _FAKE_GHP not in out
+
+    def test_handles_none_and_empty(self):
+        assert _redact_approval_command("") == ""
+        assert _redact_approval_command(None) == ""
 
 
 class TestApprovalCommandWiring:
@@ -120,6 +127,31 @@ class TestApprovalCommandWiring:
 
         self._assert_redacts_then_uses(api_server, "_approval_notify", "put_nowait")
 
+    def test_chat_platform_threads_approval_capabilities_to_adapter(self):
+        """The gateway must not drop the backend's one-operation UI contract."""
+        import ast
+        import inspect
+        import gateway.run as run
+
+        tree = ast.parse(inspect.getsource(run))
+        notify = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_approval_notify_sync"
+        )
+        call = next(
+            node for node in ast.walk(notify)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "send_exec_approval"
+        )
+        keywords = {kw.arg: kw.value for kw in call.keywords}
+        for name, default in (("allow_permanent", True), ("smart_denied", False)):
+            value = keywords[name]
+            assert isinstance(value, ast.Call)
+            assert isinstance(value.func, ast.Attribute) and value.func.attr == "get"
+            assert isinstance(value.args[0], ast.Constant) and value.args[0].value == name
+            assert isinstance(value.args[1], ast.Constant) and value.args[1].value is default
+
 
 class TestApprovalTextFallbackContract:
     def test_smart_deny_only_advertises_one_operation(self):
@@ -135,4 +167,22 @@ class TestApprovalTextFallbackContract:
         assert "approve session" not in text
         assert "approve always" not in text
 
+    def test_non_smart_restriction_preserves_session_choice(self):
+        from gateway.run import _format_exec_approval_fallback
 
+        text = _format_exec_approval_fallback(
+            "curl https://example.test", "content warning", "!",
+            allow_permanent=False, smart_denied=False,
+        )
+        assert "`!approve session`" in text
+        assert "approve always" not in text
+
+    def test_manual_prompt_preserves_all_choices(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "rm -rf /", "dangerous deletion", "/",
+            allow_permanent=True, smart_denied=False,
+        )
+        assert "`/approve session`" in text
+        assert "`/approve always`" in text

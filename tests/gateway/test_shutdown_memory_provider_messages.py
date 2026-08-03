@@ -88,4 +88,61 @@ class TestCleanupAgentResourcesPassesMessages:
 
         agent.shutdown_memory_provider.assert_called_once_with([])
 
+    def test_missing_attribute_falls_back_to_no_arg(self):
+        """Test stubs built via ``object.__new__(AIAgent)`` skip
+        ``__init__`` and therefore have no ``_session_messages``
+        attribute. The fix must not explode — it falls back to the
+        legacy no-arg call so existing suites keep passing."""
+        runner = _make_runner()
+        agent = _FakeAgent(session_messages=None)  # attribute not set
 
+        runner._cleanup_agent_resources(agent)
+
+        agent.shutdown_memory_provider.assert_called_once_with()
+
+    def test_non_list_attribute_falls_back_to_no_arg(self):
+        """A MagicMock-based agent auto-synthesises ``_session_messages``
+        as a nested MagicMock. ``isinstance(mock, list)`` is False, so
+        we fall back to the no-arg path rather than passing a garbage
+        value to providers that expect ``List[Dict]``."""
+        runner = _make_runner()
+        agent = MagicMock()
+        # No explicit _session_messages assignment — MagicMock will
+        # synthesise one on access.
+
+        runner._cleanup_agent_resources(agent)
+
+        agent.shutdown_memory_provider.assert_called_once_with()
+
+    def test_provider_exception_is_swallowed(self):
+        """Provider teardown must be best-effort — a raising
+        ``shutdown_memory_provider`` must not prevent ``close()`` from
+        running (tool resource leak is worse than a missed memory
+        flush)."""
+        runner = _make_runner()
+        agent = _FakeAgent(session_messages=[{"role": "user", "content": "x"}])
+        agent.shutdown_memory_provider.side_effect = RuntimeError("boom")
+
+        # Must not raise.
+        runner._cleanup_agent_resources(agent)
+
+        # close() still invoked after the swallowed exception.
+        agent.close.assert_called_once()
+
+    def test_none_agent_is_noop(self):
+        """Defensive: None agent short-circuits (idle sweeps may
+        observe a None entry in the cache during eviction races)."""
+        runner = _make_runner()
+        # Must not raise.
+        runner._cleanup_agent_resources(None)
+
+    def test_agent_without_shutdown_method_is_tolerated(self):
+        """An agent without ``shutdown_memory_provider`` (old test
+        stub, partial mock) must still have ``close()`` called."""
+        runner = _make_runner()
+        agent = _FakeAgent(has_shutdown=False)
+        # No _session_messages either, to exercise the hasattr guard.
+
+        runner._cleanup_agent_resources(agent)
+
+        agent.close.assert_called_once()

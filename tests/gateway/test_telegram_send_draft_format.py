@@ -47,6 +47,24 @@ def _make_adapter() -> TelegramAdapter:
 
 
 @pytest.mark.asyncio
+async def test_send_draft_passes_markdownv2_parse_mode():
+    """Happy path: draft is sent with parse_mode set and format_message'd text."""
+    adapter = _make_adapter()
+    # Make format_message observable and deterministic.
+    adapter.format_message = lambda c: f"FMT::{c}"
+
+    result = await adapter.send_draft("123", 7, "**bold** body")
+
+    assert result.success is True
+    adapter._bot.send_message_draft.assert_awaited_once()
+    kwargs = adapter._bot.send_message_draft.await_args.kwargs
+    assert kwargs["text"] == "FMT::**bold** body"
+    assert kwargs["parse_mode"] is tg_mod.ParseMode.MARKDOWN_V2
+    assert kwargs["chat_id"] == 123
+    assert kwargs["draft_id"] == 7
+
+
+@pytest.mark.asyncio
 async def test_send_draft_falls_back_to_plain_text_on_markdownv2_error():
     """A MarkdownV2 BadRequest retries once as plain text (no parse_mode),
     instead of aborting draft streaming for the whole response."""
@@ -75,3 +93,22 @@ async def test_send_draft_falls_back_to_plain_text_on_markdownv2_error():
     assert calls[1]["text"] == "weird _text"  # raw, unformatted
 
 
+@pytest.mark.asyncio
+async def test_send_draft_non_badrequest_propagates_without_retry():
+    """A non-BadRequest failure (e.g. drafts not allowed) returns failure
+    immediately so the caller falls back to the edit transport."""
+    adapter = _make_adapter()
+    adapter.format_message = lambda c: f"FMT::{c}"
+
+    calls = []
+
+    async def _draft(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("drafts disabled for this chat")
+
+    adapter._bot.send_message_draft = AsyncMock(side_effect=_draft)
+
+    result = await adapter.send_draft("123", 11, "hi")
+
+    assert result.success is False
+    assert len(calls) == 1  # no plain-text retry on non-BadRequest

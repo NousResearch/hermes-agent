@@ -35,6 +35,28 @@ def _agent(provider, base_url, pool_provider):
 
 
 class TestCustomPoolMismatchGuard:
+    def test_matching_custom_pool_reaches_recovery(self):
+        """agent=custom + pool=custom:<name> whose base_url matches must NOT
+        be treated as a cross-provider mismatch."""
+        agent, pool = _agent("custom", FIREWORKS_URL, "custom:fireworks")
+        # Rate-limit path deterministically calls pool.current() once past
+        # the guard (the auth path consults agent._is_entitlement_failure,
+        # which a MagicMock would answer truthily).
+        pool.current.return_value = None
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value="custom:fireworks",
+        ):
+            recover_with_credential_pool(
+                agent,
+                status_code=429,
+                has_retried_429=False,
+                classified_reason=FailoverReason.rate_limit,
+            )
+        assert pool.current.called, (
+            "guard short-circuited: pool never touched despite matching "
+            "custom base_url"
+        )
 
     def test_unrelated_custom_pool_still_guarded(self):
         """agent=custom pointed at a DIFFERENT endpoint than the pool's
@@ -69,3 +91,13 @@ class TestCustomPoolMismatchGuard:
         assert recovered is False
         assert not pool.method_calls
 
+    def test_plain_provider_mismatch_still_guarded(self):
+        agent, pool = _agent("openrouter", "https://openrouter.ai/api/v1", "anthropic")
+        recovered, _ = recover_with_credential_pool(
+            agent,
+            status_code=429,
+            has_retried_429=False,
+            classified_reason=FailoverReason.rate_limit,
+        )
+        assert recovered is False
+        assert not pool.method_calls

@@ -5,7 +5,6 @@ import { sessionCommands } from './commands/session.js'
 import { setupCommands } from './commands/setup.js'
 import { subscriptionCommands } from './commands/subscription.js'
 import { topupCommands } from './commands/topup.js'
-import { wakeCommands } from './commands/wake.js'
 import type { SlashCommand } from './types.js'
 
 export const SLASH_COMMANDS: SlashCommand[] = [
@@ -14,7 +13,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   ...sessionCommands,
   ...subscriptionCommands,
   ...opsCommands,
-  ...wakeCommands,
   ...setupCommands,
   ...debugCommands
 ]

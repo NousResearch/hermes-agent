@@ -38,12 +38,22 @@ def _extract_pending_text(interrupted, pending_event, interrupt_message):
 class TestPendingEventNoneChannelPrompt:
     """Guard against AttributeError when pending_event is None."""
 
+    def test_none_pending_event_returns_none_channel_prompt(self):
+        """Path B: pending_event is None — must not raise AttributeError."""
+        result = _extract_channel_prompt(None)
+        assert result is None
 
     def test_pending_event_with_channel_prompt_passes_through(self):
         """Path A: pending_event present — channel_prompt is forwarded."""
         event = SimpleNamespace(channel_prompt="You are a helpful bot.")
         result = _extract_channel_prompt(event)
         assert result == "You are a helpful bot."
+
+    def test_pending_event_without_channel_prompt_returns_none(self):
+        """Path A: pending_event present but has no channel_prompt attribute."""
+        event = SimpleNamespace()
+        result = _extract_channel_prompt(event)
+        assert result is None
 
 
 class TestControlInterruptMessages:
@@ -53,4 +63,10 @@ class TestControlInterruptMessages:
         result = _extract_pending_text(True, None, "Stop requested")
         assert result is None
 
+    def test_session_reset_requested_is_not_treated_as_pending_user_message(self):
+        result = _extract_pending_text(True, None, "Session reset requested")
+        assert result is None
 
+    def test_real_user_interrupt_message_still_requeues(self):
+        result = _extract_pending_text(True, None, "actually use postgres instead")
+        assert result == "actually use postgres instead"

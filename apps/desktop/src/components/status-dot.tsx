@@ -1,5 +1,4 @@
 import type { ComponentProps } from 'react'
-import { memo } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -16,7 +15,7 @@ interface StatusDotProps extends ComponentProps<'span'> {
   tone: StatusTone
 }
 
-export const StatusDot = memo(function StatusDot({ className, tone, ...props }: StatusDotProps) {
+export function StatusDot({ className, tone, ...props }: StatusDotProps) {
   return (
     <span
       aria-hidden="true"
@@ -24,4 +23,4 @@ export const StatusDot = memo(function StatusDot({ className, tone, ...props }: 
       {...props}
     />
   )
-})
+}

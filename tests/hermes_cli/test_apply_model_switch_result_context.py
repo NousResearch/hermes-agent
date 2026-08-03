@@ -88,6 +88,38 @@ def test_picker_path_uses_provider_aware_context_on_codex(monkeypatch):
     )
 
 
+def test_picker_path_shows_vendor_value_when_no_provider_cap(monkeypatch):
+    """On providers with no enforced cap (e.g. OpenRouter), the picker path
+    should surface the real 1.05M context for gpt-5.5 — resolver and models.dev
+    agree here.
+    """
+    result = ModelSwitchResult(
+        success=True,
+        new_model="openai/gpt-5.5",
+        target_provider="openrouter",
+        provider_changed=True,
+        api_key="",
+        base_url="https://openrouter.ai/api/v1",
+        api_mode="chat_completions",
+        warning_message="",
+        provider_label="OpenRouter",
+        resolved_via_alias=False,
+        capabilities=None,
+        model_info=_FakeModelInfo(),
+        is_global=False,
+    )
+    with patch(
+        "agent.model_metadata.get_model_context_length",
+        return_value=1_050_000,
+    ):
+        lines = _run_display(monkeypatch, result)
+
+    ctx_line = next((l for l in lines if "Context:" in l), "")
+    assert "1,050,000" in ctx_line, (
+        f"OpenRouter gpt-5.5 should show 1.05M context, got: {ctx_line!r}"
+    )
+
+
 def test_picker_path_falls_back_to_model_info_when_resolver_empty(monkeypatch):
     """If ``get_model_context_length`` returns nothing (rare — truly unknown
     endpoint), the display still surfaces ``ModelInfo.context_window`` so the

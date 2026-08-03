@@ -38,6 +38,13 @@ def test_session_has_required_fields():
     assert s.expires_at == 1234567890
 
 
+def test_login_start_has_redirect_and_state():
+    ls = LoginStart(
+        redirect_url="https://portal/authorize?...",
+        cookie_payload={"hermes_session_pkce": "verifier=abc;state=xyz"},
+    )
+    assert ls.redirect_url.startswith("https://")
+    assert "hermes_session_pkce" in ls.cookie_payload
 
 
 # ---------------------------------------------------------------------------
@@ -45,12 +52,20 @@ def test_session_has_required_fields():
 # ---------------------------------------------------------------------------
 
 
+def test_abstract_provider_cannot_be_instantiated():
+    with pytest.raises(TypeError):
+        DashboardAuthProvider()  # type: ignore[abstract]
 
 
 class _BrokenProvider(DashboardAuthProvider):
     name = "broken"
     display_name = "Broken"
     # Deliberately missing all the methods.
+
+
+def test_assert_protocol_compliance_rejects_partial_impl():
+    with pytest.raises(TypeError):
+        assert_protocol_compliance(_BrokenProvider)
 
 
 class _CompliantProvider(DashboardAuthProvider):
@@ -81,8 +96,25 @@ class _CompliantProvider(DashboardAuthProvider):
         return None
 
 
+def test_assert_protocol_compliance_accepts_full_impl():
+    # Returns None on success; the helper raises on failure.
+    assert assert_protocol_compliance(_CompliantProvider) is None
 
 
+def test_assert_protocol_compliance_rejects_missing_name_attr():
+    class NoName(_CompliantProvider):
+        name = ""  # empty is treated as missing
+
+    with pytest.raises(TypeError, match="name"):
+        assert_protocol_compliance(NoName)
+
+
+def test_assert_protocol_compliance_rejects_missing_display_name():
+    class NoDisplay(_CompliantProvider):
+        display_name = ""
+
+    with pytest.raises(TypeError, match="display_name"):
+        assert_protocol_compliance(NoDisplay)
 
 
 # ---------------------------------------------------------------------------
@@ -106,8 +138,14 @@ def _isolated_registry():
     clear_providers()
 
 
+def test_registry_register_and_get():
+    p = _CompliantProvider()
+    register_provider(p)
+    assert get_provider("ok") is p
 
 
+def test_registry_get_missing_returns_none():
+    assert get_provider("nope") is None
 
 
 def test_registry_lists_in_registration_order():
@@ -125,3 +163,20 @@ def test_registry_lists_in_registration_order():
     assert names == ["a", "b"]
 
 
+def test_registry_rejects_non_compliant_provider():
+    with pytest.raises(TypeError):
+        register_provider(_BrokenProvider())  # type: ignore[abstract]
+
+
+def test_registry_rejects_duplicate_name():
+    register_provider(_CompliantProvider())
+    with pytest.raises(ValueError, match="already registered"):
+        register_provider(_CompliantProvider())
+
+
+def test_registry_clear_drops_all():
+    register_provider(_CompliantProvider())
+    assert get_provider("ok") is not None
+    clear_providers()
+    assert get_provider("ok") is None
+    assert list_providers() == []

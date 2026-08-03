@@ -44,6 +44,23 @@ class TestPortalEnvOverrideHelper:
         monkeypatch.delenv("NOUS_PORTAL_BASE_URL", raising=False)
         assert _nous_portal_env_override() is None
 
+    def test_hermes_portal_base_url_wins(self, monkeypatch):
+        monkeypatch.setenv(
+            "HERMES_PORTAL_BASE_URL", "https://portal.staging-nousresearch.com/"
+        )
+        monkeypatch.delenv("NOUS_PORTAL_BASE_URL", raising=False)
+        assert (
+            _nous_portal_env_override() == "https://portal.staging-nousresearch.com"
+        )
+
+    def test_nous_portal_base_url_used_as_fallback(self, monkeypatch):
+        monkeypatch.delenv("HERMES_PORTAL_BASE_URL", raising=False)
+        monkeypatch.setenv(
+            "NOUS_PORTAL_BASE_URL", "https://portal.staging-nousresearch.com"
+        )
+        assert (
+            _nous_portal_env_override() == "https://portal.staging-nousresearch.com"
+        )
 
     def test_env_override_not_gated_by_allowlist(self, monkeypatch):
         """The whole point: an env-set staging host is NOT in
@@ -87,11 +104,6 @@ class TestResolveAccessTokenEnvOverrideWins:
     def _run_and_capture(self, monkeypatch, auth):
         seen_portal_urls = []
 
-        # The resolve memo is module-level state; clear it so each test's
-        # resolution actually exercises the refresh path instead of serving
-        # a token cached by a previous test.
-        monkeypatch.setattr(auth, "_RESOLVE_TOKEN_CACHE", None)
-
         def _fake_refresh(*, client, portal_base_url, client_id, refresh_token):
             seen_portal_urls.append(portal_base_url)
             return {
@@ -134,7 +146,39 @@ class TestResolveAccessTokenEnvOverrideWins:
             "ignoring invalid portal_base_url" in msg for msg in records
         ), "env override must bypass the allowlist gate entirely"
 
+    def test_env_override_wins_over_prod_state(self, monkeypatch, tmp_path):
+        """Even when the STORED state is the prod host (e.g. a stale/healed
+        value from before the env var was set), the env override must still
+        win for the actual refresh call."""
+        import hermes_cli.auth as auth
 
+        staging_portal = "https://portal.staging-nousresearch.com"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PORTAL_BASE_URL", staging_portal)
+        self._write_auth_file(tmp_path, stored_portal_url=DEFAULT_NOUS_PORTAL_URL)
+
+        seen_portal_urls, _records = self._run_and_capture(monkeypatch, auth)
+
+        assert seen_portal_urls == [staging_portal]
+
+    def test_no_env_override_stored_staging_host_heals_to_prod(
+        self, monkeypatch, tmp_path
+    ):
+        """Without the env override set, a stored staging host is untrusted
+        network provenance and correctly heals to prod (this is the
+        allowlist's actual job — preserved, not regressed, by this fix)."""
+        import hermes_cli.auth as auth
+
+        staging_portal = "https://portal.staging-nousresearch.com"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_PORTAL_BASE_URL", raising=False)
+        monkeypatch.delenv("NOUS_PORTAL_BASE_URL", raising=False)
+        self._write_auth_file(tmp_path, stored_portal_url=staging_portal)
+
+        seen_portal_urls, records = self._run_and_capture(monkeypatch, auth)
+
+        assert seen_portal_urls == [DEFAULT_NOUS_PORTAL_URL]
+        assert any("ignoring invalid portal_base_url" in msg for msg in records)
 
     def test_no_env_no_staging_state_prod_url_used_unmodified(
         self, monkeypatch, tmp_path

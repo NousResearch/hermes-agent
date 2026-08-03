@@ -25,8 +25,18 @@ def _history(n_pairs: int) -> list[dict[str, str]]:
 # ── parse_partial_compress_args ──────────────────────────────────────
 
 
+def test_empty_args_is_full_compress():
+    partial, keep, focus = parse_partial_compress_args("")
+    assert partial is False
+    assert keep == DEFAULT_KEEP_LAST
+    assert focus is None
 
 
+def test_here_defaults_keep_last():
+    partial, keep, focus = parse_partial_compress_args("here")
+    assert partial is True
+    assert keep == DEFAULT_KEEP_LAST
+    assert focus is None
 
 
 def test_here_with_count():
@@ -36,6 +46,11 @@ def test_here_with_count():
     assert focus is None
 
 
+def test_up_to_here_alias():
+    partial, keep, focus = parse_partial_compress_args("up to here 3")
+    assert partial is True
+    assert keep == 3
+    assert focus is None
 
 
 def test_keep_flag_forms():
@@ -46,6 +61,10 @@ def test_keep_flag_forms():
         assert focus is None, arg
 
 
+def test_focus_topic_when_not_boundary_form():
+    partial, keep, focus = parse_partial_compress_args("database schema")
+    assert partial is False
+    assert focus == "database schema"
 
 
 def test_here_count_clamped_low_and_high():
@@ -55,13 +74,31 @@ def test_here_count_clamped_low_and_high():
     assert keep_high == MAX_KEEP_LAST
 
 
+def test_here_garbage_count_falls_back_to_default():
+    partial, keep, focus = parse_partial_compress_args("here lots")
+    assert partial is True
+    assert keep == DEFAULT_KEEP_LAST
 
 
 # ── split_history_for_partial_compress ───────────────────────────────
 
 
+def test_split_keeps_last_n_exchanges():
+    h = _history(5)  # 10 messages: u0 a0 u1 a1 u2 a2 u3 a3 u4 a4
+    head, tail = split_history_for_partial_compress(h, keep_last=2)
+    # Keep last 2 user-starts → tail begins at u3 (index 6).
+    assert tail == h[6:]
+    assert head == h[:6]
+    # Tail must begin on a user turn (role-alternation safety).
+    assert tail[0]["role"] == "user"
 
 
+def test_split_default_keep():
+    h = _history(4)  # 8 messages
+    head, tail = split_history_for_partial_compress(h, keep_last=DEFAULT_KEEP_LAST)
+    assert tail[0]["role"] == "user"
+    assert head + tail == h
+    assert len(head) > 0
 
 
 def test_split_tail_always_starts_on_user():
@@ -82,8 +119,19 @@ def test_split_tail_always_starts_on_user():
     assert head + tail == h
 
 
+def test_split_degenerate_returns_no_tail():
+    # keep_last larger than the number of exchanges → nothing to compress.
+    h = _history(2)  # 4 messages, 2 user turns
+    head, tail = split_history_for_partial_compress(h, keep_last=5)
+    # Boundary lands at the first user turn → head empty → signal full.
+    assert tail == []
+    assert head == h
 
 
+def test_split_empty_history():
+    head, tail = split_history_for_partial_compress([], keep_last=2)
+    assert head == []
+    assert tail == []
 
 
 def test_split_rejoin_preserves_all_messages():
@@ -137,6 +185,9 @@ def test_rejoin_assistant_assistant_seam_merges():
     assert out[-2]["content"] == "head end\n\ntail start"
 
 
+def test_rejoin_empty_tail_returns_head():
+    head = [{"role": "user", "content": "x"}]
+    assert rejoin_compressed_head_and_tail(head, []) == head
 
 
 def test_rejoin_tool_seam_left_alone():

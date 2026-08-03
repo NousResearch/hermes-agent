@@ -403,6 +403,7 @@ def _category_counts(payload: dict[str, Any]) -> list[tuple[str, int]]:
 def category_color_map(payload: dict[str, Any]) -> dict[str, str]:
     """Deterministic, evenly-spread hue per skill category (theme-independent)."""
     clusters = _category_counts(payload)
+    n = max(1, len(clusters))
     # Golden-angle hue spacing so adjacent categories never collide in color.
     return {cat: rgb_to_hex(_hsl_to_rgb((i * 137.508) % 360, 0.55, 0.62)) for i, (cat, _c) in enumerate(clusters)}
 

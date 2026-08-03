@@ -78,6 +78,54 @@ def _make_runner():
 
 
 @pytest.mark.asyncio
+async def test_gate_off_runs_execute_immediately(monkeypatch):
+    """When approvals.destructive_slash_confirm is False, the destructive
+    action runs immediately without prompting."""
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
+    runner._session_key_for_source = lambda src: build_session_key(src)
+
+    sentinel = "✨ Session reset!"
+    execute = AsyncMock(return_value=sentinel)
+
+    result = await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="Discards history.",
+        execute=execute,
+    )
+
+    execute.assert_awaited_once()
+    assert result == sentinel
+
+
+@pytest.mark.asyncio
+async def test_gate_on_text_fallback_returns_prompt_without_executing(monkeypatch):
+    """When the gate is on and the adapter has no button UI, the user gets
+    a text prompt back and the destructive action is NOT yet run."""
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    runner._session_key_for_source = lambda src: build_session_key(src)
+
+    execute = AsyncMock(return_value="should not run yet")
+
+    result = await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="Discards history.",
+        execute=execute,
+    )
+
+    execute.assert_not_awaited()
+    assert isinstance(result, str)
+    assert "Confirm /new" in result
+    assert "Approve Once" in result
+    assert "Cancel" in result
+
+
+@pytest.mark.asyncio
 async def test_gate_on_pending_confirm_registered(monkeypatch):
     """When the gate is on, a pending slash-confirm entry is registered for
     the session — the user's /approve reply will resolve it."""
@@ -102,6 +150,72 @@ async def test_gate_on_pending_confirm_registered(monkeypatch):
     assert pending is not None
     assert pending["command"] == "new"
     _slash_confirm_mod.clear(session_key)
+
+
+@pytest.mark.asyncio
+async def test_resolve_once_runs_execute_and_returns_result():
+    """Resolving the pending confirm with 'once' runs the destructive
+    action and returns its output."""
+    from tools import slash_confirm as _slash_confirm_mod
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda src: session_key
+    _slash_confirm_mod.clear(session_key)
+
+    execute = AsyncMock(return_value="✨ fresh session")
+
+    await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="Discards history.",
+        execute=execute,
+    )
+
+    pending = _slash_confirm_mod.get_pending(session_key)
+    assert pending is not None
+
+    resolved = await _slash_confirm_mod.resolve(
+        session_key, pending["confirm_id"], "once",
+    )
+
+    execute.assert_awaited_once()
+    assert resolved == "✨ fresh session"
+    # Pending should be cleared after resolve.
+    assert _slash_confirm_mod.get_pending(session_key) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_cancel_does_not_run_execute():
+    """Resolving with 'cancel' must NOT run the destructive action."""
+    from tools import slash_confirm as _slash_confirm_mod
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda src: session_key
+    _slash_confirm_mod.clear(session_key)
+
+    execute = AsyncMock(side_effect=AssertionError("execute must NOT run on cancel"))
+
+    await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="Discards history.",
+        execute=execute,
+    )
+
+    pending = _slash_confirm_mod.get_pending(session_key)
+    assert pending is not None
+
+    resolved = await _slash_confirm_mod.resolve(
+        session_key, pending["confirm_id"], "cancel",
+    )
+
+    execute.assert_not_awaited()
+    assert resolved is not None
+    assert "cancelled" in resolved.lower()
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,17 @@ class TestChownRecursiveLongOptionAbbreviation:
         assert dangerous is True
         assert "chown" in desc.lower() or "root" in desc.lower()
 
+    def test_chown_recur_root_detected(self):
+        dangerous, _, _ = detect_dangerous_command("chown --recur root /etc")
+        assert dangerous is True
+
+    def test_chown_recurs_root_detected(self):
+        dangerous, _, _ = detect_dangerous_command("chown --recurs root:root /var")
+        assert dangerous is True, "chown --recurs is a valid abbreviation of --recursive"
+
+    def test_chown_recursi_root_detected(self):
+        dangerous, _, _ = detect_dangerous_command("chown --recursi root /etc")
+        assert dangerous is True
 
     def test_chown_recur_non_root_not_flagged(self):
         """--recur* chown to a non-root user must not be flagged."""
@@ -52,12 +63,28 @@ class TestGitPushForceLongOptionAbbreviation:
         assert dangerous is True
         assert "force" in desc.lower()
 
+    def test_git_push_forc_abbreviation_detected(self):
+        dangerous, _, _ = detect_dangerous_command("git push --forc origin main")
+        assert dangerous is True, "git push --forc is a valid abbreviation of --force"
+
+    def test_git_push_forced_variant_detected(self):
+        dangerous, _, _ = detect_dangerous_command("git push --forced origin main")
+        assert dangerous is True
+
+    def test_git_push_force_with_lease_detected(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "git push --force-with-lease origin main"
+        )
+        assert dangerous is True
 
     def test_git_push_short_f_still_detected(self):
         """Existing -f pattern must not regress."""
         dangerous, _, _ = detect_dangerous_command("git push -f origin main")
         assert dangerous is True
 
+    def test_git_push_no_force_not_flagged(self):
+        dangerous, _, _ = detect_dangerous_command("git push origin main")
+        assert dangerous is False
 
     def test_git_push_set_upstream_not_flagged(self):
         dangerous, _, _ = detect_dangerous_command(

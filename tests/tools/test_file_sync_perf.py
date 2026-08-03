@@ -90,6 +90,29 @@ class TestSSHPerf:
         # SSH round-trip + spawn-per-call, but sync should be ~0ms (rate limited)
         assert med < 2.0, f"ssh echo median {med*1000:.0f}ms exceeds 2000ms"
 
+    def test_sync_overhead_after_interval(self, ssh_env):
+        """Measure sync cost when the rate-limit window has expired.
+
+        Sleep past the 5s interval, then time the next command which
+        triggers a real sync cycle (but with mtime skip, should be fast).
+        """
+        # Warm up
+        ssh_env.execute("echo warmup", timeout=10)
+
+        # Wait for sync interval to expire
+        time.sleep(6)
+
+        # This command will trigger a real sync cycle
+        t0 = time.monotonic()
+        result = ssh_env.execute("echo after-interval", timeout=10)
+        elapsed = time.monotonic() - t0
+
+        print(f"\n  ssh echo after 6s wait (sync triggered): {elapsed*1000:.0f}ms")
+        assert result.get("returncode", result.get("exit_code", -1)) == 0
+
+        # Even with sync triggered, mtime skip should keep it fast
+        # Old rsync approach: ~2-3s. New mtime skip: should be < 1.5s
+        assert elapsed < 1.5, f"sync-triggered command took {elapsed*1000:.0f}ms (expected < 1500ms)"
 
     def test_no_sync_within_interval(self, ssh_env):
         """Rapid sequential commands within 5s window — no sync at all."""

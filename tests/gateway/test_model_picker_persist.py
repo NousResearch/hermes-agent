@@ -202,6 +202,107 @@ async def test_picker_tap_global_flag_persists(tmp_path, monkeypatch, seed_model
 
 
 @pytest.mark.asyncio
+async def test_picker_tap_is_session_scoped_by_default(tmp_path, monkeypatch):
+    """Tapping a model in a bare ``/model`` picker applies an in-memory session
+    override and does NOT touch config.yaml — switches are session-scoped
+    unless the user opts in with ``--global`` (or sets
+    ``model.persist_switch_by_default: true``)."""
+    adapter = _FakePickerAdapter()
+    cfg_path = _setup_isolated_home(
+        tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"}
+    )
+    runner = _make_runner(adapter)
+
+    confirmation = await _drive_picker(runner, _make_event("/model"))
+
+    assert confirmation is not None
+    assert "gpt-5.5" in confirmation
+    # The session override IS applied in-memory (the switch worked).
+    assert runner._session_model_overrides, "session override should be set"
+    assert any(
+        ov.get("model") == "gpt-5.5"
+        for ov in runner._session_model_overrides.values()
+    )
+    # But config.yaml is untouched — session-scoped by default.
+    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert written["model"]["default"] == "old-model"
+    assert written["model"]["provider"] == "openrouter"
+
+
+@pytest.mark.asyncio
+async def test_picker_tap_session_flag_does_not_persist(tmp_path, monkeypatch):
+    """``/model --session`` then a picker tap stays in-memory only — config
+    untouched, but the in-memory session override must still be applied (the
+    switch worked, it just wasn't persisted)."""
+    adapter = _FakePickerAdapter()
+    cfg_path = _setup_isolated_home(
+        tmp_path, monkeypatch, {"default": "old-model", "provider": "openai-codex"}
+    )
+    runner = _make_runner(adapter)
+
+    confirmation = await _drive_picker(runner, _make_event("/model --session"))
+
+    assert confirmation is not None
+    assert "gpt-5.5" in confirmation
+    # The session override IS applied in-memory (proves the path didn't no-op).
+    assert runner._session_model_overrides, "session override should be set"
+    assert any(
+        ov.get("model") == "gpt-5.5"
+        for ov in runner._session_model_overrides.values()
+    )
+    # But config.yaml is untouched — the override is in-memory only.
+    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert written["model"]["default"] == "old-model"
+    assert written["model"]["provider"] == "openai-codex"
+
+
+@pytest.mark.asyncio
+async def test_multiplex_picker_keeps_profile_adapter_and_callback_scope(
+    tmp_path, monkeypatch
+):
+    """A named profile must present and execute its picker under one identity."""
+    from agent.secret_scope import get_secret, set_multiplex_active
+
+    default_adapter = _FakePickerAdapter()
+    named_adapter = _FakePickerAdapter()
+    named_home = tmp_path / "profiles" / "named"
+    named_home.mkdir(parents=True)
+    (named_home / ".env").write_text("PROFILE_MODEL_KEY=named-secret\n", encoding="utf-8")
+    runner = _make_named_runner(monkeypatch, default_adapter, named_adapter, named_home)
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openai-codex"},
+    )
+    resolved = []
+
+    def _profile_switch(**kwargs):
+        resolved.append(get_secret("PROFILE_MODEL_KEY"))
+        return _fake_switch_result()
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _profile_switch)
+    event = _named_event("--session")
+
+    set_multiplex_active(True)
+    try:
+        sent = await runner._handle_model_command(event)
+
+        assert sent is None
+        assert default_adapter.captured_callback is None
+        assert named_adapter.captured_callback is not None
+        assert resolved == []
+
+        confirmation = await named_adapter.captured_callback(
+            "named-chat", "gpt-5.5", "openrouter"
+        )
+    finally:
+        set_multiplex_active(False)
+
+    assert "gpt-5.5" in confirmation
+    assert resolved == ["named-secret"]
+
+
+@pytest.mark.asyncio
 async def test_multiplex_picker_global_persists_only_named_profile(
     tmp_path, monkeypatch
 ):

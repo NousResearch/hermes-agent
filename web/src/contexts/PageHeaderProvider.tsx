@@ -1,5 +1,5 @@
 import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
-import { useLocation } from "react-router";
+import { useLocation } from "react-router-dom";
 import { PageHeaderContext } from "./page-header-context";
 import { resolvePageTitle } from "@/lib/resolve-page-title";
 import { cn } from "@/lib/utils";

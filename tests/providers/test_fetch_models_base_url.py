@@ -58,8 +58,42 @@ class TestFetchModelsBaseUrlOverride:
         finally:
             server.shutdown()
 
+    def test_fallback_to_self_base_url(self):
+        """When base_url is None, falls back to self.base_url."""
+        server, port = _start_server([{"id": "default-model"}])
+        try:
+            profile = ProviderProfile(
+                name="test",
+                base_url=f"http://127.0.0.1:{port}",
+            )
+            result = profile.fetch_models(api_key="test-key")
+            assert result == ["default-model"]
+        finally:
+            server.shutdown()
 
+    def test_no_base_url_returns_none(self):
+        """When both base_url and self.base_url are empty, returns None."""
+        profile = ProviderProfile(name="test", base_url="")
+        result = profile.fetch_models(api_key="test-key", base_url="")
+        assert result is None
 
+    def test_base_url_override_with_models_url_set(self):
+        """When self.models_url is set, base_url override is ignored (models_url wins)."""
+        server, port = _start_server([{"id": "from-models-url"}])
+        try:
+            profile = ProviderProfile(
+                name="test",
+                base_url="http://127.0.0.1:1",
+                models_url=f"http://127.0.0.1:{port}/models",
+            )
+            # base_url override should NOT be used because models_url takes priority
+            result = profile.fetch_models(
+                api_key="test-key",
+                base_url="http://127.0.0.1:1",
+            )
+            assert result == ["from-models-url"]
+        finally:
+            server.shutdown()
 
 
 class TestCustomProviderBaseUrlPassthrough:
@@ -140,6 +174,14 @@ class TestFetchModelsRedirectCredentialStripping:
         assert "authorization" not in headers
         assert "x-api-key" not in headers
 
+    def test_same_host_different_port_redirect_strips_credentials(self):
+        """A different port is a different origin — it can be a different service."""
+        result, headers = self._run(
+            lambda _, second_port: f"http://127.0.0.1:{second_port}/redirected"
+        )
+        assert result == ["redirected-model"]
+        assert "authorization" not in headers
+        assert "x-api-key" not in headers
 
     def test_same_origin_redirect_keeps_credentials(self):
         result, headers = self._run(

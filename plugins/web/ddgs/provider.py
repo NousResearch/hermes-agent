@@ -193,8 +193,6 @@ def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]
         stderr=subprocess.DEVNULL,
         env=env,
         text=True,
-        encoding="utf-8",
-        errors="replace",
         **extra_kwargs,
     )
     _last_worker_proc = proc

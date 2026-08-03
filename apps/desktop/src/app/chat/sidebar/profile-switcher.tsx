@@ -20,7 +20,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate } from 'react-router-dom'
 
 import { CodeEditor } from '@/components/chat/code-editor'
 import { Button } from '@/components/ui/button'
@@ -213,7 +213,6 @@ export function ProfileRail() {
   const createRequest = useStore($profileCreateRequest)
   const lastCreateRef = useRef(createRequest)
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (createRequest === lastCreateRef.current) {
       return
@@ -672,7 +671,7 @@ function ProfileSquare({
         {/* The rail sits at the very bottom, so pad off the chrome (esp. the
             statusbar) — Radix then flips the menu up instead of squishing it. */}
         <ContextMenuContent
-          aria-label={p.actions}
+          aria-label={p.actionsFor(label)}
           className="w-40"
           collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
           // Menu close refocuses the trigger — which doubles as the popover
@@ -704,7 +703,7 @@ function ProfileSquare({
       </ContextMenu>
 
       <PopoverContent
-        aria-label={p.colorFor}
+        aria-label={p.colorFor(label)}
         className="w-auto p-2"
         collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
         side="top"

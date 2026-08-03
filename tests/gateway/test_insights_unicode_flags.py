@@ -40,4 +40,15 @@ class TestInsightsUnicodeDashFlags:
         result = _normalize_insights_args(input_str)
         assert result == expected
 
+    def test_regular_hyphens_unaffected(self):
+        """Normal --days/--source must pass through unchanged."""
+        assert _normalize_insights_args("--days 7 --source discord") == "--days 7 --source discord"
 
+    def test_bare_number_still_works(self):
+        """Shorthand /insights 7 (no flag) must not be mangled."""
+        assert _normalize_insights_args("7") == "7"
+
+    def test_no_flags_unchanged(self):
+        """Input with no flags passes through as-is."""
+        assert _normalize_insights_args("") == ""
+        assert _normalize_insights_args("30") == "30"

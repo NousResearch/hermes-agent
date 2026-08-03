@@ -84,6 +84,19 @@ class TestCompressNoOpRegistersIneffective:
             f"Expected ineffective_compression_count >= 1, got {comp._ineffective_compression_count}"
         )
 
+    def test_no_op_sets_savings_to_zero(self):
+        """compress_start >= compress_end -> _last_compression_savings_pct = 0"""
+        comp = _make_compressor(
+            summary_target_ratio=0.45,
+            config_context_length=96000,
+        )
+        messages = _build_session(10, words_per_turn=10)
+        comp.last_prompt_tokens = 73_000
+        comp._find_tail_cut_by_tokens = lambda msgs, he: he  # force no-op
+
+        comp.compress(messages, current_tokens=73_000)
+
+        assert comp._last_compression_savings_pct == 0.0
 
     def test_two_no_ops_block_should_compress(self):
         """After 2 no-op compressions, should_compress returns False."""
@@ -103,6 +116,23 @@ class TestCompressNoOpRegistersIneffective:
             "should_compress should return False after 2+ ineffective compressions"
         )
 
+    def test_no_op_returns_unchanged_messages(self):
+        """compress_start >= compress_end -> messages returned unchanged"""
+        comp = _make_compressor(
+            summary_target_ratio=0.45,
+            config_context_length=96000,
+        )
+        messages = _build_session(10, words_per_turn=10)
+        comp.last_prompt_tokens = 73_000
+        original_cut = comp._find_tail_cut_by_tokens
+        comp._find_tail_cut_by_tokens = lambda msgs, he: he  # force no-op
+
+        result = comp.compress(messages, current_tokens=73_000)
+
+        assert len(result) == len(messages), (
+            f"Expected unchanged message count {len(messages)}, got {len(result)}"
+        )
+        comp._find_tail_cut_by_tokens = original_cut
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +163,43 @@ class TestTailCutRawBudgetFallback:
             f"(cut={cut}, head_end={head_end}, n={n})"
         )
 
+    def test_default_ratio_still_works(self):
+        """Default ratio (0.20) should not be affected by the fix."""
+        comp = _make_compressor(
+            summary_target_ratio=0.20,
+            config_context_length=96000,
+        )
+        messages = _build_session(20, words_per_turn=50)
+        head_end = comp._protect_head_size(messages)
+        head_end = comp._align_boundary_forward(messages, head_end)
 
+        cut = comp._find_tail_cut_by_tokens(messages, head_end)
+
+        n = len(messages)
+        assert head_end < cut < n, (
+            f"Expected head_end ({head_end}) < cut ({cut}) < n ({n})"
+        )
+
+    def test_proactive_fix_prevents_no_op_window(self):
+        """The raw-budget fallback in _find_tail_cut_by_tokens should prevent
+        compress_start >= compress_end for the exact issue scenario:
+        context_length=96000, summary_target_ratio=0.45."""
+        comp = _make_compressor(
+            summary_target_ratio=0.45,
+            config_context_length=96000,
+        )
+        # Simulate the issue scenario: 16 messages, all fitting in soft_ceiling
+        messages = _build_session(8, words_per_turn=30)  # 17 messages
+        head_end = comp._protect_head_size(messages)
+        head_end = comp._align_boundary_forward(messages, head_end)
+
+        cut = comp._find_tail_cut_by_tokens(messages, head_end)
+
+        # With the fix, cut should be well past head_end
+        assert cut > head_end + 1, (
+            f"Expected cut ({cut}) > head_end ({head_end}) + 1, "
+            f"meaning the compressable window is non-trivial"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +241,18 @@ class TestAntiThrashing:
         comp._ineffective_compression_count = 2
         assert not comp.should_compress(73_000)
 
+    def test_ineffective_count_1_allows(self):
+        """_ineffective_compression_count = 1 -> should_compress still True."""
+        comp = _make_compressor(config_context_length=96000)
+        comp.last_prompt_tokens = 73_000
+        comp._ineffective_compression_count = 1
+        assert comp.should_compress(73_000)
 
+    def test_below_threshold_allows(self):
+        """Tokens below threshold -> should_compress returns False regardless."""
+        comp = _make_compressor(config_context_length=96000)
+        comp.last_prompt_tokens = 10_000
+        assert not comp.should_compress(10_000)
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +273,19 @@ class TestCooldownGuard:
         comp._summary_failure_cooldown_until = time.monotonic() + 60
         assert not comp.should_compress(73_000)
 
+    def test_expired_cooldown_allows(self):
+        """A past cooldown deadline -> compression resumes normally."""
+        comp = _make_compressor(config_context_length=96000)
+        comp.last_prompt_tokens = 73_000
+        comp._summary_failure_cooldown_until = time.monotonic() - 1
+        assert comp.should_compress(73_000)
 
+    def test_no_cooldown_allows(self):
+        """The default (no cooldown set) does not block compression."""
+        comp = _make_compressor(config_context_length=96000)
+        comp.last_prompt_tokens = 73_000
+        assert comp._summary_failure_cooldown_until == 0.0
+        assert comp.should_compress(73_000)
 
 
 # ---------------------------------------------------------------------------

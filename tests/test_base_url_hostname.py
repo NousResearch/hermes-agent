@@ -24,14 +24,23 @@ def test_plain_host_without_scheme():
     assert base_url_hostname("api.openai.com/v1") == "api.openai.com"
 
 
+def test_https_url_extracts_hostname_only():
+    assert base_url_hostname("https://api.openai.com/v1") == "api.openai.com"
+    assert base_url_hostname("https://api.x.ai/v1") == "api.x.ai"
+    assert base_url_hostname("https://api.anthropic.com") == "api.anthropic.com"
 
 
+def test_hostname_case_insensitive():
+    assert base_url_hostname("https://API.OpenAI.com/v1") == "api.openai.com"
 
 
 def test_trailing_dot_stripped():
     assert base_url_hostname("https://api.openai.com./v1") == "api.openai.com"
 
 
+def test_path_containing_provider_host_is_not_the_hostname():
+    assert base_url_hostname("https://proxy.example.test/api.openai.com/v1") == "proxy.example.test"
+    assert base_url_hostname("https://proxy.example.test/api.anthropic.com/v1") == "proxy.example.test"
 
 
 def test_host_suffix_is_not_the_provider():
@@ -43,6 +52,8 @@ def test_port_is_ignored():
     assert base_url_hostname("https://api.openai.com:443/v1") == "api.openai.com"
 
 
+def test_whitespace_stripped():
+    assert base_url_hostname("  https://api.openai.com/v1  ") == "api.openai.com"
 
 
 # ─── base_url_host_matches ────────────────────────────────────────────────
@@ -86,8 +97,15 @@ class TestBaseUrlHostMatchesEdgeCases:
         assert base_url_host_matches("", "openrouter.ai") is False
         assert base_url_host_matches(None, "openrouter.ai") is False  # type: ignore[arg-type]
 
+    def test_empty_domain_returns_false(self):
+        assert base_url_host_matches("https://openrouter.ai/v1", "") is False
 
+    def test_case_insensitive(self):
+        assert base_url_host_matches("https://OpenRouter.AI/v1", "openrouter.ai") is True
+        assert base_url_host_matches("https://openrouter.ai/v1", "OPENROUTER.AI") is True
 
+    def test_trailing_dot_on_domain_stripped(self):
+        assert base_url_host_matches("https://openrouter.ai/v1", "openrouter.ai.") is True
 
 
 class TestOllamaUrlHostCheck:
@@ -110,11 +128,33 @@ class TestOllamaUrlHostCheck:
             "http://ollama.com.attacker.test:9000/v1", "ollama.com"
         ) is False
 
+    def test_ollama_com_localtest_me_rejected(self):
+        """ollama.com.localtest.me resolves to 127.0.0.1 via localtest.me
+        but its true hostname is localtest.me, not ollama.com."""
+        assert base_url_host_matches(
+            "http://ollama.com.localtest.me:9000/v1", "ollama.com"
+        ) is False
 
+    def test_ollama_ai_is_not_ollama_com(self):
+        """Different TLD. ollama.ai is not ollama.com."""
+        assert base_url_host_matches(
+            "https://ollama.ai/v1", "ollama.com"
+        ) is False
 
+    def test_localhost_ollama_port_is_not_ollama_com(self):
+        """http://localhost:11434/v1 is a local Ollama install, but its
+        hostname is localhost, so OLLAMA_API_KEY (an ollama.com-only secret)
+        must not be sent."""
+        assert base_url_host_matches(
+            "http://localhost:11434/v1", "ollama.com"
+        ) is False
 
     def test_genuine_ollama_com_matches(self):
         assert base_url_host_matches(
             "https://ollama.com/api/generate", "ollama.com"
         ) is True
 
+    def test_ollama_com_subdomain_matches(self):
+        assert base_url_host_matches(
+            "https://api.ollama.com/v1", "ollama.com"
+        ) is True

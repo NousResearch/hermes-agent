@@ -4,11 +4,7 @@ import { getStatus } from '@/hermes'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import type { StatusResponse } from '@/types/hermes'
 
-// Statusbar health is ambient chrome, not live data — nothing the user acts on
-// within seconds. 60s + a hidden-tab skip keeps it honest at a quarter of the
-// old traffic; the visibility listener refreshes immediately on return so a
-// backgrounded window never shows stale health after re-focus.
-const REFRESH_MS = 60_000
+const REFRESH_MS = 15_000
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
@@ -34,14 +30,6 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
     }
 
     const refresh = async () => {
-      // Hidden window: skip the round-trips, keep the timer alive; the
-      // visibilitychange listener repaints immediately on return.
-      if (document.visibilityState !== 'visible') {
-        scheduleRefresh()
-
-        return
-      }
-
       try {
         // Wait for both legs before scheduling the next refresh. setInterval
         // allowed a slow runtime check to overlap with later polls, which
@@ -79,22 +67,10 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
       }
     }
 
-    const onVisible = () => {
-      if (document.visibilityState === 'visible' && !cancelled) {
-        if (timer !== undefined) {
-          window.clearTimeout(timer)
-        }
-
-        void refresh()
-      }
-    }
-
-    document.addEventListener('visibilitychange', onVisible)
     void refresh()
 
     return () => {
       cancelled = true
-      document.removeEventListener('visibilitychange', onVisible)
 
       if (timer !== undefined) {
         window.clearTimeout(timer)

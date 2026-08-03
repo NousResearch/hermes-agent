@@ -96,6 +96,21 @@ class TestPatternsData:
         names = [r["ruleName"] for r in p.SECURITY_PATTERNS]
         assert len(names) == len(set(names))
 
+    def test_rule_id_enum_in_sync(self):
+        # The upstream patterns.py asserts this at import time. If the
+        # set diverges, the import itself raises and this test fails.
+        p = _load_patterns()
+        rule_names = {r["ruleName"] for r in p.SECURITY_PATTERNS}
+        enum_names = set(p._RULE_NAME_TO_ID)
+        assert rule_names == enum_names
+
+    def test_rule_names_to_mask_packs_bits(self):
+        p = _load_patterns()
+        # PICKLE_DESERIALIZATION = 8, EVAL_INJECTION = 4 → bits 8 and 4 set.
+        mask = p.rule_names_to_mask({"pickle_deserialization", "eval_injection"})
+        assert mask & (1 << p.RuleId.PICKLE_DESERIALIZATION)
+        assert mask & (1 << p.RuleId.EVAL_INJECTION)
+
 
 # ---------------------------------------------------------------------------
 # _scan_content
@@ -110,6 +125,12 @@ class TestScanContent:
         names = [n for n, _ in findings]
         assert "pickle_deserialization" in names
 
+    def test_pickle_load_in_md_skipped_by_path_filter(self):
+        mod = _load_plugin_init()
+        findings = mod._scan_content(
+            "/tmp/foo.md", "import pickle\nx = pickle.load(open('p.pkl', 'rb'))\n"
+        )
+        assert findings == []
 
     def test_method_call_eval_does_not_trip(self):
         """model.eval() / redis.eval() / spec.eval() must not match eval_injection."""
@@ -193,6 +214,17 @@ class TestTransformToolResultHook:
             is None
         )
 
+    def test_no_warn_when_result_is_error(self):
+        mod = _load_plugin_init()
+        args = {"path": "/tmp/foo.py", "content": "pickle.load(f)\n"}
+        # When the tool itself errored, we don't pile a security warning on
+        # top — the model has bigger problems to solve.
+        assert (
+            mod._on_transform_tool_result(
+                tool_name="write_file", args=args, result='{"error": "boom"}'
+            )
+            is None
+        )
 
     def test_patch_tool_new_string_scanned(self):
         mod = _load_plugin_init()
@@ -245,6 +277,10 @@ class TestTransformToolResultHook:
 
 
 class TestPreToolCallHook:
+    def test_no_block_in_warn_mode(self):
+        mod = _load_plugin_init()
+        args = {"path": "/tmp/foo.py", "content": "pickle.load(f)\n"}
+        assert mod._on_pre_tool_call(tool_name="write_file", args=args) is None
 
     def test_blocks_in_block_mode_on_dangerous_pattern(self, monkeypatch):
         mod = _load_plugin_init()
@@ -255,6 +291,18 @@ class TestPreToolCallHook:
         assert out["action"] == "block"
         assert "pickle_deserialization" in out["message"]
         assert "SECURITY_GUIDANCE_BLOCK" in out["message"]  # tells user how to disable
+
+    def test_no_block_in_block_mode_on_clean_content(self, monkeypatch):
+        mod = _load_plugin_init()
+        monkeypatch.setenv("SECURITY_GUIDANCE_BLOCK", "1")
+        args = {"path": "/tmp/foo.py", "content": "import json\n"}
+        assert mod._on_pre_tool_call(tool_name="write_file", args=args) is None
+
+    def test_untargeted_tool_skipped(self, monkeypatch):
+        mod = _load_plugin_init()
+        monkeypatch.setenv("SECURITY_GUIDANCE_BLOCK", "1")
+        args = {"command": "echo pickle.load(f)"}
+        assert mod._on_pre_tool_call(tool_name="terminal", args=args) is None
 
 
 # ---------------------------------------------------------------------------

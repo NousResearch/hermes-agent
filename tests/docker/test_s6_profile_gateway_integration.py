@@ -81,6 +81,34 @@ def test_s6_register_creates_service_dir_in_live_container(
     assert "phase3test" in r.stdout, f"list output: {r.stdout!r}"
 
 
+def test_s6_unregister_removes_service_dir_in_live_container(
+    built_image: str, container_name: str,
+) -> None:
+    """unregister_profile_gateway must stop the service, remove the
+    directory, and trigger s6-svscan rescan so the supervise process
+    is dropped."""
+    start_container(built_image, container_name, cmd="sleep 120")
+
+    # First register so we have something to unregister.
+    r = docker_exec(container_name, "python3", "-c", _REGISTER_SCRIPT, timeout=30)
+    assert "REGISTERED" in r.stdout
+
+    # Then unregister.
+    r = docker_exec(container_name, "python3", "-c", _UNREGISTER_SCRIPT, timeout=30)
+    assert "UNREGISTERED" in r.stdout, (
+        f"unregister failed: stderr={r.stderr!r} stdout={r.stdout!r}"
+    )
+
+    # Directory is gone.
+    r = docker_exec(container_name, "test", "-d", "/run/service/gateway-phase3test")
+    assert r.returncode != 0, "service directory still exists after unregister"
+
+    # list_profile_gateways no longer includes it.
+    r = docker_exec(container_name, "python3", "-c", (
+        "from hermes_cli.service_manager import S6ServiceManager;"
+        "print(S6ServiceManager().list_profile_gateways())"
+    ))
+    assert "phase3test" not in r.stdout
 
 
 # Shell probe: build a service-shaped staging dir under the live scandir
@@ -119,3 +147,55 @@ rm -rf "$DIR" 2>/dev/null || true
 """
 
 
+def test_s6_dotfile_staging_dir_is_ignored_by_svscan_rescan(
+    built_image: str, container_name: str,
+) -> None:
+    """Regression for the arm64 register-seed race.
+
+    The register path builds the slot in a sibling staging dir and then
+    atomically renames it to the live ``gateway-<profile>`` name. That
+    staging dir lives INSIDE the scandir s6-svscan watches, so its NAME
+    decides whether a concurrent ``s6-svscanctl -a`` rescan (fired by the
+    cont-init reconciler registering ``gateway-default``, or by another
+    register) supervises the half-built slot.
+
+    - A NON-dotted name (the old ``gateway-<p>.tmp``) IS picked up: once it
+      has a valid ``type``/``run``, s6-svscan spawns ``s6-supervise`` AS
+      ROOT, creating a root-owned ``supervise/`` — which makes the in-flight
+      ``_seed_supervise_skeleton`` EACCES on ``mkdir supervise/event``. That
+      is the arm64-only flake (the native-arm runner's wider scheduling
+      jitter lets the rescan land inside the seed window).
+    - A DOT-prefixed name (the fix, ``.gateway-<p>.tmp``) is SKIPPED by
+      s6-svscan and never supervised, so no root-owned ``supervise/`` can
+      appear under the staging dir.
+
+    This proves the mechanism directly and is arch-independent (it does not
+    rely on hitting the narrow timing window — it forces the rescan and
+    checks pickup), so it guards the fix on the amd64 job too.
+    """
+    start_container(built_image, container_name, cmd="sleep 120")
+
+    # Control: a NON-dotted service-shaped dir IS supervised by the rescan
+    # (root-owned supervise/). This is the pre-fix staging-name behaviour and
+    # confirms the probe actually exercises s6-svscan pickup.
+    r = docker_exec(
+        container_name, "sh", "-c", _SVSCAN_PICKUP_PROBE, "probe",
+        "gateway-raceprobe.tmp", user="root", timeout=30,
+    )
+    assert "SUPERVISED" in r.stdout and "NOT-SUPERVISED" not in r.stdout, (
+        "control failed: a non-dotted staging dir should be picked up by "
+        f"s6-svscan. stdout={r.stdout!r} stderr={r.stderr!r}"
+    )
+
+    # The fix: a DOT-prefixed staging dir (the name register/reconcile now
+    # use) must be IGNORED by the same rescan — no supervisor, no root-owned
+    # supervise/, so the in-flight seed can never EACCES.
+    r = docker_exec(
+        container_name, "sh", "-c", _SVSCAN_PICKUP_PROBE, "probe",
+        ".gateway-raceprobe.tmp", user="root", timeout=30,
+    )
+    assert "NOT-SUPERVISED" in r.stdout, (
+        "dot-prefixed staging dir was supervised by s6-svscan — the race "
+        f"that EACCESes the seed is still reachable. stdout={r.stdout!r} "
+        f"stderr={r.stderr!r}"
+    )

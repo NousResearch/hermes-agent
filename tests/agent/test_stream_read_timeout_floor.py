@@ -71,7 +71,18 @@ class TestCloudReadTimeoutFloor:
         read = _resolve_read_timeout(base_url, stale)
         assert read >= stale
 
+    @pytest.mark.parametrize("base_url", CLOUD_URLS)
+    def test_small_context_floored_to_stale_base(self, base_url):
+        """Reported case: ~120s timeouts on Copilot are raised to the 180s base."""
+        stale = _resolve_stale_timeout(base_url, est_tokens=37_000)
+        read = _resolve_read_timeout(base_url, stale)
+        assert read == 180.0
 
+    @pytest.mark.parametrize("base_url", CLOUD_URLS)
+    def test_large_context_tracks_scaled_stale(self, base_url):
+        """Big contexts scale the stale detector; the read timeout follows."""
+        assert _resolve_read_timeout(base_url, _resolve_stale_timeout(base_url, 60_000)) == 240.0
+        assert _resolve_read_timeout(base_url, _resolve_stale_timeout(base_url, 150_000)) == 300.0
 
     def test_user_override_is_respected(self):
         """An explicit HERMES_STREAM_READ_TIMEOUT is never overridden by the floor."""

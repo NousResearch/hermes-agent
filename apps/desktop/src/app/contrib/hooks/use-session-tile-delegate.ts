@@ -6,7 +6,6 @@ import { publishSessionState, setSessionTileDelegate } from '@/store/session-sta
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
-import { resolveSessionProfile } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
 import type { GatewayRequester } from '../types'
 
@@ -67,20 +66,9 @@ export function useSessionTileDelegate({
           return existing
         }
 
-        // Resolve the owning profile before binding a runtime. A tile can open a
-        // session from any profile, not just the active one; resuming (or
-        // reading messages) without a profile lets the gateway fall back to the
-        // launch-profile DB and fork the conversation into the wrong profile —
-        // the same cross-profile bleed the recovery resumes had (#67603).
-        const profile = await resolveSessionProfile(storedSessionId)
-
         const [prefetch, resumed] = await Promise.all([
-          getSessionMessages(storedSessionId, profile).catch(() => null),
-          requestGateway<SessionResumeResponse>('session.resume', {
-            session_id: storedSessionId,
-            cols: 96,
-            ...(profile ? { profile } : {})
-          })
+          getSessionMessages(storedSessionId).catch(() => null),
+          requestGateway<SessionResumeResponse>('session.resume', { session_id: storedSessionId, cols: 96 })
         ])
 
         const runtimeId = resumed?.session_id

@@ -41,6 +41,15 @@ def test_snapshot_counts_live_background_tasks():
     assert snap["active_background_tasks"] == 2
 
 
+def test_snapshot_safe_when_background_tasks_attr_missing():
+    """Older HermesCLI instances (tests with __new__, etc.) may lack the attr."""
+    cli_obj = HermesCLI.__new__(HermesCLI)
+    cli_obj.model = "x"
+    cli_obj.agent = None
+    cli_obj.session_start = datetime.now()
+    # No _background_tasks at all — must not raise.
+    snap = cli_obj._get_status_bar_snapshot()
+    assert snap["active_background_tasks"] == 0
 
 
 def test_plain_text_status_omits_indicator_when_idle():
@@ -49,12 +58,41 @@ def test_plain_text_status_omits_indicator_when_idle():
     assert "▶" not in text
 
 
+def test_plain_text_status_shows_indicator_when_active():
+    cli_obj = _make_cli()
+    cli_obj._background_tasks = {"bg_a": _stub_thread()}
+    text = cli_obj._build_status_bar_text(width=80)
+    assert "▶ 1" in text
 
 
+def test_plain_text_status_shows_higher_count():
+    cli_obj = _make_cli()
+    cli_obj._background_tasks = {
+        "a": _stub_thread(),
+        "b": _stub_thread(),
+        "c": _stub_thread(),
+    }
+    text = cli_obj._build_status_bar_text(width=80)
+    assert "▶ 3" in text
 
 
+def test_narrow_width_omits_bg_indicator():
+    """The narrow tier (<52) is already cramped — bg is secondary, drop it."""
+    cli_obj = _make_cli()
+    cli_obj._background_tasks = {"bg_a": _stub_thread()}
+    text = cli_obj._build_status_bar_text(width=40)
+    assert "▶" not in text
 
 
+def test_fragments_include_bg_segment_when_active():
+    cli_obj = _make_cli()
+    cli_obj._background_tasks = {"a": _stub_thread(), "b": _stub_thread()}
+    cli_obj._status_bar_visible = True
+    # _get_status_bar_fragments asks _get_tui_terminal_width(); stub it wide.
+    cli_obj._get_tui_terminal_width = lambda: 120  # type: ignore[method-assign]
+    frags = cli_obj._get_status_bar_fragments()
+    rendered = "".join(text for _style, text in frags)
+    assert "▶ 2" in rendered
 
 
 def test_fragments_omit_bg_segment_when_idle():
@@ -88,18 +126,69 @@ def _patch_process_registry(monkeypatch, count: int) -> None:
     monkeypatch.setattr(pr_mod, "process_registry", _FakeRunningRegistry(count))
 
 
+def test_snapshot_reports_zero_when_no_background_processes(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_process_registry(monkeypatch, 0)
+    snap = cli_obj._get_status_bar_snapshot()
+    assert snap["active_background_processes"] == 0
 
 
+def test_snapshot_counts_live_background_processes(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_process_registry(monkeypatch, 3)
+    snap = cli_obj._get_status_bar_snapshot()
+    assert snap["active_background_processes"] == 3
 
 
+def test_snapshot_safe_when_process_registry_raises(monkeypatch):
+    """If count_running() raises the snapshot stays at 0; no propagate."""
+    cli_obj = _make_cli()
+    import tools.process_registry as pr_mod
+
+    class _BoomRegistry:
+        def count_running(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(pr_mod, "process_registry", _BoomRegistry())
+    snap = cli_obj._get_status_bar_snapshot()
+    assert snap["active_background_processes"] == 0
 
 
+def test_plain_text_status_shows_proc_indicator_when_active(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_process_registry(monkeypatch, 2)
+    text = cli_obj._build_status_bar_text(width=80)
+    assert "⚙ 2" in text
 
 
+def test_plain_text_status_omits_proc_indicator_when_idle(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_process_registry(monkeypatch, 0)
+    text = cli_obj._build_status_bar_text(width=80)
+    assert "⚙" not in text
 
 
+def test_fragments_include_proc_segment_when_active(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_process_registry(monkeypatch, 1)
+    cli_obj._status_bar_visible = True
+    cli_obj._get_tui_terminal_width = lambda: 120  # type: ignore[method-assign]
+    frags = cli_obj._get_status_bar_fragments()
+    rendered = "".join(text for _style, text in frags)
+    assert "⚙ 1" in rendered
 
 
+def test_indicators_independent_agents_and_processes(monkeypatch):
+    """▶ (agent tasks) and ⚙ (shell processes) render side-by-side."""
+    cli_obj = _make_cli()
+    cli_obj._background_tasks = {"bg_a": _stub_thread()}
+    _patch_process_registry(monkeypatch, 2)
+    cli_obj._status_bar_visible = True
+    cli_obj._get_tui_terminal_width = lambda: 120  # type: ignore[method-assign]
+    frags = cli_obj._get_status_bar_fragments()
+    rendered = "".join(text for _style, text in frags)
+    assert "▶ 1" in rendered
+    assert "⚙ 2" in rendered
 
 
 # ── Background/async subagent indicator (⛓ N) ─────────────────────────────
@@ -121,6 +210,11 @@ def test_snapshot_reports_zero_when_no_background_subagents(monkeypatch):
     assert snap["active_background_subagents"] == 0
 
 
+def test_snapshot_counts_live_background_subagents(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_async_active(monkeypatch, 4)
+    snap = cli_obj._get_status_bar_snapshot()
+    assert snap["active_background_subagents"] == 4
 
 
 def test_snapshot_safe_when_async_active_count_raises(monkeypatch):

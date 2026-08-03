@@ -35,7 +35,7 @@ from gateway.status import get_process_start_time, _pid_exists
 def _spawn_sleeper(*extra_argv) -> subprocess.Popen:
     """Spawn a real, short-lived process; optional extra argv shapes its cmdline."""
     return subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(0.2)", *extra_argv]
+        [sys.executable, "-c", "import time; time.sleep(30)", *extra_argv]
     )
 
 
@@ -76,6 +76,31 @@ class TestIdentityGuard:
                 proc.kill()
                 proc.wait()
 
+    def test_spares_recycled_pid_start_time_mismatch(self, tmp_path):
+        """Alive PID whose start time changed (recycled) is NOT signalled."""
+        proc = _spawn_sleeper()
+        try:
+            real_start = get_process_start_time(proc.pid)
+            # Pidfile claims a different start time -> simulates a recycled PID.
+            (tmp_path / "bridge.pid").write_text("{}\n{}".format(proc.pid, real_start + 1))
+            _kill_stale_bridge_by_pidfile(tmp_path)
+            assert not _wait_dead(proc, timeout=1.0), "recycled PID must survive"
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_legacy_pidfile_spares_non_bridge_cmdline(self, tmp_path):
+        """Legacy pidfile (pid only): a PID that isn't node+session is spared."""
+        proc = _spawn_sleeper()  # cmdline is just python -c ... — not a bridge
+        try:
+            (tmp_path / "bridge.pid").write_text(str(proc.pid))  # legacy: pid only
+            _kill_stale_bridge_by_pidfile(tmp_path)
+            assert not _wait_dead(proc, timeout=1.0), "stranger must survive"
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()
 
     def test_legacy_pidfile_kills_matching_bridge_cmdline(self, tmp_path):
         """Legacy pidfile: a PID whose cmdline names node + session IS reaped."""
@@ -89,6 +114,13 @@ class TestIdentityGuard:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+    def test_is_ours_false_for_dead_pid(self, tmp_path):
+        assert _bridge_pid_is_ours(999999999, tmp_path, None) is False
+
+    def test_missing_pidfile_is_noop(self, tmp_path):
+        # No file -> must not raise.
+        _kill_stale_bridge_by_pidfile(tmp_path)
 
 
 class TestKillPortProcess:
@@ -110,7 +142,7 @@ class TestKillPortProcess:
         # A separate process holding a *client* connection to that port.
         client = subprocess.Popen([
             sys.executable, "-c",
-            "import socket,time; c=socket.create_connection(('127.0.0.1',%d)); time.sleep(0.2)" % port,
+            "import socket,time; c=socket.create_connection(('127.0.0.1',%d)); time.sleep(30)" % port,
         ])
         try:
             conn, _ = srv.accept()  # establish the client connection
@@ -126,3 +158,44 @@ class TestKillPortProcess:
             client.wait()
             srv.close()
 
+    def test_kill_port_spares_client_process(self):
+        # Listener in a SEPARATE process — the legitimate kill target. This
+        # pytest process is the CLIENT: if port cleanup matched clients it would
+        # SIGTERM the test runner, so simply reaching the asserts proves the
+        # client was spared.
+        listener = subprocess.Popen(
+            [
+                sys.executable, "-c",
+                "import socket,time;"
+                "s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);"
+                "s.bind(('127.0.0.1',0));port=s.getsockname()[1];"
+                "s.listen(5);"           # listen BEFORE announcing the port
+                "print(port,flush=True);"  # so the parent never connects too early
+                "time.sleep(30)",
+            ],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            port = int(listener.stdout.readline().strip())
+            # Connect with a short retry: under a loaded CI box the child can
+            # print the port a hair before the listen backlog is fully ready,
+            # so a single immediate connect occasionally hits ECONNREFUSED.
+            cli = None
+            deadline = time.monotonic() + 5.0
+            last_err = None
+            while time.monotonic() < deadline:
+                try:
+                    cli = socket.create_connection(("127.0.0.1", port), timeout=1.0)
+                    break
+                except (ConnectionRefusedError, OSError) as e:
+                    last_err = e
+                    time.sleep(0.05)
+            assert cli is not None, f"could not connect to listener: {last_err}"
+            _kill_port_process(port)
+            assert _pid_exists(os.getpid()), "client (test process) must survive"
+            assert _wait_dead(listener, timeout=5.0), "stale listener should be killed"
+            cli.close()
+        finally:
+            if listener.poll() is None:
+                listener.kill()
+                listener.wait()

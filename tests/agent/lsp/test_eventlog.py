@@ -52,12 +52,35 @@ def test_disabled_emits_at_debug(caplog_lsp):
 # ---------------------------------------------------------------------------
 
 
+def test_active_for_fires_once_per_root(caplog_lsp):
+    for _ in range(50):
+        eventlog.log_active("pyright", "/proj")
+    info_records = [
+        r for r in caplog_lsp.records
+        if r.levelno == logging.INFO and "active for" in r.getMessage()
+    ]
+    assert len(info_records) == 1
 
 
+def test_active_for_fires_per_distinct_root(caplog_lsp):
+    eventlog.log_active("pyright", "/proj-a")
+    eventlog.log_active("pyright", "/proj-b")
+    info = [r for r in caplog_lsp.records if r.levelno == logging.INFO]
+    assert len(info) == 2
 
 
+def test_active_for_separate_per_server(caplog_lsp):
+    eventlog.log_active("pyright", "/proj")
+    eventlog.log_active("typescript", "/proj")
+    info = [r for r in caplog_lsp.records if r.levelno == logging.INFO]
+    assert len(info) == 2
 
 
+def test_no_project_root_fires_once_per_path(caplog_lsp):
+    for _ in range(5):
+        eventlog.log_no_project_root("pyright", "/orphan.py")
+    info = [r for r in caplog_lsp.records if r.levelno == logging.INFO]
+    assert len(info) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -78,14 +101,40 @@ def test_diagnostics_always_info(caplog_lsp):
 # ---------------------------------------------------------------------------
 
 
+def test_server_unavailable_warns_once_per_binary(caplog_lsp):
+    for _ in range(20):
+        eventlog.log_server_unavailable("pyright", "pyright-langserver")
+    warns = [r for r in caplog_lsp.records if r.levelno == logging.WARNING]
+    assert len(warns) == 1
+    assert "pyright-langserver" in warns[0].getMessage()
 
 
+def test_server_unavailable_separate_per_binary(caplog_lsp):
+    eventlog.log_server_unavailable("pyright", "pyright-langserver")
+    eventlog.log_server_unavailable("typescript", "typescript-language-server")
+    warns = [r for r in caplog_lsp.records if r.levelno == logging.WARNING]
+    assert len(warns) == 2
 
 
+def test_no_server_configured_warns_once(caplog_lsp):
+    for _ in range(10):
+        eventlog.log_no_server_configured("pyright")
+    warns = [r for r in caplog_lsp.records if r.levelno == logging.WARNING]
+    assert len(warns) == 1
 
 
+def test_timeout_warns_every_call(caplog_lsp):
+    for _ in range(3):
+        eventlog.log_timeout("pyright", "/x.py")
+    warns = [r for r in caplog_lsp.records if r.levelno == logging.WARNING]
+    assert len(warns) == 3
 
 
+def test_server_error_warns_every_call(caplog_lsp):
+    for _ in range(3):
+        eventlog.log_server_error("pyright", "/x.py", RuntimeError("boom"))
+    warns = [r for r in caplog_lsp.records if r.levelno == logging.WARNING]
+    assert len(warns) == 3
 
 
 def test_spawn_failed_warns(caplog_lsp):
@@ -100,6 +149,12 @@ def test_spawn_failed_warns(caplog_lsp):
 # ---------------------------------------------------------------------------
 
 
+def test_log_lines_use_lsp_prefix(caplog_lsp):
+    eventlog.log_clean("pyright", "/x.py")
+    eventlog.log_active("pyright", "/proj")
+    eventlog.log_diagnostics("typescript", "/y.ts", 2)
+    for r in caplog_lsp.records:
+        assert r.getMessage().startswith("lsp[")
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +178,12 @@ def test_thousand_clean_writes_emit_one_info(caplog_lsp):
 # ---------------------------------------------------------------------------
 
 
+def test_short_path_uses_relative_when_inside_cwd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sub = tmp_path / "x.py"
+    sub.write_text("")
+    out = eventlog._short_path(str(sub))
+    assert out == "x.py"
 
 
 def test_short_path_keeps_absolute_when_outside(tmp_path, monkeypatch):
@@ -134,3 +195,5 @@ def test_short_path_keeps_absolute_when_outside(tmp_path, monkeypatch):
     assert out == "/var/log/foo.txt" or not out.startswith("..")
 
 
+def test_short_path_handles_empty_string():
+    assert eventlog._short_path("") == ""

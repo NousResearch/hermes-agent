@@ -225,3 +225,19 @@ class TestProviderShutdown:
         assert provider._store is None
         assert MemoryStore._shared == {}
 
+    def test_shutdown_keeps_sibling_provider_alive(self, db_path):
+        from plugins.memory.holographic import HolographicMemoryProvider
+
+        a = HolographicMemoryProvider(config={"db_path": str(db_path)})
+        b = HolographicMemoryProvider(config={"db_path": str(db_path)})
+        a.initialize("session-a")
+        b.initialize("session-b")
+        assert MemoryStore._shared[str(db_path)]["refs"] == 2
+
+        a.shutdown()
+        # Sibling still holds a live, writable connection.
+        assert MemoryStore._shared[str(db_path)]["refs"] == 1
+        assert b._store is not None
+        b._store.add_fact("write after sibling shutdown")
+        b.shutdown()
+        assert MemoryStore._shared == {}

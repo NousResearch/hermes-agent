@@ -95,6 +95,13 @@ def test_build_kwargs_omits_tools_key_when_no_tools(transport, codex_messages):
     )
 
 
+def test_build_kwargs_omits_tool_choice_and_parallel_when_no_tools(transport, codex_messages):
+    """``tool_choice`` / ``parallel_tool_calls`` are meaningless without
+    tools — and some backends 400 on them.  Confirm we never set them."""
+    kwargs = _build_kwargs_no_tools(transport, codex_messages)
+
+    assert "tool_choice" not in kwargs
+    assert "parallel_tool_calls" not in kwargs
 
 
 def test_build_kwargs_keeps_required_codex_fields_without_tools(transport, codex_messages):
@@ -110,8 +117,47 @@ def test_build_kwargs_keeps_required_codex_fields_without_tools(transport, codex
     assert kwargs["input"] and kwargs["input"][0]["role"] == "user"
 
 
+def test_build_kwargs_emits_tools_when_tools_present(transport, codex_messages):
+    """Sanity check the inverse: when tools ARE provided, they MUST appear
+    in the outgoing kwargs along with the related ``tool_choice`` /
+    ``parallel_tool_calls`` switches."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run a shell command.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    kwargs = transport.build_kwargs(
+        model="gpt-5.5",
+        messages=codex_messages,
+        tools=tools,
+        is_codex_backend=True,
+    )
+
+    assert "tools" in kwargs and kwargs["tools"], "tools must be present when registered"
+    assert kwargs["tools"][0]["name"] == "terminal"
+    assert kwargs["tool_choice"] == "auto"
+    assert kwargs["parallel_tool_calls"] is True
 
 
+def test_build_kwargs_drops_empty_tools_list(transport, codex_messages):
+    """``tools=[]`` collapses to ``None`` inside ``_responses_tools`` —
+    the resulting kwargs must therefore also omit the key."""
+    kwargs = transport.build_kwargs(
+        model="gpt-5.5",
+        messages=codex_messages,
+        tools=[],
+        is_codex_backend=True,
+    )
+
+    assert "tools" not in kwargs
+    assert "tool_choice" not in kwargs
+    assert "parallel_tool_calls" not in kwargs
 
 
 # ---------------------------------------------------------------------------

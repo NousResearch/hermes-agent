@@ -17,9 +17,21 @@
   ...
 }:
 let
+  # apps/shared ships as a file: workspace dep of apps/desktop, so its
+  # source must be in the filtered src tree too.
+  npm = hermesNpmLib.mkNpmPassthru {
+    dirs = [
+      "apps/desktop"
+      "apps/shared"
+    ];
+  };
+
+  packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/apps/desktop/package.json"));
+  version = packageJson.version;
+
   electronHeaders = pkgs.fetchurl {
     url = "https://artifacts.electronjs.org/headers/dist/v${electron.version}/node-v${electron.version}-headers.tar.gz";
-    sha256 = "sha256-f8bSbLRmtbP93CJAvEBs+sHWDZ1xP2bcpLhC1EnOmZU=";
+    sha256 = "sha256-zi/QMwRZ0+FwE9XTE+DiSIeJXAwxmLKEaBWD5W3pMOI=";
   };
 
   # node-pty ships no Electron-tagged prebuild we can trust to match this
@@ -42,101 +54,99 @@ let
       throw "hermes-desktop: unsupported host arch for node-pty staging";
 
   # Build the renderer (dist/ + electron/ + package.json).
-  renderer = hermesNpmLib.buildNpmPackage {
-    dirs = [
-      "apps/desktop"
-      "apps/shared"
-    ];
-    pname = "hermes-desktop-renderer";
+  renderer = pkgs.buildNpmPackage (
+    npm
+    // {
+      pname = "hermes-desktop-renderer";
+      inherit version;
+      doCheck = true;
 
-    doCheck = true;
+      buildPhase = ''
+        runHook preBuild
 
-    buildPhase = ''
-      runHook preBuild
+        mkdir -p apps/desktop/build
 
-      mkdir -p apps/desktop/build
+        patchShebangs .
 
-      patchShebangs .
+        pushd apps/desktop
+          # typecheck :3
+          npm exec tsc -b
 
-      pushd apps/desktop
-        # typecheck :3
-        npm exec -- tsc -b
+          # build the renderer bundle
+          # vite's emptyOutDir wipes dist/ on every run
+          # so it has to be first
+          npm exec vite build
 
-        # build the renderer bundle
-        # vite's emptyOutDir wipes dist/ on every run
-        # so it has to be first
-        npm exec -- vite build
+          # build the electron bundle
+          node scripts/bundle-electron-main.mjs
 
-        # build the electron bundle
-        node scripts/bundle-electron-main.mjs
+          # Compile node-pty against Electron's actual ABI (the nixpkgs
+          # `electron` we ship). Headers come from a pinned fetchurl input
+          # since the sandbox has no network here, so node-gyp's
+          # normal --disturl download path can't run.
+          mkdir -p "$TMPDIR/electron-headers"
+          tar -xzf ${electronHeaders} -C "$TMPDIR/electron-headers" --strip-components=1
 
-        # Compile node-pty against Electron's actual ABI (the nixpkgs
-        # `electron` we ship). Headers come from a pinned fetchurl input
-        # since the sandbox has no network here, so node-gyp's
-        # normal --disturl download path can't run.
-        mkdir -p "$TMPDIR/electron-headers"
-        tar -xzf ${electronHeaders} -C "$TMPDIR/electron-headers" --strip-components=1
+          npm rebuild node-pty \
+            --build-from-source \
+            --runtime=electron \
+            --target=${electron.version} \
+            --nodedir="$TMPDIR/electron-headers" \
+            --disturl="" \
+            --offline
 
-        ${lib.getExe hermesNpmLib.node-gyp} rebuild \
-          --directory=../../node_modules/node-pty \
-          --build-from-source \
-          --runtime=electron \
-          --target=${electron.version} \
-          --nodedir="$TMPDIR/electron-headers" \
-          --disturl="" \
-          --offline
+          # Target platform/arch come from stdenv.hostPlatform, not the
+          # build host's own process.platform/arch.
+          node scripts/stage-native-deps.mjs ${targetPlatform} ${targetArch}
+        popd
 
-        # Target platform/arch come from stdenv.hostPlatform, not the
-        # build host's own process.platform/arch.
-        node scripts/stage-native-deps.mjs ${targetPlatform} ${targetArch}
-      popd
+        runHook postBuild
+      '';
 
-      runHook postBuild
-    '';
+      checkPhase = ''
+        runHook preCheck
 
-    checkPhase = ''
-      runHook preCheck
+        pushd apps/desktop
 
-      pushd apps/desktop
+          npm run postbuild
 
-        npm run postbuild
+          # validate staged node-pty native binary is present.
+          STAGED_PTY_NODE="./dist/node_modules/node-pty/build/Release/pty.node"
 
-        # validate staged node-pty native binary is present.
-        STAGED_PTY_NODE="./dist/node_modules/node-pty/build/Release/pty.node"
+          if [ ! -f "$STAGED_PTY_NODE" ]; then
+            echo "FATAL: Missing staged node-pty native binary at $STAGED_PTY_NODE"
+            echo "node-pty must be compiled natively"
+            exit 1
+          fi
+          
+        popd
 
-        if [ ! -f "$STAGED_PTY_NODE" ]; then
-          echo "FATAL: Missing staged node-pty native binary at $STAGED_PTY_NODE"
-          echo "node-pty must be compiled natively"
-          exit 1
-        fi
-        
-      popd
+        runHook postCheck
+      '';
 
-      runHook postCheck
-    '';
+      installPhase = ''
+        runHook preInstall
+        mkdir -p $out
+        # vite writes to apps/desktop/dist/ (we cd'd there in buildPhase).
+        # stage-native-deps.mjs stages node-pty into dist/node_modules/node-pty,
+        # so copying dist/ wholesale carries the native dep along with the
+        # esbuild bundle that require()s it. apps/desktop/build was created
+        # before the cd.
+        cp -rn apps/desktop/dist $out/
 
-    installPhase = ''
-      runHook preInstall
-      mkdir -p $out
-      # vite writes to apps/desktop/dist/ (we cd'd there in buildPhase).
-      # stage-native-deps.mjs stages node-pty into dist/node_modules/node-pty,
-      # so copying dist/ wholesale carries the native dep along with the
-      # esbuild bundle that require()s it. apps/desktop/build was created
-      # before the cd.
-      cp -rn apps/desktop/dist $out/
+        echo '{"schemaVersion":1,"commit":"nix-dummy-commit","branch":"nix","dirty":false,"source":"nix"}' > $out/install-stamp.json
 
-      echo '{"schemaVersion":1,"commit":"nix-dummy-commit","branch":"nix","dirty":false,"source":"nix"}' > $out/install-stamp.json
-
-      cp -n apps/desktop/package.json $out/
-      runHook postInstall
-    '';
-  };
+        cp -n apps/desktop/package.json $out/
+        runHook postInstall
+      '';
+    }
+  );
 in
 
 # Electron wrapper: nixpkgs' electron binary pointed at the renderer dir.
 stdenv.mkDerivation {
   pname = "hermes-desktop";
-  inherit (renderer) version;
+  inherit version;
 
   dontUnpack = true;
   dontBuild = true;

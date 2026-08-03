@@ -85,6 +85,14 @@ class _MinimalProvider(MemoryProvider):
         return []
 
 
+def test_abc_default_on_session_switch_is_noop():
+    """Providers that don't override the hook must not raise."""
+    p = _MinimalProvider()
+    # All three call styles must be accepted without raising
+    p.on_session_switch("new-id")
+    p.on_session_switch("new-id", parent_session_id="old-id")
+    p.on_session_switch("new-id", parent_session_id="old-id", reset=True)
+    p.on_session_switch("new-id", parent_session_id="old-id", reset=True, reason="new_session")
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +119,18 @@ def test_manager_fans_out_to_all_providers():
         assert call["extra"] == {"reason": "resume"}
 
 
+def test_manager_ignores_empty_session_id():
+    """Empty string session_id must not trigger provider hooks.
+
+    Prevents accidental fires during shutdown when self.session_id may be
+    cleared. Providers expect a meaningful id to switch TO.
+    """
+    mm = MemoryManager()
+    p = _RecordingProvider()
+    mm.add_provider(p)
+    mm.on_session_switch("")
+    mm.on_session_switch(None)  # type: ignore[arg-type]
+    assert p.switch_calls == []
 
 
 def test_manager_isolates_provider_failures():
@@ -134,6 +154,13 @@ def test_manager_isolates_provider_failures():
     assert good.switch_calls[0]["new"] == "new-sid"
 
 
+def test_manager_reset_flag_preserved():
+    mm = MemoryManager()
+    p = _RecordingProvider()
+    mm.add_provider(p)
+    mm.on_session_switch("new-sid", reset=True, reason="new_session")
+    assert p.switch_calls[0]["reset"] is True
+    assert p.switch_calls[0]["extra"] == {"reason": "new_session"}
 
 
 # ---------------------------------------------------------------------------
@@ -141,8 +168,30 @@ def test_manager_isolates_provider_failures():
 # ---------------------------------------------------------------------------
 
 
+def test_sync_all_propagates_session_id_to_providers():
+    """run_agent.py's sync_all call must pass session_id through to providers.
+
+    Without this, a provider that updates _session_id defensively in
+    sync_turn (as Hindsight does at hindsight/__init__.py:1199) never
+    sees the new id and keeps writing under the old one.
+    """
+    mm = MemoryManager()
+    p = _RecordingProvider()
+    mm.add_provider(p)
+    mm.sync_all("hello", "world", session_id="sess-42")
+    mm.flush_pending(timeout=5)
+    assert p.sync_calls == [
+        {"user": "hello", "asst": "world", "session_id": "sess-42"}
+    ]
 
 
+def test_queue_prefetch_all_propagates_session_id_to_providers():
+    mm = MemoryManager()
+    p = _RecordingProvider()
+    mm.add_provider(p)
+    mm.queue_prefetch_all("next query", session_id="sess-42")
+    mm.flush_pending(timeout=5)
+    assert p.queue_calls == [{"query": "next query", "session_id": "sess-42"}]
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +292,38 @@ def test_hindsight_on_session_switch_clears_turn_buffers():
     assert provider._turn_index == 0
 
 
+def test_hindsight_on_session_switch_clears_on_reset_true():
+    """reset=True (from /new, /reset) must also flush buffers."""
+    provider = _make_hindsight_provider()
+    provider.on_session_switch("new-sid", reset=True, reason="new_session")
+    assert provider._session_id == "new-sid"
+    assert provider._session_turns == []
+    assert provider._turn_counter == 0
 
 
+def test_hindsight_on_session_switch_ignores_empty_id():
+    """Empty new_session_id must be a no-op to avoid corrupting state."""
+    provider = _make_hindsight_provider()
+    before = (
+        provider._session_id,
+        provider._document_id,
+        list(provider._session_turns),
+        provider._turn_counter,
+    )
+    provider.on_session_switch("")
+    provider.on_session_switch(None)  # type: ignore[arg-type]
+    after = (
+        provider._session_id,
+        provider._document_id,
+        list(provider._session_turns),
+        provider._turn_counter,
+    )
+    assert before == after
 
 
+def test_hindsight_preserves_parent_across_empty_parent_arg():
+    """Omitting parent_session_id must NOT overwrite an existing one."""
+    provider = _make_hindsight_provider()
+    provider._parent_session_id = "original-parent"
+    provider.on_session_switch("new-sid")  # no parent passed
+    assert provider._parent_session_id == "original-parent"

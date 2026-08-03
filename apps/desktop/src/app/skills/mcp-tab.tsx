@@ -463,7 +463,6 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // in-progress edit — the draft is the user's until they save or reset.
   const draftSeeded = useRef(false)
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     // profilePending: config still holds the PREVIOUS profile's record right
     // after a switch — seeding from it would latch the wrong profile's doc.
@@ -526,7 +525,6 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // on a fresh success, errorUpdatedAt on a fresh failure. Releasing on error too
   // means a failed refetch surfaces the retry UI instead of leaving mutations
   // silently no-op forever.
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (
       profilePending &&
@@ -730,7 +728,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     return next
   }
 
-  const setServerEnabled = async (serverName: string, enabled: boolean) => {
+  const toggleServer = async (serverName: string, enabled: boolean) => {
     if (profilePending) {
       return
     }
@@ -978,7 +976,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
             onBack={() => setCursor(0)}
             onProbe={() => void runProbe(selected)}
             onRemove={() => void removeServer(selected)}
-            onToggle={checked => void setServerEnabled(selected, checked)}
+            onToggle={checked => void toggleServer(selected, checked)}
             onToggleTool={toolName => void toggleTool(selected, toolName)}
             probe={probes[selected]}
             saved={savedEntry !== undefined}
@@ -1019,7 +1017,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
                         onProbe={() => void runProbe(serverName)}
                         onRemove={() => void removeServer(serverName)}
                         onSelect={() => focusServer(serverName)}
-                        onToggle={checked => void setServerEnabled(serverName, checked)}
+                        onToggle={checked => void toggleServer(serverName, checked)}
                         status={status}
                         statusText={statusLine(m, status, probes[serverName], server)}
                       />

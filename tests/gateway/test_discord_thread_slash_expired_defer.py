@@ -40,3 +40,33 @@ async def test_thread_create_slash_survives_expired_defer():
     interaction.followup.send.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_thread_create_slash_normal_defer_still_follows_up():
+    adapter = _adapter()
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+    adapter._create_thread = AsyncMock(
+        return_value={"success": True, "thread_id": "999", "thread_name": "t"}
+    )
+    adapter._threads = SimpleNamespace(mark=lambda _tid: None)
+
+    await adapter._handle_thread_create_slash(interaction, name="t")
+
+    interaction.followup.send.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_create_slash_reraises_non_expiry_errors():
+    adapter = _adapter()
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(defer=AsyncMock(side_effect=RuntimeError("boom"))),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+    adapter._create_thread = AsyncMock()
+
+    with pytest.raises(RuntimeError):
+        await adapter._handle_thread_create_slash(interaction, name="t")
+
+    adapter._create_thread.assert_not_awaited()

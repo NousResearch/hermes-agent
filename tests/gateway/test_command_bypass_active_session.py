@@ -367,6 +367,30 @@ class TestNonBypassStillQueued:
             "Regular text should not produce a direct response"
         )
 
+    @pytest.mark.asyncio
+    async def test_unknown_command_queued(self):
+        """Unknown /commands must be queued, not dispatched."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/foobar"))
+
+        assert sk in adapter._pending_messages
+        assert len(adapter.sent_responses) == 0
+
+    @pytest.mark.asyncio
+    async def test_file_path_not_treated_as_command(self):
+        """A message like '/path/to/file' must not bypass the guard."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/path/to/file.py"))
+
+        assert sk in adapter._pending_messages
+        assert len(adapter.sent_responses) == 0
+
 
 # ---------------------------------------------------------------------------
 # Tests: no active session — commands go through normally
@@ -416,6 +440,25 @@ class TestPendingCommandSafetyNet:
         assert resolve_command("new") is not None
         assert resolve_command("new").name == "new"
 
+    def test_reset_alias_detected(self):
+        from hermes_cli.commands import resolve_command
+
+        assert resolve_command("reset") is not None
+        assert resolve_command("reset").name == "new"  # alias
+
+    def test_unknown_command_not_detected(self):
+        from hermes_cli.commands import resolve_command
+
+        assert resolve_command("foobar") is None
+
+    def test_file_path_not_detected_as_command(self):
+        """'/path/to/file' should not resolve as a command."""
+        from hermes_cli.commands import resolve_command
+
+        # The safety net splits on whitespace and takes the first word
+        # after stripping '/'.  For '/path/to/file', that's 'path/to/file'.
+        assert resolve_command("path/to/file") is None
+
 
 # ---------------------------------------------------------------------------
 # Tests: bypass with @botname suffix (Telegram-style)
@@ -439,3 +482,14 @@ class TestBypassWithBotnameSuffix:
         )
         assert any("handled:stop" in r for r in adapter.sent_responses)
 
+    @pytest.mark.asyncio
+    async def test_new_with_botname(self):
+        """/new@MyHermesBot must bypass the guard."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/new@MyHermesBot"))
+
+        assert sk not in adapter._pending_messages
+        assert any("handled:new" in r for r in adapter.sent_responses)

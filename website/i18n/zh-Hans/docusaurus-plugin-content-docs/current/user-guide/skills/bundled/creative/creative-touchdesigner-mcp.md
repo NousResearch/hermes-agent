@@ -21,7 +21,7 @@ description: "通过 twozero MCP 控制运行中的 TouchDesigner 实例——�
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `TouchDesigner`, `MCP`, `twozero`, `creative-coding`, `real-time-visuals`, `generative-art`, `audio-reactive`, `VJ`, `installation`, `GLSL` |
-| 相关 skill |, [`ascii-video`](/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/user-guide/skills/bundled/creative/creative-manim-video) |
+| 相关 skill | [`native-mcp`](/user-guide/skills/bundled/mcp/mcp-native-mcp), [`ascii-video`](/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/user-guide/skills/bundled/creative/creative-manim-video), `hermes-video` |
 
 ## 参考：完整 SKILL.md
 

@@ -137,6 +137,55 @@ class TestMinimaxM3OpenAIReasoningWireShape:
         assert extra_body == {"reasoning_split": True}
         assert top_level == {}
 
+    def test_m3_openai_route_maps_explicit_effort_to_adaptive_only(self):
+        import model_tools  # noqa: F401
+        import providers
+
+        profile = providers.get_provider_profile("minimax")
+        assert profile is not None
+        extra_body, top_level = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="MiniMax-M3",
+            base_url="https://api.minimax.io/v1",
+        )
+        assert extra_body == {
+            "reasoning_split": True,
+            "thinking": {"type": "adaptive"},
+        }
+        assert top_level == {}
+
+    def test_m3_openai_route_does_not_send_reasoning_effort(self):
+        import model_tools  # noqa: F401
+        import providers
+
+        profile = providers.get_provider_profile("minimax")
+        assert profile is not None
+        extra_body, _top_level = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            model="MiniMax-M3",
+            base_url="https://api.minimax.io/v1/",
+        )
+        assert extra_body == {
+            "reasoning_split": True,
+            "thinking": {"type": "adaptive"},
+        }
+
+    def test_m3_openai_route_can_disable_thinking(self):
+        import model_tools  # noqa: F401
+        import providers
+
+        profile = providers.get_provider_profile("minimax")
+        assert profile is not None
+        extra_body, top_level = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False, "effort": "high"},
+            model="MiniMax-M3",
+            base_url="https://api.minimax.io/v1",
+        )
+        assert extra_body == {
+            "reasoning_split": True,
+            "thinking": {"type": "disabled"},
+        }
+        assert top_level == {}
 
     @pytest.mark.parametrize(
         "model,base_url",

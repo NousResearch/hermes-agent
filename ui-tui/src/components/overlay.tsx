@@ -5,7 +5,15 @@ import { type ReactNode } from 'react'
 import { $uiTheme } from '../app/uiStore.js'
 
 export type OverlayZone =
-  'bottom' | 'bottom-left' | 'bottom-right' | 'center' | 'left' | 'right' | 'top' | 'top-left' | 'top-right'
+  | 'bottom'
+  | 'bottom-left'
+  | 'bottom-right'
+  | 'center'
+  | 'left'
+  | 'right'
+  | 'top'
+  | 'top-left'
+  | 'top-right'
 
 interface OverlayProps {
   /** Render a faux scrim behind the content (lipgloss-style: spaces + bg color). */

@@ -1,6 +1,6 @@
 ---
 name: docker-management
-description: Manage Docker containers, images, volumes, and Compose.
+description: Manage Docker containers, images, volumes, networks, and Compose stacks — lifecycle ops, debugging, cleanup, and Dockerfile optimization.
 version: 1.0.0
 author: sprmn24
 license: MIT

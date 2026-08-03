@@ -43,6 +43,24 @@ def _clean_client_cache():
 class TestCrossLoopCacheIsolation:
     """Verify async clients are cached per-event-loop, not globally."""
 
+    def test_same_loop_reuses_client(self):
+        """Within a single event loop, the same client should be returned."""
+        from agent.auxiliary_client import _get_cached_client
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                    side_effect=_stub_resolve_provider_client):
+            client1, _ = _get_cached_client("custom", "m1", async_mode=True,
+                                             base_url="http://localhost:8081/v1")
+            client2, _ = _get_cached_client("custom", "m1", async_mode=True,
+                                             base_url="http://localhost:8081/v1")
+
+        assert client1 is client2, (
+            "Same loop should return the same cached client"
+        )
+        loop.close()
 
     def test_different_loops_get_different_clients(self):
         """Different event loops must get separate client instances."""
@@ -74,6 +92,30 @@ class TestCrossLoopCacheIsolation:
             "httpx cross-loop deadlocks in gateway mode (#2681)"
         )
 
+    def test_sync_clients_not_affected(self):
+        """Sync clients (async_mode=False) should still be cached globally,
+        since httpx.Client (sync) doesn't bind to an event loop."""
+        from agent.auxiliary_client import _get_cached_client
+
+        results = {}
+
+        def _get_sync_client(name):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            with patch("agent.auxiliary_client.resolve_provider_client",
+                        side_effect=_stub_resolve_provider_client):
+                client, _ = _get_cached_client("custom", "m1", async_mode=False,
+                                                 base_url="http://localhost:8081/v1")
+            results[name] = id(client)
+
+        t1 = threading.Thread(target=_get_sync_client, args=("a",))
+        t2 = threading.Thread(target=_get_sync_client, args=("b",))
+        t1.start(); t1.join()
+        t2.start(); t2.join()
+
+        assert results["a"] == results["b"], (
+            "Sync clients should be shared across threads (no loop binding)"
+        )
 
     def test_gateway_simulation_no_deadlock(self):
         """Simulate gateway mode: _run_async spawns a thread with asyncio.run(),
@@ -112,3 +154,30 @@ class TestCrossLoopCacheIsolation:
         )
         gateway_loop.close()
 
+    def test_closed_loop_client_discarded(self):
+        """A cached client whose loop has closed should be replaced."""
+        from agent.auxiliary_client import _get_cached_client
+
+        loop1 = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop1)
+
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                    side_effect=_stub_resolve_provider_client):
+            client1, _ = _get_cached_client("custom", "m1", async_mode=True,
+                                             base_url="http://localhost:8081/v1")
+
+        loop1.close()
+
+        # New loop on same thread
+        loop2 = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop2)
+
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                    side_effect=_stub_resolve_provider_client):
+            client2, _ = _get_cached_client("custom", "m1", async_mode=True,
+                                             base_url="http://localhost:8081/v1")
+
+        assert client1 is not client2, (
+            "Client from closed loop should not be reused"
+        )
+        loop2.close()

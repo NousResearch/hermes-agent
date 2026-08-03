@@ -89,6 +89,15 @@ class TestHandleBundlesCommand:
         result = asyncio.run(runner._handle_bundles_command(_make_event("/bundles")))
         assert "No skill bundles" in result
 
+    def test_with_bundles(self, bundles_env):
+        bundles_dir, _ = bundles_env
+        _make_bundle(bundles_dir, "research", ["alpha", "beta"])
+        runner = _make_runner()
+        result = asyncio.run(runner._handle_bundles_command(_make_event("/bundles")))
+        assert "research" in result
+        assert "/research" in result
+        assert "2 skills" in result
+
 
 class TestBundleResolutionPriority:
     """Verify resolve_bundle_command_key picks bundles over skills."""
@@ -99,3 +108,8 @@ class TestBundleResolutionPriority:
         from agent.skill_bundles import resolve_bundle_command_key
         assert resolve_bundle_command_key("research") == "/research"
 
+    def test_underscore_alias(self, bundles_env):
+        bundles_dir, _ = bundles_env
+        _make_bundle(bundles_dir, "my-bundle", ["alpha"])
+        from agent.skill_bundles import resolve_bundle_command_key
+        assert resolve_bundle_command_key("my_bundle") == "/my-bundle"

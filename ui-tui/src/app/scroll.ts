@@ -67,8 +67,5 @@ export function scrollWithSelectionBy(delta: number, { scrollRef, selection }: S
     shift(-actual, top, bottom)
   }
 
-  // The target is already accepted and clamped here. Commit it directly so
-  // wheel/page input does not enter ScrollBox's multi-frame pending-delta
-  // drain and produce visible stair steps at virtual row boundaries.
-  s.scrollTo(cur + actual)
+  s.scrollBy(actual)
 }

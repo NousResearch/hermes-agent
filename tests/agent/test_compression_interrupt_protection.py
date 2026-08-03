@@ -14,13 +14,19 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
-
 import agent.auxiliary_client as aux
 
 
 class TestAuxInterruptProtection:
+    def test_protected_flag_defaults_false(self):
+        # Fresh thread-local state.
+        assert aux._aux_interrupt_protected() is False
 
+    def test_context_manager_sets_and_restores(self):
+        assert aux._aux_interrupt_protected() is False
+        with aux.aux_interrupt_protection():
+            assert aux._aux_interrupt_protected() is True
+        assert aux._aux_interrupt_protected() is False
 
     def test_context_manager_is_reentrant(self):
         with aux.aux_interrupt_protection():
@@ -39,15 +45,9 @@ class TestAuxInterruptProtection:
             pass
         assert aux._aux_interrupt_protected() is False
 
-
-    def test_nested_protection_preserves_explicit_cancel_check(self):
-        """A hard-cancel hook installed by the compression host survives the
-        compressor's nested protection scope."""
-        with aux.aux_interrupt_protection(cancel_check=lambda: True):
-            with aux.aux_interrupt_protection():
-                assert aux._aux_interrupt_protected() is True
-                assert aux._aux_interrupt_cancel_requested() is True
-        assert aux._aux_interrupt_cancel_requested() is False
+    def test_explicit_inactive_is_noop(self):
+        with aux.aux_interrupt_protection(active=False):
+            assert aux._aux_interrupt_protected() is False
 
 
 class TestCompressionProtectsSummaryCall:
@@ -93,83 +93,3 @@ class TestCompressionProtectsSummaryCall:
         )
         # Protection must be cleared after the call returns.
         assert aux._aux_interrupt_protected() is False
-
-    def test_explicit_interrupt_is_not_degraded_into_summary_fallback(self):
-        """Ctrl+C cancellation must escape summary fallback so the outer
-        compression transaction can abort without rotating the session."""
-        from agent.context_compressor import ContextCompressor
-
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True)
-
-        msgs = [
-            {"role": "user", "content": "do a thing"},
-            {"role": "assistant", "content": "working"},
-            {"role": "user", "content": "more"},
-            {"role": "assistant", "content": "done"},
-        ]
-        with aux.aux_interrupt_protection(cancel_check=lambda: True), patch(
-            "agent.context_compressor.call_llm",
-            side_effect=aux.AuxiliaryExplicitCancellation(),
-        ):
-            try:
-                c._generate_summary(msgs)
-            except aux.AuxiliaryExplicitCancellation as exc:
-                assert exc.cause == "explicit_host_cancel"
-            else:
-                raise AssertionError("compression swallowed an explicit interrupt")
-
-    def test_non_explicit_interrupted_error_remains_provider_failure(self):
-        """An unrelated provider/OS InterruptedError must keep the established
-        summary-failure fallback semantics when no host cancel was requested."""
-        from agent.context_compressor import ContextCompressor
-
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True)
-
-        msgs = [
-            {"role": "user", "content": "do a thing"},
-            {"role": "assistant", "content": "working"},
-            {"role": "user", "content": "more"},
-            {"role": "assistant", "content": "done"},
-        ]
-        with patch(
-            "agent.context_compressor.call_llm",
-            side_effect=InterruptedError("provider syscall interrupted"),
-        ):
-            assert c._generate_summary(msgs) is None
-
-    def test_explicit_interrupt_restores_rehydration_state(self):
-        """Cancellation after the handoff scan must be a compressor no-op."""
-        from agent.context_compressor import ContextCompressor
-
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(
-                model="test",
-                protect_first_n=1,
-                protect_last_n=1,
-                quiet_mode=True,
-            )
-        c._previous_summary = "foreign-session-summary"
-        c._summary_has_user_turn = False
-        msgs = [
-            {"role": "system", "content": "system"},
-            {"role": "user", "content": "one"},
-            {"role": "assistant", "content": "two"},
-            {"role": "user", "content": "three"},
-            {"role": "assistant", "content": "four"},
-            {"role": "user", "content": "five"},
-            {"role": "assistant", "content": "six"},
-            {"role": "user", "content": "tail"},
-        ]
-
-        with patch.object(
-            c,
-            "_generate_summary",
-            side_effect=aux.AuxiliaryExplicitCancellation(),
-        ):
-            with pytest.raises(aux.AuxiliaryExplicitCancellation):
-                c.compress(msgs)
-
-        assert c._previous_summary == "foreign-session-summary"
-        assert c._summary_has_user_turn is False

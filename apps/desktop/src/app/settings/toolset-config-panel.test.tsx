@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
 import type { ReactElement } from 'react'
-import { MemoryRouter } from 'react-router'
-import type * as ReactRouterDom from 'react-router'
+import { MemoryRouter } from 'react-router-dom'
+import type * as ReactRouterDom from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ToolsetConfig } from '@/types/hermes'
@@ -11,7 +11,7 @@ import type { ToolsetConfig } from '@/types/hermes'
 // needs a router context. The navigate spy asserts the deep-link target.
 const navigateSpy = vi.fn()
 
-vi.mock('react-router', async importOriginal => ({
+vi.mock('react-router-dom', async importOriginal => ({
   ...(await importOriginal<typeof ReactRouterDom>()),
   useNavigate: () => navigateSpy
 }))
@@ -111,16 +111,6 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
   Element.prototype.hasPointerCapture = vi.fn(() => false)
   Element.prototype.releasePointerCapture = vi.fn()
-  // cmdk (used by the free-input voice/model combobox) needs ResizeObserver,
-  // which jsdom doesn't ship (mirrors searchable-select.test.tsx).
-  vi.stubGlobal(
-    'ResizeObserver',
-    class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    }
-  )
 
   getToolsetConfig.mockResolvedValue(config())
   getToolsetModels.mockResolvedValue({
@@ -211,17 +201,12 @@ describe('ToolsetConfigPanel', () => {
     expect(getToolsetConfig).toHaveBeenCalledWith('tts')
   })
 
-  it('expands a provider on row click and activates it via the explicit button', async () => {
+  it('selects a provider when clicked', async () => {
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
-    // Row click only expands — browsing details must not rewrite config.
     const elevenlabs = await screen.findByRole('button', { name: /ElevenLabs/ })
     fireEvent.click(elevenlabs)
-    expect(selectToolsetProvider).not.toHaveBeenCalled()
-
-    // The explicit activation button is what persists the backend choice.
-    fireEvent.click(await screen.findByRole('button', { name: /Use this backend/ }))
 
     await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('tts', 'ElevenLabs'))
   })
@@ -238,22 +223,17 @@ describe('ToolsetConfigPanel', () => {
     const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
-    // Edge auto-expands (first configured provider); activate it explicitly.
-    await screen.findByRole('button', { name: /Microsoft Edge TTS/ })
-    const useBackend = await screen.findByRole('button', { name: /Use this backend/ })
-    fireEvent.click(useBackend)
+    const edge = await screen.findByRole('button', { name: /Microsoft Edge TTS/ })
+    const elevenlabs = screen.getByRole('button', { name: /ElevenLabs/ })
+    fireEvent.click(edge)
 
     await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('tts', 'Microsoft Edge TTS'))
-    // While the first selection is pending, the activation CTA is disabled —
-    // a second click must not fire another PUT.
-    expect(useBackend.hasAttribute('disabled')).toBe(true)
-    fireEvent.click(useBackend)
+    expect(elevenlabs.hasAttribute('disabled')).toBe(true)
+    fireEvent.click(elevenlabs)
     expect(selectToolsetProvider).toHaveBeenCalledTimes(1)
 
     resolveSelection({ name: 'tts', ok: true, provider: 'Microsoft Edge TTS' })
-    // Edge is now the active backend — its expanded panel shows the active
-    // hint instead of the activation button.
-    await waitFor(() => expect(screen.getByText('This is your active backend')).toBeTruthy())
+    await waitFor(() => expect(elevenlabs.hasAttribute('disabled')).toBe(false))
   })
 
   it('shows a backend model catalog for image_gen and persists a pick', async () => {
@@ -317,7 +297,7 @@ describe('ToolsetConfigPanel', () => {
     fireEvent.click(elevenlabs)
 
     // Open the credential actions menu (Radix opens on pointerdown), then "Set".
-    const trigger = await screen.findByRole('button', { name: /^Actions$/ })
+    const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Set' }))
 
@@ -584,12 +564,10 @@ describe('ToolsetConfigPanel', () => {
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
       await screen.findByText('Microsoft Edge TTS')
-      // Edge is the active backend — its row pill reads Active (which
-      // subsumes Ready); the other rows keep their warn pills.
-      expect(screen.getAllByText('Active')).toHaveLength(1)
-      expect(screen.queryByText('Ready')).toBeNull()
+      // Exactly one Ready pill — the genuinely keyless Edge TTS row.
+      expect(screen.getAllByText('Ready')).toHaveLength(1)
       expect(screen.getByText('Needs sign-in')).toBeTruthy()
-      expect(screen.getByText('Setup required')).toBeTruthy()
+      expect(screen.getByText('Needs setup')).toBeTruthy()
     })
 
     it('shows no Ready pill for a keyed provider the server marks needs_keys', async () => {
@@ -625,7 +603,7 @@ describe('ToolsetConfigPanel', () => {
       expect(screen.queryByText('Ready')).toBeNull()
       // Missing keys are signalled by the env-var fields, not a warn pill.
       expect(screen.queryByText('Needs sign-in')).toBeNull()
-      expect(screen.queryByText('Setup required')).toBeNull()
+      expect(screen.queryByText('Needs setup')).toBeNull()
     })
 
     it('falls back to the env-var heuristic when the backend sends no status', async () => {
@@ -639,13 +617,13 @@ describe('ToolsetConfigPanel', () => {
       // Default config(): keyless Edge TTS (ready) + unset ElevenLabs (not).
       expect(screen.getAllByText('Ready')).toHaveLength(1)
       expect(screen.queryByText('Needs sign-in')).toBeNull()
-      expect(screen.queryByText('Setup required')).toBeNull()
+      expect(screen.queryByText('Needs setup')).toBeNull()
     })
 
     it('flips a needs_keys provider to Ready locally after its key is saved', async () => {
       getToolsetConfig.mockResolvedValue(
         config({
-          active_provider: null,
+          active_provider: 'ElevenLabs',
           providers: [
             {
               name: 'ElevenLabs',
@@ -662,7 +640,7 @@ describe('ToolsetConfigPanel', () => {
               ],
               post_setup: null,
               requires_nous_auth: false,
-              is_active: false,
+              is_active: true,
               status: 'needs_keys'
             }
           ]
@@ -677,7 +655,7 @@ describe('ToolsetConfigPanel', () => {
 
       // Save a key: the pill must go Ready from the local envState patch even
       // though the (now stale) server status still says needs_keys.
-      const trigger = await screen.findByRole('button', { name: /^Actions$/ })
+      const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
       fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
       fireEvent.click(await screen.findByRole('menuitem', { name: 'Set' }))
       fireEvent.change(await screen.findByPlaceholderText('ElevenLabs API key'), { target: { value: 'sk-live' } })
@@ -828,9 +806,7 @@ describe('ToolsetConfigPanel', () => {
       const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
-      // The single Nous row auto-expands; activate via the explicit button.
-      await screen.findByRole('button', { name: /Nous Subscription/ })
-      fireEvent.click(await screen.findByRole('button', { name: /Use this backend/ }))
+      fireEvent.click(await screen.findByRole('button', { name: /Nous Subscription/ }))
 
       await waitFor(() =>
         expect(selectToolsetProvider).toHaveBeenCalledWith('browser', 'Nous Subscription (Browser Use cloud)')
@@ -873,8 +849,7 @@ describe('ToolsetConfigPanel', () => {
         const { ToolsetConfigPanel } = await import('./toolset-config-panel')
         render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
-        await screen.findByRole('button', { name: /Nous Subscription/ })
-        fireEvent.click(await screen.findByRole('button', { name: /Use this backend/ }))
+        fireEvent.click(await screen.findByRole('button', { name: /Nous Subscription/ }))
 
         // Grab the sign-in action off the warning notification and invoke it —
         // this is the affordance the toast renders as a button.
@@ -916,8 +891,7 @@ describe('ToolsetConfigPanel', () => {
       const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
-      await screen.findByRole('button', { name: /Nous Subscription/ })
-      fireEvent.click(await screen.findByRole('button', { name: /Use this backend/ }))
+      fireEvent.click(await screen.findByRole('button', { name: /Nous Subscription/ }))
 
       await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' })))
       expect(startOAuthLogin).not.toHaveBeenCalled()
@@ -955,7 +929,7 @@ describe('ToolsetConfigPanel', () => {
       const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
-      const trigger = await screen.findByRole('button', { name: /^Actions$/ })
+      const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
       fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
       fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage in API Keys' }))
 
@@ -973,9 +947,9 @@ describe('ToolsetConfigPanel', () => {
       // provider initializer, and user intent must win that race.
       const elevenLabs = await screen.findByRole('button', { name: /ElevenLabs/ })
       fireEvent.click(elevenLabs)
-      await waitFor(() => expect(elevenLabs.getAttribute('aria-expanded')).toBe('true'))
+      await waitFor(() => expect(elevenLabs.getAttribute('aria-pressed')).toBe('true'))
 
-      const trigger = await screen.findByRole('button', { name: /^Actions$/ })
+      const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
       fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
 
       await screen.findByRole('menuitem', { name: 'Set' })

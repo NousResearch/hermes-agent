@@ -86,6 +86,13 @@ class TestUpdateConfigForProviderClearsStaleCustomFields:
             "OpenRouter requests to the Anthropic SDK — must be cleared"
         )
 
+    def test_switching_to_nous_clears_stale_api_mode(self):
+        _seed_custom_provider_config()
+        _update_config_for_provider("nous", "https://inference-api.nousresearch.com/v1")
+        model_cfg = _read_model_cfg()
+        assert model_cfg.get("provider") == "nous"
+        assert "api_mode" not in model_cfg
+        assert "api_key" not in model_cfg
 
     def test_switching_clears_codex_responses_api_mode(self):
         """Also covers codex_responses, not just anthropic_messages."""

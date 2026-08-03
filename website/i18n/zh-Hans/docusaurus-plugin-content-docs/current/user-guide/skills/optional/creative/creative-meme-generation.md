@@ -21,7 +21,7 @@ description: "使用 Pillow 选取模板并叠加文字，生成真实的表情�
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `creative`, `memes`, `humor`, `images` |
-| 相关 skill | [`ascii-art`](/user-guide/skills/bundled/creative/creative-ascii-art) |
+| 相关 skill | [`ascii-art`](/user-guide/skills/bundled/creative/creative-ascii-art), `generative-widgets` |
 
 ## 参考：完整 SKILL.md
 

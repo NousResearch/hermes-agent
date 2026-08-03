@@ -21,7 +21,7 @@ description: "使用 FastMCP 在 Python 中构建、测试、检查、安装和�
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `MCP`, `FastMCP`, `Python`, `Tools`, `Resources`, `Prompts`, `Deployment` |
-| 相关 skill | [`hermes-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`mcporter`](/user-guide/skills/optional/mcp/mcp-mcporter) |
+| 相关 skill | [`native-mcp`](/user-guide/skills/bundled/mcp/mcp-native-mcp), [`mcporter`](/user-guide/skills/optional/mcp/mcp-mcporter) |
 
 ## 参考：完整 SKILL.md
 

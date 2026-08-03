@@ -23,6 +23,23 @@ class TestMemorySetupProviderRouting:
         direct.assert_called_once_with("honcho")
         picker.assert_not_called()
 
+    def test_setup_without_provider_runs_picker(self):
+        """`memory setup` (no provider) runs the interactive picker."""
+        args = SimpleNamespace(memory_command="setup", provider=None)
+        with patch.object(memory_setup, "cmd_setup_provider") as direct, \
+             patch.object(memory_setup, "cmd_setup") as picker:
+            memory_setup.memory_command(args)
+        picker.assert_called_once_with(args)
+        direct.assert_not_called()
+
+    def test_setup_with_missing_provider_attr_runs_picker(self):
+        """A SimpleNamespace lacking `provider` must not crash — fall back to picker."""
+        args = SimpleNamespace(memory_command="setup")
+        with patch.object(memory_setup, "cmd_setup_provider") as direct, \
+             patch.object(memory_setup, "cmd_setup") as picker:
+            memory_setup.memory_command(args)
+        picker.assert_called_once_with(args)
+        direct.assert_not_called()
 
     def test_unknown_provider_reports_and_returns_early(self, capsys):
         """An unknown provider name surfaces a helpful message and returns
@@ -42,9 +59,7 @@ class TestInstallDependenciesRunner:
     def _run_with_missing_dep(self, tmp_path, which_side_effect, run_behavior=None):
         """Drive _install_dependencies for a plugin that declares one missing
         pip dep, capturing every subprocess.run argv issued by the ladder."""
-        import os
         import sys
-        from unittest.mock import patch as _patch
 
         (tmp_path / "plugin.yaml").write_text(
             "pip_dependencies:\n  - definitely-not-installed-xyz\n", encoding="utf-8"
@@ -57,13 +72,7 @@ class TestInstallDependenciesRunner:
                 return run_behavior(cmd)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        # The hermetic conftest sets HERMES_DISABLE_LAZY_INSTALLS=1 so no test
-        # can trigger a real mid-run pip install. These tests exercise the
-        # install ladder itself (against a fully mocked subprocess.run), so
-        # they opt back in — the same both-directions override
-        # tests/tools/test_lazy_deps.py uses.
-        with _patch.dict(os.environ, {"HERMES_DISABLE_LAZY_INSTALLS": "0"}), \
-             patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
+        with patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
              patch("hermes_cli.tools_config.shutil.which", side_effect=which_side_effect), \
              patch("hermes_cli.tools_config.subprocess.run", fake_run):
             memory_setup._install_dependencies("x")

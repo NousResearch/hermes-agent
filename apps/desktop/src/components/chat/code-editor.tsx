@@ -209,7 +209,6 @@ export function CodeEditor({
   onSaveRef.current = onSave
   formatJsonRef.current = formatJson
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const host = hostRef.current
 

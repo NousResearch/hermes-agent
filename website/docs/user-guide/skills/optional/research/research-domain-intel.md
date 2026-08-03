@@ -1,14 +1,14 @@
 ---
-title: "Domain Intel — Passive recon of subdomains, SSL certs, WHOIS, and DNS"
+title: "Domain Intel — Passive domain reconnaissance using Python stdlib"
 sidebar_label: "Domain Intel"
-description: "Passive recon of subdomains, SSL certs, WHOIS, and DNS"
+description: "Passive domain reconnaissance using Python stdlib"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Domain Intel
 
-Passive recon of subdomains, SSL certs, WHOIS, and DNS.
+Passive domain reconnaissance using Python stdlib. Subdomain discovery, SSL certificate inspection, WHOIS lookups, DNS records, domain availability checks, and bulk multi-domain analysis. No API keys required.
 
 ## Skill metadata
 

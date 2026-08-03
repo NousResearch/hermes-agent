@@ -74,6 +74,46 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         self.assertIn("B", warn)
         self.assertIn("sibling", warn.lower())
 
+    def test_write_without_read_flagged(self):
+        p = self._mk()
+        # Agent A never read this file.
+        file_state.note_write("B", p)  # another agent touched it
+        warn = file_state.check_stale("A", p)
+        self.assertIsNotNone(warn)
+
+    def test_partial_read_flagged_on_write(self):
+        p = self._mk()
+        file_state.record_read("A", p, partial=True)
+        warn = file_state.check_stale("A", p)
+        self.assertIsNotNone(warn)
+        self.assertIn("partial", warn.lower())
+
+    def test_external_mtime_drift_flagged(self):
+        p = self._mk()
+        file_state.record_read("A", p)
+        # Bump the on-disk mtime without going through the registry.
+        time.sleep(0.01)
+        os.utime(p, None)
+        with open(p, "w") as f:
+            f.write("externally modified\n")
+        warn = file_state.check_stale("A", p)
+        self.assertIsNotNone(warn)
+        self.assertIn("modified since you last read", warn)
+
+    def test_own_write_updates_stamp_so_next_write_is_clean(self):
+        p = self._mk()
+        file_state.record_read("A", p)
+        file_state.note_write("A", p)
+        # Second write by the same agent — should not be flagged.
+        self.assertIsNone(file_state.check_stale("A", p))
+
+    def test_different_paths_dont_interfere(self):
+        a = self._mk()
+        b = self._mk()
+        file_state.record_read("A", a)
+        file_state.note_write("B", b)
+        # A reads only `a`; B writes `b`. A writing `a` is NOT stale.
+        self.assertIsNone(file_state.check_stale("A", a))
 
     def test_lock_path_serializes_same_path(self):
         p = self._mk()
@@ -123,6 +163,33 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         ta.join(timeout=3.0)
         tb.join(timeout=3.0)
 
+    def test_writes_since_filters_by_parent_read_set(self):
+        foo = self._mk()
+        bar = self._mk()
+        baz = self._mk()
+        file_state.record_read("parent", foo)
+        file_state.record_read("parent", bar)
+        since = time.time()
+        time.sleep(0.01)
+        file_state.note_write("child", foo)  # parent read this — report
+        file_state.note_write("child", baz)  # parent never saw — skip
+
+        # Caller passes only paths the parent actually read (this is what
+        # delegate_tool does via ``known_reads(parent_task_id)``).
+        parent_reads = file_state.known_reads("parent")
+        out = file_state.writes_since("parent", since, parent_reads)
+        self.assertIn("child", out)
+        self.assertIn(foo, out["child"])
+        self.assertNotIn(baz, out["child"])
+
+    def test_writes_since_excludes_the_target_agent(self):
+        p = self._mk()
+        file_state.record_read("parent", p)
+        since = time.time()
+        time.sleep(0.01)
+        file_state.note_write("parent", p)  # parent's own write
+        out = file_state.writes_since("parent", since, [p])
+        self.assertEqual(out, {})
 
     def test_kill_switch_env_var(self):
         p = self._mk()
@@ -177,6 +244,36 @@ class FileToolsIntegrationTests(unittest.TestCase):
         self.assertIn("agentB", warn)
         self.assertIn("sibling", warn.lower())
 
+    def test_same_agent_consecutive_writes_no_false_warning(self):
+        p = self._write_seed("own.txt")
+        json.loads(read_file_tool(path=p, task_id="agentC"))
+        w1 = json.loads(write_file_tool(path=p, content="one\n", task_id="agentC"))
+        self.assertFalse(w1.get("_warning"))
+        w2 = json.loads(write_file_tool(path=p, content="two\n", task_id="agentC"))
+        self.assertFalse(w2.get("_warning"))
+
+    def test_patch_tool_also_surfaces_sibling_warning(self):
+        p = self._write_seed("p.txt", "hello world\n")
+        json.loads(read_file_tool(path=p, task_id="agentA"))
+        json.loads(write_file_tool(path=p, content="hello planet\n", task_id="agentB"))
+        r = json.loads(
+            patch_tool(
+                mode="replace",
+                path=p,
+                old_string="hello",
+                new_string="HI",
+                task_id="agentA",
+            )
+        )
+        warn = r.get("_warning", "")
+        # Patch may fail (sibling changed the content so old_string may not
+        # match) or succeed — either way, the cross-agent warning should be
+        # present when old_string still happens to match.  What matters is
+        # that if the patch succeeded or the warning was reported, it names
+        # the sibling.  When old_string doesn't match, the patch itself
+        # returns an error but the warning is still set from the pre-check.
+        if warn:
+            self.assertIn("agentB", warn)
 
     def test_net_new_file_no_warning(self):
         p = os.path.join(self._tmpdir, "brand_new.txt")

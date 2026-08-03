@@ -54,6 +54,24 @@ class TestFileToolsContainerConfig:
         cc = self._run(_make_env_config(docker_mount_cwd_to_workspace=True), "t1").get("container_config", {})
         assert cc.get("docker_mount_cwd_to_workspace") is True
 
+    def test_docker_forward_env_passed(self):
+        """docker_forward_env is forwarded to container_config."""
+        cc = self._run(_make_env_config(docker_forward_env=["MY_SECRET"]), "t2").get("container_config", {})
+        assert cc.get("docker_forward_env") == ["MY_SECRET"]
+
+    def test_docker_mount_cwd_defaults_to_false(self):
+        """docker_mount_cwd_to_workspace defaults to False when absent from config."""
+        cfg = _make_env_config()
+        del cfg["docker_mount_cwd_to_workspace"]
+        cc = self._run(cfg, "t3").get("container_config", {})
+        assert cc.get("docker_mount_cwd_to_workspace") is False
+
+    def test_docker_forward_env_defaults_to_empty_list(self):
+        """docker_forward_env defaults to [] when absent from config."""
+        cfg = _make_env_config()
+        del cfg["docker_forward_env"]
+        cc = self._run(cfg, "t4").get("container_config", {})
+        assert cc.get("docker_forward_env") == []
 
     def test_cwd_only_raw_task_override_reaches_file_environment(self):
         """CWD-only task overrides collapse to default but must keep their cwd."""

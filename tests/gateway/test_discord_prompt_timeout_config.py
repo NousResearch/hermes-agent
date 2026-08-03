@@ -63,6 +63,21 @@ def _patch_config(monkeypatch, cfg):
     monkeypatch.setattr(hermes_cli.config, "read_raw_config", lambda: cfg)
 
 
+def test_default_when_config_absent(monkeypatch):
+    _patch_config(monkeypatch, {})
+    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
+
+
+def test_default_when_approvals_block_missing(monkeypatch):
+    _patch_config(monkeypatch, {"other": {}})
+    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
+
+
+def test_default_when_key_missing(monkeypatch):
+    _patch_config(monkeypatch, {"approvals": {"mode": "manual"}})
+    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
+
+
 def test_explicit_int_value(monkeypatch):
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 600}})
     assert _read_discord_prompt_timeout() == 600
@@ -88,6 +103,38 @@ def test_value_clamped_to_minimum(monkeypatch):
     assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
 
 
+def test_value_clamped_to_maximum(monkeypatch):
+    """Discord interaction tokens expire at ~15 min — clamp larger values."""
+    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 99999}})
+    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MAX
+
+
+def test_zero_clamped_to_minimum(monkeypatch):
+    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 0}})
+    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
+
+
+def test_negative_clamped_to_minimum(monkeypatch):
+    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": -300}})
+    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
+
+
+def test_empty_string_falls_back_to_default(monkeypatch):
+    _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": ""}})
+    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
+
+
+def test_config_read_exception_falls_back_to_default(monkeypatch):
+    """A crashing read_raw_config must not bring down view construction —
+    falling back to the historical 300s default preserves existing behavior.
+    """
+    import hermes_cli.config
+    def _boom():
+        raise RuntimeError("config file corrupt")
+    monkeypatch.setattr(hermes_cli.config, "read_raw_config", _boom)
+    assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_DEFAULT
+
+
 def test_default_matches_previous_hardcoded_value():
     """Behavioral parity assertion: existing installs (no new config) must
     see exactly the 300s timeout the views were hardcoded to before this
@@ -96,3 +143,8 @@ def test_default_matches_previous_hardcoded_value():
     assert _DISCORD_PROMPT_TIMEOUT_DEFAULT == 300
 
 
+def test_clamp_range_includes_default():
+    """Sanity: the default must lie inside the clamp range, or every fresh
+    install would hit the clamp on its very first read.
+    """
+    assert _DISCORD_PROMPT_TIMEOUT_MIN <= _DISCORD_PROMPT_TIMEOUT_DEFAULT <= _DISCORD_PROMPT_TIMEOUT_MAX

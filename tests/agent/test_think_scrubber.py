@@ -28,6 +28,9 @@ class TestClosedPairs:
         s = StreamingThinkScrubber()
         assert _drive(s, ["<think>reasoning</think>Hello world"]) == "Hello world"
 
+    def test_closed_pair_surrounded_by_content(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["Hello <think>note</think> world"]) == "Hello  world"
 
     @pytest.mark.parametrize(
         "tag",
@@ -38,6 +41,9 @@ class TestClosedPairs:
         delta = f"<{tag}>x</{tag}>Hello"
         assert _drive(s, [delta]) == "Hello"
 
+    def test_case_insensitive_pair(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["<THINK>x</Think>Hello"]) == "Hello"
 
 
 class TestUnterminatedOpen:
@@ -47,7 +53,14 @@ class TestUnterminatedOpen:
         s = StreamingThinkScrubber()
         assert _drive(s, ["<think>reasoning text with no close"]) == ""
 
+    def test_open_after_newline(self) -> None:
+        s = StreamingThinkScrubber()
+        # 'Hello\n' is a block boundary for the <think> that follows
+        assert _drive(s, ["Hello\n<think>reasoning"]) == "Hello\n"
 
+    def test_open_after_newline_then_whitespace(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["Hello\n  <think>reasoning"]) == "Hello\n  "
 
     def test_prose_mentioning_tag_not_stripped(self) -> None:
         """Mid-line '<think>' in prose is preserved (no boundary)."""
@@ -63,7 +76,14 @@ class TestOrphanClose:
         s = StreamingThinkScrubber()
         assert _drive(s, ["Hello</think>world"]) == "Helloworld"
 
+    def test_orphan_close_with_trailing_space_consumed(self) -> None:
+        """Matches _strip_think_blocks case 3 \\s* behaviour."""
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["Hello</think> world"]) == "Helloworld"
 
+    def test_multiple_orphan_closes(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["A</think>B</thinking>C"]) == "ABC"
 
 
 class TestPartialTagsAcrossDeltas:
@@ -89,7 +109,21 @@ class TestPartialTagsAcrossDeltas:
         out = _drive(s, ["word<", "think>prose</think>more"])
         assert out == "wordmore"
 
+    def test_split_close_tag_held_back(self) -> None:
+        """Close tag split across deltas still closes the block."""
+        s = StreamingThinkScrubber()
+        assert (
+            _drive(s, ["<think>reasoning<", "/think>after"])
+            == "after"
+        )
 
+    def test_split_close_tag_deep(self) -> None:
+        """Close tag can be split anywhere."""
+        s = StreamingThinkScrubber()
+        assert (
+            _drive(s, ["<think>reasoning</th", "ink>after"])
+            == "after"
+        )
 
 
 class TestTheMiniMaxScenario:
@@ -101,6 +135,19 @@ class TestTheMiniMaxScenario:
         out = _drive(s, ["<think>", "Let me check their config", "</think>", "done"])
         assert out == "done"
 
+    def test_minimax_split_open_with_trailing_content(self) -> None:
+        """Reasoning then closes and hands off to final content."""
+        s = StreamingThinkScrubber()
+        out = _drive(
+            s,
+            [
+                "<think>",
+                "The user wants to know if thinking is on",
+                "</think>",
+                "\n\nshow_reasoning: false — thinking is OFF.",
+            ],
+        )
+        assert out == "\n\nshow_reasoning: false — thinking is OFF."
 
     def test_minimax_unterminated_reasoning_at_end(self) -> None:
         """Unclosed reasoning at stream end is dropped entirely."""
@@ -129,8 +176,21 @@ class TestResetAndReentry:
 
 
 class TestFlushBehaviour:
+    def test_flush_drops_unterminated_block(self) -> None:
+        s = StreamingThinkScrubber()
+        assert s.feed("<think>reasoning with no close") == ""
+        assert s.flush() == ""
 
+    def test_flush_emits_innocent_partial_tag_tail(self) -> None:
+        """If held-back tail turned out not to be a real tag, emit it."""
+        s = StreamingThinkScrubber()
+        s.feed("word<")  # '<' could be a tag prefix
+        # Stream ends with only '<' held back — emit it as prose.
+        assert s.flush() == "<"
 
+    def test_flush_on_empty_scrubber(self) -> None:
+        s = StreamingThinkScrubber()
+        assert s.flush() == ""
 
     def test_flush_restores_stream_start_boundary(self) -> None:
         """End-of-stream flush must re-arm block-boundary gating.
@@ -167,6 +227,10 @@ class TestRealisticStreaming:
         deltas = list("<think>x</think>Hello world")
         assert _drive(s, deltas) == "Hello world"
 
+    def test_char_by_char_orphan_close(self) -> None:
+        s = StreamingThinkScrubber()
+        deltas = list("Hello</think>world")
+        assert _drive(s, deltas) == "Helloworld"
 
     def test_reasoning_then_real_response_first_word_preserved(self) -> None:
         """Regression: the first word of the final response must NOT be eaten.

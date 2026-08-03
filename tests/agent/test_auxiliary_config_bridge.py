@@ -73,6 +73,17 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
 class TestAuxiliaryConfigBridge:
     """Verify the config.yaml → env var bridging logic used by CLI and gateway."""
 
+    def test_vision_provider_bridged(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "vision": {"provider": "openrouter", "model": ""},
+                "web_extract": {"provider": "auto", "model": ""},
+            }
+        }
+        _run_auxiliary_bridge(config, monkeypatch)
+        assert os.environ.get("AUXILIARY_VISION_PROVIDER") == "openrouter"
+        # auto should not be set
+        assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") is None
 
     def test_vision_model_bridged(self, monkeypatch):
         config = {
@@ -95,9 +106,46 @@ class TestAuxiliaryConfigBridge:
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") == "nous"
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_MODEL") == "gemini-2.5-flash"
 
+    def test_direct_endpoint_bridged(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "base_url": "http://localhost:1234/v1",
+                    "api_key": "local-key",
+                    "model": "qwen2.5-vl",
+                }
+            }
+        }
+        _run_auxiliary_bridge(config, monkeypatch)
+        assert os.environ.get("AUXILIARY_VISION_BASE_URL") == "http://localhost:1234/v1"
+        assert os.environ.get("AUXILIARY_VISION_API_KEY") == "local-key"
+        assert os.environ.get("AUXILIARY_VISION_MODEL") == "qwen2.5-vl"
 
+    def test_empty_values_not_bridged(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "vision": {"provider": "auto", "model": ""},
+            }
+        }
+        _run_auxiliary_bridge(config, monkeypatch)
+        assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
+        assert os.environ.get("AUXILIARY_VISION_MODEL") is None
 
+    def test_missing_auxiliary_section_safe(self, monkeypatch):
+        """Config without auxiliary section should not crash."""
+        config = {"model": {"default": "test-model"}}
+        _run_auxiliary_bridge(config, monkeypatch)
+        assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
 
+    def test_non_dict_task_config_ignored(self, monkeypatch):
+        """Malformed task config (e.g. string instead of dict) is safely ignored."""
+        config = {
+            "auxiliary": {
+                "vision": "openrouter",  # should be a dict
+            }
+        }
+        _run_auxiliary_bridge(config, monkeypatch)
+        assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
 
     def test_mixed_tasks(self, monkeypatch):
         config = {
@@ -112,8 +160,34 @@ class TestAuxiliaryConfigBridge:
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") is None
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_MODEL") == "custom-llm"
 
+    def test_all_tasks_with_overrides(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"},
+                "web_extract": {"provider": "nous", "model": "gemini-3-flash"},
+            }
+        }
+        _run_auxiliary_bridge(config, monkeypatch)
+        assert os.environ.get("AUXILIARY_VISION_PROVIDER") == "openrouter"
+        assert os.environ.get("AUXILIARY_VISION_MODEL") == "google/gemini-2.5-flash"
+        assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") == "nous"
+        assert os.environ.get("AUXILIARY_WEB_EXTRACT_MODEL") == "gemini-3-flash"
 
+    def test_whitespace_in_values_stripped(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "vision": {"provider": "  openrouter  ", "model": "  my-model  "},
+            }
+        }
+        _run_auxiliary_bridge(config, monkeypatch)
+        assert os.environ.get("AUXILIARY_VISION_PROVIDER") == "openrouter"
+        assert os.environ.get("AUXILIARY_VISION_MODEL") == "my-model"
 
+    def test_empty_auxiliary_dict_safe(self, monkeypatch):
+        config = {"auxiliary": {}}
+        _run_auxiliary_bridge(config, monkeypatch)
+        assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
+        assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") is None
 
 
 # ── Gateway bridge parity test ───────────────────────────────────────────────

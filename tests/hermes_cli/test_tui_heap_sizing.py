@@ -42,6 +42,32 @@ class TestReadCgroupMemoryLimit:
     def test_v2_max_is_unlimited(self):
         assert _read({V2: "max"}) is None
 
+    def test_v2_numeric_limit(self):
+        assert _read({V2: str(4 * GB)}) == 4 * GB
+
+    def test_v1_unlimited_sentinel_is_none(self):
+        # cgroup v1 reports "unlimited" as a near-INT64 huge value.
+        assert _read({V1: "9223372036854771712"}) is None
+
+    def test_v1_numeric_limit_when_no_v2(self):
+        assert _read({V1: str(2 * GB)}) == 2 * GB
+
+    def test_no_files_present(self):
+        assert _read({}) is None
+
+    def test_empty_v2_falls_through_to_v1(self):
+        # A blank v2 file must NOT be mistaken for "unlimited" — fall to v1.
+        assert _read({V2: "", V1: str(3 * GB)}) == 3 * GB
+
+    def test_v2_wins_over_v1(self):
+        assert _read({V2: str(6 * GB), V1: str(2 * GB)}) == 6 * GB
+
+    def test_zero_is_skipped(self):
+        assert _read({V2: "0"}) is None
+
+    def test_petabyte_plus_treated_as_unlimited(self):
+        assert _read({V2: str(1 << 51)}) is None
+
 
 class TestResolveTuiHeapMb:
     def _resolve(self, limit_bytes):
@@ -50,6 +76,27 @@ class TestResolveTuiHeapMb:
 
     def test_unconstrained_uses_default(self):
         assert self._resolve(None) == 8192
+
+    def test_large_container_clamps_to_default(self):
+        # 16GB -> 75% = 12288 >= 8192 -> clamp to 8192.
+        assert self._resolve(16 * GB) == 8192
+
+    def test_4gb_container_75_percent(self):
+        assert self._resolve(4 * GB) == 3072
+
+    def test_3gb_container_above_floor(self):
+        assert self._resolve(3 * GB) == 2304
+
+    def test_2gb_container_at_floor(self):
+        assert self._resolve(2 * GB) == 1536
+
+    def test_tiny_container_honors_limit_below_floor(self):
+        # 1GB -> 75% = 768; honored even though below the 1536 floor, because a
+        # graceful V8 exit beats a silent cgroup SIGKILL.
+        assert self._resolve(1 * GB) == 768
+
+    def test_never_exceeds_default(self):
+        assert self._resolve(64 * GB) == 8192
 
 
 class TestNodeOptionsTokenMerge:
@@ -66,6 +113,11 @@ class TestNodeOptionsTokenMerge:
     def test_unconstrained_empty(self):
         assert self._merge("", None) == "--max-old-space-size=8192"
 
+    def test_constrained_container(self):
+        assert self._merge("", 4 * GB) == "--max-old-space-size=3072"
+
+    def test_user_override_respected(self):
+        assert self._merge("--max-old-space-size=12288", 2 * GB) == "--max-old-space-size=12288"
 
     def test_preserves_other_flags(self):
         assert self._merge("--enable-source-maps", 4 * GB) == "--enable-source-maps --max-old-space-size=3072"

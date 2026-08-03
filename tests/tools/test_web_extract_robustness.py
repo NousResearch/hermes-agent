@@ -26,6 +26,23 @@ def test_store_full_text_is_bounded(tmp_path, monkeypatch):
     assert "stored copy truncated" in stored
 
 
+def test_truncate_footer_gives_concrete_offset(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Build content well over the limit with many lines so head has a known count.
+    content = "\n".join(f"line {i}" for i in range(5000))
+    model_text, truncated = wt._truncate_with_footer(
+        content, "https://example.com/page", char_limit=4000
+    )
+    assert truncated
+    # Footer must contain a real integer offset, NOT the <line> placeholder.
+    assert "offset=<line>" not in model_text
+    m = re.search(r"offset=(\d+) limit=\d+", model_text)
+    assert m, f"no concrete offset in footer: {model_text[-400:]}"
+    offset = int(m.group(1))
+    # Offset should point past the head we showed (head is ~75% of 4000 chars).
+    assert offset > 1
+
+
 def test_small_page_not_truncated_no_footer(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     content = "short page\nwith a few lines\n"

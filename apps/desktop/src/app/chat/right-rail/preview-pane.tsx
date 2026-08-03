@@ -12,7 +12,6 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
 
-import { ArtifactPreview } from './preview-artifact'
 import {
   clampConsoleHeight,
   compactUrl,
@@ -147,13 +146,7 @@ export function PreviewPane({
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
-
-  // Artifacts have no URL to load — they render from the registry, never in a
-  // webview.
-  const isWebPreview =
-    target.kind !== 'artifact' &&
-    (target.kind === 'url' || (target.previewKind === 'html' && target.renderMode !== 'source'))
-
+  const isWebPreview = target.kind === 'url' || (target.previewKind === 'html' && target.renderMode !== 'source')
   const currentLabel = compactUrl(currentUrl)
 
   const previewLabel =
@@ -326,7 +319,6 @@ export function PreviewPane({
     return () => setTitlebarToolGroup(TITLEBAR_GROUP_ID, [])
   }, [consoleOpen, consoleState, copy, devtoolsOpen, isWebPreview, setTitlebarToolGroup, toggleDevTools])
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!consoleOpen) {
       return
@@ -342,7 +334,6 @@ export function PreviewPane({
     return () => window.cancelAnimationFrame(handle)
   }, [consoleOpen])
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (
       !previewServerRestart ||
@@ -401,7 +392,6 @@ export function PreviewPane({
     return () => window.clearTimeout(timer)
   }, [copy.stillWorking, previewServerRestart, restartingServer])
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (reloadRequest === lastReloadRequestRef.current) {
       return
@@ -508,7 +498,6 @@ export function PreviewPane({
     }
   }, [appendConsoleEntry, copy, reloadPreview, target.kind, target.url])
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const host = hostRef.current
 
@@ -650,12 +639,7 @@ export function PreviewPane({
             )}
             ref={hostRef}
           />
-          {!isWebPreview &&
-            (target.kind === 'artifact' ? (
-              <ArtifactPreview target={target} />
-            ) : (
-              <LocalFilePreview reloadKey={localReloadKey} target={target} />
-            ))}
+          {!isWebPreview && <LocalFilePreview reloadKey={localReloadKey} target={target} />}
           {loadError && (
             <PreviewLoadError
               consoleHeight={consoleOpen ? consoleHeight : 0}

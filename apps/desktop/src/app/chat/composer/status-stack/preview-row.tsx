@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 import { PREVIEW_PANE_ID } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $paneOpen } from '@/store/panes'
-import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
+import { $previewTarget, dismissPreviewTarget, setCurrentSessionPreviewTarget } from '@/store/preview'
 import { type PreviewArtifact } from '@/store/preview-status'
 
 interface PreviewStatusRowProps {
@@ -22,10 +22,10 @@ interface PreviewStatusRowProps {
 /** One detected artifact, single line, always visible: filename + open + close. */
 export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss }: PreviewStatusRowProps) {
   const { t } = useI18n()
-  const openSources = useStore($previewTabSources)
+  const activePreview = useStore($previewTarget)
   const previewPaneOpen = useStore($paneOpen(PREVIEW_PANE_ID))
   const [opening, setOpening] = useState(false)
-  const isOpen = openSources.includes(item.target) && previewPaneOpen
+  const isOpen = activePreview?.source === item.target && previewPaneOpen
 
   const resolveTarget = async () => {
     const target = await normalizeOrLocalPreviewTarget(item.target, item.cwd || undefined)
@@ -43,7 +43,7 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     }
 
     if (isOpen) {
-      closePreviewForSource(item.target)
+      dismissPreviewTarget()
 
       return
     }
@@ -51,7 +51,7 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     setOpening(true)
 
     try {
-      openPreview(await resolveTarget(), 'tool-result')
+      setCurrentSessionPreviewTarget(await resolveTarget(), 'tool-result', item.target)
     } catch (error) {
       notifyError(error, t.preview.unavailable)
     } finally {

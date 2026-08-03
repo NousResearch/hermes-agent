@@ -154,6 +154,71 @@ class TestCachedAgentCleanupOnShutdown:
 
         assert len(gw._agent_cache) == 0
 
+    @pytest.mark.asyncio
+    async def test_no_cached_agents_no_error(self):
+        """stop() works fine when _agent_cache is empty."""
+        gw = _FakeGateway()
+
+        await gw_mod.GatewayRunner.stop(gw)  # Should not raise
+
+        assert len(gw._agent_cache) == 0
+
+    @pytest.mark.asyncio
+    async def test_multiple_cached_agents_all_cleaned(self):
+        """All cached agents get cleaned up."""
+        gw = _FakeGateway()
+        agents = []
+        for i in range(5):
+            a = _make_mock_agent()
+            agents.append(a)
+            gw._agent_cache[f"s{i}"] = (a, f"sig{i}")
+
+        await gw_mod.GatewayRunner.stop(gw)
+
+        for a in agents:
+            a.shutdown_memory_provider.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_survives_agent_exception(self):
+        """An exception from one agent's shutdown doesn't prevent others."""
+        gw = _FakeGateway()
+
+        bad = _make_mock_agent()
+        bad.shutdown_memory_provider.side_effect = RuntimeError("boom")
+        bad.close.side_effect = RuntimeError("boom")
+
+        good = _make_mock_agent()
+
+        gw._agent_cache["bad"] = (bad, "sig-bad")
+        gw._agent_cache["good"] = (good, "sig-good")
+
+        await gw_mod.GatewayRunner.stop(gw)
+
+        # The good agent should still be cleaned up
+        good.shutdown_memory_provider.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_plain_agent_not_tuple(self):
+        """Cache entries that aren't tuples (just bare agents) are also cleaned."""
+        gw = _FakeGateway()
+        agent = _make_mock_agent()
+        gw._agent_cache["s1"] = agent  # Not a tuple
+
+        await gw_mod.GatewayRunner.stop(gw)
+
+        agent.shutdown_memory_provider.assert_called_once()
+        assert len(gw._agent_cache) == 0
+
+    @pytest.mark.asyncio
+    async def test_none_entry_skipped(self):
+        """A None cache entry doesn't cause errors."""
+        gw = _FakeGateway()
+        gw._agent_cache["s1"] = None
+
+        await gw_mod.GatewayRunner.stop(gw)
+
+        assert len(gw._agent_cache) == 0
+
 
 class TestRunningAgentsNotDoubleCleaned:
     """Verify behavior when agents appear in both _running_agents and _agent_cache."""

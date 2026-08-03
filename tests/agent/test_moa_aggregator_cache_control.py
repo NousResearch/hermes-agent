@@ -15,7 +15,6 @@ even when the resolved aggregator slot is a cache-honoring route.
 
 from __future__ import annotations
 
-import copy
 from types import SimpleNamespace
 
 import pytest
@@ -113,41 +112,3 @@ def test_aggregator_synthesis_untouched_on_non_caching_route(
     agg_kwargs = _aggregator_kwargs(captured_calls)
     synth_message = agg_kwargs["messages"][0]
     assert isinstance(synth_message["content"], str), "must stay undecorated (plain string content)"
-
-
-def test_prepared_aggregator_plans_tools_without_decorating_prepared_state(monkeypatch):
-    from agent import moa_loop
-
-    calls = []
-    monkeypatch.setattr(moa_loop, "call_llm", lambda **kwargs: calls.append(kwargs) or _response())
-    monkeypatch.setattr(
-        moa_loop,
-        "_slot_runtime",
-        lambda slot: {
-            "provider": "anthropic",
-            "model": "claude-sonnet-4-6",
-            "base_url": "https://api.anthropic.com",
-            "api_mode": "anthropic_messages",
-        },
-    )
-    completions = moa_loop.MoAChatCompletions.__new__(moa_loop.MoAChatCompletions)
-    completions._pending_trace = None
-    prepared = {
-        "messages": [
-            {"role": "system", "content": "system"},
-            {"role": "user", "content": "lookup"},
-            {"role": "assistant", "content": "", "tool_calls": [{"id": "lookup", "function": {"name": "lookup", "arguments": "{}"}}]},
-            {"role": "tool", "tool_call_id": "lookup", "content": "result"},
-        ],
-        "guidance": None,
-        "aggregator": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
-        "aggregator_temperature": None,
-    }
-    canonical_prepared = copy.deepcopy(prepared)
-    tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}}}]
-
-    completions._call_prepared_aggregator(prepared, {"tools": tools})
-
-    assert "cache_control" in calls[0]["tools"][-1]
-    assert "cache_control" not in tools[-1]
-    assert prepared == canonical_prepared

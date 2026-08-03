@@ -1,14 +1,14 @@
 ---
-title: "Huggingface Accelerate — Run PyTorch training across GPUs with minimal changes"
+title: "Huggingface Accelerate — Simplest distributed training API"
 sidebar_label: "Huggingface Accelerate"
-description: "Run PyTorch training across GPUs with minimal changes"
+description: "Simplest distributed training API"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Huggingface Accelerate
 
-Run PyTorch training across GPUs with minimal changes.
+Simplest distributed training API. 4 lines to add distributed support to any PyTorch script. Unified API for DeepSpeed/FSDP/Megatron/DDP. Automatic device placement, mixed precision (FP16/BF16/FP8). Interactive config, single launch command. HuggingFace ecosystem standard.
 
 ## Skill metadata
 
@@ -16,7 +16,7 @@ Run PyTorch training across GPUs with minimal changes.
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/accelerate` |
 | Path | `optional-skills/mlops/accelerate` |
-| Version | `1.0.1` |
+| Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `accelerate`, `torch`, `transformers` |
@@ -163,35 +163,30 @@ for batch in dataloader:
 
 ### Workflow 3: DeepSpeed ZeRO integration
 
-**Enable DeepSpeed ZeRO-2** (pass a `DeepSpeedPlugin`, not a raw dict):
+**Enable DeepSpeed ZeRO-2**:
 ```python
-from accelerate import Accelerator, DeepSpeedPlugin
-
-deepspeed_plugin = DeepSpeedPlugin(
-    zero_stage=2,                     # ZeRO-2
-    offload_optimizer_device="none",  # or "cpu" to offload
-    gradient_accumulation_steps=4,
-)
+from accelerate import Accelerator
 
 accelerator = Accelerator(
     mixed_precision='bf16',
-    deepspeed_plugin=deepspeed_plugin,  # DeepSpeedPlugin instance (or dict[str, DeepSpeedPlugin])
+    deepspeed_plugin={
+        "zero_stage": 2,  # ZeRO-2
+        "offload_optimizer": False,
+        "gradient_accumulation_steps": 4
+    }
 )
 
 # Same code as before!
 model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 ```
 
-**Or point at a full DeepSpeed JSON config via the plugin**:
-```python
-from accelerate import Accelerator, DeepSpeedPlugin
-
-# hf_ds_config accepts a path to a DeepSpeed config JSON (or a dict)
-deepspeed_plugin = DeepSpeedPlugin(hf_ds_config="ds_config.json")
-accelerator = Accelerator(mixed_precision='bf16', deepspeed_plugin=deepspeed_plugin)
+**Or via config**:
+```bash
+accelerate config
+# Select: DeepSpeed → ZeRO-2
 ```
 
-**ds_config.json** (a raw DeepSpeed config — passed via the plugin, NOT via `--config_file`):
+**deepspeed_config.json**:
 ```json
 {
     "fp16": {"enabled": false},
@@ -205,20 +200,9 @@ accelerator = Accelerator(mixed_precision='bf16', deepspeed_plugin=deepspeed_plu
 }
 ```
 
-**Or via interactive config**:
+**Launch**:
 ```bash
-accelerate config
-# Select: DeepSpeed → ZeRO-2
-# This writes an accelerate YAML config (default: ~/.cache/huggingface/accelerate/default_config.yaml)
-```
-
-**Launch** (`--config_file` expects an accelerate YAML, not a raw DeepSpeed JSON):
-```bash
-# Uses the default accelerate config written by `accelerate config`
-accelerate launch train.py
-
-# Or point at a specific accelerate YAML
-accelerate launch --config_file accelerate_deepspeed.yaml train.py
+accelerate launch --config_file deepspeed_config.json train.py
 ```
 
 ### Workflow 4: FSDP (Fully Sharded Data Parallel)
@@ -229,7 +213,7 @@ from accelerate import Accelerator, FullyShardedDataParallelPlugin
 
 fsdp_plugin = FullyShardedDataParallelPlugin(
     sharding_strategy="FULL_SHARD",  # ZeRO-3 equivalent
-    auto_wrap_policy="transformer_based_wrap",  # valid: transformer_based_wrap | size_based_wrap | no_wrap
+    auto_wrap_policy="TRANSFORMER_AUTO_WRAP",
     cpu_offload=False
 )
 

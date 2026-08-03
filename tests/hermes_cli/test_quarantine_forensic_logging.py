@@ -56,6 +56,17 @@ def test_quarantine_emits_warning(caplog):
     assert any("quarantined" in r.getMessage() for r in warnings)
 
 
+def test_warning_contains_hash_prefix_and_error_code(caplog):
+    state = _make_state()
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+        _quarantine_nous_oauth_state(state, _error(), reason="unit_test_quarantine")
+
+    text = caplog.text
+    assert _EXPECTED_FP in text, (
+        f"expected refresh-token hash prefix {_EXPECTED_FP} in log output"
+    )
+    assert "invalid_grant" in text, "expected error.code in log output"
+    assert "unit_test_quarantine" in text, "expected reason in log output"
 
 
 def test_raw_refresh_token_never_logged(caplog):
@@ -71,3 +82,23 @@ def test_raw_refresh_token_never_logged(caplog):
     assert "nous_agent_key_SECRET_material" not in text
 
 
+def test_quarantine_no_refresh_token_does_not_throw(caplog):
+    state = _make_state()
+    state.pop("refresh_token", None)
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+        # Must not raise even when there is no refresh token to fingerprint.
+        _quarantine_nous_oauth_state(state, _error(), reason="unit_test_no_rt")
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings, "expected a WARNING even when refresh_token is absent"
+    # Fingerprint should be null/None, and definitely not the canary prefix.
+    assert _EXPECTED_FP not in caplog.text
+
+
+def test_quarantine_clears_token_material():
+    """Regression guard: the quarantine still clears dead token keys."""
+    state = _make_state()
+    _quarantine_nous_oauth_state(state, _error(), reason="unit_test_quarantine")
+    for key in ("access_token", "refresh_token", "agent_key", "agent_key_id", "expires_at"):
+        assert key not in state, f"{key} should have been cleared by quarantine"
+    assert state["last_auth_error"]["code"] == "invalid_grant"

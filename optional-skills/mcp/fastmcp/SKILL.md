@@ -1,6 +1,6 @@
 ---
 name: fastmcp
-description: Build, test, and deploy Python MCP servers.
+description: Build, test, inspect, install, and deploy MCP servers with FastMCP in Python. Use when creating a new MCP server, wrapping an API or database as MCP tools, exposing resources or prompts, or preparing a FastMCP server for Claude Code, Cursor, or HTTP deployment.
 version: 1.0.0
 author: Hermes Agent
 license: MIT
@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [MCP, FastMCP, Python, Tools, Resources, Prompts, Deployment]
     homepage: https://gofastmcp.com
-    related_skills: [hermes-agent, mcporter]
+    related_skills: [native-mcp, mcporter]
 prerequisites:
   commands: [python3]
 ---

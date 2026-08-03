@@ -51,12 +51,81 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
 
 
 class TestScanSkillCommands:
+    def test_finds_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "my-skill")
+            result = scan_skill_commands()
+        assert "/my-skill" in result
+        assert result["/my-skill"]["name"] == "my-skill"
 
+    def test_empty_dir(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            result = scan_skill_commands()
+        assert result == {}
 
+    def test_excludes_incompatible_platform(self, tmp_path):
+        """macOS-only skills should not register slash commands on Linux."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_utils.sys") as mock_sys,
+        ):
+            mock_sys.platform = "linux"
+            _make_skill(tmp_path, "imessage", frontmatter_extra="platforms: [macos]\n")
+            _make_skill(tmp_path, "web-search")
+            result = scan_skill_commands()
+        assert "/web-search" in result
+        assert "/imessage" not in result
 
+    def test_includes_matching_platform(self, tmp_path):
+        """macOS-only skills should register slash commands on macOS."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_utils.sys") as mock_sys,
+        ):
+            mock_sys.platform = "darwin"
+            _make_skill(tmp_path, "imessage", frontmatter_extra="platforms: [macos]\n")
+            result = scan_skill_commands()
+        assert "/imessage" in result
 
+    def test_universal_skill_on_any_platform(self, tmp_path):
+        """Skills without platforms field should register on any platform."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_utils.sys") as mock_sys,
+        ):
+            mock_sys.platform = "win32"
+            _make_skill(tmp_path, "generic-tool")
+            result = scan_skill_commands()
+        assert "/generic-tool" in result
 
+    def test_excludes_disabled_skills(self, tmp_path):
+        """Disabled skills should not register slash commands."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "tools.skills_tool._get_disabled_skill_names",
+                return_value={"disabled-skill"},
+            ),
+        ):
+            _make_skill(tmp_path, "enabled-skill")
+            _make_skill(tmp_path, "disabled-skill")
+            result = scan_skill_commands()
+        assert "/enabled-skill" in result
+        assert "/disabled-skill" not in result
 
+    def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            result = scan_skill_commands()
+
+        assert "/knowledge-brain" in result
+        assert result["/knowledge-brain"]["name"] == "knowledge-brain"
 
     def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
         """Slash commands should load skills symlinked under the local skills dir."""
@@ -236,15 +305,106 @@ class TestScanSkillCommands:
             assert "/telegram-only" in bare_commands
             assert sc_mod._skill_commands_platform is None
 
+    def test_get_skill_commands_does_not_rescan_when_platform_unchanged(self, tmp_path):
+        """Same-platform back-to-back calls must hit the cache, not rescan.
+
+        The rescan trigger is *change* in platform scope, not "always
+        re-resolve." A gateway serving consecutive telegram requests must
+        not pay the scan cost for each one.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.dict(os.environ, {"HERMES_PLATFORM": "telegram"}),
+        ):
+            _make_skill(tmp_path, "shared")
+            # Prime the cache.
+            get_skill_commands()
+            # Spy on rescans during the subsequent same-platform calls.
+            with patch(
+                "agent.skill_commands.scan_skill_commands",
+                wraps=sc_mod.scan_skill_commands,
+            ) as scan_spy:
+                get_skill_commands()
+                get_skill_commands()
+                get_skill_commands()
+            assert scan_spy.call_count == 0
 
 
+    def test_special_chars_stripped_from_cmd_key(self, tmp_path):
+        """Skill names with +, /, or other special chars produce clean cmd keys."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            # Simulate a skill named "Jellyfin + Jellystat 24h Summary"
+            skill_dir = tmp_path / "jellyfin-plus"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: Jellyfin + Jellystat 24h Summary\n"
+                "description: Test skill\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        # The + should be stripped, not left as a literal character
+        assert "/jellyfin-jellystat-24h-summary" in result
+        # The old buggy key should NOT exist
+        assert "/jellyfin-+-jellystat-24h-summary" not in result
 
+    def test_allspecial_name_skipped(self, tmp_path):
+        """Skill with name consisting only of special chars is silently skipped."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "bad-name"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: +++\ndescription: Bad skill\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        # Should not create a "/" key or any entry
+        assert "/" not in result
+        assert result == {}
 
+    def test_slash_in_name_stripped_from_cmd_key(self, tmp_path):
+        """Skill names with / chars produce clean cmd keys."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "sonarr-api"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: Sonarr v3/v4 API\n"
+                "description: Test skill\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/sonarr-v3v4-api" in result
+        assert any("/" in k[1:] for k in result) is False  # no unescaped /
 
     # -- core-command collision guard (#31204 / #53450) ---------------------
 
+    def test_skill_collides_with_core_command_is_skipped(self, tmp_path):
+        """A skill whose auto-generated /command collides with a core Hermes
+        command (e.g. 'skills') should be excluded from the slash-command map.
+        The skill remains loadable via /skill <name>."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "skills")
+            result = scan_skill_commands()
+        assert "/skills" not in result
 
+    def test_skill_collides_with_core_alias_is_skipped(self, tmp_path):
+        """A skill whose slug matches a core command *alias* is also skipped."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "bg")
+            result = scan_skill_commands()
+        # "bg" is an alias of the "background" command
+        assert "/bg" not in result
 
+    def test_core_command_collision_does_not_block_others(self, tmp_path):
+        """A colliding skill is skipped, but non-colliding skills in the same
+        scan pass are still registered."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "skills")
+            _make_skill(tmp_path, "my-other-skill")
+            result = scan_skill_commands()
+        assert "/skills" not in result
+        assert "/my-other-skill" in result
 
     # -- inter-skill slug collision dedup (#50304 / #63305) ------------------
 
@@ -306,7 +466,18 @@ class TestResolveSkillCommandKey:
             scan_skill_commands()
             assert resolve_skill_command_key("claude-code") == "/claude-code"
 
+    def test_underscore_form_resolves_to_hyphenated_skill(self, tmp_path):
+        """/claude_code from Telegram autocomplete must resolve to /claude-code."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "claude-code")
+            scan_skill_commands()
+            assert resolve_skill_command_key("claude_code") == "/claude-code"
 
+    def test_single_word_command_resolves(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "investigate")
+            scan_skill_commands()
+            assert resolve_skill_command_key("investigate") == "/investigate"
 
     def test_unknown_command_returns_none(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -315,7 +486,19 @@ class TestResolveSkillCommandKey:
             assert resolve_skill_command_key("does_not_exist") is None
             assert resolve_skill_command_key("does-not-exist") is None
 
+    def test_empty_command_returns_none(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            assert resolve_skill_command_key("") is None
 
+    def test_hyphenated_command_is_not_mangled(self, tmp_path):
+        """A user-typed /foo-bar (hyphen) must not trigger the underscore fallback."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "foo-bar")
+            scan_skill_commands()
+            assert resolve_skill_command_key("foo-bar") == "/foo-bar"
+            # Underscore form also works (Telegram round-trip)
+            assert resolve_skill_command_key("foo_bar") == "/foo-bar"
 
 
 class TestBuildPreloadedSkillsPrompt:
@@ -333,6 +516,16 @@ class TestBuildPreloadedSkillsPrompt:
         assert "second-skill" in prompt
         assert "preloaded" in prompt.lower()
 
+    def test_reports_missing_named_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "present-skill")
+            prompt, loaded, missing = build_preloaded_skills_prompt(
+                ["present-skill", "missing-skill"]
+            )
+
+        assert "present-skill" in prompt
+        assert loaded == ["present-skill"]
+        assert missing == ["missing-skill"]
 
     def test_skips_disabled_skill(self, tmp_path, monkeypatch):
         """A globally-disabled skill must not be force-loaded via -s /
@@ -355,12 +548,70 @@ class TestBuildPreloadedSkillsPrompt:
         assert "SECRET DISABLED CONTENT." not in prompt
         assert "enabled-skill" in prompt
 
+    def test_loads_normally_when_nothing_disabled(self, tmp_path, monkeypatch):
+        """Positive control: without a disabled-skills config, both load."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "first-skill")
+            _make_skill(tmp_path, "second-skill")
+
+            import agent.skill_utils as su_module
+            monkeypatch.setattr(su_module, "get_disabled_skill_names", lambda platform=None: set())
+
+            prompt, loaded, missing = build_preloaded_skills_prompt(
+                ["first-skill", "second-skill"]
+            )
+
+        assert missing == []
+        assert loaded == ["first-skill", "second-skill"]
 
 
 class TestBuildSkillInvocationMessage:
+    def test_loads_skill_by_stored_path_when_frontmatter_name_differs(self, tmp_path):
+        skill_dir = tmp_path / "mlops" / "audiocraft"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            """\
+---
+name: audiocraft-audio-generation
+description: Generate audio with AudioCraft.
+---
 
+# AudioCraft
 
+Generate some audio.
+"""
+        )
 
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/audiocraft-audio-generation", "compose")
+
+        assert msg is not None
+        assert "AudioCraft" in msg
+        assert "compose" in msg
+
+    def test_builds_message(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "test-skill")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/test-skill", "do stuff")
+        assert msg is not None
+        assert "test-skill" in msg
+        assert "do stuff" in msg
+
+    def test_returns_none_for_unknown(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/nonexistent")
+        assert msg is None
+
+    def test_returns_none_when_skill_load_fails(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "broken-skill")
+            scan_skill_commands()
+            with patch("agent.skill_commands._load_skill_payload", return_value=None):
+                msg = build_skill_invocation_message("/broken-skill", "do stuff")
+        assert msg is None
 
     def test_uses_shared_skill_loader_for_secure_setup(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
@@ -440,6 +691,31 @@ class TestBuildSkillInvocationMessage:
         assert msg is not None
         assert "local cli" in msg.lower()
 
+    def test_preserves_remaining_remote_setup_warning(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        monkeypatch.setattr(
+            skills_tool_module,
+            "_secret_capture_callback",
+            None,
+            raising=False,
+        )
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "test-skill",
+                frontmatter_extra=(
+                    "required_environment_variables:\n"
+                    "  - name: TENOR_API_KEY\n"
+                    "    prompt: Tenor API key\n"
+                ),
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/test-skill", "do stuff")
+
+        assert msg is not None
+        assert "remote environment" in msg.lower()
 
     def test_supporting_file_hint_uses_file_path_argument(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -505,7 +781,34 @@ class TestTemplateVarSubstitution:
         # The literal template token must not leak through.
         assert "${HERMES_SKILL_DIR}" not in msg.split("[Skill directory:")[0]
 
+    def test_substitutes_session_id_when_available(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "sess-templated",
+                body="Session: ${HERMES_SESSION_ID}",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message(
+                "/sess-templated", task_id="abc-123"
+            )
 
+        assert msg is not None
+        assert "Session: abc-123" in msg
+
+    def test_leaves_session_id_token_when_missing(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "sess-missing",
+                body="Session: ${HERMES_SESSION_ID}",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/sess-missing", task_id=None)
+
+        assert msg is not None
+        # No session — token left intact so the author can spot it.
+        assert "Session: ${HERMES_SESSION_ID}" in msg
 
     def test_disable_template_vars_via_config(self, tmp_path):
         with (
@@ -532,7 +835,41 @@ class TestInlineShellExpansion:
     """Inline ``!`cmd`` snippets in SKILL.md run before the agent sees the
     content — but only when the user has opted in via config."""
 
+    def test_inline_shell_is_off_by_default(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "dyn-default-off",
+                body="Today is !`echo INLINE_RAN`.",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/dyn-default-off")
 
+        assert msg is not None
+        # Default config has inline_shell=False — snippet must stay literal.
+        assert "!`echo INLINE_RAN`" in msg
+        assert "Today is INLINE_RAN." not in msg
+
+    def test_inline_shell_runs_when_enabled(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_commands._load_skills_config",
+                return_value={"template_vars": True, "inline_shell": True,
+                              "inline_shell_timeout": 5},
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "dyn-on",
+                body="Marker: !`echo INLINE_RAN`.",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/dyn-on")
+
+        assert msg is not None
+        assert "Marker: INLINE_RAN." in msg
+        assert "!`echo INLINE_RAN`" not in msg
 
     def test_inline_shell_runs_in_skill_directory(self, tmp_path):
         """Inline snippets get the skill dir as CWD so relative paths work."""
@@ -589,6 +926,16 @@ class TestStackedSkillCommands:
         _make_skill(tmp_path, "skill-b", body="Body B.")
         _make_skill(tmp_path, "skill-c", body="Body C.")
 
+    def test_split_consumes_leading_skill_tokens(self, tmp_path):
+        from agent.skill_commands import split_stacked_skill_commands
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            keys, instruction = split_stacked_skill_commands(
+                "/skill-b /skill-c do the thing"
+            )
+        assert keys == ["/skill-b", "/skill-c"]
+        assert instruction == "do the thing"
 
     def test_split_stops_at_non_skill_token(self, tmp_path):
         from agent.skill_commands import split_stacked_skill_commands
@@ -603,7 +950,24 @@ class TestStackedSkillCommands:
         # there on is the user instruction (slash included).
         assert instruction == "/not-a-skill /skill-c hello"
 
+    def test_split_plain_instruction_passthrough(self, tmp_path):
+        from agent.skill_commands import split_stacked_skill_commands
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            keys, instruction = split_stacked_skill_commands("just do the thing")
+        assert keys == []
+        assert instruction == "just do the thing"
 
+    def test_split_underscore_form_resolves(self, tmp_path):
+        """Telegram autocomplete sends /skill_b — must resolve like /skill-b."""
+        from agent.skill_commands import split_stacked_skill_commands
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            keys, instruction = split_stacked_skill_commands("/skill_b go")
+        assert keys == ["/skill-b"]
+        assert instruction == "go"
 
     def test_split_caps_at_five_total(self, tmp_path):
         from agent.skill_commands import split_stacked_skill_commands
@@ -618,7 +982,33 @@ class TestStackedSkillCommands:
         assert len(keys) == 4
         assert instruction.startswith("/stk-5")
 
+    def test_split_dedupes_repeated_skill(self, tmp_path):
+        from agent.skill_commands import split_stacked_skill_commands
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            keys, instruction = split_stacked_skill_commands(
+                "/skill-b /skill-b go"
+            )
+        # The duplicate stops parsing (treated as instruction text).
+        assert keys == ["/skill-b"]
+        assert instruction == "/skill-b go"
 
+    def test_stacked_message_contains_all_bodies_and_instruction(self, tmp_path):
+        from agent.skill_commands import build_stacked_skill_invocation_message
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            result = build_stacked_skill_invocation_message(
+                ["/skill-a", "/skill-b"], "do the thing"
+            )
+        assert result is not None
+        msg, loaded, missing = result
+        assert loaded == ["skill-a", "skill-b"]
+        assert missing == []
+        assert "Body A." in msg
+        assert "Body B." in msg
+        assert "User instruction: do the thing" in msg
 
     def test_stacked_message_skips_missing_skills(self, tmp_path):
         from agent.skill_commands import build_stacked_skill_invocation_message
@@ -634,5 +1024,41 @@ class TestStackedSkillCommands:
         assert missing == ["gone"]
         assert "Skills missing (skipped): gone" in msg
 
+    def test_stacked_message_none_when_nothing_loads(self, tmp_path):
+        from agent.skill_commands import build_stacked_skill_invocation_message
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            result = build_stacked_skill_invocation_message(["/gone"], "go")
+        assert result is None
 
+    def test_memory_extractor_recovers_instruction_from_stacked_turn(self, tmp_path):
+        """The stacked scaffolding reuses bundle markers so memory providers
+        recover the user's instruction, not N skill bodies."""
+        from agent.skill_commands import (
+            build_stacked_skill_invocation_message,
+            extract_user_instruction_from_skill_message,
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            result = build_stacked_skill_invocation_message(
+                ["/skill-a", "/skill-b"], "summarize the repo"
+            )
+        assert result is not None
+        msg, _, _ = result
+        assert extract_user_instruction_from_skill_message(msg) == "summarize the repo"
 
+    def test_memory_extractor_returns_none_for_bare_stacked_turn(self, tmp_path):
+        from agent.skill_commands import (
+            build_stacked_skill_invocation_message,
+            extract_user_instruction_from_skill_message,
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            self._setup_three_skills(tmp_path)
+            scan_skill_commands()
+            result = build_stacked_skill_invocation_message(
+                ["/skill-a", "/skill-b"], ""
+            )
+        assert result is not None
+        msg, _, _ = result
+        assert extract_user_instruction_from_skill_message(msg) is None

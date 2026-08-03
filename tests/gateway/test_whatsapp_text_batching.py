@@ -33,6 +33,12 @@ def _event(text):
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=src)
 
 
+def test_batch_delays_default_from_config():
+    adapter = _make_adapter()
+    assert adapter._text_batch_delay_seconds == 5.0
+    assert adapter._text_batch_split_delay_seconds == 10.0
+
+
 def test_batch_delays_overridden_via_config_extra():
     adapter = _make_adapter(
         text_batch_delay_seconds="2.5",
@@ -51,3 +57,51 @@ def test_invalid_config_value_falls_back_to_default():
     assert adapter._text_batch_split_delay_seconds == 10.0
 
 
+def test_env_var_is_ignored(monkeypatch):
+    # Config-only path: the legacy HERMES_* env var must NOT influence delays.
+    monkeypatch.setenv("HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS", "99")
+    adapter = _make_adapter()
+    assert adapter._text_batch_delay_seconds == 5.0
+
+
+def test_rapid_texts_collapse_into_single_dispatch():
+    adapter = _make_adapter(
+        text_batch_delay_seconds=0.05,
+        text_batch_split_delay_seconds=0.05,
+    )
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event.text)
+
+    adapter.handle_message = _capture
+
+    async def _drive():
+        adapter._enqueue_text_event(_event("one"))
+        adapter._enqueue_text_event(_event("two"))
+        adapter._enqueue_text_event(_event("three"))
+        assert dispatched == []  # nothing flushed during the burst
+        await asyncio.sleep(0.2)
+
+    asyncio.run(_drive())
+    assert dispatched == ["one\ntwo\nthree"]
+
+
+def test_lone_message_dispatched_alone():
+    adapter = _make_adapter(
+        text_batch_delay_seconds=0.05,
+        text_batch_split_delay_seconds=0.05,
+    )
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event.text)
+
+    adapter.handle_message = _capture
+
+    async def _drive():
+        adapter._enqueue_text_event(_event("solo"))
+        await asyncio.sleep(0.2)
+
+    asyncio.run(_drive())
+    assert dispatched == ["solo"]

@@ -43,8 +43,55 @@ def _reset_registry():
 class TestPluginTTSProviders:
     """``_plugin_tts_providers()`` returns picker-row dicts."""
 
+    def test_empty_when_no_plugins(self):
+        assert tools_config._plugin_tts_providers() == []
 
+    def test_returns_row_for_registered_plugin(self):
+        tts_registry.register_provider(
+            _FakeTTSProvider(
+                name="cartesia",
+                schema={
+                    "name": "Cartesia",
+                    "badge": "paid",
+                    "tag": "Ultra-low-latency streaming",
+                    "env_vars": [
+                        {"key": "CARTESIA_API_KEY", "prompt": "Cartesia API key",
+                         "url": "https://play.cartesia.ai/console"},
+                    ],
+                },
+            )
+        )
+        rows = tools_config._plugin_tts_providers()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["name"] == "Cartesia"
+        assert row["badge"] == "paid"
+        assert row["tag"] == "Ultra-low-latency streaming"
+        assert row["env_vars"][0]["key"] == "CARTESIA_API_KEY"
+        # Selecting this row writes ``tts.provider: cartesia`` — same
+        # write path as a hardcoded row.
+        assert row["tts_provider"] == "cartesia"
+        assert row["tts_plugin_name"] == "cartesia"
 
+    def test_filters_builtin_shadow_defensively(self):
+        """Even if a plugin slipped past the registry's built-in check
+        (e.g. via direct ``agent.tts_registry.register_provider`` rather
+        than the ``ctx.register_tts_provider`` hook), the picker layer
+        filters it out so the picker invariant holds."""
+        # Use lower-level call to bypass the warning + skip in
+        # register_provider (the registry's built-in guard).
+        # Note: this is intentionally pathological — production code
+        # paths go through the hook which catches this first.
+        provider = _FakeTTSProvider(name="edge")
+        tts_registry._providers["edge"] = provider  # type: ignore[index]
+        try:
+            rows = tools_config._plugin_tts_providers()
+            assert rows == [], (
+                "Picker must filter built-in name shadows even when the "
+                "registry has been bypassed."
+            )
+        finally:
+            tts_registry._providers.pop("edge", None)  # type: ignore[arg-type]
 
     def test_skips_providers_with_no_name(self):
         """Defense in depth: a provider with no .name attribute is skipped
@@ -63,6 +110,15 @@ class TestPluginTTSProviders:
         finally:
             tts_registry._providers.pop("bogus", None)  # type: ignore[arg-type]
 
+    def test_skips_providers_whose_schema_raises(self):
+        class _ExplodingSchema(_FakeTTSProvider):
+            def get_setup_schema(self):
+                raise RuntimeError("boom")
+
+        tts_registry.register_provider(_ExplodingSchema(name="exploding"))
+        tts_registry.register_provider(_FakeTTSProvider(name="working"))
+        rows = tools_config._plugin_tts_providers()
+        assert [r["tts_plugin_name"] for r in rows] == ["working"]
 
     def test_minimal_schema_uses_display_name(self):
         """A provider with no setup_schema override gets a row built from
@@ -74,6 +130,19 @@ class TestPluginTTSProviders:
         assert rows[0]["tts_provider"] == "minimal"
         assert rows[0]["env_vars"] == []
 
+    def test_post_setup_passthrough(self):
+        tts_registry.register_provider(
+            _FakeTTSProvider(
+                name="my-tts",
+                schema={
+                    "name": "My TTS",
+                    "post_setup": "my_post_install_hook",
+                    "env_vars": [],
+                },
+            )
+        )
+        rows = tools_config._plugin_tts_providers()
+        assert rows[0].get("post_setup") == "my_post_install_hook"
 
 
 class TestVisibleProvidersInjectsTTSPlugins:
@@ -107,3 +176,12 @@ class TestVisibleProvidersInjectsTTSPlugins:
         names = [row.get("name") for row in visible]
         assert "Cartesia" not in names
 
+    def test_tts_category_without_plugins_only_hardcoded(self):
+        """No plugins → picker shows exactly the hardcoded rows."""
+        tts_cat = tools_config.TOOL_CATEGORIES["tts"]
+        visible = tools_config._visible_providers(tts_cat, config={})
+        names = [row.get("name") for row in visible]
+        # No row has the plugin marker
+        assert all(not row.get("tts_plugin_name") for row in visible)
+        # Hardcoded rows still present (sample one of the always-visible ones)
+        assert "Microsoft Edge TTS" in names

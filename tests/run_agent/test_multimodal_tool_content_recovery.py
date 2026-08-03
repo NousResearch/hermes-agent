@@ -57,6 +57,13 @@ class TestStripImagePartsHelper:
         assert agent._try_strip_image_parts_from_tool_messages([]) is False
         assert agent._try_strip_image_parts_from_tool_messages(None) is False
 
+    def test_no_tool_messages_returns_false(self):
+        agent = _make_agent()
+        msgs = [
+            {"role": "user", "content": "plain text"},
+            {"role": "assistant", "content": "ack"},
+        ]
+        assert agent._try_strip_image_parts_from_tool_messages(msgs) is False
 
     def test_tool_message_with_string_content_unchanged(self):
         agent = _make_agent()
@@ -77,7 +84,33 @@ class TestStripImagePartsHelper:
         ]
         assert agent._try_strip_image_parts_from_tool_messages(msgs) is False
 
+    def test_tool_message_list_with_image_downgrades(self):
+        agent = _make_agent()
+        msgs = [
+            {"role": "tool", "tool_call_id": "x", "content": [
+                {"type": "text", "text": "AX summary: 5 buttons visible"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR..."}},
+            ]},
+        ]
+        assert agent._try_strip_image_parts_from_tool_messages(msgs) is True
+        # Image stripped; text preserved as a string.
+        assert isinstance(msgs[0]["content"], str)
+        assert "AX summary" in msgs[0]["content"]
+        assert "image_url" not in msgs[0]["content"]
+        assert "iVBOR" not in msgs[0]["content"]
 
+    def test_tool_message_image_only_gets_placeholder(self):
+        """If the list had nothing but image parts, leave a placeholder so
+        the assistant message has something to reference."""
+        agent = _make_agent()
+        msgs = [
+            {"role": "tool", "tool_call_id": "x", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR..."}},
+            ]},
+        ]
+        assert agent._try_strip_image_parts_from_tool_messages(msgs) is True
+        assert isinstance(msgs[0]["content"], str)
+        assert "image content removed" in msgs[0]["content"]
 
     def test_records_provider_model_in_session_cache(self):
         agent = _make_agent(provider="xiaomi", model="mimo-v2.5")
@@ -112,6 +145,18 @@ class TestStripImagePartsHelper:
         assert isinstance(msgs[1]["content"], str)
         assert "summary" in msgs[1]["content"]
 
+    def test_skips_recording_when_no_model_id(self):
+        """Don't poison the cache with empty keys when provider/model is
+        unset (e.g. lazy-initialised mid-handshake)."""
+        agent = _make_agent(provider="", model="")
+        msgs = [
+            {"role": "tool", "tool_call_id": "x", "content": [
+                {"type": "text", "text": "summary"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,X"}},
+            ]},
+        ]
+        agent._try_strip_image_parts_from_tool_messages(msgs)
+        assert agent._no_list_tool_content_models == set()
 
 
 # ─── Short-circuit on cached models ──────────────────────────────────────────
@@ -151,7 +196,29 @@ class TestToolResultContentShortCircuit:
         assert "data:image" not in out
         assert "image_url" not in out
 
+    def test_returns_text_summary_when_model_in_cache(self, monkeypatch):
+        agent = _make_agent(provider="xiaomi", model="mimo-v2.5")
+        agent._no_list_tool_content_models = {("xiaomi", "mimo-v2.5")}
+        monkeypatch.setattr(agent, "_model_supports_vision", lambda: True)
+        out = agent._tool_result_content_for_active_model(
+            "computer_use", self._multimodal_result()
+        )
+        # Short-circuit: a plain string summary, no image_url present.
+        assert isinstance(out, str)
+        assert "data:image" not in out
+        assert "image_url" not in out
 
+    def test_xiaomi_any_model_gets_text_summary(self, monkeypatch):
+        """All Xiaomi models reject list-type tool content, so even a
+        different model on the same provider gets a text summary."""
+        agent = _make_agent(provider="xiaomi", model="mimo-v2.5-pro")
+        agent._no_list_tool_content_models = {("xiaomi", "mimo-v2.5")}
+        monkeypatch.setattr(agent, "_model_supports_vision", lambda: True)
+        out = agent._tool_result_content_for_active_model(
+            "computer_use", self._multimodal_result()
+        )
+        assert isinstance(out, str)
+        assert "data:image" not in out
 
     def test_missing_cache_attribute_falls_through(self, monkeypatch):
         """Agents built via ``object.__new__`` without calling ``__init__``

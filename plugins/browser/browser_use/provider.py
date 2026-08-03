@@ -37,7 +37,6 @@ from typing import Any, Dict, Optional
 import requests
 
 from agent.browser_provider import BrowserProvider
-from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +137,7 @@ class BrowserUseBrowserProvider(BrowserProvider):
 
         # Direct API key wins unless the user has explicitly opted into the
         # managed Nous gateway via ``tool_gateway.browser: gateway``.
-        api_key = get_secret("BROWSER_USE_API_KEY")
+        api_key = os.environ.get("BROWSER_USE_API_KEY")
         if api_key and not prefers_gateway("browser"):
             return {
                 "api_key": api_key,
@@ -247,10 +246,6 @@ class BrowserUseBrowserProvider(BrowserProvider):
             "session_name": session_name,
             "bb_session_id": session_data["id"],
             "cdp_url": cdp_url,
-            # Browser Use sessions have a fixed server-side lifetime. Preserve
-            # the authority returned by the API so the dispatcher can retire an
-            # expired CDP endpoint instead of reconnecting to it indefinitely.
-            "expires_at": session_data.get("timeoutAt"),
             "features": {"browser_use": True},
             "external_call_id": external_call_id,
         }
@@ -318,7 +313,5 @@ class BrowserUseBrowserProvider(BrowserProvider):
                     "url": "https://browser-use.com",
                 },
             ],
-            # Cloud-scoped hook: installs the agent-browser CLI only (no
-            # local Chromium — Browser Use hosts the browser).
-            "post_setup": "browserbase",
+            "post_setup": "agent_browser",
         }

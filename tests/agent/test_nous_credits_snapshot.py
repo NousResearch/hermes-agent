@@ -50,10 +50,55 @@ def test_healthy():
     assert "%" not in blob
 
 
+def test_money_rule_no_percent():
+    info = _account(
+        paid_service_access=True,
+        paid_service_access_info=NousPaidServiceAccessInfo(
+            subscription_credits_remaining=18.0,
+            purchased_credits_remaining=12.34,
+            total_usable_credits=30.34,
+        ),
+        subscription=NousPortalSubscriptionInfo(plan="Pro"),
+    )
+    snap = build_nous_credits_snapshot(info)
+    assert snap is not None
+    for line in snap.details:
+        assert "%" not in line
 
 
+def test_depleted():
+    info = _account(
+        paid_service_access=False,
+        paid_service_access_info=NousPaidServiceAccessInfo(
+            subscription_credits_remaining=0.0,
+            purchased_credits_remaining=0.0,
+            total_usable_credits=0.0,
+        ),
+        subscription=NousPortalSubscriptionInfo(plan="Pro"),
+    )
+    snap = build_nous_credits_snapshot(info)
+    assert snap is not None
+    blob = "\n".join(_all_lines(snap))
+    assert "access depleted" in blob
+    assert "/billing" in blob
 
 
+def test_purchased_only():
+    info = _account(
+        paid_service_access=True,
+        paid_service_access_info=NousPaidServiceAccessInfo(
+            subscription_credits_remaining=None,
+            purchased_credits_remaining=30.0,
+            total_usable_credits=30.0,
+        ),
+        subscription=None,
+    )
+    snap = build_nous_credits_snapshot(info)
+    assert snap is not None
+    blob = "\n".join(_all_lines(snap))
+    assert "Subscription credits" not in blob
+    assert "Top-up credits: $30.00" in blob
+    assert snap.plan is None
 
 
 def test_logged_out():
@@ -71,7 +116,50 @@ def test_none():
     assert build_nous_credits_snapshot(None) is None
 
 
+def test_never_raises_empty():
+    info = _account(
+        paid_service_access=True,
+        paid_service_access_info=None,
+        subscription=None,
+    )
+    # No usable numbers and not depleted -> None, without raising.
+    assert build_nous_credits_snapshot(info) is None
 
 
+def test_topup_line_is_org_pinned_when_slug_present():
+    info = _account(
+        portal_base_url="https://portal.example.test",
+        org_slug="acme",
+        org_name="Acme Inc",
+        paid_service_access=True,
+        paid_service_access_info=NousPaidServiceAccessInfo(
+            purchased_credits_remaining=30.0,
+            total_usable_credits=30.0,
+        ),
+        subscription=None,
+    )
+    snap = build_nous_credits_snapshot(info)
+    assert snap is not None
+    blob = "\n".join(_all_lines(snap))
+    # The /usage top-up link auto-opens the modal and is org-pinned.
+    assert "https://portal.example.test/orgs/acme/billing?topup=open" in blob
+    assert "/topup" in blob
 
 
+def test_topup_line_falls_back_to_legacy_when_slug_null():
+    info = _account(
+        portal_base_url="https://portal.example.test",
+        org_slug=None,
+        paid_service_access=True,
+        paid_service_access_info=NousPaidServiceAccessInfo(
+            purchased_credits_remaining=30.0,
+            total_usable_credits=30.0,
+        ),
+        subscription=None,
+    )
+    snap = build_nous_credits_snapshot(info)
+    assert snap is not None
+    blob = "\n".join(_all_lines(snap))
+    # Null slug → legacy page (which forwards the param); never /orgs/None/...
+    assert "https://portal.example.test/billing?topup=open" in blob
+    assert "/orgs/" not in blob

@@ -30,6 +30,32 @@ def test_terminal_env_config_uses_terminal_cwd(monkeypatch, tmp_path):
     assert config["cwd"] == str(workspace)
 
 
+def test_file_tool_relative_paths_use_terminal_cwd(monkeypatch, tmp_path):
+    """Relative file/search/patch paths resolve under TERMINAL_CWD."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+    resolved = file_tools._resolve_path_for_task("notes/today.md", task_id="cwd-contract")
+
+    assert resolved == (workspace / "notes" / "today.md").resolve()
+
+
+def test_execute_code_project_mode_uses_terminal_cwd(monkeypatch, tmp_path):
+    """Project-mode execute_code should run scripts from TERMINAL_CWD."""
+    workspace = tmp_path / "workspace"
+    staging = tmp_path / "staging"
+    workspace.mkdir()
+    staging.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+    resolved = code_execution_tool._resolve_child_cwd("project", str(staging))
+
+    assert Path(resolved) == workspace
+
+
 def test_execute_code_project_mode_falls_back_when_terminal_cwd_missing(monkeypatch, tmp_path):
     """Invalid TERMINAL_CWD should not break execute_code project mode startup."""
     staging = tmp_path / "staging"

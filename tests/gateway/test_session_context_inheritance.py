@@ -126,6 +126,23 @@ async def _async_noop(fn):
     fn()
 
 
+def test_child_task_inherits_foreign_session_without_reset():
+    """REPRODUCER: without the entry reset, B's pre-bind window leaks A's id.
+
+    This is the production hijack. Asserting the leak EXISTS documents the bug
+    the fix closes; the next test proves the fix.
+    """
+    set_session_vars(**MINE)  # parent A binds in the current context
+
+    captured = asyncio.run(_child_turn(reset_first=False))
+
+    # The pre-bind window inherited A's (MINE) identity — the leak.
+    assert captured["window"]["HERMES_SESSION_CHAT_ID"] == "MINE_CHAT", (
+        "Expected to reproduce the inheritance leak (window sees parent's "
+        f"MINE_CHAT); got {captured['window']!r}"
+    )
+
+
 def test_reset_session_vars_closes_inheritance_leak():
     """THE FIX: resetting at handler entry strips the inherited identity.
 
@@ -146,6 +163,19 @@ def test_reset_session_vars_closes_inheritance_leak():
     # B's own session still binds correctly after the reset window.
     assert captured["bound"]["HERMES_SESSION_CHAT_ID"] == "FOREIGN_CHAT"
     assert captured["bound"]["HERMES_SESSION_KEY"] == FOREIGN["session_key"]
+
+
+def test_reset_session_vars_restores_unset_not_empty():
+    """reset_session_vars sets _UNSET (not "" like clear_session_vars).
+
+    The distinction matters: "" is 'explicitly cleared' (suppresses os.environ
+    fallback, used when a handler finishes); _UNSET is 'never bound here' (lets
+    the bridge strip and a CLI fallback resolve). Entry-reset must use _UNSET.
+    """
+    set_session_vars(**MINE)
+    reset_session_vars()
+    for name, var in _VAR_MAP.items():
+        assert var.get() is _UNSET, f"{name} is {var.get()!r}, expected _UNSET"
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +213,23 @@ async def _child_async_delivery(reset_first: bool):
     return captured
 
 
+def test_child_task_inherits_foreign_async_delivery_without_reset():
+    """REPRODUCER: without the entry reset, B inherits A's async_delivery=False.
+
+    A stateless adapter (API server) opts out with async_delivery=False. A task
+    spawned from that context sees the inherited False in its pre-bind window —
+    the leak the explicit reset closes.
+    """
+    set_session_vars(**FOREIGN, async_delivery=False)  # stateless sibling A
+
+    captured = asyncio.run(_child_async_delivery(reset_first=False))
+
+    assert captured["window"] is False, (
+        "Expected to reproduce the async-delivery inheritance leak (window "
+        f"inherits A's async_delivery=False); got {captured['window']!r}"
+    )
+
+
 def test_reset_session_vars_closes_async_delivery_leak():
     """THE FIX: resetting at handler entry drops the inherited async_delivery.
 
@@ -200,3 +247,16 @@ def test_reset_session_vars_closes_async_delivery_leak():
     )
 
 
+def test_reset_session_vars_restores_async_delivery_unset():
+    """reset_session_vars restores _SESSION_ASYNC_DELIVERY to the _UNSET sentinel.
+
+    The capability flag must read 'never bound here' (_UNSET), not a falsy value,
+    so async_delivery_supported() resolves to the default-supported path rather
+    than being mistaken for an opted-out stateless adapter.
+    """
+    set_session_vars(**FOREIGN, async_delivery=False)
+    reset_session_vars()
+    assert _SESSION_ASYNC_DELIVERY.get() is _UNSET, (
+        f"_SESSION_ASYNC_DELIVERY is {_SESSION_ASYNC_DELIVERY.get()!r}, expected _UNSET"
+    )
+    assert async_delivery_supported() is True

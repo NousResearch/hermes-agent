@@ -106,6 +106,43 @@ def _make_event(text="/stop", chat_id="42"):
 # ---------------------------------------------------------------------------
 
 
+def test_unwrap_plain_string_is_passthrough():
+    adapter = _delete_adapter()
+    text, ttl = adapter._unwrap_ephemeral("hello")
+    assert text == "hello"
+    assert ttl == 0
+
+
+def test_unwrap_none_is_passthrough():
+    adapter = _delete_adapter()
+    text, ttl = adapter._unwrap_ephemeral(None)
+    assert text is None
+    assert ttl == 0
+
+
+def test_unwrap_ephemeral_explicit_ttl_on_capable_adapter():
+    adapter = _delete_adapter()
+    text, ttl = adapter._unwrap_ephemeral(EphemeralReply("bye", ttl_seconds=60))
+    assert text == "bye"
+    assert ttl == 60
+
+
+def test_unwrap_ephemeral_zeros_ttl_on_incapable_adapter():
+    """Platforms without delete_message should silently degrade to normal send."""
+    adapter = _no_delete_adapter()
+    text, ttl = adapter._unwrap_ephemeral(EphemeralReply("bye", ttl_seconds=60))
+    assert text == "bye"
+    assert ttl == 0  # forced to 0 — message will stay in place
+
+
+def test_unwrap_ephemeral_default_ttl_from_config():
+    adapter = _delete_adapter()
+    with patch.object(adapter, "_get_ephemeral_system_ttl_default", return_value=120):
+        text, ttl = adapter._unwrap_ephemeral(EphemeralReply("bye"))
+    assert text == "bye"
+    assert ttl == 120
+
+
 def test_unwrap_ephemeral_default_ttl_zero_disables():
     """Config default of 0 (the shipped default) means the feature is off."""
     adapter = _delete_adapter()
@@ -163,6 +200,33 @@ async def test_schedule_ephemeral_delete_calls_delete_after_ttl():
     assert adapter.deleted == [("42", "m-2")]
 
 
+@pytest.mark.asyncio
+async def test_schedule_ephemeral_delete_swallows_errors():
+    adapter = _delete_adapter()
+
+    async def _boom(*a, **kw):
+        raise RuntimeError("permission denied")
+
+    adapter.delete_message = _boom  # type: ignore[assignment]
+    with patch("gateway.platforms.base.asyncio.sleep", AsyncMock()):
+        adapter._schedule_ephemeral_delete(
+            chat_id="42", message_id="m-2", ttl_seconds=1
+        )
+        # No exception should propagate even though delete_message raised.
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+
+def test_schedule_ephemeral_delete_outside_event_loop_is_noop():
+    """No running loop → no crash, silently drops the request."""
+    adapter = _delete_adapter()
+    # No pytest.mark.asyncio → no loop.  Must not raise.
+    adapter._schedule_ephemeral_delete(
+        chat_id="42", message_id="m-2", ttl_seconds=1
+    )
+    assert adapter.deleted == []
+
+
 # ---------------------------------------------------------------------------
 # _process_message_background unwraps EphemeralReply before send
 # ---------------------------------------------------------------------------
@@ -202,6 +266,37 @@ async def test_process_message_unwraps_ephemeral_before_send():
     assert sent_text == "⚡ Stopped."
     # Auto-delete scheduled using the returned message_id
     assert ("42", "sent-1") in adapter.deleted
+
+
+@pytest.mark.asyncio
+async def test_process_message_ephemeral_reply_does_not_auto_upload_bare_paths(tmp_path):
+    """Tips/system notices may mention local paths; they must remain text."""
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-1")
+    )
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(success=True, message_id="doc-1")
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model:\n  provider: test\n", encoding="utf-8")
+    reply_text = f"Tip: hermes chat --ignore-user-config skips {config_path}"
+
+    async def _handler(evt):
+        return EphemeralReply(reply_text, ttl_seconds=0)
+
+    adapter.set_message_handler(_handler)
+
+    event = _make_event(text="/new")
+    session_key = "agent:main:telegram:private:42"
+    with patch("gateway.platforms.base.asyncio.sleep", AsyncMock()), patch.object(
+        adapter, "_keep_typing", new=AsyncMock()
+    ):
+        await adapter._process_message_background(event, session_key)
+
+    adapter._send_with_retry.assert_called_once()
+    assert adapter._send_with_retry.call_args.kwargs["content"] == reply_text
+    adapter.send_document.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -246,3 +341,27 @@ async def test_process_message_incapable_platform_does_not_schedule_delete():
     assert delete_calls == []
 
 
+@pytest.mark.asyncio
+async def test_process_message_plain_string_behaves_unchanged():
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-1")
+    )
+
+    async def _handler(evt):
+        return "plain reply"
+
+    adapter.set_message_handler(_handler)
+
+    event = _make_event()
+    session_key = "agent:main:telegram:private:42"
+    with patch("gateway.platforms.base.asyncio.sleep", AsyncMock()), patch.object(
+        adapter, "_keep_typing", new=AsyncMock()
+    ):
+        await adapter._process_message_background(event, session_key)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    adapter._send_with_retry.assert_called_once()
+    assert adapter._send_with_retry.call_args.kwargs["content"] == "plain reply"
+    assert adapter.deleted == []  # no auto-delete for plain replies

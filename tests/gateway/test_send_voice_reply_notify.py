@@ -67,6 +67,24 @@ def _fake_tts_call(monkeypatch, audio_bytes=b"\x00" * 32):
 
 
 @pytest.mark.asyncio
+async def test_voice_reply_marks_metadata_notify_true_for_dm(monkeypatch, tmp_path):
+    """Final voice reply with no thread metadata gets a fresh notify=True dict."""
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    _fake_tts_call(monkeypatch)
+
+    send_voice = AsyncMock()
+    runner = _runner_with_adapter(send_voice)
+    event = _make_event()
+
+    await runner._send_voice_reply(event, "Hello there.")
+
+    send_voice.assert_awaited_once()
+    kwargs = send_voice.await_args.kwargs
+    assert kwargs["metadata"] is not None, "metadata must be set so notify flag reaches adapter"
+    assert kwargs["metadata"].get("notify") is True
+
+
+@pytest.mark.asyncio
 async def test_voice_reply_marks_existing_thread_metadata_without_mutation(monkeypatch, tmp_path):
     """When thread metadata exists (Telegram DM-topic), notify=True is added without mutating the source dict."""
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))

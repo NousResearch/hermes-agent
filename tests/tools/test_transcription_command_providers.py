@@ -103,6 +103,41 @@ class TestResolveCommandSTTProviderConfig:
         cfg = {"providers": {}}
         assert _resolve_command_stt_provider_config("nope", cfg) is None
 
+    def test_empty_provider_returns_none(self):
+        assert _resolve_command_stt_provider_config("", {}) is None
+        assert _resolve_command_stt_provider_config(None, {}) is None  # type: ignore[arg-type]
+
+    def test_none_provider_short_circuits(self):
+        # "none" is the auto-detect-failed sentinel; never a command provider.
+        cfg = {
+            "providers": {
+                "none": {"type": "command", "command": "echo hi"},
+            },
+        }
+        assert _resolve_command_stt_provider_config("none", cfg) is None
+
+    def test_provider_without_command_field_returns_none(self):
+        cfg = {"providers": {"my-cli": {"type": "command"}}}
+        assert _resolve_command_stt_provider_config("my-cli", cfg) is None
+
+    def test_provider_with_empty_command_returns_none(self):
+        cfg = {"providers": {"my-cli": {"type": "command", "command": "  "}}}
+        assert _resolve_command_stt_provider_config("my-cli", cfg) is None
+
+    def test_provider_with_explicit_type_other_than_command_returns_none(self):
+        cfg = {"providers": {"my-cli": {"type": "http", "command": "echo hi"}}}
+        assert _resolve_command_stt_provider_config("my-cli", cfg) is None
+
+    def test_provider_with_command_string_and_no_type_resolves(self):
+        cfg = {"providers": {"my-cli": {"command": "whisper {input_path}"}}}
+        result = _resolve_command_stt_provider_config("my-cli", cfg)
+        assert result is not None
+        assert result["command"] == "whisper {input_path}"
+
+    def test_provider_with_explicit_type_command_resolves(self):
+        cfg = {"providers": {"my-cli": {"type": "command", "command": "echo hi"}}}
+        result = _resolve_command_stt_provider_config("my-cli", cfg)
+        assert result is not None
 
     def test_resolution_is_case_insensitive(self):
         cfg = {"providers": {"my-cli": {"type": "command", "command": "echo hi"}}}
@@ -121,6 +156,23 @@ class TestGetNamedSTTProviderConfig:
         result = _get_named_stt_provider_config(cfg, "my-cli")
         assert result == {"command": "whisper {input_path}"}
 
+    def test_legacy_stt_dot_name_fallback(self):
+        # Users who followed the built-in layout (stt.openai.*) for their
+        # custom name still work.
+        cfg = {"my-cli": {"command": "whisper {input_path}"}}
+        result = _get_named_stt_provider_config(cfg, "my-cli")
+        assert result == {"command": "whisper {input_path}"}
+
+    def test_builtin_name_is_not_legacy_resolved(self):
+        # stt.openai has model/language but no command — must NOT be
+        # mis-detected as a command provider.
+        cfg = {"openai": {"model": "whisper-1", "language": "en"}}
+        result = _get_named_stt_provider_config(cfg, "openai")
+        assert result == {}
+
+    def test_missing_returns_empty(self):
+        assert _get_named_stt_provider_config({}, "nope") == {}
+        assert _get_named_stt_provider_config({"providers": {}}, "nope") == {}
 
     def test_canonical_wins_over_legacy(self):
         cfg = {
@@ -139,11 +191,40 @@ class TestSTTCommandHelpers:
     def test_timeout_uses_default_when_missing(self):
         assert _get_command_stt_timeout({}) == DEFAULT_COMMAND_STT_TIMEOUT_SECONDS
 
+    def test_timeout_accepts_int_and_float(self):
+        assert _get_command_stt_timeout({"timeout": 5}) == 5.0
+        assert _get_command_stt_timeout({"timeout": 2.5}) == 2.5
+
+    def test_timeout_falls_back_when_invalid(self):
+        assert _get_command_stt_timeout({"timeout": "not-a-number"}) == \
+            DEFAULT_COMMAND_STT_TIMEOUT_SECONDS
+        assert _get_command_stt_timeout({"timeout": -5}) == \
+            DEFAULT_COMMAND_STT_TIMEOUT_SECONDS
+        assert _get_command_stt_timeout({"timeout": 0}) == \
+            DEFAULT_COMMAND_STT_TIMEOUT_SECONDS
+
+    def test_timeout_legacy_key(self):
+        assert _get_command_stt_timeout({"timeout_seconds": 7}) == 7.0
 
     def test_output_format_defaults_to_txt(self):
         assert _get_command_stt_output_format({}) == DEFAULT_COMMAND_STT_OUTPUT_FORMAT
         assert DEFAULT_COMMAND_STT_OUTPUT_FORMAT == "txt"
 
+    def test_output_format_validates_against_allowed_set(self):
+        for fmt in COMMAND_STT_OUTPUT_FORMATS:
+            assert _get_command_stt_output_format({"format": fmt}) == fmt
+
+    def test_output_format_rejects_unknown(self):
+        assert _get_command_stt_output_format({"format": "exe"}) == \
+            DEFAULT_COMMAND_STT_OUTPUT_FORMAT
+        assert _get_command_stt_output_format({"format": "../etc/passwd"}) == \
+            DEFAULT_COMMAND_STT_OUTPUT_FORMAT
+
+    def test_output_format_strips_leading_dot(self):
+        assert _get_command_stt_output_format({"format": ".json"}) == "json"
+
+    def test_output_format_legacy_key(self):
+        assert _get_command_stt_output_format({"output_format": "srt"}) == "srt"
 
     def test_iter_command_providers_yields_only_command_type(self):
         cfg = {
@@ -157,6 +238,21 @@ class TestSTTCommandHelpers:
         names = {name for name, _ in _iter_command_stt_providers(cfg)}
         assert names == {"cmd-one", "cmd-two"}
 
+    def test_iter_command_providers_excludes_builtins(self):
+        # Defense in depth — a user trying to register a built-in name as
+        # a command provider should be silently ignored at iteration time.
+        cfg = {
+            "providers": {
+                "openai": {"type": "command", "command": "x"},
+                "groq": {"command": "y"},
+                "custom": {"command": "z"},
+            },
+        }
+        names = {name for name, _ in _iter_command_stt_providers(cfg)}
+        assert names == {"custom"}
+
+    def test_has_any_command_provider_false_when_none_configured(self):
+        assert _has_any_command_stt_provider({"providers": {}}) is False
 
     def test_has_any_command_provider_true_when_one_configured(self):
         cfg = {"providers": {"custom": {"command": "x"}}}
@@ -196,6 +292,30 @@ class TestRenderCommandSTTTemplate:
         assert rendered.endswith('}')
         assert "audio.wav" in rendered
 
+    def test_shell_quote_outside_quotes_uses_shlex(self):
+        rendered = _render_command_stt_template(
+            "whisper {input_path}",
+            {"input_path": "/tmp/has space.wav"},
+        )
+        # shlex.quote wraps strings with whitespace in single quotes.
+        if os.name != "nt":
+            assert "'/tmp/has space.wav'" in rendered
+
+    def test_shell_quote_inside_single_quotes(self):
+        rendered = _render_command_stt_template(
+            "whisper '{input_path}'",
+            {"input_path": "/tmp/he's-here.wav"},
+        )
+        # Inside '...': use the '\'' trick.
+        assert r"he'\''s-here" in rendered
+
+    def test_shell_quote_inside_double_quotes(self):
+        rendered = _render_command_stt_template(
+            'whisper "{input_path}"',
+            {"input_path": "$VAR.wav"},
+        )
+        # Inside "...": $, `, " are escaped.
+        assert r"\$VAR.wav" in rendered
 
     def test_placeholder_not_in_dict_passes_through(self):
         # Unknown placeholder isn't replaced — preserves literal text.
@@ -233,11 +353,101 @@ class TestTranscribeCommandSTT:
         assert result["success"] is True
         assert result["transcript"] == "stdout transcript"
 
+    def test_missing_command_returns_error(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        result = _transcribe_command_stt(str(audio), "fake-cli", {}, {})
+        assert result["success"] is False
+        assert "command is not configured" in result["error"]
+
+    def test_missing_audio_returns_error(self, tmp_path):
+        cfg = {"command": _python_emit_command("x")}
+        result = _transcribe_command_stt(
+            str(tmp_path / "does-not-exist.wav"), "fake-cli", cfg, {},
+        )
+        assert result["success"] is False
+        assert "Audio file not found" in result["error"]
+
+    def test_nonzero_exit_returns_error_with_stderr(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        # Use a command that fails reliably across platforms.
+        interpreter = sys.executable
+        cfg = {
+            "command": (
+                f'"{interpreter}" -c "import sys; sys.stderr.write(\'boom\'); sys.exit(7)"'
+            ),
+        }
+        result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+        assert result["success"] is False
+        assert "exited with code 7" in result["error"]
+        assert "boom" in result["error"]
+
+    def test_timeout_returns_clean_error(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        interpreter = sys.executable
+        cfg = {
+            "command": f'"{interpreter}" -c "import time; time.sleep(5)"',
+            "timeout": 0.5,
+        }
+        result = _transcribe_command_stt(str(audio), "slow-cli", cfg, {})
+        assert result["success"] is False
+        assert "timed out after" in result["error"]
+
+    def test_model_override_passed_to_template(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        # Write the model into the transcript so we can assert it propagated.
+        interpreter = sys.executable
+        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
+        cfg = {
+            "command": f'"{interpreter}" -c "{payload}" {{model}} {{output_path}}',
+            "model": "config-model",
+        }
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", cfg, {}, model_override="override-model",
+        )
+        assert result["success"] is True
+        assert result["transcript"] == "override-model"
+
+    def test_config_model_used_when_no_override(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        interpreter = sys.executable
+        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
+        cfg = {
+            "command": f'"{interpreter}" -c "{payload}" {{model}} {{output_path}}',
+            "model": "config-model",
+        }
+        result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+        assert result["transcript"] == "config-model"
+
+    def test_language_from_provider_config_wins(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        interpreter = sys.executable
+        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
+        cfg = {
+            "command": f'"{interpreter}" -c "{payload}" {{language}} {{output_path}}',
+            "language": "fr",
+        }
+        # stt.language is "es" but provider config says "fr" — provider wins.
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", cfg, {"language": "es"},
+        )
+        assert result["transcript"] == "fr"
+
+    def test_language_falls_back_to_stt_section(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        interpreter = sys.executable
+        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
+        cfg = {
+            "command": f'"{interpreter}" -c "{payload}" {{language}} {{output_path}}',
+        }
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", cfg, {"language": "ja"},
+        )
+        assert result["transcript"] == "ja"
 
     def test_language_defaults_to_en(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "input.wav")
         interpreter = sys.executable
-        payload = "import sys; open(sys.argv[2], 'w', encoding='utf-8').write(sys.argv[1])"
+        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
         cfg = {
             "command": f'"{interpreter}" -c "{payload}" {{language}} {{output_path}}',
         }
@@ -276,6 +486,23 @@ class TestTranscribeAudioDispatchToCommandProvider:
         assert result["transcript"] == "dispatched via command"
         assert result["provider"] == "fake-cli"
 
+    def test_builtin_name_shadow_does_not_route_to_command(self, tmp_path):
+        # User mis-configures stt.providers.openai as a command — must NOT
+        # hijack the real OpenAI built-in. The built-in elif chain owns
+        # the name; the command-provider resolver explicitly rejects it.
+        audio = _make_silent_wav(tmp_path / "audio.wav")
+        cfg = {
+            "provider": "openai",
+            "providers": {
+                "openai": {"type": "command", "command": _python_emit_command("HIJACK")},
+            },
+        }
+        with patch("tools.transcription_tools._load_stt_config", return_value=cfg):
+            # openai dispatch will likely fail with no API key — that's fine,
+            # what matters is the transcript is NOT "HIJACK" (which would
+            # mean the command-provider hijacked the built-in name).
+            result = transcribe_audio(str(audio))
+        assert result.get("transcript") != "HIJACK"
 
     def test_unknown_provider_no_command_falls_through_to_error(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "audio.wav")
@@ -283,10 +510,7 @@ class TestTranscribeAudioDispatchToCommandProvider:
         with patch("tools.transcription_tools._load_stt_config", return_value=cfg):
             result = transcribe_audio(str(audio))
         assert result["success"] is False
-        # Explicitly-configured unknown providers now get a named
-        # registration error instead of the generic legacy message.
-        assert result["error_type"] == "provider_not_registered"
-        assert "unknown-cli" in result["error"]
+        assert "No STT provider available" in result["error"]
 
 
 # ---------------------------------------------------------------------------

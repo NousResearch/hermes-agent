@@ -412,7 +412,7 @@ class TestRunConversationCodexPath:
         profile remains the filesystem boundary."""
         captured = self._capture_routing_agent(monkeypatch)
         with patch(
-            "hermes_cli.config.load_config_readonly",
+            "hermes_cli.config.load_config",
             return_value={"approvals": {"mode": "off"}},
         ):
             agent = _make_codex_agent()
@@ -431,7 +431,7 @@ class TestRunConversationCodexPath:
         subsystem's compatibility behavior for codex app-server routing too."""
         captured = self._capture_routing_agent(monkeypatch)
         with patch(
-            "hermes_cli.config.load_config_readonly",
+            "hermes_cli.config.load_config",
             return_value={"approvals": {"mode": False}},
         ):
             agent = _make_codex_agent()
@@ -498,7 +498,7 @@ class TestRunConversationCodexPath:
         ):
             agent = _make_codex_agent()
             with patch(
-                "tools.approval.is_approval_bypass_active_for_session",
+                "tools.approval.is_current_session_yolo_enabled",
                 return_value=True,
             ), patch.object(
                 agent, "_spawn_background_review", return_value=None
@@ -786,3 +786,4 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
+

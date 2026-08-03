@@ -79,8 +79,22 @@ class TestRegistration:
         assert tts_registry.get_provider("cartesia") is p
         assert [r.name for r in tts_registry.list_providers()] == ["cartesia"]
 
+    def test_rejects_non_provider_type(self):
+        with pytest.raises(TypeError, match="expects a TTSProvider instance"):
+            tts_registry.register_provider("not a provider")  # type: ignore[arg-type]
+        assert tts_registry.list_providers() == []
 
+    def test_rejects_empty_name(self):
+        p = _FakeProvider(name="")
+        with pytest.raises(ValueError, match="non-empty string"):
+            tts_registry.register_provider(p)
+        assert tts_registry.list_providers() == []
 
+    def test_rejects_whitespace_name(self):
+        p = _FakeProvider(name="   ")
+        with pytest.raises(ValueError, match="non-empty string"):
+            tts_registry.register_provider(p)
+        assert tts_registry.list_providers() == []
 
     @pytest.mark.parametrize(
         "builtin",
@@ -99,7 +113,24 @@ class TestRegistration:
         assert tts_registry.get_provider(builtin) is None
         assert tts_registry.list_providers() == []
 
+    def test_builtin_shadow_case_insensitive(self, caplog):
+        """``EDGE``/``Edge``/``  edge  `` all collide with the ``edge`` built-in."""
+        for variant in ("EDGE", "Edge", "  edge  ", "eDgE"):
+            tts_registry._reset_for_tests()
+            with caplog.at_level(logging.WARNING, logger="agent.tts_registry"):
+                tts_registry.register_provider(_FakeProvider(name=variant))
+            assert tts_registry.list_providers() == [], (
+                f"variant {variant!r} should have been rejected as a built-in shadow"
+            )
 
+    def test_reregistration_overwrites(self, caplog):
+        p1 = _FakeProvider(name="cartesia")
+        p2 = _FakeProvider(name="cartesia")
+        tts_registry.register_provider(p1)
+        with caplog.at_level(logging.DEBUG, logger="agent.tts_registry"):
+            tts_registry.register_provider(p2)
+        assert tts_registry.get_provider("cartesia") is p2
+        assert "re-registered" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -108,12 +139,23 @@ class TestRegistration:
 
 
 class TestLookup:
+    def test_get_provider_missing_returns_none(self):
+        assert tts_registry.get_provider("nonexistent") is None
 
     def test_get_provider_non_string_returns_none(self):
         assert tts_registry.get_provider(None) is None  # type: ignore[arg-type]
         assert tts_registry.get_provider(123) is None  # type: ignore[arg-type]
 
+    def test_get_provider_case_insensitive(self):
+        p = _FakeProvider(name="cartesia")
+        tts_registry.register_provider(p)
+        assert tts_registry.get_provider("CARTESIA") is p
+        assert tts_registry.get_provider("Cartesia") is p
 
+    def test_get_provider_whitespace_tolerant(self):
+        p = _FakeProvider(name="cartesia")
+        tts_registry.register_provider(p)
+        assert tts_registry.get_provider("  cartesia  ") is p
 
     def test_list_providers_sorted(self):
         tts_registry.register_provider(_FakeProvider(name="zylo"))
@@ -129,17 +171,52 @@ class TestLookup:
 
 
 class TestABCContract:
+    def test_must_implement_synthesize(self):
+        class Incomplete(TTSProvider):
+            @property
+            def name(self) -> str:
+                return "incomplete"
+            # synthesize NOT implemented
 
+        with pytest.raises(TypeError, match="abstract"):
+            Incomplete()  # type: ignore[abstract]
 
+    def test_must_implement_name(self):
+        class Incomplete(TTSProvider):
+            def synthesize(self, text, output_path, **kw):
+                return output_path
+            # name NOT implemented
 
+        with pytest.raises(TypeError, match="abstract"):
+            Incomplete()  # type: ignore[abstract]
+
+    def test_display_name_defaults_to_title(self):
+        p = _FakeProvider(name="cartesia")
+        assert p.display_name == "Cartesia"
+
+    def test_display_name_override_respected(self):
+        p = _FakeProvider(name="cartesia", display="Cartesia AI")
+        assert p.display_name == "Cartesia AI"
 
     def test_is_available_default_true(self):
         p = _FakeProvider(name="cartesia")
         assert p.is_available() is True
 
+    def test_list_voices_default_empty(self):
+        p = _FakeProvider(name="cartesia")
+        assert p.list_voices() == []
 
+    def test_list_models_default_empty(self):
+        p = _FakeProvider(name="cartesia")
+        assert p.list_models() == []
 
+    def test_default_model_none_when_no_models(self):
+        p = _FakeProvider(name="cartesia")
+        assert p.default_model() is None
 
+    def test_default_voice_none_when_no_voices(self):
+        p = _FakeProvider(name="cartesia")
+        assert p.default_voice() is None
 
     def test_default_model_first_listed(self):
         class WithModels(_FakeProvider):
@@ -168,7 +245,13 @@ class TestABCContract:
         with pytest.raises(NotImplementedError, match="does not implement streaming"):
             next(p.stream("hello"))
 
+    def test_voice_compatible_default_false(self):
+        p = _FakeProvider(name="cartesia")
+        assert p.voice_compatible is False
 
+    def test_voice_compatible_override(self):
+        p = _FakeProvider(name="cartesia", voice_compat=True)
+        assert p.voice_compatible is True
 
 
 # ---------------------------------------------------------------------------
@@ -181,9 +264,19 @@ class TestResolveOutputFormat:
     def test_valid_passes_through(self, valid):
         assert resolve_output_format(valid) == valid
 
+    def test_uppercase_normalized(self):
+        assert resolve_output_format("MP3") == "mp3"
+        assert resolve_output_format("Opus") == "opus"
 
+    def test_whitespace_stripped(self):
+        assert resolve_output_format("  wav  ") == "wav"
 
+    def test_invalid_returns_default(self):
+        assert resolve_output_format("aiff") == DEFAULT_OUTPUT_FORMAT
+        assert resolve_output_format("") == DEFAULT_OUTPUT_FORMAT
 
+    def test_none_returns_default(self):
+        assert resolve_output_format(None) == DEFAULT_OUTPUT_FORMAT
 
     def test_non_string_returns_default(self):
         assert resolve_output_format(123) == DEFAULT_OUTPUT_FORMAT  # type: ignore[arg-type]

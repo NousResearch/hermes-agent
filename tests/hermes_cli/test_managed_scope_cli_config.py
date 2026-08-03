@@ -71,3 +71,12 @@ def test_cli_config_managed_leaf_preserves_user_siblings(homes):
     assert display.get("show_reasoning") is True  # user sibling preserved
 
 
+def test_cli_config_no_managed_scope_uses_user_value(homes):
+    """With no managed config, CLI_CONFIG reflects the user's value."""
+    home, managed = homes  # managed dir exists but empty
+    (home / "config.yaml").write_text("display:\n  skin: user_skin\n", encoding="utf-8")
+    from hermes_cli import managed_scope
+
+    managed_scope.invalidate_managed_cache()
+    cfg = _load_cli_config(home)
+    assert (cfg.get("display") or {}).get("skin") == "user_skin"

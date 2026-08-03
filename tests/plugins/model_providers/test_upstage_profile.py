@@ -81,6 +81,12 @@ class TestUpstageReasoning:
         assert extra_body == {}
         assert top_level == {"reasoning_effort": effort}
 
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "ultra"])
+    def test_pro_strong_efforts_collapse_to_high(self, upstage_profile, effort):
+        _, top_level = upstage_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort}, model="solar-pro2"
+        )
+        assert top_level == {"reasoning_effort": "high"}
 
     def test_unknown_future_effort_collapses_to_high(self, upstage_profile):
         # Guard against the #62650 recurrence: a future effort level Hermes
@@ -92,6 +98,18 @@ class TestUpstageReasoning:
         )
         assert top_level == {"reasoning_effort": "high"}
 
+    def test_pro_enabled_without_effort_defaults_on(self, upstage_profile):
+        _, top_level = upstage_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True}, model="solar-pro3"
+        )
+        assert top_level == {"reasoning_effort": "medium"}
+
+    def test_pro_minimal_effort_is_omitted(self, upstage_profile):
+        # Explicit minimal == reasoning off → omit so Solar applies its default.
+        _, top_level = upstage_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "minimal"}, model="solar-pro3"
+        )
+        assert top_level == {}
 
     def test_disabled_omits_field(self, upstage_profile):
         # `/reasoning none` → enabled False → explicitly off.
@@ -107,6 +125,29 @@ class TestUpstageReasoning:
         _, top_level = upstage_profile.build_api_kwargs_extras(model=model)
         assert top_level == {"reasoning_effort": "medium"}
 
+    @pytest.mark.parametrize("model", ["solar-mini", "solar-mini-202610", "syn-pro"])
+    def test_no_config_deny_listed_still_omits(self, upstage_profile, model):
+        # Default-on must not leak to the deny-listed non-reasoning models.
+        _, top_level = upstage_profile.build_api_kwargs_extras(model=model)
+        assert top_level == {}
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "solar-pro3-250127",
+            "solar-open",
+            "solar-open-250127",
+            "solar-open2",
+            "solar-open2-260528",
+        ],
+    )
+    def test_pro_and_open_variants_support_reasoning(self, upstage_profile, model):
+        # Both the Solar Pro and Solar Open families (incl. dated variants)
+        # accept reasoning_effort.
+        _, top_level = upstage_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"}, model=model
+        )
+        assert top_level == {"reasoning_effort": "high"}
 
     @pytest.mark.parametrize("model", ["solar-mini", "solar-mini-202610", "syn-pro"])
     def test_deny_listed_models_never_send_reasoning(self, upstage_profile, model):
@@ -118,6 +159,19 @@ class TestUpstageReasoning:
         assert extra_body == {}
         assert top_level == {}
 
+    @pytest.mark.parametrize("model", ["solar-future", "solar-future-260601"])
+    def test_unknown_future_models_default_to_reasoning(self, upstage_profile, model):
+        # Deny-list semantics: a future Solar model we've never heard of is
+        # assumed reasoning-capable, so reasoning_effort is sent instead of
+        # being silently dropped (the old allow-list failure mode).
+        _, top_level = upstage_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"}, model=model
+        )
+        assert top_level == {"reasoning_effort": "high"}
+
+        # And the unset-config default-on path applies to it too.
+        _, top_level = upstage_profile.build_api_kwargs_extras(model=model)
+        assert top_level == {"reasoning_effort": "medium"}
 
     def test_none_model_defaults_to_reasoning(self, upstage_profile):
         # No model in context → treated as reasoning-capable, consistent with

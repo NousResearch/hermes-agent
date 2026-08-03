@@ -26,7 +26,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("hermes.security_audit")
 
@@ -168,12 +168,9 @@ def _path_is_mounted(path: Path) -> bool:
 def _container_no_volume_mount(hermes_home: Optional[Path]) -> Optional[str]:
     if not _in_container():
         return None
-    if hermes_home is not None:
-        home = hermes_home
-    else:
-        from hermes_constants import get_hermes_home
-
-        home = get_hermes_home()
+    home = hermes_home or Path(
+        os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    )
     try:
         if _path_is_mounted(home):
             return None

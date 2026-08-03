@@ -73,11 +73,38 @@ class TestRequestToolApproval:
         assert calls["session"] == ["plugin_rule:ssh-writes"]
         assert calls["permanent"] == []  # session != always
 
+    def test_cli_always_persists_permanent(self, monkeypatch):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *a, **k: "always")
+        persisted = {}
+        monkeypatch.setattr(approval, "approve_session", lambda sk, pk: None)
+        monkeypatch.setattr(approval, "approve_permanent",
+                            lambda pk: persisted.setdefault("key", pk))
+        monkeypatch.setattr(approval, "save_permanent_allowlist",
+                            lambda x: persisted.setdefault("saved", True))
+        res = request_tool_approval("write_file", "reason", rule_key="ssh-writes")
+        assert res["approved"] is True
+        assert persisted["key"] == "plugin_rule:ssh-writes"
+        assert persisted["saved"] is True
+
+    def test_gateway_path_submits_pending_and_defers(self, monkeypatch):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+        submitted = {}
+        monkeypatch.setattr(approval, "submit_pending",
+                            lambda sk, data: submitted.update(data))
+        res = request_tool_approval("browser_navigate", "external URL",
+                                    rule_key="ext-nav")
+        assert res["approved"] is False
+        assert res["status"] == "approval_required"
+        assert submitted["pattern_key"] == "plugin_rule:ext-nav"
 
     def test_cron_deny_mode_blocks(self, monkeypatch):
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
         monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
-        monkeypatch.setattr(approval, "_is_cron_approval_context", lambda: True)
+        monkeypatch.setattr(approval, "env_var_enabled",
+                            lambda v: v == "HERMES_CRON_SESSION")
         monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "deny")
         res = request_tool_approval("terminal", "smtp send")
         assert res["approved"] is False
@@ -86,11 +113,20 @@ class TestRequestToolApproval:
     def test_cron_approve_mode_allows(self, monkeypatch):
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
         monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
-        monkeypatch.setattr(approval, "_is_cron_approval_context", lambda: True)
+        monkeypatch.setattr(approval, "env_var_enabled",
+                            lambda v: v == "HERMES_CRON_SESSION")
         monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "approve")
         res = request_tool_approval("terminal", "smtp send")
         assert res["approved"] is True
 
+    def test_rule_key_derived_from_tool_and_reason(self, monkeypatch):
+        """With no explicit rule_key, the pattern key is derived from
+        tool + a hash of the reason (so distinct reasons persist apart)."""
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *a, **k: "deny")
+        res = request_tool_approval("patch", "reason")  # no rule_key
+        assert res["pattern_key"].startswith("plugin_rule:patch:")
 
     def test_distinct_reasons_get_distinct_keys(self, monkeypatch):
         """Two different reasons on the SAME tool must not share an [a]lways
@@ -114,7 +150,7 @@ class TestRequestToolApproval:
         — a plugin-flagged action never runs ungated without a human."""
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
         monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
-        monkeypatch.setattr(approval, "_is_cron_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "env_var_enabled", lambda v: False)  # not cron
         res = request_tool_approval("terminal", "smtp send")
         assert res["approved"] is False
         assert "no interactive user or gateway" in res["message"].lower()

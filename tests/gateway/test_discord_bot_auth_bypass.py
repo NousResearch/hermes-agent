@@ -98,6 +98,59 @@ def test_discord_bot_authorized_when_allow_bots_mentions(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
+def test_discord_bot_authorized_when_allow_bots_all(monkeypatch):
+    """DISCORD_ALLOW_BOTS=all is a superset of =mentions — should also bypass."""
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+
+    source = _make_discord_bot_source()
+    assert runner._is_user_authorized(source) is True
+
+
+def test_discord_bot_NOT_authorized_when_allow_bots_none(monkeypatch):
+    """DISCORD_ALLOW_BOTS=none (default) must still reject bots that aren't
+    in DISCORD_ALLOWED_USERS — preserves the original security behavior.
+    """
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "none")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+
+    source = _make_discord_bot_source(bot_id="999888777")
+    assert runner._is_user_authorized(source) is False
+
+
+def test_discord_bot_NOT_authorized_when_allow_bots_unset(monkeypatch):
+    """Unset DISCORD_ALLOW_BOTS must behave like 'none'."""
+    runner = _make_bare_runner()
+
+    monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+
+    source = _make_discord_bot_source(bot_id="999888777")
+    assert runner._is_user_authorized(source) is False
+
+
+def test_discord_human_still_checked_against_allowlist_when_bot_policy_set(monkeypatch):
+    """DISCORD_ALLOW_BOTS=all must NOT open the gate for humans — they
+    still need to be in DISCORD_ALLOWED_USERS (or a pairing approval).
+    """
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+
+    # Human NOT on the allowlist → must be rejected.
+    source = _make_discord_human_source(user_id="999999999")
+    assert runner._is_user_authorized(source) is False
+
+    # Human ON the allowlist → accepted.
+    source_allowed = _make_discord_human_source(user_id="100200300")
+    assert runner._is_user_authorized(source_allowed) is True
+
+
 def test_bot_bypass_does_not_leak_to_other_platforms(monkeypatch):
     """The is_bot bypass is Discord-specific — a Telegram bot source with
     is_bot=True must NOT be authorized just because DISCORD_ALLOW_BOTS=all.
@@ -143,6 +196,21 @@ def test_discord_role_config_does_not_bypass_gateway_allowlist(monkeypatch):
 
     source = _make_discord_human_source(user_id="999888777")
     assert runner._is_user_authorized(source) is False
+
+
+def test_discord_user_allowlist_still_authorizes_when_role_is_also_configured(monkeypatch):
+    """Sanity: DISCORD_ALLOWED_USERS still authorizes users on the list,
+    independent of DISCORD_ALLOWED_ROLES.  This guards against a future
+    regression that ties the user-allowlist check to the (now-removed)
+    role bypass.
+    """
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "1493705176387948674")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+
+    source = _make_discord_human_source(user_id="100200300")
+    assert runner._is_user_authorized(source) is True
 
 
 def test_discord_role_config_does_not_leak_to_other_platforms(monkeypatch):

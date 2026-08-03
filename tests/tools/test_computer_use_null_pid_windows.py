@@ -50,6 +50,29 @@ class TestIngestWindows:
         assert out[0]["pid"] == 4321
         assert out[0]["window_id"] == 77
 
+    def test_skips_window_with_null_window_id(self):
+        from tools.computer_use.cua_backend import _ingest_windows
+
+        raw = [
+            {"app_name": "Panel", "pid": 10, "window_id": None, "z_index": 0},
+            {"app_name": "Firefox", "pid": 4321, "window_id": 77, "z_index": 1},
+        ]
+
+        out = _ingest_windows(raw)
+
+        assert [w["app_name"] for w in out] == ["Firefox"]
+
+    def test_coerces_numeric_strings_like_the_original_int_call(self):
+        # The original `int(w["pid"])` accepted numeric strings; preserve that.
+        from tools.computer_use.cua_backend import _ingest_windows
+
+        out = _ingest_windows(
+            [{"app_name": "Term", "pid": "200", "window_id": "9", "z_index": 0}]
+        )
+
+        assert out[0]["pid"] == 200
+        assert out[0]["window_id"] == 9
+        assert isinstance(out[0]["pid"], int)
 
     def test_preserves_fields_capture_relies_on(self):
         from tools.computer_use.cua_backend import _ingest_windows

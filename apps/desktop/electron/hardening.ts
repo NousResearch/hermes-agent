@@ -4,33 +4,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
-// Default / floor / ceiling for Desktop's data-URL file load (composer attach,
-// image preview, etc.). The whole file is base64-buffered in main, so this is
-// a memory guard — not a model limit. Settings → Chat takes a free-form MB
-// value; 16 MB ships as default. The ceiling is only a typo guard (very large
-// values can OOM / crash the app).
-const DATA_URL_READ_DEFAULT_MAX_MB = 16
-const DATA_URL_READ_MIN_MAX_MB = 1
-const DATA_URL_READ_MAX_MAX_MB = 4096
-// Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
-// reader so the payload still fits uvicorn's raised ws_max_size (384 MiB)
-// after base64 + framing. Preview stays on the Settings-configurable path.
-const ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES = 256 * 1024 * 1024
+const DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
-
-function clampDataUrlReadMaxMb(value) {
-  const parsed = Number(value)
-
-  if (!Number.isFinite(parsed)) {
-    return DATA_URL_READ_DEFAULT_MAX_MB
-  }
-
-  return Math.min(DATA_URL_READ_MAX_MAX_MB, Math.max(DATA_URL_READ_MIN_MAX_MB, Math.round(parsed)))
-}
-
-function dataUrlReadMaxBytesFromMb(maxMb) {
-  return clampDataUrlReadMaxMb(maxMb) * 1024 * 1024
-}
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
@@ -328,34 +303,10 @@ async function resolveReadableFileForIpc(
   return { realPath, resolvedPath, stat }
 }
 
-async function readFileDataUrlForIpc(
-  filePath,
-  options: {
-    purpose?: string
-    baseDir?: fs.PathOrFileDescriptor
-    fs?: typeof fs
-    blockSensitive?: boolean
-    maxBytes?: number
-    mimeType: string
-  }
-): Promise<string> {
-  const fsImpl = options.fs || fs
-  const { resolvedPath } = await resolveReadableFileForIpc(filePath, options)
-  const data = await fsImpl.promises.readFile(resolvedPath)
-
-  return `data:${options.mimeType};base64,${data.toString('base64')}`
-}
-
 export {
-  ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
-  clampDataUrlReadMaxMb,
-  DATA_URL_READ_DEFAULT_MAX_MB,
-  DATA_URL_READ_MAX_MAX_MB,
-  DATA_URL_READ_MIN_MAX_MB,
-  dataUrlReadMaxBytesFromMb,
+  DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
-  readFileDataUrlForIpc,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,

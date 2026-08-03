@@ -62,6 +62,62 @@ def test_cprint_app_not_running_direct_print(monkeypatch):
     assert calls == [("pt_print", "x")]
 
 
+def test_cprint_bg_thread_schedules_on_app_loop(monkeypatch):
+    """App running + different thread → schedules via call_soon_threadsafe."""
+    scheduled = []
+    direct_prints = []
+
+    monkeypatch.setattr(cli, "_pt_print", lambda x: direct_prints.append(x))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, cb, *args):
+            scheduled.append(cb)
+
+    fake_loop = FakeLoop()
+
+    # Install a fake "current loop" that is NOT the app's loop, so the
+    # cross-thread branch is taken.
+    fake_current_loop = SimpleNamespace(is_running=lambda: True)
+    fake_asyncio = types.ModuleType("asyncio")
+
+    class _Policy:
+        def get_event_loop(self):
+            return fake_current_loop
+
+    fake_asyncio.get_event_loop_policy = lambda: _Policy()
+    monkeypatch.setitem(sys.modules, "asyncio", fake_asyncio)
+
+    fake_app = SimpleNamespace(_is_running=True, loop=fake_loop)
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: fake_app
+
+    run_in_terminal_calls = []
+
+    def _fake_run_in_terminal(func, **kw):
+        run_in_terminal_calls.append(func)
+        # Simulate run_in_terminal actually calling func (as the real PT
+        # impl would once the app loop tick picks it up).
+        func()
+        return None
+
+    fake_pt_app.run_in_terminal = _fake_run_in_terminal
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    cli._cprint("💾 Self-improvement review: Skill updated")
+
+    # call_soon_threadsafe must have been called with a scheduling cb.
+    assert len(scheduled) == 1
+
+    # Invoking the scheduled callback should hit run_in_terminal.
+    scheduled[0]()
+    assert len(run_in_terminal_calls) == 1
+
+    # And run_in_terminal's inner func should have emitted a pt_print.
+    assert direct_prints == ["💾 Self-improvement review: Skill updated"]
 
 
 def test_cprint_same_thread_as_app_loop_direct_print(monkeypatch):
@@ -100,6 +156,27 @@ def test_cprint_same_thread_as_app_loop_direct_print(monkeypatch):
     assert direct_prints == ["x"]
 
 
+def test_cprint_swallows_app_loop_attr_error(monkeypatch):
+    """Loop missing on app → fall back to direct print, no crash."""
+    direct_prints = []
+    monkeypatch.setattr(cli, "_pt_print", lambda x: direct_prints.append(x))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+
+    class WeirdApp:
+        _is_running = True
+
+        @property
+        def loop(self):
+            raise RuntimeError("no loop for you")
+
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: WeirdApp()
+    fake_pt_app.run_in_terminal = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    cli._cprint("fallback")
+
+    assert direct_prints == ["fallback"]
 
 
 def test_cprint_swallows_prompt_toolkit_import_error(monkeypatch):
@@ -138,8 +215,33 @@ def test_cprint_swallows_prompt_toolkit_import_error(monkeypatch):
     assert direct_prints == ["fallback2"]
 
 
+def test_output_history_preserves_ansi_and_keeps_recent_lines():
+    cli._configure_output_history(True, 10)
+
+    for idx in range(12):
+        cli._record_output_history(f"\x1b[31mline-{idx}\x1b[0m")
+
+    assert list(cli._OUTPUT_HISTORY) == [
+        f"\x1b[31mline-{idx}\x1b[0m" for idx in range(2, 12)
+    ]
 
 
+def test_replay_output_history_does_not_record_replayed_lines(monkeypatch):
+    cli._configure_output_history(True, 10)
+    cli._record_output_history("visible output")
+    printed = []
+
+    def _fake_print(value):
+        printed.append(value)
+        cli._record_output_history("duplicated replay")
+
+    monkeypatch.setattr(cli, "_pt_print", _fake_print)
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda text: text)
+
+    cli._replay_output_history()
+
+    assert printed == ["visible output"]
+    assert list(cli._OUTPUT_HISTORY) == ["visible output"]
 
 
 def test_replay_output_history_rerenders_callable_entries(monkeypatch):
@@ -162,6 +264,19 @@ def test_replay_output_history_rerenders_callable_entries(monkeypatch):
     assert list(cli._OUTPUT_HISTORY) == [_render_current_width]
 
 
+def test_replay_output_history_batches_rendered_lines_into_one_print(monkeypatch):
+    cli._configure_output_history(True, 10)
+    cli._record_output_history("first line")
+    cli._record_output_history("second line")
+    cli._record_output_history_entry(lambda: ["third line", "fourth line"])
+    printed = []
+
+    monkeypatch.setattr(cli, "_pt_print", lambda value: printed.append(value))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda text: text)
+
+    cli._replay_output_history()
+
+    assert printed == ["first line\nsecond line\nthird line\nfourth line"]
 
 
 def test_chat_console_records_rich_ansi_for_resize_replay(monkeypatch):

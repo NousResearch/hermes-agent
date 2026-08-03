@@ -27,13 +27,48 @@ def bare_runner():
 
 
 @pytest.mark.asyncio
+async def test_safe_disconnect_calls_adapter_disconnect(bare_runner):
+    """The helper forwards to adapter.disconnect()."""
+    adapter = MagicMock()
+    adapter.disconnect = AsyncMock(return_value=None)
+
+    await bare_runner._safe_adapter_disconnect(adapter, Platform.TELEGRAM)
+
+    adapter.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_safe_disconnect_swallows_exceptions(bare_runner):
+    """An exception in adapter.disconnect() must not propagate — the
+    caller is already on an error path."""
+    adapter = MagicMock()
+    adapter.disconnect = AsyncMock(side_effect=RuntimeError("partial init"))
+
+    # Must NOT raise
+    await bare_runner._safe_adapter_disconnect(adapter, Platform.TELEGRAM)
+
+    adapter.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_safe_disconnect_handles_none_platform(bare_runner):
+    """Logging path must tolerate platform=None."""
+    adapter = MagicMock()
+    adapter.disconnect = AsyncMock(side_effect=ValueError("nope"))
+
+    await bare_runner._safe_adapter_disconnect(adapter, None)
+
+    adapter.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_safe_disconnect_times_out_and_continues(bare_runner, monkeypatch, caplog):
     """A wedged adapter disconnect must not block gateway shutdown."""
     monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.001")
     adapter = MagicMock()
 
     async def hang():
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(60)
 
     adapter.disconnect = AsyncMock(side_effect=hang)
 

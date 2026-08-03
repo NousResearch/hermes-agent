@@ -103,6 +103,26 @@ class TestExpressionPreScan:
         assert result["success"] is True
         assert result["result"] == "ok"
 
+    def test_skips_prescan_for_local_backend(self, monkeypatch):
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command",
+            lambda *a, **k: {"success": True, "data": {"result": "local-ok"}},
+        )
+        result = _eval(f"fetch('{PRIVATE_URL}')")
+        assert result["success"] is True
+        assert result["result"] == "local-ok"
+
+    def test_skips_prescan_for_local_sidecar(self, monkeypatch):
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: True)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command",
+            lambda *a, **k: {"success": True, "data": {"result": "sidecar-ok"}},
+        )
+        result = _eval(f"fetch('{PRIVATE_URL}')")
+        assert result["success"] is True
 
     def test_skips_prescan_when_allow_private(self, monkeypatch):
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
@@ -276,6 +296,10 @@ class TestExpressionScanHelper:
         )
         assert out == "http://127.0.0.1/x"
 
+    def test_none_when_no_url(self, monkeypatch):
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+        assert browser_tool._expression_targets_private_url("document.title") is None
 
     def test_strips_trailing_punctuation(self, monkeypatch):
         monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)

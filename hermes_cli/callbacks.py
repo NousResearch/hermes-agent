@@ -15,34 +15,25 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 from hermes_constants import display_hermes_home
 
 
-def clarify_callback(cli, question, choices, multi_select=False):
+def clarify_callback(cli, question, choices):
     """Prompt for clarifying question through the TUI.
 
     Sets up the interactive selection UI, then blocks until the user
     responds. Returns the user's choice or a timeout message.
-
-    When ``multi_select`` is True, shows checkboxes and the user can
-    select multiple options with Space, confirming with Enter.
     """
     from cli import CLI_CONFIG
-    from tools.clarify_gateway import resolve_clarify_timeout
 
-    # Canonical clarify timeout, shared with the gateway/TUI path. `<= 0`
-    # means unlimited (never auto-skip mid-think) → a null deadline.
-    timeout = resolve_clarify_timeout(CLI_CONFIG)
+    timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
     response_queue = queue.Queue()
     is_open_ended = not choices
-    effective_multi = multi_select and not is_open_ended
 
     cli._clarify_state = {
         "question": question,
         "choices": choices if not is_open_ended else [],
         "selected": 0,
-        "multi_select": effective_multi,
-        "selected_indices": set() if effective_multi else None,
         "response_queue": response_queue,
     }
-    cli._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
+    cli._clarify_deadline = _time.monotonic() + timeout
     cli._clarify_freetext = is_open_ended
 
     if hasattr(cli, "_app") and cli._app:
@@ -51,20 +42,18 @@ def clarify_callback(cli, question, choices, multi_select=False):
     while True:
         try:
             result = response_queue.get(timeout=1)
-            cli._clarify_deadline = None
+            cli._clarify_deadline = 0
             return result
         except queue.Empty:
-            # None deadline = unlimited: never auto-skip, just keep polling.
-            if cli._clarify_deadline is not None:
-                remaining = cli._clarify_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
+            remaining = cli._clarify_deadline - _time.monotonic()
+            if remaining <= 0:
+                break
             if hasattr(cli, "_app") and cli._app:
                 cli._app.invalidate()
 
     cli._clarify_state = None
     cli._clarify_freetext = False
-    cli._clarify_deadline = None
+    cli._clarify_deadline = 0
     if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
     cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
@@ -250,4 +239,4 @@ def approval_callback(cli, command: str, description: str) -> str:
         if hasattr(cli, "_app") and cli._app:
             cli._app.invalidate()
         cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
-        return "timeout"
+        return "deny"

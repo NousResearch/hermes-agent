@@ -1,14 +1,14 @@
 ---
-title: "Bioinformatics — Gateway to 400+ genomics and computational biology skills"
+title: "Bioinformatics — Gateway to 400+ bioinformatics skills from bioSkills and ClawBio"
 sidebar_label: "Bioinformatics"
-description: "Gateway to 400+ genomics and computational biology skills"
+description: "Gateway to 400+ bioinformatics skills from bioSkills and ClawBio"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Bioinformatics
 
-Gateway to 400+ genomics and computational biology skills.
+Gateway to 400+ bioinformatics skills from bioSkills and ClawBio. Covers genomics, transcriptomics, single-cell, variant calling, pharmacogenomics, metagenomics, structural biology, and more. Fetches domain-specific reference material on demand.
 
 ## Skill metadata
 

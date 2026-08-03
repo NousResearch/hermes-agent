@@ -45,6 +45,15 @@ def test_evidence_store_add(tmp_path):
     assert len(store.data["evidence"][0]["content_sha256"]) == 64
 
 
+def test_evidence_store_add_persists(tmp_path):
+    store_file = tmp_path / "test_evidence.json"
+    store = EvidenceStore(str(store_file))
+    store.add(source="s1", content="c1", evidence_type="git")
+
+    # Reload from disk
+    store2 = EvidenceStore(str(store_file))
+    assert len(store2.data["evidence"]) == 1
+    assert store2.data["evidence"][0]["id"] == "EV-0001"
 
 
 def test_evidence_store_sequential_ids(tmp_path):
@@ -60,6 +69,23 @@ def test_evidence_store_sequential_ids(tmp_path):
     assert eid3 == "EV-0003"
 
 
+def test_evidence_store_list(tmp_path):
+    store_file = tmp_path / "test_evidence.json"
+    store = EvidenceStore(str(store_file))
+
+    store.add(source="s1", content="c1", evidence_type="git", actor="a1")
+    store.add(source="s2", content="c2", evidence_type="gh_api", actor="a2")
+
+    all_evidence = store.list_evidence()
+    assert len(all_evidence) == 2
+
+    git_evidence = store.list_evidence(filter_type="git")
+    assert len(git_evidence) == 1
+    assert git_evidence[0]["actor"] == "a1"
+
+    actor_evidence = store.list_evidence(filter_actor="a2")
+    assert len(actor_evidence) == 1
+    assert actor_evidence[0]["type"] == "gh_api"
 
 
 def test_evidence_store_verify_integrity(tmp_path):
@@ -76,6 +102,20 @@ def test_evidence_store_verify_integrity(tmp_path):
     assert issues[0]["id"] == "EV-0001"
 
 
+def test_evidence_store_query(tmp_path):
+    store_file = tmp_path / "test_evidence.json"
+    store = EvidenceStore(str(store_file))
+
+    store.add(source="github_api", content="malicious activity detected", evidence_type="gh_api")
+    store.add(source="manual", content="clean observation", evidence_type="manual")
+
+    results = store.query("malicious")
+    assert len(results) == 1
+    assert results[0]["source"] == "github_api"
+
+    # Query should be case-insensitive
+    results = store.query("MALICIOUS")
+    assert len(results) == 1
 
 
 def test_evidence_store_query_searches_multiple_fields(tmp_path):

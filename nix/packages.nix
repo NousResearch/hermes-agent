@@ -36,7 +36,6 @@
           "modal"
           "parallel-web"
           "tts-premium"
-          "vercel"
           "voice"
         ]
         # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
@@ -45,10 +44,6 @@
     in
     {
       packages = {
-        node-gyp =
-          (pkgs.callPackage ./lib.nix {
-            inherit (pkgs) npm-lockfile-fix;
-          }).node-gyp;
         default = full;
 
         inherit minimal;

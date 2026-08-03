@@ -169,7 +169,6 @@ def _install_fake_openai_module(captured, transcription_response=None):
         APIError=Exception,
         APIConnectionError=Exception,
         APITimeoutError=Exception,
-        BadRequestError=type("BadRequestError", (Exception,), {}),
     )
     sys.modules["openai"] = fake_module
 
@@ -202,6 +201,27 @@ def test_managed_fal_submit_uses_gateway_origin_and_nous_token(monkeypatch):
     assert captured["sync_client_inits"] == 1
 
 
+def test_managed_fal_submit_reuses_cached_sync_client(monkeypatch):
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_fal_client(captured)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+
+    image_generation_tool = _load_tool_module(
+        "tools.image_generation_tool",
+        "image_generation_tool.py",
+    )
+
+    image_generation_tool._submit_fal_request("fal-ai/flux-2-pro", {"prompt": "first"})
+    first_client = captured["http_client"]
+    image_generation_tool._submit_fal_request("fal-ai/flux-2-pro", {"prompt": "second"})
+
+    assert captured["sync_client_inits"] == 1
+    assert captured["http_client"] is first_client
+
+
 def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatch, tmp_path):
     captured = {}
     _install_fake_tools_package()
@@ -222,6 +242,46 @@ def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatc
     assert captured["speech_kwargs"]["extra_headers"] == {"x-idempotency-key": "tts-call-123"}
     assert captured["stream_to_file"] == str(output_path)
     assert captured["close_calls"] == 1
+
+
+def test_openai_tts_coerces_direct_only_model_on_managed_gateway(monkeypatch, tmp_path):
+    """A tts.openai.model valid only for direct OpenAI (e.g. tts-1-hd) must be
+    coerced to a managed-supported model, else the gateway 400s with
+    'Unsupported managed OpenAI speech model'."""
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_openai_module(captured)
+    monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "nousresearch.com")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+
+    tts_tool = _load_tool_module("tools.tts_tool", "tts_tool.py")
+    output_path = tmp_path / "speech.mp3"
+    tts_tool._generate_openai_tts(
+        "hello world", str(output_path), {"openai": {"model": "tts-1-hd"}}
+    )
+
+    assert captured["base_url"] == "https://openai-audio-gateway.nousresearch.com/v1"
+    assert captured["speech_kwargs"]["model"] == "gpt-4o-mini-tts"
+
+
+def test_openai_tts_keeps_direct_only_model_with_direct_key(monkeypatch, tmp_path):
+    """With a direct key, the user's tts-1-hd is honored (not coerced)."""
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_openai_module(captured)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-direct-key")
+    monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+
+    tts_tool = _load_tool_module("tools.tts_tool", "tts_tool.py")
+    output_path = tmp_path / "speech.mp3"
+    tts_tool._generate_openai_tts(
+        "hello world", str(output_path), {"openai": {"model": "tts-1-hd"}}
+    )
+
+    assert captured["base_url"] == "https://api.openai.com/v1"
+    assert captured["speech_kwargs"]["model"] == "tts-1-hd"
 
 
 def test_openai_tts_accepts_openai_api_key_as_direct_fallback(monkeypatch, tmp_path):
@@ -313,6 +373,163 @@ def _load_video_gen_plugin(monkeypatch):
     sys.modules["plugins.video_gen.fal"] = plugin_mod
     spec.loader.exec_module(plugin_mod)
     return plugin_mod
+
+
+def test_video_gen_managed_fal_submit_uses_gateway(monkeypatch):
+    """Video gen routes through the managed gateway when FAL_KEY is absent."""
+    captured = {}
+    fake_fal = _install_fake_fal_client(captured)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-video-token")
+
+    plugin = _load_video_gen_plugin(monkeypatch)
+
+    # Patch uuid for deterministic idempotency key
+    monkeypatch.setattr(plugin.uuid, "uuid4", lambda: "video-submit-456")
+
+    plugin._submit_fal_video_request(
+        "fal-ai/pixverse/v6/text-to-video",
+        {"prompt": "a cat riding a bicycle", "duration": "5"},
+    )
+
+    assert captured["submit_via"] == "managed_client"
+    assert captured["client_key"] == "nous-video-token"
+    assert captured["submit_url"] == "http://127.0.0.1:3009/fal-ai/pixverse/v6/text-to-video"
+    assert captured["method"] == "POST"
+    assert captured["arguments"] == {"prompt": "a cat riding a bicycle", "duration": "5"}
+    assert captured["headers"] == {"x-idempotency-key": "video-submit-456"}
+    assert captured["sync_client_inits"] == 1
+
+
+def test_video_gen_managed_client_reused_across_calls(monkeypatch):
+    """The managed video client is cached and reused across requests."""
+    captured = {}
+    _install_fake_fal_client(captured)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-video-token")
+
+    plugin = _load_video_gen_plugin(monkeypatch)
+
+    plugin._submit_fal_video_request("fal-ai/pixverse/v6/text-to-video", {"prompt": "first"})
+    first_client = captured["http_client"]
+    plugin._submit_fal_video_request("fal-ai/pixverse/v6/text-to-video", {"prompt": "second"})
+
+    assert captured["sync_client_inits"] == 1
+    assert captured["http_client"] is first_client
+
+
+def test_video_gen_direct_mode_when_fal_key_set(monkeypatch):
+    """When FAL_KEY is set and gateway not preferred, uses direct fal_client.submit."""
+    captured = {}
+    _install_fake_fal_client(captured)
+    monkeypatch.setenv("FAL_KEY", "direct-fal-key-123")
+    monkeypatch.delenv("FAL_QUEUE_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
+
+    plugin = _load_video_gen_plugin(monkeypatch)
+    monkeypatch.setattr(plugin.uuid, "uuid4", lambda: "direct-456")
+
+    # Trigger the lazy load so _fal_client is populated from our fake
+    plugin._load_fal_client()
+
+    # In direct mode, fal_client.submit is the module-level function.
+    # Our fake raises AssertionError from the managed path, so we need
+    # to patch it to actually capture the call.
+    direct_captured = {}
+
+    def direct_submit(endpoint, arguments=None, headers=None):
+        direct_captured["endpoint"] = endpoint
+        direct_captured["arguments"] = arguments
+        direct_captured["headers"] = headers
+        # Return a mock handle
+        class FakeHandle:
+            def get(self):
+                return {"video": {"url": "https://fal.media/result.mp4"}}
+        return FakeHandle()
+
+    plugin._fal_client.submit = direct_submit
+
+    plugin._submit_fal_video_request(
+        "fal-ai/pixverse/v6/text-to-video",
+        {"prompt": "test direct"},
+    )
+
+    assert direct_captured["endpoint"] == "fal-ai/pixverse/v6/text-to-video"
+    assert direct_captured["arguments"] == {"prompt": "test direct"}
+    assert direct_captured["headers"] == {"x-idempotency-key": "direct-456"}
+    # Managed client should NOT have been initialized
+    assert "submit_via" not in captured
+
+
+def test_video_gen_gateway_4xx_raises_actionable_valueerror(monkeypatch):
+    """A 4xx from the managed gateway surfaces a clear ValueError with remediation hints."""
+    captured = {}
+    _install_fake_fal_client(captured)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-video-token")
+
+    plugin = _load_video_gen_plugin(monkeypatch)
+
+    # Make _maybe_retry_request raise an exception with a 403 status
+    class FakeResponse:
+        status_code = 403
+
+    class GatewayRejectError(Exception):
+        def __init__(self):
+            super().__init__("forbidden")
+            self.response = FakeResponse()
+
+    original_retry = sys.modules["fal_client"].client._maybe_retry_request
+
+    def raising_retry(client, method, url, json=None, timeout=None, headers=None):
+        raise GatewayRejectError()
+
+    sys.modules["fal_client"].client._maybe_retry_request = raising_retry
+
+    with pytest.raises(ValueError, match=r"gateway rejected endpoint.*HTTP 403"):
+        plugin._submit_fal_video_request(
+            "fal-ai/pixverse/v6/text-to-video",
+            {"prompt": "test 4xx"},
+        )
+
+
+def test_video_gen_is_available_true_via_gateway(monkeypatch):
+    """is_available() returns True when FAL_KEY is absent but managed gateway is configured."""
+    _install_fake_fal_client({})
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-video-token")
+
+    plugin = _load_video_gen_plugin(monkeypatch)
+    provider = plugin.FALVideoGenProvider()
+    assert provider.is_available() is True
+
+
+def test_video_gen_prefers_gateway_overrides_direct_key(monkeypatch):
+    """When FAL_KEY is set but prefers_gateway('video_gen') is True, routes through gateway."""
+    captured = {}
+    _install_fake_fal_client(captured)
+    monkeypatch.setenv("FAL_KEY", "direct-key-present")
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-video-token")
+
+    plugin = _load_video_gen_plugin(monkeypatch)
+
+    # Patch prefers_gateway to return True for video_gen
+    tb_helpers = sys.modules["tools.tool_backend_helpers"]
+    original_pg = tb_helpers.prefers_gateway
+    monkeypatch.setattr(tb_helpers, "prefers_gateway", lambda section: section == "video_gen")
+
+    plugin._submit_fal_video_request(
+        "fal-ai/pixverse/v6/text-to-video",
+        {"prompt": "gateway preferred"},
+    )
+
+    assert captured["submit_via"] == "managed_client"
+    assert captured["client_key"] == "nous-video-token"
 
 
 def test_video_gen_happy_horse_uses_alibaba_namespace():

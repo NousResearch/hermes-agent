@@ -125,6 +125,13 @@ const SOURCE_CONFIG: Record<
     border: "rgba(96, 165, 250, 0.2)",
     icon: "\u{25CB}",
   },
+  "Claude Marketplace": {
+    label: "Marketplace",
+    color: "#a78bfa",
+    bg: "rgba(167, 139, 250, 0.08)",
+    border: "rgba(167, 139, 250, 0.2)",
+    icon: "\u{25A0}",
+  },
   "skills.sh": {
     label: "skills.sh",
     color: "#34d399",
@@ -216,6 +223,7 @@ const SOURCE_ORDER = [
   "ClawHub",
   "browse.sh",
   "LobeHub",
+  "Claude Marketplace",
   "VoltAgent",
   "Well-Known",
   "GitHub",

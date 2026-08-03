@@ -112,7 +112,7 @@ export function MarkdownAlert({ children, type }: { children: ReactNode; type: A
 
   return (
     <div
-      className="my-2 rounded-lg border border-(--ui-stroke-tertiary) bg-muted/25 px-3 py-2 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+      className="my-2 rounded-lg border border-border bg-muted/25 px-3 py-2 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
       data-slot="aui_markdown-alert"
     >
       <div className={cn('mb-1 flex items-center gap-1.5 text-[0.8125rem] font-semibold', style.accent)}>

@@ -61,6 +61,55 @@ def test_kanban_comment_body_scrubbed_github_pat(worker_env):
     assert stored  # something was stored
 
 
+def test_kanban_comment_body_scrubbed_openai_key(worker_env):
+    """sk- key in comment body must be masked before DB write."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    secret = "sk-" + "A" * 48
+    kt._handle_comment({"task_id": worker_env, "body": f"key={secret}"})
+    conn = kb.connect()
+    try:
+        comments = kb.list_comments(conn, worker_env)
+    finally:
+        conn.close()
+    stored = comments[-1].body
+    assert secret not in stored
+
+
+def test_kanban_complete_summary_scrubbed(worker_env):
+    """sk-ant- key in summary must be masked before DB write."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    secret = "sk-ant-" + "A" * 40
+    kt._handle_complete({"summary": f"done, key={secret}"})
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+    finally:
+        conn.close()
+    assert run is not None
+    stored = run.summary or ""
+    assert secret not in stored
+
+
+def test_kanban_complete_metadata_scrubbed(worker_env):
+    """Token in metadata dict must be masked in JSON stored in DB."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    secret = "ghp_" + "B" * 40
+    metadata = {"token": secret, "count": 5}
+    kt._handle_complete({"summary": "done", "metadata": metadata})
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+    finally:
+        conn.close()
+    assert run is not None
+    # metadata is stored on the run; serialize to catch any nesting
+    meta_raw = json.dumps(run.metadata) if run.metadata else "{}"
+    assert secret not in meta_raw
+
+
 def test_kanban_block_reason_scrubbed_jwt(worker_env):
     """JWT in block reason must be masked before DB write."""
     from tools import kanban_tools as kt

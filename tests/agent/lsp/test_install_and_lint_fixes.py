@@ -28,8 +28,43 @@ from agent.lsp.install import INSTALL_RECIPES
 # ---------------------------------------------------------------------------
 
 
+def test_typescript_recipe_includes_typescript_sdk():
+    recipe = INSTALL_RECIPES["typescript-language-server"]
+    extras = recipe.get("extra_pkgs") or []
+    assert "typescript" in extras, (
+        "typescript-language-server requires the `typescript` SDK as a "
+        "sibling install — without it `initialize` fails with "
+        "'Could not find a valid TypeScript installation'."
+    )
 
 
+def test_install_npm_passes_extras_to_npm_command(tmp_path, monkeypatch):
+    """Verify the npm subprocess is invoked with both pkg AND extras."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        # Pretend npm succeeded but binary doesn't exist — install code
+        # will return None, which is fine for this test.
+        return MagicMock(returncode=0, stderr="")
+
+    from agent.lsp import install as install_mod
+
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
+
+    install_mod._install_npm("typescript-language-server", "typescript-language-server",
+                             extra_pkgs=["typescript"])
+
+    cmd = captured["cmd"]
+    assert "typescript-language-server" in cmd
+    assert "typescript" in cmd
+    # Both must come AFTER the npm flags, in install-target position
+    install_idx = cmd.index("install")
+    assert cmd.index("typescript-language-server") > install_idx
+    assert cmd.index("typescript") > install_idx
 
 
 def test_install_npm_works_without_extras(tmp_path, monkeypatch):
@@ -59,6 +94,21 @@ def test_install_npm_works_without_extras(tmp_path, monkeypatch):
     assert install_targets == ["pyright"]
 
 
+def test_existing_binary_finds_windows_wrapper_in_staging(tmp_path, monkeypatch):
+    """Installed Windows shims should satisfy later status/probe calls."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    wrapper = install_mod.hermes_lsp_bin_dir() / "pyright-langserver.cmd"
+    wrapper.write_text("@echo off\n")
+    wrapper.chmod(0o755)
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda _name: None)
+
+    assert install_mod._existing_binary("pyright-langserver") == str(wrapper)
+    assert install_mod.detect_status("pyright") == "installed"
 
 
 def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
@@ -90,8 +140,27 @@ def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_backend_warnings_quiet_when_bash_not_installed(tmp_path, monkeypatch):
+    """No bash → no warning."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from agent.lsp import cli as lsp_cli
+
+    with patch("shutil.which", return_value=None):
+        notes = lsp_cli._backend_warnings()
+    assert notes == []
 
 
+def test_backend_warnings_quiet_when_bash_and_shellcheck_both_present(tmp_path, monkeypatch):
+    """Both installed → no warning."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from agent.lsp import cli as lsp_cli
+
+    def which(name):
+        return f"/usr/bin/{name}"  # both found
+
+    with patch("shutil.which", side_effect=which):
+        notes = lsp_cli._backend_warnings()
+    assert notes == []
 
 
 def test_backend_warnings_fires_when_bash_installed_but_shellcheck_missing(tmp_path, monkeypatch):
@@ -137,12 +206,81 @@ def test_status_output_includes_backend_warnings_section(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_npx_tsc_missing_treated_as_skipped():
+    """The original bug: ``npx tsc`` errors when tsc isn't installed.
+
+    Without this fix, the lint result is ``error``, which means the LSP
+    semantic tier (gated on ``success or skipped``) is skipped — the user
+    gets a useless tooling-error message instead of real diagnostics.
+    """
+    from tools.file_operations import _looks_like_linter_unusable
+
+    npx_failure_output = (
+        "                                                                               \n"
+        "                This is not the tsc command you are looking for                \n"
+        "                                                                               \n"
+        "\n"
+        "To get access to the TypeScript compiler, tsc, from the command line either:\n"
+        "- Use npm install typescript to first add TypeScript to your project before using npx\n"
+    )
+
+    assert _looks_like_linter_unusable("npx", npx_failure_output) is True
 
 
+def test_real_lint_error_not_classified_as_unusable():
+    """A genuine TypeScript type error must NOT be misclassified."""
+    from tools.file_operations import _looks_like_linter_unusable
+
+    real_error = (
+        "bad.ts:5:1 - error TS2322: Type 'number' is not assignable to type 'string'.\n"
+        "5 const x: string = greet(42);\n"
+        "  ~~~~~~~~~~~~~~~\n"
+    )
+
+    assert _looks_like_linter_unusable("npx", real_error) is False
 
 
+def test_unknown_base_cmd_returns_false():
+    """Unfamiliar linters fall through and use the normal error path."""
+    from tools.file_operations import _looks_like_linter_unusable
+
+    assert _looks_like_linter_unusable("eslint", "any output") is False
+    assert _looks_like_linter_unusable("", "anything") is False
 
 
+def test_check_lint_returns_skipped_when_npx_tsc_unusable(tmp_path):
+    """Integration: _check_lint sees npx exit non-zero with the npx banner
+    and returns a ``skipped`` LintResult so LSP can still run."""
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+
+    ts_file = tmp_path / "bad.ts"
+    ts_file.write_text("const x: string = 42;\n")
+
+    env = LocalEnvironment()
+    fops = ShellFileOperations(env)
+
+    # Patch _exec to simulate ``npx tsc`` failing because tsc is missing.
+    npx_banner = (
+        "                                                                               \n"
+        "                This is not the tsc command you are looking for                \n"
+    )
+
+    def fake_exec(cmd, **kwargs):
+        result = MagicMock()
+        result.exit_code = 1
+        result.stdout = npx_banner
+        return result
+
+    with patch.object(fops, "_exec", side_effect=fake_exec), \
+         patch.object(fops, "_has_command", return_value=True):
+        lint = fops._check_lint(str(ts_file))
+
+    assert lint.skipped is True, (
+        f"expected skipped (so LSP runs); got success={lint.success}, "
+        f"output={lint.output!r}"
+    )
+    assert "not usable" in (lint.message or "")
 
 
 def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):

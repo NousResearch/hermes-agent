@@ -11,3 +11,6 @@ def test_xai_oauth_provider_label_is_not_collapsed_to_api_key_label():
     assert get_label("grok-oauth") == "xAI Grok OAuth (SuperGrok / Premium+)"
 
 
+def test_xai_oauth_provider_labels_match_canonical_model_labels():
+    """Provider helpers should agree on the OAuth display label."""
+    assert get_label("xai-oauth") == provider_label("xai-oauth")

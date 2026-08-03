@@ -40,3 +40,14 @@ def test_gateway_checkpoint_config_reaches_real_agent(tmp_path, monkeypatch):
         agent.close()
 
 
+def test_checkpoint_agent_kwargs_supports_legacy_boolean_config():
+    from gateway.run import _checkpoint_agent_kwargs
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    kwargs = _checkpoint_agent_kwargs({"checkpoints": True})
+    defaults = DEFAULT_CONFIG["checkpoints"]
+
+    assert kwargs["checkpoints_enabled"] is True
+    assert kwargs["checkpoint_max_snapshots"] == defaults["max_snapshots"]
+    assert kwargs["checkpoint_max_total_size_mb"] == defaults["max_total_size_mb"]
+    assert kwargs["checkpoint_max_file_size_mb"] == defaults["max_file_size_mb"]

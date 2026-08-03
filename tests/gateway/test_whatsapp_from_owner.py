@@ -93,3 +93,39 @@ def test_from_owner_does_not_double_prefix_when_already_tagged():
     assert event.text == "[owner reply] already tagged"
 
 
+def test_from_owner_prefixes_empty_body_for_uniform_media_placeholders():
+    """Owner media with empty caption still gets the marker (bridge may
+    substitute placeholders like ``[image received]`` upstream; empty stays
+    tagged for consistency)."""
+    adapter = _make_adapter()
+    payload = _dm_payload(fromOwner=True, body="")
+
+    event = asyncio.run(adapter._build_message_event(payload))
+
+    assert event is not None
+    assert event.metadata.get("whatsapp_from_owner") is True
+    assert event.text == "[owner reply] "
+
+
+def test_metadata_flag_absent_by_default():
+    """Default bridge payload (env flag off → field never present) must not
+    leak the metadata key.  Plugins use ``.get(...)`` and rely on absence."""
+    adapter = _make_adapter()
+    payload = _dm_payload()
+
+    event = asyncio.run(adapter._build_message_event(payload))
+
+    assert event is not None
+    assert "whatsapp_from_owner" not in event.metadata
+
+
+def test_metadata_flag_absent_when_explicitly_false():
+    """Explicit fromOwner=false must not set the metadata key — plugins
+    test for truthiness, but absence is the canonical "not owner" state."""
+    adapter = _make_adapter()
+    payload = _dm_payload(fromOwner=False)
+
+    event = asyncio.run(adapter._build_message_event(payload))
+
+    assert event is not None
+    assert "whatsapp_from_owner" not in event.metadata

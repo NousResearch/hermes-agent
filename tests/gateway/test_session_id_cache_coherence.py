@@ -196,6 +196,93 @@ class TestSessionIdCacheCoherence:
         # Guard must invalidate.
         assert _guard_would_reuse(runner, "telegram:s1", "s1") is False
 
+    @pytest.mark.asyncio
+    async def test_refresh_skips_when_session_id_differs(self, tmp_path):
+        """_refresh_agent_cache_message_count must NOT refresh the cached
+        snapshot when the current session_id differs from the one the
+        snapshot belongs to. Otherwise the snapshot gets overwritten with
+        a different session's count, and the next switch back fires the
+        guard (the original bug)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("sA", source="telegram")
+        db.create_session("sB", source="telegram")
+        db.append_message("sA", role="user", content="x")
+        runner = _make_runner()
+        runner._session_db = AsyncSessionDB(db)
+        agent = object()
+
+        # Cache built from session A: (agent, sig, mc=1, sid=sA).
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:USER1"] = (agent, "sig", 1, "sA")
+
+        # Someone (the call site at line 9540) calls the re-baseline with
+        # the CURRENT session_id — which is sB after a switch. The
+        # snapshot is from sA → must NOT be touched.
+        await runner._refresh_agent_cache_message_count("telegram:USER1", "sB")
+
+        with runner._agent_cache_lock:
+            cached = runner._agent_cache["telegram:USER1"]
+            assert cached[2] == 1, (
+                f"BUG: snapshot was overwritten with sB's count: cached[2]={cached[2]}"
+            )
+            assert cached[3] == "sA", (
+                f"BUG: snapshot's session_id was changed: cached[3]={cached[3]}"
+            )
+            assert cached[0] is agent
+
+    @pytest.mark.asyncio
+    async def test_refresh_refreshes_when_session_id_matches(self, tmp_path):
+        """Sanity: when the snapshot's session_id matches the current one,
+        the re-baseline still runs and updates the count to the live value."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        runner = _make_runner()
+        runner._session_db = AsyncSessionDB(db)
+        agent = object()
+
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (agent, "sig", 0, "s1")
+
+        # s1's own turn flushes two rows.
+        db.append_message("s1", role="user", content="u")
+        db.append_message("s1", role="assistant", content="a")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["telegram:s1"][2] == 2
+
+    @pytest.mark.asyncio
+    async def test_legacy_2tuple_and_pending_sentinel_untouched(self, tmp_path):
+        """Backward-compat: legacy 2-tuples and pending-sentinel 3-tuples
+        are not affected by the fix. The 2-tuple opts out of the guard;
+        the sentinel is left as-is by the re-baseline."""
+        from hermes_state import SessionDB
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        db.append_message("s1", role="user", content="hi")
+        runner = _make_runner()
+        runner._session_db = AsyncSessionDB(db)
+
+        # Legacy 2-tuple — untouched.
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (object(), "sig")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        with runner._agent_cache_lock:
+            assert len(runner._agent_cache["telegram:s1"]) == 2
+
+        # Pending sentinel — untouched.
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (_AGENT_PENDING_SENTINEL, "sig", 0)
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["telegram:s1"][0] is _AGENT_PENDING_SENTINEL
+            assert runner._agent_cache["telegram:s1"][2] == 0
 
     @pytest.mark.asyncio
     async def test_legacy_3tuple_session_id_unknown_still_guarded(self, tmp_path):

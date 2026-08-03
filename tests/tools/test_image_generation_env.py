@@ -15,10 +15,62 @@ def test_fal_key_whitespace_is_unset(monkeypatch):
     assert image_generation_tool.check_fal_api_key() is False
 
 
+def test_fal_key_valid(monkeypatch):
+    monkeypatch.setenv("FAL_KEY", "sk-test")
+
+    from tools import image_generation_tool
+
+    monkeypatch.setattr(
+        image_generation_tool, "_resolve_managed_fal_gateway", lambda: None
+    )
+
+    assert image_generation_tool.check_fal_api_key() is True
+
+
+def test_fal_key_empty_is_unset(monkeypatch):
+    monkeypatch.setenv("FAL_KEY", "")
+
+    from tools import image_generation_tool
+
+    monkeypatch.setattr(
+        image_generation_tool, "_resolve_managed_fal_gateway", lambda: None
+    )
+
+    assert image_generation_tool.check_fal_api_key() is False
+
+
 # ---------------------------------------------------------------------------
 # Actionable setup message when no FAL backend is reachable.
 # Regression for the silent-drop UX gap described in issue #2543.
 # ---------------------------------------------------------------------------
+
+
+def test_no_backend_message_mentions_fal_signup_and_plugins(monkeypatch):
+    from tools import image_generation_tool
+
+    monkeypatch.setattr(
+        image_generation_tool, "managed_nous_tools_enabled", lambda: False
+    )
+
+    msg = image_generation_tool._build_no_backend_setup_message()
+
+    assert "FAL_KEY" in msg
+    assert "https://fal.ai" in msg
+    # Plugin pointer so users on a stale image_gen.provider know where to look.
+    assert "hermes tools" in msg or "hermes plugins" in msg
+
+
+def test_no_backend_message_mentions_managed_gateway_when_enabled(monkeypatch):
+    from tools import image_generation_tool
+
+    monkeypatch.setattr(
+        image_generation_tool, "managed_nous_tools_enabled", lambda: True
+    )
+
+    msg = image_generation_tool._build_no_backend_setup_message()
+
+    assert "managed FAL gateway" in msg
+    assert "Nous account" in msg or "hermes setup" in msg
 
 
 def test_image_generate_tool_returns_actionable_error_when_no_backend(monkeypatch):

@@ -13,7 +13,6 @@ import {
   shouldAutoDrain
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
-import { $sessions, idsShareLineage } from '@/store/session'
 import { $workingSessionIds } from '@/store/session-states'
 
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
@@ -53,7 +52,6 @@ export function useBackgroundQueueDrain({
   const retryTimersRef = useRef<number[]>([])
   const [retryTick, setRetryTick] = useState(0)
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     submitTextRef.current = submitText
   }, [submitText])
@@ -155,23 +153,14 @@ export function useBackgroundQueueDrain({
       return
     }
 
-    // Queue keys prefer the lineage root (resolveComposerSessionKey) while
-    // $workingSessionIds / selection may hold the compression tip. Strict
-    // equality then mis-classifies a busy or selected chat as idle/offscreen.
-    const sessions = $sessions.get()
-    const working = [...workingSessionIds]
+    const working = new Set(workingSessionIds)
 
     for (const [sessionKey, entries] of Object.entries(queuedPromptsBySession)) {
-      const isSelected =
-        Boolean(selectedStoredSessionId) && idsShareLineage(sessionKey, selectedStoredSessionId!, sessions)
-
-      const isBusy = working.some(workingId => idsShareLineage(sessionKey, workingId, sessions))
-
       if (
-        isSelected ||
+        sessionKey === selectedStoredSessionId ||
         drainingSessionIdsRef.current.has(sessionKey) ||
         !shouldAutoDrain({
-          isBusy,
+          isBusy: working.has(sessionKey),
           parked: Boolean(parkedQueueSessions[sessionKey]),
           queueLength: entries.length
         })

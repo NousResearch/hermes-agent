@@ -76,6 +76,14 @@ SINGLE_HANDLER_CASES = [
 ]
 
 
+@pytest.mark.parametrize("name,builder,kw,argv", SINGLE_HANDLER_CASES, ids=[c[0] for c in SINGLE_HANDLER_CASES])
+def test_single_handler_builders(name, builder, kw, argv):
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h(name)
+    builder(sub, **{kw: handler})
+    ns = parser.parse_args(argv)
+    assert ns.func is handler
 
 
 def test_config_get_unset_subcommands_parse():
@@ -97,6 +105,15 @@ def test_config_get_unset_subcommands_parse():
     assert ns.key == "terminal.backend"
 
 
+def test_dashboard_builder_two_handlers():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    dash, reg = _h("dashboard"), _h("dashboard_register")
+    build_dashboard_parser(sub, cmd_dashboard=dash, cmd_dashboard_register=reg)
+    # bare dashboard -> launch handler
+    assert parser.parse_args(["dashboard"]).func is dash
+    # dashboard register -> register handler
+    assert parser.parse_args(["dashboard", "register"]).func is reg
 
 
 # ── deprecated `hermes login` fails gracefully, not with argparse error ────
@@ -117,6 +134,18 @@ def _login_parser():
     return parser
 
 
+@pytest.mark.parametrize("provider", ["anthropic", "nous", "openai-codex", "totally-made-up"])
+def test_login_accepts_any_provider_value(provider):
+    """Deprecated `login` must route every `--provider` to the handler.
+
+    A restrictive `choices=` list (the pre-fix behavior) rejected providers
+    like `anthropic` with an argparse error *before* the deprecation message
+    could run, so the user just saw `invalid choice: 'anthropic'` and assumed
+    the feature was broken rather than relocated.
+    """
+    ns = _login_parser().parse_args(["login", "--provider", provider])
+    assert ns.func.__name__ == "cmd_login"
+    assert ns.provider == provider
 
 
 def test_login_subparser_help_is_suppressed():

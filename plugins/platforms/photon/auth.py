@@ -40,9 +40,7 @@ import json
 import logging
 import os
 import re
-import stat
 import time
-import uuid
 from base64 import b64encode
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,30 +50,6 @@ try:
     import httpx
 except ImportError:  # pragma: no cover - httpx is a hermes dependency
     httpx = None  # type: ignore[assignment]
-
-from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
-from agent.secret_scope import get_secret as _scoped_get_secret
-
-
-def _get_scoped_secret(name, default=None):
-    """Scope-aware credential read with the default-profile startup fallback.
-
-    Secondary profiles construct their adapters under a profile secret
-    scope -- the scope is authoritative and a scoped miss returns ``default``
-    (no cross-profile borrow from ``os.environ``, which may hold another
-    profile's value). The DEFAULT profile's adapter constructs and sends
-    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
-    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
-    profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and
-    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    """
-    try:
-        val = _scoped_get_secret(name, default)
-    except _UnscopedSecretError:
-        val = os.getenv(name)
-    return val if val is not None else default
-
 
 logger = logging.getLogger(__name__)
 
@@ -135,46 +109,14 @@ def _load_auth() -> Dict[str, Any]:
 def _save_auth(data: Dict[str, Any]) -> None:
     path = _auth_json_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Per-process random temp suffix avoids collisions between concurrent
-    # writers and stale leftovers from a crashed prior write.
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
-    # Create with 0o600 atomically via os.open(O_EXCL) + fdopen: the old
-    # open() → write → chmod() sequence left a window where the bearer
-    # token sat world-readable at process umask (typically 0o644), and the
-    # predictable temp name could be pre-planted (symlink attack). Mirrors
-    # hermes_cli/auth.py:_save_auth_store (#19673, #21148).
-    fd = os.open(
-        str(tmp),
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-        stat.S_IRUSR | stat.S_IWUSR,
-    )
+    tmp = path.with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, sort_keys=True)
     try:
-        fh = os.fdopen(fd, "w", encoding="utf-8")
-    except BaseException:
-        # os.fdopen() failed before taking ownership of the raw descriptor,
-        # so nothing else will ever close it — do it here, then drop the
-        # just-created temp file.
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
-    try:
-        with fh:
-            json.dump(data, fh, indent=2, sort_keys=True)
-            fh.flush()
-            os.fsync(fh.fileno())
-        tmp.replace(path)
-    except BaseException:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    tmp.replace(path)
 
 
 def load_photon_token() -> Optional[str]:
@@ -194,56 +136,11 @@ def load_photon_token() -> Optional[str]:
 
 def store_photon_token(token: str) -> None:
     """Persist a dashboard bearer token under ``credential_pool.photon``."""
-    from hermes_cli.auth import _auth_store_lock
-
-    with _auth_store_lock():
-        auth = _load_auth()
-        auth.setdefault("credential_pool", {})["photon"] = [
-            {"access_token": token, "issued_at": int(time.time())}
-        ]
-        _save_auth(auth)
-
-
-def clear_photon_token() -> None:
-    """Remove any stored Photon dashboard token from auth.json.
-
-    Used to discard a stale/expired token before re-authentication.
-    """
     auth = _load_auth()
-    pool = auth.get("credential_pool", {})
-    photon = pool.get("photon", [])
-    if isinstance(photon, list) and photon:
-        pool["photon"] = []
-        _save_auth(auth)
-    # Also clear the legacy shape if present.
-    providers = auth.get("providers", {})
-    if "photon" in providers:
-        providers["photon"] = {}
-        _save_auth(auth)
-
-
-def check_photon_token_valid(token: str) -> bool:
-    """Return True if the token is accepted by the dashboard API.
-
-    Delegates to :func:`validate_photon_token`, which checks both
-    ``/api/auth/get-session`` and ``/api/projects/`` — the device flow can
-    mint tokens that pass the session lookup but are rejected by the project
-    APIs, and setup's management calls all hit the project APIs.  A
-    definitive rejection (``PhotonDashboardAuthError``) is treated as stale;
-    transient failures (network blips, 5xx) are treated as "probably valid"
-    so they don't force an unnecessary re-login.
-    """
-    if not token:
-        return False
-    try:
-        validate_photon_token(token)
-        return True
-    except PhotonDashboardAuthError:
-        return False
-    except Exception:
-        # Transient error — don't force a re-auth; let the caller's
-        # management-call error propagate if the token really is bad.
-        return True
+    auth.setdefault("credential_pool", {})["photon"] = [
+        {"access_token": token, "issued_at": int(time.time())}
+    ]
+    _save_auth(auth)
 
 
 def load_project_credentials() -> Tuple[Optional[str], Optional[str]]:
@@ -255,7 +152,7 @@ def load_project_credentials() -> Tuple[Optional[str], Optional[str]]:
     is the unified project id (dashboard id == spectrumProjectId).
     """
     env_id = os.getenv("PHOTON_PROJECT_ID")
-    env_sec = _get_scoped_secret("PHOTON_PROJECT_SECRET")
+    env_sec = os.getenv("PHOTON_PROJECT_SECRET")
     if env_id and env_sec:
         return env_id, env_sec
     auth = _load_auth()
@@ -308,21 +205,18 @@ def store_project_credentials(
     ``auth.json`` so management commands work even when ``.env`` hasn't been
     loaded into the current process.
     """
-    from hermes_cli.auth import _auth_store_lock
-
-    with _auth_store_lock():
-        auth = _load_auth()
-        record: Dict[str, Any] = {
-            "spectrum_project_id": spectrum_project_id,
-            "project_secret": project_secret,
-            "issued_at": int(time.time()),
-        }
-        if dashboard_project_id:
-            record["dashboard_project_id"] = dashboard_project_id
-        if name:
-            record["name"] = name
-        auth.setdefault("credential_pool", {})["photon_project"] = [record]
-        _save_auth(auth)
+    auth = _load_auth()
+    record: Dict[str, Any] = {
+        "spectrum_project_id": spectrum_project_id,
+        "project_secret": project_secret,
+        "issued_at": int(time.time()),
+    }
+    if dashboard_project_id:
+        record["dashboard_project_id"] = dashboard_project_id
+    if name:
+        record["name"] = name
+    auth.setdefault("credential_pool", {})["photon_project"] = [record]
+    _save_auth(auth)
     _persist_runtime_env(spectrum_project_id, project_secret)
 
 
@@ -336,21 +230,18 @@ def store_user_numbers(
     """Persist non-secret Photon user numbers for offline ``status`` output."""
     if not phone_number and not assigned_phone_number:
         return
-    from hermes_cli.auth import _auth_store_lock
-
-    with _auth_store_lock():
-        auth = _load_auth()
-        record: Dict[str, Any] = {"issued_at": int(time.time())}
-        if phone_number:
-            record["phone_number"] = phone_number
-        if assigned_phone_number:
-            record["assigned_phone_number"] = assigned_phone_number
-        if user_id:
-            record["user_id"] = user_id
-        if dashboard_project_id:
-            record["dashboard_project_id"] = dashboard_project_id
-        auth.setdefault("credential_pool", {})["photon_user"] = [record]
-        _save_auth(auth)
+    auth = _load_auth()
+    record: Dict[str, Any] = {"issued_at": int(time.time())}
+    if phone_number:
+        record["phone_number"] = phone_number
+    if assigned_phone_number:
+        record["assigned_phone_number"] = assigned_phone_number
+    if user_id:
+        record["user_id"] = user_id
+    if dashboard_project_id:
+        record["dashboard_project_id"] = dashboard_project_id
+    auth.setdefault("credential_pool", {})["photon_user"] = [record]
+    _save_auth(auth)
 
 
 def _persist_runtime_env(spectrum_project_id: str, project_secret: str) -> None:
@@ -790,19 +681,11 @@ def create_project(
     resp = httpx.post(url, json=body, headers=_bearer(token), timeout=30.0)
     resp.raise_for_status()
     data = resp.json() or {}
-    if not isinstance(data, dict):
-        raise RuntimeError("Photon create-project returned an unexpected response")
     if data.get("error"):
         raise RuntimeError(f"Photon create-project failed: {data['error']}")
-    if data.get("succeed") is False:
-        raise RuntimeError(
-            f"Photon create-project failed: {data.get('message') or data}"
-        )
-    project_candidate = data.get("data")
-    project: Dict[str, Any] = project_candidate if isinstance(project_candidate, dict) else data
-    if not project.get("id"):
+    if not data.get("id"):
         raise RuntimeError("Photon create-project did not return a project id")
-    return project
+    return data
 
 
 def regenerate_project_secret(token: str, project_id: str) -> str:

@@ -107,6 +107,16 @@ def test_send_result_retryable_default_is_false():
     assert r.retryable is False
 
 
+def test_send_result_retryable_can_be_set_true():
+    r = SendResult(success=False, error="httpx.ConnectError: ...", retryable=True)
+    assert r.retryable is True
+
+
+def test_send_result_retryable_false_for_permanent():
+    r = SendResult(success=False, error="message to edit not found")
+    assert r.retryable is False
+
+
 # ---------------------------------------------------------------------------
 # 3. run.py logic — retryable result must NOT set can_edit=False
 #    We simulate the relevant block from send_progress_messages():
@@ -136,3 +146,36 @@ def _simulate_progress_loop(edit_results):
     return can_edit
 
 
+def test_transient_failure_keeps_can_edit_true():
+    """A single transient network error must not disable progress editing."""
+    results = [
+        SendResult(success=False, error="httpx.ConnectError", retryable=True),
+        SendResult(success=True, message_id="42"),
+    ]
+    assert _simulate_progress_loop(results) is True
+
+
+def test_permanent_failure_sets_can_edit_false():
+    """A permanent edit failure must disable progress editing."""
+    results = [
+        SendResult(success=False, error="message to edit not found", retryable=False),
+    ]
+    assert _simulate_progress_loop(results) is False
+
+
+def test_multiple_transient_then_success_keeps_can_edit_true():
+    """Multiple transient failures followed by success keep can_edit=True."""
+    results = [
+        SendResult(success=False, error="httpx.ConnectError", retryable=True),
+        SendResult(success=False, error="server disconnected", retryable=True),
+        SendResult(success=True, message_id="99"),
+    ]
+    assert _simulate_progress_loop(results) is True
+
+
+def test_flood_control_sets_can_edit_false():
+    """Flood control (non-retryable) must disable progress editing."""
+    results = [
+        SendResult(success=False, error="flood_control:30.0", retryable=False),
+    ]
+    assert _simulate_progress_loop(results) is False

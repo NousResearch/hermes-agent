@@ -44,6 +44,21 @@ class TestInterruptForSessionByParentId:
         mine.assert_called_once()
         other.assert_not_called()
 
+    def test_reset_interrupts_by_key_and_parent(self):
+        """A /new reset passes both selectors — either match claims the record."""
+        by_key = _seed_record("d1", session_key="agent:main:telegram:dm:1", parent_session_id="")
+        by_parent = _seed_record("d2", session_key="", parent_session_id="sess_old")
+        unrelated = _seed_record("d3", session_key="other", parent_session_id="other")
+        n = ad.interrupt_for_session(
+            session_key="agent:main:telegram:dm:1",
+            parent_session_id="sess_old",
+            reason="session_reset",
+        )
+        assert n == 2
+        by_key.assert_called_once()
+        by_parent.assert_called_once()
+        unrelated.assert_not_called()
+
 
 class TestGatewayPinningFailsClosed:
     """The gateway must follow only verified compression continuations."""
@@ -98,6 +113,19 @@ class TestGatewayPinningFailsClosed:
             runner.session_store, "advance_compression_session"
         ).assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_live_spawning_session_stays_pinned(self):
+        current = self._entry("sess_live")
+        runner = self._make_runner(
+            {"sess_live": {"id": "sess_live", "ended_at": None}}
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_live"
+        )
+
+        assert resolved is current
+        self._assert_no_route_change(runner)
 
     @pytest.mark.asyncio
     async def test_live_spawning_session_rebinds_from_different_route(self):
@@ -137,6 +165,64 @@ class TestGatewayPinningFailsClosed:
         assert resolved is None
         self._assert_no_route_change(runner)
 
+    @pytest.mark.asyncio
+    async def test_compression_parent_advances_stale_route_to_live_tip(self):
+        current = self._entry("sess_parent")
+        tip = self._entry("sess_tip")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": None,
+                    "parent_session_id": "sess_parent",
+                },
+            },
+            compression_tip="sess_tip",
+            switched_entry=tip,
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is tip
+        getattr(
+            runner.session_store, "advance_compression_session"
+        ).assert_called_once_with(current.session_key, "sess_parent", "sess_tip")
+
+    @pytest.mark.asyncio
+    async def test_compression_cas_losing_to_new_drops(self):
+        current = self._entry("sess_parent")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": None,
+                    "parent_session_id": "sess_parent",
+                },
+            },
+            compression_tip="sess_tip",
+            switched_entry=None,
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is None
+        getattr(
+            runner.session_store, "advance_compression_session"
+        ).assert_called_once_with(current.session_key, "sess_parent", "sess_tip")
 
     @pytest.mark.asyncio
     async def test_intermediate_compression_route_advances_to_same_live_tip(self):
@@ -206,6 +292,118 @@ class TestGatewayPinningFailsClosed:
         getattr(
             runner.session_store, "advance_compression_session"
         ).assert_called_once_with(current.session_key, "sess_parent", "sess_tip")
+
+    @pytest.mark.asyncio
+    async def test_ended_compression_tip_drops(self):
+        current = self._entry("sess_parent")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": "2026-07-08T00:01:00",
+                    "end_reason": "session_reset",
+                    "parent_session_id": "sess_parent",
+                },
+            },
+            compression_tip="sess_tip",
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_compression_lookup_failure_drops(self):
+        current = self._entry("sess_parent")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                }
+            },
+            compression_error=RuntimeError("db unavailable"),
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_compression_parent_accepts_already_current_tip(self):
+        current = self._entry("sess_tip")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": None,
+                    "parent_session_id": "sess_parent",
+                },
+            },
+            compression_tip="sess_tip",
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is current
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_compression_parent_does_not_override_new_route(self):
+        current = self._entry("sess_after_new")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": None,
+                    "parent_session_id": "sess_parent",
+                },
+            },
+            compression_tip="sess_tip",
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_unknown_spawning_session_drops(self):
+        current = self._entry("sess_current")
+        runner = self._make_runner({})
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_gone"
+        )
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
 
 
 class TestResetHandlerInterruptsDelegations:

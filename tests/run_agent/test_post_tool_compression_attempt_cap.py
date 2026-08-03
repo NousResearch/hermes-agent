@@ -167,6 +167,13 @@ class TestPostToolCompressionAttemptCap:
             f"got {len(compress_calls)} compactions"
         )
 
+    def test_post_tool_compression_honors_configured_cap(self, agent):
+        """A raised compression.max_attempts cap lets more rounds run."""
+        agent.max_compression_attempts = 5
+        result, compress_calls = _run_tool_loop(agent, n_tool_iterations=8)
+
+        assert result["completed"] is True
+        assert len(compress_calls) == 5
 
     def test_post_tool_compression_shares_counter_with_pre_api_gate(self, agent):
         """Pre-API compactions consume the same per-turn budget.

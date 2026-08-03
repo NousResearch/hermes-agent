@@ -38,3 +38,13 @@ def test_build_apikey_providers_list_skips_dedicated_check_providers():
     )
 
 
+def test_build_apikey_providers_list_includes_non_dedicated_providers():
+    """Sanity guard: the skip-set must not strip every provider."""
+    from hermes_cli import doctor
+
+    doctor._APIKEY_PROVIDERS_CACHE = None
+    entries = doctor._build_apikey_providers_list()
+
+    names = {entry[0] for entry in entries}
+    assert "DeepSeek" in names
+    assert "Z.AI / GLM" in names

@@ -13,34 +13,11 @@ class _FakeSessionDB:
     """
 
     closed = False
-    opened_read_only = None
 
-    def __init__(self, *args, **kwargs):
-        type(self).opened_read_only = kwargs.get("read_only")
-
-    @staticmethod
-    def _source_allowed(row, source=None, sources=None, exclude_sources=None):
-        row_source = row.get("source")
-        if source and row_source != source:
-            return False
-        if sources and row_source not in sources:
-            return False
-        if exclude_sources and row_source in exclude_sources:
-            return False
-        return True
-
-    def search_sessions_by_id(
-        self,
-        query,
-        limit=20,
-        include_archived=True,
-        source=None,
-        sources=None,
-        exclude_sources=None,
-    ):
+    def search_sessions_by_id(self, query, limit=20, include_archived=True):
         assert query == "20260603"
         assert include_archived is True
-        rows = [
+        return [
             {
                 "id": "20260603_090200_exact",
                 "preview": "ID match preview",
@@ -49,17 +26,10 @@ class _FakeSessionDB:
                 "started_at": 100,
             }
         ]
-        return [
-            row
-            for row in rows
-            if self._source_allowed(
-                row, source=source, sources=sources, exclude_sources=exclude_sources
-            )
-        ][:limit]
 
-    def search_messages(self, query, source_filter=None, exclude_sources=None, limit=20):
+    def search_messages(self, query, limit=20):
         assert query == "20260603*"
-        rows = [
+        return [
             {
                 "session_id": "20260603_090200_exact",
                 "snippet": "duplicate content hit should not replace ID hit",
@@ -77,13 +47,6 @@ class _FakeSessionDB:
                 "session_started": 200,
             },
         ]
-        return [
-            row
-            for row in rows
-            if self._source_allowed(
-                row, sources=source_filter, exclude_sources=exclude_sources
-            )
-        ][:limit]
 
     def get_session(self, session_id):
         # No compression chains in this fixture — every session is its own root.
@@ -97,7 +60,6 @@ class _FakeSessionDB:
 
 
 def test_desktop_session_search_merges_id_matches_before_content_matches(monkeypatch):
-    _FakeSessionDB.opened_read_only = None
     monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
 
     response = asyncio.run(web_server.search_sessions(q="20260603", limit=2))
@@ -107,7 +69,6 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
     assert response == {
         "results": [
             {
-                "id": "20260603_090200_exact",
                 "session_id": "20260603_090200_exact",
                 "lineage_root": "20260603_090200_exact",
                 "snippet": "ID match preview",
@@ -117,7 +78,6 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "session_started": 100,
             },
             {
-                "id": "content_session",
                 "session_id": "content_session",
                 "lineage_root": "content_session",
                 "snippet": "content hit",
@@ -128,4 +88,3 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
             },
         ]
     }
-    assert _FakeSessionDB.opened_read_only is True

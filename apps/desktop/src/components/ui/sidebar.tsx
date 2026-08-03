@@ -229,7 +229,7 @@ function Sidebar({
 }
 
 function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<typeof Button>) {
-  const { state, toggleSidebar } = useSidebar()
+  const { toggleSidebar } = useSidebar()
   const { t } = useI18n()
 
   return (
@@ -246,20 +246,19 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
       {...props}
     >
       <PanelLeftIcon />
-      <span className="sr-only">{t.ui.sidebar.toggle(state === 'collapsed')}</span>
+      <span className="sr-only">{t.ui.sidebar.toggle}</span>
     </Button>
   )
 }
 
 function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
-  const { state, toggleSidebar } = useSidebar()
+  const { toggleSidebar } = useSidebar()
   const { t } = useI18n()
-  const label = t.ui.sidebar.toggle(state === 'collapsed')
 
   return (
-    <Tip label={label}>
+    <Tip label={t.ui.sidebar.toggle}>
       <button
-        aria-label={label}
+        aria-label={t.ui.sidebar.toggle}
         className={cn(
           'absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:left-1/2 after:w-[0.125rem] hover:after:bg-sidebar-border sm:flex',
           'in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize',

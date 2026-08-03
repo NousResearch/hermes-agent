@@ -135,3 +135,56 @@ async def test_verbose_dispatches_mid_run(monkeypatch):
     assert "can't run mid-turn" not in (result or "")
 
 
+@pytest.mark.asyncio
+async def test_fast_rejected_mid_run():
+    """/fast mid-run must hit the busy catch-all — config-only, next message."""
+    runner = _make_runner()
+    runner._handle_fast_command = AsyncMock(
+        side_effect=AssertionError("/fast should not dispatch mid-run")
+    )
+
+    result = await runner._handle_message(_make_event("/fast"))
+
+    runner._handle_fast_command.assert_not_awaited()
+    assert result is not None
+    assert "can't run mid-turn" in result
+    assert "/fast" in result
+
+
+@pytest.mark.asyncio
+async def test_reasoning_rejected_mid_run():
+    """/reasoning mid-run must hit the busy catch-all — config-only, next message."""
+    runner = _make_runner()
+    runner._handle_reasoning_command = AsyncMock(
+        side_effect=AssertionError("/reasoning should not dispatch mid-run")
+    )
+
+    result = await runner._handle_message(_make_event("/reasoning high"))
+
+    runner._handle_reasoning_command.assert_not_awaited()
+    assert result is not None
+    assert "can't run mid-turn" in result
+    assert "/reasoning" in result
+
+
+@pytest.mark.asyncio
+async def test_btw_dispatches_mid_run():
+    """/btw mid-run must dispatch to /background's handler, not hit the catch-all.
+
+    /btw is an alias of /background (see hermes_cli/commands.py). Typing
+    /btw mid-turn must spawn a parallel background task — that's the whole
+    point of the command. Before the mid-turn bypass was added for
+    /background, /btw fell through to the "Agent is running — wait or
+    /stop first" catch-all, making it useless in exactly the scenario it
+    was designed for. The alias and the bypass together make it work.
+    """
+    runner = _make_runner()
+    runner._handle_background_command = AsyncMock(
+        return_value='🚀 Background task started: "what module owns titles?"'
+    )
+
+    result = await runner._handle_message(_make_event("/btw what module owns titles?"))
+
+    runner._handle_background_command.assert_awaited_once()
+    assert result is not None
+    assert "can't run mid-turn" not in result

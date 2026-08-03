@@ -22,6 +22,15 @@ def _reset(monkeypatch):
 class TestRuntimeProviderUsesScope:
     """hermes_cli.runtime_provider._getenv resolves through the secret scope."""
 
+    def test_getenv_reads_scope_under_multiplex(self, monkeypatch):
+        from hermes_cli.runtime_provider import _getenv
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-global-leak")
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope({"ANTHROPIC_API_KEY": "sk-profileA"})
+        try:
+            assert _getenv("ANTHROPIC_API_KEY") == "sk-profileA"
+        finally:
+            ss.reset_secret_scope(tok)
 
     def test_getenv_two_profiles_isolated(self, monkeypatch):
         from hermes_cli.runtime_provider import _getenv
@@ -39,6 +48,20 @@ class TestRuntimeProviderUsesScope:
         finally:
             ss.reset_secret_scope(tok_b)
 
+    def test_getenv_fails_closed_unscoped(self, monkeypatch):
+        from hermes_cli.runtime_provider import _getenv
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-leak")
+        ss.set_multiplex_active(True)
+        with pytest.raises(ss.UnscopedSecretError):
+            _getenv("OPENROUTER_API_KEY")
+
+    def test_getenv_global_var_still_reads_environ(self, monkeypatch):
+        from hermes_cli.runtime_provider import _getenv
+        monkeypatch.setenv("HERMES_MAX_ITERATIONS", "42")
+        ss.set_multiplex_active(True)
+        # global var: no scope needed, no raise
+        assert _getenv("HERMES_MAX_ITERATIONS") == "42"
+
 
 class TestMcpInterpolationUsesScope:
     """MCP config ${VAR} interpolation resolves through the secret scope."""
@@ -53,6 +76,18 @@ class TestMcpInterpolationUsesScope:
             assert _interpolate_env_vars(cfg) == {"env": {"TOKEN": "profile-token"}}
         finally:
             ss.reset_secret_scope(tok)
+
+    def test_interpolation_unset_keeps_placeholder(self, monkeypatch):
+        from tools.mcp_tool import _interpolate_env_vars
+        monkeypatch.delenv("UNSET_MCP_VAR", raising=False)
+        # multiplex off: unset var keeps literal placeholder (legacy behavior)
+        assert _interpolate_env_vars("${UNSET_MCP_VAR}") == "${UNSET_MCP_VAR}"
+
+    def test_interpolation_off_reads_environ(self, monkeypatch):
+        from tools.mcp_tool import _interpolate_env_vars
+        monkeypatch.setenv("MY_MCP_TOKEN", "env-token")
+        # multiplex off: legacy os.environ resolution
+        assert _interpolate_env_vars("${MY_MCP_TOKEN}") == "env-token"
 
 
 class TestProfilePathResolutionUnderMultiplexScope:
@@ -87,82 +122,37 @@ class TestProfilePathResolutionUnderMultiplexScope:
         assert a_seen == prof_a / "skills"
         assert b_seen == prof_b / "skills"
 
+    def test_cache_dir_follows_multiplex_scope(self, tmp_path):
+        from gateway.run import _profile_runtime_scope
+        import gateway.platforms.base as gb
 
-def test_cold_profile_hydrates_external_source_without_global_env(
-    tmp_path, monkeypatch
-):
-    """The first routed secondary turn must resolve its own source locally."""
-    import os
+        _prof_a, prof_b = self._profiles(tmp_path)
+        with _profile_runtime_scope(prof_b):
+            seen = gb.get_image_cache_dir()
+        assert str(seen).startswith(str(prof_b))
 
-    from agent.secret_sources.base import FetchResult
-    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
-    from agent.secret_sources import registry
-    from agent.secret_scope import get_secret
-    from hermes_cli import env_loader
-    from gateway.run import _profile_runtime_scope
+    def test_worker_thread_inherits_multiplex_scope(self, tmp_path):
+        """A wrapped worker spawned inside the scope must see the right profile.
 
-    profile = tmp_path / "profiles" / "secondary"
-    sibling = tmp_path / "profiles" / "sibling"
-    profile.mkdir(parents=True)
-    sibling.mkdir(parents=True)
-    (profile / ".env").write_text(
-        "EXPLICIT_API_KEY=dotenv-wins\n", encoding="utf-8"
-    )
-    monkeypatch.delenv("TEST_PROVIDER_API_KEY", raising=False)
-    monkeypatch.delenv("EXPLICIT_API_KEY", raising=False)
-    monkeypatch.setattr(
-        env_loader,
-        "_load_secrets_config",
-        lambda home: (
-            {"fake-source": {"enabled": True}}
-            if Path(home).resolve() == profile.resolve()
-            else {}
-        ),
-    )
+        The _profile_runtime_scope docstring relies on copy_context() carrying
+        the override into the agent worker thread; this proves the M2 fix
+        primitive delivers that under the multiplexer's scope.
+        """
+        import threading
 
-    calls = {"count": 0}
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_hermes_home
+        from tools.thread_context import propagate_context_to_thread
 
-    def _fake_apply_all(_cfg, _home, *, environ=None):
-        calls["count"] += 1
-        assert environ is not os.environ
-        assert environ is not None
-        assert environ["EXPLICIT_API_KEY"] == "dotenv-wins"
-        environ["TEST_PROVIDER_API_KEY"] = "profile-only"
-        return ApplyReport(
-            sources=[
-                SourceReport(
-                    name="fake-source",
-                    label="Fake Source",
-                    result=FetchResult(),
-                    applied=["TEST_PROVIDER_API_KEY"],
-                )
-            ],
-            provenance={
-                "TEST_PROVIDER_API_KEY": AppliedVar(
-                    name="TEST_PROVIDER_API_KEY",
-                    source="fake-source",
-                    shape="mapped",
-                    overrode_env=False,
-                )
-            },
-        )
+        _prof_a, prof_b = self._profiles(tmp_path)
+        seen = {}
 
-    monkeypatch.setattr(registry, "apply_all", _fake_apply_all)
-    env_loader.reset_secret_source_cache()
+        def worker():
+            seen["home"] = str(get_hermes_home())
 
-    with _profile_runtime_scope(profile):
-        assert get_secret("TEST_PROVIDER_API_KEY") == "profile-only"
-        assert get_secret("EXPLICIT_API_KEY") == "dotenv-wins"
-        assert env_loader.get_secret_source_values(profile) == {
-            "TEST_PROVIDER_API_KEY": "profile-only"
-        }
-    with _profile_runtime_scope(profile):
-        assert get_secret("TEST_PROVIDER_API_KEY") == "profile-only"
-    with _profile_runtime_scope(sibling):
-        assert get_secret("TEST_PROVIDER_API_KEY") is None
+        with _profile_runtime_scope(prof_b):
+            t = threading.Thread(target=propagate_context_to_thread(worker))
+            t.start()
+            t.join()
 
-    assert calls["count"] == 1
-    assert "TEST_PROVIDER_API_KEY" not in os.environ
-    assert "EXPLICIT_API_KEY" not in os.environ
-
-
+        assert seen["home"] == str(prof_b)

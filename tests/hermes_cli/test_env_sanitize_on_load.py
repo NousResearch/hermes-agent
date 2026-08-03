@@ -5,11 +5,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-def test_load_env_preserves_concatenated_text_as_value_data():
-    """Verify load_env() does not infer assignments within a physical line.
+def test_load_env_sanitizes_concatenated_lines():
+    """Verify load_env() splits concatenated KEY=VALUE pairs.
 
-    A missing newline is ambiguous: text resembling a second assignment may
-    instead be part of the first value, so it must remain opaque value data.
+    Reproduces the scenario from #8908 where a corrupted .env file
+    contained multiple tokens on a single line, causing the bot token
+    to be duplicated 8 times.
     """
     from hermes_cli.config import load_env
 
@@ -26,10 +27,10 @@ def test_load_env_preserves_concatenated_text_as_value_data():
     try:
         with patch("hermes_cli.config.get_env_path", return_value=env_path):
             result = load_env()
-        assert result.get("TELEGRAM_BOT_TOKEN") == (
-            f"{token}ANTHROPIC_API_KEY=sk-ant-test123"
+        assert result.get("TELEGRAM_BOT_TOKEN") == token, (
+            f"Token should be exactly '{token}', got '{result.get('TELEGRAM_BOT_TOKEN')}'"
         )
-        assert "ANTHROPIC_API_KEY" not in result
+        assert result.get("ANTHROPIC_API_KEY") == "sk-ant-test123"
     finally:
         env_path.unlink(missing_ok=True)
 
@@ -62,8 +63,8 @@ def test_load_env_normal_file_unchanged():
         env_path.unlink(missing_ok=True)
 
 
-def test_env_loader_does_not_split_concatenated_text():
-    """Verify sanitization preserves one assignment per physical line."""
+def test_env_loader_sanitizes_before_dotenv():
+    """Verify env_loader._sanitize_env_file_if_needed fixes corrupted files."""
     from hermes_cli.env_loader import _sanitize_env_file_if_needed
 
     token = "0123456789:test"
@@ -79,8 +80,12 @@ def test_env_loader_does_not_split_concatenated_text():
         _sanitize_env_file_if_needed(env_path)
         with open(env_path, encoding="utf-8") as f:
             lines = f.readlines()
-        assert lines == [corrupted]
+        # Should be split into two separate lines
+        assert len(lines) == 2, f"Expected 2 lines, got {len(lines)}: {lines}"
+        assert lines[0].startswith("TELEGRAM_BOT_TOKEN=")
+        assert lines[1].startswith("ANTHROPIC_API_KEY=")
+        # Token should not contain the second key
         parsed_token = lines[0].strip().split("=", 1)[1]
-        assert parsed_token == f"{token}ANTHROPIC_API_KEY=sk-ant-test"
+        assert parsed_token == token
     finally:
         env_path.unlink(missing_ok=True)

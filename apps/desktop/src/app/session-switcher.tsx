@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { useNavigate } from 'react-router'
+import { useNavigate } from 'react-router-dom'
 
 import { sessionTitle } from '@/lib/chat-runtime'
 import { cn } from '@/lib/utils'
@@ -10,7 +10,7 @@ import { $attentionSessionIds, $workingSessionIds } from '@/store/session-states
 import { $switcherIndex, $switcherOpen, $switcherSessions, closeSwitcher } from '@/store/session-switcher'
 
 import { HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from './floating-hud'
-import { openSession } from './open-session'
+import { sessionRoute } from './routes'
 
 // Compact session-switcher HUD — keyboard-driven from `use-keybinds`, rows
 // clickable via mousedown (Ctrl+click on macOS). No Dialog: Tab stays global.
@@ -39,14 +39,14 @@ export function SessionSwitcher() {
 
   const pick = (sessionId: string) => {
     closeSwitcher()
-    openSession(sessionId, navigate)
+    navigate(sessionRoute(sessionId))
   }
 
   return createPortal(
     <>
       {/* Transparent click-catcher: click-away closes, but no dim/blur. */}
       <div
-        className="fixed inset-0 z-(--z-switcher-backdrop)"
+        className="fixed inset-0 z-[219]"
         onMouseDown={e => {
           e.preventDefault()
           closeSwitcher()
@@ -56,7 +56,7 @@ export function SessionSwitcher() {
         className={cn(
           HUD_POSITION,
           HUD_SURFACE,
-          'dt-portal-scrollbar z-(--z-switcher) max-h-[min(22rem,64vh)] w-[min(19rem,calc(100vw-2rem))] select-none overflow-y-auto p-1'
+          'dt-portal-scrollbar z-[220] max-h-[min(22rem,64vh)] w-[min(19rem,calc(100vw-2rem))] select-none overflow-y-auto p-1'
         )}
       >
         {sessions.map((session, i) => {

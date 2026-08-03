@@ -81,8 +81,94 @@ def test_clamp_collision_emits_warning_naming_both_skills(
     assert prefix in msg, f"clamped name not in warning: {msg!r}"
 
 
+def test_clamp_collision_with_reserved_name_emits_distinct_warning(
+    tmp_path: Path, caplog
+) -> None:
+    """A skill clashing with a reserved gateway command gets its own phrasing.
+
+    The reserved-vs-skill case is operationally different — the fix is
+    still "rename the skill," but there's no second skill to also
+    rename. The warning should say so explicitly.
+    """
+    from hermes_cli.commands import discord_skill_commands_by_category
+
+    # Reserved name 'help' is 4 chars — make a skill whose slug
+    # clamps to 'help' (so, exactly 'help').
+    reserved = "help"
+    skills_dir = tmp_path / "skills"
+    d = skills_dir / "creative" / reserved
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: x\n---\n")
+
+    fake_cmds = {
+        f"/{reserved}": {
+            "name": reserved,
+            "description": "desc",
+            "skill_md_path": str(d / "SKILL.md"),
+        },
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.commands"), (
+        patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds)
+    ), patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+        categories, uncategorized, hidden = discord_skill_commands_by_category(
+            reserved_names={"help"},
+        )
+
+    # Skill dropped in favor of the reserved command.
+    assert hidden == 1
+    assert categories == {}
+    assert uncategorized == []
+
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "reserved" in r.getMessage()
+    ]
+    assert len(warnings) == 1, (
+        f"expected one reserved-name collision warning, got "
+        f"{[r.getMessage() for r in warnings]}"
+    )
+    msg = warnings[0].getMessage()
+    assert f"/{reserved}" in msg
+    assert "reserved" in msg.lower()
 
 
+def test_no_collision_no_warning(tmp_path: Path, caplog) -> None:
+    """Sanity: two distinct-prefix skills produce zero warnings."""
+    from hermes_cli.commands import discord_skill_commands_by_category
+
+    skills_dir = tmp_path / "skills"
+    for nm in ("alpha", "bravo"):
+        d = skills_dir / "creative" / nm
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("---\nname: x\n---\n")
+
+    fake_cmds = {
+        "/alpha": {
+            "name": "alpha", "description": "",
+            "skill_md_path": str(skills_dir / "creative" / "alpha" / "SKILL.md"),
+        },
+        "/bravo": {
+            "name": "bravo", "description": "",
+            "skill_md_path": str(skills_dir / "creative" / "bravo" / "SKILL.md"),
+        },
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.commands"), (
+        patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds)
+    ), patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+        categories, uncategorized, hidden = discord_skill_commands_by_category(
+            reserved_names=set(),
+        )
+
+    assert hidden == 0
+    assert {n for n, _d, _k in categories["creative"]} == {"alpha", "bravo"}
+    clamp_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and ("clamp" in r.getMessage() or "reserved" in r.getMessage())
+    ]
+    assert clamp_warnings == []
 
 
 def test_long_skill_name_preserves_cmd_key_through_by_category(

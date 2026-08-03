@@ -32,6 +32,19 @@ def _fake_spawn(*args, **kwargs):
     return 12345
 
 
+def test_no_cap_all_tasks_dispatched(isolated_kanban_home_with_profiles):
+    """Baseline: with no per-profile cap, all ready tasks dispatch."""
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        for i in range(5):
+            kb.create_task(conn, title=f"a{i}", assignee="alpha")
+        for i in range(3):
+            kb.create_task(conn, title=f"b{i}", assignee="beta")
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(conn, spawn_fn=_fake_spawn, dry_run=True)
+    assert len(res.spawned) == 8
+    assert not res.skipped_per_profile_capped
 
 
 def test_cap_2_balances_two_profiles(isolated_kanban_home_with_profiles):
@@ -57,6 +70,52 @@ def test_cap_2_balances_two_profiles(isolated_kanban_home_with_profiles):
     assert capped_assignees.count("beta") == 1
 
 
+def test_pre_existing_running_counts_against_cap(isolated_kanban_home_with_profiles):
+    """A task already in 'running' status when dispatch_once starts counts
+    toward the per-profile cap. With 1 alpha pre-running and cap=1, NO new
+    alpha tasks should spawn; beta is independent so 1 beta spawns."""
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        running_alpha = kb.create_task(conn, title="running alpha", assignee="alpha")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'running', claim_lock = 'test:1' WHERE id = ?",
+                (running_alpha,),
+            )
+        for i in range(2):
+            kb.create_task(conn, title=f"a{i}", assignee="alpha")
+        for i in range(2):
+            kb.create_task(conn, title=f"b{i}", assignee="beta")
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn, spawn_fn=_fake_spawn, dry_run=True,
+            max_in_progress_per_profile=1,
+        )
+    spawn_assignees = [s[1] for s in res.spawned]
+    capped_assignees = [c[1] for c in res.skipped_per_profile_capped]
+    assert spawn_assignees.count("alpha") == 0
+    assert spawn_assignees.count("beta") == 1
+    assert capped_assignees.count("alpha") == 2
+    assert capped_assignees.count("beta") == 1
+
+
+@pytest.mark.parametrize("cap", [0, -1, "abc", None])
+def test_invalid_cap_treated_as_no_cap(isolated_kanban_home_with_profiles, cap):
+    """Cap values that don't represent a positive int should be treated as
+    'no cap' — silently falling through rather than crashing the dispatcher."""
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        for i in range(3):
+            kb.create_task(conn, title=f"a{i}", assignee="alpha")
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn, spawn_fn=_fake_spawn, dry_run=True,
+            max_in_progress_per_profile=cap,
+        )
+    assert not res.skipped_per_profile_capped
+    assert len(res.spawned) == 3
 
 
 def test_capped_tasks_dispatched_on_subsequent_tick(isolated_kanban_home_with_profiles):
@@ -98,3 +157,11 @@ def test_capped_tasks_dispatched_on_subsequent_tick(isolated_kanban_home_with_pr
     assert res2.spawned[0][0] != spawned_id  # different task this time
 
 
+def test_dispatch_result_has_skipped_per_profile_capped_field():
+    """Schema-level invariant: DispatchResult exposes the
+    skipped_per_profile_capped field as a list of
+    (task_id, assignee, current_running) tuples."""
+    from hermes_cli.kanban_db import DispatchResult
+    r = DispatchResult()
+    assert hasattr(r, "skipped_per_profile_capped")
+    assert r.skipped_per_profile_capped == []

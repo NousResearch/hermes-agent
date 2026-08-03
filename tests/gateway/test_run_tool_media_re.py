@@ -71,15 +71,69 @@ class TestToolMediaReWindowsPaths:
 
     # ── Positive: Unix paths still match ───────────────────────────
 
+    @pytest.mark.parametrize("media_tag, expected_path", [
+        ("MEDIA:/tmp/output.png", "/tmp/output.png"),
+        ("MEDIA:/var/log/report.pdf", "/var/log/report.pdf"),
+        ("MEDIA:/home/user/docs/file.txt", "/home/user/docs/file.txt"),
+        # Home-relative
+        ("MEDIA:~/Downloads/image.jpg", "~/Downloads/image.jpg"),
+        ("MEDIA:~/Documents/report.pdf", "~/Documents/report.pdf"),
+    ])
+    def test_unix_paths_still_match(self, media_tag, expected_path):
+        """Unix-style absolute and home-relative paths still match."""
+        match = _TOOL_MEDIA_RE.search(media_tag)
+        assert match is not None, f"Should match: {media_tag}"
+        assert match.group(1) == expected_path
 
     # ── Negative: invalid paths don't match ────────────────────────
 
+    @pytest.mark.parametrize("text", [
+        "No MEDIA tag here",
+        "MEDIA:relative/path/file.png",       # relative path, no anchor
+        "MEDIA:file.png",                      # no directory
+        "MEDIA:C:file.png",                    # drive letter but no separator
+        "MEDIA:/path/to/file.unknown",         # unsupported extension
+        "MEDIA:/path/to/file",                 # no extension
+        "MEDIA:",                               # empty path
+    ])
+    def test_invalid_paths_dont_match(self, text):
+        """Non-MEDIA text, relative paths, and unsupported extensions are ignored."""
+        match = _TOOL_MEDIA_RE.search(text)
+        assert match is None, f"Should NOT match: {text}"
 
     # ── Negative/preserved: old pattern rejects Windows paths ──────
 
+    @pytest.mark.parametrize("media_tag", [
+        "MEDIA:C:\\Users\\test\\image.png",
+        "MEDIA:D:/data/report.pdf",
+        "MEDIA:C:\\path\\file.jpg",
+    ])
+    def test_pre_fix_pattern_rejects_windows(self, media_tag):
+        """The pre-fix pattern (without Windows anchor) does NOT match Windows paths.
+        This proves the fix is necessary — without it, these paths are silently ignored."""
+        match = _TOOL_MEDIA_RE_PRE_FIX.search(media_tag)
+        assert match is None, f"Pre-fix pattern should NOT match: {media_tag}"
 
     # ── Edge cases ─────────────────────────────────────────────────
 
+    def test_multiple_media_tags_in_content(self):
+        """Multiple MEDIA tags in the same content are all found."""
+        content = (
+            "Some text MEDIA:C:\\path\\img.png and more MEDIA:/tmp/out.pdf trailing"
+        )
+        matches = list(_TOOL_MEDIA_RE.finditer(content))
+        assert len(matches) == 2
+        paths = [m.group(1) for m in matches]
+        assert "C:\\path\\img.png" in paths
+        assert "/tmp/out.pdf" in paths
+
+    def test_case_insensitive_drive_letter(self):
+        """Drive letters are case-insensitive due to re.IGNORECASE."""
+        match_lower = _TOOL_MEDIA_RE.search("MEDIA:c:\\path\\file.png")
+        match_upper = _TOOL_MEDIA_RE.search("MEDIA:C:\\path\\file.png")
+        assert match_lower is not None
+        assert match_upper is not None
+        assert match_lower.group(1).lower() == match_upper.group(1).lower()
 
     @pytest.mark.parametrize("media_tag", [
         "MEDIA:C:\\path\\file.jpeg",

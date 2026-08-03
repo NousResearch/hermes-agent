@@ -46,6 +46,36 @@ def test_probe_returns_true_when_container_starts(monkeypatch):
     assert "hermes-agent:latest" in captured["cmd"]
 
 
+def test_probe_returns_false_and_warns_on_oci_error(monkeypatch, caplog):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+
+    def _run(cmd, *a, **k):
+        return subprocess.CompletedProcess(
+            cmd, 126, stdout="",
+            stderr="crun: controller `pids` is not available",
+        )
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    with caplog.at_level("WARNING"):
+        assert docker_env._cgroup_limits_available("img") is False
+    assert "Cgroup resource limits" in caplog.text
+
+
+def test_probe_returns_false_when_no_docker(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: None)
+    assert docker_env._cgroup_limits_available("img") is False
+
+
+def test_probe_returns_false_on_empty_image(monkeypatch):
+    """An empty image string must not be probed (would be a malformed run)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env.subprocess, "run",
+        lambda *a, **k: pytest.fail("should not probe with empty image"),
+    )
+    assert docker_env._cgroup_limits_available("") is False
+
+
 def test_probe_result_is_cached(monkeypatch):
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = []

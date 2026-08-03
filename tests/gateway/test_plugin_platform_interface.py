@@ -87,6 +87,14 @@ def _import_platform_module(name: str) -> ModuleType:
 
 
 @pytest.mark.parametrize("platform_name", _PLATFORM_NAMES)
+def test_plugin_exposes_register_function(platform_name: str):
+    """Every platform plugin must expose a callable register function."""
+    module = _import_platform_module(platform_name)
+    assert hasattr(module, "register"), f"{platform_name} missing register()"
+    assert callable(module.register), f"{platform_name}.register not callable"
+
+
+@pytest.mark.parametrize("platform_name", _PLATFORM_NAMES)
 def test_plugin_registers_valid_platform_entry(platform_name: str, clean_registry):
     """Calling register() must create a valid PlatformEntry."""
     module = _import_platform_module(platform_name)
@@ -130,3 +138,93 @@ def test_platform_entry_has_required_fields(platform_name: str, clean_registry):
         assert callable(entry.setup_fn)
 
 
+@pytest.mark.parametrize("platform_name", _PLATFORM_NAMES)
+def test_adapter_factory_produces_valid_adapter(platform_name: str, clean_registry):
+    """The adapter factory must return an object with the base interface."""
+    module = _import_platform_module(platform_name)
+    ctx = _MockPluginContext()
+    module.register(ctx)
+
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform_name)
+    assert entry is not None
+
+    # Build a minimal synthetic config that shouldn't crash __init__
+    mock_config = MagicMock()
+    mock_config.extra = {}
+    mock_config.enabled = True
+    mock_config.token = None
+    mock_config.api_key = None
+    mock_config.home_channel = None
+    mock_config.reply_to_mode = "first"
+
+    adapter = entry.adapter_factory(mock_config)
+    assert adapter is not None, f"{platform_name} adapter_factory returned None"
+
+    # Required adapter interface
+    assert hasattr(adapter, "connect") and callable(adapter.connect)
+    assert hasattr(adapter, "disconnect") and callable(adapter.disconnect)
+    assert hasattr(adapter, "send") and callable(adapter.send)
+    assert hasattr(adapter, "name")
+
+    # Should be a BasePlatformAdapter subclass if importable
+    try:
+        from gateway.platforms.base import BasePlatformAdapter
+        assert isinstance(adapter, BasePlatformAdapter)
+    except Exception:
+        pytest.skip("BasePlatformAdapter not available for isinstance check")
+
+
+@pytest.mark.parametrize("platform_name", _PLATFORM_NAMES)
+def test_check_fn_returns_bool(platform_name: str, clean_registry):
+    """check_fn() must return a boolean."""
+    module = _import_platform_module(platform_name)
+    ctx = _MockPluginContext()
+    module.register(ctx)
+
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform_name)
+    assert entry is not None
+
+    result = entry.check_fn()
+    assert isinstance(result, bool), f"{platform_name}.check_fn() returned {type(result)}, expected bool"
+
+
+@pytest.mark.parametrize("platform_name", _PLATFORM_NAMES)
+def test_validate_config_if_present(platform_name: str, clean_registry):
+    """If validate_config is provided, it must accept a config object."""
+    module = _import_platform_module(platform_name)
+    ctx = _MockPluginContext()
+    module.register(ctx)
+
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform_name)
+    assert entry is not None
+
+    if entry.validate_config is None:
+        pytest.skip("No validate_config provided")
+
+    mock_config = MagicMock()
+    mock_config.extra = {}
+    result = entry.validate_config(mock_config)
+    assert isinstance(result, bool)
+
+
+@pytest.mark.parametrize("platform_name", _PLATFORM_NAMES)
+def test_is_connected_if_present(platform_name: str, clean_registry):
+    """If is_connected is provided, it must accept a config object."""
+    module = _import_platform_module(platform_name)
+    ctx = _MockPluginContext()
+    module.register(ctx)
+
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform_name)
+    assert entry is not None
+
+    if entry.is_connected is None:
+        pytest.skip("No is_connected provided")
+
+    mock_config = MagicMock()
+    mock_config.extra = {}
+    result = entry.is_connected(mock_config)
+    assert isinstance(result, bool)

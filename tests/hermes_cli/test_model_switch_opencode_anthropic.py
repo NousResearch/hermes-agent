@@ -92,10 +92,90 @@ class TestOpenCodeGoV1Strip:
             f"Expected /v1 stripped for anthropic_messages; got {result.base_url}"
         )
 
+    def test_switch_to_minimax_m25_strips_v1(self):
+        """Same behavior for M2.5."""
+        result = _run_opencode_switch(
+            raw_input="minimax-m2.5",
+            current_provider="opencode-go",
+            current_model="kimi-k2.5",
+            current_base_url="https://opencode.ai/zen/go/v1",
+        )
+
+        assert result.success
+        assert result.api_mode == "anthropic_messages"
+        assert result.base_url == "https://opencode.ai/zen/go"
+
+    def test_switch_to_glm_leaves_v1_intact(self):
+        """OpenAI-compatible models (GLM, Kimi, MiMo) keep /v1."""
+        result = _run_opencode_switch(
+            raw_input="glm-5.1",
+            current_provider="opencode-go",
+            current_model="minimax-m2.7",
+            current_base_url="https://opencode.ai/zen/go",  # stripped from previous Anthropic model
+            runtime_base_url="https://opencode.ai/zen/go/v1",
+        )
+
+        assert result.success
+        assert result.api_mode == "chat_completions"
+        assert result.base_url == "https://opencode.ai/zen/go/v1", (
+            f"chat_completions must keep /v1; got {result.base_url}"
+        )
+
+    def test_switch_to_kimi_leaves_v1_intact(self):
+        result = _run_opencode_switch(
+            raw_input="kimi-k2.5",
+            current_provider="opencode-go",
+            current_model="glm-5",
+            current_base_url="https://opencode.ai/zen/go/v1",
+        )
+
+        assert result.success
+        assert result.api_mode == "chat_completions"
+        assert result.base_url == "https://opencode.ai/zen/go/v1"
+
+    def test_trailing_slash_also_stripped(self):
+        """``/v1/`` with trailing slash is also stripped cleanly."""
+        result = _run_opencode_switch(
+            raw_input="minimax-m2.7",
+            current_provider="opencode-go",
+            current_model="glm-5",
+            current_base_url="https://opencode.ai/zen/go/v1/",
+        )
+
+        assert result.success
+        assert result.api_mode == "anthropic_messages"
+        assert result.base_url == "https://opencode.ai/zen/go"
+
 
 class TestOpenCodeZenV1Strip:
     """OpenCode Zen: ``/model claude-*`` must strip /v1."""
 
+    def test_switch_to_claude_sonnet_strips_v1(self):
+        """Gemini → Claude on opencode-zen: /v1 stripped."""
+        result = _run_opencode_switch(
+            raw_input="claude-sonnet-4-6",
+            current_provider="opencode-zen",
+            current_model="gemini-3-flash",
+            current_base_url="https://opencode.ai/zen/v1",
+        )
+
+        assert result.success
+        assert result.api_mode == "anthropic_messages"
+        assert result.base_url == "https://opencode.ai/zen"
+
+    def test_switch_to_gemini_leaves_v1_intact(self):
+        """Gemini on opencode-zen stays on chat_completions with /v1."""
+        result = _run_opencode_switch(
+            raw_input="gemini-3-flash",
+            current_provider="opencode-zen",
+            current_model="claude-sonnet-4-6",
+            current_base_url="https://opencode.ai/zen",  # stripped from previous Claude
+            runtime_base_url="https://opencode.ai/zen/v1",
+        )
+
+        assert result.success
+        assert result.api_mode == "chat_completions"
+        assert result.base_url == "https://opencode.ai/zen/v1"
 
     def test_switch_to_gpt_uses_codex_responses_keeps_v1(self):
         """GPT on opencode-zen uses codex_responses api_mode — /v1 kept."""
@@ -172,6 +252,7 @@ class TestAgentSwitchModelDefenseInDepth:
         )
 
 
+
 class TestStaleConfigDefaultDoesNotWedgeResolver:
     """Regression for the real bug Quentin hit.
 
@@ -225,4 +306,70 @@ class TestStaleConfigDefaultDoesNotWedgeResolver:
         )
         assert result.api_mode == "chat_completions"
 
+    def test_go_glm_switch_keeps_v1_despite_minimax_config_default(self, tmp_path, monkeypatch):
+        import yaml
+        import importlib
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-key")
+        monkeypatch.delenv("OPENCODE_ZEN_API_KEY", raising=False)
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "model": {"provider": "opencode-go", "default": "minimax-m2.7"},
+        }))
+
+        import hermes_cli.config as _cfg_mod
+        importlib.reload(_cfg_mod)
+        import hermes_cli.runtime_provider as _rp_mod
+        importlib.reload(_rp_mod)
+        import hermes_cli.model_switch as _ms_mod
+        importlib.reload(_ms_mod)
+
+        result = _ms_mod.switch_model(
+            raw_input="glm-5.1",
+            current_provider="opencode-go",
+            current_model="minimax-m2.7",
+            current_base_url="https://opencode.ai/zen/go",  # stripped from prior minimax turn
+            current_api_key="test-key",
+            is_global=False,
+            explicit_provider="opencode-go",
+        )
+
+        assert result.success, f"switch failed: {result.error_message}"
+        assert result.base_url == "https://opencode.ai/zen/go/v1"
+        assert result.api_mode == "chat_completions"
+
+    def test_claude_switch_still_strips_v1_with_kimi_config_default(self, tmp_path, monkeypatch):
+        """Inverse case: config default is chat_completions, switch TO anthropic_messages.
+
+        Guards that the target_model plumbing does not break the original
+        strip-for-anthropic behavior.
+        """
+        import yaml
+        import importlib
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "test-key")
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "model": {"provider": "opencode-zen", "default": "kimi-k2.6"},
+        }))
+
+        import hermes_cli.config as _cfg_mod
+        importlib.reload(_cfg_mod)
+        import hermes_cli.runtime_provider as _rp_mod
+        importlib.reload(_rp_mod)
+        import hermes_cli.model_switch as _ms_mod
+        importlib.reload(_ms_mod)
+
+        result = _ms_mod.switch_model(
+            raw_input="claude-sonnet-4-6",
+            current_provider="opencode-zen",
+            current_model="kimi-k2.6",
+            current_base_url="https://opencode.ai/zen/v1",
+            current_api_key="test-key",
+            is_global=False,
+            explicit_provider="opencode-zen",
+        )
+
+        assert result.success, f"switch failed: {result.error_message}"
+        assert result.base_url == "https://opencode.ai/zen"
+        assert result.api_mode == "anthropic_messages"

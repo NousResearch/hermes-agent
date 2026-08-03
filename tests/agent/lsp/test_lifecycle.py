@@ -59,6 +59,16 @@ def test_get_service_registers_atexit_handler_once(monkeypatch):
     assert registrations[0] is lsp_module._atexit_shutdown
 
 
+def test_atexit_shutdown_calls_shutdown_service(monkeypatch):
+    """The atexit-registered wrapper invokes ``shutdown_service`` and
+    swallows any exception — by the time atexit fires, the user has
+    already seen the response and a noisy traceback would be clutter."""
+    called = []
+    monkeypatch.setattr(
+        lsp_module, "shutdown_service", lambda: called.append("shutdown")
+    )
+    lsp_module._atexit_shutdown()
+    assert called == ["shutdown"]
 
 
 def test_atexit_shutdown_swallows_exceptions(monkeypatch):
@@ -88,9 +98,47 @@ def test_shutdown_service_idempotent(monkeypatch):
     assert fake_svc.shutdown.call_count == 1
 
 
+def test_shutdown_service_no_op_when_never_started():
+    """Calling shutdown without ever creating the service is safe."""
+    lsp_module.shutdown_service()  # must not raise
 
 
+def test_shutdown_service_swallows_exception(monkeypatch):
+    """An exception during ``svc.shutdown()`` must not propagate —
+    the caller (often atexit) has nothing useful to do with it."""
+    fake_svc = MagicMock()
+    fake_svc.is_active.return_value = True
+    fake_svc.shutdown = MagicMock(side_effect=RuntimeError("kill -9 already"))
+    monkeypatch.setattr(
+        lsp_module.LSPService, "create_from_config", classmethod(lambda cls: fake_svc)
+    )
+    monkeypatch.setattr(atexit, "register", lambda fn: None)
+
+    lsp_module.get_service()
+    lsp_module.shutdown_service()  # must not raise
 
 
+def test_get_service_returns_none_for_inactive_service(monkeypatch):
+    """A service whose ``is_active()`` returns False is treated as
+    not running — callers see ``None`` and fall back."""
+    fake_svc = MagicMock()
+    fake_svc.is_active.return_value = False
+    monkeypatch.setattr(
+        lsp_module.LSPService, "create_from_config", classmethod(lambda cls: fake_svc)
+    )
+    monkeypatch.setattr(atexit, "register", lambda fn: None)
+
+    assert lsp_module.get_service() is None
+    # Subsequent call returns None too — but the inactive instance is
+    # cached so we don't re-build it on every check.
+    assert lsp_module.get_service() is None
 
 
+def test_get_service_returns_none_when_create_fails(monkeypatch):
+    """Service factory returning ``None`` (no config, etc.) propagates."""
+    monkeypatch.setattr(
+        lsp_module.LSPService, "create_from_config", classmethod(lambda cls: None)
+    )
+    monkeypatch.setattr(atexit, "register", lambda fn: None)
+
+    assert lsp_module.get_service() is None

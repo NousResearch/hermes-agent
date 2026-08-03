@@ -458,7 +458,6 @@ DISCORD_ALLOWED_USERS=...
 | **Groq** | `whisper-large-v3` | 快（约 1 秒） | 较好 | 免费额度 | 是 |
 | **OpenAI** | `whisper-1` | 快（约 1 秒） | 良好 | 付费 | 是 |
 | **OpenAI** | `gpt-4o-transcribe` | 中等（约 2 秒） | 最佳 | 付费 | 是 |
-| **OpenAI** | `gpt-transcribe` | 快 | 最佳 | 付费（$0.0045/分钟） | 是 |
 
 提供商优先级（自动回退）：**本地** > **groq** > **openai**
 

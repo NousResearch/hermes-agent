@@ -35,6 +35,10 @@ def _flatten(d, prefix="") -> dict:
 # falls back to English for those users and defeats the feature.
 # ---------------------------------------------------------------------------
 
+def test_all_locales_exist():
+    """Every supported language must have a catalog file on disk."""
+    for lang in i18n.SUPPORTED_LANGUAGES:
+        assert (LOCALES_DIR / f"{lang}.yaml").is_file(), f"missing locales/{lang}.yaml"
 
 
 @pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
@@ -74,14 +78,42 @@ def test_catalog_placeholders_match_english(lang: str):
 # Language resolution
 # ---------------------------------------------------------------------------
 
+def test_normalize_lang_accepts_supported():
+    assert i18n._normalize_lang("zh") == "zh"
+    assert i18n._normalize_lang("EN") == "en"
 
 
+def test_normalize_lang_accepts_aliases():
+    assert i18n._normalize_lang("chinese") == "zh"
+    assert i18n._normalize_lang("zh-CN") == "zh"
+    assert i18n._normalize_lang("Deutsch") == "de"
+    assert i18n._normalize_lang("español") == "es"
+    assert i18n._normalize_lang("jp") == "ja"
+    assert i18n._normalize_lang("Ukrainian") == "uk"
+    assert i18n._normalize_lang("uk-UA") == "uk"
+    assert i18n._normalize_lang("ua") == "uk"
+    assert i18n._normalize_lang("Turkish") == "tr"
+    assert i18n._normalize_lang("tr-TR") == "tr"
+    assert i18n._normalize_lang("türkçe") == "tr"
 
 
+def test_normalize_lang_unknown_falls_back():
+    assert i18n._normalize_lang("klingon") == "en"
+    assert i18n._normalize_lang("") == "en"
+    assert i18n._normalize_lang(None) == "en"
 
 
+def test_env_var_override(monkeypatch):
+    """HERMES_LANGUAGE wins over config."""
+    i18n.reset_language_cache()
+    monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+    assert i18n.get_language() == "ja"
 
 
+def test_env_var_normalized(monkeypatch):
+    i18n.reset_language_cache()
+    monkeypatch.setenv("HERMES_LANGUAGE", "Chinese")
+    assert i18n.get_language() == "zh"
 
 
 def test_default_when_nothing_set(monkeypatch):
@@ -97,10 +129,22 @@ def test_default_when_nothing_set(monkeypatch):
 # t() semantics
 # ---------------------------------------------------------------------------
 
+def test_t_explicit_lang():
+    assert i18n.t("approval.denied", lang="en").endswith("Denied")
+    assert i18n.t("approval.denied", lang="zh").endswith("已拒绝")
+    assert i18n.t("approval.denied", lang="uk").endswith("Відхилено")
+    assert i18n.t("approval.denied", lang="tr").endswith("Reddedildi")
 
 
+def test_t_formats_placeholders():
+    msg = i18n.t("gateway.draining", lang="en", count=3)
+    assert "3" in msg
 
 
+def test_t_missing_key_returns_key():
+    """A missing key returns its own path -- ugly but never crashes."""
+    result = i18n.t("nonexistent.key.path", lang="en")
+    assert result == "nonexistent.key.path"
 
 
 def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatch):
@@ -120,6 +164,9 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
         i18n.reset_language_cache()
 
 
+def test_t_unknown_language_uses_english():
+    """Unknown lang codes normalize to English, not to a key-path fallback."""
+    assert i18n.t("approval.denied", lang="klingon") == i18n.t("approval.denied", lang="en")
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +175,12 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
 # agent/, so _locales_dir must resolve via env override or the data scheme.
 # ---------------------------------------------------------------------------
 
+def test_locales_dir_env_override_used_when_dir_exists(tmp_path, monkeypatch):
+    """HERMES_BUNDLED_LOCALES wins when it points at a real directory."""
+    bundled = tmp_path / "bundled-locales"
+    bundled.mkdir()
+    monkeypatch.setenv("HERMES_BUNDLED_LOCALES", str(bundled))
+    assert i18n._locales_dir() == bundled
 
 
 def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
@@ -140,3 +193,9 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result.name == "locales"
 
 
+def test_t_resolves_real_string_in_source_checkout():
+    """Sanity: in the test environment (a source checkout) t() must return a
+    human string, never the bare key path. Guards against catalog-load
+    regressions independent of packaging."""
+    assert i18n.t("gateway.reset.header_default", lang="en") != "gateway.reset.header_default"
+    assert i18n.t("gateway.status.header", lang="en") != "gateway.status.header"

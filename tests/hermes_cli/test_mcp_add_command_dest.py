@@ -65,8 +65,47 @@ class TestMcpAddCommandDest:
         assert args.url == "https://example.com/mcp"
         assert args.mcp_command is None
 
+    def test_command_flag_writes_to_mcp_command_dest(self):
+        """`--command npx` must populate args.mcp_command, not args.command."""
+        parser = _build_parser()
+        args = parser.parse_args(
+            ["mcp", "add", "github", "--command", "npx"]
+        )
 
+        assert args.command == "mcp"
+        assert args.mcp_command == "npx"
 
+    def test_bare_mcp_add_does_not_clobber_command(self):
+        """Even without --url or --command, args.command stays "mcp".
+
+        Catches the regression at the parser layer regardless of which
+        transport flag the user passes.
+        """
+        parser = _build_parser()
+        args = parser.parse_args(["mcp", "add", "foo"])
+
+        assert args.command == "mcp"
+        assert args.mcp_command is None
+        assert args.url is None
+
+    def test_connect_timeout_flag_sets_probe_timeout(self):
+        """`--connect-timeout` exposes the per-server discovery timeout."""
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "mcp",
+                "add",
+                "slow",
+                "--url",
+                "https://example.com/mcp",
+                "--connect-timeout",
+                "180",
+            ]
+        )
+
+        assert args.command == "mcp"
+        assert args.mcp_action == "add"
+        assert args.connect_timeout == 180
 
     def test_args_passthrough_keeps_nested_option_flags(self):
         """`--args` must keep command flags like Docker MCP's --profile."""

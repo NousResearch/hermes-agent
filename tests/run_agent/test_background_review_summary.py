@@ -74,6 +74,13 @@ def test_falls_back_to_content_equality_when_tool_call_id_missing():
     assert "Skill created." in actions
 
 
+def test_ignores_failed_tool_results():
+    bad = {"success": False, "message": "something created but failed"}
+    review_messages = [_tool_msg("call_new", bad)]
+
+    actions = _summarize(review_messages, [])
+
+    assert actions == []
 
 
 def test_handles_non_json_tool_content_gracefully():
@@ -92,6 +99,17 @@ def test_empty_inputs():
     assert _summarize(None, None) == []
 
 
+def test_added_message_relabels_by_target():
+    review_messages = [
+        _tool_msg(
+            "c1",
+            {"success": True, "message": "Entry added to store.", "target": "memory"},
+        )
+    ]
+
+    actions = _summarize(review_messages, [])
+
+    assert actions == ["Memory updated"]
 
 
 def test_removed_or_replaced_relabels_by_target():

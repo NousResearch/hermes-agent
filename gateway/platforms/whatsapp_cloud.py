@@ -33,7 +33,7 @@ Optional / Phase-3+:
 - WHATSAPP_CLOUD_APP_SECRET       (HMAC key for X-Hub-Signature-256)
 - WHATSAPP_CLOUD_WABA_ID          (analytics / future use)
 - WHATSAPP_CLOUD_VERIFY_TOKEN     (hub.verify_token shared secret)
-- WHATSAPP_CLOUD_WEBHOOK_HOST     (default: unset → dual-stack, all interfaces IPv4+IPv6)
+- WHATSAPP_CLOUD_WEBHOOK_HOST     (default 0.0.0.0)
 - WHATSAPP_CLOUD_WEBHOOK_PORT     (default 8090)
 - WHATSAPP_CLOUD_WEBHOOK_PATH     (default /whatsapp/webhook)
 - WHATSAPP_CLOUD_API_VERSION      (default v20.0)
@@ -76,9 +76,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    SUPPORTED_DOCUMENT_TYPES,
 )
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
-from gateway.platforms.media_cache import ext_for_mime
+from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
 
@@ -86,12 +86,7 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_API_VERSION = "v20.0"
-# ``None`` → aiohttp/asyncio ``create_server`` binds one listening socket per
-# address family (IPv4 + IPv6). The old "0.0.0.0" default bound IPv4 ONLY and
-# was unreachable over IPv6-only private networks (e.g. Fly.io 6PN) — same
-# bug as the LINE adapter (NS-603) and gateway/platforms/webhook.py
-# (d542894ad). Pin a host via WHATSAPP_CLOUD_WEBHOOK_HOST or extra.webhook_host.
-DEFAULT_WEBHOOK_HOST = None
+DEFAULT_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 GRAPH_API_BASE = "https://graph.facebook.com"
@@ -164,25 +159,18 @@ async def _read_limited_request_body(request: Any, max_bytes: int) -> bytes:
 def _ext_for_mime(mime: str) -> Optional[str]:
     """Resolve a mime type to the file extension we want on disk.
 
-    Thin wrapper over the shared dispatch in
-    ``gateway.platforms.media_cache``. Consults the WhatsApp override map
-    first so types like ``audio/ogg`` produce the extension downstream
-    tools actually accept (``.ogg``, not the technically-correct-but-broken
-    ``.oga``). Falls back to Python's ``mimetypes.guess_extension`` for
-    anything we haven't pinned — the shared default table is skipped so
-    behavior stays byte-identical to the historical implementation.
+    Consults the override map first so types like ``audio/ogg`` produce
+    the extension downstream tools actually accept (``.ogg``, not the
+    technically-correct-but-broken ``.oga``). Falls back to Python's
+    ``mimetypes.guess_extension`` for anything we haven't pinned.
     """
     if not mime:
         return None
-    return ext_for_mime(
-        mime,
-        # preserves historical whatsapp_cloud mapping: overrides →
-        # mimetypes → None, never the shared default table.
-        overrides=_WHATSAPP_MIME_EXTENSION_OVERRIDES,
-        use_defaults=False,
-        use_mimetypes=True,
-        fallback=None,
-    )
+    primary = mime.split(";")[0].strip().lower()
+    override = _WHATSAPP_MIME_EXTENSION_OVERRIDES.get(primary)
+    if override:
+        return override
+    return mimetypes.guess_extension(primary) or None
 
 
 # Inbound media cache lives under the user's hermes dir so it survives
@@ -229,11 +217,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._verify_token: str = str(extra.get("verify_token", "")).strip()
 
         # Webhook server config
-        # Falsy host (None/"") collapses to the dual-stack default.
-        _raw_webhook_host = extra.get("webhook_host", DEFAULT_WEBHOOK_HOST) or DEFAULT_WEBHOOK_HOST
-        self._webhook_host: Optional[str] = (
-            str(_raw_webhook_host) if _raw_webhook_host else None
-        )
+        self._webhook_host: str = str(extra.get("webhook_host", DEFAULT_WEBHOOK_HOST))
         self._webhook_port: int = int(extra.get("webhook_port", DEFAULT_WEBHOOK_PORT))
         self._webhook_path: str = self._normalize_path(
             extra.get("webhook_path", DEFAULT_WEBHOOK_PATH)
@@ -255,34 +239,22 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         # Allowlist: honor the *documented* WHATSAPP_CLOUD_ALLOWED_USERS (the
         # var the setup wizard writes) in addition to WHATSAPP_CLOUD_ALLOW_FROM.
-        # Precedence matches construction forever: explicit config (by key
-        # presence, including empty []), then legacy ALLOW_FROM, then
-        # ALLOWED_USERS. Track the winning source so live DM checks do not let
-        # a lower-precedence env broaden access.
-        if "allow_from" in extra:
-            self._dm_allowlist_source = "config"
-            allow_raw = extra.get("allow_from")
-        elif "allowFrom" in extra:
-            self._dm_allowlist_source = "config"
-            allow_raw = extra.get("allowFrom")
-        elif _get_wsecret("WHATSAPP_CLOUD_ALLOW_FROM"):
-            self._dm_allowlist_source = "WHATSAPP_CLOUD_ALLOW_FROM"
-            allow_raw = _get_wsecret("WHATSAPP_CLOUD_ALLOW_FROM")
-        elif _get_wsecret("WHATSAPP_CLOUD_ALLOWED_USERS"):
-            self._dm_allowlist_source = "WHATSAPP_CLOUD_ALLOWED_USERS"
-            allow_raw = _get_wsecret("WHATSAPP_CLOUD_ALLOWED_USERS")
-        else:
-            self._dm_allowlist_source = None
-            allow_raw = None
+        # The adapter historically read only ALLOW_FROM, so an allowlist
+        # configured via the documented var silently dropped every inbound.
         self._allow_from: set[str] = self._normalize_allow_ids(
-            self._coerce_allow_list(allow_raw)
+            self._coerce_allow_list(
+                extra.get("allow_from")
+                or extra.get("allowFrom")
+                or os.getenv("WHATSAPP_CLOUD_ALLOW_FROM")
+                or os.getenv("WHATSAPP_CLOUD_ALLOWED_USERS")
+            )
         )
         # DM policy: explicit config wins; otherwise choose a safe, working
         # default -- "open" if the operator opted into allow-all, else
         # "allowlist" when an allowlist is configured (so it is actually
         # enforced instead of silently dropping), else "open".
         _allow_all_optin = str(
-            _get_wsecret("WHATSAPP_CLOUD_ALLOW_ALL_USERS", default="") or ""
+            os.getenv("WHATSAPP_CLOUD_ALLOW_ALL_USERS", "")
         ).strip().lower() in {"true", "1", "yes"}
         _default_dm_policy = (
             "open" if _allow_all_optin
@@ -290,21 +262,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         self._dm_policy: str = str(
             extra.get("dm_policy")
-            or _get_wsecret("WHATSAPP_CLOUD_DM_POLICY")
-            or _get_wsecret("WHATSAPP_DM_POLICY")
+            or os.getenv("WHATSAPP_CLOUD_DM_POLICY")
+            or os.getenv("WHATSAPP_DM_POLICY")
             or _default_dm_policy
         ).strip().lower()
         self._group_policy: str = str(
             extra.get("group_policy")
-            or _get_wsecret("WHATSAPP_CLOUD_GROUP_POLICY")
-            or _get_wsecret("WHATSAPP_GROUP_POLICY", default="open")
-            or "open"
+            or os.getenv("WHATSAPP_CLOUD_GROUP_POLICY")
+            or os.getenv("WHATSAPP_GROUP_POLICY", "open")
         ).strip().lower()
         self._group_allow_from: set[str] = self._normalize_allow_ids(
             self._coerce_allow_list(
                 extra.get("group_allow_from")
                 or extra.get("groupAllowFrom")
-                or _get_wsecret("WHATSAPP_CLOUD_GROUP_ALLOW_FROM")
+                or os.getenv("WHATSAPP_CLOUD_GROUP_ALLOW_FROM")
             )
         )
         self._mention_patterns = self._compile_mention_patterns()
@@ -402,8 +373,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Allowlist check against the normalized bare wa_id."""
         if self._dm_policy == "allowlist":
             bare = re.sub(r"\D", "", str(sender_id).split("@", 1)[0])
-            allow_from = self._normalize_allow_ids(self._live_dm_allow_from())
-            return (bare or sender_id) in allow_from
+            return (bare or sender_id) in self._allow_from
         return super()._is_dm_allowed(sender_id)
 
     def _open_dm_opted_in(self) -> bool:
@@ -413,7 +383,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         WHATSAPP_ALLOW_ALL_USERS; the Cloud adapter's documented open-access
         opt-in is WHATSAPP_CLOUD_ALLOW_ALL_USERS, so honor it here too.
         """
-        if str(_get_wsecret("WHATSAPP_CLOUD_ALLOW_ALL_USERS", default="") or "").strip().lower() in {"true", "1", "yes"}:
+        if str(os.getenv("WHATSAPP_CLOUD_ALLOW_ALL_USERS", "")).strip().lower() in {"true", "1", "yes"}:
             return True
         return super()._open_dm_opted_in()
 

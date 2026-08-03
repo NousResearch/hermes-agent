@@ -39,8 +39,25 @@ BASE = _lock(
 )
 
 
+def test_parse_skips_root_and_versionless():
+    text = _lock({"node_modules/linked": {"link": True}})
+    parsed = _mod.parse_lockfile(text)
+    assert parsed == {}  # root entry and versionless link both skipped
 
 
+def test_reorder_and_hash_churn_is_empty_diff():
+    # Same packages, reordered, different integrity hashes — the exact noise
+    # that makes textual lockfile diffs unreadable.
+    reordered = _lock(
+        {
+            "node_modules/foo/node_modules/react": {"version": "17.0.2"},
+            "node_modules/left-pad": {"version": "1.3.0", "integrity": "sha512-XYZ"},
+            "node_modules/react": {"version": "18.2.0", "integrity": "sha512-ZZZ"},
+        }
+    )
+    d = _mod.diff_locks(_mod.parse_lockfile(BASE), _mod.parse_lockfile(reordered))
+    assert d == {"added": [], "removed": [], "updated": []}
+    assert _mod.render_markdown({"package-lock.json": d}) == ""
 
 
 def test_add_remove_update_all_detected():

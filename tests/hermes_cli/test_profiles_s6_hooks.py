@@ -99,6 +99,16 @@ def test_register_noop_on_host(monkeypatch: pytest.MonkeyPatch) -> None:
     _maybe_register_gateway_service("hostprof")
 
 
+def test_register_calls_through_on_s6(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_detect_s6(monkeypatch)
+    mgr = _S6Manager()
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: mgr,
+    )
+    _maybe_register_gateway_service("coder")
+    assert mgr.registered == ["coder"]
+
+
 def test_register_passes_start_now_false(monkeypatch: pytest.MonkeyPatch) -> None:
     """_maybe_register_gateway_service must register with start_now=False
     so that profile creation does not auto-start a gateway that may
@@ -112,6 +122,52 @@ def test_register_passes_start_now_false(monkeypatch: pytest.MonkeyPatch) -> Non
     assert mgr.last_start_now is False, (
         "profile creation must not auto-start the gateway service"
     )
+
+
+def test_register_swallows_duplicate_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-existing s6 registration (from container-boot reconcile)
+    is a benign condition — register must not propagate ValueError."""
+    _patch_detect_s6(monkeypatch)
+    mgr = _S6Manager()
+    mgr.raise_on_register = ValueError("already registered")
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: mgr,
+    )
+    # Should NOT raise
+    _maybe_register_gateway_service("coder")
+
+
+def test_register_swallows_arbitrary_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Even an unexpected exception from the manager must not bring
+    down `hermes profile create` — print and continue."""
+    _patch_detect_s6(monkeypatch)
+    mgr = _S6Manager()
+    mgr.raise_on_register = RuntimeError("svscanctl exploded")
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: mgr,
+    )
+    _maybe_register_gateway_service("coder")
+    captured = capsys.readouterr()
+    assert "Could not register" in captured.out
+
+
+def test_register_swallows_no_backend_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When `get_service_manager()` raises RuntimeError (no backend
+    detected), the hook must silently no-op."""
+    _patch_detect_s6(monkeypatch)
+    def _no_backend() -> None:
+        raise RuntimeError("no supported service manager detected")
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", _no_backend,
+    )
+    # Should NOT raise
+    _maybe_register_gateway_service("anywhere")
 
 
 def test_register_silent_when_detect_throws(
@@ -138,3 +194,34 @@ def test_register_silent_when_detect_throws(
     assert captured.out == ""
 
 
+def test_unregister_noop_on_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Same as test_register_noop_on_host: rely on real host detection.
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager",
+        lambda: _HostManager(),
+    )
+    _maybe_unregister_gateway_service("hostprof")
+
+
+def test_unregister_calls_through_on_s6(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_detect_s6(monkeypatch)
+    mgr = _S6Manager()
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: mgr,
+    )
+    _maybe_unregister_gateway_service("coder")
+    assert mgr.unregistered == ["coder"]
+
+
+def test_unregister_swallows_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    _patch_detect_s6(monkeypatch)
+    mgr = _S6Manager()
+    mgr.raise_on_unregister = RuntimeError("svc gone weird")
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: mgr,
+    )
+    _maybe_unregister_gateway_service("coder")
+    captured = capsys.readouterr()
+    assert "Could not unregister" in captured.out

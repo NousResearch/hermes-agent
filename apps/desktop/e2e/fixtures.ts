@@ -120,17 +120,6 @@ export function createSandbox(prefix: string): Sandbox {
     'utf8',
   )
 
-  // Pin Chromium actual-size zoom (level 0) for the suite. Fresh installs
-  // ship DEFAULT_ZOOM_LEVEL at the Appearance 90% preset, but Playwright
-  // click hit-testing and the committed visual baselines were calibrated at
-  // 100%. Without this file every sandbox would inherit the product default
-  // and fail pointer interception + snapshot diffs.
-  fs.writeFileSync(
-    path.join(userDataDir, 'zoom-state.json'),
-    JSON.stringify({ zoomLevel: 0 }, null, 2),
-    'utf8',
-  )
-
   return {
     root,
     hermesHome,
@@ -241,10 +230,6 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
     HERMES_DESKTOP_IGNORE_EXISTING: '1',
     HERMES_DESKTOP_HERMES_ROOT: REPO_ROOT,
     HERMES_DESKTOP_APP_NAME: `HermesE2E-${Date.now()}`,
-    // `app.close()` in teardown must exit even when a spec leaves a turn
-    // mid-flight — otherwise the quit confirmation waits on a click that no
-    // one is there to make, and the worker dies on a teardown timeout.
-    HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
     // Clear dev-server override — we want the built dist/, not a vite server.
     // The dev-server check in main.ts looks for this env var; if it's set,
     // it loads from the vite URL instead of the local file.

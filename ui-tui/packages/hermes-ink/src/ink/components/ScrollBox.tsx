@@ -10,31 +10,9 @@ import { markCommitStart } from '../reconciler.js'
 import type { Styles } from '../styles.js'
 
 import Box from './Box.js'
-
-const MAX_SCROLL_GEOMETRY = 1_000_000_000
-
-const validUnsignedGeometry = (value: number): boolean =>
-  Number.isFinite(value) && value >= 0 && value <= MAX_SCROLL_GEOMETRY
-
-const validClampMaximum = (value: number): boolean => value === Number.POSITIVE_INFINITY || validUnsignedGeometry(value)
-
-const validSignedGeometry = (value: number): boolean => Number.isFinite(value) && Math.abs(value) <= MAX_SCROLL_GEOMETRY
-
-const safeUnsignedGeometry = (value: number | undefined): number =>
-  value !== undefined && validUnsignedGeometry(value) ? value : 0
-
-const safeSignedGeometry = (value: number | undefined): number =>
-  value !== undefined && validSignedGeometry(value) ? value : 0
-
 export type ScrollBoxHandle = {
   scrollTo: (y: number) => void
   scrollBy: (dy: number) => void
-  /**
-   * Offset the committed viewport after content above it changes height.
-   * Unlike scrollTo, this preserves pending input, sticky state, anchor seeks,
-   * and the manual-scroll timestamp.
-   */
-  adjustScrollTop: (dy: number) => void
   /**
    * Scroll so `el`'s top is at the viewport top (plus `offset`). Unlike
    * scrollTo which bakes a number that's stale by the time the throttled
@@ -71,9 +49,9 @@ export type ScrollBoxHandle = {
   isSticky: () => boolean
   /**
    * Subscribe to scroll viewport changes. Fires for imperative scroll changes
-   * (scrollTo/scrollBy/adjustScrollTop/scrollToBottom) and for renderer-computed
-   * scroll bounds changes such as content growth or terminal resize. Callers
-   * use this to keep virtualized ranges aligned with the visible viewport.
+   * (scrollTo/scrollBy/scrollToBottom) and for renderer-computed scroll bounds
+   * changes such as content growth or terminal resize. Callers use this to
+   * keep virtualized ranges aligned with the currently visible viewport.
    */
   subscribe: (listener: () => void) => () => void
   /**
@@ -107,7 +85,7 @@ export type ScrollBoxProps = Except<Styles, 'textWrap' | 'overflow' | 'overflowX
  */
 function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<ScrollBoxProps>): React.ReactNode {
   const domRef = useRef<DOMElement>(null)
-  // Imperative position changes bypass React: they mutate scrollTop on the DOM node,
+  // scrollTo/scrollBy bypass React: they mutate scrollTop on the DOM node,
   // mark it dirty, and call the root's throttled scheduleRender directly.
   // The Ink renderer reads scrollTop from the node — no React state needed,
   // no reconciler overhead per wheel event. The microtask defer coalesces
@@ -149,29 +127,10 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
   useImperativeHandle(
     ref,
     (): ScrollBoxHandle => ({
-      adjustScrollTop(dy: number) {
-        const el = domRef.current
-
-        if (!el || !validSignedGeometry(dy)) {
-          return
-        }
-
-        const current = safeUnsignedGeometry(el.scrollTop)
-        const next = Math.max(0, current + Math.floor(dy))
-        const compensation = safeSignedGeometry(el.scrollTopCompensation) + (next - current)
-
-        if (next === current || !validUnsignedGeometry(next) || !validSignedGeometry(compensation)) {
-          return
-        }
-
-        el.scrollTop = next
-        el.scrollTopCompensation = compensation
-        scrollMutated(el)
-      },
       scrollTo(y: number) {
         const el = domRef.current
 
-        if (!el || !validSignedGeometry(y)) {
+        if (!el) {
           return
         }
 
@@ -180,7 +139,6 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         el.stickyScroll = false
         manualScrollAtRef.current = Date.now()
         el.pendingScrollDelta = undefined
-        el.scrollTopCompensation = undefined
         el.scrollAnchor = undefined
         el.scrollTop = Math.max(0, Math.floor(y))
         scrollMutated(el)
@@ -188,14 +146,13 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
       scrollToElement(el: DOMElement, offset = 0) {
         const box = domRef.current
 
-        if (!box || !validSignedGeometry(offset)) {
+        if (!box) {
           return
         }
 
         box.stickyScroll = false
         manualScrollAtRef.current = Date.now()
         box.pendingScrollDelta = undefined
-        box.scrollTopCompensation = undefined
         box.scrollAnchor = {
           el,
           offset
@@ -205,20 +162,14 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
       scrollBy(dy: number) {
         const el = domRef.current
 
-        if (!el || !validSignedGeometry(dy)) {
-          return
-        }
-
-        const pending = safeSignedGeometry(el.pendingScrollDelta) + Math.floor(dy)
-
-        if (!validSignedGeometry(pending)) {
+        if (!el) {
           return
         }
 
         el.stickyScroll = false
         manualScrollAtRef.current = Date.now()
         el.scrollAnchor = undefined
-        el.pendingScrollDelta = pending
+        el.pendingScrollDelta = (el.pendingScrollDelta ?? 0) + Math.floor(dy)
         scrollMutated(el)
       },
       scrollToBottom() {
@@ -229,35 +180,30 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         }
 
         el.pendingScrollDelta = undefined
-        el.scrollTopCompensation = undefined
         el.stickyScroll = true
         markDirty(el)
         notify()
         forceRender(n => n + 1)
       },
       getScrollTop() {
-        return safeUnsignedGeometry(domRef.current?.scrollTop)
+        return domRef.current?.scrollTop ?? 0
       },
       getPendingDelta() {
         // Accumulated-but-not-yet-drained delta. useVirtualScroll needs
         // this to mount the union [committed, committed+pending] range —
         // otherwise intermediate drain frames find no children (blank).
-        return safeSignedGeometry(domRef.current?.pendingScrollDelta)
+        return domRef.current?.pendingScrollDelta ?? 0
       },
       getScrollHeight() {
-        return safeUnsignedGeometry(domRef.current?.scrollHeight)
+        return domRef.current?.scrollHeight ?? 0
       },
       getFreshScrollHeight() {
         const content = domRef.current?.childNodes[0] as DOMElement | undefined
 
-        const height = content?.yogaNode?.getComputedHeight()
-
-        return validUnsignedGeometry(height ?? Number.NaN)
-          ? height!
-          : safeUnsignedGeometry(domRef.current?.scrollHeight)
+        return content?.yogaNode?.getComputedHeight() ?? domRef.current?.scrollHeight ?? 0
       },
       getViewportHeight() {
-        return safeUnsignedGeometry(domRef.current?.scrollViewportHeight)
+        return domRef.current?.scrollViewportHeight ?? 0
       },
       getViewportTop() {
         return domRef.current?.scrollViewportTop ?? 0
@@ -283,26 +229,6 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         const el = domRef.current
 
         if (!el) {
-          return
-        }
-
-        if (min === undefined && max === undefined) {
-          el.scrollClampMin = undefined
-          el.scrollClampMax = undefined
-
-          return
-        }
-
-        if (
-          min === undefined ||
-          max === undefined ||
-          !validUnsignedGeometry(min) ||
-          !validClampMaximum(max) ||
-          min > max
-        ) {
-          el.scrollClampMin = undefined
-          el.scrollClampMax = undefined
-
           return
         }
 
@@ -334,7 +260,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         domRef.current = el
 
         if (el) {
-          el.scrollTop = safeUnsignedGeometry(el.scrollTop)
+          el.scrollTop ??= 0
           el.notifyScrollChange = notify
         }
       }}

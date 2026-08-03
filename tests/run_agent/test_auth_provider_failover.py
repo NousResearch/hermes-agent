@@ -59,6 +59,9 @@ class TestAuthErrorClassification:
         assert c.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
         assert c.is_auth is True
 
+    def test_403_is_auth(self):
+        c = classify_api_error(_auth_error(403, "forbidden"))
+        assert c.is_auth is True
 
     def test_500_is_not_auth(self):
         err = Exception("Error code: 500 - internal server error")

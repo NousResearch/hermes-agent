@@ -65,3 +65,18 @@ def test_update_hands_external_supervisor_gateway_back_without_watcher(monkeypat
     )
 
 
+def test_update_keeps_detached_restart_for_ordinary_foreground_gateway(monkeypatch):
+    monkeypatch.setattr(
+        gateway,
+        "_capture_gateway_argv",
+        lambda _pid: ["python", "-m", "hermes_cli.main", "gateway", "run"],
+    )
+    calls = []
+    monkeypatch.setattr(
+        gateway,
+        "launch_detached_profile_gateway_restart",
+        lambda profile, pid: calls.append((profile, pid)) or True,
+    )
+
+    assert gateway._prepare_profile_gateway_update_restart("work", 1234) == "detached"
+    assert calls == [("work", 1234)]

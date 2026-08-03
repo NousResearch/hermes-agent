@@ -40,16 +40,52 @@ def _make_runner_with_mock_restart(tmp_path, monkeypatch):
     monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
     monkeypatch.delenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, raising=False)
-    # Hermeticity: neutralize the real container probe — on a containerized
-    # CI runner /.dockerenv exists and would route every case via_service=True
-    # regardless of the env markers under test (the detection under test is
-    # the SUPERVISOR markers, not the runner's own containment).
-    monkeypatch.setattr(
-        "gateway.restart.is_container_restart_context", lambda: False
-    )
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
     return runner
+
+
+@pytest.mark.asyncio
+async def test_restart_under_launchd_uses_service_path(tmp_path, monkeypatch):
+    """launchd job label in XPC_SERVICE_NAME routes /restart via the service path."""
+    runner = _make_runner_with_mock_restart(tmp_path, monkeypatch)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+
+    await runner._handle_restart_command(_make_restart_event())
+
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_restart_in_interactive_macos_shell_uses_detached_path(tmp_path, monkeypatch):
+    """XPC_SERVICE_NAME=0 (inherited by interactive macOS shells) is NOT a service."""
+    runner = _make_runner_with_mock_restart(tmp_path, monkeypatch)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+
+    await runner._handle_restart_command(_make_restart_event())
+
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_restart_without_service_env_uses_detached_path(tmp_path, monkeypatch):
+    """No service-manager env at all falls back to the detached restart."""
+    runner = _make_runner_with_mock_restart(tmp_path, monkeypatch)
+
+    await runner._handle_restart_command(_make_restart_event())
+
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_restart_under_systemd_uses_service_path(tmp_path, monkeypatch):
+    """INVOCATION_ID (systemd) still routes via the service path."""
+    runner = _make_runner_with_mock_restart(tmp_path, monkeypatch)
+    monkeypatch.setenv("INVOCATION_ID", "abc123")
+
+    await runner._handle_restart_command(_make_restart_event())
+
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
 
 
 @pytest.mark.asyncio

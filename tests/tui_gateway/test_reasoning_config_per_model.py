@@ -80,3 +80,21 @@ class TestTUIPerModelReasoningConfig:
         gw_result = gateway_run.GatewayRunner._load_reasoning_config()
         assert tui_result == gw_result
 
+    def test_global_fallback_with_yaml_false(self, monkeypatch):
+        """YAML boolean False must reach parse_reasoning_effort uncoerced.
+
+        Regression: str(... or "").strip() turned False into "", silently
+        re-enabling thinking. The raw value must pass through so
+        parse_reasoning_effort(False) returns {'enabled': False}.
+        """
+        fake_cfg = {
+            "model": {"default": "gpt-5"},
+            "agent": {
+                "reasoning_effort": False,  # YAML boolean, not string
+            },
+        }
+        monkeypatch.setattr(tui_server, "_load_cfg", lambda: fake_cfg)
+
+        result = tui_server._load_reasoning_config()
+        assert result is not None
+        assert result.get("enabled") is False

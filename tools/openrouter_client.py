@@ -29,19 +29,5 @@ def get_async_client():
 
 
 def check_api_key() -> bool:
-    """Check whether the OpenRouter API key is present.
-
-    Scope-aware (Slack pattern): tool paths run inside an installed profile
-    secret scope, whose verdict is authoritative under multiplex; unscoped
-    CLI probes keep the legacy env read.
-    """
-    try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
-
-        try:
-            return bool(get_secret("OPENROUTER_API_KEY"))
-        except UnscopedSecretError:
-            pass
-    except Exception:
-        pass
+    """Check whether the OpenRouter API key is present."""
     return bool(os.getenv("OPENROUTER_API_KEY"))

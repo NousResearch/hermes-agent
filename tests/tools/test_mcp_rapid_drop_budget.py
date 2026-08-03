@@ -34,6 +34,18 @@ class TestReconnectGroupFatalSignals:
                 _group(ConnectionError("drop"), KeyboardInterrupt())
             )
 
+    def test_system_exit_leaf_reraises(self):
+        task = MCPServerTask("t")
+        task._ready.set()
+        with pytest.raises(BaseExceptionGroup):
+            task._reconnect_or_reraise_group(_group(SystemExit(1)))
+
+    def test_nested_keyboard_interrupt_reraises(self):
+        task = MCPServerTask("t")
+        task._ready.set()
+        nested = _group(_group(KeyboardInterrupt()))
+        with pytest.raises(BaseExceptionGroup):
+            task._reconnect_or_reraise_group(nested)
 
     def test_plain_transient_drop_still_reconnects(self):
         task = MCPServerTask("t")

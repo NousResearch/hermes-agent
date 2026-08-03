@@ -67,6 +67,17 @@ def test_upsert_env_updates_existing_values(tmp_path: Path):
     assert "OTHER=keep" in env_text
 
 
+def test_messages_after_checkpoint_returns_only_newer_items():
+    mod = load_module()
+    messages = [
+        {"sid": "SM3", "body": "newest"},
+        {"sid": "SM2", "body": "middle"},
+        {"sid": "SM1", "body": "oldest"},
+    ]
+
+    assert mod._messages_after_checkpoint(messages, "") == messages
+    assert mod._messages_after_checkpoint(messages, "SM2") == [{"sid": "SM3", "body": "newest"}]
+    assert mod._messages_after_checkpoint(messages, "SM3") == []
 
 
 def test_twilio_buy_number_saves_env_and_state(tmp_path: Path):
@@ -98,8 +109,91 @@ def test_twilio_buy_number_saves_env_and_state(tmp_path: Path):
     assert "TWILIO_PHONE_NUMBER_SID=PN111" in env_text
 
 
+def test_twilio_inbox_marks_seen_checkpoint(tmp_path: Path):
+    mod = load_module()
+    state_path = tmp_path / "telephony_state.json"
+    mod._save_state(
+        {
+            "version": 1,
+            "twilio": {
+                "default_phone_number": "+17025550123",
+                "default_phone_sid": "PN111",
+                "last_inbound_message_sid": "SM1",
+            },
+        },
+        state_path,
+    )
+
+    mod._twilio_owned_numbers = lambda limit=50: [
+        mod.OwnedTwilioNumber(
+            sid="PN111",
+            phone_number="+17025550123",
+            friendly_name="Main",
+            capabilities={"voice": True, "sms": True},
+        )
+    ]
+    mod._twilio_request = lambda method, path, params=None, form=None: {
+        "messages": [
+            {
+                "sid": "SM3",
+                "direction": "inbound",
+                "status": "received",
+                "from": "+15551230000",
+                "to": "+17025550123",
+                "date_sent": "Tue, 14 Mar 2026 09:00:00 +0000",
+                "body": "new message",
+                "num_media": "0",
+            },
+            {
+                "sid": "SM1",
+                "direction": "inbound",
+                "status": "received",
+                "from": "+15551110000",
+                "to": "+17025550123",
+                "date_sent": "Tue, 14 Mar 2026 08:00:00 +0000",
+                "body": "old message",
+                "num_media": "0",
+            },
+        ]
+    }
+
+    result = mod._twilio_inbox(limit=10, since_last=True, mark_seen=True, state_path=state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert result["count"] == 1
+    assert result["messages"][0]["sid"] == "SM3"
+    assert state["twilio"]["last_inbound_message_sid"] == "SM3"
 
 
+def test_vapi_import_twilio_number_saves_phone_number_id(tmp_path: Path):
+    mod = load_module()
+    state_path = tmp_path / "telephony_state.json"
+    env_path = tmp_path / ".env"
+
+    mod._vapi_api_key = lambda: "vapi-key"
+    mod._twilio_creds = lambda: ("AC123", "token123")
+    mod._resolve_twilio_number = lambda identifier=None: mod.OwnedTwilioNumber(
+        sid="PN111",
+        phone_number="+17025550123",
+        friendly_name="Main",
+        capabilities={"voice": True, "sms": True},
+    )
+    mod._json_request = lambda method, url, headers=None, params=None, form=None, json_body=None: {
+        "id": "vapi-phone-xyz"
+    }
+
+    result = mod._vapi_import_twilio_number(
+        save_env=True,
+        state_path=state_path,
+        env_path=env_path,
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    env_text = env_path.read_text(encoding="utf-8")
+
+    assert result["phone_number_id"] == "vapi-phone-xyz"
+    assert state["vapi"]["phone_number_id"] == "vapi-phone-xyz"
+    assert "VAPI_PHONE_NUMBER_ID=vapi-phone-xyz" in env_text
 
 
 def test_diagnose_includes_decision_tree_and_saved_state(tmp_path: Path, monkeypatch):

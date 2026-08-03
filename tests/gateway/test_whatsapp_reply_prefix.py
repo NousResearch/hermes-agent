@@ -4,30 +4,13 @@ Covers:
 - config.yaml whatsapp.reply_prefix bridging into PlatformConfig.extra
 - WhatsAppAdapter reading reply_prefix from config.extra
 - Bridge subprocess receiving WHATSAPP_REPLY_PREFIX env var
-- config.yaml whatsapp.send_read_receipts bridging into PlatformConfig.extra
-- WhatsAppAdapter parsing send_read_receipts as a boolean
 - Config version covers all ENV_VARS_BY_VERSION keys (regression guard)
 """
 
-import asyncio
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
-
-
-class _AsyncResponseContext:
-    def __init__(self, response):
-        self.response = response
-
-    async def __aenter__(self):
-        return self.response
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +50,33 @@ class TestConfigYamlBridging:
         assert wa_config is not None
         assert wa_config.extra.get("reply_prefix") == ""
 
+    def test_no_whatsapp_section_no_extra(self, tmp_path):
+        """Without whatsapp section, no reply_prefix is set."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text("timezone: UTC\n")
+
+        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
+            from gateway.config import load_gateway_config
+            with patch.dict("os.environ", {"WHATSAPP_ENABLED": "true"}, clear=False):
+                config = load_gateway_config()
+
+        wa_config = config.platforms.get(Platform.WHATSAPP)
+        assert wa_config is not None
+        assert "reply_prefix" not in wa_config.extra
+
+    def test_whatsapp_section_without_reply_prefix(self, tmp_path):
+        """whatsapp section present but without reply_prefix key."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text("whatsapp:\n  other_setting: true\n")
+
+        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
+            from gateway.config import load_gateway_config
+            with patch.dict("os.environ", {"WHATSAPP_ENABLED": "true"}, clear=False):
+                config = load_gateway_config()
+
+        wa_config = config.platforms.get(Platform.WHATSAPP)
+        assert "reply_prefix" not in wa_config.extra
+
 
 # ---------------------------------------------------------------------------
 # WhatsAppAdapter __init__
@@ -82,30 +92,17 @@ class TestAdapterInit:
         adapter = WhatsAppAdapter(config)
         assert adapter._reply_prefix == "Bot\\n"
 
-
-class TestReadReceiptPolicyOrdering:
-    @pytest.mark.asyncio
-    async def test_accepted_receipt_key_is_sent_to_bridge(self):
+    def test_reply_prefix_default_none(self):
         from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+        config = PlatformConfig(enabled=True)
+        adapter = WhatsAppAdapter(config)
+        assert adapter._reply_prefix is None
 
-        adapter = WhatsAppAdapter(
-            PlatformConfig(enabled=True, extra={"send_read_receipts": True})
-        )
-        response = SimpleNamespace(status=200)
-        session = MagicMock()
-        session.post.return_value = _AsyncResponseContext(response)
-        adapter._http_session = session
-        key = {
-            "id": "incoming-1",
-            "remoteJid": "120363001234567890@g.us",
-            "participant": "15550001111@s.whatsapp.net",
-            "fromMe": False,
-        }
-
-        await adapter._send_read_receipt({"readReceiptKey": key})
-
-        assert session.post.call_args.kwargs["json"] == {"key": key}
-        assert session.post.call_args.args[0].endswith("/read")
+    def test_reply_prefix_empty_string(self):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+        config = PlatformConfig(enabled=True, extra={"reply_prefix": ""})
+        adapter = WhatsAppAdapter(config)
+        assert adapter._reply_prefix == ""
 
 
 # ---------------------------------------------------------------------------

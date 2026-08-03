@@ -39,8 +39,13 @@ def _thinking_on_replay(base_url, signature=SIG, model="k3"):
     return [b for b in assistant["content"] if isinstance(b, dict) and b.get("type") == "thinking"]
 
 
+def test_kimi_coding_keeps_signed_thinking():
+    thinking = _thinking_on_replay(KIMI)
+    assert thinking and thinking[0].get("signature") == SIG
 
 
+def test_kimi_coding_keeps_unsigned_thinking():
+    assert _thinking_on_replay(KIMI, signature="")
 
 
 def test_moonshot_keeps_signed_thinking():
@@ -48,6 +53,13 @@ def test_moonshot_keeps_signed_thinking():
     assert thinking and thinking[0].get("signature") == SIG
 
 
+def test_deepseek_still_strips_signed_thinking():
+    # A DeepSeek model on the DeepSeek Anthropic endpoint must strip signed
+    # thinking on replay. (The model must be a real DeepSeek slug: the bare
+    # ``k3`` slug is now classified as Kimi family, and a Kimi-family MODEL
+    # name deliberately preserves thinking regardless of gateway hostname —
+    # the proxied-endpoint path, see _is_kimi_family_endpoint.)
+    assert not _thinking_on_replay(DEEPSEEK, model="deepseek-reasoner")
 
 
 def test_kimi_model_name_on_foreign_gateway_keeps_thinking():
@@ -59,6 +71,8 @@ def test_kimi_model_name_on_foreign_gateway_keeps_thinking():
         assert _thinking_on_replay(DEEPSEEK, model=model), model
 
 
+def test_direct_anthropic_keeps_signed_on_latest():
+    assert _thinking_on_replay(None)
 
 
 def test_orphan_tool_turn_demotes_and_leaks_no_internal_marker():

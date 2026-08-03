@@ -82,9 +82,7 @@ def resolve_cache_home(home_path: Optional[Path] = None) -> Path:
     (and tests that don't thread a home through) working.
     """
     if home_path is None:
-        from hermes_constants import get_hermes_home
-
-        home_path = get_hermes_home()
+        home_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     return home_path
 
 

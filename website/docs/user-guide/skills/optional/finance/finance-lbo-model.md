@@ -1,14 +1,14 @@
 ---
-title: "Lbo Model — Build leveraged buyout workbooks with IRR/MOIC in Excel"
+title: "Lbo Model"
 sidebar_label: "Lbo Model"
-description: "Build leveraged buyout workbooks with IRR/MOIC in Excel"
+description: "Build leveraged buyout models in Excel — sources & uses, debt schedule, cash sweep, exit multiple, IRR/MOIC sensitivity"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Lbo Model
 
-Build leveraged buyout workbooks with IRR/MOIC in Excel.
+Build leveraged buyout models in Excel — sources & uses, debt schedule, cash sweep, exit multiple, IRR/MOIC sensitivity. Pairs with excel-author. Use for PE screening, sponsor-case valuation, or illustrative LBO in a pitch.
 
 ## Skill metadata
 

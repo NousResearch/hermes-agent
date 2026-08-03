@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
 import { zh } from "./zh";
@@ -16,7 +16,6 @@ import { ga } from "./ga";
 import { pt } from "./pt";
 import { ru } from "./ru";
 import { hu } from "./hu";
-import { ar } from "./ar";
 
 const TRANSLATIONS: Record<Locale, Translations> = {
   en,
@@ -35,12 +34,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   pt,
   ru,
   hu,
-  ar,
 };
-
-// Locales whose script flows right-to-left. Consumed by the provider to set the
-// document direction so Tailwind's logical utilities (ms-/me-, ps-/pe-) flip.
-const RTL_LOCALES = new Set<Locale>(["ar"]);
 
 // Display metadata for the language picker — endonym (native name) so users
 // recognize their language even if they don't speak the current UI language.
@@ -68,7 +62,6 @@ export const LOCALE_META: Record<Locale, { name: string }> = {
   pt: { name: "Português" },
   ru: { name: "Русский" },
   hu: { name: "Magyar" },
-  ar: { name: "العربية" },
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
@@ -111,12 +104,6 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       // ignore
     }
   }, []);
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.documentElement.lang = locale;
-    document.documentElement.dir = RTL_LOCALES.has(locale) ? "rtl" : "ltr";
-  }, [locale]);
 
   const value: I18nContextValue = {
     locale,

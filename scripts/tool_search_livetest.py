@@ -248,9 +248,7 @@ SCENARIOS: List[Dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 
 
-def setup_isolated_home(enabled: bool, listing: str = "off",
-                        listing_max_tokens: int = 4000,
-                        model: str = "anthropic/claude-haiku-4.5") -> Path:
+def setup_isolated_home(enabled: bool) -> Path:
     """Create a fresh ~/.hermes/ for one test, copying minimal credentials.
 
     Also reads OPENROUTER_API_KEY from the user's real ``~/.hermes/.env`` so
@@ -280,7 +278,7 @@ def setup_isolated_home(enabled: bool, listing: str = "off",
     cfg = {
         "model": {
             "provider": "openrouter",
-            "model": model,
+            "model": "anthropic/claude-haiku-4.5",
         },
         "tools": {
             "tool_search": {
@@ -288,8 +286,6 @@ def setup_isolated_home(enabled: bool, listing: str = "off",
                 "threshold_pct": 10,
                 "search_default_limit": 5,
                 "max_search_limit": 20,
-                "listing": listing,
-                "listing_max_tokens": listing_max_tokens,
             },
         },
         "logging": {"level": "WARNING"},

@@ -48,8 +48,14 @@ def test_summarize_strips_rust_report_noise():
     assert "Error:" not in summary
 
 
+def test_summarize_joins_multiple_cause_lines():
+    raw = "Error:\n   0: outer cause\n   1: inner cause\n\nLocation:\n   x.rs:1"
+    assert _summarize_bws_stderr(raw) == "outer cause; inner cause"
 
 
+def test_summarize_falls_back_to_raw_on_unknown_shape():
+    assert _summarize_bws_stderr("plain failure text") == "plain failure text"
+    assert _summarize_bws_stderr("") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +63,17 @@ def test_summarize_strips_rust_report_noise():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("message", [
+    'bws exited 1: Received error message from server: [400 Bad Request] {"error":"invalid_client"}',
+    "invalid_grant returned by identity",
+    "server said 401 unauthorized",
+])
+def test_classify_auth_failures(message):
+    assert _classify_bws_error(message) == ErrorKind.AUTH_FAILED
 
 
+def test_classify_unknown_stays_internal():
+    assert _classify_bws_error("some novel explosion") == ErrorKind.INTERNAL
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +105,9 @@ def test_fetch_auth_failure_gets_friendly_error(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_bitwarden_auth_remediation_points_at_token_command():
+    hint = BitwardenSource().remediation(ErrorKind.AUTH_FAILED, {})
+    assert "hermes secrets bitwarden token" in hint
 
 
 def test_onepassword_auth_remediation_points_at_token_command():
@@ -98,8 +116,33 @@ def test_onepassword_auth_remediation_points_at_token_command():
     assert "OP_SERVICE_ACCOUNT_TOKEN" in hint
 
 
+def test_onepassword_remediation_uses_configured_token_env():
+    hint = OnePasswordSource().remediation(
+        ErrorKind.AUTH_FAILED, {"service_account_token_env": "MY_OP_TOKEN"}
+    )
+    assert "MY_OP_TOKEN" in hint
 
 
+def test_base_remediation_covers_common_kinds():
+    class _Src(SecretSource):
+        name = "dummy"
+        label = "Dummy"
+
+        def fetch(self, cfg, home_path):  # pragma: no cover
+            raise NotImplementedError
+
+    src = _Src()
+    for kind in (ErrorKind.NOT_CONFIGURED, ErrorKind.BINARY_MISSING,
+                 ErrorKind.AUTH_FAILED, ErrorKind.AUTH_EXPIRED,
+                 ErrorKind.NETWORK, ErrorKind.TIMEOUT):
+        hint = src.remediation(kind, {})
+        assert hint, f"no default hint for {kind}"
+        if kind in (ErrorKind.NOT_CONFIGURED, ErrorKind.BINARY_MISSING,
+                    ErrorKind.AUTH_FAILED, ErrorKind.AUTH_EXPIRED):
+            assert "hermes secrets dummy" in hint
+    # Kinds without a sensible generic action stay silent.
+    assert _Src().remediation(ErrorKind.INTERNAL, {}) == ""
+    assert _Src().remediation(None, {}) == ""
 
 
 def test_remediation_never_raises_on_junk_cfg():
@@ -149,3 +192,41 @@ def test_env_loader_prints_remediation_hint(tmp_path, monkeypatch, capsys):
     assert "hermes secrets bitwarden token" in err
 
 
+def test_env_loader_hint_survives_broken_remediation(tmp_path, monkeypatch, capsys):
+    """A plugin source whose remediation() raises must not break startup."""
+    from hermes_cli import env_loader
+    from agent.secret_sources import registry
+
+    class _Broken(SecretSource):
+        name = "brokensrc"
+        label = "Broken"
+        shape = "bulk"
+
+        def fetch(self, cfg, home_path):
+            from agent.secret_sources.base import FetchResult
+            res = FetchResult()
+            res.error = "kaput"
+            res.error_kind = ErrorKind.AUTH_FAILED
+            return res
+
+        def remediation(self, kind, cfg):
+            raise RuntimeError("hint machine broke")
+
+    registry._reset_registry_for_tests()
+    registry._BUILTINS_LOADED = True  # keep real builtins out of this test
+    registry.register_source(_Broken())
+    env_loader.reset_secret_source_cache()
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "secrets:\n  brokensrc:\n    enabled: true\n"
+    )
+    try:
+        env_loader._apply_external_secret_sources(home)
+    finally:
+        registry._reset_registry_for_tests()
+        env_loader.reset_secret_source_cache()
+
+    err = capsys.readouterr().err
+    assert "kaput" in err  # error still surfaced, no crash

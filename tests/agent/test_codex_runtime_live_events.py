@@ -47,8 +47,51 @@ def _recording_agent():
     return agent, calls
 
 
+def test_agent_message_and_reasoning_deltas_are_forwarded_live():
+    agent, calls = _recording_agent()
+    bridge = make_codex_app_server_event_bridge(agent)
+
+    bridge({"method": "item/agentMessage/delta", "params": {"delta": "Working"}})
+    bridge({"method": "item/reasoning/delta", "params": {"delta": "Thinking"}})
+    bridge({"method": "item/reasoning/summaryDelta", "params": {"delta": "Summary"}})
+
+    assert calls["stream"] == ["Working"]
+    assert calls["reasoning"] == ["Thinking", "Summary"]
 
 
+def test_command_start_and_complete_fire_both_callback_contracts():
+    agent, calls = _recording_agent()
+    bridge = make_codex_app_server_event_bridge(agent)
+    started = {
+        "type": "commandExecution",
+        "id": "abc123",
+        "command": "echo hi",
+        "cwd": "/tmp",
+    }
+    completed = dict(
+        started,
+        aggregatedOutput="hi\n",
+        exitCode=0,
+        durationMs=250,
+    )
+
+    bridge({"method": "item/started", "params": {"item": started}})
+    bridge({"method": "item/completed", "params": {"item": completed}})
+
+    expected_args = {"command": "echo hi", "cwd": "/tmp"}
+    expected_id = "codex_exec_abc123"
+    assert calls["tool_start"] == [(expected_id, "exec_command", expected_args)]
+    assert calls["tool_complete"] == [
+        (expected_id, "exec_command", expected_args, "hi\n")
+    ]
+    assert calls["tool_progress"][0] == (
+        ("tool.started", "exec_command", "echo hi", expected_args),
+        {},
+    )
+    assert calls["tool_progress"][1] == (
+        ("tool.completed", "exec_command", None, None),
+        {"duration": 0.25, "is_error": False, "result": "hi\n"},
+    )
 
 
 def test_stable_ids_match_history_projector():
@@ -104,5 +147,36 @@ def test_failed_command_result_and_error_flag_are_preserved():
     assert calls["tool_complete"][0][3] == "[exit 2]\nboom"
 
 
+def test_non_tool_events_and_malformed_payloads_are_ignored():
+    agent, calls = _recording_agent()
+    bridge = make_codex_app_server_event_bridge(agent)
+    for note in (
+        {"method": "item/started", "params": {"item": {"type": "reasoning"}}},
+        {"method": "turn/completed", "params": {}},
+        {"method": "item/started", "params": []},
+        {},
+        None,
+    ):
+        bridge(note)
+
+    assert all(not entries for entries in calls.values())
 
 
+def test_one_broken_callback_does_not_hide_other_live_events():
+    starts = []
+
+    def broken_progress(*_args, **_kwargs):
+        raise RuntimeError("display consumer failed")
+
+    agent = SimpleNamespace(
+        tool_progress_callback=broken_progress,
+        tool_start_callback=lambda call_id, name, args: starts.append(
+            (call_id, name, args)
+        ),
+    )
+    bridge = make_codex_app_server_event_bridge(agent)
+    item = {"type": "dynamicToolCall", "id": "d1", "tool": "search"}
+
+    bridge({"method": "item/started", "params": {"item": item}})
+
+    assert starts == [("codex_dyn_search_d1", "search", {})]

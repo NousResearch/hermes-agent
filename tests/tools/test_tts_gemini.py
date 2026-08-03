@@ -165,6 +165,267 @@ class TestGenerateGeminiTts:
         )
         assert voice == "Puck"
 
+    def test_custom_model(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"gemini": {"model": "gemini-2.5-pro-preview-tts"}}
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), config)
+
+        endpoint = mock_post.call_args[0][0]
+        assert "gemini-2.5-pro-preview-tts" in endpoint
+
+    def test_response_modality_is_audio(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+        payload = mock_post.call_args[1]["json"]
+        assert payload["generationConfig"]["responseModalities"] == ["AUDIO"]
+
+    def test_http_error_raises_runtime_error(self, tmp_path, monkeypatch):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        err_resp = MagicMock()
+        err_resp.status_code = 400
+        err_resp.json.return_value = {"error": {"message": "Invalid voice"}}
+
+        with patch("requests.post", return_value=err_resp):
+            with pytest.raises(RuntimeError, match="HTTP 400.*Invalid voice"):
+                _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+    def test_empty_audio_raises(self, tmp_path, monkeypatch):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "candidates": [
+                {"content": {"parts": [{"inlineData": {"data": ""}}]}}
+            ]
+        }
+
+        with patch("requests.post", return_value=resp):
+            with pytest.raises(RuntimeError, match="empty audio"):
+                _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+    def test_malformed_response_raises(self, tmp_path, monkeypatch):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"candidates": []}  # no content
+
+        with patch("requests.post", return_value=resp):
+            with pytest.raises(RuntimeError, match="malformed"):
+                _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+    def test_snake_case_inline_data_accepted(self, tmp_path, monkeypatch, fake_pcm_bytes):
+        """Some Gemini SDK versions return inline_data instead of inlineData."""
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "inline_data": {
+                                    "data": base64.b64encode(fake_pcm_bytes).decode()
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+
+        output_path = str(tmp_path / "test.wav")
+        with patch("requests.post", return_value=resp):
+            _generate_gemini_tts("Hi", output_path, {})
+
+        data = (tmp_path / "test.wav").read_bytes()
+        assert data[:4] == b"RIFF"
+
+    def test_custom_base_url_env(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        monkeypatch.setenv("GEMINI_BASE_URL", "https://custom-gemini.example.com/v1beta")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+        assert mock_post.call_args[0][0].startswith("https://custom-gemini.example.com/v1beta/")
+        assert "X-Goog-Api-Client" not in mock_post.call_args[1]["headers"]
+
+    def test_lookalike_base_url_omits_client_context(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        lookalike = "https://generativelanguage.googleapis.com.evil.example/v1beta"
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        monkeypatch.setenv("GEMINI_BASE_URL", lookalike)
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+        assert mock_post.call_args[0][0].startswith(f"{lookalike}/")
+        assert "X-Goog-Api-Client" not in mock_post.call_args[1]["headers"]
+
+    def test_persona_prompt_file_appends_labeled_transcript(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        persona_file = tmp_path / "voice-persona.md"
+        persona_file.write_text(
+            "# AUDIO PROFILE: Dry Butler\n\n### DIRECTOR'S NOTES\nStyle: Understated.",
+            encoding="utf-8",
+        )
+        config = {"gemini": {"persona_prompt_file": str(persona_file)}}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), config)
+
+        prompt_text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert "Synthesize speech from the TRANSCRIPT only" in prompt_text
+        assert "# AUDIO PROFILE: Dry Butler" in prompt_text
+        assert "### DIRECTOR'S NOTES\nStyle: Understated." in prompt_text
+        assert "#### TRANSCRIPT\nHi" in prompt_text
+
+    def test_persona_prompt_file_supports_transcript_placeholder(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        persona_file = tmp_path / "voice-persona.md"
+        persona_file.write_text(
+            "### DIRECTOR'S NOTES\nPacing: Slow.\n\n#### TRANSCRIPT\n{{ transcript }}",
+            encoding="utf-8",
+        )
+        config = {"gemini": {"persona_prompt_file": str(persona_file)}}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Read this.", str(tmp_path / "test.wav"), config)
+
+        prompt_text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert "{{ transcript }}" not in prompt_text
+        assert "#### TRANSCRIPT\nRead this." in prompt_text
+
+    def test_missing_persona_prompt_file_warns_and_continues(
+        self, tmp_path, monkeypatch, caplog, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        config = {"gemini": {"persona_prompt_file": str(tmp_path / "missing.md")}}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), config)
+
+        prompt_text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert prompt_text == "Hi"
+        assert "persona prompt file unavailable" in caplog.text
+
+    def test_audio_tags_disabled_does_not_call_rewriter(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        config = {
+            "gemini": {
+                "model": "gemini-3.1-flash-tts-preview",
+                "audio_tags": False,
+            }
+        }
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("agent.auxiliary_client.call_llm") as mock_call_llm, \
+             patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi there.", str(tmp_path / "test.wav"), config)
+
+        mock_call_llm.assert_not_called()
+        prompt_text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert prompt_text == "Hi there."
+
+    def test_audio_tags_enabled_rewrites_hidden_tts_script(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        persona_file = tmp_path / "voice-persona.md"
+        persona_file.write_text(
+            "### DIRECTOR'S NOTES\nStyle: Warm and amused.",
+            encoding="utf-8",
+        )
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="[warmly] Hi there. [soft laugh]")
+                )
+            ]
+        )
+        config = {
+            "gemini": {
+                "model": "gemini-3.1-flash-tts-preview",
+                "audio_tags": True,
+                "persona_prompt_file": str(persona_file),
+            }
+        }
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call_llm, \
+             patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi there.", str(tmp_path / "test.wav"), config)
+
+        mock_call_llm.assert_called_once()
+        call_kwargs = mock_call_llm.call_args.kwargs
+        assert call_kwargs["task"] == "tts_audio_tags"
+        assert "Audio tags are inline square-bracket modifiers" in call_kwargs["messages"][0]["content"]
+        assert "Style: Warm and amused." in call_kwargs["messages"][1]["content"]
+        assert "Hi there." in call_kwargs["messages"][1]["content"]
+
+        prompt_text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert "Synthesize speech from the TRANSCRIPT only" in prompt_text
+        assert "### DIRECTOR'S NOTES\nStyle: Warm and amused." in prompt_text
+        assert "#### TRANSCRIPT\n[warmly] Hi there. [soft laugh]" in prompt_text
+
+    def test_audio_tags_enabled_skips_non_tag_capable_model(
+        self, tmp_path, monkeypatch, mock_gemini_response, caplog
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        config = {
+            "gemini": {
+                "model": "gemini-2.5-flash-preview-tts",
+                "audio_tags": True,
+            }
+        }
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("agent.auxiliary_client.call_llm") as mock_call_llm, \
+             patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi there.", str(tmp_path / "test.wav"), config)
+
+        mock_call_llm.assert_not_called()
+        prompt_text = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
+        assert prompt_text == "Hi there."
+        assert "not known to support Gemini audio tags" in caplog.text
 
     def test_audio_tag_rewrite_failure_falls_back_to_original_text(
         self, tmp_path, monkeypatch, mock_gemini_response, caplog

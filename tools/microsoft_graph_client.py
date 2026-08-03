@@ -9,7 +9,6 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 import httpx
 
-from agent.retry_utils import parse_retry_after_seconds
 from tools.microsoft_graph_auth import GraphCredentials, MicrosoftGraphTokenProvider
 
 
@@ -358,9 +357,12 @@ class MicrosoftGraphClient:
     @staticmethod
     def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
         if response is not None:
-            retry_after = parse_retry_after_seconds(response.headers)
-            if retry_after is not None:
-                return retry_after
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    return max(0.0, float(retry_after))
+                except ValueError:
+                    pass
         return min(8.0, 0.5 * (2 ** attempt))
 
     @staticmethod
@@ -388,7 +390,13 @@ class MicrosoftGraphClient:
             elif isinstance(error, str):
                 message = error
 
-        retry_after: float | None = parse_retry_after_seconds(response.headers)
+        retry_after: float | None = None
+        header_value = response.headers.get("Retry-After")
+        if header_value:
+            try:
+                retry_after = float(header_value)
+            except ValueError:
+                retry_after = None
 
         return MicrosoftGraphAPIError(
             response.status_code,

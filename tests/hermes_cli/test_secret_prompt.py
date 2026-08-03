@@ -29,6 +29,12 @@ def test_collect_masked_input_shows_feedback_without_echoing_secret():
     assert "secret" not in output
 
 
+def test_collect_masked_input_handles_backspace():
+    value, output = _run_collect("sec\x7fret\r")
+
+    assert value == "seret"
+    assert output == "API key: ***\b \b***\r\n"
+    assert "secret" not in output
 
 
 def test_collect_masked_input_raises_keyboard_interrupt():

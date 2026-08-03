@@ -60,6 +60,14 @@ class TestLocalBackend:
         assert res.data == PNG
         assert res.origin == "file"
 
+    @pytest.mark.asyncio
+    async def test_file_uri_scheme_stripped(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "pic.jpg"
+        img.write_bytes(JPEG)
+        res = await isrc.resolve_image_source(f"file://{img}", isrc.ResolveContext())
+        assert res.mime == "image/jpeg"
 
     @pytest.mark.asyncio
     async def test_bare_relative_path_resolves(self, tmp_path, monkeypatch):
@@ -74,6 +82,13 @@ class TestLocalBackend:
         assert res.data == PNG
         assert res.origin == "file"
 
+    @pytest.mark.asyncio
+    async def test_unknown_url_scheme_rejected(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        with pytest.raises(isrc.UnsupportedScheme):
+            await isrc.resolve_image_source(
+                "ftp://example.com/pic.png", isrc.ResolveContext())
 
     @pytest.mark.asyncio
     async def test_svg_passes_through_for_rasterization(self, tmp_path, monkeypatch):
@@ -103,28 +118,6 @@ class TestNonLocalBackendConfinement:
         cached.write_bytes(PNG)
         # No sandbox env needed — a cache path is host-read directly.
         res = await isrc.resolve_image_source(str(cached), isrc.ResolveContext())
-        assert res.data == PNG
-        assert res.origin == "file"
-
-    @pytest.mark.asyncio
-    async def test_desktop_upload_images_dir_host_read(self, tmp_path, monkeypatch):
-        """Desktop/clipboard uploads under ``HERMES_HOME/images`` are host-read.
-
-        Regression for #69575: uploads land in the flat top-level ``images/``
-        dir (not ``cache/images``). Under a sandbox backend the vision resolver
-        must permit reading them host-side — otherwise it falls through to the
-        task-id-less sandbox reader and fails with "not reachable inside the
-        sandbox".
-        """
-        home = tmp_path / "hermes"
-        isrc = _reload(monkeypatch, home)
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        upload = home / "images" / "upload_20260722_181019_1.png"
-        upload.parent.mkdir(parents=True)
-        upload.write_bytes(PNG)
-        # No sandbox env: an uploads path must be host-read directly, not routed
-        # to the in-sandbox exec-read.
-        res = await isrc.resolve_image_source(str(upload), isrc.ResolveContext())
         assert res.data == PNG
         assert res.origin == "file"
 
@@ -218,6 +211,23 @@ class TestExecReadSafety:
         assert f"head -c {isrc._MAX_INGEST_BYTES + 1} < " in captured["cmd"]
         assert "'-i-etc-shadow.png'" in captured["cmd"] or "-i-etc-shadow.png" in captured["cmd"]
 
+    @pytest.mark.asyncio
+    async def test_exec_read_over_cap_rejected(self, tmp_path, monkeypatch):
+        """A sandbox file larger than the ingest cap is rejected, not embedded."""
+        home = tmp_path / "hermes"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        # head -c returns cap+1 bytes for an oversized file.
+        over = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * (isrc._MAX_INGEST_BYTES - 7)).decode()
+
+        def fake_execute(cmd, **kw):
+            return {"returncode": 0, "output": over}
+
+        with patch("tools.image_source._get_active_env",
+                   return_value=SimpleNamespace(execute=fake_execute)):
+            with pytest.raises(isrc.SourceTooLarge):
+                await isrc.resolve_image_source(
+                    "/workspace/huge.png", isrc.ResolveContext(task_id="t1"))
 
     @pytest.mark.asyncio
     async def test_exec_read_nonzero_returncode_raises(self, tmp_path, monkeypatch):

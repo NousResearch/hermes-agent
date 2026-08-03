@@ -46,8 +46,52 @@ def _client(workspace: Path, script: str, **env_extra: str) -> LSPClient:
     )
 
 
+@pytest.mark.asyncio
+async def test_stale_push_does_not_satisfy_wait(tmp_path: Path):
+    """A push from the previous edit cycle must not end the wait early.
+
+    The 'stale' mock publishes an error for the original content and
+    then goes silent — the wait after the edit must time out (False),
+    not return instantly on the leftover push.
+    """
+    f = tmp_path / "x.py"
+    f.write_text("bad code\n")
+
+    client = _client(tmp_path, "stale")
+    await client.start()
+    try:
+        v0 = await client.open_file(str(f), language_id="python")
+        assert await client.wait_for_diagnostics(str(f), v0, mode="document", timeout=2.0)
+        assert len(client.diagnostics_for(str(f))) == 1  # pre-edit error is real
+
+        # Fix the file.  The stale server never re-checks.
+        f.write_text("good code\n")
+        v1 = await client.open_file(str(f), language_id="python")
+        fresh = await client.wait_for_diagnostics(str(f), v1, mode="document", timeout=1.0)
+        assert fresh is False, "wait must not be satisfied by pre-edit leftovers"
+    finally:
+        await client.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_fresh_only_excludes_stale_stores(tmp_path: Path):
+    f = tmp_path / "x.py"
+    f.write_text("bad code\n")
+
+    client = _client(tmp_path, "stale")
+    await client.start()
+    try:
+        v0 = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), v0, mode="document", timeout=2.0)
+
+        f.write_text("good code\n")
+        await client.open_file(str(f), language_id="python")
+        # Merged legacy view still exposes the leftover push...
+        assert len(client.diagnostics_for(str(f))) == 1
+        # ...but the fresh-only view correctly reports no verdict yet.
+        assert client.diagnostics_for(str(f), fresh_only=True) == []
+    finally:
+        await client.shutdown()
 
 
 @pytest.mark.asyncio
@@ -73,8 +117,56 @@ async def test_slow_push_is_waited_for(tmp_path: Path):
         await client.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_wait_timeout_param_overrides_mode_budget(tmp_path: Path):
+    """The explicit timeout must control the wait budget (config plumb)."""
+    import asyncio
+
+    f = tmp_path / "x.py"
+    f.write_text("bad code\n")
+
+    client = _client(tmp_path, "stale")
+    await client.start()
+    try:
+        v0 = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), v0, mode="document", timeout=2.0)
+        f.write_text("good code\n")
+        v1 = await client.open_file(str(f), language_id="python")
+
+        loop = asyncio.get_event_loop()
+        start = loop.time()
+        fresh = await client.wait_for_diagnostics(str(f), v1, mode="document", timeout=0.5)
+        elapsed = loop.time() - start
+        assert fresh is False
+        # Must respect ~0.5s, not the 5s document default.
+        assert elapsed < 3.0
+    finally:
+        await client.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_stale_pull_result_dropped_when_change_races(tmp_path: Path):
+    """A pull answered for pre-edit content must not read as fresh after
+    a didChange raced past it (version-tag anchoring)."""
+    f = tmp_path / "x.py"
+    f.write_text("bad code\n")
+
+    client = _client(tmp_path, "clean")
+    await client.start()
+    try:
+        v0 = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), v0, mode="document", timeout=2.0)
+        doc = client._docs[os.path.abspath(str(f))]
+        assert doc.fresh_pull()
+
+        # Simulate an edit racing in: the version bump invalidates the
+        # stored pull without any explicit clearing.
+        f.write_text("good code\n")
+        await client.open_file(str(f), language_id="python")
+        assert not doc.fresh_pull()
+        assert client.diagnostics_for(str(f), fresh_only=True) == []
+    finally:
+        await client.shutdown()
 
 
 # ---------------------------------------------------------------------------

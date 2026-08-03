@@ -10,7 +10,15 @@ from agent.memory_manager import StreamingContextScrubber, sanitize_context
 
 
 class TestStreamingContextScrubberBasics:
+    def test_empty_input_returns_empty(self):
+        s = StreamingContextScrubber()
+        assert s.feed("") == ""
+        assert s.flush() == ""
 
+    def test_plain_text_passes_through(self):
+        s = StreamingContextScrubber()
+        assert s.feed("hello world") == "hello world"
+        assert s.flush() == ""
 
     def test_complete_block_in_single_delta(self):
         """Regression: the one-shot test case from #13672 must still work."""
@@ -25,6 +33,18 @@ class TestStreamingContextScrubberBasics:
         out = s.feed(leaked) + s.flush()
         assert out == "\n\nVisible answer"
 
+    def test_open_and_close_in_separate_deltas_strips_payload(self):
+        """The real streaming case: tag pair split across deltas."""
+        s = StreamingContextScrubber()
+        deltas = [
+            "Hello\n",
+            "<memory-context>\npayload ",
+            "more payload\n",
+            "</memory-context> world",
+        ]
+        out = "".join(s.feed(d) for d in deltas) + s.flush()
+        assert out == "Hello\n world"
+        assert "payload" not in out
 
     def test_realistic_fragmented_chunks_strip_memory_payload(self):
         """Exact leak scenario from the reviewer's comment — 4 realistic chunks.
@@ -48,8 +68,38 @@ class TestStreamingContextScrubberBasics:
         assert "Honcho Context" not in out
         assert "stale memory" not in out
 
+    def test_open_tag_split_across_two_deltas(self):
+        """The open tag itself arriving in two fragments."""
+        s = StreamingContextScrubber()
+        out = (
+            s.feed("pre \n<memory")
+            + s.feed("-context>\nleak</memory-context> post")
+            + s.flush()
+        )
+        assert out == "pre \n post"
+        assert "leak" not in out
 
+    def test_open_tag_waits_for_newline_confirmation_across_deltas(self):
+        """A boundary tag is only a leaked block when the next char is a newline."""
+        s = StreamingContextScrubber()
+        out = (
+            s.feed("pre \n<memory-context>")
+            + s.feed("\nleak</memory-context> post")
+            + s.flush()
+        )
+        assert out == "pre \n post"
+        assert "leak" not in out
 
+    def test_close_tag_split_across_two_deltas(self):
+        """The close tag arriving in two fragments."""
+        s = StreamingContextScrubber()
+        out = (
+            s.feed("pre \n<memory-context>\nleak</memory")
+            + s.feed("-context> post")
+            + s.flush()
+        )
+        assert out == "pre \n post"
+        assert "leak" not in out
 
 
 class TestStreamingContextScrubberPartialTagFalsePositives:
@@ -59,6 +109,12 @@ class TestStreamingContextScrubberPartialTagFalsePositives:
         out = s.feed("hello <mem") + s.feed("ory other") + s.flush()
         assert out == "hello <memory other"
 
+    def test_partial_tag_released_when_disambiguated(self):
+        """A held-back partial tag that turns out to be prose gets released."""
+        s = StreamingContextScrubber()
+        # '< ' should not look like the start of any tag.
+        out = s.feed("price < ") + s.feed("10 dollars") + s.flush()
+        assert out == "price < 10 dollars"
 
     def test_inline_memory_context_tag_mention_is_not_scrubbed(self):
         """A prose mention of the fence tag must not swallow the answer."""
@@ -77,6 +133,15 @@ class TestStreamingContextScrubberPartialTagFalsePositives:
         out = s.feed("The <memory-context> tag name is documented here.") + s.flush()
         assert out == "The <memory-context> tag name is documented here."
 
+    def test_line_start_memory_context_mention_without_close_is_not_scrubbed(self):
+        """A plain-text line that starts with the tag name must be preserved."""
+        s = StreamingContextScrubber()
+        out = (
+            s.feed("Visible intro\n")
+            + s.feed("<memory-context> is the literal tag name mentioned here.")
+            + s.flush()
+        )
+        assert out == "Visible intro\n<memory-context> is the literal tag name mentioned here."
 
 
 class TestStreamingContextScrubberUnterminatedSpan:

@@ -103,22 +103,6 @@ def _is_alive_like_dispatcher(pid: int) -> bool:
                         break
         except (FileNotFoundError, PermissionError, OSError):
             pass
-    elif sys.platform == "darwin":
-        try:
-            proc = subprocess.run(
-                ["ps", "-o", "stat=", "-p", str(pid)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=1,
-                check=False,
-            )
-            if proc.returncode != 0:
-                return False
-            if "Z" in (proc.stdout or "").strip():
-                return False
-        except (OSError, subprocess.SubprocessError, TimeoutError):
-            pass
     return True
 
 
@@ -216,3 +200,31 @@ def test_sigterm_without_kanban_task_env_uses_keyboard_interrupt_path():
         _cleanup(proc)
 
 
+def test_real_handler_uses_os_exit_for_kanban_workers():
+    """Source-level invariant: cli.py's _signal_handler_q must call
+    os._exit(0) when HERMES_KANBAN_TASK is set.
+
+    Catches the case where someone refactors the handler and accidentally
+    drops the env-gated exit, restoring the bug. Reading cli.py directly is
+    cheap and avoids the heavy CLI import.
+    """
+    import pathlib
+
+    cli_path = (
+        pathlib.Path(__file__).resolve().parent.parent.parent / "cli.py"
+    )
+    src = cli_path.read_text()
+    # Locate the handler body.
+    start = src.find("def _signal_handler_q(signum, frame):")
+    assert start != -1, "cli.py is missing _signal_handler_q"
+    # Look ahead for the env-gated os._exit call within ~80 lines.
+    body = src[start : start + 4000]
+    assert "HERMES_KANBAN_TASK" in body, (
+        "_signal_handler_q must gate its kanban-worker exit path on "
+        "HERMES_KANBAN_TASK — see #28181"
+    )
+    assert "os._exit(0)" in body, (
+        "_signal_handler_q must call os._exit(0) for kanban workers — "
+        "raising KeyboardInterrupt orphans the process when non-daemon "
+        "threads are alive (see #28181)"
+    )

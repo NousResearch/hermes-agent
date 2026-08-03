@@ -12,14 +12,30 @@ def test_string_message_gets_note_prepended():
     assert _prepend_note_to_message("hello", "NOTE") == "NOTE\n\nhello"
 
 
+def test_empty_note_returns_message_unchanged():
+    assert _prepend_note_to_message("hello", "") == "hello"
+    assert _prepend_note_to_message("hello", "   ") == "hello"
+    parts = [{"type": "text", "text": "hi"}]
+    assert _prepend_note_to_message(parts, "") == parts
 
 
 def test_note_is_stripped():
     assert _prepend_note_to_message("hello", "  NOTE  ") == "NOTE\n\nhello"
 
 
+def test_empty_string_message_yields_just_note():
+    # No trailing blank lines when the user message is empty.
+    assert _prepend_note_to_message("", "NOTE") == "NOTE"
 
 
+def test_empty_text_part_yields_just_note():
+    message = [
+        {"type": "text", "text": ""},
+        {"type": "image_url", "image_url": {"url": "x"}},
+    ]
+    result = _prepend_note_to_message(message, "NOTE")
+    assert result[0]["text"] == "NOTE"
+    assert result[1]["type"] == "image_url"
 
 
 def test_list_message_folds_note_into_first_text_part():
@@ -45,6 +61,18 @@ def test_image_only_list_gets_leading_text_part():
     assert result[1]["type"] == "image_url"
 
 
+def test_list_message_does_not_raise_typeerror():
+    # The exact #repro shape: multimodal list + queued note must not raise
+    # "can only concatenate str (not 'list') to str".
+    message = [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": "x"}},
+    ]
+    result = _prepend_note_to_message(
+        message, "Model switched to gpt-5.5 (provider: openai-codex)."
+    )
+    assert isinstance(result, list)
+    assert result[0]["text"].startswith("Model switched to gpt-5.5")
 
 
 def test_unknown_shape_returned_unchanged():

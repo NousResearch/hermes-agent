@@ -32,7 +32,14 @@ def _reset_registry():
 
 
 class TestRegisterProvider:
+    def test_register_and_lookup(self):
+        provider = _FakeProvider("fake")
+        video_gen_registry.register_provider(provider)
+        assert video_gen_registry.get_provider("fake") is provider
 
+    def test_rejects_non_provider(self):
+        with pytest.raises(TypeError):
+            video_gen_registry.register_provider("not a provider")  # type: ignore[arg-type]
 
     def test_rejects_empty_name(self):
         class Empty(VideoGenProvider):
@@ -46,6 +53,12 @@ class TestRegisterProvider:
         with pytest.raises(ValueError):
             video_gen_registry.register_provider(Empty())
 
+    def test_reregister_overwrites(self):
+        a = _FakeProvider("same")
+        b = _FakeProvider("same")
+        video_gen_registry.register_provider(a)
+        video_gen_registry.register_provider(b)
+        assert video_gen_registry.get_provider("same") is b
 
     def test_list_is_sorted(self):
         video_gen_registry.register_provider(_FakeProvider("zeta"))
@@ -55,8 +68,25 @@ class TestRegisterProvider:
 
 
 class TestGetActiveProvider:
+    def test_single_provider_autoresolves(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        video_gen_registry.register_provider(_FakeProvider("solo"))
+        active = video_gen_registry.get_active_provider()
+        assert active is not None and active.name == "solo"
 
+    def test_no_provider_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert video_gen_registry.get_active_provider() is None
 
+    def test_multi_without_config_returns_none(self, tmp_path, monkeypatch):
+        """Unlike image_gen (which falls back to 'fal'), video_gen has no
+        legacy default — when there are multiple *available* providers and no
+        config, the registry returns None and the tool surfaces a helpful error.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        video_gen_registry.register_provider(_FakeProvider("xai"))
+        video_gen_registry.register_provider(_FakeProvider("fal"))
+        assert video_gen_registry.get_active_provider() is None
 
     def test_single_available_among_many_autoresolves(self, tmp_path, monkeypatch):
         """When several providers are registered but only one has credentials
@@ -71,6 +101,17 @@ class TestGetActiveProvider:
         active = video_gen_registry.get_active_provider()
         assert active is not None and active.name == "deepinfra"
 
+    def test_config_selects_provider(self, tmp_path, monkeypatch):
+        import yaml
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"video_gen": {"provider": "fal"}})
+        )
+        video_gen_registry.register_provider(_FakeProvider("xai"))
+        video_gen_registry.register_provider(_FakeProvider("fal"))
+        active = video_gen_registry.get_active_provider()
+        assert active is not None and active.name == "fal"
 
     def test_unknown_explicit_config_fails_closed(self, tmp_path, monkeypatch):
         """A typo must not silently route a paid request to another backend."""

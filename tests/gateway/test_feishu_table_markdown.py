@@ -87,3 +87,47 @@ def test_markdown_table_uses_post_not_text():
     )
 
 
+def test_plain_text_without_markdown_still_uses_text():
+    """Negative control: a message with no markdown hints and no table must
+    still go to plain text.  Guards against accidentally promoting everything
+    to ``post``."""
+    msg_type, _ = _call_build_outbound_payload("just a plain sentence with no markup")
+    assert msg_type == "text"
+
+
+def test_existing_markdown_heading_still_uses_post():
+    """Sanity: the existing ``post`` path (heading / list / code / bold /
+    link) must still work after the table downgrade is removed."""
+    msg_type, payload_str = _call_build_outbound_payload("# hello world\n")
+    assert msg_type == "post"
+    md_texts = _md_texts_from_post_payload(payload_str)
+    assert md_texts, f"expected at least one md element; got {payload_str!r}"
+    assert any("hello world" in t for t in md_texts), (
+        f"expected 'hello world' in md elements; got {md_texts!r}"
+    )
+
+
+def test_table_combined_with_other_markdown_does_not_downgrade():
+    """A message that mixes a table with surrounding markdown must also
+    take the ``post`` path.
+
+    The old ``_MARKDOWN_TABLE_RE`` branch returned ``text`` unconditionally
+    and stripped all the surrounding markdown formatting, so a Feishu
+    reader saw literal pipes and lost the prose framing the table.
+    """
+    content = (
+        "Here is the data:\n\n"
+        "| col A | col B |\n"
+        "| ----- | ----- |\n"
+        "| 1     | 2     |\n\n"
+        "Let me know."
+    )
+    msg_type, payload_str = _call_build_outbound_payload(content)
+    assert msg_type == "post"
+    md_texts = _md_texts_from_post_payload(payload_str)
+    joined = "\n".join(md_texts)
+    assert "Here is the data" in joined, (
+        "leading prose was lost when downgrading a mixed-table message"
+    )
+    assert "col A" in joined, "table header was lost"
+    assert "Let me know" in joined, "trailing prose was lost"

@@ -28,6 +28,23 @@ class TestToolsetIntersection:
         assert "browser" not in scoped
         assert "rl" not in scoped
 
+    def test_all_requested_toolsets_available_on_parent(self):
+        """LLM requests subset of parent tools — all pass through."""
+        parent = SimpleNamespace(enabled_toolsets=["terminal", "file", "web", "browser"])
+
+        parent_toolsets = set(parent.enabled_toolsets)
+        requested = ["terminal", "web"]
+        scoped = [t for t in requested if t in parent_toolsets]
+
+        assert sorted(scoped) == ["terminal", "web"]
+
+    def test_no_toolsets_requested_inherits_parent(self):
+        """When toolsets is None/empty, child inherits parent's set."""
+        parent_toolsets = ["terminal", "file", "web"]
+        child = _strip_blocked_tools(parent_toolsets)
+        assert "terminal" in child
+        assert "file" in child
+        assert "web" in child
 
     def test_strip_blocked_removes_delegation(self):
         """Blocked toolsets (delegation, clarify, etc.) are always removed."""
@@ -66,6 +83,20 @@ class TestEmitParentConsole:
         assert stdout_stderr.out == ""
         assert stdout_stderr.err == ""
 
+    def test_falls_back_to_stdout_when_no_safe_print(self, capsys):
+        parent = SimpleNamespace()
+        _emit_parent_console(parent, "  ✓ [1/3] fallback path")
+        captured = capsys.readouterr()
+        assert "fallback path" in captured.out
+
+    def test_falls_back_to_stdout_when_safe_print_raises(self, capsys):
+        def raiser(_line):
+            raise RuntimeError("boom")
+
+        parent = SimpleNamespace(_safe_print=raiser)
+        _emit_parent_console(parent, "  ✓ [2/3] fallback on exception")
+        captured = capsys.readouterr()
+        assert "fallback on exception" in captured.out
 
     def test_non_callable_safe_print_is_ignored(self, capsys):
         """Defensive: if _safe_print is set but not callable, fall back."""

@@ -43,6 +43,19 @@ def _patch_resolution(monkeypatch, *, model_from_config: str, provider: str = "o
     )
 
 
+def test_normal_turn_caches_last_resolved_model(monkeypatch):
+    _patch_resolution(monkeypatch, model_from_config="deepseek/deepseek-v4-flash")
+    runner = _make_runner()
+    sk = "agent:main:discord:dm:123"
+
+    model, _ = runner._resolve_session_agent_runtime(session_key=sk, user_config={"model": {"default": "x"}})
+
+    assert model == "deepseek/deepseek-v4-flash"
+    # Cached per-session AND process-wide for first-seen-session recovery.
+    assert runner._last_resolved_model[sk] == "deepseek/deepseek-v4-flash"
+    assert runner._last_resolved_model["*"] == "deepseek/deepseek-v4-flash"
+
+
 def test_empty_model_recovers_session_last_good(monkeypatch):
     runner = _make_runner()
     sk = "agent:main:discord:dm:123"
@@ -56,6 +69,30 @@ def test_empty_model_recovers_session_last_good(monkeypatch):
     model, _ = runner._resolve_session_agent_runtime(session_key=sk, user_config={})
 
     assert model == "deepseek/deepseek-v4-flash", "recovery turn must reuse last-known-good, not build model=''"
+
+
+def test_empty_model_new_session_recovers_global_last_good(monkeypatch):
+    runner = _make_runner()
+
+    # Prime a different session so the process-wide "*" slot is populated.
+    _patch_resolution(monkeypatch, model_from_config="deepseek/deepseek-v4-flash")
+    runner._resolve_session_agent_runtime(session_key="agent:main:discord:dm:111", user_config={"model": {}})
+
+    # A brand-new session that hits an empty config read still recovers via "*".
+    _patch_resolution(monkeypatch, model_from_config="", provider="")
+    model, _ = runner._resolve_session_agent_runtime(session_key="agent:main:discord:dm:999", user_config={})
+
+    assert model == "deepseek/deepseek-v4-flash"
+
+
+def test_cold_start_empty_model_does_not_crash(monkeypatch):
+    """No last-good anywhere + empty config → returns '' gracefully (no exception)."""
+    _patch_resolution(monkeypatch, model_from_config="", provider="")
+    runner = _make_runner()
+
+    model, _ = runner._resolve_session_agent_runtime(session_key="agent:main:discord:dm:1", user_config={})
+
+    assert model == ""
 
 
 def test_bare_runner_without_cache_attr_does_not_crash(monkeypatch):
@@ -90,3 +127,21 @@ def test_has_pending_fallback_empty_chain():
     assert agent._has_pending_fallback() is False
 
 
+def test_has_pending_fallback_with_chain():
+    agent = _bare_agent()
+    agent._fallback_chain = [{"provider": "openai", "model": "gpt-5"}]
+    agent._fallback_index = 0
+    assert agent._has_pending_fallback() is True
+
+
+def test_has_pending_fallback_exhausted_chain():
+    agent = _bare_agent()
+    agent._fallback_chain = [{"provider": "openai", "model": "gpt-5"}]
+    agent._fallback_index = 1
+    assert agent._has_pending_fallback() is False
+
+
+def test_has_pending_fallback_missing_attrs():
+    """Bare agent with no fallback attributes set must default to False, not crash."""
+    agent = _bare_agent()
+    assert agent._has_pending_fallback() is False

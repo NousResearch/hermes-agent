@@ -55,12 +55,64 @@ def _make_running_again(conn, tid):
 # ---------------------------------------------------------------------------
 
 
+def test_first_typed_block_lands_in_blocked(kanban_home: Path) -> None:
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        assert kb.block_task(conn, tid, reason="which key?", kind="needs_input")
+        t = kb.get_task(conn, tid)
+        assert t.status == "blocked"
+        assert t.block_kind == "needs_input"
+        assert t.block_recurrences == 1
 
 
+def test_unblock_does_not_reset_recurrence_counter(kanban_home: Path) -> None:
+    """The crux of the fix: unblock must preserve the loop counter."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="x", kind="needs_input")
+        assert kb.get_task(conn, tid).block_recurrences == 1
+        assert kb.unblock_task(conn, tid)
+        t = kb.get_task(conn, tid)
+        assert t.status == "ready"
+        assert t.block_recurrences == 1  # NOT reset to 0
+        assert t.block_kind == "needs_input"  # kind preserved for comparison
 
 
+def test_same_cause_reblock_routes_to_triage(kanban_home: Path) -> None:
+    """Dale's loop: block → unblock → re-block same kind → triage."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="need creds", kind="needs_input")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="still need creds", kind="needs_input")
+        t = kb.get_task(conn, tid)
+        assert t.status == "triage"
+        assert t.block_recurrences == 2
 
 
+def test_untyped_block_loop_also_protected(kanban_home: Path) -> None:
+    """Legacy un-typed blocks (kind=None) still trip the breaker."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="a")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="a again")
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_different_kinds_do_not_compound(kanban_home: Path) -> None:
+    """A re-block for a DIFFERENT reason resets the counter to 1."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="a", kind="needs_input")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="b", kind="capability")
+        t = kb.get_task(conn, tid)
+        assert t.status == "blocked"
+        assert t.block_recurrences == 1
 
 
 def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
@@ -81,6 +133,16 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------
+
+
+def test_dependency_block_routes_to_todo(kanban_home: Path) -> None:
+    """Dependency waits never enter the human 'blocked' bucket."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        assert kb.block_task(conn, tid, reason="need X first", kind="dependency")
+        t = kb.get_task(conn, tid)
+        assert t.status == "todo"
+        assert t.block_kind == "dependency"
 
 
 def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
@@ -105,8 +167,36 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_completion_clears_block_memory(kanban_home: Path) -> None:
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="x", kind="capability")
+        kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).block_recurrences == 1
+        kb.complete_task(conn, tid, result="done")
+        t = kb.get_task(conn, tid)
+        assert t.status == "done"
+        assert t.block_recurrences == 0
+        assert t.block_kind is None
+
+
 # ---------------------------------------------------------------------------
 # Validation + back-compat
 # ---------------------------------------------------------------------------
 
 
+def test_invalid_kind_rejected(kanban_home: Path) -> None:
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        with pytest.raises(ValueError):
+            kb.block_task(conn, tid, reason="x", kind="bogus")
+
+
+def test_block_without_kind_is_backward_compatible(kanban_home: Path) -> None:
+    """Existing callers that pass no kind keep the old single-block behaviour."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        assert kb.block_task(conn, tid, reason="legacy")
+        t = kb.get_task(conn, tid)
+        assert t.status == "blocked"
+        assert t.block_kind is None

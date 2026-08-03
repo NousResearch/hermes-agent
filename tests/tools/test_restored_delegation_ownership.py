@@ -88,6 +88,54 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     assert "restored" not in json.loads(row[0])
 
 
+def test_unfiltered_drain_never_consumes_restored_events():
+    """The legacy consume-everything branch must fail closed on restored events."""
+    reg = _make_registry()
+    reg.completion_queue.put(_delegation_event(session_key="DEAD_SESSION", restored=True))
+
+    results = reg.drain_notifications()  # no filter — legacy CLI post-turn shape
+
+    assert results == []
+    # Still queued for its real owner.
+    assert reg.completion_queue.qsize() == 1
+    assert reg.completion_queue.get_nowait()["session_key"] == "DEAD_SESSION"
+
+
+def test_unfiltered_drain_keeps_legacy_behavior_for_same_process_events():
+    """Non-restored keyless events (created by this process) are still consumed."""
+    reg = _make_registry()
+    reg.completion_queue.put(_delegation_event(session_key=""))
+
+    results = reg.drain_notifications()
+
+    assert len(results) == 1
+    assert results[0][0]["delegation_id"] == "d1"
+    assert reg.completion_queue.empty()
+
+
+def test_owner_session_key_drain_consumes_restored_event():
+    """The owning session (key match) still receives its restored completion."""
+    reg = _make_registry()
+    reg.completion_queue.put(_delegation_event(session_key="OWNER", restored=True))
+
+    results = reg.drain_notifications(session_key="OWNER")
+
+    assert len(results) == 1
+    assert results[0][0]["session_key"] == "OWNER"
+    assert reg.completion_queue.empty()
+
+
+def test_foreign_session_key_drain_requeues_restored_event():
+    """A different session's keyed drain must not claim the restored event."""
+    reg = _make_registry()
+    reg.completion_queue.put(_delegation_event(session_key="OWNER", restored=True))
+
+    results = reg.drain_notifications(session_key="SOMEONE_ELSE")
+
+    assert results == []
+    assert reg.completion_queue.qsize() == 1
+
+
 def test_owns_event_callback_beats_restored_flag():
     """A positive-proof ownership callback consumes restored events it owns."""
     reg = _make_registry()

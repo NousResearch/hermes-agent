@@ -11,7 +11,6 @@ import {
   Sun,
   Wrench
 } from '@/lib/icons'
-import { REASONING_EFFORTS } from '@/lib/reasoning-effort'
 import type { ThemeMode } from '@/themes/context'
 
 import { defineFieldCopy } from './field-copy'
@@ -247,8 +246,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'approvals.mode': ['manual', 'smart', 'off'],
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
-  // '' = inherit the agent's own effort; the rest is the shared scale.
-  'delegation.reasoning_effort': ['', ...REASONING_EFFORTS],
+  'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   // NOTE: memory.provider is intentionally NOT listed here. Its options are
   // discovery-driven and served by the backend config schema (merged
   // per-request in web_server._schema_with_dynamic_provider_options), so
@@ -263,10 +261,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // Speech-to-text backends — kept in sync with the stt block in
   // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
-  // OpenAI TTS voices — the union across models (per the OpenAI TTS API
-  // docs). Model-specific narrowing happens in enumOptionsFor():
-  // tts-1 / tts-1-hd support 9 voices; gpt-4o-mini-tts supports all 13.
-  // Free-input field — the list is suggestions, not a gate (FREE_INPUT_KEYS).
+  // gpt-4o-mini-tts voice set (the tts-1 era stopped at shimmer). Free-input
+  // field — the list is suggestions, not a gate (see FREE_INPUT_KEYS).
   'tts.openai.voice': [
     'alloy',
     'ash',
@@ -351,7 +347,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'kittentts',
     'piper'
   ],
-  'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
+  'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
   'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
   'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
@@ -566,7 +562,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     repoScanRoots: 'Folders to scan. Leave empty to scan your home directory.',
     repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
   },
-  timezone: 'IANA timezone identifier. Blank uses the system timezone.',
+  timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
     maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.'

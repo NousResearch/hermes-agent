@@ -21,9 +21,7 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 | `gateway/mirror.py` | Cross-session message mirroring for `send_message` |
 | `gateway/status.py` | Token lock management for profile-scoped gateway instances |
 | `gateway/builtin_hooks/` | Extension point for always-registered hooks (none shipped) |
-| `gateway/platform_registry.py` | Adapter registry, factories, and deferred (lazy) loaders for bundled platform plugins |
-| `plugins/platforms/<name>/` | Bundled messaging adapters (most platforms: `adapter.py` + `plugin.yaml`) |
-| `gateway/platforms/` | Shared `base.py` plus legacy/direct adapters (Signal, API server, webhooks, …) |
+| `gateway/platforms/` | Platform adapters (one per messaging platform) |
 
 ## Architecture Overview
 
@@ -178,14 +176,12 @@ gateway/platforms/                  # core base + legacy direct adapters
 └── api_server.py        # REST API server adapter
 ```
 
-**Deferred loading:** Bundled `kind: platform` plugins register cheap `register_deferred` loaders in `gateway/platform_registry.py` (via `hermes_cli/plugins.py`) so platform SDKs import only when the gateway starts, delivers, or runs setup/status — not on plain `hermes chat`. Resolution loads one adapter on lookup; full enumeration runs pending loaders only on paths that need every platform.
-
 Experimental connector-backed platforms use the generic relay adapter in `gateway/relay/` instead of a direct platform module. When `GATEWAY_RELAY_URL` or `gateway.relay_url` is configured, the gateway registers the `relay` platform, dials the connector over an outbound WebSocket, and receives `descriptor`, `inbound`, and `interrupt_inbound` frames on that same socket. The connector advertises a `CapabilityDescriptor`; Hermes can send normal outbound replies, token-less `follow_up` operations, and interrupt frames back through the relay. The source-grounded wire contract lives in [`docs/relay-connector-contract.md`](https://github.com/NousResearch/hermes-agent/blob/main/docs/relay-connector-contract.md).
 
 Adapters implement a common interface:
 - `connect()` / `disconnect()` — lifecycle management
-- `send()` — outbound message delivery
-- inbound events are normalized into a `MessageEvent` and forwarded via `handle_message()`
+- `send_message()` — outbound message delivery
+- `on_message()` — inbound message normalization → `MessageEvent`
 
 ### Token Locks
 

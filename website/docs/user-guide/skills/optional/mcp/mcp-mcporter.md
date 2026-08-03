@@ -1,14 +1,14 @@
 ---
-title: "Mcporter — List, auth, and call MCP servers/tools from the terminal"
+title: "Mcporter"
 sidebar_label: "Mcporter"
-description: "List, auth, and call MCP servers/tools from the terminal"
+description: "Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio), including ad-hoc servers, config edits, and CLI/type gene..."
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Mcporter
 
-List, auth, and call MCP servers/tools from the terminal.
+Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio), including ad-hoc servers, config edits, and CLI/type generation.
 
 ## Skill metadata
 

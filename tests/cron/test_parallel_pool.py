@@ -30,6 +30,18 @@ class TestPersistentPool:
         # Cleanup.
         sched._shutdown_parallel_pool()
 
+    def test_pool_is_recreated_on_worker_change(self, monkeypatch):
+        """New pool when max_workers changes."""
+        import cron.scheduler as sched
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+
+        pool1 = sched._get_parallel_pool(2)
+        pool2 = sched._get_parallel_pool(4)
+        assert pool1 is not pool2
+
+        sched._shutdown_parallel_pool()
 
     def test_shutdown_clears_pool(self, monkeypatch):
         """_shutdown_parallel_pool resets state."""
@@ -71,7 +83,7 @@ class TestRunningJobGuard:
 
         dispatched = []
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_runs", lambda *_a, **_kw: 0)
+        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -104,7 +116,7 @@ class TestSyncMode:
         ]
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
-        monkeypatch.setattr(sched, "advance_next_runs", lambda *_a, **_kw: 0)
+        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -113,6 +125,49 @@ class TestSyncMode:
         n = sched.tick(verbose=False)
         assert n == 3
 
+        sched._shutdown_parallel_pool()
+
+    def test_sync_false_returns_immediately(self, tmp_path, monkeypatch):
+        """sync=False returns before parallel jobs finish (optimistic count)."""
+        import cron.scheduler as sched
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+
+        job = {
+            "id": "slow-job",
+            "name": "slow",
+            "prompt": "test",
+            "schedule": "every 5m",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+        }
+
+        barrier = threading.Barrier(2, timeout=5)
+
+        def slow_run(j, *, defer_agent_teardown=None):
+            barrier.wait()  # blocks until test thread also waits
+            return True, "out", "resp", None
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "run_job", slow_run)
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
+        monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
+
+        start = time.monotonic()
+        n = sched.tick(verbose=False, sync=False)  # opt-in: non-blocking
+        elapsed = time.monotonic() - start
+
+        assert n == 1  # optimistic count
+        assert elapsed < 1.0  # returned immediately, didn't wait for slow_run
+
+        # Let the job finish so cleanup works.
+        barrier.wait()
+        time.sleep(0.1)
         sched._shutdown_parallel_pool()
 
 
@@ -151,7 +206,7 @@ class TestSequentialPool:
             return True, "out", "resp", None
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_runs", lambda *_a, **_kw: 0)
+        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", slow_run)
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -168,6 +223,43 @@ class TestSequentialPool:
         time.sleep(0.1)
         sched._shutdown_parallel_pool()
 
+    def test_sequential_running_guard_prevents_double_dispatch(self, tmp_path, monkeypatch):
+        """A workdir job already in _running_job_ids is skipped on next tick."""
+        import cron.scheduler as sched
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._sequential_pool = None
+        sched._running_job_ids.clear()
+
+        job = {
+            "id": "guard-seq",
+            "name": "guard-seq",
+            "prompt": "test",
+            "schedule": "every 5m",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+            "workdir": str(tmp_path),
+        }
+
+        # Simulate the job already running.
+        sched._running_job_ids.add("guard-seq")
+
+        dispatched = []
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "run_job", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
+
+        n = sched.tick(verbose=False)
+        assert n == 0  # skipped, not dispatched
+        assert dispatched == []
+
+        sched._running_job_ids.discard("guard-seq")
+        sched._shutdown_parallel_pool()
 
     def test_get_sequential_pool_is_persistent(self):
         """_get_sequential_pool returns the same single-thread pool."""
@@ -180,42 +272,3 @@ class TestSequentialPool:
 
         sched._shutdown_parallel_pool()
         assert sched._sequential_pool is None
-
-
-class TestTickBatchAdvance:
-    """The tick's pre-dispatch advance must go through advance_next_runs
-    exactly once with the whole due set — a revert to the per-job loop
-    (or back to advance_next_run) must fail this test, not slip past the
-    helper-level I/O pin."""
-
-    def test_tick_calls_advance_next_runs_once_with_all_due_ids(self, tmp_path, monkeypatch):
-        import cron.scheduler as sched
-
-        sched._parallel_pool = None
-        sched._parallel_pool_max_workers = None
-        sched._running_job_ids.clear()
-
-        jobs = [
-            {"id": f"job-{i}", "name": f"Job {i}", "prompt": "test",
-             "schedule": "every 5m", "enabled": True,
-             "next_run_at": "2020-01-01T00:00:00", "deliver": "local"}
-            for i in range(4)
-        ]
-
-        advance_calls = []
-        monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
-        monkeypatch.setattr(
-            sched, "advance_next_runs",
-            lambda ids: advance_calls.append(list(ids)) or len(list(ids)))
-        monkeypatch.setattr(sched, "run_job", lambda j, **_kw: (True, "out", "resp", None))
-        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
-        monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
-        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
-
-        n = sched.tick(verbose=False)
-
-        assert n == 4
-        assert advance_calls == [["job-0", "job-1", "job-2", "job-3"]], (
-            f"tick must batch-advance the due set in ONE call; got {advance_calls}")
-
-        sched._shutdown_parallel_pool()

@@ -8,7 +8,7 @@ platforms: [linux, macos]
 metadata:
   hermes:
     tags: [evolution, optimization, prompt-engineering, research]
-    related_skills: [arxiv, jupyter-notebook]
+    related_skills: [arxiv, jupyter-live-kernel]
 ---
 
 # Darwinian Evolver

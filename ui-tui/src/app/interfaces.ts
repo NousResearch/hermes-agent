@@ -7,12 +7,12 @@ import type {
   BillingCardInfo,
   BillingMutationResponse,
   BillingStateResponse,
+  ImageAttachResponse,
   SessionCloseResponse,
   SubscriptionPreviewResponse,
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
 } from '../gatewayTypes.js'
-import type { QueueItem } from '../hooks/useQueue.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
@@ -88,9 +88,6 @@ export interface SelectionApi {
 
 export interface CompletionItem {
   display: string
-  /** Completion class from the gateway; `skill` is the only kind offered for
-   *  an inline `/skill` reference typed mid-message. */
-  kind?: string
   meta?: string
   text: string
 }
@@ -324,9 +321,6 @@ export interface UiState {
   compact: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
-  // Focus view (/focus) — display-only reduced-output mode. Drives the
-  // persistent `◉ focus` status-bar badge; never affects request payloads.
-  focusView: boolean
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
@@ -364,36 +358,29 @@ export interface ComposerPasteResult {
 export type MaybePromise<T> = Promise<T> | T
 
 export interface ComposerActions {
-  /** Pull an image off the system clipboard in as a token. */
-  attachClipboardImage: () => void
-  /** Attach an image by path in as a token. */
-  attachImagePath: (path: string) => void
   clearIn: () => void
   dequeue: () => string | undefined
-  enqueue: (text: string, display?: string) => void
+  enqueue: (text: string) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
-  prependQueue: (item: QueueItem) => void
   pushHistory: (text: string) => void
   removeQueue: (index: number) => void
+  replaceQueue: (index: number, text: string) => void
   setCompIdx: StateSetter<number>
-  setComposerTokens: StateSetter<ComposerToken[]>
   setHistoryIdx: StateSetter<null | number>
   setInput: StateSetter<string>
   setInputBuf: StateSetter<string[]>
+  setPasteSnips: StateSetter<PasteSnippet[]>
   setQueueEdit: (index: null | number) => void
-  takeQueue: (index: number, editedDisplay?: string) => QueueItem | undefined
-  /** Reconcile attached payloads against tokens still present in the text. */
-  syncTokens: (value: string) => void
+  syncQueue: () => void
 }
 
 export interface ComposerRefs {
   historyDraftRef: MutableRefObject<string>
   historyRef: MutableRefObject<string[]>
   queueEditRef: MutableRefObject<null | number>
-  queueRef: MutableRefObject<QueueItem[]>
+  queueRef: MutableRefObject<string[]>
   submitRef: MutableRefObject<(value: string) => void>
-  tokensRef: MutableRefObject<ComposerToken[]>
 }
 
 export interface ComposerState {
@@ -403,15 +390,16 @@ export interface ComposerState {
   historyIdx: null | number
   input: string
   inputBuf: string[]
+  pasteSnips: PasteSnippet[]
   queueEditIdx: null | number
   queuedDisplay: string[]
-  tokens: ComposerToken[]
 }
 
 export interface UseComposerStateOptions {
   gw: GatewayClient
+  onClipboardPaste: (quiet?: boolean) => Promise<void> | void
+  onImageAttached?: (info: ImageAttachResponse) => void
   submitRef: MutableRefObject<(value: string) => void>
-  sys: (text: string) => void
 }
 
 export interface UseComposerStateResult {
@@ -501,12 +489,11 @@ export interface GatewayEventHandlerContext {
 
 export interface SlashHandlerContext {
   composer: {
-    attachClipboardImage: () => void
-    attachImagePath: (path: string) => void
-    enqueue: (text: string, display?: string) => void
+    enqueue: (text: string) => void
     hasSelection: boolean
     openEditor: () => Promise<void>
-    queueRef: MutableRefObject<QueueItem[]>
+    paste: (quiet?: boolean) => void
+    queueRef: MutableRefObject<string[]>
     selection: SelectionApi
     setInput: StateSetter<string>
   }
@@ -533,7 +520,7 @@ export interface SlashHandlerContext {
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
-    send: (text: string, showUserMessage?: boolean, displayText?: string) => void
+    send: (text: string) => void
     setHistoryItems: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]
@@ -625,14 +612,8 @@ export interface AppOverlaysProps {
   pagerPageSize: number
 }
 
-/**
- * A `[[ … ]]` token sitting in the composer text, plus the payload it stands
- * for. `paste` tokens expand back into their text at submit; `image` tokens
- * are a receipt for a file the gateway already holds, and expand to nothing.
- *
- * `index` is the user-facing number in `[[ Image 2 ]]`; `path` is the gateway
- * path, used to detach the image when its token is deleted.
- */
-export type ComposerToken =
-  | { index: number; kind: 'image'; label: string; path: string; text?: undefined }
-  | { index?: undefined; kind: 'paste'; label: string; path?: string; text: string }
+export interface PasteSnippet {
+  label: string
+  path?: string
+  text: string
+}

@@ -1,14 +1,14 @@
 ---
-title: "Whisper — Transcribe and translate speech in 99 languages"
+title: "Whisper — OpenAI's general-purpose speech recognition model"
 sidebar_label: "Whisper"
-description: "Transcribe and translate speech in 99 languages"
+description: "OpenAI's general-purpose speech recognition model"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Whisper
 
-Transcribe and translate speech in 99 languages.
+OpenAI's general-purpose speech recognition model. Supports 99 languages, transcription, translation to English, and language identification. Six model sizes from tiny (39M params) to large (1550M params). Use for speech-to-text, podcast transcription, or multilingual audio processing. Best for robust, multilingual ASR.
 
 ## Skill metadata
 

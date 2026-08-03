@@ -69,12 +69,10 @@ class DummyAgent:
         self.events = []
         self.built_prompts = []
         self.touch_calls = []
-        self.touch_provenances = []
         self._compression_activity_heartbeat_interval = 0.1
 
-    def _touch_activity(self, desc, *, provenance=None, force_persist=False):
+    def _touch_activity(self, desc):
         self.touch_calls.append(desc)
-        self.touch_provenances.append(provenance)
 
     def _emit_status(self, message):
         self.statuses.append(message)
@@ -138,20 +136,134 @@ def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting(
     assert "context compression started" in agent.touch_calls
     assert "context compression in progress" in agent.touch_calls
     assert agent.touch_calls[-1] == "context compression completed"
-    from agent.session_activity import ActivityProvenance
 
-    assert agent.touch_provenances
-    assert all(
-        p is ActivityProvenance.AGENT_COMPRESSION for p in agent.touch_provenances
+
+def test_codex_app_server_manual_compression_routes_to_codex_thread():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="compact-turn-1")
+    )
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+
+    returned, prompt = compress_context(
+        agent,
+        messages,
+        "system",
+        approx_tokens=100000,
+        task_id="test",
+        force=True,
     )
 
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert agent._codex_session.calls == 1
+    assert agent.context_compressor.compression_count == 1
+    assert agent.status_events == [
+        ("lifecycle", COMPACTION_STATUS),
+        ("compacted", COMPACTION_DONE_STATUS),
+    ]
+    assert agent.context_compressor.last_compression_rough_tokens == 100000
+    # This minimal fake compressor does not implement update_from_response(),
+    # so the runtime preserves its existing pending-usage bookkeeping here.
+    assert agent.context_compressor.last_prompt_tokens == -1
+    assert agent.context_compressor.last_completion_tokens == 0
+    assert agent.context_compressor.awaiting_real_usage_after_compression is True
+    assert agent.events == [
+        (
+            "session:compress",
+            {
+                "platform": "cli",
+                "session_id": "hermes-session-1",
+                "old_session_id": "",
+                "in_place": False,
+                "compression_count": 1,
+                "runtime": "codex_app_server",
+                "thread_id": "thread-1",
+                "turn_id": "compact-turn-1",
+            },
+        )
+    ]
 
 
+def test_codex_app_server_hermes_mode_auto_compression_routes_to_codex_thread():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="compact-turn-1"),
+        auto_compaction="hermes",
+    )
+    messages = [{"role": "user", "content": "hi"}]
+
+    returned, prompt = compress_context(
+        agent,
+        messages,
+        "system",
+        approx_tokens=100000,
+    )
+
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert agent._codex_session.calls == 1
+    assert agent.context_compressor.compression_count == 1
 
 
+def test_codex_app_server_compression_failure_preserves_bookkeeping():
+    agent = DummyAgent(TurnResult(error="compact failed"))
+    messages = [{"role": "user", "content": "hi"}]
+
+    returned, prompt = compress_context(
+        agent,
+        messages,
+        "system",
+        approx_tokens=100000,
+        force=True,
+    )
+
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert agent._codex_session.calls == 1
+    assert agent.context_compressor.compression_count == 0
+    assert agent.context_compressor.last_prompt_tokens == 123
+    assert agent.warnings
+    assert agent.touch_calls[0] == "context compression started"
+    assert agent.touch_calls[-1] == "context compression failed"
+    assert agent.status_events == [
+        ("lifecycle", COMPACTION_STATUS),
+        ("warn", "⚠ Codex app-server compaction failed: compact failed"),
+        ("compacted", COMPACTION_DONE_STATUS),
+    ]
 
 
+def test_codex_app_server_native_compaction_notice_emits_status_and_event():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="normal-turn-1")
+    )
+    turn = TurnResult(
+        thread_id="thread-1",
+        turn_id="normal-turn-1",
+        compacted=True,
+    )
 
+    recorded = _record_codex_app_server_compaction(agent, turn)
+
+    assert recorded is True
+    assert agent.context_compressor.compression_count == 1
+    assert agent.statuses == [COMPACTION_STATUS]
+    assert agent.events == [
+        (
+            "session:compress",
+            {
+                "platform": "cli",
+                "session_id": "hermes-session-1",
+                "old_session_id": "",
+                "in_place": False,
+                "compression_count": 1,
+                "runtime": "codex_app_server",
+                "thread_id": "thread-1",
+                "turn_id": "normal-turn-1",
+            },
+        )
+    ]
 
 
 def test_codex_native_boundary_clears_stale_hermes_fallback_streak():

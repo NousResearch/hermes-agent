@@ -1,14 +1,14 @@
 ---
-title: "Plan — Write a markdown plan to .hermes/plans/; no execution"
+title: "Plan — Plan mode: write an actionable markdown plan to"
 sidebar_label: "Plan"
-description: "Write a markdown plan to .hermes/plans/; no execution"
+description: "Plan mode: write an actionable markdown plan to"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Plan
 
-Write a markdown plan to .hermes/plans/; no execution.
+Plan mode: write an actionable markdown plan to .hermes/plans/, no execution. Bite-sized tasks, exact paths, complete code.
 
 ## Skill metadata
 

@@ -1,14 +1,14 @@
 ---
-title: "Hyperframes — Render MP4/WebM videos from HTML compositions"
+title: "Hyperframes"
 sidebar_label: "Hyperframes"
-description: "Render MP4/WebM videos from HTML compositions"
+description: "Create HTML-based video compositions, animated title cards, social overlays, captioned talking-head videos, audio-reactive visuals, and shader transitions us..."
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Hyperframes
 
-Render MP4/WebM videos from HTML compositions.
+Create HTML-based video compositions, animated title cards, social overlays, captioned talking-head videos, audio-reactive visuals, and shader transitions using HyperFrames. HTML is the source of truth for video. Use when the user wants a rendered MP4/WebM from an HTML composition, wants to animate text/logos/charts over media, needs captions synced to audio, wants TTS narration, or wants to convert a website into a video.
 
 ## Skill metadata
 

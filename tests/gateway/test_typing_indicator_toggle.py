@@ -85,3 +85,15 @@ async def test_typing_indicator_enabled_spawns_refresh_loop():
     assert adapter.send_typing.await_count >= 1
 
 
+@pytest.mark.asyncio
+async def test_typing_indicator_disabled_never_calls_send_typing():
+    """typing_indicator=False: the loop is never spawned, send_typing unused."""
+    adapter = _make_adapter(typing_indicator=False)
+    event = _make_event()
+    adapter._active_sessions[_sk()] = asyncio.Event()
+
+    await adapter._process_message_background(event, _sk())
+
+    adapter.send_typing.assert_not_awaited()
+    # Delivery still happened — disabling typing must not suppress the reply.
+    adapter._send_with_retry.assert_awaited()

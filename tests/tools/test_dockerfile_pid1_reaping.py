@@ -28,7 +28,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
-ENTRYPOINT_DISPATCH = REPO_ROOT / "docker" / "entrypoint-dispatch.sh"
 
 
 # Init-process families this repo accepts as PID 1. ``tini`` /
@@ -114,12 +113,12 @@ def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
 
 
 def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
-    """The ENTRYPOINT must preserve a PID-1 init path, even with a dispatcher.
+    """The ENTRYPOINT must invoke the init, not the entrypoint script directly.
 
     Installing the init is only half the fix — the container must actually
-    run with it as PID 1.  A shell dispatcher is fine only if it execs the
-    real init when the image owns PID 1; otherwise the shell would become
-    PID 1 and hermes would run without zombie reaping.
+    run with it as PID 1.  If the ENTRYPOINT executes the shell script
+    directly, the shell becomes PID 1 and will ``exec`` into hermes,
+    which then runs as PID 1 without any zombie reaping.
     """
     # Find the last uncommented ENTRYPOINT line — Docker honours the final one.
     entrypoint_line = None
@@ -132,30 +131,108 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
 
     assert entrypoint_line is not None, "Dockerfile is missing an ENTRYPOINT directive"
 
-    if any(name in entrypoint_line for name in _KNOWN_INIT_TOKENS):
-        return
-
-    assert "/opt/hermes/docker/entrypoint-dispatch.sh" in entrypoint_line, (
-        f"Unexpected Dockerfile ENTRYPOINT: {entrypoint_line!r}"
-    )
-    assert ENTRYPOINT_DISPATCH.exists(), (
-        "Dockerfile points at entrypoint-dispatch.sh but the script is missing."
-    )
-    dispatcher = ENTRYPOINT_DISPATCH.read_text(encoding="utf-8")
-    assert 'if [ "$$" -eq 1 ]; then' in dispatcher
-    assert "exec /init /opt/hermes/docker/main-wrapper.sh" in dispatcher, (
-        "The entrypoint dispatcher must hand PID-1 execution off to /init; "
-        "otherwise the shell becomes PID 1 and zombies will accumulate."
+    routes_through_init = any(name in entrypoint_line for name in _KNOWN_INIT_TOKENS)
+    assert routes_through_init, (
+        f"ENTRYPOINT does not route through a PID-1 init: {entrypoint_line!r}. "
+        f"Expected one of {_KNOWN_INIT_TOKENS}. If the init is installed but "
+        "not wired into ENTRYPOINT, hermes still runs as PID 1 and zombies "
+        "will accumulate (#15012)."
     )
 
 
-def test_dispatcher_non_pid1_fallback_restores_s6_helpers_on_path() -> None:
-    """Skipping /init must still expose s6-setuidgid to stage2/main-wrapper."""
-    dispatcher = ENTRYPOINT_DISPATCH.read_text(encoding="utf-8")
-    assert 'export PATH="/command:/package/admin/s6/command:${PATH}"' in dispatcher, (
-        "The non-PID-1 entrypoint fallback skips /init, so it must restore the "
-        "s6 helper directories on PATH before invoking stage2-hook.sh and "
-        "main-wrapper.sh."
+def test_dockerfile_installs_tui_dependencies(dockerfile_text):
+    # The TUI workspace manifests must be present so ``npm install`` can
+    # resolve dependencies. The bundled ``hermes-ink`` workspace package is
+    # now COPIED into the image as a whole tree (not just its lockfile)
+    # because it's referenced as a ``file:`` workspace dependency from
+    # ``ui-tui/package.json`` — copying the tree avoids npm stopping at a
+    # bare ``package.json`` shell.
+    # With a single workspace root lockfile, only the root package-lock.json
+    # is copied; per-workspace lockfiles no longer exist.
+    assert "ui-tui/package.json" in dockerfile_text
+    assert "ui-tui/packages/hermes-ink/" in dockerfile_text
+    assert "package-lock.json" in dockerfile_text
+    assert any(
+        "npm" in step and (" install" in step or " ci" in step)
+        for step in _run_steps(dockerfile_text)
+    )
+
+
+def test_dockerfile_preinstalls_gateway_messaging_dependencies(dockerfile_text):
+    sync_steps = [
+        step for step in _run_steps(dockerfile_text)
+        if "uv sync" in step and "--no-install-project" in step
+    ]
+
+    assert sync_steps, "Dockerfile must install Python dependencies with uv sync"
+    assert any("--extra messaging" in step for step in sync_steps), (
+        "Published Docker images must preload the [messaging] extra so "
+        "Telegram/Discord gateway adapters do not depend on first-boot "
+        "lazy installation (#24698)."
+    )
+
+
+def test_dockerfile_preinstalls_matrix_dependencies(dockerfile_text):
+    sync_steps = [
+        step for step in _run_steps(dockerfile_text)
+        if "uv sync" in step and "--no-install-project" in step
+    ]
+
+    assert sync_steps, "Dockerfile must install Python dependencies with uv sync"
+    assert any("--extra matrix" in step for step in sync_steps), (
+        "Published Docker images must preload the [matrix] extra so the "
+        "Matrix gateway has mautrix[encryption]/python-olm available at "
+        "runtime instead of relying on first-boot lazy installation into "
+        "the container venv (#30399)."
+    )
+
+
+def test_dockerfile_installs_matrix_native_build_dependencies(dockerfile_text):
+    instructions = _instruction_text(dockerfile_text)
+
+    for package in ("libolm-dev", "cmake", "g++", "make"):
+        assert package in instructions, (
+            "Docker image must include native build dependencies needed by "
+            f"python-olm when preinstalling the [matrix] extra (#30399): {package}"
+        )
+
+
+def test_dockerfile_preinstalls_hindsight_memory_dependency(dockerfile_text):
+    sync_steps = [
+        step for step in _run_steps(dockerfile_text)
+        if "uv sync" in step and "--no-install-project" in step
+    ]
+
+    assert sync_steps, "Dockerfile must install Python dependencies with uv sync"
+    assert any("--extra hindsight" in step for step in sync_steps), (
+        "Published Docker images must preload the [hindsight] extra so the "
+        "native Hindsight memory provider's client (hindsight-client) is baked "
+        "into /opt/hermes/.venv. It lazy-installs into the image layer (not the "
+        "mounted /opt/data volume), so without baking it in recall/retain fails "
+        "with `ModuleNotFoundError: No module named 'hindsight_client'` after "
+        "every container recreate / image update (#38128)."
+    )
+
+
+def test_dockerfile_builds_tui_assets(dockerfile_text):
+    assert any(
+        "ui-tui" in step and "npm" in step and "run build" in step
+        for step in _run_steps(dockerfile_text)
+    )
+
+
+def test_dockerfile_materializes_local_tui_ink_package(dockerfile_text):
+    # ``hermes-ink`` is a bundled workspace package referenced from
+    # ``ui-tui/package.json`` via ``file:`` — not pulled from the npm
+    # registry. The contract this test pins is just that the image
+    # actually carries the package source so ``await import('@hermes/ink')``
+    # can resolve at runtime; the previous, much pickier assertion (manual
+    # ``rm -rf`` + ``npm install --omit=dev --prefix node_modules/@hermes/ink``)
+    # baked in implementation details of an older materialisation flow that
+    # was simplified once npm workspaces handled the resolution natively.
+    assert "ui-tui/packages/hermes-ink/" in dockerfile_text, (
+        "Dockerfile must COPY the bundled hermes-ink workspace package "
+        "so ``await import('@hermes/ink')`` resolves at runtime."
     )
 
 

@@ -9,13 +9,7 @@ export function linkTitleWindowOptions(partitionSession) {
     width: 1280,
     height: 800,
     webPreferences: {
-      // Deliberately throttled: this hidden window loads arbitrary user-linked
-      // pages, and an unthrottled heavy page burns full CPU for the window's
-      // whole lifetime. Title resolution rides load events
-      // (page-title-updated / did-finish-load) plus main-process timers, none
-      // of which the renderer clamp touches — hidden-page throttling only
-      // slows the page's own timer-driven JS, and the grace window already
-      // absorbs that.
+      backgroundThrottling: false,
       contextIsolation: true,
       javascript: true,
       nodeIntegration: false,

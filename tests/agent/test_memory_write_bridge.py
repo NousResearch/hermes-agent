@@ -69,8 +69,22 @@ def test_notifies_remove_with_old_text_after_success():
     ]
 
 
+def test_skips_failed_memory_write():
+    mgr, provider = _manager_with_provider()
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": False, "error": "No entry matched"}),
+        {"action": "remove", "target": "memory", "old_text": "stale preference entry"},
+    )
+    assert provider.calls == []
 
 
+def test_skips_staged_memory_write():
+    mgr, provider = _manager_with_provider()
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": True, "staged": True, "pending_id": "abc123"}),
+        {"action": "remove", "target": "memory", "old_text": "stale preference entry"},
+    )
+    assert provider.calls == []
 
 
 @pytest.mark.parametrize("tool_result", [None, [], object(), "not-json"])
@@ -83,8 +97,35 @@ def test_skips_unrecognized_tool_result_shape(tool_result):
     assert provider.calls == []
 
 
+def test_preserves_old_text_for_replace_and_remove_batch():
+    mgr, provider = _manager_with_provider()
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": True}),
+        {
+            "target": "user",
+            "operations": [
+                {"action": "replace", "old_text": "old preference", "content": "updated"},
+                {"action": "remove", "old_text": "obsolete preference"},
+                {"action": "add", "content": "new fact"},
+            ],
+        },
+    )
+    assert provider.calls == [
+        {"action": "replace", "target": "user", "content": "updated",
+         "metadata": {"old_text": "old preference"}},
+        {"action": "remove", "target": "user", "content": "",
+         "metadata": {"old_text": "obsolete preference"}},
+        {"action": "add", "target": "user", "content": "new fact", "metadata": {}},
+    ]
 
 
+def test_non_mutating_actions_are_not_mirrored():
+    mgr, provider = _manager_with_provider()
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": True}),
+        {"action": "read", "target": "memory"},
+    )
+    assert provider.calls == []
 
 
 def test_build_metadata_callback_is_merged_per_op():

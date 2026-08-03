@@ -77,8 +77,76 @@ class TestProcFallback:
         assert 99999 not in pids
         mock_ps.assert_not_called()  # ps must NOT be called when /proc worked
 
+    def test_detects_no_supervisor_restart_process_only_when_enabled(self):
+        entries = {
+            12345: "python -m hermes_cli.main gateway restart",
+            99999: _OTHER_CMD,
+        }
+        _isdir, _listdir, _open = _fake_proc_dir(entries)
 
+        with (
+            patch("hermes_cli.gateway.is_windows", return_value=False),
+            patch("os.path.isdir", side_effect=_isdir),
+            patch("os.listdir", side_effect=_listdir),
+            patch("builtins.open", side_effect=_open),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+            patch("subprocess.run") as mock_ps,
+        ):
+            strict_pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
 
+        _isdir, _listdir, _open = _fake_proc_dir(entries)
+        with (
+            patch("hermes_cli.gateway.is_windows", return_value=False),
+            patch("os.path.isdir", side_effect=_isdir),
+            patch("os.listdir", side_effect=_listdir),
+            patch("builtins.open", side_effect=_open),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+            patch("subprocess.run") as mock_ps_enabled,
+        ):
+            fallback_pids = gateway_mod._scan_gateway_pids(
+                set(),
+                all_profiles=True,
+                include_restart_managers=True,
+            )
+
+        assert strict_pids == []
+        assert fallback_pids == [12345]
+        mock_ps.assert_not_called()
+        mock_ps_enabled.assert_not_called()
+
+    def test_excludes_own_pid_from_proc_scan(self):
+        my_pid = os.getpid()
+        entries = {my_pid: _GATEWAY_CMD}
+        _isdir, _listdir, _open = _fake_proc_dir(entries)
+
+        with (
+            patch("hermes_cli.gateway.is_windows", return_value=False),
+            patch("os.path.isdir", side_effect=_isdir),
+            patch("os.listdir", side_effect=_listdir),
+            patch("builtins.open", side_effect=_open),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+            patch("subprocess.run"),
+        ):
+            pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
+
+        assert my_pid not in pids
+
+    def test_falls_back_to_ps_when_proc_absent(self):
+        ps_output = f"12345 {_GATEWAY_CMD}\n99999 {_OTHER_CMD}\n"
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ps_output
+
+        with (
+            patch("hermes_cli.gateway.is_windows", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+            patch("subprocess.run", return_value=mock_result) as mock_ps,
+        ):
+            pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
+
+        mock_ps.assert_called_once()
+        assert 12345 in pids
 
     def test_proc_permission_error_skips_pid(self):
         def _isdir(path):

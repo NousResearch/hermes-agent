@@ -1,13 +1,10 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { I18nProvider } from '@/i18n/context'
 import type { ComposerAttachment } from '@/store/composer'
-import { $previewTabs } from '@/store/preview'
 
 import { AttachmentList } from './attachments'
-
-const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
 function makeAttachment(id: string, label = 'test.pdf'): ComposerAttachment {
   return { id, kind: 'file', label }
@@ -68,44 +65,5 @@ describe('AttachmentList', () => {
     await expect(renderWithI18n(<AttachmentList attachments={attachments} />)).resolves.toBeTruthy()
 
     expect(screen.getByText('valid.txt')).toBeDefined()
-  })
-
-  it('opens an attached image in the lightbox, not the preview rail', async () => {
-    $previewTabs.set([])
-
-    const image: ComposerAttachment = {
-      id: 'img',
-      kind: 'image',
-      label: 'shot.png',
-      path: '/tmp/shot.png',
-      previewUrl: DATA_URL
-    }
-
-    await renderWithI18n(<AttachmentList attachments={[image]} />)
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /shot\.png/ }))
-    })
-
-    // The lightbox renders the full-size image in a dialog; the rail stays empty.
-    const lightbox = await screen.findByRole('dialog')
-
-    expect(lightbox.querySelector<HTMLImageElement>('img')?.src).toBe(DATA_URL)
-    expect($previewTabs.get()).toHaveLength(0)
-  })
-
-  it('still routes a non-image attachment to the preview rail', async () => {
-    $previewTabs.set([])
-
-    const file: ComposerAttachment = { id: 'doc', kind: 'file', label: 'notes.md', path: '/tmp/notes.md' }
-
-    await renderWithI18n(<AttachmentList attachments={[file]} />)
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /notes\.md/ }))
-    })
-
-    expect(screen.queryByRole('dialog')).toBeNull()
-    expect($previewTabs.get().map(tab => tab.target.path)).toEqual(['/tmp/notes.md'])
   })
 })

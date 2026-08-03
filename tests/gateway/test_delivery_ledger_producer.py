@@ -8,7 +8,6 @@ block the send.
 """
 
 import asyncio
-import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -66,31 +65,6 @@ def _rows():
         ).fetchall()
 
 
-def _blocking_probe():
-    """Return a blocking ledger call and an event-loop progress witness."""
-    ledger_started = threading.Event()
-    event_loop_progressed = threading.Event()
-    blocked_event_loop = []
-
-    def _slow_ledger_call(*args, **kwargs):
-        ledger_started.set()
-        # Generous timeout: a genuinely blocked loop can never set the event
-        # (the witness coroutine cannot run), so a longer wait only guards
-        # against loaded-CI scheduling flake, not against missing the bug.
-        if not event_loop_progressed.wait(timeout=5.0):
-            blocked_event_loop.append(True)
-
-    async def _event_loop_witness():
-        deadline = asyncio.get_running_loop().time() + 10
-        while not ledger_started.is_set():
-            if asyncio.get_running_loop().time() >= deadline:
-                raise AssertionError("ledger call never started")
-            await asyncio.sleep(0)
-        event_loop_progressed.set()
-
-    return _slow_ledger_call, _event_loop_witness, blocked_event_loop
-
-
 async def _run(adapter, event, response="final answer"):
     adapter._message_handler = AsyncMock(return_value=response)
     session_key = "agent:main:slack:channel:C1"
@@ -122,35 +96,45 @@ class TestProducerHook:
         assert len(rows) == 1
         assert rows[0][1] == "failed"
 
+    @pytest.mark.asyncio
+    async def test_slash_command_not_recorded(self):
+        adapter = _Adapter()
+        await _run(adapter, _event(text="/status"))
+        assert adapter.sent  # reply still sent
+        assert _rows() == []
 
     @pytest.mark.asyncio
-    async def test_slow_ledger_record_does_not_block_event_loop(self):
+    async def test_typed_prefix_command_not_recorded(self):
         adapter = _Adapter()
-        slow_record, event_loop_witness, blocked_event_loop = _blocking_probe()
+        # Platforms like Slack rewrite native slash commands to a typed "!"
+        # prefix; declare it so the hook's prefix check exercises that lane.
+        adapter.typed_command_prefix = "!"
+        await _run(adapter, _event(text="!status"))
+        assert _rows() == []
 
+    @pytest.mark.asyncio
+    async def test_empty_response_not_recorded(self):
+        adapter = _Adapter()
+        await _run(adapter, _event(), response="")
+        assert adapter.sent == []
+        assert _rows() == []
+
+    @pytest.mark.asyncio
+    async def test_disabled_gate_skips_recording_but_sends(self):
+        adapter = _Adapter()
+        with patch("gateway.delivery_ledger.ledger_enabled", return_value=False):
+            await _run(adapter, _event())
+        assert adapter.sent == ["final answer"]
+        assert _rows() == []
+
+    @pytest.mark.asyncio
+    async def test_ledger_crash_never_blocks_send(self):
+        adapter = _Adapter()
         with patch(
             "gateway.delivery_ledger.record_obligation",
-            side_effect=slow_record,
-        ), patch("gateway.delivery_ledger.mark_attempting"):
-            await asyncio.gather(_run(adapter, _event()), event_loop_witness())
-
-        assert blocked_event_loop == []
-        assert adapter.sent == ["final answer"]
-
-    @pytest.mark.asyncio
-    async def test_slow_ledger_update_does_not_block_event_loop(self):
-        adapter = _Adapter()
-        slow_delivered, event_loop_witness, blocked_event_loop = _blocking_probe()
-
-        with patch("gateway.delivery_ledger.record_obligation"), patch(
-            "gateway.delivery_ledger.mark_attempting"
-        ), patch(
-            "gateway.delivery_ledger.mark_delivered",
-            side_effect=slow_delivered,
+            side_effect=RuntimeError("disk full"),
         ):
-            await asyncio.gather(_run(adapter, _event()), event_loop_witness())
-
-        assert blocked_event_loop == []
+            await _run(adapter, _event())
         assert adapter.sent == ["final answer"]
 
     @pytest.mark.asyncio

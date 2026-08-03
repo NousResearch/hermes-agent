@@ -69,3 +69,33 @@ def test_same_provider_copilot_switch_recomputes_api_mode():
     assert result.api_mode == "chat_completions"
 
 
+def test_explicit_copilot_switch_uses_selected_model_api_mode():
+    """Cross-provider switch to copilot: api_mode from new model, not stale runtime."""
+    result = _run_copilot_switch(
+        raw_input="claude-opus-4.6",
+        current_provider="openrouter",
+        current_model="anthropic/claude-sonnet-4.6",
+        explicit_provider="copilot",
+    )
+
+    assert result.success, f"switch_model failed: {result.error_message}"
+    assert result.new_model == "claude-opus-4.6"
+    assert result.target_provider == "github-copilot"
+    assert result.api_mode == "chat_completions"
+
+
+def test_copilot_gpt5_keeps_codex_responses():
+    """GPT-5 → GPT-5 on copilot: api_mode must stay codex_responses."""
+    result = _run_copilot_switch(
+        raw_input="gpt-5.4-mini",
+        current_provider="copilot",
+        current_model="gpt-5.4",
+        runtime_api_mode="codex_responses",
+    )
+
+    assert result.success, f"switch_model failed: {result.error_message}"
+    assert result.new_model == "gpt-5.4-mini"
+    assert result.target_provider == "copilot"
+    # gpt-5.4-mini is a GPT-5 variant — should use codex_responses
+    # (gpt-5-mini is the special case that uses chat_completions)
+    assert result.api_mode == "codex_responses"

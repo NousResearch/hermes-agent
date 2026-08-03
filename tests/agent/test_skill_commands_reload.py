@@ -66,7 +66,28 @@ def hermes_home(monkeypatch):
 class TestReloadSkillsHelper:
     """``agent.skill_commands.reload_skills``."""
 
+    def test_returns_expected_keys(self, hermes_home):
+        from agent.skill_commands import reload_skills
 
+        result = reload_skills()
+        assert set(result) == {"added", "removed", "unchanged", "total", "commands"}
+        assert result["total"] == 0
+        assert result["added"] == []
+        assert result["removed"] == []
+
+    def test_detects_newly_added_skill_with_description(self, hermes_home):
+        from agent.skill_commands import reload_skills, get_skill_commands
+
+        # Prime the cache so subsequent diff is meaningful
+        get_skill_commands()
+
+        _write_skill(hermes_home / "skills", "demo", "a demo skill")
+        result = reload_skills()
+
+        assert result["added"] == [{"name": "demo", "description": "a demo skill"}]
+        assert result["removed"] == []
+        assert result["total"] == 1
+        assert result["commands"] == 1
 
     def test_detects_removed_skill_carries_description(self, hermes_home):
         from agent.skill_commands import reload_skills
@@ -86,7 +107,34 @@ class TestReloadSkillsHelper:
         assert second["added"] == []
         assert second["total"] == 0
 
+    def test_description_passes_through_verbatim(self, hermes_home):
+        """``description`` must be the full SKILL.md frontmatter string — no
+        truncation. The system prompt renders skills as
+        ``    - name: description`` without a length cap, and the reload
+        note mirrors that format, so truncating here would make the diff
+        render differently from the original catalog."""
+        from agent.skill_commands import reload_skills, get_skill_commands
 
+        get_skill_commands()  # prime
+        long_desc = "x" * 200
+        _write_skill(hermes_home / "skills", "longdesc", long_desc)
+
+        result = reload_skills()
+        assert len(result["added"]) == 1
+        assert result["added"][0]["description"] == long_desc
+
+    def test_unchanged_skills_appear_in_unchanged_list(self, hermes_home):
+        from agent.skill_commands import reload_skills, get_skill_commands
+
+        _write_skill(hermes_home / "skills", "alpha")
+        # Prime cache
+        get_skill_commands()
+
+        # Call reload again with no FS changes
+        result = reload_skills()
+        assert "alpha" in result["unchanged"]
+        assert result["added"] == []
+        assert result["removed"] == []
 
     def test_does_not_invalidate_prompt_cache_snapshot(self, hermes_home):
         """reload_skills must NOT delete the skills prompt-cache snapshot.

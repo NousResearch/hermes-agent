@@ -71,3 +71,31 @@ class TestGoogleWorkspaceCredentialFiles:
         finally:
             clear_credential_files()
 
+    def test_missing_token_is_reported(self, tmp_path):
+        """google_token.json absent (first-time setup) — reported as missing, client secret still mounts."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "google_client_secret.json").write_text("{}")
+
+        from tools.credential_files import (
+            clear_credential_files,
+            get_credential_file_mounts,
+            register_credential_files,
+        )
+
+        clear_credential_files()
+        try:
+            content = SKILL_MD.read_text(encoding="utf-8")
+            fm = _parse_frontmatter(content)
+            entries = fm.get("required_credential_files", [])
+
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                missing = register_credential_files(entries)
+
+            assert "google_token.json" in missing
+            mounts = get_credential_file_mounts()
+            container_paths = {m["container_path"] for m in mounts}
+            assert "/root/.hermes/google_client_secret.json" in container_paths
+            assert "/root/.hermes/google_token.json" not in container_paths
+        finally:
+            clear_credential_files()

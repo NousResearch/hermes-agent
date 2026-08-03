@@ -772,7 +772,7 @@ nix develop
 
 # Shell provides:
 #   - Python 3.12 + uv (deps installed into .venv on first entry)
-#   - Node.js 26, ripgrep, git, openssh, ffmpeg on PATH
+#   - Node.js 22, ripgrep, git, openssh, ffmpeg on PATH
 #   - Stamp-file optimization: re-entry is near-instant if deps haven't changed
 
 hermes setup

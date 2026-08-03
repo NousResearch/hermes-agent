@@ -143,6 +143,10 @@ class TestIsInterrupted:
 
 
 class TestConsumeInterruptedFlag:
+    def test_false_when_not_marked(self):
+        import cron.scheduler as sched
+
+        assert sched._consume_interrupted_flag("job-1") is False
 
     def test_true_and_clears_when_marked(self):
         import cron.scheduler as sched
@@ -230,6 +234,31 @@ class TestRunOneJobHonoursInterruptedFlag:
         assert delivered_content == "This run was interrupted."
         assert "plausible final response" not in delivered_content
 
+    def test_success_path_writes_normally_when_not_interrupted(self):
+        """Control case: the guard must not swallow ordinary, un-interrupted
+        completions -- only ones the shutdown path explicitly flagged."""
+        import cron.scheduler as sched
+
+        job = self._make_job()
+
+        with patch("cron.scheduler.claim_dispatch", return_value=True), \
+             patch("agent.secret_scope.set_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.reset_secret_scope"), \
+             patch(
+                 "cron.scheduler.run_job",
+                 return_value=(True, "full output", "final response", None),
+             ), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._is_cron_silence_response", return_value=False), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run") as mock_mark:
+            result = sched.run_one_job(job)
+
+        assert result is True
+        mock_mark.assert_called_once()
+        assert mock_mark.call_args.args[0] == job["id"]
+        assert mock_mark.call_args.args[1] is True  # success
 
     def test_exception_path_also_honours_interrupted_flag(self):
         import cron.scheduler as sched

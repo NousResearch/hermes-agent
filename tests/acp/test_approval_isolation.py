@@ -15,30 +15,6 @@ Both fixed together by:
 
 import threading
 
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def _isolate_approval_state(monkeypatch):
-    """Keep these security regression tests hermetic.
-
-    Earlier tests (e.g. tests/acp/test_permissions.py) lazily load the
-    developer's real ``~/.hermes/config.yaml`` command allowlist into
-    ``tools.approval._permanent_approved``. If that allowlist contains a
-    pattern like "recursive delete", ``rm -rf …`` is auto-approved before
-    the interactive callback fires and the GHSA regression assertions fail
-    for reasons unrelated to the code under test.
-    """
-    import tools.approval as _approval
-
-    monkeypatch.setattr(_approval, "_permanent_approved", set())
-    monkeypatch.setattr(_approval, "_session_approved", {})
-    # These tests assert the *manual* interactive-callback path. The default
-    # config is approvals.mode=smart, whose guardian LLM can auto-approve the
-    # command before the callback is consulted (test-order dependent, since
-    # load_config() caching decides which config file is in effect). Pin the
-    # mode so the GHSA regression path is what actually runs.
-    monkeypatch.setattr(_approval, "_get_approval_mode", lambda: "manual")
 
 
 class TestThreadLocalApprovalCallback:
@@ -117,6 +93,27 @@ class TestThreadLocalApprovalCallback:
         # Main thread still has its callback
         assert _get_approval_callback() is cb_main
 
+    def test_sudo_password_callback_also_thread_local(self):
+        """Same protection applies to the sudo password callback."""
+        from tools.terminal_tool import (
+            set_sudo_password_callback,
+            _get_sudo_password_callback,
+        )
+
+        cb_main = lambda: "main-password"  # noqa: E731
+        set_sudo_password_callback(cb_main)
+
+        worker_saw = []
+
+        def worker():
+            worker_saw.append(_get_sudo_password_callback())
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        assert worker_saw == [None]
+        assert _get_sudo_password_callback() is cb_main
 
     def test_sudo_password_cache_does_not_leak_across_threads(self):
         """Interactive sudo cache must not bleed into another executor thread."""
@@ -141,6 +138,58 @@ class TestThreadLocalApprovalCallback:
         assert worker_saw == [""]
         assert _get_cached_sudo_password() == "main-thread-password"
 
+    def test_sudo_password_cache_isolated_across_acp_sessions_on_same_pool_thread(self):
+        """ACP's ThreadPoolExecutor reuses threads. Two ACP sessions that land
+        on the same reused thread must not share the interactive sudo password
+        cache. The fix wraps each session in contextvars.copy_context() and
+        binds HERMES_SESSION_KEY per session, so the cache scope key differs
+        across sessions even when the underlying thread is identical.
+        """
+        import contextvars
+        from concurrent.futures import ThreadPoolExecutor
+
+        from gateway.session_context import (
+            clear_session_vars,
+            set_session_vars,
+        )
+        from tools.terminal_tool import (
+            _get_cached_sudo_password,
+            _reset_cached_sudo_passwords,
+            _set_cached_sudo_password,
+        )
+
+        _reset_cached_sudo_passwords()
+        executor = ThreadPoolExecutor(max_workers=1)  # force thread reuse
+
+        runs: list[tuple[str, str, str]] = []  # (session_id, before, after)
+
+        def _simulate_acp_session(session_id: str, write_password: str) -> None:
+            tokens = set_session_vars(session_key=session_id)
+            try:
+                observed_before = _get_cached_sudo_password()
+                _set_cached_sudo_password(write_password)
+                observed_after = _get_cached_sudo_password()
+                runs.append((session_id, observed_before, observed_after))
+            finally:
+                clear_session_vars(tokens)
+
+        def _run_in_fresh_context(session_id: str, pw: str) -> str:
+            ctx = contextvars.copy_context()
+            ctx.run(_simulate_acp_session, session_id, pw)
+            return session_id
+
+        try:
+            executor.submit(_run_in_fresh_context, "acp-session-A", "alpha-secret").result()
+            # Same thread. Without the fix B would see "alpha-secret".
+            executor.submit(_run_in_fresh_context, "acp-session-B", "bravo-secret").result()
+        finally:
+            executor.shutdown(wait=True)
+            _reset_cached_sudo_passwords()
+
+        assert runs[0] == ("acp-session-A", "", "alpha-secret")
+        # Core regression guard: B on the same reused thread must see an empty
+        # cache, not A's password.
+        assert runs[1] == ("acp-session-B", "", "bravo-secret")
 
 
 class TestAcpExecAskGate:
@@ -193,3 +242,45 @@ class TestAcpExecAskGate:
         )
         assert result["approved"] is True
 
+    def test_interactive_context_var_routes_to_callback_without_env(
+        self, monkeypatch,
+    ):
+        """Context-local interactive flag must work without touching os.environ.
+
+        Concurrent ACP sessions run on a shared ThreadPoolExecutor, so the
+        interactive flag is now a contextvar instead of a process-global env
+        var — one session can no longer clobber another's flag mid-run
+        (GHSA-96vc-wcxf-jjff).
+        """
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        from tools.approval import (
+            check_all_command_guards,
+            reset_hermes_interactive_context,
+            set_hermes_interactive_context,
+        )
+
+        called_with = []
+
+        def fake_cb(command, description, *, allow_permanent=True):
+            called_with.append((command, description))
+            return "once"
+
+        tok = set_hermes_interactive_context(True)
+        try:
+            result = check_all_command_guards(
+                "rm -rf /tmp/test-context-interactive",
+                "local",
+                approval_callback=fake_cb,
+            )
+        finally:
+            reset_hermes_interactive_context(tok)
+
+        assert called_with, (
+            "set_hermes_interactive_context(True) should route dangerous "
+            "commands through the callback without HERMES_INTERACTIVE in env"
+        )
+        assert result["approved"] is True

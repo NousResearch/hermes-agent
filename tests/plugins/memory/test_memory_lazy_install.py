@@ -55,6 +55,10 @@ class TestAllowlistEntries:
             f"lazy-install on a sealed Docker venv."
         )
 
+    @pytest.mark.parametrize("feature", MEMORY_FEATURES)
+    def test_feature_specs_pass_safety(self, feature):
+        for spec in ld.LAZY_DEPS[feature]:
+            assert ld._spec_is_safe(spec), f"{feature}: {spec!r} fails safety"
 
     def test_supermemory_spec_package(self):
         specs = ld.LAZY_DEPS["memory.supermemory"]

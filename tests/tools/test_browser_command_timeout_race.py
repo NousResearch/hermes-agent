@@ -46,6 +46,57 @@ class TestGetCommandTimeoutRace:
         assert self.bt._cached_command_timeout is not None
         assert self.bt._command_timeout_resolved is True
 
+    def test_cache_assigned_before_resolved_flag(self):
+        """Invariant: if resolved=True then cache must not be None."""
+        with patch(
+            "hermes_cli.config.read_raw_config", side_effect=RuntimeError("boom")
+        ):
+            self.bt._get_command_timeout()
+
+        # The bug was: resolved=True while cache=None. Assert that's impossible.
+        assert not (
+            self.bt._command_timeout_resolved
+            and self.bt._cached_command_timeout is None
+        )
+
+    def test_safe_command_timeout_never_returns_none(self):
+        """Defense-in-depth helper survives a manually corrupted cache."""
+        # Simulate the pre-fix bug state directly.
+        self.bt._command_timeout_resolved = True
+        self.bt._cached_command_timeout = None
+
+        result = self.bt._safe_command_timeout()
+        assert isinstance(result, int)
+        assert result == self.bt.DEFAULT_COMMAND_TIMEOUT
+
+    def test_safe_command_timeout_preserves_zero(self):
+        """``or DEFAULT_COMMAND_TIMEOUT`` would swallow a legit 0.
+
+        We use ``is not None`` so a configured 0 stays 0. (In practice the
+        caller floor is 5s, but the helper itself must be honest.)
+        """
+        self.bt._command_timeout_resolved = True
+        self.bt._cached_command_timeout = 0
+
+        assert self.bt._safe_command_timeout() == 0
+
+    def test_cleanup_resets_flag_before_nulling_cache(self):
+        """After cleanup, observers must never see resolved=True with cache=None."""
+        # Warm the cache first.
+        with patch(
+            "hermes_cli.config.read_raw_config", side_effect=RuntimeError("boom")
+        ):
+            self.bt._get_command_timeout()
+        assert self.bt._command_timeout_resolved is True
+
+        self.bt.cleanup_all_browsers()
+
+        # Post-cleanup: both must be reset together; specifically resolved must
+        # not be True while cache is None (the original race window).
+        assert not (
+            self.bt._command_timeout_resolved
+            and self.bt._cached_command_timeout is None
+        )
 
     def test_max_call_site_pattern_never_raises(self):
         """The exact expression from browser_navigate must not raise TypeError."""

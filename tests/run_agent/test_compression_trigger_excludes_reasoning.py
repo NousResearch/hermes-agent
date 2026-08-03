@@ -37,6 +37,17 @@ class TestCompressionTriggerExcludesReasoning:
             "Should NOT trigger compression — only prompt tokens matter"
         )
 
+    def test_high_prompt_tokens_should_trigger_compression(self):
+        """When prompt tokens genuinely exceed the threshold, compress."""
+        real_tokens, comp = _make_agent_stub(
+            prompt_tokens=110_000,
+            completion_tokens=5_000,
+            threshold_tokens=100_000,
+        )
+        assert real_tokens == 110_000
+        assert real_tokens >= comp.threshold_tokens, (
+            "Should trigger compression — prompt tokens exceed threshold"
+        )
 
     def test_zero_prompt_tokens_falls_back(self):
         """When provider returns 0 prompt tokens, real_tokens is 0 (fallback path)."""

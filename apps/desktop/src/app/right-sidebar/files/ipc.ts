@@ -32,25 +32,16 @@ function clean(path: string) {
   return path.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
 }
 
-// Windows path identity is case-insensitive. Fold only comparison keys so the
-// relative path returned below keeps the filesystem's original spelling;
-// POSIX paths remain case-sensitive.
-function comparisonPath(path: string) {
-  return /^[A-Za-z]:(?:\/|$)/.test(path) || path.startsWith('//') ? path.toLowerCase() : path
-}
-
 /** Strict POSIX-style relative path; null if `child` is not inside `root`. */
 function relativeTo(root: string, child: string) {
   const r = clean(root)
   const c = clean(child)
-  const rKey = comparisonPath(r)
-  const cKey = comparisonPath(c)
 
-  if (cKey === rKey) {
+  if (c === r) {
     return ''
   }
 
-  return cKey.startsWith(`${rKey}/`) ? c.slice(r.length + 1) : null
+  return c.startsWith(`${r}/`) ? c.slice(r.length + 1) : null
 }
 
 /** Repo-root → repo-root/a → repo-root/a/b → … for every dir between root and `dir`. */

@@ -12,9 +12,3 @@ export const REASONING_PULSE_MS = 700
 // responsive enough to track the drag, cheap enough to stay smooth, and the
 // trailing edge always lands the final width so the settled layout is exact.
 export const RESIZE_COALESCE_MS = 32
-
-// Two Esc presses within this window discard the draft (Claude Code /
-// Gemini CLI parity). Long enough for a deliberate double-tap, short
-// enough that two unrelated Escs — dismissing a completion, then a
-// selection — don't silently clear the composer.
-export const DOUBLE_ESC_MS = 500

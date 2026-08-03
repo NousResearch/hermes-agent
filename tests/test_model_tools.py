@@ -30,7 +30,74 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_exception_returns_json_error(self):
+        # Even if something goes wrong, should return valid JSON
+        result = handle_function_call("web_search", None)  # None args may cause issues
+        parsed = json.loads(result)
+        assert isinstance(parsed, dict)
+        assert "error" in parsed
+        assert len(parsed["error"]) > 0
+        assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
 
+    def test_tool_hooks_receive_session_and_tool_call_ids(self):
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                tool_call_id="call-1",
+                session_id="session-1",
+            )
+
+        assert result == '{"ok":true}'
+        assert mock_invoke_hook.call_args_list == [
+            call(
+                "pre_tool_call",
+                tool_name="web_search",
+                args={"q": "test"},
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                middleware_trace=[],
+            ),
+            call(
+                "post_tool_call",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
+                middleware_trace=[],
+            ),
+            call(
+                "transform_tool_result",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
+            ),
+        ]
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
         """Regression: post_tool_call and transform_tool_result hooks must
@@ -60,6 +127,25 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_no_listener_skips_post_and_transform_emit(self):
+        """When no plugin is registered for post_tool_call /
+        transform_tool_result, the emit path must short-circuit on
+        ``has_hook`` and never build/dispatch a payload — so the
+        no-listener hot path stays cheap.  ``pre_tool_call`` is always
+        polled (block-check), so it may still fire; the observer/transform
+        emits must not.
+        """
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=False),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = handle_function_call("web_search", {"q": "test"}, task_id="t1")
+
+        assert result == '{"ok":true}'
+        fired = {c.args[0] for c in mock_invoke_hook.call_args_list}
+        assert "post_tool_call" not in fired
+        assert "transform_tool_result" not in fired
 
     def test_tool_request_and_execution_middleware_wrap_registry_dispatch(self, monkeypatch):
         seen = {}
@@ -205,41 +291,81 @@ class TestPreToolCallBlocking:
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
         assert result == {"ok": True}
 
+    def test_skip_flag_prevents_double_fire(self, monkeypatch):
+        """When skip_pre_tool_call_hook=True, the hook does not fire again.
 
-    def test_relay_rewrite_is_visible_to_pre_tool_authorization(self, monkeypatch):
-        observed = {}
-
-        def rewrite(**kwargs):
-            assert kwargs["tool_name"] == "read_file"
-            return {**kwargs["args"], "path": "approved.txt"}
+        The caller (e.g. run_agent._invoke_tool) has already called
+        get_pre_tool_call_block_message(), which fires the hook once.
+        handle_function_call must NOT fire it a second time — that was
+        the classic double-fire bug where observer hooks logged every
+        tool call twice.
+        """
+        hook_calls = []
 
         def fake_invoke_hook(hook_name, **kwargs):
-            if hook_name == "pre_tool_call":
-                observed["pre_tool_args"] = kwargs["args"]
+            hook_calls.append(hook_name)
             return []
 
-        def dispatch(_name, args, **_kwargs):
-            observed["dispatch_args"] = args
-            return json.dumps({"ok": True})
-
-        monkeypatch.setattr(
-            "hermes_cli.observability.relay_runtime.apply_tool_request_intercepts",
-            rewrite,
-        )
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
         monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
-        monkeypatch.setattr("model_tools.registry.dispatch", dispatch)
+        monkeypatch.setattr("model_tools.registry.dispatch",
+                            lambda *a, **kw: json.dumps({"ok": True}))
 
+        handle_function_call("web_search", {"q": "test"}, task_id="t1",
+                             skip_pre_tool_call_hook=True)
+
+        # Single-fire contract: when skip=True the caller already fired
+        # pre_tool_call, so handle_function_call must not fire it again.
+        assert hook_calls.count("pre_tool_call") == 0, (
+            f"pre_tool_call fired {hook_calls.count('pre_tool_call')} times "
+            f"with skip_pre_tool_call_hook=True; expected 0 "
+            f"(caller already fired it). hook_calls={hook_calls}"
+        )
+        # post_tool_call and transform_tool_result still fire — only the
+        # pre-call block-check path is suppressed by the skip flag.
+        assert "post_tool_call" in hook_calls
+        assert "transform_tool_result" in hook_calls
+
+    def test_run_agent_pattern_fires_pre_tool_call_exactly_once(self, monkeypatch):
+        """End-to-end regression for the double-fire bug.
+
+        Mirrors run_agent._invoke_tool: first calls
+        get_pre_tool_call_block_message() (which fires the hook as part of
+        its block-directive poll), then calls
+        handle_function_call(skip_pre_tool_call_hook=True).  The plugin
+        hook MUST fire exactly once across both calls — not twice as it
+        did before the fix (observer plugins were seeing every tool
+        execution logged twice).
+        """
+        from hermes_cli.plugins import get_pre_tool_call_block_message
+
+        hook_calls = []
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append(hook_name)
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch",
+                            lambda *a, **kw: json.dumps({"ok": True}))
+
+        # Step 1: caller checks for a block directive (this fires pre_tool_call once).
+        block = get_pre_tool_call_block_message(
+            "web_search", {"q": "test"}, task_id="t1",
+        )
+        assert block is None
+
+        # Step 2: caller dispatches with skip=True so the hook isn't re-fired.
         handle_function_call(
-            "read_file",
-            {"path": "original.txt"},
-            task_id="t1",
-            session_id="s1",
+            "web_search", {"q": "test"}, task_id="t1",
+            skip_pre_tool_call_hook=True,
         )
 
-        assert observed["pre_tool_args"]["path"] == "approved.txt"
-        assert observed["dispatch_args"]["path"] == "approved.txt"
-
+        assert hook_calls.count("pre_tool_call") == 1, (
+            f"pre_tool_call fired {hook_calls.count('pre_tool_call')} times "
+            f"across the run_agent (block-check + dispatch) path; "
+            f"expected exactly 1. hook_calls={hook_calls}"
+        )
 
 
 # =========================================================================
@@ -256,6 +382,11 @@ class TestLegacyToolsetMap:
         for name in expected:
             assert name in _LEGACY_TOOLSET_MAP, f"Missing legacy toolset: {name}"
 
+    def test_values_are_lists_of_strings(self):
+        for name, tools in _LEGACY_TOOLSET_MAP.items():
+            assert isinstance(tools, list), f"{name} is not a list"
+            for tool in tools:
+                assert isinstance(tool, str), f"{name} contains non-string: {tool}"
 
 
 # =========================================================================
@@ -276,7 +407,13 @@ class TestBackwardCompat:
         assert result is not None
         assert isinstance(result, str)
 
+    def test_get_toolset_for_unknown_tool(self):
+        result = get_toolset_for_tool("totally_nonexistent_tool")
+        assert result is None
 
+    def test_tool_to_toolset_map(self):
+        assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
+        assert len(TOOL_TO_TOOLSET_MAP) > 0
 
 
 # =========================================================================
@@ -293,12 +430,26 @@ class TestCoerceNumberInfNan:
         from model_tools import _coerce_number
         assert _coerce_number("inf") == "inf"
 
+    def test_negative_inf_returns_original_string(self):
+        from model_tools import _coerce_number
+        assert _coerce_number("-inf") == "-inf"
 
     def test_nan_returns_original_string(self):
         from model_tools import _coerce_number
         assert _coerce_number("nan") == "nan"
 
+    def test_infinity_spelling_returns_original_string(self):
+        from model_tools import _coerce_number
+        # Python's float() parses "Infinity" too — still not JSON-safe.
+        assert _coerce_number("Infinity") == "Infinity"
 
+    def test_coerced_result_is_strict_json_safe(self):
+        """Whatever _coerce_number returns for inf/nan must round-trip
+        through strict (allow_nan=False) json.dumps without raising."""
+        from model_tools import _coerce_number
+        for s in ("inf", "-inf", "nan", "Infinity"):
+            result = _coerce_number(s)
+            json.dumps({"x": result}, allow_nan=False)  # must not raise
 
     def test_normal_numbers_still_coerce(self):
         """Guard against over-correction — real numbers still coerce."""
@@ -345,8 +496,40 @@ class TestDisabledToolsetsPlatformBundle:
         names = {t["function"]["name"] for t in tools}
         assert "discord" not in names
 
+    def test_disabling_non_platform_toolset_still_works(self):
+        """Disabling a regular (non-hermes-) toolset still subtracts all tools."""
+        from model_tools import get_tool_definitions
+
+        tools_normal = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            quiet_mode=True,
+        )
+        tools_no_web = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            disabled_toolsets=["web"],
+            quiet_mode=True,
+        )
+        names_normal = {t["function"]["name"] for t in tools_normal}
+        names_no_web = {t["function"]["name"] for t in tools_no_web}
+
+        web_tools = {"web_search", "web_extract"}
+        removed = names_normal - names_no_web
+        # web tools should be removed (if they were present)
+        present_web = web_tools & names_normal
+        assert present_web <= removed, (
+            f"Web tools not removed: {present_web - removed}"
+        )
 
 
+    def test_disabling_bundle_removes_platform_tools_but_keeps_core(self):
+        """Disabling hermes-discord (when enabled) removes discord/discord_admin
+        from the resolved delta but keeps core tools — via bundle_non_core_tools."""
+        from toolsets import bundle_non_core_tools, _HERMES_CORE_TOOLS
+
+        delta = bundle_non_core_tools("hermes-yuanbao")
+        # The delta is the bundle's platform-specific tools, NOT core.
+        assert "yb_send_dm" in delta
+        assert not (delta & set(_HERMES_CORE_TOOLS)), "core tools must not be in the removal delta"
 
     def test_bundle_non_core_tools_unknown_falls_back(self):
         """An unknown/garbage bundle name falls back to full resolution (best effort)."""

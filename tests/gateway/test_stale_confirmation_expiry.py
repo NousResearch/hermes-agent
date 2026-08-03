@@ -19,17 +19,33 @@ import time
 import pytest
 from typing import Dict, List
 
-from agent.replay_cleanup import (
-    is_dangerous_confirmation as _is_dangerous_confirmation,
-    strip_stale_dangerous_confirmations as _strip_stale_dangerous_confirmations,
+from gateway.run import (
+    _build_gateway_agent_history,
+    _is_dangerous_confirmation,
+    _strip_stale_dangerous_confirmations,
 )
-from gateway.run import _build_gateway_agent_history
 
 
 # High-risk confirmation patterns. A user message matching one of these
 # (case-insensitive) is considered a "confirmation text" and is subject
 # to the expiry rule. Add new patterns here as new high-risk side effects
 # are introduced.
+def test_dangerous_confirmation_helper():
+    """The pattern matcher is case-insensitive and substring-based."""
+    assert _is_dangerous_confirmation("confirm forced restart")
+    assert _is_dangerous_confirmation("CONFIRM FORCED RESTART")
+    assert _is_dangerous_confirmation("  confirm forced restart please  ")
+    assert _is_dangerous_confirmation("I want to confirm forced restart the server")
+
+    # i18n
+    assert _is_dangerous_confirmation("確認強制重開機")
+
+    # Not a confirmation
+    assert not _is_dangerous_confirmation("can you restart the docker container?")
+    assert not _is_dangerous_confirmation("hello world")
+    assert not _is_dangerous_confirmation("")
+    assert not _is_dangerous_confirmation(None)
+    assert not _is_dangerous_confirmation(123)
 
 
 def _make_history_with_confirmation(
@@ -86,6 +102,35 @@ def test_stale_confirmation_text_is_stripped_on_resume():
     )
 
 
+def test_fresh_confirmation_text_is_preserved():
+    """A confirmation text within EXPIRY is kept (not yet expired)."""
+    current_time = time.time()
+    user_message_at = current_time - 30
+    assistant_warning_at = current_time - 29
+    confirmation_at = current_time - 5  # 5 seconds ago — fresh
+    assistant_action_at = current_time - 4
+
+    history = _make_history_with_confirmation(
+        user_message_at=user_message_at,
+        assistant_warning_at=assistant_warning_at,
+        confirmation_message="confirm forced restart",
+        confirmation_at=confirmation_at,
+        assistant_action_at=assistant_action_at,
+    )
+
+    agent_history, _ = _build_gateway_agent_history(history)
+
+    # Fresh confirmation should still be there
+    confirmation_present = any(
+        m.get("role") == "user" and "confirm forced restart" in (m.get("content") or "")
+        for m in agent_history
+    )
+    assert confirmation_present, (
+        f"Fresh confirmation (5s old) should NOT be stripped. "
+        f"Got agent_history: {agent_history}"
+    )
+
+
 def test_non_confirmation_text_is_preserved():
     """A regular user message is never treated as a confirmation."""
     current_time = time.time()
@@ -104,6 +149,46 @@ def test_non_confirmation_text_is_preserved():
     assert len(user_msgs) == 1
     assert "help me with the docs" in user_msgs[0].get("content", "")
 
+
+def test_no_dangerous_pattern_at_all_preserves_everything():
+    """If the conversation has no dangerous confirmation, nothing is stripped."""
+    current_time = time.time()
+    user_message_at = current_time - 1000
+
+    history = [
+        {"role": "user", "content": "tell me a joke", "timestamp": user_message_at},
+        {"role": "assistant", "content": "Why did the chicken cross the road?", "timestamp": user_message_at + 1},
+        {"role": "user", "content": "haha", "timestamp": user_message_at + 2},
+    ]
+
+    agent_history, _ = _build_gateway_agent_history(history)
+
+    assert len(agent_history) == 3
+
+
+def test_strip_stale_dangerous_confirmations_directly():
+    """Unit test the strip helper in isolation."""
+    current_time = time.time()
+    history = _make_history_with_confirmation(
+        user_message_at=current_time - 1000,
+        assistant_warning_at=current_time - 999,
+        confirmation_message="confirm forced restart",
+        confirmation_at=current_time - 300,
+        assistant_action_at=current_time - 299,
+    )
+
+    cleaned = _strip_stale_dangerous_confirmations(history, now=current_time)
+
+    # The dangerous confirmation should be gone
+    assert not any(
+        "confirm forced restart" in (m.get("content") or "")
+        for m in cleaned
+        if m.get("role") == "user"
+    )
+    # The original user question and the assistant responses stay
+    assert any("can you force a restart" in (m.get("content") or "") for m in cleaned)
+    assert any("Rebooting the host is dangerous" in (m.get("content") or "") for m in cleaned)
+    assert any("OK, restarting now" in (m.get("content") or "") for m in cleaned)
 
 def test_redaction_preserves_role_alternation():
     """Expiry must redact in place, never delete the user message.

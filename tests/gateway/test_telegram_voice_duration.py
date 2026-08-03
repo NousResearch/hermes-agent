@@ -88,6 +88,34 @@ def _inject_fake_mutagen(monkeypatch, length):
     monkeypatch.setitem(sys.modules, "mutagen", fake)
 
 
+def test_probe_ogg_via_mutagen(monkeypatch, tmp_path):
+    f = tmp_path / "voice.ogg"
+    f.write_bytes(b"\x00" * 16)
+    _inject_fake_mutagen(monkeypatch, length=291.4)
+    assert _probe_voice_duration_seconds(str(f)) == 291
+
+
+@pytest.mark.parametrize("bad_length", [0, 0.0, None])
+def test_probe_returns_none_for_missing_length(monkeypatch, tmp_path, bad_length):
+    f = tmp_path / "voice.ogg"
+    f.write_bytes(b"\x00" * 16)
+    _inject_fake_mutagen(monkeypatch, length=bad_length)
+    # Force the ffprobe fallback off so the result is deterministically None.
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda _n: None)
+    assert _probe_voice_duration_seconds(str(f)) is None
+
+
+def test_probe_returns_none_when_nothing_can_read(monkeypatch, tmp_path):
+    """No mutagen, no ffprobe, unknown container -> None (omit duration)."""
+    f = tmp_path / "blob.bin"
+    f.write_bytes(b"\x00" * 16)
+    monkeypatch.setitem(sys.modules, "mutagen", None)  # import mutagen -> ImportError
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda _n: None)
+    assert _probe_voice_duration_seconds(str(f)) is None
+
+
 # ---------------------------------------------------------------------------
 # 1c. _coerce_duration_seconds rounding/guard contract
 # ---------------------------------------------------------------------------
@@ -130,3 +158,66 @@ async def test_voice_send_forwards_duration(monkeypatch, tmp_path):
     adapter._bot.send_audio.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_audio_send_forwards_duration(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        telegram_mod, "_probe_voice_duration_seconds", lambda _p: 600
+    )
+    audio = tmp_path / "song.mp3"
+    audio.write_bytes(b"\x00" * 16)
+
+    adapter = _make_adapter()
+    result = await adapter.send_voice("123", str(audio))
+
+    assert result.success is True
+    adapter._bot.send_audio.assert_awaited_once()
+    assert adapter._bot.send_audio.await_args.kwargs["duration"] == 600
+
+
+@pytest.mark.asyncio
+async def test_voice_send_omits_unknown_duration(monkeypatch, tmp_path):
+    """When the probe fails, duration is None — Telegram's own (legacy) behavior."""
+    monkeypatch.setattr(
+        telegram_mod, "_probe_voice_duration_seconds", lambda _p: None
+    )
+    audio = tmp_path / "reply.ogg"
+    audio.write_bytes(b"\x00" * 16)
+
+    adapter = _make_adapter()
+    await adapter.send_voice("123", str(audio))
+
+    assert adapter._bot.send_voice.await_args.kwargs["duration"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "is_voice", "sender_name"),
+    [("reply.ogg", True, "send_voice"), ("song.mp3", False, "send_audio")],
+)
+async def test_standalone_send_includes_duration_on_thread_retry(
+    monkeypatch, tmp_path, filename, is_voice, sender_name
+):
+    audio = tmp_path / filename
+    audio.write_bytes(b"audio")
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    bot.send_photo = AsyncMock()
+    bot.send_video = AsyncMock()
+    bot.send_voice = AsyncMock()
+    bot.send_audio = AsyncMock()
+    bot.send_document = AsyncMock()
+    sender = getattr(bot, sender_name)
+    sender.side_effect = [
+        Exception("Bad Request: message thread not found"),
+        MagicMock(message_id=3),
+    ]
+    monkeypatch.setattr(sys.modules["telegram"], "Bot", lambda **_kwargs: bot)
+    monkeypatch.setattr(telegram_mod, "_probe_voice_duration_seconds", lambda _path: 314)
+
+    result = await _send_telegram(
+        "token", "-1001234567890", "", media_files=[(str(audio), is_voice)], thread_id="17585"
+    )
+
+    assert result.get("success") is True, result
+    assert sender.await_count == 2
+    assert all(call.kwargs["duration"] == 314 for call in sender.await_args_list)

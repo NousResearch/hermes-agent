@@ -50,6 +50,10 @@ CODE_ACK = "Let me inspect the repository files first."
 # ── mode resolution ────────────────────────────────────────────────────────
 
 
+def test_auto_is_codex_only():
+    assert intent_ack_continuation_mode(_agent("auto", "codex_responses")) == "codex_only"
+    assert intent_ack_continuation_mode(_agent("auto", "chat_completions")) == "off"
+    assert intent_ack_continuation_mode(_agent("auto", "anthropic")) == "off"
 
 
 def test_true_is_all_api_modes():
@@ -59,10 +63,24 @@ def test_true_is_all_api_modes():
         assert intent_ack_continuation_mode(_agent(s, "chat_completions")) == "all"
 
 
+def test_false_is_off_even_for_codex():
+    assert intent_ack_continuation_mode(_agent(False, "codex_responses")) == "off"
+    for s in ("false", "never", "no", "off"):
+        assert intent_ack_continuation_mode(_agent(s, "codex_responses")) == "off"
 
 
+def test_list_matches_model_substring():
+    assert intent_ack_continuation_mode(
+        _agent(["gemini", "qwen"], "chat_completions", "google/gemini-3-pro")
+    ) == "all"
+    assert intent_ack_continuation_mode(
+        _agent(["gemini", "qwen"], "chat_completions", "anthropic/claude-sonnet-4")
+    ) == "off"
 
 
+def test_unrecognised_value_falls_back_to_auto():
+    assert intent_ack_continuation_mode(_agent("garbage", "codex_responses")) == "codex_only"
+    assert intent_ack_continuation_mode(_agent("garbage", "chat_completions")) == "off"
 
 
 def test_missing_attr_defaults_to_auto():
@@ -82,6 +100,16 @@ def test_enabled_is_mode_not_off():
 # ── detector: workspace requirement ─────────────────────────────────────────
 
 
+def test_codex_only_path_requires_workspace():
+    a = _agent("auto", "codex_responses")
+    msgs = [{"role": "user", "content": CODE_USER}]
+    # codebase ack matches workspace markers → fires
+    assert looks_like_codex_intermediate_ack(a, CODE_USER, CODE_ACK, msgs, require_workspace=True)
+    # server-ops ack has no filesystem reference → does NOT fire (historical scope)
+    repro_msgs = [{"role": "user", "content": REPRO_USER}]
+    assert not looks_like_codex_intermediate_ack(
+        a, REPRO_USER, REPRO_ACK, repro_msgs, require_workspace=True
+    )
 
 
 def test_multipart_user_message_does_not_crash_on_workspace_path():
@@ -119,9 +147,37 @@ def test_all_path_drops_workspace_requirement():
 # ── detector: guardrails that hold regardless of workspace ───────────────────
 
 
+def test_real_final_answer_does_not_fire():
+    a = _agent(True, "chat_completions")
+    final = "Done. The server is healthy and there are no critical errors in the logs."
+    msgs = [{"role": "user", "content": REPRO_USER}]
+    assert not looks_like_codex_intermediate_ack(a, REPRO_USER, final, msgs, require_workspace=False)
 
 
+def test_conversational_reply_without_action_verb_does_not_fire():
+    a = _agent(True, "chat_completions")
+    brainstorm = "I'll help you think through the tradeoffs here."
+    msgs = [{"role": "user", "content": "help me decide"}]
+    assert not looks_like_codex_intermediate_ack(
+        a, "help me decide", brainstorm, msgs, require_workspace=False
+    )
 
 
+def test_does_not_fire_after_a_tool_already_ran():
+    a = _agent(True, "chat_completions")
+    msgs = [
+        {"role": "user", "content": REPRO_USER},
+        {"role": "tool", "content": "health check result"},
+    ]
+    assert not looks_like_codex_intermediate_ack(
+        a, REPRO_USER, REPRO_ACK, msgs, require_workspace=False
+    )
 
 
+def test_long_response_is_not_treated_as_an_ack():
+    a = _agent(True, "chat_completions")
+    long_ack = "I will run the check. " + ("x" * 1300)
+    msgs = [{"role": "user", "content": REPRO_USER}]
+    assert not looks_like_codex_intermediate_ack(
+        a, REPRO_USER, long_ack, msgs, require_workspace=False
+    )

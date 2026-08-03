@@ -62,8 +62,28 @@ class TestQueryOllamaNumCtx:
 
         assert result == 32768
 
+    def test_returns_none_for_non_ollama_server(self):
+        """Should return None if the server is not Ollama."""
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"):
+            result = query_ollama_num_ctx("model", "http://localhost:1234")
+        assert result is None
 
+    def test_returns_none_on_connection_error(self):
+        """Should return None if the server is unreachable."""
+        with patch("agent.model_metadata.detect_local_server_type", side_effect=Exception("timeout")):
+            result = query_ollama_num_ctx("model", "http://localhost:11434")
+        assert result is None
 
+    def test_returns_none_on_404(self):
+        """Should return None if the model is not found."""
+        mock_ctx, _ = _mock_httpx_client({}, status_code=404)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+            import httpx
+            with patch.object(httpx, "Client", return_value=mock_ctx):
+                result = query_ollama_num_ctx("nonexistent", "http://localhost:11434")
+
+        assert result is None
 
     def test_strips_provider_prefix(self):
         """Should strip 'local:' prefix from model name before querying."""
@@ -98,6 +118,20 @@ class TestQueryOllamaNumCtx:
 
         assert result == 65536
 
+    def test_returns_none_when_model_info_empty(self):
+        """Should return None if model_info has no context_length key."""
+        show_data = {
+            "model_info": {"llama.embedding_length": 4096},
+            "parameters": "",
+        }
+        mock_ctx, _ = _mock_httpx_client(show_data)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+            import httpx
+            with patch.object(httpx, "Client", return_value=mock_ctx):
+                result = query_ollama_num_ctx("model", "http://localhost:11434")
+
+        assert result is None
 
 
 class TestQueryOllamaSupportsVision:
@@ -114,6 +148,16 @@ class TestQueryOllamaSupportsVision:
 
         assert result is True
 
+    def test_returns_false_when_capabilities_exclude_vision(self):
+        show_data = {"capabilities": ["completion", "tools"]}
+        mock_ctx, _ = _mock_httpx_client(show_data)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+            import httpx
+            with patch.object(httpx, "Client", return_value=mock_ctx):
+                result = query_ollama_supports_vision("gemma4:31b", "http://localhost:11434/v1")
+
+        assert result is False
 
     def test_falls_back_to_model_info_vision_block_count(self):
         show_data = {"model_info": {"gemma3.vision.block_count": 27}}

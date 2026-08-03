@@ -46,3 +46,12 @@ def test_shutdown_closes_store_connection(tmp_path):
         conn.execute("SELECT 1")
 
 
+def test_shutdown_is_idempotent_and_safe_without_store(tmp_path):
+    provider = _make_provider(tmp_path)
+    provider.shutdown()
+    # Second shutdown (store already None) must not raise.
+    provider.shutdown()
+
+    # A provider that was never initialized must also shut down cleanly.
+    bare = HolographicMemoryProvider(config={"db_path": str(tmp_path / "x.db")})
+    bare.shutdown()

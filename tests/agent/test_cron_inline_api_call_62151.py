@@ -56,8 +56,44 @@ def test_should_use_direct_api_call_only_for_cron_openai_wire():
     assert should_use_direct_api_call(moa) is False
 
 
+def test_direct_api_call_runs_inline_and_closes_client():
+    agent = _make_agent()
+    caller_tid = threading.get_ident()
+    ran_on = {}
+    fake_client = MagicMock()
+
+    def _create(**_kwargs):
+        ran_on["tid"] = threading.get_ident()
+        return fake_client
+
+    fake_client.chat.completions.create.return_value = SimpleNamespace(id="resp")
+    agent._create_request_openai_client.side_effect = _create
+
+    resp = direct_api_call(agent, {"model": "m", "messages": []})
+
+    assert resp.id == "resp"
+    # Inline: the request ran on the calling thread, no worker was spawned.
+    assert ran_on["tid"] == caller_tid
+    assert agent._close_request_openai_client.call_count == 1
 
 
+def test_interruptible_api_call_routes_cron_inline_no_worker_thread():
+    agent = _make_agent()
+    caller_tid = threading.get_ident()
+    fake_client = MagicMock()
+    ran_on = {}
+
+    def _create(**_kwargs):
+        ran_on["tid"] = threading.get_ident()
+        return fake_client
+
+    fake_client.chat.completions.create.return_value = SimpleNamespace(id="first")
+    agent._create_request_openai_client.side_effect = _create
+
+    resp = interruptible_api_call(agent, {"model": "m", "messages": []})
+
+    assert resp.id == "first"
+    assert ran_on["tid"] == caller_tid  # no daemon worker thread
 
 
 def test_direct_api_call_interrupt_aborts_active_client_and_raises():
@@ -100,3 +136,21 @@ def test_direct_api_call_interrupt_aborts_active_client_and_raises():
     assert agent._active_request_abort is None
 
 
+def test_interruptible_streaming_api_call_routes_cron_via_nonstream_method():
+    """Streaming is the default even for cron — the gate must catch it too.
+
+    It delegates to the ``_interruptible_api_call`` method (which itself runs
+    inline for cron) rather than calling ``direct_api_call`` directly, so the
+    outer loop's per-request retry/refresh seam — which patches that method —
+    stays intact (regression from the codex 401-refresh path).
+    """
+    agent = _make_agent()
+    sentinel = SimpleNamespace(id="via-nonstream")
+    agent._interruptible_api_call = MagicMock(return_value=sentinel)
+
+    resp = interruptible_streaming_api_call(
+        agent, {"model": "m", "messages": []}, on_first_delta=lambda: None
+    )
+
+    assert resp is sentinel
+    agent._interruptible_api_call.assert_called_once()

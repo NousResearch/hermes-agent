@@ -35,6 +35,20 @@ class TestReconnectOrReraiseGroup:
             _group(ConnectionError("sse stream dropped"))
         ) == "reconnect"
 
+    def test_shutdown_in_progress_reraises(self):
+        task = MCPServerTask("t")
+        task._ready.set()
+        task._shutdown_event.set()
+        with pytest.raises(BaseExceptionGroup):
+            task._reconnect_or_reraise_group(_group(ConnectionError("x")))
+
+    def test_group_carrying_cancellation_reraises(self):
+        task = MCPServerTask("t")
+        task._ready.set()
+        with pytest.raises(BaseException) as ei:
+            task._reconnect_or_reraise_group(_group(asyncio.CancelledError()))
+        # The cancellation must not be masked as a reconnect.
+        assert ei.value.split(asyncio.CancelledError)[0] is not None
 
     def test_no_live_session_reraises_for_backoff(self):
         task = MCPServerTask("t")

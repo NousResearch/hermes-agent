@@ -135,3 +135,29 @@ async def test_stacked_second_skill_disabled_for_platform_is_blocked(monkeypatch
     assert "disabled for telegram" in result
 
 
+@pytest.mark.asyncio
+async def test_stacked_all_enabled_skills_still_load(monkeypatch, skills_env):
+    """Positive control: the new platform-disabled check must not over-block
+    a stacked invocation where every skill is actually enabled."""
+    import gateway.run as gateway_run
+    import agent.skill_utils as skill_utils_mod
+
+    _make_skill(skills_env, "alpha-skill", body="ALPHA BODY MARKER")
+    _make_skill(skills_env, "beta-skill", body="BETA BODY MARKER")
+
+    monkeypatch.setattr(
+        skill_utils_mod, "get_disabled_skill_names", lambda platform=None: set()
+    )
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    runner = _make_runner()
+    event = _make_event("/alpha-skill /beta-skill do something")
+    result = await runner._handle_message(event)
+
+    # Not rejected: the handler falls through to normal message processing
+    # with event.text rewritten to the combined stacked-skill payload.
+    assert result is None or "disabled for" not in result
+    assert "ALPHA BODY MARKER" in event.text
+    assert "BETA BODY MARKER" in event.text

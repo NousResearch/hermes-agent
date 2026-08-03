@@ -86,3 +86,12 @@ def test_each_provider_lands_on_the_tab_its_auth_type_dictates():
             assert d.slug in accounts, f"{d.slug} (accounts tab) missing from /api/providers/oauth"
 
 
+def test_no_provider_appears_on_both_tabs():
+    """A provider should be configured exactly one way — not duplicated across
+    both tabs (which would confuse users about where to put credentials).
+
+    Exception: genuinely dual-auth providers (see ``_DUAL_TAB``) intentionally
+    appear on both tabs.
+    """
+    overlap = (_keys_tab_providers() & _accounts_tab_providers()) - _EXEMPT - _DUAL_TAB
+    assert not overlap, f"providers appearing on BOTH desktop tabs: {sorted(overlap)}"

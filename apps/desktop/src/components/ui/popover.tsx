@@ -1,7 +1,6 @@
 import { Popover as PopoverPrimitive } from 'radix-ui'
 import * as React from 'react'
 
-import { usePopoverPortalContainer } from '@/components/ui/dialog-portal-context'
 import { cn } from '@/lib/utils'
 
 function Popover({ ...props }: React.ComponentProps<typeof PopoverPrimitive.Root>) {
@@ -28,12 +27,8 @@ function PopoverContent({
   sideOffset = 6,
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Content>) {
-  // Portal into the enclosing dialog when nested in one (keeps focus inside so
-  // the dialog doesn't close on dismiss); document.body otherwise.
-  const container = usePopoverPortalContainer()
-
   return (
-    <PopoverPrimitive.Portal container={container}>
+    <PopoverPrimitive.Portal>
       <PopoverPrimitive.Content
         align={align}
         arrowPadding={arrowPadding}

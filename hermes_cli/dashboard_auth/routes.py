@@ -19,7 +19,7 @@ import logging
 import threading
 import time
 from collections import defaultdict, deque
-from typing import Any, Deque, Dict
+from typing import Any, Deque, Dict, Tuple
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse

@@ -1,14 +1,14 @@
 ---
-title: "Sherlock — Find accounts for a username across 400+ platforms"
+title: "Sherlock — OSINT username search across 400+ social networks"
 sidebar_label: "Sherlock"
-description: "Find accounts for a username across 400+ platforms"
+description: "OSINT username search across 400+ social networks"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Sherlock
 
-Find accounts for a username across 400+ platforms.
+OSINT username search across 400+ social networks. Hunt down social media accounts by username.
 
 ## Skill metadata
 

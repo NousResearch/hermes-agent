@@ -62,6 +62,21 @@ class TestMetadataStorage:
         assert str(loaded.token_endpoint) == "https://auth.example.com/oauth/token"
         assert str(loaded.issuer).rstrip("/") == "https://auth.example.com"
 
+    def test_load_missing_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("nonexistent")
+        assert storage.load_oauth_metadata() is None
+
+    def test_load_corrupt_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("corrupt-server")
+
+        # Write something that doesn't validate as OAuthMetadata
+        meta_path = storage._meta_path()
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(json.dumps({"issuer": "not-a-url", "wrong_field": 123}))
+
+        assert storage.load_oauth_metadata() is None
 
     def test_remove_deletes_meta_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -116,6 +131,52 @@ class TestManagerOAuthProviderMetadata:
         assert str(provider.context.oauth_metadata.token_endpoint) == \
             "https://mgr.example.com/token"
 
+    def test_initialize_skips_restore_when_in_memory_present(self, tmp_path, monkeypatch):
+        """If SDK already has metadata in memory, don't overwrite from disk."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("mgr-srv2")
+        storage.save_oauth_metadata(_make_metadata("https://disk.example.com/token"))
+        in_memory = _make_metadata("https://memory.example.com/token")
+
+        provider = _manager_provider_with_context(storage, oauth_metadata=in_memory)
+
+        with patch.object(
+            _HERMES_PROVIDER_CLS.__bases__[0], "_initialize", new=AsyncMock()
+        ):
+            asyncio.run(provider._initialize())
+
+        assert str(provider.context.oauth_metadata.token_endpoint) == \
+            "https://memory.example.com/token"
+
+    def test_persist_metadata_if_changed_writes_on_first_discover(self, tmp_path, monkeypatch):
+        """When nothing on disk yet, persist what the SDK discovered in-memory."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("persist-srv")
+        assert storage.load_oauth_metadata() is None
+
+        discovered = _make_metadata("https://discovered.example.com/token")
+        provider = _manager_provider_with_context(storage, oauth_metadata=discovered)
+
+        provider._persist_oauth_metadata_if_changed()
+
+        loaded = storage.load_oauth_metadata()
+        assert loaded is not None
+        assert str(loaded.token_endpoint) == "https://discovered.example.com/token"
+
+    def test_persist_metadata_noop_when_unchanged(self, tmp_path, monkeypatch):
+        """No-op write when disk already matches in-memory metadata."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("noop-srv")
+        meta = _make_metadata("https://same.example.com/token")
+        storage.save_oauth_metadata(meta)
+
+        provider = _manager_provider_with_context(storage, oauth_metadata=meta)
+
+        with patch.object(
+            HermesTokenStorage, "save_oauth_metadata"
+        ) as save_spy:
+            provider._persist_oauth_metadata_if_changed()
+            save_spy.assert_not_called()
 
     def test_async_auth_flow_persists_on_completion(self, tmp_path, monkeypatch):
         """End-to-end: running the wrapped auth_flow persists discovered metadata."""

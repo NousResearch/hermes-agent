@@ -66,6 +66,79 @@ def test_resolve_stdio_command_falls_back_to_usr_local_bin():
     assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(target)
 
 
+def test_resolve_stdio_command_respects_explicit_empty_path():
+    seen_paths = []
+
+    def _fake_which(_cmd, path=None):
+        seen_paths.append(path)
+        return None
+
+    with patch("tools.mcp_tool.shutil.which", side_effect=_fake_which):
+        command, env = _resolve_stdio_command("python", {"PATH": ""})
+
+    assert command == "python"
+    assert env["PATH"] == ""
+    assert seen_paths == [""]
+
+
+def test_format_connect_error_unwraps_exception_group():
+    error = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [FileNotFoundError(2, "No such file or directory", "node")],
+    )
+
+    message = _format_connect_error(error)
+
+    assert "missing executable 'node'" in message
+
+
+def test_run_stdio_uses_resolved_command_and_prepended_path(tmp_path):
+    node_bin = tmp_path / "node" / "bin"
+    node_bin.mkdir(parents=True)
+    npx_path = node_bin / "npx"
+    npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    npx_path.chmod(0o755)
+
+    mock_session = MagicMock()
+    mock_session.initialize = AsyncMock()
+    mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+
+    mock_stdio_cm = MagicMock()
+    mock_stdio_cm.__aenter__ = AsyncMock(return_value=(object(), object()))
+    mock_stdio_cm.__aexit__ = AsyncMock(return_value=False)
+
+    mock_session_cm = MagicMock()
+    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_cm.__aexit__ = AsyncMock(return_value=False)
+
+    async def _test():
+        with patch("tools.mcp_tool.shutil.which", return_value=None), \
+             patch.dict("os.environ", {"HERMES_HOME": str(tmp_path), "PATH": "/usr/bin", "HOME": str(tmp_path)}, clear=False), \
+             patch("tools.mcp_tool.StdioServerParameters") as mock_params, \
+             patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
+             patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm):
+            server = MCPServerTask("srv")
+            await server.start({"command": "npx", "args": ["-y", "pkg"], "env": {"PATH": "/usr/bin"}})
+
+            # The real (resolved) command no longer reaches StdioServerParameters
+            # directly -- it's now wrapped in the parent-death watchdog
+            # supervisor (tools/mcp_stdio_watchdog.py) so an ungraceful exit of
+            # this process can't orphan it. Assert the resolved npx path and
+            # its args still flow through correctly as the watchdog's target
+            # command, preserving this test's original path-resolution intent.
+            call_kwargs = mock_params.call_args.kwargs
+            assert call_kwargs["command"] == sys.executable
+            assert call_kwargs["args"][0].endswith("mcp_stdio_watchdog.py")
+            assert "--" in call_kwargs["args"]
+            sep = call_kwargs["args"].index("--")
+            assert call_kwargs["args"][sep + 1:] == [str(npx_path), "-y", "pkg"]
+            assert call_kwargs["env"]["PATH"].split(os.pathsep)[0] == str(node_bin)
+
+            await server.shutdown()
+
+    asyncio.run(_test())
+
+
 # ---------------------------------------------------------------------------
 # #29184: OSV malware preflight must not block the asyncio event loop, and a
 # stalled check must time out fail-open rather than freezing MCP startup.

@@ -70,11 +70,42 @@ def test_console_ws_rejects_missing_or_bad_token(console_client):
     assert exc.value.code == 4401
 
 
+def test_console_ws_runs_read_only_command(console_client):
+    with console_client.websocket_connect(_url()) as conn:
+        ready = conn.receive_json()
+        assert ready["type"] == "ready"
+        assert ready["prompt"] == "hermes> "
+
+        conn.send_json({"type": "input", "line": "help"})
+
+        output = _recv_until(conn, "output")
+        assert "Hermes Console" in output["data"]
+        complete = _recv_until(conn, "complete", status="ok")
+        assert complete["prompt"] == "hermes> "
+
+
+def test_console_ws_confirmed_command_executes_after_confirmation(console_client):
+    from hermes_cli.config import load_config
+
+    with console_client.websocket_connect(_url()) as conn:
+        assert conn.receive_json()["type"] == "ready"
+        conn.send_json({"type": "input", "line": "config set display.interface cli"})
+
+        confirmation = _recv_until(conn, "confirm_required")
+        assert confirmation["command"] == "config set display.interface cli"
+        assert confirmation["message"]
+
+        conn.send_json({"type": "confirm", "command": confirmation["command"]})
+        _recv_until(conn, "complete", status="ok")
+
+    assert load_config()["display"]["interface"] == "cli"
+
+
 def test_console_ws_cancel_returns_to_prompt(console_client, monkeypatch):
     from hermes_cli.console_engine import ConsoleResult, HermesConsoleEngine
 
     def slow_execute(self, line: str, *, confirmed: bool = False):
-        time.sleep(0.2)
+        time.sleep(0.5)
         return ConsoleResult("ok", output="late", command=line)
 
     monkeypatch.setattr(HermesConsoleEngine, "execute", slow_execute)

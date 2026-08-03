@@ -105,6 +105,30 @@ class TestCompressAlwaysKeepsAUserTurn:
             f"non-retryable 400. Role histogram: {hist}"
         )
 
+    def test_summary_pinned_to_user_when_no_user_survives(self, compressor):
+        """When the whole compressible region is assistant/tool and no
+        user message survives in head or tail, the inserted summary
+        itself must be the user turn."""
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            COMPRESSED_SUMMARY_METADATA_KEY,
+        )
+
+        c = compressor
+        c.compression_count = 1
+        messages = [{"role": "user", "content": "work kanban task 7"}]
+        messages += _tool_turns(0, 12)
+
+        mocked = f"{SUMMARY_PREFIX}\nsummary body"
+        with patch.object(c, "_generate_summary", return_value=mocked):
+            out = c.compress(messages, current_tokens=90_000)
+
+        summary_rows = [m for m in out if m.get(COMPRESSED_SUMMARY_METADATA_KEY)]
+        assert len(summary_rows) == 1
+        assert summary_rows[0].get("role") == "user", (
+            "The handoff summary must carry role=user when it is the only "
+            "possible user turn in the compressed transcript (#58753)."
+        )
 
     def test_no_consecutive_user_roles_introduced(self, compressor):
         """Forcing the summary to role=user must not create two
@@ -154,123 +178,3 @@ class TestCompressAlwaysKeepsAUserTurn:
             m.get("content") for m in out if isinstance(m.get("content"), str)
         )
         assert "the latest live user question" in joined
-
-
-def _has_nonempty_user_text(messages: list[dict]) -> bool:
-    """True if some role="user" message carries non-empty text.
-
-    Deliberately narrower than "any message has text": a non-empty
-    ``role="assistant"`` summary does not satisfy backends that require an
-    actual user query, so checking role and content together is the point.
-    """
-    from agent.context_compressor import _content_text_for_contains
-
-    return any(
-        m.get("role") == "user"
-        and _content_text_for_contains(m.get("content")).strip()
-        for m in messages
-    )
-
-
-class TestCompressKeepsANonEmptyUserTurn:
-    """A bare ``role == "user"`` check is not enough: the surviving user
-    message can be image-only (no caption). ``_strip_historical_media``
-    anchors on the newest image-bearing user message and keeps it
-    byte-for-byte — it never gains a text placeholder — so a role-only
-    guard is satisfied while the request still has zero *text* user
-    turns, which is what backends actually reject on.
-    """
-
-    def test_image_only_tail_user_turn_still_yields_non_empty_text(self, compressor):
-        from agent.context_compressor import SUMMARY_PREFIX
-
-        c = compressor
-        c.compression_count = 1
-        # No system message and no protected head (compression_count=1
-        # decays protect_first_n to 0), same #58753 shape — except the
-        # only surviving user turn is an image with no caption text.
-        messages = [{"role": "user", "content": "work kanban task 42"}]
-        messages += _tool_turns(0, 12)
-        messages += [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-            ],
-        }]
-
-        mocked = f"{SUMMARY_PREFIX}\nrolled-up summary of the tool work"
-        with patch.object(c, "_generate_summary", return_value=mocked):
-            out = c.compress(messages, current_tokens=90_000)
-
-        hist = _role_hist(out)
-        assert hist.get("user", 0) >= 1
-        assert _has_nonempty_user_text(out), (
-            "REGRESSION: an image-only user turn satisfied the role-only "
-            "zero-user-turn guard, leaving a transcript with a user-role "
-            "message but no actual query text — the exact class of "
-            "request backends reject with 'No user query found in "
-            f"messages'. Output: {out}"
-        )
-
-    def test_image_only_protected_head_still_yields_non_empty_text(self, compressor):
-        """Isolates the ``_user_survives`` text check from the merge-target
-        fix below: here ``compress_start != 0`` and there's no system
-        message, so neither existing force condition
-        (``compress_start == 0`` / ``last_head_role == "system"``) fires on
-        its own — only the broadened (text-aware) survival check does.
-        """
-        from agent.context_compressor import SUMMARY_PREFIX
-
-        c = compressor
-        c.protect_first_n = 1
-        c.protect_last_n = 2
-        c.tail_token_budget = 10
-        c.compression_count = 0
-
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-            ],
-        }]
-        messages += _tool_turns(0, 12)
-
-        mocked = f"{SUMMARY_PREFIX}\nrolled-up summary of the tool work"
-        with patch.object(c, "_generate_summary", return_value=mocked):
-            out = c.compress(messages, current_tokens=90_000)
-
-        assert _has_nonempty_user_text(out), (
-            "REGRESSION: an image-only protected-head user turn satisfied "
-            f"the role-only zero-user-turn guard. Output: {out}"
-        )
-
-    def test_merge_targets_the_colliding_tail_message_not_index_zero(self, compressor):
-        """Template-exempt rows (bare tool-call assistant / tool messages)
-        ahead of the colliding tail user message must not divert the merge:
-        merging into literal tail index 0 would attach the summary to an
-        exempt row and leave the real (image-only) user message untouched
-        and still empty, silently defeating the forced role="user" this
-        block exists to guarantee.
-        """
-        from agent.context_compressor import SUMMARY_PREFIX
-
-        c = compressor
-        c.compression_count = 1  # decays protect_first_n to 0 -> compress_start == 0
-        messages = [{"role": "user", "content": "work kanban task 42"}]
-        messages += _tool_turns(0, 12)
-        messages += [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-            ],
-        }]
-
-        mocked = f"{SUMMARY_PREFIX}\nrolled-up summary of the tool work"
-        with patch.object(c, "_generate_summary", return_value=mocked):
-            out = c.compress(messages, current_tokens=90_000)
-
-        assert _has_nonempty_user_text(out), (
-            "REGRESSION: the summary merged into tail index 0 (a "
-            "template-exempt row) instead of the colliding image-only "
-            f"user message, leaving zero non-empty user turns. Output: {out}"
-        )

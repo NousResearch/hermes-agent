@@ -111,22 +111,13 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
   return keys
 }
 
-/** Add a provider's curated default model keys to `target`. Prefers the
- *  backend's `featured_models` shortlist (one flagship per lab) for aggregator
- *  providers that would otherwise flood the default view with dozens of models;
- *  falls back to the top-N collapsed families when a provider ships no featured
- *  list. Shared by `defaultVisibleKeys` and `resolveVisibleKeys` so the
+/** Add a provider's curated default model keys (top-N collapsed families) to
+ *  `target`. Shared by `defaultVisibleKeys` and `resolveVisibleKeys` so the
  *  expansion rule lives in exactly one place. */
 function expandProviderDefaults(provider: ModelOptionProvider, target: Set<string>): void {
   const families = collapseModelFamilies(provider.models ?? [])
 
-  const featured = provider.featured_models ?? []
-
-  const defaults = featured.length
-    ? families.filter(family => featured.includes(family.id))
-    : families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)
-
-  for (const family of defaults) {
+  for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
     target.add(modelVisibilityKey(provider.slug, family.id))
   }
 }
@@ -214,48 +205,6 @@ export function toggleModelVisibility(
     // re-enable." (Locked in by the sentinel-clear-on-re-enable test.)
     next.delete(sentinel)
     next.add(key)
-  }
-
-  return next
-}
-
-/** Compute the next persisted visibility set when a provider's master switch is
- *  flipped. `visible=true` enables every one of the provider's collapsed model
- *  families (and clears its hide-all sentinel); `visible=false` removes them all
- *  and records the sentinel so the defaults are not silently re-expanded.
- *  Seeds from `resolveVisibleKeys` so other providers' state (including their
- *  sentinels) survives the persist, mirroring `toggleModelVisibility`. */
-export function setProviderVisibility(
-  stored: Set<string> | null,
-  providers: readonly ModelOptionProvider[],
-  providerSlug: string,
-  visible: boolean
-): Set<string> {
-  const next = resolveVisibleKeys(stored, providers)
-  const sentinel = emptyProviderSentinelKey(providerSlug)
-  const provider = providers.find(p => p.slug === providerSlug)
-  const families = collapseModelFamilies(provider?.models ?? [])
-
-  // Drop every existing entry for this provider (real keys + sentinel); we
-  // rebuild its state from scratch below.
-  for (const key of [...next]) {
-    if (key.startsWith(`${providerSlug}::`)) {
-      next.delete(key)
-    }
-  }
-
-  if (visible) {
-    for (const family of families) {
-      next.add(modelVisibilityKey(providerSlug, family.id))
-    }
-
-    // A provider with zero models can't be "all on" — leave it empty rather
-    // than stranding a sentinel that reads as an explicit hide-all.
-    if (families.length === 0) {
-      next.delete(sentinel)
-    }
-  } else {
-    next.add(sentinel)
   }
 
   return next

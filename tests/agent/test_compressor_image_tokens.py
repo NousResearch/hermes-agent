@@ -21,7 +21,11 @@ class TestContentLengthForBudget:
     def test_plain_string(self):
         assert _content_length_for_budget("hello world") == 11
 
+    def test_empty_string(self):
+        assert _content_length_for_budget("") == 0
 
+    def test_none_coerces_to_zero(self):
+        assert _content_length_for_budget(None) == 0
 
     def test_text_only_list(self):
         content = [
@@ -30,11 +34,57 @@ class TestContentLengthForBudget:
         ]
         assert _content_length_for_budget(content) == 5 + 6
 
+    def test_single_image_part_charges_fixed_budget(self):
+        content = [
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,XXXX"}},
+        ]
+        # 4 chars of text + 1 image at fixed char-equivalent
+        assert _content_length_for_budget(content) == 4 + _IMAGE_CHAR_EQUIVALENT
 
+    def test_image_url_raw_base64_is_not_counted_as_chars(self):
+        """A 1MB base64 blob inside an image_url must NOT inflate token count.
 
+        The flat image estimate is what the provider actually bills; the raw
+        base64 is transport payload, not context tokens.
+        """
+        huge_url = "data:image/png;base64," + ("A" * 1_000_000)
+        content = [
+            {"type": "image_url", "image_url": {"url": huge_url}},
+        ]
+        # Exactly one image's worth, not 1M + something.
+        assert _content_length_for_budget(content) == _IMAGE_CHAR_EQUIVALENT
 
+    def test_multiple_image_parts(self):
+        content = [
+            {"type": "text", "text": "compare"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,BBB"}},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,CCC"}},
+        ]
+        assert _content_length_for_budget(content) == 7 + 3 * _IMAGE_CHAR_EQUIVALENT
 
+    def test_openai_responses_input_image_shape(self):
+        """Responses API uses type=input_image with top-level image_url string."""
+        content = [
+            {"type": "input_text", "text": "hey"},
+            {"type": "input_image", "image_url": "data:image/png;base64,XX"},
+        ]
+        # input_text has .text "hey" (3 chars) + 1 image
+        assert _content_length_for_budget(content) == 3 + _IMAGE_CHAR_EQUIVALENT
 
+    def test_anthropic_native_image_shape(self):
+        """Anthropic native shape: {type: image, source: {...}}."""
+        content = [
+            {"type": "text", "text": "hi"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "XX"}},
+        ]
+        assert _content_length_for_budget(content) == 2 + _IMAGE_CHAR_EQUIVALENT
+
+    def test_bare_string_part_in_list(self):
+        """Older code paths sometimes produce mixed list-of-strings content."""
+        content = ["hello", {"type": "text", "text": "world"}]
+        assert _content_length_for_budget(content) == 5 + 5
 
     def test_image_estimate_constant_is_reasonable(self):
         """Sanity-check the estimate aligns with real provider billing.

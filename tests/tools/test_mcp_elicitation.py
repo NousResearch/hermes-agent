@@ -85,6 +85,16 @@ class TestElicitationHandlerFormMode:
         assert handler.metrics["accepted"] == 1
         assert handler.metrics["declined"] == 0
 
+    def test_user_denies_returns_decline(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params()
+
+        with patch("tools.approval.request_elicitation_consent", return_value="decline"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "decline"
+        assert handler.metrics["declined"] == 1
+        assert handler.metrics["accepted"] == 0
 
     def test_cancel_propagates_through(self):
         """request_elicitation_consent returns 'cancel' when the gateway
@@ -161,6 +171,9 @@ class TestElicitationHandlerWiring:
         kwargs = handler.session_kwargs()
         assert kwargs == {"elicitation_callback": handler}
 
+    def test_default_timeout_is_300_seconds(self):
+        handler = ElicitationHandler("pay", {})
+        assert handler.timeout == 300
 
     def test_disabled_config_does_not_construct_handler(self):
         """The server task initializer checks ``elicitation.enabled`` --
@@ -235,6 +248,38 @@ class TestElicitationHandlerContextBridge:
         assert result.action == "accept"
         assert m.call_count == 1
 
+    def test_captured_context_can_be_replayed_multiple_times(self):
+        """A single tool call may trigger more than one elicitation
+        (e.g. the agent retries an MCP call within the same wrapper).
+        ``Context.run`` raises if a context is re-entered, so the handler
+        must ``.copy()`` before each run."""
+        import contextvars
+        from types import SimpleNamespace
+
+        probe: contextvars.ContextVar[str] = contextvars.ContextVar(
+            "elicitation_test_probe_multi", default=""
+        )
+        seen: list[str] = []
+
+        def fake_consent(*_args, **_kwargs):
+            seen.append(probe.get())
+            return "accept"
+
+        token = probe.set("gateway:slack")
+        try:
+            captured = contextvars.copy_context()
+        finally:
+            probe.reset(token)
+
+        owner = SimpleNamespace(_pending_call_context=captured)
+        handler = ElicitationHandler("pay", {"timeout": 5}, owner=owner)
+        params = _form_params()
+
+        with patch("tools.approval.request_elicitation_consent", side_effect=fake_consent):
+            for _ in range(3):
+                asyncio.run(handler(context=None, params=params))
+
+        assert seen == ["gateway:slack"] * 3
 
     def test_pending_call_context_none_does_not_crash(self):
         """``owner._pending_call_context`` is set to None between tool

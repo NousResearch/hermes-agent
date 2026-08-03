@@ -2,14 +2,12 @@ import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import { describe, expect, it } from 'vitest'
 
 import {
-  acceptsTriggerCompletion,
   isPendingDraftPersistCurrent,
   type PendingDraftPersist,
   pickPlaceholder,
   slashArgStage,
   slashChipKindForItem,
-  slashCommandToken,
-  type TriggerAcceptInput
+  slashCommandToken
 } from './composer-utils'
 
 const item = (group: string): Unstable_TriggerItem =>
@@ -38,53 +36,6 @@ describe('slashChipKindForItem', () => {
     expect(slashChipKindForItem(item('Skills'))).toBe('skill')
     expect(slashChipKindForItem(item('Themes'))).toBe('theme')
     expect(slashChipKindForItem(item('Commands'))).toBe('command')
-  })
-})
-
-describe('acceptsTriggerCompletion', () => {
-  const press = (key: string, overrides: Partial<TriggerAcceptInput> = {}) =>
-    acceptsTriggerCompletion({
-      activeExplicit: false,
-      freeTextArgStage: false,
-      key,
-      kind: '/',
-      query: 'personality alic',
-      ...overrides
-    })
-
-  it('accepts on Enter / Tab / Space for a finite option list', () => {
-    expect(press('Enter')).toBe(true)
-    expect(press('Tab')).toBe(true)
-    expect(press(' ')).toBe(true)
-  })
-
-  it('ignores keys that are neither navigation nor acceptance', () => {
-    expect(press('a')).toBe(false)
-    expect(press('Escape')).toBe(false)
-  })
-
-  it('lets an `@` mention take a literal space', () => {
-    expect(press(' ', { kind: '@', query: 'src/comp' })).toBe(false)
-    expect(press('Enter', { kind: '@', query: 'src/comp' })).toBe(true)
-  })
-
-  it('types a space on a bare `/ ` instead of accepting', () => {
-    expect(press(' ', { query: '' })).toBe(false)
-  })
-
-  // The `/goal <prose>` class: the popover may be live over free-form text, so
-  // the keys that mean something else in prose must keep meaning it.
-  it('sends the prose rather than the unchosen first row', () => {
-    expect(press('Enter', { freeTextArgStage: true, query: 'goal ship the redesign' })).toBe(false)
-    expect(press(' ', { freeTextArgStage: true, query: 'goal ship the' })).toBe(false)
-  })
-
-  it('accepts on Enter once the user has arrowed to a row deliberately', () => {
-    expect(press('Enter', { activeExplicit: true, freeTextArgStage: true, query: 'goal stat' })).toBe(true)
-  })
-
-  it('keeps Tab as the explicit accept even over free text', () => {
-    expect(press('Tab', { freeTextArgStage: true, query: 'goal stat' })).toBe(true)
   })
 })
 

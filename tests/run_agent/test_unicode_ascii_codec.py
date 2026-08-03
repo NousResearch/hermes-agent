@@ -21,10 +21,20 @@ class TestStripNonAscii:
     def test_ascii_only(self):
         assert _strip_non_ascii("hello world") == "hello world"
 
+    def test_removes_non_ascii(self):
+        assert _strip_non_ascii("hello ⚕ world") == "hello  world"
 
+    def test_removes_emoji(self):
+        assert _strip_non_ascii("test 🤖 done") == "test  done"
 
+    def test_chinese_chars(self):
+        assert _strip_non_ascii("你好world") == "world"
 
+    def test_empty_string(self):
+        assert _strip_non_ascii("") == ""
 
+    def test_only_non_ascii(self):
+        assert _strip_non_ascii("⚕🤖") == ""
 
 
 class TestSanitizeMessagesNonAscii:
@@ -35,14 +45,57 @@ class TestSanitizeMessagesNonAscii:
         assert _sanitize_messages_non_ascii(messages) is False
         assert messages[0]["content"] == "hello"
 
+    def test_sanitizes_content_string(self):
+        messages = [{"role": "user", "content": "hello ⚕ world"}]
+        assert _sanitize_messages_non_ascii(messages) is True
+        assert messages[0]["content"] == "hello  world"
 
+    def test_sanitizes_content_list(self):
+        messages = [{
+            "role": "user",
+            "content": [{"type": "text", "text": "hello 🤖"}]
+        }]
+        assert _sanitize_messages_non_ascii(messages) is True
+        assert messages[0]["content"][0]["text"] == "hello "
 
+    def test_sanitizes_name_field(self):
+        messages = [{"role": "tool", "name": "⚕tool", "content": "ok"}]
+        assert _sanitize_messages_non_ascii(messages) is True
+        assert messages[0]["name"] == "tool"
 
+    def test_sanitizes_tool_calls(self):
+        messages = [{
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"path": "⚕test.txt"}'
+                }
+            }]
+        }]
+        assert _sanitize_messages_non_ascii(messages) is True
+        assert messages[0]["tool_calls"][0]["function"]["arguments"] == '{"path": "test.txt"}'
 
+    def test_handles_non_dict_messages(self):
+        messages = ["not a dict", {"role": "user", "content": "hello"}]
+        assert _sanitize_messages_non_ascii(messages) is False
 
     def test_empty_messages(self):
         assert _sanitize_messages_non_ascii([]) is False
 
+    def test_multiple_messages(self):
+        messages = [
+            {"role": "system", "content": "⚕ System prompt"},
+            {"role": "user", "content": "Hello 你好"},
+            {"role": "assistant", "content": "Hi there!"},
+        ]
+        assert _sanitize_messages_non_ascii(messages) is True
+        assert messages[0]["content"] == " System prompt"
+        assert messages[1]["content"] == "Hello "
+        assert messages[2]["content"] == "Hi there!"
 
 
 class TestSurrogateVsAsciiSanitization:
@@ -143,6 +196,27 @@ class TestSanitizeToolsNonAscii:
         assert tools[0]["function"]["description"] == "Print structured output  with emoji "
         assert tools[0]["function"]["parameters"]["properties"]["path"]["description"] == "File path  with unicode"
 
+    def test_no_change_for_ascii_only_tools(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read file content",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "File path",
+                            }
+                        },
+                    },
+                },
+            }
+        ]
+
+        assert _sanitize_tools_non_ascii(tools) is False
 
 
 class TestSanitizeStructureNonAscii:

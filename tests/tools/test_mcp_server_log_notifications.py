@@ -62,6 +62,49 @@ class TestLoggingCallback:
             for rec in caplog.records
         )
 
+    @pytest.mark.asyncio
+    async def test_error_family_maps_to_error_level(self, caplog):
+        server = MCPServerTask("log_srv")
+        callback = server._make_logging_callback()
+        with caplog.at_level(logging.ERROR, logger="tools.mcp_tool"):
+            for lvl in ("error", "critical", "alert", "emergency"):
+                await callback(_params(level=lvl, data=f"boom-{lvl}"))
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 4
+
+    @pytest.mark.asyncio
+    async def test_non_string_data_is_json_serialized(self, caplog):
+        server = MCPServerTask("log_srv")
+        callback = server._make_logging_callback()
+        with caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+            await callback(_params(data={"event": "connect", "port": 8080}))
+        assert any(
+            '"event": "connect"' in rec.getMessage() for rec in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_unknown_level_defaults_to_info(self, caplog):
+        server = MCPServerTask("log_srv")
+        callback = server._make_logging_callback()
+        with caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+            await callback(_params(level="bogus", data="odd level"))
+        assert any(
+            rec.levelno == logging.INFO and "odd level" in rec.getMessage()
+            for rec in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_oversized_payload_truncated(self, caplog):
+        server = MCPServerTask("log_srv")
+        callback = server._make_logging_callback()
+        with caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+            await callback(_params(data="x" * 10_000))
+        msg = next(
+            rec.getMessage() for rec in caplog.records
+            if "MCP server log" in rec.getMessage()
+        )
+        assert "... [truncated]" in msg
+        assert len(msg) < 3000
 
     @pytest.mark.asyncio
     async def test_handler_never_raises(self):

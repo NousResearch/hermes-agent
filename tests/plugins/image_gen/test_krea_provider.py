@@ -74,6 +74,23 @@ class TestKreaImageGenProvider:
 
         assert KreaImageGenProvider().is_available() is True
 
+    def test_is_available_without_key(self, monkeypatch):
+        monkeypatch.delenv("KREA_API_KEY", raising=False)
+        import plugins.image_gen.krea as krea_mod
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        # No direct key AND no managed gateway → unavailable.
+        monkeypatch.setattr(krea_mod, "_managed_krea_gateway_ready", lambda: False)
+        assert KreaImageGenProvider().is_available() is False
+
+    def test_is_available_via_managed_gateway_without_key(self, monkeypatch):
+        monkeypatch.delenv("KREA_API_KEY", raising=False)
+        import plugins.image_gen.krea as krea_mod
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        # No direct key but the managed Nous gateway is ready → available.
+        monkeypatch.setattr(krea_mod, "_managed_krea_gateway_ready", lambda: True)
+        assert KreaImageGenProvider().is_available() is True
 
     def test_list_models(self):
         from plugins.image_gen.krea import KreaImageGenProvider
@@ -111,6 +128,12 @@ class TestKreaImageGenProvider:
 
 
 class TestModelResolution:
+    def test_default(self):
+        from plugins.image_gen.krea import _resolve_model
+
+        model_id, meta = _resolve_model()
+        assert model_id == "krea-2-medium"
+        assert meta["path"] == "medium"
 
     def test_env_override_large(self, monkeypatch):
         monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-2-large")
@@ -120,11 +143,28 @@ class TestModelResolution:
         assert model_id == "krea-2-large"
         assert meta["path"] == "large"
 
+    def test_env_override_unknown_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-2-xxl-fake")
+        from plugins.image_gen.krea import _resolve_model
+
+        model_id, _ = _resolve_model()
+        assert model_id == "krea-2-medium"
 
     def test_creativity_default(self):
         from plugins.image_gen.krea import _resolve_creativity
 
         assert _resolve_creativity(None) == "medium"
+
+    def test_creativity_valid(self):
+        from plugins.image_gen.krea import _resolve_creativity
+
+        assert _resolve_creativity("HIGH") == "high"
+        assert _resolve_creativity(" raw ") == "raw"
+
+    def test_creativity_invalid(self):
+        from plugins.image_gen.krea import _resolve_creativity
+
+        assert _resolve_creativity("ultra") == "medium"
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +387,45 @@ class TestGenerateErrors:
         assert "401" in result["error"]
         assert "Invalid API key" in result["error"]
 
+    def test_submit_timeout(self):
+        import requests as req_lib
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        with patch(
+            "plugins.image_gen.krea.requests.post", side_effect=req_lib.Timeout()
+        ):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == "timeout"
+
+    def test_submit_connection_error(self):
+        import requests as req_lib
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        with patch(
+            "plugins.image_gen.krea.requests.post",
+            side_effect=req_lib.ConnectionError("dns nope"),
+        ):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == "connection_error"
+
+    def test_submit_missing_job_id(self):
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        bad_submit = MagicMock()
+        bad_submit.status_code = 200
+        bad_submit.raise_for_status = MagicMock()
+        bad_submit.json.return_value = {"status": "queued"}
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=bad_submit):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_response"
+        assert "job_id" in result["error"]
 
     def test_job_failed(self):
         from plugins.image_gen.krea import KreaImageGenProvider
@@ -371,6 +450,26 @@ class TestGenerateErrors:
         assert result["error_type"] == "api_error"
         assert "NSFW" in result["error"]
 
+    def test_job_cancelled(self):
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        cancelled = {
+            "job_id": "abc",
+            "status": "cancelled",
+            "completed_at": "2026-05-27T00:01:00Z",
+            "result": {},
+        }
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+             patch(
+                 "plugins.image_gen.krea.requests.get",
+                 return_value=_poll_response(cancelled),
+             ), \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == "cancelled"
 
     def test_completed_but_missing_urls(self):
         from plugins.image_gen.krea import KreaImageGenProvider
@@ -475,6 +574,80 @@ class TestPollRetryPolicy:
         # One call — no retry on permanent auth failure.
         assert mock_get.call_count == 1
 
+    def test_poll_fails_fast_on_404(self):
+        """Missing job (404) should surface immediately, not retry for 180s."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        bad_poll = self._http_error_response(404)
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+             patch("plugins.image_gen.krea.requests.get", return_value=bad_poll) as mock_get, \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "404" in result["error"]
+        assert mock_get.call_count == 1
+
+    def test_poll_fails_fast_on_403(self):
+        """Billing/permission failure (403) should not retry."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        bad_poll = self._http_error_response(403)
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+             patch("plugins.image_gen.krea.requests.get", return_value=bad_poll) as mock_get, \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert mock_get.call_count == 1
+
+    def test_poll_retries_on_503_then_succeeds(self):
+        """Transient 5xx should retry and eventually surface a completion."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        flaky = self._http_error_response(503)
+        good = _poll_response(_completed_job("https://krea.cdn/ok.png"))
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+             patch(
+                 "plugins.image_gen.krea.requests.get",
+                 side_effect=[flaky, flaky, good],
+             ) as mock_get, \
+             patch(
+                 "plugins.image_gen.krea.save_url_image",
+                 return_value=Path("/tmp/x.png"),
+             ), \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is True
+        assert mock_get.call_count == 3
+
+    def test_poll_retries_on_429(self):
+        """Rate-limit (429) is in the retryable set."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        rate_limited = self._http_error_response(429)
+        good = _poll_response(_completed_job("https://krea.cdn/ok.png"))
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+             patch(
+                 "plugins.image_gen.krea.requests.get",
+                 side_effect=[rate_limited, good],
+             ) as mock_get, \
+             patch(
+                 "plugins.image_gen.krea.save_url_image",
+                 return_value=Path("/tmp/x.png"),
+             ), \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is True
+        assert mock_get.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # Managed Nous gateway path
@@ -530,6 +703,48 @@ class TestManagedGateway:
         poll_headers = mock_get.call_args.kwargs["headers"]
         assert poll_headers["Authorization"] == "Bearer nous-tok-abc"
 
+    def test_managed_available_without_direct_key(self, monkeypatch):
+        """No KREA_API_KEY but an active gateway → generate proceeds (no auth_required)."""
+        import plugins.image_gen.krea as krea_mod
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        monkeypatch.delenv("KREA_API_KEY", raising=False)
+        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
+
+        submit = _submit_response()
+        poll = _poll_response(_completed_job())
+        with patch("plugins.image_gen.krea.requests.post", return_value=submit), \
+             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+             patch(
+                 "plugins.image_gen.krea.save_url_image",
+                 return_value=Path("/tmp/x.png"),
+             ), \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is True
+
+    def test_managed_4xx_returns_actionable_remediation(self, monkeypatch):
+        import requests as req_lib
+        import plugins.image_gen.krea as krea_mod
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
+
+        resp = req_lib.Response()
+        resp.status_code = 402
+        resp._content = b'{"error": {"message": "out of credits"}}'
+        resp.headers["Content-Type"] = "application/json"
+        resp.raise_for_status = MagicMock(side_effect=req_lib.HTTPError(response=resp))
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=resp):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "402" in result["error"]
+        assert "Nous Subscription Krea gateway" in result["error"]
+        assert "KREA_API_KEY" in result["error"]
 
     def test_managed_429_concurrency_hint(self, monkeypatch):
         import requests as req_lib
@@ -550,6 +765,41 @@ class TestManagedGateway:
         assert result["success"] is False
         assert "429" in result["error"]
         assert "concurrency" in result["error"].lower()
+
+    def test_managed_blocks_styles(self, monkeypatch):
+        import plugins.image_gen.krea as krea_mod
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
+
+        with patch("plugins.image_gen.krea.requests.post") as mock_post:
+            result = KreaImageGenProvider().generate(
+                prompt="test",
+                styles=[{"id": "lora-1"}],
+            )
+
+        assert result["success"] is False
+        assert result["error_type"] == "unsupported_argument"
+        assert "LoRA" in result["error"] or "styles" in result["error"]
+        # Never hit the network with an unsupported tier.
+        mock_post.assert_not_called()
+
+    def test_managed_blocks_moodboards(self, monkeypatch):
+        import plugins.image_gen.krea as krea_mod
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
+
+        with patch("plugins.image_gen.krea.requests.post") as mock_post:
+            result = KreaImageGenProvider().generate(
+                prompt="test",
+                moodboards=[{"url": "https://x.com/m.png"}],
+            )
+
+        assert result["success"] is False
+        assert result["error_type"] == "unsupported_argument"
+        assert "moodboard" in result["error"].lower()
+        mock_post.assert_not_called()
 
 
 class TestExplicitModelOverride:

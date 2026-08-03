@@ -6,12 +6,8 @@ Covers:
 3. Eager fallback deferred when credential pool has credentials
 4. Eager fallback fires when no credential pool exists
 5. Full 429 rotation cycle: retry-same → rotate → exhaust → fallback
-6. Failure attribution: the entry matching the failing API key is marked
-   exhausted, not whatever pool.current() happens to point at
 """
 
-import json
-import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -29,7 +25,6 @@ class TestCliTurnRoutePool:
             api_key="sk-test",
             base_url=None,
             provider="openai-codex",
-            requested_provider="my-named-provider",
             api_mode="codex_responses",
             acp_command=None,
             acp_args=[],
@@ -42,12 +37,6 @@ class TestCliTurnRoutePool:
         route = bound("test message")
 
         assert route["runtime"]["credential_pool"] is fake_pool
-        assert route["runtime"]["requested_provider"] == "my-named-provider"
-        assert "my-named-provider" in route["signature"]
-
-        shell.requested_provider = "other-named-provider"
-        other_route = bound("test message")
-        assert other_route["signature"] != route["signature"]
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +54,6 @@ class TestGatewayTurnRoutePool:
             "api_key": "***",
             "base_url": None,
             "provider": "openai-codex",
-            "requested_provider": "openai-codex",
             "api_mode": "codex_responses",
             "command": None,
             "args": [],
@@ -76,7 +64,6 @@ class TestGatewayTurnRoutePool:
         route = bound("test message", "gpt-5.4", runtime_kwargs)
 
         assert route["runtime"]["credential_pool"] is fake_pool
-        assert route["runtime"]["requested_provider"] == "openai-codex"
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +225,19 @@ class TestPoolRotationCycle:
         assert has_retried is False
         pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None, api_key_hint="test-api-key")
 
+    def test_no_pool_returns_false(self):
+        """No pool should return (False, unchanged)."""
+        from run_agent import AIAgent
+
+        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
+            agent = AIAgent()
+        agent._credential_pool = None
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=429, has_retried_429=False
+        )
+        assert recovered is False
+        assert has_retried is False
 
     def test_api_key_hint_from_pool_current_when_agent_key_missing(self):
         """api_key_hint should fall back to pool.current().runtime_api_key
@@ -352,143 +352,3 @@ class TestApiKeyHintRealPool:
         statuses = {e.id: e.last_status for e in pool._entries}
         assert statuses["cred-healthy"] == "exhausted"
         assert statuses["cred-failed"] in (None, "ok")
-
-
-# ---------------------------------------------------------------------------
-# 7. Failure attribution — mark the key that failed, not pool.current()
-# ---------------------------------------------------------------------------
-
-class TestFailureAttribution:
-    """Regression: recover_with_credential_pool must mark the entry whose API
-    key actually produced the failure.
-
-    pool.current() is shared mutable state: round-robin select() advances it,
-    concurrent turns move it, and a freshly loaded pool (second process) has
-    current() == None — in which case the old code fell through to
-    _select_unlocked() and exhausted the NEXT (healthy) entry, copying the
-    failing key's error/reset time onto it until the whole pool went offline.
-    """
-
-    def _make_pool(self, tmp_path, monkeypatch, entries):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir(parents=True, exist_ok=True)
-        (hermes_home / "auth.json").write_text(
-            json.dumps({"version": 1, "credential_pool": {"anthropic": entries}})
-        )
-        from agent.credential_pool import load_pool
-
-        return load_pool("anthropic")
-
-    def _entry(self, idx, key, **overrides):
-        entry = {
-            "id": f"cred-{idx}",
-            "label": f"key-{idx}",
-            "auth_type": "api_key",
-            "priority": idx,
-            "source": "manual",
-            "access_token": key,
-        }
-        entry.update(overrides)
-        return entry
-
-    def _agent(self, pool, failing_key, credential_id=None):
-        return SimpleNamespace(
-            provider="anthropic",
-            api_key=failing_key,
-            _credential_pool=pool,
-            _credential_pool_entry_id=credential_id,
-            _swap_credential=MagicMock(),
-        )
-
-    def _statuses(self, pool):
-        return {e.id: e.last_status for e in pool.entries()}
-
-
-
-    def test_pre_exhausted_check_uses_failing_key(self, tmp_path, monkeypatch):
-        """The 'already exhausted → rotate immediately' check must inspect the
-        failing entry, not pool.current(): first 429 on an already-exhausted
-        key rotates without burning a retry."""
-        pool = self._make_pool(
-            tmp_path, monkeypatch,
-            [
-                self._entry(0, "key-a"),
-                self._entry(
-                    1, "key-b",
-                    last_status="exhausted",
-                    last_status_at=time.time(),
-                    last_error_code=429,
-                ),
-            ],
-        )
-        agent = self._agent(pool, failing_key="key-b")
-
-        from agent.agent_runtime_helpers import recover_with_credential_pool
-
-        recovered, has_retried = recover_with_credential_pool(
-            agent, status_code=429, has_retried_429=False
-        )
-
-        assert recovered is True
-        assert has_retried is False
-        statuses = self._statuses(pool)
-        assert statuses["cred-0"] != "exhausted"
-        swapped = agent._swap_credential.call_args[0][0]
-        assert swapped.id == "cred-0"
-
-    def test_auth_refresh_targets_failing_key_not_pointer(self, tmp_path, monkeypatch):
-        """The auth path must refresh the entry that supplied the failing key,
-        not current(). With current() pointing at healthy A while key B failed,
-        try_refresh_current() force-refreshes A — for non-OAuth entries a
-        forced refresh marks the entry exhausted outright — so healthy A dies,
-        the hinted rotation then exhausts B, and the pool has nothing left."""
-        pool = self._make_pool(
-            tmp_path, monkeypatch,
-            [self._entry(0, "key-a"), self._entry(1, "key-b")],
-        )
-        # Point the shared cursor at the healthy entry, as a concurrent
-        # turn's select() would.
-        selected = pool.select()
-        assert selected.id == "cred-0"
-        assert pool.current().id == "cred-0"
-
-        agent = self._agent(pool, failing_key="key-b")
-        agent._is_entitlement_failure = MagicMock(return_value=False)
-
-        from agent.agent_runtime_helpers import recover_with_credential_pool
-
-        recovered, _ = recover_with_credential_pool(
-            agent, status_code=401, has_retried_429=False
-        )
-
-        assert recovered is True
-        statuses = self._statuses(pool)
-        assert statuses["cred-1"] == "exhausted"
-        assert statuses["cred-0"] != "exhausted"
-        swapped = agent._swap_credential.call_args[0][0]
-        assert swapped.id == "cred-0"
-
-
-    def test_unmatched_key_does_not_retry_only_pool_entry(
-        self, tmp_path, monkeypatch
-    ):
-        """Legacy agents without a stable id must stop when an unmatched key
-        has no different credential to rotate to."""
-        pool = self._make_pool(
-            tmp_path, monkeypatch,
-            [self._entry(0, "pool-runtime-key")],
-        )
-        agent = self._agent(pool, failing_key="wrapper-runtime-key")
-        agent._is_entitlement_failure = MagicMock(return_value=False)
-
-        from agent.agent_runtime_helpers import recover_with_credential_pool
-
-        recovered, _ = recover_with_credential_pool(
-            agent, status_code=401, has_retried_429=False
-        )
-
-        assert recovered is False
-        assert self._statuses(pool)["cred-0"] != "exhausted"
-        agent._swap_credential.assert_not_called()
-

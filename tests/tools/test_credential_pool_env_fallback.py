@@ -83,6 +83,20 @@ class TestCredentialPoolSeedsFromDotEnv:
             for e in entries
         ), f"Expected seeded entry with dotenv key, got: {[(e.source, e.access_token) for e in entries]}"
 
+    def test_openrouter_key_from_dotenv_only(self, isolated_hermes_home):
+        """OpenRouter path has its own branch — verify it also reads .env."""
+        _write_env_file(isolated_hermes_home, OPENROUTER_API_KEY="sk-or-dotenv-abc")
+        assert "OPENROUTER_API_KEY" not in os.environ
+
+        from agent.credential_pool import _seed_from_env
+        entries = []
+        changed, active_sources = _seed_from_env("openrouter", entries)
+
+        assert changed is True
+        assert "env:OPENROUTER_API_KEY" in active_sources
+        assert any(
+            e.access_token == "sk-or-dotenv-abc" for e in entries
+        )
 
     def test_empty_dotenv_no_entries(self, isolated_hermes_home):
         """No .env file, no env vars → no entries seeded (and no crash)."""

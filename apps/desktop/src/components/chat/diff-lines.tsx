@@ -1,7 +1,9 @@
 'use client'
 
+import type { ReactNode } from 'react'
 import * as React from 'react'
-import type { BundledLanguage, ShikiTransformer, ThemedToken } from 'shiki'
+import { useShikiHighlighter } from 'react-shiki'
+import { type BundledLanguage, codeToTokens, type ShikiTransformer, type ThemedToken } from 'shiki'
 
 import { chunkLines, type LineChunk, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { exceedsHighlightBudget, SHIKI_THEME } from '@/components/chat/shiki-highlighter'
@@ -39,15 +41,15 @@ interface ParsedHunk {
 // plain renderer; the Shiki path omits it so syntax colors win, layering only
 // the background + border.
 const DIFF_KIND_TINT: Record<DiffKind, string> = {
-  add: 'border-(--ui-diff-add-border) bg-(--ui-diff-add-background)',
+  add: 'border-emerald-500 bg-emerald-500/12',
   context: 'border-transparent',
-  remove: 'border-(--ui-diff-remove-border) bg-(--ui-diff-remove-background)'
+  remove: 'border-rose-500 bg-rose-500/12'
 }
 
 const DIFF_KIND_TEXT: Record<DiffKind, string> = {
-  add: 'text-(--ui-diff-add-foreground)',
+  add: 'text-emerald-800 dark:text-emerald-200',
   context: '',
-  remove: 'text-(--ui-diff-remove-foreground)'
+  remove: 'text-rose-800 dark:text-rose-200'
 }
 
 const DIFF_LINE_BASE = 'block min-w-max whitespace-pre border-l-2 px-2.5 py-px'
@@ -274,8 +276,7 @@ function parseFullFileDiff(diff: string, fullText: string): DiffLine[] {
   return out
 }
 
-/** Exported for the lazily-loaded SyntaxDiff (syntax-diff.tsx). */
-export function DiffBody({ lines, syntax }: { lines: DiffLine[]; syntax?: boolean }) {
+function DiffBody({ lines, syntax }: { lines: DiffLine[]; syntax?: boolean }) {
   return (
     <>
       {lines.map((line, index) => (
@@ -382,10 +383,7 @@ function TokenizedDiffBody({
     let cancelled = false
 
     setTokens(null)
-    // Dynamic import so the multi-MB shiki chunk stays off the cold-start
-    // path — this effect only runs once a highlightable diff is on screen.
-    void import('shiki')
-      .then(({ codeToTokens }) => codeToTokens(code, { lang: language as BundledLanguage, theme }))
+    void codeToTokens(code, { lang: language as BundledLanguage, theme })
       .then(result => {
         if (!cancelled) {
           setTokens(result.tokens)
@@ -448,8 +446,7 @@ function TokenizedDiffBody({
 
 // Shiki transformer: tag each `.line` with the diff tint for its kind, so the
 // syntax-highlighted output keeps add/remove backgrounds + the gutter accent.
-// Exported for the lazily-loaded SyntaxDiff (syntax-diff.tsx).
-export function diffLineTransformer(kinds: DiffKind[]): ShikiTransformer {
+function diffLineTransformer(kinds: DiffKind[]): ShikiTransformer {
   return {
     line(node, line) {
       const kind = kinds[line - 1] ?? 'context'
@@ -466,17 +463,17 @@ export function diffLineTransformer(kinds: DiffKind[]): ShikiTransformer {
 }
 
 function SyntaxDiff({ language, lines }: { language: string; lines: DiffLine[] }) {
-  // The Shiki hook lives in a lazily-loaded module (syntax-diff.tsx) so the
-  // multi-MB shiki chunk stays off the cold-start path. Until it (and the
-  // highlight itself) resolves, show the plain colored diff — no flash.
-  return (
-    <React.Suspense fallback={<DiffBody lines={lines} />}>
-      <LazySyntaxDiff language={language} lines={lines} />
-    </React.Suspense>
-  )
-}
+  const code = React.useMemo(() => lines.map(line => line.text).join('\n'), [lines])
+  const transformers = React.useMemo(() => [diffLineTransformer(lines.map(line => line.kind))], [lines])
 
-const LazySyntaxDiff = React.lazy(() => import('./syntax-diff'))
+  const highlighted = useShikiHighlighter(code, language, SHIKI_THEME, {
+    defaultColor: 'light-dark()',
+    transformers
+  })
+
+  // Until Shiki resolves, show the plain colored diff so there's no flash.
+  return (highlighted as ReactNode) ?? <DiffBody lines={lines} />
+}
 
 interface DiffLinesProps extends Omit<React.ComponentProps<'pre'>, 'children'> {
   text: string
@@ -498,7 +495,7 @@ function overviewRuns(lines: DiffLine[]): { kind: 'add' | 'remove'; sizePct: num
   const total = lines.length || 1
   const runs: { kind: 'add' | 'remove'; sizePct: number; startPct: number }[] = []
 
-  for (let i = 0; i < lines.length;) {
+  for (let i = 0; i < lines.length; ) {
     const kind = lines[i].kind
 
     if (kind === 'context') {
@@ -540,10 +537,7 @@ function DiffOverviewRuler({ lines }: { lines: DiffLine[] }) {
       <div className="relative w-full" style={{ height: `min(100%, ${lines.length * PREVIEW_LINE_PX}px)` }}>
         {runs.map((run, index) => (
           <div
-            className={cn(
-              'absolute inset-x-0',
-              run.kind === 'add' ? 'bg-(--ui-diff-add-border)' : 'bg-(--ui-diff-remove-border)'
-            )}
+            className={cn('absolute inset-x-0', run.kind === 'add' ? 'bg-(--ui-green)' : 'bg-(--ui-red)')}
             key={index}
             style={{ height: `max(0.125rem, ${run.sizePct}%)`, top: `${run.startPct}%` }}
           />

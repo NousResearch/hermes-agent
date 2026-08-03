@@ -1,14 +1,14 @@
 ---
-title: "Scrapling — Scrape sites with stealth browsing and Cloudflare bypass"
+title: "Scrapling"
 sidebar_label: "Scrapling"
-description: "Scrape sites with stealth browsing and Cloudflare bypass"
+description: "Web scraping with Scrapling - HTTP fetching, stealth browser automation, Cloudflare bypass, and spider crawling via CLI and Python"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Scrapling
 
-Scrape sites with stealth browsing and Cloudflare bypass.
+Web scraping with Scrapling - HTTP fetching, stealth browser automation, Cloudflare bypass, and spider crawling via CLI and Python.
 
 ## Skill metadata
 

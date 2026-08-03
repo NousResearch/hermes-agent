@@ -22,6 +22,10 @@ class TestDetectCodeSkew:
         monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:def456")
         assert code_skew.detect_code_skew() is None
 
+    def test_unchanged_checkout_is_not_skew(self, monkeypatch):
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:abc1234567890")
+        code_skew.record_boot_fingerprint()
+        assert code_skew.detect_code_skew() is None
 
     def test_drift_is_detected_with_short_revs(self, monkeypatch):
         monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:abc1234567890")
@@ -31,7 +35,19 @@ class TestDetectCodeSkew:
         skew = code_skew.detect_code_skew()
         assert skew == ("abc1234567", "def4567890")
 
+    def test_unreadable_current_rev_does_not_false_positive(self, monkeypatch):
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:abc1234567890")
+        code_skew.record_boot_fingerprint()
 
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: None)
+        assert code_skew.detect_code_skew() is None
+
+    def test_record_is_idempotent(self, monkeypatch):
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:first")
+        code_skew.record_boot_fingerprint()
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:second")
+        code_skew.record_boot_fingerprint()  # must not overwrite the boot snapshot
+        assert code_skew._boot_fingerprint == "git:refs/heads/main:first"
 
 
 class TestShort:

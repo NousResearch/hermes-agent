@@ -710,9 +710,9 @@ def _find_pses_bundle(ctx: ServerContext) -> Optional[str]:
     env_path = os.environ.get("PSES_BUNDLE_PATH")
     if env_path:
         candidates.append(env_path)
-    from hermes_constants import get_hermes_home
-
-    home = str(get_hermes_home())
+    home = os.environ.get("HERMES_HOME") or os.path.join(
+        os.path.expanduser("~"), ".hermes"
+    )
     candidates.append(os.path.join(home, "lsp", "PowerShellEditorServices"))
 
     for cand in candidates:
@@ -796,9 +796,9 @@ def _spawn_powershell_es(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 
 def hermes_lsp_session_dir() -> str:
     """Return (and create) the dir for PSES session/log scratch files."""
-    from hermes_constants import get_hermes_home
-
-    home = str(get_hermes_home())
+    home = os.environ.get("HERMES_HOME") or os.path.join(
+        os.path.expanduser("~"), ".hermes"
+    )
     d = os.path.join(home, "lsp", "pses")
     os.makedirs(d, exist_ok=True)
     return d

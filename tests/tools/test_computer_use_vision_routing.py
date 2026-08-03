@@ -45,6 +45,35 @@ class TestExplicitAuxVisionOverride:
         cfg = {"auxiliary": {"compression": {"provider": "openai"}}}
         assert _explicit_aux_vision_override(cfg) is False
 
+    def test_returns_false_for_blank_provider_no_model_no_base_url(self):
+        from tools.computer_use.vision_routing import _explicit_aux_vision_override
+        cfg = {"auxiliary": {"vision": {"provider": "", "model": "", "base_url": ""}}}
+        assert _explicit_aux_vision_override(cfg) is False
+
+    def test_returns_false_for_provider_auto(self):
+        from tools.computer_use.vision_routing import _explicit_aux_vision_override
+        cfg = {"auxiliary": {"vision": {"provider": "auto"}}}
+        assert _explicit_aux_vision_override(cfg) is False
+
+    def test_returns_false_for_provider_AUTO_uppercase(self):
+        from tools.computer_use.vision_routing import _explicit_aux_vision_override
+        cfg = {"auxiliary": {"vision": {"provider": "  AUTO  "}}}
+        assert _explicit_aux_vision_override(cfg) is False
+
+    def test_returns_true_for_explicit_provider(self):
+        from tools.computer_use.vision_routing import _explicit_aux_vision_override
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter"}}}
+        assert _explicit_aux_vision_override(cfg) is True
+
+    def test_returns_true_for_explicit_model_only(self):
+        from tools.computer_use.vision_routing import _explicit_aux_vision_override
+        cfg = {"auxiliary": {"vision": {"model": "google/gemini-2.5-flash"}}}
+        assert _explicit_aux_vision_override(cfg) is True
+
+    def test_returns_true_for_explicit_base_url_only(self):
+        from tools.computer_use.vision_routing import _explicit_aux_vision_override
+        cfg = {"auxiliary": {"vision": {"base_url": "http://localhost:1234/v1"}}}
+        assert _explicit_aux_vision_override(cfg) is True
 
     def test_returns_true_for_provider_auto_plus_explicit_model(self):
         """``provider: auto`` + an explicit model still counts as override."""
@@ -119,6 +148,17 @@ class TestRouteDecision:
                 "anthropic", "claude-opus-4-5", None
             ) is False
 
+    def test_provider_rejects_multimodal_tool_results_routes_to_aux(self):
+        """Some providers' tool-result messages won't carry images at all."""
+        from tools.computer_use import vision_routing
+
+        with patch.object(vision_routing, "_lookup_supports_vision", return_value=True), \
+             patch.object(vision_routing,
+                          "_provider_accepts_multimodal_tool_result",
+                          return_value=False):
+            assert vision_routing.should_route_capture_to_aux_vision(
+                "some-aggregator", "some-vision-model", {}
+            ) is True
 
     def test_user_declared_vision_support_keeps_custom_provider_native(self):
         """Local/custom VLMs use config as their tool-result image escape hatch."""
@@ -138,6 +178,23 @@ class TestRouteDecision:
                 "custom", "Qwen3.6-35B-A3B-local-vlm", cfg
             ) is False
 
+    def test_user_declared_no_vision_routes_custom_provider_to_aux(self):
+        """An explicit false override should not fall through to native routing."""
+        from tools.computer_use import vision_routing
+
+        cfg = {
+            "model": {
+                "default": "local-text-model",
+                "provider": "omlx",
+                "supports_vision": False,
+            }
+        }
+        with patch.object(vision_routing,
+                          "_provider_accepts_multimodal_tool_result",
+                          return_value=True):
+            assert vision_routing.should_route_capture_to_aux_vision(
+                "custom", "local-text-model", cfg
+            ) is True
 
     def test_unknown_provider_capabilities_fail_closed(self):
         """When tool-result lookup returns None, route to aux (safe default)."""
@@ -151,6 +208,17 @@ class TestRouteDecision:
                 "exotic-provider", "exotic-model", {}
             ) is True
 
+    def test_unknown_vision_capability_fails_closed(self):
+        """When models.dev has no entry, prefer aux over a likely 404."""
+        from tools.computer_use import vision_routing
+
+        with patch.object(vision_routing, "_lookup_supports_vision", return_value=None), \
+             patch.object(vision_routing,
+                          "_provider_accepts_multimodal_tool_result",
+                          return_value=True):
+            assert vision_routing.should_route_capture_to_aux_vision(
+                "openrouter", "novel/never-seen-model", {}
+            ) is True
 
     def test_explicit_override_wins_over_unknown_caps(self):
         """Explicit aux config wins regardless of unknown caps elsewhere."""
@@ -175,6 +243,25 @@ class TestLookupHelpers:
         from tools.computer_use.vision_routing import _lookup_supports_vision
         assert _lookup_supports_vision("", "claude") is None
 
+    def test_lookup_supports_vision_returns_none_for_blank_model(self):
+        from tools.computer_use.vision_routing import _lookup_supports_vision
+        assert _lookup_supports_vision("anthropic", "") is None
+
+    def test_lookup_supports_vision_handles_lookup_exception(self):
+        """Underlying caps lookup may raise; helper must swallow + return None."""
+        from tools.computer_use import vision_routing
+
+        def _boom(_provider, _model):
+            raise RuntimeError("models.dev unreachable")
+
+        with patch("agent.models_dev.get_model_capabilities", side_effect=_boom):
+            assert vision_routing._lookup_supports_vision("anthropic", "claude") is None
+
+    def test_lookup_supports_vision_returns_none_when_caps_missing(self):
+        from tools.computer_use import vision_routing
+
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert vision_routing._lookup_supports_vision("anthropic", "claude") is None
 
     def test_provider_accepts_multimodal_tool_result_returns_none_for_blank_provider(self):
         from tools.computer_use.vision_routing import (

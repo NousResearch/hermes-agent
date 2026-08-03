@@ -95,6 +95,13 @@ def _usage_payload(primary_used: float, secondary_used: float) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def test_rate_limit_shaped_variants():
+    assert _is_codex_rate_limit_shaped(429, None, None)
+    assert _is_codex_rate_limit_shaped(None, "usage_limit_reached", None)
+    assert _is_codex_rate_limit_shaped(None, None, "The usage limit has been reached")
+    assert _is_codex_rate_limit_shaped(None, "quota_exceeded", None)
+    assert not _is_codex_rate_limit_shaped(401, "token_invalidated", "token revoked")
+    assert not _is_codex_rate_limit_shaped(None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +109,18 @@ def _usage_payload(primary_used: float, secondary_used: float) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def test_probe_url_backend_api_uses_wham():
+    assert (
+        _codex_usage_probe_url("https://chatgpt.com/backend-api/codex")
+        == "https://chatgpt.com/backend-api/wham/usage"
+    )
+
+
+def test_probe_url_non_backend_uses_api_codex():
+    assert (
+        _codex_usage_probe_url("https://example.com/codex")
+        == "https://example.com/api/codex/usage"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +128,44 @@ def _usage_payload(primary_used: float, secondary_used: float) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def test_probe_returns_true_when_windows_below_100(monkeypatch):
+    calls = _patch_httpx(monkeypatch, _StubResponse(200, _usage_payload(12.0, 34.0)))
+    token = _jwt({"exp": time.time() + 3600})
+    assert _probe_codex_quota_restored(token) is True
+    assert calls and calls[0]["url"].endswith("/usage")
+
+
+def test_probe_returns_false_when_window_still_exhausted(monkeypatch):
+    _patch_httpx(monkeypatch, _StubResponse(200, _usage_payload(100.0, 34.0)))
+    token = _jwt({"exp": time.time() + 3600})
+    assert _probe_codex_quota_restored(token) is False
+
+
+def test_probe_returns_false_on_429(monkeypatch):
+    _patch_httpx(monkeypatch, _StubResponse(429, {}))
+    token = _jwt({"exp": time.time() + 3600})
+    assert _probe_codex_quota_restored(token) is False
+
+
+def test_probe_indeterminate_on_unexpected_payload(monkeypatch):
+    _patch_httpx(monkeypatch, _StubResponse(200, {}))
+    token = _jwt({"exp": time.time() + 3600})
+    assert _probe_codex_quota_restored(token) is None
+
+
+def test_probe_skips_non_jwt_tokens_without_network(monkeypatch):
+    calls = _patch_httpx(monkeypatch, _StubResponse(200, _usage_payload(0.0, 0.0)))
+    assert _probe_codex_quota_restored("not-a-jwt") is None
+    assert _probe_codex_quota_restored("") is None
+    assert calls == []
+
+
+def test_probe_throttles_repeat_calls(monkeypatch):
+    calls = _patch_httpx(monkeypatch, _StubResponse(200, _usage_payload(12.0, 34.0)))
+    token = _jwt({"exp": time.time() + 3600})
+    assert _probe_codex_quota_restored(token) is True
+    assert _probe_codex_quota_restored(token) is True  # cached
+    assert len(calls) == 1
 
 
 def test_probe_sends_chatgpt_account_id_from_jwt(monkeypatch):
@@ -183,8 +240,56 @@ def _exhausted_pool_store(now=None):
     }
 
 
+def test_clear_cooldowns_only_touches_quota_shaped_entries(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _write_auth_store(hermes_home, _exhausted_pool_store())
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    assert clear_codex_pool_quota_cooldowns() == 1
+
+    store = json.loads((hermes_home / "auth.json").read_text())
+    entries = {e["id"]: e for e in store["credential_pool"]["openai-codex"]}
+    assert entries["cred-quota"]["last_status"] is None
+    assert entries["cred-quota"]["last_error_reset_at"] is None
+    # DEAD (terminal auth) and non-quota exhausted entries stay untouched.
+    assert entries["cred-dead"]["last_status"] == "dead"
+    assert entries["cred-auth"]["last_status"] == "exhausted"
 
 
+def test_clear_cooldowns_scoped_to_access_token(tmp_path, monkeypatch):
+    now = time.time()
+    store = _exhausted_pool_store(now)
+    store["credential_pool"]["openai-codex"].append(
+        {
+            "id": "cred-quota-2",
+            "label": "other-quota",
+            "auth_type": "oauth",
+            "priority": 3,
+            "source": "device_code",
+            "access_token": "tok-other",
+            "last_status": "exhausted",
+            "last_status_at": now,
+            "last_error_code": 429,
+            "last_error_reset_at": now + 3600,
+        }
+    )
+    hermes_home = tmp_path / "hermes"
+    _write_auth_store(hermes_home, store)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    assert clear_codex_pool_quota_cooldowns("tok-other") == 1
+
+    persisted = json.loads((hermes_home / "auth.json").read_text())
+    entries = {e["id"]: e for e in persisted["credential_pool"]["openai-codex"]}
+    assert entries["cred-quota-2"]["last_status"] is None
+    assert entries["cred-quota"]["last_status"] == "exhausted"
+
+
+def test_clear_cooldowns_noop_without_pool(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _write_auth_store(hermes_home, {"version": 1, "providers": {}})
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    assert clear_codex_pool_quota_cooldowns() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +345,33 @@ def test_resolver_recovers_when_probe_confirms_reset(tmp_path, monkeypatch):
     assert entry["last_error_reset_at"] is None
 
 
+def test_resolver_keeps_cooldown_when_probe_negative(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _write_auth_store(hermes_home, _pool_only_rate_limited_store())
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    monkeypatch.setattr(
+        auth_mod, "_probe_codex_quota_restored", lambda token, **kw: False
+    )
+
+    with pytest.raises(AuthError) as exc:
+        resolve_codex_runtime_credentials()
+    assert exc.value.code == auth_mod.CODEX_RATE_LIMITED_CODE
+    assert "retry after" in str(exc.value)
+
+
+def test_resolver_keeps_cooldown_when_probe_indeterminate(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _write_auth_store(hermes_home, _pool_only_rate_limited_store())
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    monkeypatch.setattr(
+        auth_mod, "_probe_codex_quota_restored", lambda token, **kw: None
+    )
+
+    with pytest.raises(AuthError) as exc:
+        resolve_codex_runtime_credentials()
+    assert exc.value.code == auth_mod.CODEX_RATE_LIMITED_CODE
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +379,35 @@ def test_resolver_recovers_when_probe_confirms_reset(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_pool_entry_recovers_when_probe_confirms_reset(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path / "hermes", _pool_only_rate_limited_store())
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    monkeypatch.setattr(
+        auth_mod, "_probe_codex_quota_restored", lambda token, **kw: True
+    )
+
+    available = pool._available_entries(clear_expired=True, refresh=False)
+    assert len(available) == 1
+    assert available[0].last_status == "ok"
+    assert available[0].last_error_reset_at is None
+
+
+def test_pool_entry_stays_frozen_when_probe_negative(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path / "hermes", _pool_only_rate_limited_store())
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    monkeypatch.setattr(
+        auth_mod, "_probe_codex_quota_restored", lambda token, **kw: False
+    )
+
+    assert pool._available_entries(clear_expired=True, refresh=False) == []
 
 
 def test_pool_probe_not_fired_for_non_quota_exhaustion(tmp_path, monkeypatch):
@@ -274,6 +435,24 @@ def test_pool_probe_not_fired_for_non_quota_exhaustion(tmp_path, monkeypatch):
     assert probes == []
 
 
+def test_pool_readonly_enumeration_does_not_probe(tmp_path, monkeypatch):
+    """clear_expired=False callers (read-only listing) must not fire probes
+    or mutate persisted state."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path / "hermes", _pool_only_rate_limited_store())
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    probes = []
+
+    def _spy(token, **kw):
+        probes.append(token)
+        return True
+
+    monkeypatch.setattr(auth_mod, "_probe_codex_quota_restored", _spy)
+    assert pool._available_entries(clear_expired=False, refresh=False) == []
+    assert probes == []
 
 
 # ---------------------------------------------------------------------------
@@ -281,3 +460,49 @@ def test_pool_probe_not_fired_for_non_quota_exhaustion(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_redeem_reset_clears_pool_cooldowns(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _write_auth_store(hermes_home, _pool_only_rate_limited_store())
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from agent import account_usage
+
+    class _FakeResetClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, headers=None):
+            return _StubResponse(
+                200,
+                {
+                    "rate_limit": {
+                        "primary_window": {"used_percent": 100.0},
+                        "secondary_window": {"used_percent": 40.0},
+                    },
+                    "rate_limit_reset_credits": {"available_count": 1},
+                },
+            )
+
+        def post(self, url, headers=None, json=None):
+            return _StubResponse(200, {"code": "reset", "windows_reset": 2})
+
+    monkeypatch.setattr(
+        account_usage.httpx, "Client", lambda **kwargs: _FakeResetClient(**kwargs)
+    )
+
+    result = account_usage.redeem_codex_reset_credit(
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="live-agent-token",
+    )
+    assert result.redeemed
+
+    store = json.loads((hermes_home / "auth.json").read_text())
+    entry = store["credential_pool"]["openai-codex"][0]
+    assert entry["last_status"] is None
+    assert entry["last_error_reset_at"] is None

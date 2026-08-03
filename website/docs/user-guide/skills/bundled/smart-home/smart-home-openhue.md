@@ -16,7 +16,7 @@ Control Philips Hue lights, scenes, rooms via OpenHue CLI.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/smart-home/openhue` |
-| Version | `1.0.1` |
+| Version | `1.0.0` |
 | Author | community |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -35,11 +35,8 @@ Control Philips Hue lights and scenes via a Hue Bridge from the terminal.
 ## Prerequisites
 
 ```bash
-# Linux (pre-built binary — releases ship tarballs, not bare binaries)
-curl -sL "https://github.com/openhue/openhue-cli/releases/latest/download/openhue_Linux_x86_64.tar.gz" \
-  | tar -xz -C /tmp openhue \
-  && install -m 0755 /tmp/openhue ~/.local/bin/openhue
-# (use openhue_Linux_arm64.tar.gz on ARM64)
+# Linux (pre-built binary)
+curl -sL https://github.com/openhue/openhue-cli/releases/latest/download/openhue-linux-amd64 -o ~/.local/bin/openhue && chmod +x ~/.local/bin/openhue
 
 # macOS
 brew install openhue/cli/openhue-cli

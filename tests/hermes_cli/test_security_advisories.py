@@ -80,6 +80,11 @@ class TestDetectCompromised:
         assert hits[0].package == "fake-malicious-pkg"
         assert hits[0].installed_version == "6.6.6"
 
+    def test_safe_version_does_not_match(self, fake_advisory, patched_version):
+        # Package is installed but the version is not in the compromised set.
+        patched_version["fake-malicious-pkg"] = "6.6.5"
+        hits = adv.detect_compromised(advisories=[fake_advisory])
+        assert hits == []
 
     def test_empty_compromised_set_matches_any_version(
         self, patched_version
@@ -114,7 +119,25 @@ class TestAck:
         )
         assert adv.get_acked_ids() == set()
 
+    def test_filter_unacked_strips_dismissed(self, fake_advisory, monkeypatch):
+        hit = adv.AdvisoryHit(
+            advisory=fake_advisory,
+            package="fake-malicious-pkg",
+            installed_version="6.6.6",
+        )
+        monkeypatch.setattr(adv, "get_acked_ids", lambda: {fake_advisory.id})
+        assert adv.filter_unacked([hit]) == []
 
+    def test_filter_unacked_passes_through_unknown(
+        self, fake_advisory, monkeypatch
+    ):
+        hit = adv.AdvisoryHit(
+            advisory=fake_advisory,
+            package="fake-malicious-pkg",
+            installed_version="6.6.6",
+        )
+        monkeypatch.setattr(adv, "get_acked_ids", lambda: set())
+        assert adv.filter_unacked([hit]) == [hit]
 
     def test_ack_advisory_persists_id(self, isolated_home, monkeypatch):
         # Stub the config layer end-to-end with a tiny in-memory store so we
@@ -136,6 +159,9 @@ class TestAck:
             == 1
         )
 
+    def test_ack_advisory_rejects_blank(self, isolated_home):
+        assert adv.ack_advisory("") is False
+        assert adv.ack_advisory("   ") is False
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +182,19 @@ class TestBannerCache:
         due = adv.hits_due_for_banner([hit])
         assert due == [hit]
 
+    def test_second_call_within_window_suppresses(
+        self, fake_advisory, isolated_home, monkeypatch
+    ):
+        monkeypatch.setattr(adv, "get_acked_ids", lambda: set())
+        hit = adv.AdvisoryHit(
+            advisory=fake_advisory,
+            package="fake-malicious-pkg",
+            installed_version="6.6.6",
+        )
+        adv.hits_due_for_banner([hit])
+        # Same banner inside repeat window → suppressed.
+        again = adv.hits_due_for_banner([hit])
+        assert again == []
 
     def test_call_after_window_re_banners(
         self, fake_advisory, isolated_home, monkeypatch
@@ -199,6 +238,18 @@ class TestBannerCache:
 
 
 class TestRendering:
+    def test_short_banner_lines_includes_id_and_version(self, fake_advisory):
+        hit = adv.AdvisoryHit(
+            advisory=fake_advisory,
+            package="fake-malicious-pkg",
+            installed_version="6.6.6",
+        )
+        lines = adv.short_banner_lines([hit])
+        joined = "\n".join(lines)
+        assert fake_advisory.id in joined
+        assert fake_advisory.title in joined
+        assert "fake-malicious-pkg==6.6.6" in joined
+        assert "hermes doctor" in joined
 
     def test_full_remediation_text_contains_all_steps(self, fake_advisory):
         hit = adv.AdvisoryHit(
@@ -213,6 +264,11 @@ class TestRendering:
         assert fake_advisory.url in body
         assert fake_advisory.summary in body
 
+    def test_render_doctor_section_clean_state(self):
+        # No hits → success message, has_problems=False.
+        has_problems, lines = adv.render_doctor_section([])
+        assert has_problems is False
+        assert any("No active security advisories" in line for line in lines)
 
     def test_render_doctor_section_with_unacked_hit(
         self, fake_advisory, monkeypatch
@@ -228,7 +284,20 @@ class TestRendering:
         body = "\n".join(lines)
         assert fake_advisory.title in body
 
+    def test_gateway_log_message_singular(self, fake_advisory, monkeypatch):
+        monkeypatch.setattr(adv, "get_acked_ids", lambda: set())
+        hit = adv.AdvisoryHit(
+            advisory=fake_advisory,
+            package="fake-malicious-pkg",
+            installed_version="6.6.6",
+        )
+        msg = adv.gateway_log_message([hit])
+        assert msg is not None
+        assert fake_advisory.id in msg
+        assert "fake-malicious-pkg==6.6.6" in msg
 
+    def test_gateway_log_message_returns_none_for_no_hits(self):
+        assert adv.gateway_log_message([]) is None
 
 
 # ---------------------------------------------------------------------------

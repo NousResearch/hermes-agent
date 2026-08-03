@@ -31,7 +31,30 @@ def _clear_cpr_env(monkeypatch):
 
 
 class TestClassicCliOutputSelection:
+    def test_posix_local_without_ssh_selects_cpr_disabled_output(self, monkeypatch):
+        """Changed contract: no SSH vars, still CPR-disabled on POSIX."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert _terminal_may_leak_cpr() is True
+        out = _select_classic_cli_pt_output(sys.stdout)
+        assert out is not None
+        assert out.enable_cpr is False
 
+    def test_application_receives_cpr_not_supported_without_ssh(self, monkeypatch):
+        """Classic-CLI Application construction must get CPR-disabled output."""
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.layout import FormattedTextControl, Layout, Window
+        from prompt_toolkit.renderer import CPR_Support
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        out = _select_classic_cli_pt_output(sys.stdout)
+        assert out is not None
+
+        app = Application(
+            layout=Layout(Window(FormattedTextControl("x"))),
+            output=out,
+            full_screen=False,
+        )
+        assert app.renderer.cpr_support == CPR_Support.NOT_SUPPORTED
 
     def test_windows_preserves_default_output_selection(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "win32")

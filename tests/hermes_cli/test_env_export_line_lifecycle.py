@@ -55,8 +55,45 @@ def test_classic_pat_save_via_endpoint_succeeds(hermes_home):
     assert load_env()["GITHUB_TOKEN"] == NEW_PAT
 
 
+def test_remove_export_prefixed_token(hermes_home):
+    """DELETE must clear an ``export KEY=...`` line, not 404 on it."""
+    _write_env_raw(hermes_home, f"export GITHUB_TOKEN={OLD_PAT}\n")
+
+    resp = client.request(
+        "DELETE", "/api/env", json={"key": "GITHUB_TOKEN"}, headers=HEADERS
+    )
+    assert resp.status_code == 200, (
+        "export-prefixed lines are parsed by load_env (UI shows the token as "
+        "set) so the delete path must recognise them too (#40041)"
+    )
+
+    env_text = hermes_home.joinpath(".env").read_text(encoding="utf-8")
+    assert OLD_PAT not in env_text
+
+    from hermes_cli.config import load_env
+
+    assert "GITHUB_TOKEN" not in load_env()
 
 
+def test_update_export_prefixed_token_does_not_duplicate(hermes_home):
+    """Saving over an ``export KEY=`` line must replace it in place."""
+    _write_env_raw(hermes_home, f"export GITHUB_TOKEN={OLD_PAT}\n")
+
+    resp = client.put(
+        "/api/env", json={"key": "GITHUB_TOKEN", "value": NEW_PAT}, headers=HEADERS
+    )
+    assert resp.status_code == 200
+
+    env_text = hermes_home.joinpath(".env").read_text(encoding="utf-8")
+    assert OLD_PAT not in env_text, "old exported token line must be replaced"
+    assert env_text.count("GITHUB_TOKEN") == 1, (
+        "save must not append a duplicate GITHUB_TOKEN line alongside the "
+        "export-prefixed one"
+    )
+
+    from hermes_cli.config import load_env
+
+    assert load_env()["GITHUB_TOKEN"] == NEW_PAT
 
 
 def test_plain_line_save_and_remove_still_work(hermes_home):
@@ -72,3 +109,17 @@ def test_plain_line_save_and_remove_still_work(hermes_home):
     assert "GITHUB_TOKEN" not in load_env()
 
 
+def test_export_line_with_comment_untouched(hermes_home):
+    """Commented-out export lines are not live assignments — leave them."""
+    _write_env_raw(
+        hermes_home,
+        f"# export GITHUB_TOKEN={OLD_PAT}\nOTHER_KEY=value\n",
+    )
+
+    resp = client.request(
+        "DELETE", "/api/env", json={"key": "GITHUB_TOKEN"}, headers=HEADERS
+    )
+    assert resp.status_code == 404
+    env_text = hermes_home.joinpath(".env").read_text(encoding="utf-8")
+    assert "# export GITHUB_TOKEN=" in env_text
+    assert "OTHER_KEY=value" in env_text

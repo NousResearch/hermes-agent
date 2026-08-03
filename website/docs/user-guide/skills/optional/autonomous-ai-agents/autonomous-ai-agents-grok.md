@@ -16,7 +16,7 @@ Delegate coding to xAI Grok Build CLI (features, PRs).
 |---|---|
 | Source | Optional — install with `hermes skills install official/autonomous-ai-agents/grok` |
 | Path | `optional-skills/autonomous-ai-agents/grok` |
-| Version | `0.1.1` |
+| Version | `0.1.0` |
 | Author | Matt Maximo (MattMaximo), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -126,16 +126,14 @@ For pure automation, headless `-p` is still cleaner than the TUI.
 |------|--------|
 | `-p, --single <PROMPT>` | Send one prompt, run headless, exit |
 | `-m, --model <MODEL>` | Choose a model |
-| `-s, --session-id <UUID>` | Assign a **NEW** valid UUID to a fresh conversation (must not already exist). Does **not** resume — use `--resume`/`--continue` for that. Only valid with `--resume`/`--continue` when paired with `--fork-session` |
-| `-r, --resume [<UUID>]` | Resume an existing session by its UUID (or the most recent if omitted) |
+| `-s, --session-id <ID>` | Create or resume a named headless session |
+| `-r, --resume <ID>` | Resume an existing session |
 | `-c, --continue` | Continue the most recent session in the current directory |
-| `--fork-session` | When resuming, create a new session ID instead of reusing the original |
-| `--max-turns <N>` | Cap the maximum number of agent turns |
 | `--cwd <PATH>` | Set the working directory |
 | `--output-format <FMT>` | `plain` (default), `json`, or `streaming-json` |
 | `--always-approve` | Auto-approve all tool executions (the `--full-auto` / `--yolo` equivalent) |
 | `--no-alt-screen` | Run inline, no fullscreen TUI takeover |
-| `--no-auto-update` | Skip background update checks (use in all automation; hidden from `--help` but still works) |
+| `--no-auto-update` | Skip background update checks (use in all automation) |
 
 ### Output Formats
 
@@ -171,19 +169,14 @@ with `tmux capture-pane`, exactly like the `claude-code` / `codex` skills.
 
 ### Session Continuation
 
-Sessions are keyed by **UUID**, not by name. `--session-id` assigns a *new* UUID
-to a fresh run (it does **not** resume); `--resume` takes an existing session's
-UUID (or omit the value to resume the most recent).
-
 ```
-# Start a session with a self-assigned UUID (must be a valid, unused UUID)
-SID=$(uuidgen)
-terminal(command="grok --no-auto-update -s $SID -p 'Start refactoring the database layer' --always-approve", workdir="/project", timeout=240)
+# Start a named session
+terminal(command="grok --no-auto-update -s refactor-db -p 'Start refactoring the database layer' --always-approve", workdir="/project", timeout=240)
 
-# Resume that exact session later by its UUID
-terminal(command="grok --no-auto-update -r $SID -p 'Now add connection pooling' --always-approve", workdir="/project", timeout=180)
+# Resume it later
+terminal(command="grok --no-auto-update -r refactor-db -p 'Now add connection pooling' --always-approve", workdir="/project", timeout=180)
 
-# Or just continue the most recent session in this directory (no UUID needed)
+# Or continue the most recent session in this directory
 terminal(command="grok --no-auto-update -c -p 'What did you change last time?'", workdir="/project", timeout=60)
 ```
 

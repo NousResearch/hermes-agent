@@ -12,8 +12,10 @@
  */
 
 import js from '@eslint/js'
-import tseslint from 'typescript-eslint';
+import typescriptEslint from '@typescript-eslint/eslint-plugin'
+import typescriptParser from '@typescript-eslint/parser'
 import perfectionist from 'eslint-plugin-perfectionist'
+import reactPlugin from 'eslint-plugin-react'
 import hooksPlugin from 'eslint-plugin-react-hooks'
 import unusedImports from 'eslint-plugin-unused-imports'
 import globals from 'globals'
@@ -29,7 +31,7 @@ export default [
       globals: {
         ...globals.node
       },
-      parser: tseslint.parser,
+      parser: typescriptParser,
       parserOptions: {
         ecmaFeatures: { jsx: true },
         ecmaVersion: 'latest',
@@ -37,8 +39,9 @@ export default [
       }
     },
     plugins: {
-      '@typescript-eslint': tseslint.plugin,
+      '@typescript-eslint': typescriptEslint,
       perfectionist,
+      react: reactPlugin,
       'react-hooks': hooksPlugin,
       'unused-imports': unusedImports
     },
@@ -92,6 +95,9 @@ export default [
       'react-hooks/exhaustive-deps': 'warn',
       'react-hooks/rules-of-hooks': 'error',
       'unused-imports/no-unused-imports': 'error'
+    },
+    settings: {
+      react: { version: 'detect' }
     }
   },
   {

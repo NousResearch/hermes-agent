@@ -127,6 +127,104 @@ def _make_branch_runner():
     return runner, session_key
 
 
+@pytest.mark.asyncio
+async def test_resume_clears_session_scoped_approval_and_yolo_state():
+    runner, session_key = _make_resume_runner()
+    other_key = "agent:main:telegram:dm:other-chat"
+
+    runner._pending_skills_reload_notes = {
+        session_key: "[USER INITIATED SKILLS RELOAD: target]",
+        other_key: "[USER INITIATED SKILLS RELOAD: other]",
+    }
+    approve_session(session_key, "recursive delete")
+    approve_session(other_key, "recursive delete")
+    enable_session_yolo(session_key)
+    enable_session_yolo(other_key)
+    runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
+    runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
+    runner._update_prompt_pending[session_key] = True
+    runner._update_prompt_pending[other_key] = True
+
+    result = await runner._handle_resume_command(_make_event("/resume Resumed Work"))
+
+    assert "Resumed session" in result
+    assert is_approved(session_key, "recursive delete") is False
+    assert is_session_yolo_enabled(session_key) is False
+    assert session_key not in runner._pending_approvals
+    assert session_key not in runner._update_prompt_pending
+    assert session_key not in runner._pending_skills_reload_notes
+    assert is_approved(other_key, "recursive delete") is True
+    assert is_session_yolo_enabled(other_key) is True
+    assert other_key in runner._pending_approvals
+    assert other_key in runner._update_prompt_pending
+    assert other_key in runner._pending_skills_reload_notes
+
+
+@pytest.mark.asyncio
+async def test_branch_clears_session_scoped_approval_and_yolo_state():
+    runner, session_key = _make_branch_runner()
+    other_key = "agent:main:telegram:dm:other-chat"
+
+    runner._pending_skills_reload_notes = {
+        session_key: "[USER INITIATED SKILLS RELOAD: target]",
+        other_key: "[USER INITIATED SKILLS RELOAD: other]",
+    }
+    approve_session(session_key, "recursive delete")
+    approve_session(other_key, "recursive delete")
+    enable_session_yolo(session_key)
+    enable_session_yolo(other_key)
+    runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
+    runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
+    runner._update_prompt_pending[session_key] = True
+    runner._update_prompt_pending[other_key] = True
+
+    result = await runner._handle_branch_command(_make_event("/branch"))
+
+    assert "Branched to" in result
+    assert is_approved(session_key, "recursive delete") is False
+    assert is_session_yolo_enabled(session_key) is False
+    assert session_key not in runner._pending_approvals
+    assert session_key not in runner._update_prompt_pending
+    assert session_key not in runner._pending_skills_reload_notes
+    assert is_approved(other_key, "recursive delete") is True
+    assert is_session_yolo_enabled(other_key) is True
+    assert other_key in runner._pending_approvals
+    assert other_key in runner._update_prompt_pending
+    assert other_key in runner._pending_skills_reload_notes
+
+
+@pytest.mark.asyncio
+async def test_branch_preserves_persisted_assistant_metadata():
+    runner, _session_key = _make_branch_runner()
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": "world",
+            "finish_reason": "stop",
+            "reasoning": "thinking",
+            "reasoning_content": "provider scratchpad",
+            "reasoning_details": [{"type": "summary", "text": "step"}],
+            "codex_reasoning_items": [{"id": "r1", "type": "reasoning"}],
+            "codex_message_items": [{"id": "m1", "type": "message"}],
+        },
+    ]
+
+    result = await runner._handle_branch_command(_make_event("/branch"))
+
+    assert "Branched to" in result
+    append_calls = runner._session_db._db.append_message.call_args_list
+    assert len(append_calls) == 2
+    assistant_kwargs = append_calls[1].kwargs
+    assert assistant_kwargs["role"] == "assistant"
+    assert assistant_kwargs["finish_reason"] == "stop"
+    assert assistant_kwargs["reasoning"] == "thinking"
+    assert assistant_kwargs["reasoning_content"] == "provider scratchpad"
+    assert assistant_kwargs["reasoning_details"] == [{"type": "summary", "text": "step"}]
+    assert assistant_kwargs["codex_reasoning_items"] == [{"id": "r1", "type": "reasoning"}]
+    assert assistant_kwargs["codex_message_items"] == [{"id": "m1", "type": "message"}]
+
+
 def test_clear_session_boundary_security_state_is_scoped():
     """The helper must wipe only the target session's approval/yolo state.
 

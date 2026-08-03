@@ -89,4 +89,32 @@ class TestResetSessionState:
             f"_user_turn_count must be 0 after reset; got: {agent._user_turn_count}"
         )
 
+    def test_both_fields_cleared_together(self):
+        """Both stale fields are cleared in a single reset_session_state() call."""
+        agent = _make_minimal_agent()
+        agent._user_turn_count = 3
 
+        compressor = ContextCompressor.__new__(ContextCompressor)
+        compressor._previous_summary = "Stale summary"
+        compressor.last_prompt_tokens = 0
+        compressor.last_completion_tokens = 0
+        compressor.last_total_tokens = 0
+        compressor.compression_count = 0
+        compressor._context_probed = False
+        agent.context_compressor = compressor
+
+        agent.reset_session_state()
+
+        assert agent._user_turn_count == 0
+        assert compressor._previous_summary is None
+
+    def test_reset_without_compressor_does_not_raise(self):
+        """reset_session_state() must not raise when context_compressor is None."""
+        agent = _make_minimal_agent()
+        agent._user_turn_count = 2
+        agent.context_compressor = None
+
+        # Must not raise
+        agent.reset_session_state()
+
+        assert agent._user_turn_count == 0

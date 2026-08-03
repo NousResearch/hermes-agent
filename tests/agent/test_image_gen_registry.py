@@ -32,7 +32,14 @@ def _reset_registry():
 
 
 class TestRegisterProvider:
+    def test_register_and_lookup(self):
+        provider = _FakeProvider("fake")
+        image_gen_registry.register_provider(provider)
+        assert image_gen_registry.get_provider("fake") is provider
 
+    def test_rejects_non_provider(self):
+        with pytest.raises(TypeError):
+            image_gen_registry.register_provider("not a provider")  # type: ignore[arg-type]
 
     def test_rejects_empty_name(self):
         class Empty(ImageGenProvider):
@@ -46,6 +53,12 @@ class TestRegisterProvider:
         with pytest.raises(ValueError):
             image_gen_registry.register_provider(Empty())
 
+    def test_reregister_overwrites(self):
+        a = _FakeProvider("same")
+        b = _FakeProvider("same")
+        image_gen_registry.register_provider(a)
+        image_gen_registry.register_provider(b)
+        assert image_gen_registry.get_provider("same") is b
 
     def test_list_is_sorted(self):
         image_gen_registry.register_provider(_FakeProvider("zeta"))
@@ -55,7 +68,18 @@ class TestRegisterProvider:
 
 
 class TestGetActiveProvider:
+    def test_single_provider_autoresolves(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        image_gen_registry.register_provider(_FakeProvider("solo"))
+        active = image_gen_registry.get_active_provider()
+        assert active is not None and active.name == "solo"
 
+    def test_fal_preferred_on_multi_without_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        image_gen_registry.register_provider(_FakeProvider("fal"))
+        image_gen_registry.register_provider(_FakeProvider("openai"))
+        active = image_gen_registry.get_active_provider()
+        assert active is not None and active.name == "fal"
 
     def test_explicit_config_wins(self, tmp_path, monkeypatch):
         import yaml
@@ -69,6 +93,18 @@ class TestGetActiveProvider:
         active = image_gen_registry.get_active_provider()
         assert active is not None and active.name == "openai"
 
+    def test_missing_configured_provider_falls_back(self, tmp_path, monkeypatch):
+        import yaml
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"provider": "replicate"}})
+        )
+        # Only FAL is registered — configured provider doesn't exist
+        image_gen_registry.register_provider(_FakeProvider("fal"))
+        active = image_gen_registry.get_active_provider()
+        # Falls back to FAL preference (legacy default) rather than None
+        assert active is not None and active.name == "fal"
 
     def test_none_when_empty(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

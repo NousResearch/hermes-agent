@@ -32,42 +32,29 @@ def test_output_path_rejects_bare_dotdot():
     assert "traversal" in result["error"].lower()
 
 
-def test_output_path_rejects_hermes_oauth_store(tmp_path, monkeypatch):
-    """TTS output_path must not bypass the shared protected-file write guard."""
-    import agent.file_safety as file_safety
+def test_output_path_absolute_path_passes_guard(tmp_path, monkeypatch):
+    """Explicit absolute paths must pass the traversal guard.
 
-    hermes_home = tmp_path / "hermes-home"
-    hermes_home.mkdir()
-    monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: hermes_home)
-    monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: hermes_home)
-
-    target = hermes_home / ".anthropic_oauth.json"
+    The agent legitimately writes audio to user-specified absolute paths;
+    only ``..`` components are rejected. Any subsequent failure (no
+    provider configured, etc.) is fine — the assertion is specifically
+    that the 'traversal' rejection didn't fire.
+    """
+    inside = tmp_path / "clip.mp3"
     result = json.loads(text_to_speech_tool(
         text="hello",
-        output_path=str(target),
+        output_path=str(inside),
     ))
-
-    assert result["success"] is False
-    assert "protected credential" in result["error"]
-    assert not target.exists()
+    error = result.get("error", "")
+    assert "traversal" not in error.lower()
 
 
-def test_output_path_rejects_mcp_token_directory(tmp_path, monkeypatch):
-    """TTS output_path must not write synthesized audio over MCP token files."""
-    import agent.file_safety as file_safety
-
-    hermes_home = tmp_path / "hermes-home"
-    token_dir = hermes_home / "mcp-tokens"
-    token_dir.mkdir(parents=True)
-    monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: hermes_home)
-    monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: hermes_home)
-
-    target = token_dir / "server.mp3"
+def test_output_path_relative_no_dotdot_passes_guard(tmp_path, monkeypatch):
+    """Relative paths without '..' components must pass the guard."""
+    monkeypatch.chdir(tmp_path)
     result = json.loads(text_to_speech_tool(
         text="hello",
-        output_path=str(target),
+        output_path="subdir/clip.mp3",
     ))
-
-    assert result["success"] is False
-    assert "protected credential" in result["error"]
-    assert not target.exists()
+    error = result.get("error", "")
+    assert "traversal" not in error.lower()

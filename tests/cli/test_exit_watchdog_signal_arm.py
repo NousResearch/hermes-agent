@@ -39,7 +39,19 @@ class TestSignalArmLogic:
             cli._arm_exit_watchdog_on_shutdown_signal()
         arm.assert_called_once_with(timeout_s=14.0)
 
+    def test_idempotent_across_repeated_signals(self, monkeypatch):
+        monkeypatch.setenv("HERMES_EXIT_WATCHDOG_S", "7")
+        with patch.object(cli, "_arm_exit_watchdog") as arm:
+            cli._arm_exit_watchdog_on_shutdown_signal()
+            cli._arm_exit_watchdog_on_shutdown_signal()
+            cli._arm_exit_watchdog_on_shutdown_signal()
+        assert arm.call_count == 1
 
+    def test_disabled_via_env_zero(self, monkeypatch):
+        monkeypatch.setenv("HERMES_EXIT_WATCHDOG_S", "0")
+        with patch.object(cli, "_arm_exit_watchdog") as arm:
+            cli._arm_exit_watchdog_on_shutdown_signal()
+        arm.assert_not_called()
 
     def test_bad_env_value_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("HERMES_EXIT_WATCHDOG_S", "not-a-number")

@@ -1,7 +1,6 @@
 async function applyConnectionChange({
   cancelAndWait,
   isPrimary,
-  rehomePrimary = null,
   scope,
   sendApplied,
   stopPool,
@@ -13,12 +12,6 @@ async function applyConnectionChange({
 
   if (!isPrimary) {
     stopPool(scope)
-
-    return
-  }
-
-  if (rehomePrimary) {
-    await rehomePrimary()
 
     return
   }

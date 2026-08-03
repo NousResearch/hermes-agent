@@ -41,13 +41,12 @@ Three pieces fit together:
 | Category | Extensions | Delivery |
 |---|---|---|
 | Images | `.png .jpg .jpeg .gif .webp .bmp .tiff .svg` | Inline embed |
-| Video | `.mp4 .mov .avi .mkv .webm .3gp` | Inline embed (where supported) |
-| Audio | `.mp3 .m2a .wav .ogg .opus .m4a .flac` | Voice / audio attachment |
-| Documents | `.pdf .docx .doc .odt .rtf .txt .md .epub` | File upload |
-| Data | `.xlsx .xls .ods .csv .tsv .json .xml .yaml .yml` | File upload |
-| Geospatial | `.kmz .kml .geojson .gpx` | File upload |
-| Presentations | `.pptx .ppt .odp .key` | File upload |
-| Archives | `.zip .tar .gz .tgz .bz2 .xz .7z .rar .apk .ipa` | File upload |
+| Video | `.mp4 .mov .avi .mkv .webm` | Inline embed (where supported) |
+| Audio | `.mp3 .wav .ogg .m4a .flac` | Voice / audio attachment |
+| Documents | `.pdf .docx .doc .odt .rtf .txt .md` | File upload |
+| Data | `.xlsx .xls .csv .tsv .json .xml .yaml .yml` | File upload |
+| Presentations | `.pptx .ppt .odp` | File upload |
+| Archives | `.zip .tar .gz .tgz .bz2 .7z` | File upload |
 | Web | `.html .htm` | File upload |
 
 `.py`, `.log`, and other source-file extensions are intentionally excluded so

@@ -65,14 +65,13 @@ hermes tools
 | `singularity` | HPC 容器 | 集群计算、无 root 权限 |
 | `modal` | 云端执行 | 无服务器、弹性扩展 |
 | `daytona` | 云端沙箱工作区 | 持久化远程开发环境 |
-| `vercel_sandbox` | Vercel Sandbox 云微虚拟机 | 带快照文件系统持久化的云端执行 |
 
 ### 配置
 
 ```yaml
 # 在 ~/.hermes/config.yaml 中
 terminal:
-  backend: local    # 或：docker, ssh, singularity, modal, daytona, vercel_sandbox
+  backend: local    # 或：docker, ssh, singularity, modal, daytona
   cwd: "."          # 工作目录
   timeout: 180      # 命令超时时间（秒）
 ```
@@ -123,41 +122,13 @@ modal setup
 hermes config set terminal.backend modal
 ```
 
-### Vercel Sandbox
-
-```bash
-pip install 'hermes-agent[vercel]'
-hermes config set terminal.backend vercel_sandbox
-hermes config set terminal.vercel_runtime node24
-```
-
-需同时配置 `VERCEL_TOKEN`、`VERCEL_PROJECT_ID` 和 `VERCEL_TEAM_ID` 三个凭据。此访问令牌配置方式是在 Render、Railway、Docker 及类似平台上进行部署和正常长期运行 Hermes 进程的推荐路径。支持的运行时为 `node24`、`node22` 和 `python3.13`；Hermes 默认使用 `/vercel/sandbox` 作为远程工作区根目录。
-
-对于本地一次性开发，Hermes 也接受短期 Vercel OIDC token：
-
-```bash
-VERCEL_OIDC_TOKEN="$(vc project token <project-name>)" hermes chat
-```
-
-在已关联的 Vercel 项目目录中：
-
-```bash
-VERCEL_OIDC_TOKEN="$(vc project token)" hermes chat
-```
-
-启用 `container_persistent: true` 后，Hermes 使用 Vercel 快照在同一任务的沙箱重建时保留文件系统状态，其中可包含沙箱内 Hermes 同步的凭据、技能和缓存文件。快照不保留活跃进程、PID 空间或相同的活跃沙箱标识。
-
-后台终端命令使用 Hermes 通用的非本地进程流程：在沙箱存活期间，spawn、poll、wait、log 和 kill 均通过标准 process 工具运行，但 Hermes 不提供清理或重启后的原生 Vercel 后台进程恢复能力。
-
-`container_disk` 保持未设置或使用共享默认值 `51200`；Vercel Sandbox 不支持自定义磁盘大小，设置后将导致诊断/后端创建失败。
-
 ### 容器资源
 
 为所有容器后端配置 CPU、内存、磁盘和持久化：
 
 ```yaml
 terminal:
-  backend: docker  # 或 singularity, modal, daytona, vercel_sandbox
+  backend: docker  # 或 singularity, modal, daytona
   container_cpu: 1              # CPU 核心数（默认：1）
   container_memory: 5120        # 内存（MB，默认：5GB）
   container_disk: 51200         # 磁盘（MB，默认：50GB）

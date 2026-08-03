@@ -74,6 +74,53 @@ class TestInitSessionCwdRespect:
             "bootstrap cd must target the configured cwd (/my/project)"
         )
 
+    def test_configured_cwd_survives_init_session(self):
+        """self.cwd must be the configured path after init_session completes."""
+        configured_cwd = "/my/project"
+        env = _TestableEnv(cwd=configured_cwd)
+
+        marker = env._cwd_marker
+
+        def mock_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
+            mock = MagicMock()
+            mock.poll.return_value = 0
+            mock.returncode = 0
+            # Simulate output where pwd reports the configured cwd
+            output = f"snapshot output\n{marker}{configured_cwd}{marker}\n"
+            stdout = TemporaryFile(mode="w+b")
+            stdout.write(output.encode("utf-8"))
+            stdout.seek(0)
+            mock.stdout = stdout
+            return mock
+
+        env._run_bash = mock_run_bash
+        env.init_session()
+
+        assert env.cwd == configured_cwd, (
+            f"Expected cwd={configured_cwd!r} after init_session, got {env.cwd!r}"
+        )
+
+    def test_default_cwd_still_works(self):
+        """When no custom cwd is configured, default /tmp behavior is preserved."""
+        env = _TestableEnv()  # default cwd="/tmp"
+
+        marker = env._cwd_marker
+
+        def mock_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
+            mock = MagicMock()
+            mock.poll.return_value = 0
+            mock.returncode = 0
+            output = f"snapshot output\n{marker}/tmp{marker}\n"
+            stdout = TemporaryFile(mode="w+b")
+            stdout.write(output.encode("utf-8"))
+            stdout.seek(0)
+            mock.stdout = stdout
+            return mock
+
+        env._run_bash = mock_run_bash
+        env.init_session()
+
+        assert env.cwd == "/tmp"
 
     def test_bootstrap_cd_uses_shlex_quote(self):
         """Paths with spaces must be properly quoted in the bootstrap cd."""

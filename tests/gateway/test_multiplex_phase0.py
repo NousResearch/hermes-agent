@@ -35,6 +35,15 @@ class TestSessionKeyByteIdenticalWhenOff:
         s = _src(chat_id="99", chat_type="dm")
         assert build_session_key(s, profile=profile) == "agent:main:telegram:dm:99"
 
+    @pytest.mark.parametrize("profile", [None, "default"])
+    def test_dm_with_thread(self, profile):
+        s = _src(chat_id="99", chat_type="dm", thread_id="t1")
+        assert build_session_key(s, profile=profile) == "agent:main:telegram:dm:99:t1"
+
+    @pytest.mark.parametrize("profile", [None, "default"])
+    def test_dm_without_chat_id_falls_back_to_user(self, profile):
+        s = _src(chat_id="", chat_type="dm", user_id="jordan")
+        assert build_session_key(s, profile=profile) == "agent:main:telegram:dm:jordan"
 
     @pytest.mark.parametrize("profile", [None, "default"])
     def test_group_per_user(self, profile):
@@ -44,10 +53,21 @@ class TestSessionKeyByteIdenticalWhenOff:
             == "agent:main:discord:group:g1:alice"
         )
 
+    @pytest.mark.parametrize("profile", [None, "default"])
+    def test_group_shared_when_disabled(self, profile):
+        s = _src(platform=Platform.DISCORD, chat_id="g1", chat_type="group", user_id="alice")
+        assert (
+            build_session_key(s, group_sessions_per_user=False, profile=profile)
+            == "agent:main:discord:group:g1"
+        )
+
 
 class TestSessionKeyNamespacedWhenOn:
     """A named profile occupies the namespace slot, isolating its sessions."""
 
+    def test_named_profile_dm(self):
+        s = _src(chat_id="99", chat_type="dm")
+        assert build_session_key(s, profile="coder") == "agent:coder:telegram:dm:99"
 
     def test_named_profile_group_per_user(self):
         s = _src(platform=Platform.DISCORD, chat_id="g1", chat_type="group", user_id="alice")
@@ -63,6 +83,27 @@ class TestSessionKeyNamespacedWhenOn:
         c = build_session_key(s, profile="writer")
         assert a != b != c and a != c
 
+    def test_positional_layout_preserved_for_parsers(self):
+        """Downstream parsers split on ':' and read parts[2]=platform,
+        parts[3]=chat_type, parts[4]=chat_id (see qqbot adapter
+        _parse_gateway_session_key). The profile must occupy parts[1] only."""
+        s = _src(platform=Platform.DISCORD, chat_id="g1", chat_type="group", user_id="alice")
+        parts = build_session_key(s, profile="coder").split(":")
+        assert parts[0] == "agent"
+        assert parts[1] == "coder"  # namespace slot (was always 'main')
+        assert parts[2] == "discord"  # platform — unchanged offset
+        assert parts[3] == "group"  # chat_type — unchanged offset
+        assert parts[4] == "g1"  # chat_id — unchanged offset
+
+    def test_default_namespace_layout_matches_named(self):
+        """Default and named keys differ ONLY in parts[1]."""
+        s = _src(platform=Platform.SLACK, chat_id="c1", chat_type="channel", user_id="u1")
+        d = build_session_key(s, profile="default").split(":")
+        n = build_session_key(s, profile="coder").split(":")
+        assert d[0] == n[0] == "agent"
+        assert d[1] == "main" and n[1] == "coder"
+        assert d[2:] == n[2:]  # everything after the namespace is identical
+
 
 class TestMultiplexConfigFlag:
     """gateway.multiplex_profiles defaults off and round-trips."""
@@ -70,10 +111,61 @@ class TestMultiplexConfigFlag:
     def test_default_is_false(self):
         assert GatewayConfig().multiplex_profiles is False
 
+    def test_to_dict_includes_flag(self):
+        assert GatewayConfig().to_dict()["multiplex_profiles"] is False
 
     def test_from_dict_top_level(self):
         cfg = GatewayConfig.from_dict({"multiplex_profiles": True})
         assert cfg.multiplex_profiles is True
+
+    def test_from_dict_nested_gateway(self):
+        cfg = GatewayConfig.from_dict({"gateway": {"multiplex_profiles": True}})
+        assert cfg.multiplex_profiles is True
+
+    def test_from_dict_coerces_truthy_string(self):
+        cfg = GatewayConfig.from_dict({"multiplex_profiles": "true"})
+        assert cfg.multiplex_profiles is True
+
+    def test_roundtrip(self):
+        cfg = GatewayConfig.from_dict(GatewayConfig(multiplex_profiles=True).to_dict())
+        assert cfg.multiplex_profiles is True
+
+    def test_gateway_config_loader_honors_profile_runtime_scope(self, tmp_path, monkeypatch):
+        """Multiplexed turns must resolve display settings from the routed profile."""
+        import gateway.run as gateway_run
+
+        root_home = tmp_path / "root"
+        profile_home = tmp_path / "profiles" / "quiet"
+        root_home.mkdir(parents=True)
+        profile_home.mkdir(parents=True)
+
+        (root_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"display": {"tool_progress": "all", "interim_assistant_messages": True}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        (profile_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"display": {"tool_progress": False, "interim_assistant_messages": False}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", root_home)
+
+        assert gateway_run._load_gateway_config()["display"]["tool_progress"] == "all"
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            scoped_config = gateway_run._load_gateway_config()
+        finally:
+            reset_hermes_home_override(token)
+
+        assert scoped_config["display"]["tool_progress"] is False
+        assert scoped_config["display"]["interim_assistant_messages"] is False
 
 
 class TestSessionStoreProfileResolution:
@@ -93,6 +185,22 @@ class TestSessionStoreProfileResolution:
         s = _src(chat_id="99", chat_type="dm")
         assert store._generate_session_key(s) == "agent:main:telegram:dm:99"
         assert store._generate_session_key(s) == build_session_key(s)
+
+    def test_flag_off_resolve_profile_is_none(self, tmp_path):
+        store = self._store(tmp_path)
+        assert store._resolve_profile_for_key() is None
+
+    def test_flag_on_uses_active_profile_namespace(self, tmp_path):
+        store = self._store(tmp_path, multiplex_profiles=True)
+        s = _src(chat_id="99", chat_type="dm")
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
+            assert store._generate_session_key(s) == "agent:coder:telegram:dm:99"
+
+    def test_flag_on_default_profile_stays_legacy(self, tmp_path):
+        store = self._store(tmp_path, multiplex_profiles=True)
+        s = _src(chat_id="99", chat_type="dm")
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+            assert store._generate_session_key(s) == "agent:main:telegram:dm:99"
 
 
 class _RecoveringDB:
@@ -118,6 +226,24 @@ class TestSessionStoreUnmultiplexedRecovery:
         store._loaded = True
         return store
 
+    def test_flag_off_rejects_other_profile_peer_fallback(self, tmp_path):
+        row = {
+            "id": "sess-coder",
+            "started_at": 1700000000,
+            "session_key": "agent:coder:telegram:dm:99",
+        }
+        store = self._store_with_row(tmp_path, row)
+        source = _src(chat_id="99", chat_type="dm")
+
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+            recovered = store._recover_session_from_db(
+                session_key="agent:main:telegram:dm:99",
+                source=source,
+                now=datetime.fromtimestamp(1700000001),
+            )
+
+        assert recovered is None
+        assert store._db.reopened == []
 
     def test_flag_off_allows_active_profile_peer_fallback(self, tmp_path):
         row = {

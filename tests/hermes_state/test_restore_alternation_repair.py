@@ -34,6 +34,11 @@ def _seed_wedged_session(db, session_id="s1"):
     db.append_message(session_id=session_id, role="assistant", content="next reply")
 
 
+def test_default_load_is_verbatim(db):
+    _seed_wedged_session(db)
+    messages = db.get_messages_as_conversation("s1")
+    roles = [m["role"] for m in messages]
+    assert roles == ["user", "assistant", "user", "user", "assistant"]
 
 
 def test_repair_alternation_merges_user_pair(db):
@@ -57,6 +62,14 @@ def test_repaired_load_is_stable_under_prerequest_repair(db):
     assert repair_message_sequence(None, messages) == 0
 
 
+def test_repair_noop_on_clean_transcript(db):
+    db.create_session("s2", "system prompt")
+    db.append_message(session_id="s2", role="user", content="ask")
+    db.append_message(session_id="s2", role="assistant", content="reply")
+    verbatim = db.get_messages_as_conversation("s2")
+    repaired = db.get_messages_as_conversation("s2", repair_alternation=True)
+    assert [m["role"] for m in repaired] == [m["role"] for m in verbatim]
+    assert [m["content"] for m in repaired] == [m["content"] for m in verbatim]
 
 
 # ---------------------------------------------------------------------------

@@ -34,6 +34,31 @@ def test_raises_when_no_model_resolvable(monkeypatch, tmp_path):
         _generate_deepinfra_tts("hi", str(tmp_path / "out.mp3"), {})
 
 
+def test_delegates_to_openai_handler_with_deepinfra_creds(monkeypatch, tmp_path):
+    """Happy path: pinned model → openai SDK invoked with DeepInfra base_url + key."""
+    captured: dict = {}
+
+    class _FakeClient:
+        def __init__(self, api_key=None, base_url=None):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+            speech = MagicMock()
+            speech.create = MagicMock(return_value=MagicMock(stream_to_file=lambda p: None))
+            self.audio = MagicMock(speech=speech)
+        def close(self):
+            pass
+
+    with patch("tools.tts_tool._import_openai_client", return_value=_FakeClient):
+        from tools.tts_tool import _generate_deepinfra_tts
+        _generate_deepinfra_tts(
+            "hello", str(tmp_path / "out.mp3"),
+            {"deepinfra": {"model": "vendor/test-tts"}},
+        )
+
+    assert "deepinfra" in captured["base_url"]
+    assert captured["api_key"] == "test-key"
+
+
 def test_requirements_follow_explicit_deepinfra_provider(monkeypatch):
     from tools import tts_tool
 

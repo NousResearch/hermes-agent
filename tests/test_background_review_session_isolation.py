@@ -27,6 +27,9 @@ class TestIsBackgroundReviewHarnessMessage:
         msg = {"role": "system", "content": "Review the conversation above and consider saving to memory."}
         assert _is_background_review_harness_message(msg) is True
 
+    def test_matches_after_leading_whitespace(self):
+        msg = {"role": "user", "content": "\n\n   Review the conversation above and update the skill library."}
+        assert _is_background_review_harness_message(msg) is True
 
     def test_ignores_normal_user_message(self):
         msg = {"role": "user", "content": "Please review my PR and update the changelog."}
@@ -37,7 +40,12 @@ class TestIsBackgroundReviewHarnessMessage:
         msg = {"role": "assistant", "content": "Review the conversation above and update the skill library"}
         assert _is_background_review_harness_message(msg) is False
 
+    def test_ignores_non_string_content(self):
+        msg = {"role": "user", "content": [{"type": "text", "text": "Review the conversation above and update the skill library"}]}
+        assert _is_background_review_harness_message(msg) is False
 
+    def test_ignores_non_dict(self):
+        assert _is_background_review_harness_message("not a dict") is False  # type: ignore[arg-type]
 
 
 class TestStripBackgroundReviewHarness:
@@ -53,10 +61,47 @@ class TestStripBackgroundReviewHarness:
         contents = [m["content"] for m in out]
         assert contents == ["What's the weather?", "It's sunny.", "Thanks, now book a flight."]
 
+    def test_strips_harness_without_following_assistant(self):
+        # Harness message is the last turn — nothing to skip after it.
+        messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "user", "content": "Review the conversation above and consider saving to memory."},
+        ]
+        out = _strip_background_review_harness(messages)
+        assert out == [{"role": "user", "content": "Hi"}]
 
+    def test_does_not_skip_user_turn_after_harness(self):
+        # If the message after the harness is a USER turn (not the curator reply),
+        # it must be preserved — only the immediately-following ASSISTANT reply is dropped.
+        messages = [
+            {"role": "user", "content": "Review the conversation above and update the skill library."},
+            {"role": "user", "content": "Actually, ignore that and help me debug."},
+        ]
+        out = _strip_background_review_harness(messages)
+        assert out == [{"role": "user", "content": "Actually, ignore that and help me debug."}]
 
+    def test_clean_history_passes_through_unchanged(self):
+        messages = [
+            {"role": "user", "content": "Question one"},
+            {"role": "assistant", "content": "Answer one"},
+            {"role": "user", "content": "Question two"},
+        ]
+        assert _strip_background_review_harness(messages) == messages
 
+    def test_empty_list(self):
+        assert _strip_background_review_harness([]) == []
 
+    def test_multiple_harness_pairs(self):
+        messages = [
+            {"role": "user", "content": "Review the conversation above and update the skill library."},
+            {"role": "assistant", "content": "Nothing to save."},
+            {"role": "user", "content": "real question"},
+            {"role": "assistant", "content": "real answer"},
+            {"role": "user", "content": "Review the conversation above and consider saving to memory."},
+            {"role": "assistant", "content": "Saved one entry."},
+        ]
+        out = _strip_background_review_harness(messages)
+        assert [m["content"] for m in out] == ["real question", "real answer"]
 
 
 class TestGetMessagesAsConversationStripsHarness:

@@ -120,6 +120,152 @@ class TestTranscriptHistoryOffset:
         assert old_new == fixed_new
         assert len(fixed_new) == 2
 
+    def test_multiple_session_meta_larger_drift(self):
+        """Two session_meta entries double the offset error.
+
+        This can happen when the session spans tool definition changes
+        or model switches that each write a new session_meta record.
+        """
+        history = [
+            {"role": "session_meta", "tools": [], "timestamp": "t0"},
+            {"role": "user", "content": "msg1", "timestamp": "t1"},
+            {"role": "assistant", "content": "reply1", "timestamp": "t1"},
+            {"role": "session_meta", "tools": ["new_tool"], "timestamp": "t2"},
+            {"role": "user", "content": "msg2", "timestamp": "t3"},
+            {"role": "assistant", "content": "reply2", "timestamp": "t3"},
+        ]
+
+        agent_history = _filter_history(history)
+        assert len(agent_history) == 4
+        assert len(history) == 6  # 2 extra session_meta entries
+
+        # Agent returns 4 old + 2 new = 6 total
+        agent_messages = [
+            {"role": "user", "content": "msg1"},
+            {"role": "assistant", "content": "reply1"},
+            {"role": "user", "content": "msg2"},
+            {"role": "assistant", "content": "reply2"},
+            {"role": "user", "content": "msg3"},
+            {"role": "assistant", "content": "reply3"},
+        ]
+
+        # OLD: len(history) == len(agent_messages) == 6 -> else branch
+        old_offset = len(history)
+        old_new = (agent_messages[old_offset:]
+                   if len(agent_messages) > old_offset
+                   else agent_messages)
+        # BUG: treats ALL messages as new (duplicates entire history)
+        assert old_new == agent_messages
+
+        # FIXED: history_offset = 4
+        fixed_new = (agent_messages[len(agent_history):]
+                     if len(agent_messages) > len(agent_history)
+                     else [])
+        assert len(fixed_new) == 2
+        assert fixed_new[0]["content"] == "msg3"
+        assert fixed_new[1]["content"] == "reply3"
+
+    def test_system_messages_also_filtered(self):
+        """system messages in history are also stripped from agent_history."""
+        history = [
+            {"role": "session_meta", "tools": [], "timestamp": "t0"},
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hi", "timestamp": "t1"},
+            {"role": "assistant", "content": "Hello!", "timestamp": "t1"},
+        ]
+
+        agent_history = _filter_history(history)
+        assert len(agent_history) == 2  # only user + assistant
+
+        agent_messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello!"},
+            {"role": "user", "content": "New question"},
+            {"role": "assistant", "content": "New answer"},
+        ]
+
+        # OLD: len(history) = 4, skips everything
+        old_offset = len(history)
+        old_new = (agent_messages[old_offset:]
+                   if len(agent_messages) > old_offset
+                   else agent_messages)
+        assert old_new == agent_messages  # BUG: all treated as new
+
+        # FIXED
+        fixed_new = (agent_messages[len(agent_history):]
+                     if len(agent_messages) > len(agent_history)
+                     else [])
+        assert len(fixed_new) == 2
+        assert fixed_new[0]["content"] == "New question"
+
+    def test_else_branch_returns_empty_list(self):
+        """When agent has fewer messages than offset, return [] not all.
+
+        The old code had ``else agent_messages`` which would treat the
+        entire message list as new when the agent compressed or dropped
+        messages.  The fix changes this to ``else []``, falling through
+        to the simple user/assistant fallback path.
+        """
+        history = [
+            {"role": "session_meta", "tools": [], "timestamp": "t0"},
+            {"role": "user", "content": "Hello", "timestamp": "t1"},
+            {"role": "assistant", "content": "Hi!", "timestamp": "t1"},
+        ]
+
+        # Agent compressed and returned fewer messages than history
+        agent_messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi!"},
+        ]
+
+        history_offset = len(_filter_history(history))  # 2
+        new_messages = (agent_messages[history_offset:]
+                        if len(agent_messages) > history_offset
+                        else [])
+        # 2 == 2, so no new messages - falls to fallback
+        assert new_messages == []
+
+    def test_tool_call_messages_preserved_in_filter(self):
+        """Tool call messages pass through the filter, keeping offset correct."""
+        history = [
+            {"role": "session_meta", "tools": [], "timestamp": "t0"},
+            {"role": "user", "content": "Search for cats", "timestamp": "t1"},
+            {"role": "assistant", "content": None, "timestamp": "t1",
+             "tool_calls": [{"id": "tc1", "function": {"name": "web_search"}}]},
+            {"role": "tool", "tool_call_id": "tc1",
+             "content": "Results about cats", "timestamp": "t1"},
+            {"role": "assistant", "content": "Here are results.",
+             "timestamp": "t1"},
+        ]
+
+        agent_history = _filter_history(history)
+        # session_meta filtered, but tool_calls/tool messages kept
+        assert len(agent_history) == 4
+        assert len(history) == 5  # 1 session_meta extra
+
+        agent_messages = [
+            {"role": "user", "content": "Search for cats"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "tc1", "function": {"name": "web_search"}}]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "Results about cats"},
+            {"role": "assistant", "content": "Here are results."},
+            {"role": "user", "content": "Now search for dogs"},
+            {"role": "assistant", "content": "Dog results here."},
+        ]
+
+        # OLD: len(history) = 5, agent_messages[5:] = 1 message (lost user msg)
+        old_new = (agent_messages[len(history):]
+                   if len(agent_messages) > len(history)
+                   else agent_messages)
+        assert len(old_new) == 1  # BUG
+
+        # FIXED
+        fixed_new = (agent_messages[len(agent_history):]
+                     if len(agent_messages) > len(agent_history)
+                     else [])
+        assert len(fixed_new) == 2
+        assert fixed_new[0]["content"] == "Now search for dogs"
+        assert fixed_new[1]["content"] == "Dog results here."
 
     def test_recursive_queued_followup_keeps_outer_history_offset(self):
         """Queued drain persistence must include every turn in the chain.
@@ -166,3 +312,14 @@ class TestTranscriptHistoryOffset:
         persisted = merged["messages"][merged["history_offset"]:]
         assert persisted == first_followup_turn + second_followup_turn
 
+    def test_recursive_queued_followup_preserves_smaller_existing_offset(self):
+        """Do not widen the slice if the nested result is already conservative."""
+        current_result = {"history_offset": 4}
+        followup_result = {"history_offset": 3, "messages": []}
+
+        merged = _preserve_queued_followup_history_offset(
+            current_result,
+            followup_result,
+        )
+
+        assert merged["history_offset"] == 3

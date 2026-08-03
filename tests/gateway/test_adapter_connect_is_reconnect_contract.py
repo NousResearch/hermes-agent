@@ -106,6 +106,18 @@ def _connect_accepts_is_reconnect(cls: ast.ClassDef) -> bool:
 ADAPTER_FILES = _iter_adapter_files()
 
 
+def test_adapter_discovery_finds_platforms():
+    """Sanity: the discovery walker actually found a meaningful set of
+    adapters. If this drops to a trivial number, the glob broke and the
+    contract test below is silently passing on nothing.
+    """
+    assert len(ADAPTER_FILES) >= 20, (
+        f"Expected to discover >=20 platform adapter files under "
+        f"{[str(p) for p in ADAPTER_ROOTS]}, found {len(ADAPTER_FILES)}. "
+        f"The discovery glob is likely broken."
+    )
+
+
 @pytest.mark.parametrize(
     "adapter_file",
     ADAPTER_FILES,

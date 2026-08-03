@@ -193,14 +193,7 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     existing_lines: list[str] = []
     if env_path.exists():
-        # Read as UTF-8 (BOM-tolerant), matching the canonical .env readers in
-        # hermes_cli/config.py. read_text() with no encoding falls back to the
-        # system locale (cp1252/GBK on Windows): it mangles or crashes on
-        # non-ASCII values while copying existing lines through, and a BOM'd
-        # first line would fail the key match and get duplicated.
-        existing_lines = env_path.read_text(
-            encoding="utf-8-sig"
-        ).splitlines()
+        existing_lines = env_path.read_text().splitlines()
 
     updated_keys: set[str] = set()
     new_lines: list[str] = []
@@ -215,7 +208,7 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
         if k not in updated_keys:
             new_lines.append(f"{k}={v}")
 
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    env_path.write_text("\n".join(new_lines) + "\n")
 
 
 def _save_mem0_json(hermes_home: str, data: dict) -> None:
@@ -228,7 +221,7 @@ def _save_mem0_json(hermes_home: str, data: dict) -> None:
         except Exception:
             pass
     existing.update(data)
-    config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    config_path.write_text(json.dumps(existing, indent=2) + "\n")
 
 
 def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
@@ -248,7 +241,7 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     config_path = Path(hermes_home) / "mem0.json"
     if config_path.exists():
         try:
-            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
+            existing_config = json.loads(config_path.read_text())
         except Exception:
             pass
 
@@ -369,7 +362,7 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
     config_path = Path(hermes_home) / "mem0.json"
     if config_path.exists():
         try:
-            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
+            existing_config = json.loads(config_path.read_text())
         except Exception:
             pass
 
@@ -500,12 +493,7 @@ def _prompt_api_key(label: str, env_var: str, hermes_home: str) -> str:
     if not existing:
         env_path = Path(hermes_home) / ".env"
         if env_path.exists():
-            # BOM-tolerant read matching the canonical .env readers in
-            # hermes_cli/config.py; a Notepad BOM on the first line would
-            # otherwise defeat the startswith() key match below.
-            for line in env_path.read_text(
-                encoding="utf-8-sig", errors="replace"
-            ).splitlines():
+            for line in env_path.read_text().splitlines():
                 if line.startswith(f"{env_var}="):
                     existing = line.split("=", 1)[1].strip()
                     break
@@ -537,7 +525,7 @@ def _ensure_pgvector(host: str = "localhost", port: int = 5432) -> dict | None:
         try:
             result = subprocess.run(
                 ["docker", "inspect", _PGVECTOR_CONTAINER, "--format", "{{.State.Status}}"],
-                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0 and "exited" in result.stdout:
                 print(f"  Found stopped container '{_PGVECTOR_CONTAINER}', restarting...")
@@ -863,17 +851,11 @@ def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> Non
     for dep in sorted(deps):
         try:
             print(f"  Installing {dep}...")
-            # Environment-aware install: sealed hosted venvs redirect to the
-            # durable data-volume target instead of /opt/hermes (NS-605).
-            from tools.lazy_deps import install_specs
-
-            outcome = install_specs([dep], timeout=60)
-            if outcome.ok:
-                print(f"  ✓ Installed {dep}")
-            elif outcome.blocked:
-                print(f"  Warning: cannot install {dep}: {outcome.reason}")
-            else:
-                print(f"  Warning: Could not install {dep}. Install manually: uv pip install {dep}")
+            subprocess.run(
+                ["uv", "pip", "install", "--python", sys.executable, dep],
+                capture_output=True, timeout=60,
+            )
+            print(f"  ✓ Installed {dep}")
         except Exception:
             print(f"  Warning: Could not install {dep}. Install manually: uv pip install {dep}")
     if deps:

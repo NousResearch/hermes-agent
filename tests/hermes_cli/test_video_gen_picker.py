@@ -115,6 +115,38 @@ class TestReconfigureWritesProvider:
         assert config["video_gen"]["model"] == "xai_fake-video-v1"
         assert config["video_gen"]["use_gateway"] is False
 
+    def test_reconfigure_with_no_env_vars_writes_provider(
+        self, monkeypatch, tmp_path
+    ):
+        """No env vars at all (managed-style plugin) → writes
+        video_gen.provider via the no-env-vars early-return branch."""
+        from hermes_cli import tools_config
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        video_gen_registry.register_provider(_FakeVideoProvider(
+            "noenv_video",
+            schema={
+                "name": "NoEnvVideo",
+                "badge": "free",
+                "tag": "",
+                "env_vars": [],
+            },
+        ))
+        monkeypatch.setattr(tools_config, "_prompt_choice", lambda *a, **kw: 0)
+
+        config: dict = {}
+        provider_row = {
+            "name": "NoEnvVideo",
+            "env_vars": [],
+            "video_gen_plugin_name": "noenv_video",
+        }
+
+        tools_config._reconfigure_provider(provider_row, config)
+
+        assert config["video_gen"]["provider"] == "noenv_video"
+        assert config["video_gen"]["model"] == "noenv_video-video-v1"
+        assert config["video_gen"]["use_gateway"] is False
+
 
 class TestPluginVideoProvidersRow:
     """Tests for _plugin_video_gen_providers row contents."""
@@ -137,6 +169,15 @@ class TestPluginVideoProvidersRow:
         match = next(r for r in rows if r.get("video_gen_plugin_name") == "xai_video")
         assert match["post_setup"] == "xai_grok"
 
+    def test_post_setup_omitted_when_not_declared(self, monkeypatch):
+        from hermes_cli import tools_config
+
+        video_gen_registry.register_provider(_FakeVideoProvider("plain_video"))
+
+        rows = tools_config._plugin_video_gen_providers()
+        match = next(r for r in rows if r.get("video_gen_plugin_name") == "plain_video")
+        assert "post_setup" not in match
+
 
 class TestVideoPluginProviderActive:
     """Tests for _is_provider_active recognizing video_gen_plugin_name."""
@@ -149,6 +190,19 @@ class TestVideoPluginProviderActive:
 
         assert tools_config._is_provider_active(row, config) is True
 
+    def test_inactive_when_video_gen_provider_differs(self):
+        from hermes_cli import tools_config
+
+        config = {"video_gen": {"provider": "fal"}}
+        row = {"name": "xAI Grok Imagine", "video_gen_plugin_name": "xai"}
+
+        assert tools_config._is_provider_active(row, config) is False
+
+    def test_inactive_when_video_gen_section_missing(self):
+        from hermes_cli import tools_config
+
+        row = {"name": "xAI Grok Imagine", "video_gen_plugin_name": "xai"}
+        assert tools_config._is_provider_active(row, {}) is False
 
     def test_detect_active_index_picks_video_plugin_match(self, monkeypatch):
         """When xAI is the configured video_gen provider, the picker should

@@ -27,6 +27,21 @@ class TestResolveSafeCwd:
         path = str(tmp_path)
         assert _resolve_safe_cwd(path) == path
 
+    def test_walks_up_to_first_existing_ancestor(self, tmp_path):
+        nested = tmp_path / "child" / "grandchild"
+        nested.mkdir(parents=True)
+        deleted = str(nested)
+        shutil.rmtree(tmp_path / "child")
+
+        # The deepest existing ancestor on the path is tmp_path itself.
+        assert _resolve_safe_cwd(deleted) == str(tmp_path)
+
+    def test_falls_back_when_path_is_empty(self):
+        assert _resolve_safe_cwd("") == tempfile.gettempdir()
+
+    def test_returns_tempdir_when_nothing_on_path_exists(self, monkeypatch):
+        monkeypatch.setattr(os.path, "isdir", lambda p: False)
+        assert _resolve_safe_cwd("/no/such/dir") == tempfile.gettempdir()
 
     def test_returns_root_when_only_root_exists(self, monkeypatch):
         """If every ancestor except the filesystem root is gone, the root

@@ -48,6 +48,42 @@ class TestCustomProvidersValidation:
         misplaced = [i for i in warnings if "custom_providers entry fields" in i.message]
         assert len(misplaced) == 1
 
+    def test_dict_detects_nested_fallback(self):
+        """When fallback_model gets swallowed into custom_providers dict."""
+        issues = validate_config_structure({
+            "custom_providers": {
+                "name": "test",
+                "fallback_model": {"provider": "openrouter", "model": "test"},
+            },
+        })
+        errors = [i for i in issues if i.severity == "error"]
+        assert any("fallback_model" in i.message and "inside" in i.message for i in errors)
+
+    def test_valid_list_no_issues(self):
+        """Properly formatted custom_providers should produce no issues."""
+        issues = validate_config_structure({
+            "custom_providers": [
+                {"name": "gemini", "base_url": "https://example.com/v1"},
+            ],
+            "model": {"provider": "custom", "default": "test"},
+        })
+        assert len(issues) == 0
+
+    def test_list_entry_missing_name(self):
+        """List entry without name should warn."""
+        issues = validate_config_structure({
+            "custom_providers": [{"base_url": "https://example.com/v1"}],
+            "model": {"provider": "custom"},
+        })
+        assert any("missing 'name'" in i.message for i in issues)
+
+    def test_list_entry_missing_base_url(self):
+        """List entry without base_url should warn."""
+        issues = validate_config_structure({
+            "custom_providers": [{"name": "test"}],
+            "model": {"provider": "custom"},
+        })
+        assert any("missing 'base_url'" in i.message for i in issues)
 
     def test_list_entry_not_dict(self):
         """Non-dict list entries should warn."""
@@ -57,12 +93,99 @@ class TestCustomProvidersValidation:
         })
         assert any("not a dict" in i.message for i in issues)
 
+    def test_none_custom_providers_no_issues(self):
+        """No custom_providers at all should be fine."""
+        issues = validate_config_structure({
+            "model": {"provider": "openrouter"},
+        })
+        assert len(issues) == 0
 
+
+class TestFallbackModelValidation:
+    """fallback_model should be a top-level dict with provider + model."""
+
+    def test_missing_provider(self):
+        issues = validate_config_structure({
+            "fallback_model": {"model": "anthropic/claude-sonnet-4"},
+        })
+        assert any("missing 'provider'" in i.message for i in issues)
+
+    def test_missing_model(self):
+        issues = validate_config_structure({
+            "fallback_model": {"provider": "openrouter"},
+        })
+        assert any("missing 'model'" in i.message for i in issues)
+
+    def test_valid_fallback(self):
+        issues = validate_config_structure({
+            "fallback_model": {
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-4",
+            },
+        })
+        # Only fallback-related issues should be absent
+        fb_issues = [i for i in issues if "fallback" in i.message.lower()]
+        assert len(fb_issues) == 0
+
+    def test_non_dict_fallback(self):
+        issues = validate_config_structure({
+            "fallback_model": "openrouter:anthropic/claude-sonnet-4",
+        })
+        assert any("should be a dict" in i.message for i in issues)
+
+    def test_empty_fallback_dict_no_issues(self):
+        """Empty fallback_model dict means disabled — no warnings needed."""
+        issues = validate_config_structure({
+            "fallback_model": {},
+        })
+        fb_issues = [i for i in issues if "fallback" in i.message.lower()]
+        assert len(fb_issues) == 0
+
+    def test_valid_fallback_list(self):
+        """List-form fallback_model (chain) should validate when every entry has provider+model."""
+        issues = validate_config_structure({
+            "fallback_model": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+                {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+            ],
+        })
+        fb_issues = [i for i in issues if "fallback" in i.message.lower()]
+        assert len(fb_issues) == 0
+
+    def test_fallback_list_entry_missing_provider(self):
+        issues = validate_config_structure({
+            "fallback_model": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+                {"model": "claude-sonnet-4-6"},
+            ],
+        })
+        assert any("fallback_model[1]" in i.message and "provider" in i.message for i in issues)
+
+    def test_fallback_list_entry_missing_model(self):
+        issues = validate_config_structure({
+            "fallback_model": [
+                {"provider": "openrouter"},
+            ],
+        })
+        assert any("fallback_model[0]" in i.message and "model" in i.message for i in issues)
+
+    def test_fallback_list_entry_not_a_dict(self):
+        issues = validate_config_structure({
+            "fallback_model": ["openrouter:anthropic/claude-sonnet-4"],
+        })
+        assert any("fallback_model[0]" in i.message and "should be a dict" in i.message for i in issues)
 
 
 class TestMissingModelSection:
     """Warn when custom_providers exists but model section is missing."""
 
+    def test_custom_providers_without_model(self):
+        issues = validate_config_structure({
+            "custom_providers": [
+                {"name": "test", "base_url": "https://example.com/v1"},
+            ],
+        })
+        assert any("no 'model' section" in i.message for i in issues)
 
     def test_custom_providers_with_model(self):
         issues = validate_config_structure({
@@ -100,6 +223,18 @@ class TestUnknownTopLevelKeys:
     warning may exist.
     """
 
+    def test_arbitrary_top_level_keys_stay_silent(self):
+        """Env-style and custom keys must produce no unknown-key warnings."""
+        issues = validate_config_structure({
+            "model": {"provider": "openrouter"},
+            "DISCORD_HOME_CHANNEL": "12345",
+            "TELEGRAM_HOME_CHANNEL": "-100987",
+            "DISCORD_ALLOW_ALL_USERS": True,
+            "MY_CUSTOM_SKILL_VAR": "hello",
+            "skillz": {"enabled": True},
+        })
+        assert not any("Unknown top-level config key" in i.message for i in issues)
+        assert issues == []
 
     def test_known_root_keys_derived_from_default_config(self):
         """_KNOWN_ROOT_KEYS must be DEFAULT_CONFIG.keys() plus extras — single source of truth."""
@@ -120,3 +255,10 @@ class TestUnknownTopLevelKeys:
         assert any("base_url" in i.message for i in misplaced)
         assert any("api_key" in i.message for i in misplaced)
 
+    def test_private_underscore_keys_not_flagged(self):
+        """Internal keys starting with _ remain ignored."""
+        issues = validate_config_structure({
+            "_internal_scratch": True,
+            "model": {"provider": "openrouter"},
+        })
+        assert issues == []

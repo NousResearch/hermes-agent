@@ -69,6 +69,26 @@ def test_executor_submit_without_copy_context_does_not_propagate():
     )
 
 
+def test_executor_submit_with_copy_context_run_propagates():
+    """Positive case: the explicit ``copy_context().run(...)`` wrapper the
+    PR adds makes parent-context ContextVar values visible in the worker.
+    """
+    probe: contextvars.ContextVar[str] = contextvars.ContextVar(
+        "probe_explicit_propagation", default="unset"
+    )
+
+    def read_in_worker() -> str:
+        return probe.get()
+
+    probe.set("set-in-main")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        ctx = contextvars.copy_context()
+        observed = ex.submit(ctx.run, read_in_worker).result(timeout=5)
+
+    assert observed == "set-in-main", (
+        f"copy_context().run(...) failed to propagate: got {observed!r}"
+    )
 
 
 def test_run_tool_worker_sees_parent_approval_session_key():
@@ -118,6 +138,93 @@ def test_run_tool_worker_sees_parent_approval_session_key():
     )
 
 
+def test_run_agent_concurrent_executor_wraps_submit_with_copy_context():
+    """Source-level guard that the fix stays at the REAL call site.
+
+    The behavioral tests above exercise the pattern in isolation and
+    pass regardless of whether ``run_agent.py`` actually uses it.
+    This guard inspects ``_execute_tool_calls_concurrent`` directly and
+    asserts that ``executor.submit`` is called with ``ctx.run`` (or
+    ``copy_context()`` appears within a few lines) — so reverting the
+    wrapper in ``run_agent.py`` fails this test with a clear message.
+    """
+    import ast
+    import inspect
+
+    import run_agent
+    from agent import tool_executor as tool_executor_module
+
+    # Source for both modules — the concurrent-executor body lives in
+    # ``agent/tool_executor.py`` after the run_agent.py refactor (PR
+    # following #16660).  Search both so this guard keeps firing
+    # regardless of where the call site lives.
+    sources = []
+    for mod in (run_agent, tool_executor_module):
+        src_path = inspect.getsourcefile(mod)
+        assert src_path is not None
+        sources.append((src_path, open(src_path, encoding="utf-8").read()))
+
+    submit_calls_in_agent: list[ast.Call] = []
+    for _src_path, src_text in sources:
+        tree = ast.parse(src_text)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            # Match executor.submit(...) style calls.
+            if isinstance(func, ast.Attribute) and func.attr == "submit":
+                submit_calls_in_agent.append(node)
+
+    # Filter to the submit call inside the concurrent tool executor —
+    # identifiable by passing `_run_tool` as its target. Other submit()
+    # call sites in run_agent.py (e.g. auxiliary client warm-up) are
+    # out of scope for this regression.
+    tool_submits = []
+    for call in submit_calls_in_agent:
+        if not call.args:
+            continue
+        first = call.args[0]
+        # Unfixed: executor.submit(_run_tool, ...) → first arg is a Name
+        if isinstance(first, ast.Name) and first.id == "_run_tool":
+            tool_submits.append(("unfixed", call))
+        # Fixed: executor.submit(ctx.run, _run_tool, ...) → first arg is
+        # ctx.run (Attribute), and _run_tool is the second arg.
+        elif (
+            isinstance(first, ast.Attribute)
+            and first.attr == "run"
+            and len(call.args) >= 2
+            and isinstance(call.args[1], ast.Name)
+            and call.args[1].id == "_run_tool"
+        ):
+            tool_submits.append(("fixed", call))
+        # Fixed (shared helper): executor.submit(
+        #     propagate_context_to_thread(_run_tool), ...) — the helper in
+        # tools/thread_context.py does copy_context().run(...) internally and
+        # additionally propagates the thread-local approval/sudo callbacks.
+        elif (
+            isinstance(first, ast.Call)
+            and isinstance(first.func, ast.Name)
+            and first.func.id == "propagate_context_to_thread"
+            and first.args
+            and isinstance(first.args[0], ast.Name)
+            and first.args[0].id == "_run_tool"
+        ):
+            tool_submits.append(("fixed", call))
+
+    assert tool_submits, (
+        "Could not locate `executor.submit(... _run_tool ...)` in "
+        "run_agent.py. The call site may have been renamed — update this "
+        "guard along with the refactor."
+    )
+    unfixed = [c for kind, c in tool_submits if kind == "unfixed"]
+    assert not unfixed, (
+        "run_agent.py contains `executor.submit(_run_tool, ...)` without a "
+        "`ctx.run` wrapper. This is the pre-#16660 shape: worker threads "
+        "will read a fresh ContextVar and approval-session routing "
+        "collapses to the os.environ fallback. Wrap with "
+        "`ctx = contextvars.copy_context(); executor.submit(ctx.run, "
+        "_run_tool, ...)`."
+    )
 
 
 def test_two_concurrent_tool_batches_keep_session_keys_isolated():

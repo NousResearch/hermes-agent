@@ -49,63 +49,34 @@ class TestLoadGatewayConfigForRunner:
         cfg = run_mod.load_gateway_config_for_runner()
         assert cfg.multiplex_profiles is False
 
-    def test_scoped_reload_still_sees_container_api_server_env(self, tmp_path, monkeypatch):
-        """#69379 — container-env API_SERVER_* visible during the scoped reload.
-
-        Docker/systemd deployments enable the api_server platform via the
-        process environment (compose ``environment:`` block), not the profile
-        ``.env``. The multiplex runner reload happens inside the default
-        profile's secret scope; the listener settings are on the global
-        allowlist (deployment config, not profile secrets) so they must stay
-        visible there — while API_SERVER_KEY (a credential) still resolves
-        through the profile scope.
-        """
-        from agent import secret_scope as ss
+    def test_scoped_reload_picks_up_default_profile_token(self, tmp_path, monkeypatch):
+        """Token only in default profile .env, not in process os.environ."""
         from gateway import run as run_mod
+        import hermes_constants as hc
 
         home = tmp_path / "home"
         home.mkdir()
-        # Credentials belong in the profile .env; listener settings do not.
         (home / ".env").write_text(
-            "TELEGRAM_BOT_TOKEN=default-profile-token-123\n"
-            "API_SERVER_KEY=profile-scoped-key-0123456789abcdef\n",
-            encoding="utf-8",
+            "TELEGRAM_BOT_TOKEN=default-profile-token-123\n", encoding="utf-8"
         )
         (home / "config.yaml").write_text(
             "gateway:\n  multiplex_profiles: true\n", encoding="utf-8"
         )
         monkeypatch.setenv("HERMES_HOME", str(home))
-        # Listener settings live ONLY in os.environ — the Docker compose case.
-        monkeypatch.setenv("API_SERVER_ENABLED", "true")
-        monkeypatch.setenv("API_SERVER_HOST", "0.0.0.0")
-        monkeypatch.setenv("API_SERVER_PORT", "8642")
-        monkeypatch.delenv("API_SERVER_KEY", raising=False)
+        # Simulate a clean process env where the token was NOT exported and
+        # was not bulk-loaded into os.environ (multiplex isolation path).
         monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        # Point both hermes_constants and gateway.run at our temp home.
+        monkeypatch.setattr(hc, "get_hermes_home", lambda: home)
         monkeypatch.setattr(run_mod, "get_hermes_home", lambda: home)
         monkeypatch.setattr(run_mod, "_hermes_home", home)
-        # Model the real multiplexed gateway: run.py flips the runtime flag
-        # before the runner reload, making any installed scope authoritative.
-        ss.set_multiplex_active(True)
 
         cfg = run_mod.load_gateway_config_for_runner()
-
         assert cfg.multiplex_profiles is True
-        # Telegram token from the profile scope (.env)
         tg = cfg.platforms.get(Platform.TELEGRAM)
         assert tg is not None
         assert tg.token == "default-profile-token-123"
-        # api_server present: key from the profile scope, listener settings
-        # from the container environment via the global allowlist.
-        api = cfg.platforms.get(Platform.API_SERVER)
-        assert api is not None, (
-            "api_server should be enabled from container env even inside "
-            "the scoped runner reload (#69379)"
-        )
-        assert api.enabled is True
-        assert api.extra.get("key") == "profile-scoped-key-0123456789abcdef"
-        assert api.extra.get("host") == "0.0.0.0"
-        assert api.extra.get("port") == 8642
-
+        assert tg.enabled is True
 
 
 class TestPlatformHasBotCredential:
@@ -118,6 +89,33 @@ class TestPlatformHasBotCredential:
         assert _platform_has_bot_credential(
             Platform.TELEGRAM, PlatformConfig(enabled=True, token=None)
         ) is False
+
+    def test_telegram_with_token_true(self):
+        from gateway.run import _platform_has_bot_credential
+
+        assert _platform_has_bot_credential(
+            Platform.TELEGRAM, PlatformConfig(enabled=True, token="123:abc")
+        ) is True
+
+    def test_non_token_platform_always_true(self):
+        from gateway.run import _platform_has_bot_credential
+
+        # SMS / webhook-style platforms are not gated by PlatformConfig.token.
+        # Use a platform that exists but is outside the token set when possible.
+        for plat in Platform:
+            if plat in {
+                Platform.TELEGRAM,
+                Platform.DISCORD,
+                Platform.SLACK,
+                Platform.MATTERMOST,
+                Platform.MATRIX,
+                Platform.WEIXIN,
+            }:
+                continue
+            assert _platform_has_bot_credential(
+                plat, PlatformConfig(enabled=True, token=None)
+            ) is True
+            break
 
 
 class TestPrimaryStartupSkipsEmptyTokenUnderMultiplex:
@@ -176,42 +174,24 @@ class TestPrimaryStartupSkipsEmptyTokenUnderMultiplex:
         assert skipped == [Platform.TELEGRAM]
         assert created == []
 
-
-class TestPrimaryMessageRuntimeScope:
     @pytest.mark.asyncio
-    async def test_default_profile_prompt_gate_sees_its_scoped_token(
-        self, tmp_path, monkeypatch
-    ):
-        from agent import secret_scope
-        from gateway import run as run_mod
-        from gateway.run import GatewayRunner
+    async def test_still_starts_when_token_present(self):
+        from gateway.run import _platform_has_bot_credential
 
-        home = tmp_path / "home"
-        home.mkdir()
-        (home / ".env").write_text(
-            "DISCORD_BOT_TOKEN=default-profile-token\n", encoding="utf-8"
+        cfg = GatewayConfig(multiplex_profiles=True)
+        cfg.platforms[Platform.TELEGRAM] = PlatformConfig(
+            enabled=True, token="123:abc"
         )
-        (home / "config.yaml").write_text(
-            "platform_toolsets:\n  discord:\n    - discord\n", encoding="utf-8"
-        )
-        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: home)
-        monkeypatch.setenv("DISCORD_BOT_TOKEN", "wrong-process-token")
-        secret_scope.set_multiplex_active(True)
-
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = GatewayConfig(multiplex_profiles=True)
-
-        async def _handle_message(_event):
-            from gateway.session import _discord_tools_loaded
-
-            return _discord_tools_loaded()
-
-        runner._handle_message = _handle_message  # type: ignore[method-assign]
-        handler = runner._primary_message_handler()
-
-        assert await handler(SimpleNamespace(source=SimpleNamespace(profile=None))) is True
-        with pytest.raises(secret_scope.UnscopedSecretError):
-            secret_scope.get_secret("DISCORD_BOT_TOKEN")
+        started = []
+        for platform, platform_config in cfg.platforms.items():
+            if not platform_config.enabled:
+                continue
+            if cfg.multiplex_profiles and not _platform_has_bot_credential(
+                platform, platform_config
+            ):
+                continue
+            started.append(platform)
+        assert started == [Platform.TELEGRAM]
 
 
 class TestReconnectDropsEmptyToken:

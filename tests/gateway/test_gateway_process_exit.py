@@ -16,6 +16,48 @@ def _raise_exit(code: int) -> None:
     raise _ExitCalled(code)
 
 
+def test_main_force_exits_zero_after_clean_shutdown(monkeypatch):
+    async def fake_start_gateway(config=None):
+        return True
+
+    stdout = SimpleNamespace(flush=Mock())
+    stderr = SimpleNamespace(flush=Mock())
+
+    monkeypatch.setattr(gateway_run, "start_gateway", fake_start_gateway)
+    monkeypatch.setattr(gateway_run.os, "_exit", _raise_exit)
+    monkeypatch.setattr(gateway_run.sys, "argv", ["gateway.run"])
+    monkeypatch.setattr(gateway_run.sys, "stdout", stdout)
+    monkeypatch.setattr(gateway_run.sys, "stderr", stderr)
+
+    with pytest.raises(_ExitCalled) as exc_info:
+        gateway_run.main()
+
+    assert exc_info.value.code == 0
+    stdout.flush.assert_called_once_with()
+    stderr.flush.assert_called_once_with()
+
+
+def test_main_force_exits_one_after_failed_shutdown(monkeypatch):
+    async def fake_start_gateway(config=None):
+        return False
+
+    stdout = SimpleNamespace(flush=Mock())
+    stderr = SimpleNamespace(flush=Mock())
+
+    monkeypatch.setattr(gateway_run, "start_gateway", fake_start_gateway)
+    monkeypatch.setattr(gateway_run.os, "_exit", _raise_exit)
+    monkeypatch.setattr(gateway_run.sys, "argv", ["gateway.run"])
+    monkeypatch.setattr(gateway_run.sys, "stdout", stdout)
+    monkeypatch.setattr(gateway_run.sys, "stderr", stderr)
+
+    with pytest.raises(_ExitCalled) as exc_info:
+        gateway_run.main()
+
+    assert exc_info.value.code == 1
+    stdout.flush.assert_called_once_with()
+    stderr.flush.assert_called_once_with()
+
+
 def test_main_terminates_via_os_exit_not_systemexit(monkeypatch):
     """The terminating call must be os._exit, NOT sys.exit — SystemExit is
     exactly what triggers the Py_FinalizeEx non-daemon-thread join hang this
@@ -66,6 +108,42 @@ def test_main_routes_systemexit_through_os_exit(monkeypatch):
     assert exc_info.value.code == 78
     stdout.flush.assert_called_once_with()
     stderr.flush.assert_called_once_with()
+
+
+def test_main_systemexit_none_code_maps_to_zero(monkeypatch):
+    """SystemExit() with no code (or None) is a clean exit → os._exit(0)."""
+    async def fake_start_gateway(config=None):
+        raise SystemExit()
+
+    monkeypatch.setattr(gateway_run, "start_gateway", fake_start_gateway)
+    monkeypatch.setattr(gateway_run.os, "_exit", _raise_exit)
+    monkeypatch.setattr(gateway_run.sys, "argv", ["gateway.run"])
+    monkeypatch.setattr(gateway_run.sys, "stdout", SimpleNamespace(flush=Mock()))
+    monkeypatch.setattr(gateway_run.sys, "stderr", SimpleNamespace(flush=Mock()))
+
+    with pytest.raises(_ExitCalled) as exc_info:
+        gateway_run.main()
+
+    assert exc_info.value.code == 0
+
+
+def test_main_systemexit_str_code_maps_to_one(monkeypatch):
+    """SystemExit with a str code (CPython prints it to stderr then exits 1).
+    We can't print during os._exit, but the code must still map to 1 — matching
+    CPython's handle_system_exit semantics for a non-int, non-None code."""
+    async def fake_start_gateway(config=None):
+        raise SystemExit("fatal: something went wrong")
+
+    monkeypatch.setattr(gateway_run, "start_gateway", fake_start_gateway)
+    monkeypatch.setattr(gateway_run.os, "_exit", _raise_exit)
+    monkeypatch.setattr(gateway_run.sys, "argv", ["gateway.run"])
+    monkeypatch.setattr(gateway_run.sys, "stdout", SimpleNamespace(flush=Mock()))
+    monkeypatch.setattr(gateway_run.sys, "stderr", SimpleNamespace(flush=Mock()))
+
+    with pytest.raises(_ExitCalled) as exc_info:
+        gateway_run.main()
+
+    assert exc_info.value.code == 1
 
 
 def test_exit_backstop_releases_pid_file_and_runtime_lock(monkeypatch):

@@ -101,6 +101,35 @@ def test_chown_helper_refuses_target_under_symlinked_home(
     assert "refusing recursive chown through symlinked path" in proc.stdout
 
 
+def test_chown_helper_refuses_target_with_symlinked_ancestor(
+    stage2_text: str,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    external_platforms = tmp_path / "external-platforms"
+    (external_platforms / "pairing").mkdir(parents=True)
+    try:
+        (home / "platforms").symlink_to(
+            external_platforms,
+            target_is_directory=True,
+        )
+    except (NotImplementedError, OSError):
+        pytest.skip("directory symlinks are not available on this platform")
+    log_path = tmp_path / "chown.log"
+
+    proc = _run_helper(
+        stage2_text,
+        home / "platforms" / "pairing",
+        log_path,
+        hermes_home=home,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not log_path.exists(), "must not chown through symlinked ancestors"
+    assert "refusing recursive chown through symlinked path" in proc.stdout
+
+
 def test_stage2_uses_symlink_safe_helper_for_hermes_home_trees(stage2_text: str) -> None:
     assert 'chown_hermes_tree "$HERMES_HOME/$sub"' in stage2_text
     assert 'chown_hermes_tree "$HERMES_HOME/profiles"' in stage2_text
@@ -114,15 +143,3 @@ def test_stage2_skips_top_level_chown_for_symlinked_hermes_home(
     stage2_text: str,
 ) -> None:
     assert 'refuse_symlinked_path "chown" "$HERMES_HOME"' in stage2_text
-
-
-def test_stage2_skips_recursive_repairs_when_tree_is_already_owned(
-    stage2_text: str,
-) -> None:
-    assert "tree_has_non_hermes_owner() {" in stage2_text
-    assert 'if [ -e "$HERMES_HOME/$sub" ] && tree_has_non_hermes_owner "$HERMES_HOME/$sub"; then' in stage2_text
-    assert 'if [ -d "$HERMES_HOME/profiles" ] && tree_has_non_hermes_owner "$HERMES_HOME/profiles"; then' in stage2_text
-    # Sibling every-boot chown blocks carry the same warm-boot gate.
-    assert 'if [ -d "$HERMES_HOME/cron" ] && tree_has_non_hermes_owner "$HERMES_HOME/cron"; then' in stage2_text
-    assert 'if [ -d "$HERMES_HOME/platforms/pairing" ] && tree_has_non_hermes_owner "$HERMES_HOME/platforms/pairing"; then' in stage2_text
-    assert 'if [ -d "$HERMES_HOME/pairing" ] && tree_has_non_hermes_owner "$HERMES_HOME/pairing"; then' in stage2_text

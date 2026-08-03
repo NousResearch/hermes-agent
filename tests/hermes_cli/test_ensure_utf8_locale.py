@@ -60,8 +60,37 @@ def _run_with_streams(monkeypatch, out, err):
     hermes_cli._ensure_utf8()
 
 
+def test_latin1_stdout_is_repaired_to_utf8(monkeypatch):
+    """A latin-1 stdout (the Raspberry Pi case) becomes UTF-8 capable."""
+    out = _FakeStream("latin-1")
+    err = _FakeStream("latin-1")
+
+    # Sanity: before the fix, the banner cannot be encoded.
+    try:
+        out.write(_BANNER)
+        pre_fix_crashes = False
+    except UnicodeEncodeError:
+        pre_fix_crashes = True
+    assert pre_fix_crashes, "fixture should reproduce the original crash"
+
+    out = _FakeStream("latin-1")
+    err = _FakeStream("latin-1")
+    _run_with_streams(monkeypatch, out, err)
+
+    assert sys.stdout.encoding.lower().replace("-", "") == "utf8"
+    assert sys.stderr.encoding.lower().replace("-", "") == "utf8"
+    # The banner now encodes without raising.
+    sys.stdout.write(_BANNER)
+    assert "⚕".encode("utf-8") in sys.stdout.getvalue()
 
 
+def test_ascii_posix_locale_is_repaired(monkeypatch):
+    """C/POSIX locale resolves to ascii stdout — also must be repaired."""
+    out = _FakeStream("ascii")
+    err = _FakeStream("ascii")
+    _run_with_streams(monkeypatch, out, err)
+    assert sys.stdout.encoding.lower().replace("-", "") == "utf8"
+    sys.stdout.write(_BANNER)  # no raise
 
 
 def test_utf8_stream_left_untouched(monkeypatch):
@@ -81,8 +110,21 @@ def test_utf8_stream_left_untouched(monkeypatch):
     assert "PYTHONIOENCODING" not in os.environ
 
 
+def test_repair_sets_child_process_env(monkeypatch):
+    """When a real repair happens, child-process UTF-8 hints are set."""
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    _run_with_streams(monkeypatch, _FakeStream("latin-1"), _FakeStream("latin-1"))
+    assert os.environ.get("PYTHONUTF8") == "1"
+    assert os.environ.get("PYTHONIOENCODING") == "utf-8"
 
 
+def test_repair_does_not_override_explicit_env(monkeypatch):
+    """A user's explicit PYTHONIOENCODING is respected (setdefault, not set)."""
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-16")
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    _run_with_streams(monkeypatch, _FakeStream("latin-1"), _FakeStream("latin-1"))
+    assert os.environ["PYTHONIOENCODING"] == "utf-16"
 
 
 def test_fallback_when_reconfigure_unavailable(monkeypatch, tmp_path):
@@ -112,5 +154,26 @@ def test_fallback_when_reconfigure_unavailable(monkeypatch, tmp_path):
     assert "⚕".encode("utf-8") in real_path.read_bytes()
 
 
+def test_broken_stream_does_not_raise(monkeypatch):
+    """A stream whose repair raises must be swallowed, never crash import."""
+
+    class _Hostile:
+        encoding = "latin-1"
+
+        def reconfigure(self, *a, **k):
+            raise OSError("nope")
+
+        def fileno(self):
+            raise OSError("no fd")
+
+    monkeypatch.setattr(sys, "stdout", _Hostile(), raising=False)
+    monkeypatch.setattr(sys, "stderr", _Hostile(), raising=False)
+    # Must not propagate.
+    hermes_cli._ensure_utf8()
 
 
+def test_none_streams_do_not_raise(monkeypatch):
+    """pythonw / detached streams (sys.stdout is None) must be tolerated."""
+    monkeypatch.setattr(sys, "stdout", None, raising=False)
+    monkeypatch.setattr(sys, "stderr", None, raising=False)
+    hermes_cli._ensure_utf8()

@@ -69,8 +69,32 @@ def test_op_env_autoloads_bootstrap_token_in_cron_context(tmp_path, monkeypatch)
     assert os.environ["OP_SERVICE_ACCOUNT_TOKEN"] == "test-token"
 
 
+def test_op_env_does_not_override_existing_token(tmp_path, monkeypatch):
+    """A token already in the environment (e.g. systemd EnvironmentFile) wins."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / ".env").write_text("FOO=bar\n", encoding="utf-8")
+    (home / ".op.env").write_text(
+        "OP_SERVICE_ACCOUNT_TOKEN=test-token\n", encoding="utf-8"
+    )
+
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "live-token")
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+
+    # override=False AND the explicit guard both protect the live token.
+    assert os.environ["OP_SERVICE_ACCOUNT_TOKEN"] == "live-token"
 
 
+def test_missing_op_env_is_a_noop(tmp_path):
+    """No .op.env present must not raise and must not invent a token."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / ".env").write_text("FOO=bar\n", encoding="utf-8")
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+
+    assert os.environ.get("OP_SERVICE_ACCOUNT_TOKEN") is None
 
 
 # ---------------------------------------------------------------------------

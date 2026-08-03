@@ -400,7 +400,6 @@ Profiles 使用 `~/.hermes/profiles/<name>/`，布局相同。
 | Alibaba / DashScope | API key | `DASHSCOPE_API_KEY` |
 | Xiaomi MiMo | API key | `XIAOMI_API_KEY` |
 | Kilo Code | API key | `KILOCODE_API_KEY` |
-| AI Gateway (Vercel) | API key | `AI_GATEWAY_API_KEY` |
 | OpenCode Zen | API key | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | API key | `OPENCODE_GO_API_KEY` |
 | Qwen OAuth | OAuth | `hermes auth add qwen-oauth` |
@@ -698,20 +697,20 @@ mintty / git-bash 行为相同（Alt+Enter 全屏），除非你在选项 → �
 
 ### 测试/贡献
 
-**`scripts/run_tests.sh` 在 Windows 上无法直接使用** — 它查找 POSIX venv 布局（`.venv/bin/activate`）。Hermes 安装的 venv 位于 `venv/Scripts/`，也没有 pip 或 pytest（为减小安装体积而精简）。解决方案：将 `pytest + pyyaml` 安装到系统 Python 3.11 用户站点，然后设置 `PYTHONPATH` 直接调用 pytest：
+**`scripts/run_tests.sh` 在 Windows 上无法直接使用** — 它查找 POSIX venv 布局（`.venv/bin/activate`）。Hermes 安装的 venv 位于 `venv/Scripts/`，也没有 pip 或 pytest（为减小安装体积而精简）。解决方案：将 `pytest + pytest-xdist + pyyaml` 安装到系统 Python 3.11 用户站点，然后设置 `PYTHONPATH` 直接调用 pytest：
 
 ```bash
-"/c/Program Files/Python311/python" -m pip install --user pytest pyyaml
+"/c/Program Files/Python311/python" -m pip install --user pytest pytest-xdist pyyaml
 export PYTHONPATH="$(pwd)"
-"/c/Program Files/Python311/python" -m pytest tests/foo/test_bar.py -v --tb=short
+"/c/Program Files/Python311/python" -m pytest tests/foo/test_bar.py -v --tb=short -n 0
 ```
 
-仓库已不再使用 pytest-xdist——规范 runner 通过 `run_tests_parallel.py` 做按文件子进程隔离，但该 wrapper 仅支持 POSIX，其 CI 一致性保证不适用于非 POSIX 环境。
+使用 `-n 0` 而非 `-n 4` — `pyproject.toml` 的默认 `addopts` 已包含 `-n`，且 wrapper 的 CI 一致性保证不适用于非 POSIX 环境。
 
 **仅 POSIX 的测试需要跳过守卫。** 代码库中已有的常见标记：
 - 符号链接——Windows 上需要提升权限
 - `0o600` 文件模式——POSIX 模式位在 NTFS 上默认不强制执行
-- `signal.SIGALRM`——仅 Unix（每测试超时不再直接使用它；参见 `tests/conftest.py::pytest_configure` 中的 win32 timeout-method shim）
+- `signal.SIGALRM`——仅 Unix（参见 `tests/conftest.py::_enforce_test_timeout`）
 - Winsock / Windows 特有回归——`@pytest.mark.skipif(sys.platform != "win32", ...)`
 
 使用现有的跳过模式风格（`sys.platform == "win32"` 或 `sys.platform.startswith("win")`）以与测试套件其余部分保持一致。
@@ -891,19 +890,19 @@ python -m pytest tests/tools/ -q            # 特定区域
 - 推送任何变更前运行完整套件
 - 使用 `-o 'addopts='` 清除任何内置的 pytest 标志
 
-**Windows 贡献者：** `scripts/run_tests.sh` 目前查找 POSIX venv（`.venv/bin/activate` / `venv/bin/activate`），在 Windows 上会报错，因为布局是 `venv/Scripts/activate` + `python.exe`。Hermes 安装的 venv 位于 `venv/Scripts/`，也没有 `pip` 或 `pytest`——为终端用户安装体积而精简。解决方案：将 pytest + pyyaml 安装到系统 Python 3.11 用户站点（`/c/Program Files/Python311/python -m pip install --user pytest pyyaml`），然后直接运行测试：
+**Windows 贡献者：** `scripts/run_tests.sh` 目前查找 POSIX venv（`.venv/bin/activate` / `venv/bin/activate`），在 Windows 上会报错，因为布局是 `venv/Scripts/activate` + `python.exe`。Hermes 安装的 venv 位于 `venv/Scripts/`，也没有 `pip` 或 `pytest`——为终端用户安装体积而精简。解决方案：将 pytest + pytest-xdist + pyyaml 安装到系统 Python 3.11 用户站点（`/c/Program Files/Python311/python -m pip install --user pytest pytest-xdist pyyaml`），然后直接运行测试：
 
 ```bash
 export PYTHONPATH="$(pwd)"
-"/c/Program Files/Python311/python" -m pytest tests/tools/test_foo.py -v --tb=short
+"/c/Program Files/Python311/python" -m pytest tests/tools/test_foo.py -v --tb=short -n 0
 ```
 
-仓库已不再使用 pytest-xdist——规范 runner 通过 `run_tests_parallel.py` 做按文件子进程隔离，但该 wrapper 仅支持 POSIX，其 CI 一致性保证不适用于非 POSIX 环境。
+使用 `-n 0`（而非 `-n 4`），因为 `pyproject.toml` 的默认 `addopts` 已包含 `-n`，且 wrapper 的 CI 一致性保证不适用于非 POSIX 环境。
 
 **跨平台测试守卫：** 使用仅 POSIX 系统调用的测试需要跳过标记。代码库中已有的常见标记：
 - 符号链接创建 → `@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")`（参见 `tests/cron/test_cron_script.py`）
 - POSIX 文件模式（0o600 等）→ `@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")`（参见 `tests/hermes_cli/test_auth_toctou_file_modes.py`）
-- `signal.SIGALRM` → 仅 Unix（每测试超时不再直接使用它；参见 `tests/conftest.py::pytest_configure` 中的 win32 timeout-method shim）
+- `signal.SIGALRM` → 仅 Unix（参见 `tests/conftest.py::_enforce_test_timeout`）
 - 实时 Winsock / Windows 特有回归测试 → `@pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific regression")`
 
 **仅 monkeypatch `sys.platform` 是不够的**，当被测代码还调用 `platform.system()` / `platform.release()` / `platform.mac_ver()` 时。这些函数独立重新读取真实 OS，因此在 Windows runner 上将 `sys.platform = "linux"` 的测试仍会看到 `platform.system() == "Windows"` 并走 Windows 分支。需要同时 patch 三者：
@@ -921,7 +920,7 @@ monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
 关于宿主 OS、用户 home、cwd、终端后端和 shell（Windows 上的 bash vs PowerShell）的事实性指导从 `agent/prompt_builder.py::build_environment_hints()` 输出。WSL 提示和每个后端的探测逻辑也在此处。约定：
 
 - **本地终端后端** → 输出宿主信息（OS、`$HOME`、cwd）+ Windows 特有说明（hostname ≠ username，`terminal` 使用 bash 而非 PowerShell）。
-- **远程终端后端**（`_REMOTE_TERMINAL_BACKENDS` 中的任何内容：`docker, singularity, modal, daytona, ssh, vercel_sandbox, managed_modal`）→ **完全抑制**宿主信息，仅描述后端。通过 `tools.environments.get_environment(...).execute(...)` 在后端内运行实时 `uname`/`whoami`/`pwd` 探测，每进程缓存在 `_BACKEND_PROBE_CACHE` 中，探测超时时使用静态回退。
+- **远程终端后端**（`_REMOTE_TERMINAL_BACKENDS` 中的任何内容：`docker, singularity, modal, daytona, ssh, managed_modal`）→ **完全抑制**宿主信息，仅描述后端。通过 `tools.environments.get_environment(...).execute(...)` 在后端内运行实时 `uname`/`whoami`/`pwd` 探测，每进程缓存在 `_BACKEND_PROBE_CACHE` 中，探测超时时使用静态回退。
 - **prompt 编写的关键事实：** 当 `TERMINAL_ENV != "local"` 时，*每个*文件工具（`read_file`、`write_file`、`patch`、`search_files`）都在后端容器内运行，而非宿主上。在这种情况下，系统 prompt 绝不能描述宿主——agent 无法访问它。
 
 完整设计说明、确切输出字符串和测试陷阱：`references/prompt-builder-environment-hints.md`。

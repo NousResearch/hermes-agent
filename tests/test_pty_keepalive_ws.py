@@ -74,6 +74,17 @@ async def test_attach_token_reuses_same_resume(pty_keepalive_harness):
     assert pty_keepalive_harness == [["x", "same"]]
 
 
+@pytest.mark.asyncio
+async def test_attach_token_does_not_reuse_different_resume(pty_keepalive_harness):
+    """A keep-alive token must not pin /chat to an old selected session."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(web_server.app)
+    with client.websocket_connect("/api/pty?attach=TOK1&resume=old") as ws1:
+        ws1.send_bytes(b"hi")
+    with client.websocket_connect("/api/pty?attach=TOK1&resume=new") as ws2:
+        ws2.send_bytes(b"again")
+    assert pty_keepalive_harness == [["x", "old"], ["x", "new"]]
 
 
 @pytest.mark.asyncio
@@ -88,6 +99,16 @@ async def test_attach_token_reuses_canonical_resume(pty_keepalive_harness):
     assert pty_keepalive_harness == [["x", "child"]]
 
 
+@pytest.mark.asyncio
+async def test_attach_token_does_not_reuse_different_profile(pty_keepalive_harness):
+    from starlette.testclient import TestClient
+
+    client = TestClient(web_server.app)
+    with client.websocket_connect("/api/pty?attach=TOK1&profile=alpha") as ws1:
+        ws1.send_bytes(b"hi")
+    with client.websocket_connect("/api/pty?attach=TOK1&profile=beta") as ws2:
+        ws2.send_bytes(b"again")
+    assert len(pty_keepalive_harness) == 2
 
 
 @pytest.mark.asyncio

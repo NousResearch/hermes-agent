@@ -60,6 +60,29 @@ def test_telegram_bot_authorized_when_allow_bots_mentions(monkeypatch):
     assert runner._is_user_authorized(_make_telegram_bot_source("999888777")) is True
 
 
+def test_telegram_bot_authorized_when_allow_bots_all(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "all")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "100200300")
+
+    assert runner._is_user_authorized(_make_telegram_bot_source()) is True
+
+
+def test_telegram_bot_not_authorized_when_allow_bots_unset(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "100200300")
+
+    assert runner._is_user_authorized(_make_telegram_bot_source("999888777")) is False
+
+
+def test_telegram_bot_not_authorized_when_allow_bots_none(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "none")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "100200300")
+
+    assert runner._is_user_authorized(_make_telegram_bot_source("999888777")) is False
+
+
 def test_telegram_human_still_checked_against_allowlist_when_bot_policy_set(monkeypatch):
     runner = _make_bare_runner()
     monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "all")
@@ -127,3 +150,9 @@ def _capture_build_source_is_bot(is_bot: bool):
     return captured.get("is_bot")
 
 
+def test_telegram_adapter_propagates_is_bot_true():
+    assert _capture_build_source_is_bot(True) is True
+
+
+def test_telegram_adapter_propagates_is_bot_false():
+    assert _capture_build_source_is_bot(False) is False

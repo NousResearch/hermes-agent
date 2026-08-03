@@ -121,6 +121,41 @@ def _make_event() -> MessageEvent:
     )
 
 
+def test_incomplete_codex_warning_is_not_surfaced_as_chat_text():
+    agent_result = _make_incomplete_result()
+
+    # Mirror the gateway pipeline: the hidden-turn detector blanks the
+    # sentinel final_response BEFORE empty-response normalization runs.
+    response = agent_result.get("final_response") or ""
+    assert gateway_run._is_gateway_hidden_reasoning_incomplete_turn(agent_result)
+    response = ""
+
+    response = gateway_run._normalize_empty_agent_response(
+        agent_result,
+        response,
+        history_len=4,
+    )
+
+    assert response == ""
+
+
+def test_real_answer_alongside_incomplete_error_is_never_suppressed():
+    """A turn whose final_response is genuine model text (not the sentinel
+    echo) must be delivered even when the error field carries the
+    retry-exhaustion sentinel — suppression is only for hidden turns."""
+    agent_result = _make_incomplete_result()
+    agent_result["final_response"] = "Here is the actual answer."
+
+    assert not gateway_run._is_gateway_hidden_reasoning_incomplete_turn(agent_result)
+
+
+def test_interrupted_or_failed_turns_are_not_classified_hidden():
+    for key in ("interrupted", "failed"):
+        agent_result = _make_incomplete_result()
+        agent_result[key] = True
+        assert not gateway_run._is_gateway_hidden_reasoning_incomplete_turn(agent_result)
+
+
 @pytest.mark.asyncio
 async def test_incomplete_codex_turn_stays_out_of_slack_transcript(monkeypatch, tmp_path):
     adapter = CaptureSlackAdapter()

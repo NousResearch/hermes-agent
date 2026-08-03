@@ -163,6 +163,10 @@ class TestModelSupportsVision:
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is False
 
+    def test_exception_returns_false(self):
+        agent = _make_agent()
+        with patch("agent.models_dev.get_model_capabilities", side_effect=RuntimeError("boom")):
+            assert agent._model_supports_vision() is False
 
     def test_top_level_model_override_wins(self):
         agent = _make_agent()
@@ -172,6 +176,14 @@ class TestModelSupportsVision:
              patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 
+    def test_per_provider_per_model_override_wins(self):
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.model = "my-llava"
+        cfg = {"providers": {"custom": {"models": {"my-llava": {"supports_vision": True}}}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert agent._model_supports_vision() is True
 
     def test_named_custom_provider_resolved_via_config_provider(self):
         # Named custom providers get runtime self.provider rewritten to
@@ -188,3 +200,10 @@ class TestModelSupportsVision:
              patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 
+    def test_override_false_disables_vision_for_models_dev_models(self):
+        agent = _make_agent()
+        fake_caps = MagicMock()
+        fake_caps.supports_vision = True
+        with patch("hermes_cli.config.load_config", return_value={"model": {"supports_vision": False}}), \
+             patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
+            assert agent._model_supports_vision() is False

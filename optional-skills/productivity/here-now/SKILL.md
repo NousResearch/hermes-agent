@@ -1,6 +1,6 @@
 ---
 name: here.now
-description: Publish sites to {slug}.here.now and store files in Drives.
+description: Publish static sites to {slug}.here.now and store private files in cloud Drives for agent-to-agent handoff.
 version: 1.15.3
 author: here.now
 license: MIT

@@ -43,6 +43,12 @@ class TestMiniMaxModelValidation:
     # -------------------------------------------------------------------------
     # Test 1b: Case-insensitive lookup matches catalog entries
     # -------------------------------------------------------------------------
+    def test_valid_minimax_model_case_insensitive(self):
+        result = validate_requested_model("minimax-m2.7", "minimax")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
 
     def test_valid_minimax_model_uppercase(self):
         result = validate_requested_model("MINIMAX-M2.7", "minimax")
@@ -68,6 +74,17 @@ class TestMiniMaxModelValidation:
     # -------------------------------------------------------------------------
     # Test 3: A completely unknown model is accepted (not rejected) with a warning
     # -------------------------------------------------------------------------
+    def test_unknown_minimax_model_accepted_with_warning(self):
+        # "NotARealModel" has very low similarity to any MiniMax model (~0.16).
+        # It should still be accepted (not rejected), with recognized=False and
+        # a note that MiniMax doesn't expose /models.
+        result = validate_requested_model("NotARealModel", "minimax")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "NotARealModel" in result["message"]
+        assert "not found in the MiniMax catalog" in result["message"]
+        assert "MiniMax does not expose a /models endpoint" in result["message"]
 
     # -------------------------------------------------------------------------
     # Test 4: Verify catalog path is used (probe_api_models returns None)
@@ -82,3 +99,32 @@ class TestMiniMaxModelValidation:
         assert result["message"] is None
 
 
+class TestMiniMaxCatalogPathRequired:
+    """Prove the catalog path is necessary: without it, MiniMax would fail.
+
+    These tests demonstrate that when fetch_api_models returns None (simulating
+    the real 404 from MiniMax /v1/models), the openai-codex-style catalog path
+    is the only way to avoid a "Could not reach the API" failure.
+    """
+
+    def test_minimax_without_fix_would_reach_api_probe(self):
+        """Without the catalog block, minimax falls through to fetch_api_models.
+
+        This test documents the before-fix behavior: when the MiniMax block
+        is absent, the code falls through to `api_models = fetch_api_models(...)`
+        which returns None (404), leading to rejection.
+        """
+        probe_payload = {
+            "models": None,
+            "probed_url": "https://api.minimax.io/v1/models",
+            "resolved_base_url": "https://api.minimax.io/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
+            # Before fix: this would return accepted=False because api_models is None
+            # After fix: returns accepted=True via catalog path
+            result = validate_requested_model("MiniMax-M2.7", "minimax")
+            # The fix makes this True; without the fix it would be False
+            assert result["accepted"] is True

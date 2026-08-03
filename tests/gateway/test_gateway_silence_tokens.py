@@ -87,3 +87,79 @@ def test_blank_and_prose_mentions_are_not_silence():
     assert not is_intentional_silence_response("The reply was [SILENT], intentionally.")
 
 
+def test_failed_agent_result_never_counts_as_intentional_silence():
+    assert is_intentional_silence_agent_result({"failed": False}, "NO_REPLY")
+    assert not is_intentional_silence_agent_result({"failed": True}, "NO_REPLY")
+
+
+@pytest.mark.asyncio
+async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "[SILENT]",
+        "messages": [
+            {"role": "user", "content": "side chatter"},
+            {"role": "assistant", "content": "[SILENT]"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert response == ""
+    appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
+    assert {"role": "assistant", "content": "[SILENT]"}.items() <= appended[-1].items()
+    assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_empty_success_still_gets_empty_response_warning(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "",
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": ""},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert "no response was generated" in response
+
+
+@pytest.mark.asyncio
+async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    text = "Use [SILENT] when no answer is needed."
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": text,
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": text},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert response == text

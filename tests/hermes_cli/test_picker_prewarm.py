@@ -45,3 +45,16 @@ def test_prewarm_guard_is_once_per_process():
     _reset_guard()
 
 
+def test_prewarm_never_raises_on_failure():
+    """A failing/offline provider path must be fully swallowed — the prewarm
+    is best-effort and must never surface errors into the session."""
+    _reset_guard()
+    with patch.object(
+        ms, "list_authenticated_providers", side_effect=RuntimeError("boom")
+    ):
+        t = ms.prewarm_picker_cache_async()
+        assert t is not None
+        # join must not raise; the worker swallows the exception internally.
+        t.join(timeout=10)
+        assert not t.is_alive()
+    _reset_guard()

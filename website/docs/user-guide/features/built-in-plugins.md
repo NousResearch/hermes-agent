@@ -211,17 +211,16 @@ Lets the agent **join, transcribe, and participate in Google Meet calls** — ta
 
 - A headless virtual participant that joins a Meet URL using browser automation
 - Live transcription of the meeting audio via the configured STT provider
-- A `meet_join` / `meet_status` / `meet_transcript` / `meet_leave` / `meet_say` toolset the agent invokes to join calls, poll the live transcript, and act on what it heard
-- Post-meeting artifacts (transcript, status) saved under `~/.hermes/workspace/meetings/<meeting_id>/`
+- A `meet_summarize` / `meet_speak` / `meet_followup` toolset the agent invokes to act on what it heard
+- Post-meeting artifacts (transcript, speaker-attributed notes, action items) saved under `~/.hermes/cache/google_meet/<meeting_id>/`
 
 **Setup:**
 
 ```bash
 hermes plugins enable google_meet
-hermes meet setup   # preflight: playwright, chromium, auth file
-hermes meet auth    # opens a browser to sign into Google and saves session state —
-                    # needs a Google account with Meet access. Host approval may be
-                    # required if the meeting enforces "only invited participants can join".
+# Prompts you to sign in via the plugin's OAuth flow on first use —
+# needs a Google account with Meet access. Host approval may be required
+# if the meeting enforces "only invited participants can join".
 ```
 
 Usage from chat:
@@ -232,7 +231,7 @@ The agent kicks off the meeting join, streams the transcription back into its co
 
 **When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
 
-**Disabling:** `hermes plugins disable google_meet`. Any saved transcripts stay in `~/.hermes/workspace/meetings/` until you remove them.
+**Disabling:** `hermes plugins disable google_meet`. Any cached transcripts and recordings stay in `~/.hermes/cache/google_meet/` until you remove them.
 
 ### hermes-achievements
 

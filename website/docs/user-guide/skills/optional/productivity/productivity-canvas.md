@@ -1,14 +1,14 @@
 ---
-title: "Canvas — Fetch Canvas LMS courses and assignments via API token"
+title: "Canvas — Canvas LMS integration — fetch enrolled courses and assignments using API token authentication"
 sidebar_label: "Canvas"
-description: "Fetch Canvas LMS courses and assignments via API token"
+description: "Canvas LMS integration — fetch enrolled courses and assignments using API token authentication"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Canvas
 
-Fetch Canvas LMS courses and assignments via API token.
+Canvas LMS integration — fetch enrolled courses and assignments using API token authentication.
 
 ## Skill metadata
 

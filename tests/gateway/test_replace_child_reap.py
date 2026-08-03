@@ -88,6 +88,46 @@ class TestReapGatewayChildren:
         assert stubborn.killed
         assert reaped == 1
 
+    def test_child_still_parented_to_live_parent_is_skipped(self, monkeypatch):
+        """If a child's ppid still equals the old gateway PID, the parent is
+        alive and the child is not an orphan — never signal it."""
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
+        _fake_psutil(monkeypatch)
+        child = _FakeChild(104, ppid=42)
+
+        reaped = status.reap_gateway_children([child], parent_pid=42)
+
+        assert reaped == 0
+        assert not child.terminated
+        assert not child.killed
+
+    def test_dead_and_zombie_children_are_skipped(self, monkeypatch):
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
+        _fake_psutil(monkeypatch)
+        dead = _FakeChild(105, running=False)
+        zombie = _FakeChild(106, zombie=True)
+
+        assert status.reap_gateway_children([dead, zombie], parent_pid=42) == 0
+        assert not dead.terminated and not zombie.terminated
+
+    def test_noop_on_windows_and_empty_snapshot(self, monkeypatch):
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        child = _FakeChild(107, ppid=1)
+        assert status.reap_gateway_children([child], parent_pid=42) == 0
+        assert not child.terminated
+
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
+        assert status.reap_gateway_children([], parent_pid=42) == 0
+
+    def test_never_raises_when_psutil_explodes(self, monkeypatch):
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
+        fake = _fake_psutil(monkeypatch)
+        fake.wait_procs.side_effect = RuntimeError("boom")
+        child = _FakeChild(108, ppid=1)
+
+        # Must swallow and return best-effort count, not raise.
+        assert status.reap_gateway_children([child], parent_pid=42) == 0
+
 
 class TestSnapshotGatewayChildren:
     def test_snapshot_walks_descendants_recursively(self, monkeypatch):
@@ -99,6 +139,15 @@ class TestSnapshotGatewayChildren:
         assert status._snapshot_gateway_children(42) == kids
         fake.Process.assert_called_once_with(42)
         fake.Process.return_value.children.assert_called_once_with(recursive=True)
+
+    def test_snapshot_returns_empty_on_windows_or_error(self, monkeypatch):
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        assert status._snapshot_gateway_children(42) == []
+
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
+        fake = _fake_psutil(monkeypatch)
+        fake.Process.side_effect = RuntimeError("gone")
+        assert status._snapshot_gateway_children(42) == []
 
 
 class TestScopedLockTakeoverReapsChildren:
@@ -165,6 +214,47 @@ class TestScopedLockTakeoverReapsChildren:
             ("terminate", 4242, False),
             ("reap", 4242, kids),
         ]
+
+    def test_failed_takeover_does_not_reap(self, tmp_path, monkeypatch):
+        # Owner never exits; safe_to_force stays False via unknown start time.
+        record = self._verified_owner_env(
+            tmp_path, monkeypatch, alive_polls=[True] * 50
+        )
+        monkeypatch.setattr(status, "_snapshot_gateway_children", lambda pid: [])
+        starts = iter([123, 123] + [None] * 50)
+        monkeypatch.setattr(
+            status, "_get_process_start_time", lambda _pid: next(starts)
+        )
+        reap = MagicMock()
+        monkeypatch.setattr(status, "reap_gateway_children", reap)
+        monkeypatch.setattr(status, "terminate_pid", lambda pid, *, force=False: None)
+        monkeypatch.setattr(status.time, "sleep", lambda _s: None)
+
+        assert (
+            status.take_over_scoped_lock_holder(
+                record, graceful_attempts=1, force_attempts=1
+            )
+            is None
+        )
+        reap.assert_not_called()
+
+    def test_unverified_holder_is_never_snapshotted_or_signalled(
+        self, tmp_path, monkeypatch
+    ):
+        """A non-gateway lock record fails identity validation: no snapshot,
+        no terminate, no reap — regardless of --replace intent upstream."""
+        record = {"pid": 4242, "kind": "something-else", "start_time": 123}
+        snapshot = MagicMock()
+        terminate = MagicMock()
+        reap = MagicMock()
+        monkeypatch.setattr(status, "_snapshot_gateway_children", snapshot)
+        monkeypatch.setattr(status, "terminate_pid", terminate)
+        monkeypatch.setattr(status, "reap_gateway_children", reap)
+
+        assert status.take_over_scoped_lock_holder(record) is None
+        snapshot.assert_not_called()
+        terminate.assert_not_called()
+        reap.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -249,3 +339,34 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
     ]
 
 
+@pytest.mark.asyncio
+async def test_start_gateway_without_replace_never_touches_old_gateway(
+    monkeypatch, tmp_path
+):
+    """Without --replace an existing gateway aborts startup: no takeover
+    authority is armed, no snapshot/terminate/reap ever runs."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    snapshot = MagicMock()
+    terminate = MagicMock()
+    reap = MagicMock()
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
+    monkeypatch.setattr("gateway.status._snapshot_gateway_children", snapshot)
+    monkeypatch.setattr("gateway.status.terminate_pid", terminate)
+    monkeypatch.setattr("gateway.status.reap_gateway_children", reap)
+    monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
+
+    class _RunnerShouldNotStart:
+        def __init__(self, config):
+            raise AssertionError("must not start while another gateway runs")
+
+    monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerShouldNotStart)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+
+    assert ok is False
+    snapshot.assert_not_called()
+    terminate.assert_not_called()
+    reap.assert_not_called()

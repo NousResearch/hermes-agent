@@ -1,6 +1,6 @@
 ---
 name: sherlock
-description: Find accounts for a username across 400+ platforms.
+description: OSINT username search across 400+ social networks. Hunt down social media accounts by username.
 version: 1.0.0
 author: unmodeled-tyler
 license: MIT

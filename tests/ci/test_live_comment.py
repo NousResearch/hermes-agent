@@ -28,6 +28,11 @@ def _job(name: str, status: str, conclusion: str | None = None, workflow: str = 
     return j
 
 
+def test_classify_empty():
+    completed, pending, job_urls = _mod.classify_jobs([])
+    assert completed == {}
+    assert pending == []
+    assert job_urls == {}
 
 
 def test_classify_success():
@@ -44,8 +49,18 @@ def test_classify_failure():
     assert pending == []
 
 
+def test_classify_skipped():
+    jobs = [_job("Python tests", "completed", "skipped")]
+    completed, pending, job_urls = _mod.classify_jobs(jobs)
+    assert completed == {"Python tests": "skipped"}
+    assert pending == []
 
 
+def test_classify_in_progress():
+    jobs = [_job("Python tests", "in_progress", None)]
+    completed, pending, job_urls = _mod.classify_jobs(jobs)
+    assert completed == {}
+    assert pending == ["Python tests"]
 
 
 def test_classify_queued():
@@ -55,6 +70,11 @@ def test_classify_queued():
     assert pending == ["Python tests"]
 
 
+def test_classify_waiting():
+    jobs = [_job("Python tests", "waiting", None)]
+    completed, pending, job_urls = _mod.classify_jobs(jobs)
+    assert completed == {}
+    assert pending == ["Python tests"]
 
 
 def test_classify_mixed():
@@ -69,6 +89,20 @@ def test_classify_mixed():
     assert set(pending) == {"JS & TS checks", "Desktop E2E"}
 
 
+def test_classify_infra_jobs_excluded():
+    """Infra jobs (detect, all-checks-pass, comment-live) are never shown."""
+    jobs = [
+        _job("detect", "completed", "success"),
+        _job("Detect affected areas", "completed", "success"),
+        _job("all-checks-pass", "completed", "success"),
+        _job("All required checks pass", "completed", "success"),
+        _job("comment-live", "in_progress", None),
+        _job("CI review comment (live)", "in_progress", None),
+        _job("Python tests", "completed", "success"),
+    ]
+    completed, pending, job_urls = _mod.classify_jobs(jobs)
+    assert completed == {"Python tests": "success"}
+    assert pending == []
 
 
 def test_classify_sub_workflow_jobs_prefixed():
@@ -96,6 +130,10 @@ def test_classify_captures_html_url():
     assert "Python lints" not in job_urls
 
 
+def test_classify_cancelled_treated_as_skipped():
+    jobs = [_job("Python tests", "completed", "cancelled")]
+    completed, pending, job_urls = _mod.classify_jobs(jobs)
+    assert completed == {"Python tests": "skipped"}
 
 
 def test_classify_timed_out_treated_as_failure():
@@ -104,10 +142,24 @@ def test_classify_timed_out_treated_as_failure():
     assert completed == {"Python tests": "failure"}
 
 
+def test_classify_neutral_treated_as_skipped():
+    jobs = [_job("Python tests", "completed", "neutral")]
+    completed, pending, job_urls = _mod.classify_jobs(jobs)
+    assert completed == {"Python tests": "skipped"}
 
 
+def test_classify_action_required_treated_as_skipped():
+    jobs = [_job("Python tests", "completed", "action_required")]
+    completed, pending, job_urls = _mod.classify_jobs(jobs)
+    assert completed == {"Python tests": "skipped"}
 
 
+def test_classify_unknown_status_skipped():
+    """Unknown status values are silently ignored, not crashed on."""
+    jobs = [_job("weird-job", "unknown_status", None)]
+    completed, pending, job_urls = _mod.classify_jobs(jobs)
+    assert completed == {}
+    assert pending == []
 
 
 def test_commit_info_uses_present_tense_while_jobs_are_pending():

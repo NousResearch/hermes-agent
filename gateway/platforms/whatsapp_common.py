@@ -37,26 +37,6 @@ import os
 import re
 from typing import Any, Dict, Optional
 
-from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
-from agent.secret_scope import get_secret as _scoped_get_secret
-
-
-def _get_wsecret(name, default=None):
-    """Scope-aware WHATSAPP_* read with the default-profile startup fallback.
-
-    Secondary profiles run under ``_profile_runtime_scope`` -- the scope is
-    authoritative and a scoped miss returns ``default`` (no cross-profile
-    borrow). The DEFAULT profile's adapter constructs and sends *unscoped*
-    under multiplexing, where a bare ``get_secret`` would raise
-    ``UnscopedSecretError`` and crash its WhatsApp path; there ``os.environ``
-    is that profile's own value, so fall back to it. Same pattern as the
-    Slack ``SLACK_APP_TOKEN`` read (#59739).
-    """
-    try:
-        val = _scoped_get_secret(name, default)
-    except _UnscopedSecretError:
-        val = os.getenv(name)
-    return val if val is not None else default
 
 logger = logging.getLogger(__name__)
 
@@ -107,12 +87,12 @@ class WhatsAppBehaviorMixin:
         adapter) can override this to always return ``""`` or apply a
         different policy.
         """
-        whatsapp_mode = _get_wsecret("WHATSAPP_MODE", default="self-chat") or "self-chat"
+        whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
         if whatsapp_mode != "self-chat":
             return ""
         if self._reply_prefix is not None:
             return self._reply_prefix.replace("\\n", "\n")
-        env_prefix = _get_wsecret("WHATSAPP_REPLY_PREFIX")
+        env_prefix = os.getenv("WHATSAPP_REPLY_PREFIX")
         if env_prefix is not None:
             return env_prefix.replace("\\n", "\n")
         return self.DEFAULT_REPLY_PREFIX
@@ -130,7 +110,7 @@ class WhatsAppBehaviorMixin:
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return (_get_wsecret("WHATSAPP_REQUIRE_MENTION", default="false") or "false").lower() in {
+        return os.getenv("WHATSAPP_REQUIRE_MENTION", "false").lower() in {
             "true",
             "1",
             "yes",
@@ -140,7 +120,7 @@ class WhatsAppBehaviorMixin:
     def _whatsapp_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
-            raw = _get_wsecret("WHATSAPP_FREE_RESPONSE_CHATS", default="") or ""
+            raw = os.getenv("WHATSAPP_FREE_RESPONSE_CHATS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -153,28 +133,6 @@ class WhatsAppBehaviorMixin:
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
-
-    def _live_dm_allow_from(self) -> set[str]:
-        """Allowlist currently enforced for DM intake / strict DM auth.
-
-        Source precedence matches construction: explicit config wins over any
-        env carrier. When the adapter was seeded from an env var, re-read that
-        same key so pairing approve/revoke takes effect without restart
-        (including an empty value while the key is still present). When the key
-        is absent — sole-entry revoke calls ``remove_env_value`` — treat the
-        allowlist as empty instead of falling back to the construction-time
-        snapshot. Config-seeded adapters keep the in-memory snapshot, which
-        pairing revoke purges in place — a lower-precedence or stale env value
-        must not broaden access.
-        """
-        source = getattr(self, "_dm_allowlist_source", None)
-        if isinstance(source, str) and source != "config":
-            if source in os.environ:
-                return self._coerce_allow_list(os.environ.get(source, ""))
-            # Key removed (e.g. sole-entry pairing revoke) — do not revive the
-            # stale construction snapshot.
-            return set()
-        return set(self._allow_from or ())
 
     # ------------------------------------------------------------------ JID helpers
     @staticmethod
@@ -210,7 +168,7 @@ class WhatsAppBehaviorMixin:
     def _open_dm_opted_in(self) -> bool:
         if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
             return True
-        return (_get_wsecret("WHATSAPP_ALLOW_ALL_USERS", default="") or "").lower() in {"true", "1", "yes"}
+        return os.getenv("WHATSAPP_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
     @staticmethod
     def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:
@@ -256,7 +214,7 @@ class WhatsAppBehaviorMixin:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(sender_id, self._live_dm_allow_from())
+            return self._matches_whatsapp_allowlist(sender_id, self._allow_from)
         if self._dm_policy == "open":
             return self._open_dm_opted_in()
         return False
@@ -269,7 +227,7 @@ class WhatsAppBehaviorMixin:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(principal, self._live_dm_allow_from())
+            return self._matches_whatsapp_allowlist(principal, self._allow_from)
         if self._dm_policy == "pairing":
             return True
         if self._dm_policy == "open":
@@ -291,7 +249,7 @@ class WhatsAppBehaviorMixin:
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
-            raw = (_get_wsecret("WHATSAPP_MENTION_PATTERNS", default="") or "").strip()
+            raw = os.getenv("WHATSAPP_MENTION_PATTERNS", "").strip()
             if raw:
                 try:
                     patterns = json.loads(raw)

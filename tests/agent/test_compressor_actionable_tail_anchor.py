@@ -68,6 +68,29 @@ def _assert_no_adjacent_user_roles(messages: list[dict]) -> None:
         assert (previous.get("role"), current.get("role")) != ("user", "user")
 
 
+@pytest.mark.parametrize(
+    "blank",
+    [
+        "",
+        "  \n\t",
+        None,
+        [],
+        [{"type": "text", "text": "  "}],
+        [{"type": "input_text", "text": "  "}],
+    ],
+)
+def test_blank_echo_does_not_displace_async_completion(compressor, blank):
+    completion = "[ASYNC DELEGATION BATCH COMPLETE — deleg_current]\nnew result"
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old reply"},
+        {"role": "user", "content": completion},
+        {"role": "user", "content": blank},
+        {"role": "assistant", "content": "working from the completion"},
+    ]
+
+    assert compressor._find_last_user_message_idx(messages, head_end=1) == 3
 
 
 def test_leading_blank_without_actionable_user_is_not_removed(compressor):
@@ -80,8 +103,71 @@ def test_leading_blank_without_actionable_user_is_not_removed(compressor):
     assert compressor._blank_echo_indices_after(messages, -1) == set()
 
 
+def test_image_only_user_turn_survives_compaction(compressor):
+    image_content = [
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AA=="},
+        }
+    ]
+    messages: list[dict] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old reply"},
+    ]
+    messages += [
+        {"role": "user", "content": f"older question {index}"}
+        if index % 2 == 0
+        else {"role": "assistant", "content": f"older reply {index}"}
+        for index in range(6)
+    ]
+    messages += [
+        {"role": "user", "content": image_content},
+        {"role": "user", "content": ""},
+        {"role": "assistant", "content": "analyzing the image"},
+    ]
+    _append_tool_run(messages, "image")
+
+    result = _compress(compressor, messages)
+
+    assert any(message.get("content") == image_content for message in result)
+    assert all(not compressor._is_blank_user_turn(message) for message in result)
+    _assert_no_adjacent_user_roles(result)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [{"type": "audio", "source": {"data": "AA=="}}],
+        [{"type": "input_audio", "input_audio": {"data": "AA=="}}],
+        [{"type": "future_input", "payload": {"value": 7}}],
+    ],
+    ids=["audio", "input-audio", "unknown-structured"],
+)
+def test_structured_non_text_user_turn_survives_compaction(compressor, payload):
+    messages: list[dict] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old reply"},
+    ]
+    messages += [
+        {"role": "user", "content": f"older question {index}"}
+        if index % 2 == 0
+        else {"role": "assistant", "content": f"older reply {index}"}
+        for index in range(6)
+    ]
+    messages += [
+        {"role": "user", "content": payload},
+        {"role": "user", "content": ""},
+        {"role": "assistant", "content": "processing structured input"},
+    ]
+    _append_tool_run(messages, "structured")
+
+    result = _compress(compressor, messages)
+
+    assert any(message.get("content") == payload for message in result)
+    assert all(not compressor._is_blank_user_turn(message) for message in result)
+    _assert_no_adjacent_user_roles(result)
 
 
 def test_completion_survives_compaction_verbatim_after_blank_echo(compressor):
@@ -183,3 +269,44 @@ def test_completion_at_compress_start_survives_when_blank_echo_is_compress_end(
     _assert_no_adjacent_user_roles(result)
 
 
+def test_tool_call_head_compacts_without_rewriting_event(compressor):
+    completion = "latest actionable completion"
+    messages: list[dict] = [
+        {"role": "user", "content": "initial request"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "head-call",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "head-call", "content": "head result"},
+    ]
+    messages += [
+        {"role": "user", "content": f"older question {index}"}
+        if index % 2 == 0
+        else {"role": "assistant", "content": f"older reply {index}"}
+        for index in range(6)
+    ]
+    messages += [
+        {"role": "user", "content": completion},
+        {"role": "user", "content": ""},
+        {"role": "assistant", "content": "working"},
+    ]
+    _append_tool_run(messages, "tail")
+
+    result = _compress(compressor, messages)
+
+    assert compressor._last_compress_aborted is False
+    assert any(message.get("content") == completion for message in result)
+    head = next(
+        message
+        for message in result
+        if any(call.get("id") == "head-call" for call in message.get("tool_calls", []))
+    )
+    assert not head.get(COMPRESSED_SUMMARY_METADATA_KEY)
+    assert any(message.get("tool_call_id") == "head-call" for message in result)
+    _assert_no_adjacent_user_roles(result)

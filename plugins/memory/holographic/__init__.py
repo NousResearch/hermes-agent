@@ -96,11 +96,14 @@ FACT_FEEDBACK_SCHEMA = {
 # ---------------------------------------------------------------------------
 
 def _load_plugin_config() -> dict:
+    from hermes_constants import get_hermes_home
+    config_path = get_hermes_home() / "config.yaml"
+    if not config_path.exists():
+        return {}
     try:
-        # Canonical loader: behavioral read now honors the managed-scope
-        # overlay + ${VAR} expansion (e.g. an api key template) too.
-        from hermes_cli.config import load_config_readonly
-        all_config = load_config_readonly()
+        import yaml
+        with open(config_path, encoding="utf-8-sig") as f:
+            all_config = yaml.safe_load(f) or {}
         return cfg_get(all_config, "plugins", "hermes-memory-store", default={}) or {}
     except Exception:
         return {}
@@ -132,10 +135,10 @@ class HolographicMemoryProvider(MemoryProvider):
         config_path = Path(hermes_home) / "config.yaml"
         try:
             import yaml
-            # Write-back round-trip: raw read is correct (merged defaults
-            # must not be persisted back into the user's file).
-            from hermes_cli.config import read_user_config_raw
-            existing = read_user_config_raw(config_path)
+            existing = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8-sig") as f:
+                    existing = yaml.safe_load(f) or {}
             existing.setdefault("plugins", {})
             existing["plugins"]["hermes-memory-store"] = values
             with open(config_path, "w", encoding="utf-8") as f:

@@ -105,6 +105,13 @@ class TestOllamaCloudReasoningEffort:
         )
         assert top_level == {}
 
+    def test_no_effort_key_emits_nothing(self, ollama_cloud_profile):
+        """When effort key is absent, let the model use its default."""
+        _, top_level = ollama_cloud_profile.build_api_kwargs_extras(
+            supports_reasoning=True,
+            reasoning_config={"enabled": True},
+        )
+        assert top_level == {}
 
     # ── unknown / minimal effort → omitted (server default) ────────
 
@@ -150,6 +157,23 @@ class TestOllamaCloudFullKwargsIntegration:
         # No extra_body — Ollama Cloud uses top-level reasoning_effort
         assert "extra_body" not in kwargs or "reasoning" not in kwargs.get("extra_body", {})
 
+    def test_full_kwargs_with_disabled(self, ollama_cloud_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek-v4-pro:cloud",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=ollama_cloud_profile,
+            reasoning_config={"enabled": False},
+            base_url="https://ollama.com/v1",
+            provider_name="ollama-cloud",
+            supports_reasoning=True,
+        )
+        # Disabling requires the explicit off switch — Ollama Cloud defaults to
+        # thinking ON, so omitting reasoning_effort would NOT disable it.
+        assert kwargs["reasoning_effort"] == "none"
+
 
 class TestOllamaCloudCapabilityGating:
     """reasoning_effort is gated on the model's thinking capability."""
@@ -164,6 +188,14 @@ class TestOllamaCloudCapabilityGating:
             supports_reasoning=False,
         )
         assert extra_body == {}
+        assert top_level == {}
+
+    def test_non_thinking_model_ignores_disable(self, ollama_cloud_profile):
+        """Even a disable request is a no-op for a non-thinking model."""
+        _, top_level = ollama_cloud_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            supports_reasoning=False,
+        )
         assert top_level == {}
 
 
@@ -207,6 +239,14 @@ class TestOllamaModelSupportsThinking:
             is True
         )
 
+    def test_no_thinking_capability_false(self, monkeypatch):
+        from hermes_cli.models import ollama_model_supports_thinking
+
+        self._patch_show(monkeypatch, capabilities=["completion", "vision"])
+        assert (
+            ollama_model_supports_thinking("gemma3:27b", "https://ollama.com/v1", "key")
+            is False
+        )
 
     def test_probe_failure_returns_none(self, monkeypatch):
         from hermes_cli.models import ollama_model_supports_thinking

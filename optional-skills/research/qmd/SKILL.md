@@ -1,6 +1,6 @@
 ---
 name: qmd
-description: Hybrid local search over notes, docs, and transcripts.
+description: Search personal knowledge bases, notes, docs, and meeting transcripts locally using qmd — a hybrid retrieval engine with BM25, vector search, and LLM reranking. Supports CLI and MCP integration.
 version: 1.0.0
 author: Hermes Agent + Teknium
 license: MIT
@@ -8,7 +8,7 @@ platforms: [macos, linux]
 metadata:
   hermes:
     tags: [Search, Knowledge-Base, RAG, Notes, MCP, Local-AI]
-    related_skills: [obsidian, hermes-agent, arxiv]
+    related_skills: [obsidian, native-mcp, arxiv]
 ---
 
 # QMD — Query Markup Documents

@@ -21,6 +21,7 @@ Zero-install localhost tunnels over SSH via Pinggy.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Pinggy`, `Tunnel`, `Networking`, `SSH`, `Webhook`, `Localhost` |
+| Related skills | `cloudflared-quick-tunnel`, `webhook-subscriptions` |
 
 ## Reference: full SKILL.md
 

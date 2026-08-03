@@ -39,6 +39,18 @@ def _clean_env(monkeypatch):
 
 # ─────────────────────────── identity parsing ───────────────────────────
 
+def test_identities_default_relay_when_unconfigured():
+    assert relay.relay_platform_identities() == [("relay", "")]
+    # The primary helper mirrors the first identity.
+    assert relay.relay_platform_identity() == ("relay", "")
+
+
+def test_identities_single_platform(monkeypatch):
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
+    monkeypatch.setenv("GATEWAY_RELAY_BOT_IDS", json.dumps({"discord": {"botId": "app-1"}}))
+    assert relay.relay_platform_identities() == [("discord", "app-1")]
+    assert relay.relay_platform_identity() == ("discord", "app-1")
+
 
 def test_identities_multi_platform_keyed_map(monkeypatch):
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord, telegram")
@@ -58,6 +70,14 @@ def test_identities_multi_platform_keyed_map(monkeypatch):
     # Username folded into the per-platform entry; the leading @ is stripped.
     assert relay.relay_bot_username("telegram") == "my_bot"
     assert relay.relay_bot_username("discord") is None
+
+
+def test_identities_platform_missing_from_map_gets_empty_bot_id(monkeypatch):
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord,telegram")
+    monkeypatch.setenv("GATEWAY_RELAY_BOT_IDS", json.dumps({"discord": {"botId": "app-1"}}))
+    # telegram is listed but absent from the ids map ⇒ empty bot_id (the
+    # connector rejects an unprovisioned platform with a structured failure).
+    assert relay.relay_platform_identities() == [("discord", "app-1"), ("telegram", "")]
 
 
 def test_bot_ids_malformed_json_degrades_to_empty(monkeypatch):
@@ -96,6 +116,35 @@ def test_self_provision_loops_per_platform(monkeypatch):
     import os
 
     assert os.environ["GATEWAY_RELAY_SECRET"] == "s" * 64
+
+
+def test_self_provision_partial_failure_tolerant(monkeypatch):
+    _arm(monkeypatch)
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord,telegram")
+    monkeypatch.setenv(
+        "GATEWAY_RELAY_BOT_IDS",
+        json.dumps({"discord": {"botId": "app-1"}, "telegram": {"botId": "bot-9"}}),
+    )
+
+    def _fake(**kwargs):
+        if kwargs["platform"] == "telegram":
+            raise RuntimeError("telegram provision boom")
+        return {"secret": "s" * 64, "deliveryKey": "d" * 64, "tenant": "t", "gatewayId": kwargs["gateway_id"]}
+
+    monkeypatch.setattr(relay, "_post_provision", _fake)
+    # discord succeeds, telegram fails ⇒ still True (at least one fronted).
+    assert relay.self_provision_relay() is True
+
+
+def test_self_provision_all_fail_returns_false(monkeypatch):
+    _arm(monkeypatch)
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord,telegram")
+
+    def _fake(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(relay, "_post_provision", _fake)
+    assert relay.self_provision_relay() is False
 
 
 # ─────────────────────────── per-frame egress (adapter) ───────────────────────────
@@ -152,3 +201,29 @@ async def test_adapter_stamps_per_frame_platform_from_inbound(monkeypatch):
     assert stub.sent_platforms[-1] == "discord"
 
 
+@pytest.mark.asyncio
+async def test_adapter_untagged_when_chat_platform_unknown(monkeypatch):
+    """A reply to a chat we never saw inbound for carries no per-frame platform
+    (the connector falls back to the session default)."""
+    from gateway.config import Platform, PlatformConfig
+    from gateway.relay.adapter import RelayAdapter
+    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+
+    from tests.gateway.relay.stub_connector import StubConnector
+
+    descriptor = CapabilityDescriptor(
+        contract_version=CONTRACT_VERSION,
+        platform="relay",
+        label="Relay",
+        max_message_length=4096,
+        supports_draft_streaming=False,
+        supports_edit=True,
+        supports_threads=False,
+        markdown_dialect="plain",
+        len_unit="chars",
+    )
+    stub = StubConnector(descriptor)
+    adapter = RelayAdapter(PlatformConfig(), descriptor, transport=stub)
+    await adapter.connect()
+    await adapter.send("never-seen", "reply")
+    assert stub.sent_platforms[-1] is None

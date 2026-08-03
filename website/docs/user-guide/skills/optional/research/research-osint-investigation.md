@@ -1,14 +1,14 @@
 ---
-title: "Osint Investigation — Follow the money via public records and sanctions data"
+title: "Osint Investigation"
 sidebar_label: "Osint Investigation"
-description: "Follow the money via public records and sanctions data"
+description: "Public-records OSINT investigation framework — SEC EDGAR filings, USAspending contracts, Senate lobbying, OFAC sanctions, ICIJ offshore leaks, NYC property r..."
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Osint Investigation
 
-Follow the money via public records and sanctions data.
+Public-records OSINT investigation framework — SEC EDGAR filings, USAspending contracts, Senate lobbying, OFAC sanctions, ICIJ offshore leaks, NYC property records (ACRIS), OpenCorporates registries, CourtListener court records, Wayback Machine archives, Wikipedia + Wikidata, GDELT news monitoring. Entity resolution across sources, cross-link analysis, timing correlation, evidence chains. Python stdlib only.
 
 ## Skill metadata
 

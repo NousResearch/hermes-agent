@@ -33,17 +33,4 @@ describe('TerminalRail', () => {
     expect(label?.classList.contains('inline-flex')).toBe(true)
     expect(label?.classList.contains('flex')).toBe(false)
   })
-
-  it('⌘-click closes the tab; a plain click selects it', () => {
-    $terminals.set([...$terminals.get(), { auto: true, cwd: 'C:\\repo', id: 'term-2', kind: 'user', title: 'zsh' }])
-
-    render(<TerminalRail />)
-
-    fireEvent.click(screen.getByRole('tab', { name: '2. zsh' }), { metaKey: true })
-    expect($terminals.get().map(term => term.id)).toEqual(['term-1'])
-
-    fireEvent.click(screen.getByRole('tab', { name: '1. PowerShell' }))
-    expect($activeTerminalId.get()).toBe('term-1')
-    expect($terminals.get()).toHaveLength(1)
-  })
 })

@@ -21,9 +21,7 @@ description: "消息 gateway 如何启动、授权用户、路由会话以及投
 | `gateway/mirror.py` | 为 `send_message` 提供跨会话消息镜像 |
 | `gateway/status.py` | 面向 profile 范围的 gateway 实例的 token 锁管理 |
 | `gateway/builtin_hooks/` | 始终注册的 hook 扩展点（当前未内置任何 hook） |
-| `gateway/platform_registry.py` | 适配器注册表、工厂，以及对捆绑平台插件的延迟（惰性）加载 |
-| `plugins/platforms/<name>/` | 捆绑的消息适配器（多数平台：`adapter.py` + `plugin.yaml`） |
-| `gateway/platforms/` | 共享的 `base.py` 与遗留/直接适配器（Signal、API server、webhooks 等） |
+| `gateway/platforms/` | 平台适配器（每个消息平台一个） |
 
 ## 架构概览
 

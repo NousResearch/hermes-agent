@@ -63,6 +63,16 @@ def test_emit_wait_notice_without_callback_still_touches_activity(tmp_path, monk
     assert "waiting on test-model" in agent.get_activity_summary()["last_activity_desc"]
 
 
+def test_emit_wait_notice_swallows_callback_errors(tmp_path, monkeypatch):
+    """A broken display callback must never break the API-call wait loop."""
+
+    def _boom(text):
+        raise RuntimeError("display exploded")
+
+    agent = _make_agent(tmp_path, monkeypatch, thinking_callback=_boom)
+
+    agent._emit_wait_notice("⏳ waiting")  # must not raise
+    assert "waiting" in agent.get_activity_summary()["last_activity_desc"]
 
 
 def test_nonstream_wait_loop_emits_explained_notice(tmp_path, monkeypatch):

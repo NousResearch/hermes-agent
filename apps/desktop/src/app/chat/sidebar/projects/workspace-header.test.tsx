@@ -11,7 +11,7 @@ vi.mock('@/i18n', () => ({
       sidebar: {
         projects: {
           copyPath: 'Copy path',
-          menu: 'Actions',
+          menu: 'Project actions',
           removeWorktree: 'Remove worktree',
           reveal: 'Reveal in file manager',
           startWork: 'New worktree'
@@ -63,11 +63,11 @@ describe('WorkspaceShowMoreButton', () => {
 })
 
 describe('WorkspaceMenu', () => {
-  it('does not wrap the kebab trigger in a Tip', () => {
+  it('wraps the kebab trigger in a Tip', () => {
     render(<WorkspaceMenu onRemove={vi.fn()} path="/repo/lane" />)
 
-    const button = screen.getByRole('button', { name: 'Actions' })
-    expect(tipTrigger(button)).toBeNull()
+    const button = screen.getByRole('button', { name: 'Project actions' })
+    expect(tipTrigger(button)).toBeTruthy()
   })
 })
 

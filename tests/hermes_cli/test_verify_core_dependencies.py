@@ -59,8 +59,88 @@ def fake_venv_python(tmp_path):
 
 
 class TestVerifyCoreDependencies:
+    def test_no_action_when_all_deps_present(self, temp_pyproject, fake_venv_python):
+        """The happy path: nothing missing, no repair install fires."""
+        py, venv_root = fake_venv_python
+        env = {"VIRTUAL_ENV": str(venv_root)}
 
+        with patch("hermes_cli.main._resolve_install_target_python", return_value=py), \
+             patch("hermes_cli.main.subprocess.run") as mock_run, \
+             patch("hermes_cli.main._run_install_with_heartbeat") as mock_install:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
+            from hermes_cli.main import _verify_core_dependencies_installed
+            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+
+            # Probe ran, repair install did not.
+            assert mock_run.called, "verification probe should have run"
+            assert not mock_install.called, "repair install should not fire when nothing is missing"
+
+    def test_triggers_reinstall_when_dep_missing(self, temp_pyproject, fake_venv_python):
+        """The regression: one base dep is missing → trigger --reinstall."""
+        py, venv_root = fake_venv_python
+        env = {"VIRTUAL_ENV": str(venv_root)}
+
+        # First probe reports pathspec missing; after repair, probe is clean.
+        probe_calls = {"count": 0}
+
+        def fake_subprocess_run(cmd, **kwargs):
+            # The probe subprocess returns stdout = newline-joined missing names.
+            probe_calls["count"] += 1
+            if probe_calls["count"] == 1:
+                return MagicMock(returncode=0, stdout="pathspec\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("hermes_cli.main._resolve_install_target_python", return_value=py), \
+             patch("hermes_cli.main.subprocess.run", side_effect=fake_subprocess_run), \
+             patch("hermes_cli.main._run_install_with_heartbeat") as mock_install:
+
+            from hermes_cli.main import _verify_core_dependencies_installed
+            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+
+            assert mock_install.called, "repair install must fire when a dep is missing"
+            # First repair must use --reinstall to force re-resolution.
+            first_repair = mock_install.call_args_list[0]
+            args = first_repair[0][0]  # positional: install_cmd
+            assert "--reinstall" in args, f"repair install should pass --reinstall, got {args}"
+            assert "-e" in args and "." in args, "first repair should be base group reinstall"
+
+    def test_falls_back_to_per_package_install_when_reinstall_did_not_help(
+        self, temp_pyproject, fake_venv_python
+    ):
+        """If --reinstall doesn't repair the partial install (uv resolver
+        thinks the env is satisfied), force-install each missing dep with
+        its declared pin spec. This is the last-ditch path."""
+        py, venv_root = fake_venv_python
+        env = {"VIRTUAL_ENV": str(venv_root)}
+
+        probe_calls = {"count": 0}
+
+        def fake_subprocess_run(cmd, **kwargs):
+            probe_calls["count"] += 1
+            # 1st probe: pathspec missing
+            # 2nd probe (after --reinstall): still missing
+            # 3rd probe (after per-package): clean
+            if probe_calls["count"] in (1, 2):
+                return MagicMock(returncode=0, stdout="pathspec\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("hermes_cli.main._resolve_install_target_python", return_value=py), \
+             patch("hermes_cli.main.subprocess.run", side_effect=fake_subprocess_run), \
+             patch("hermes_cli.main._run_install_with_heartbeat") as mock_install:
+
+            from hermes_cli.main import _verify_core_dependencies_installed
+            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+
+            assert mock_install.call_count >= 2, (
+                "expected at least 2 repair installs (reinstall + per-package), "
+                f"got {mock_install.call_count}"
+            )
+            # Second repair call should pass the pinned spec for the missing dep.
+            second_repair_args = mock_install.call_args_list[1][0][0]
+            assert any("pathspec==1.1.1" in str(a) for a in second_repair_args), (
+                f"second repair should pin pathspec from pyproject; got {second_repair_args}"
+            )
 
     def test_skips_deps_excluded_by_environment_markers(self, temp_pyproject, fake_venv_python):
         """``ptyprocess ; sys_platform != 'win32'`` should NOT be reported as
@@ -111,6 +191,48 @@ class TestVerifyCoreDependencies:
             assert not mock_resolve.called
             assert not mock_install.called
 
+    def test_repair_reinstall_quarantines_running_shim_on_windows(
+        self, temp_pyproject, fake_venv_python
+    ):
+        """Regression: the ``--reinstall -e .`` repair must
+        quarantine the running ``hermes.exe`` on Windows before installing.
+
+        That reinstall rewrites the editable entry-point shims, and on Windows
+        pip can't overwrite the live launcher — so without quarantine the shim
+        is left missing and ``hermes`` drops off PATH. Previously this path
+        called ``_run_install_with_heartbeat`` directly, bypassing the
+        quarantine that the primary install path performs.
+        """
+        py, venv_root = fake_venv_python
+        env = {"VIRTUAL_ENV": str(venv_root)}
+
+        probe_calls = {"count": 0}
+
+        def fake_subprocess_run(cmd, **kwargs):
+            probe_calls["count"] += 1
+            # 1st probe: pathspec missing → triggers --reinstall repair.
+            # 2nd probe (after repair): clean → stops before per-package path.
+            if probe_calls["count"] == 1:
+                return MagicMock(returncode=0, stdout="pathspec\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        fake_scripts = venv_root / "Scripts"  # created by fake_venv_python
+
+        with patch("hermes_cli.main._resolve_install_target_python", return_value=py), \
+             patch("hermes_cli.main.subprocess.run", side_effect=fake_subprocess_run), \
+             patch("hermes_cli.main._is_windows", return_value=True), \
+             patch("hermes_cli.main._venv_scripts_dir", return_value=fake_scripts), \
+             patch("hermes_cli.main._run_install_with_heartbeat"), \
+             patch("hermes_cli.main._quarantine_running_hermes_exe", return_value=[]) as mock_quar:
+
+            from hermes_cli.main import _verify_core_dependencies_installed
+            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+
+            assert mock_quar.called, (
+                "the --reinstall -e . repair must quarantine the running "
+                "hermes.exe on Windows"
+            )
+            assert mock_quar.call_args[0][0] == fake_scripts
 
 
 class TestResolveInstallTargetPython:

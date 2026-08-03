@@ -558,7 +558,7 @@ class _ThreadCountStore:
             self._counts = {}
             return
         try:
-            raw = self._path.read_text(encoding="utf-8")
+            raw = self._path.read_text()
             data = json.loads(raw) if raw.strip() else {}
         except json.JSONDecodeError as exc:
             logger.warning(
@@ -613,7 +613,7 @@ class _ThreadCountStore:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-            tmp.write_text(json.dumps(self._counts, separators=(",", ":")), encoding="utf-8")
+            tmp.write_text(json.dumps(self._counts, separators=(",", ":")))
             os.replace(tmp, self._path)
         except OSError as exc:
             logger.warning(

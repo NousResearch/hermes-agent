@@ -33,6 +33,9 @@ def test_compact_resolves_to_compress():
     assert "compact" in cmd.aliases
 
 
+def test_compact_alias_with_slash():
+    cmd = resolve_command("/compact")
+    assert cmd is not None and cmd.name == "compress"
 
 
 def test_compact_listed_in_flat_commands():
@@ -40,13 +43,27 @@ def test_compact_listed_in_flat_commands():
     assert "alias for /compress" in COMMANDS["/compact"]
 
 
+def test_compress_args_hint_documents_preview():
+    cmd = resolve_command("compress")
+    assert cmd is not None
+    assert "--preview" in (cmd.args_hint or "")
 
 
 # ── extract_compress_flags ────────────────────────────────────────────
 
 
+def test_no_flags_passthrough():
+    rest, preview, aggressive = extract_compress_flags("here 3")
+    assert rest == "here 3"
+    assert preview is False
+    assert aggressive is False
 
 
+def test_preview_flag_stripped():
+    rest, preview, aggressive = extract_compress_flags("--preview")
+    assert rest == ""
+    assert preview is True
+    assert aggressive is False
 
 
 def test_dry_run_is_preview():
@@ -55,8 +72,19 @@ def test_dry_run_is_preview():
         assert preview is True, form
 
 
+def test_aggressive_flag_detected():
+    rest, preview, aggressive = extract_compress_flags("--aggressive")
+    assert rest == ""
+    assert preview is False
+    assert aggressive is True
 
 
+def test_flags_coexist_with_here_form():
+    rest, preview, aggressive = extract_compress_flags("--preview here 4")
+    assert rest == "here 4"
+    assert preview is True
+    partial, keep, focus = parse_partial_compress_args(rest)
+    assert partial is True and keep == 4 and focus is None
 
 
 def test_flags_coexist_with_focus_topic():
@@ -67,8 +95,15 @@ def test_flags_coexist_with_focus_topic():
     assert partial is False and focus == "database schema"
 
 
+def test_aggressive_dry_run_combo():
+    rest, preview, aggressive = extract_compress_flags("--aggressive --dry-run")
+    assert rest == ""
+    assert preview is True and aggressive is True
 
 
+def test_empty_args():
+    rest, preview, aggressive = extract_compress_flags("")
+    assert rest == "" and preview is False and aggressive is False
 
 
 # ── summarize_compress_preview ────────────────────────────────────────
@@ -98,8 +133,19 @@ def test_preview_partial_boundary_counts():
     assert "last 2 exchange" in joined
 
 
+def test_preview_partial_degenerate_falls_back_to_full():
+    hist = _history(2)  # keep_last=5 would swallow everything
+    report = summarize_compress_preview(hist, True, 5, None, 100)
+    assert report["partial"] is False
+    assert report["head_count"] == 4
+    joined = "\n".join(report["lines"])
+    assert "falling back to full compression" in joined
 
 
+def test_preview_includes_focus_topic():
+    hist = _history(4)
+    report = summarize_compress_preview(hist, False, DEFAULT_KEEP_LAST, "db schema", 50)
+    assert 'Focus topic: "db schema"' in "\n".join(report["lines"])
 
 
 def test_preview_is_side_effect_free():

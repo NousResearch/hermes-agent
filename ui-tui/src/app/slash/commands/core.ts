@@ -18,14 +18,9 @@ import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { hotkeys } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import { t } from '../../../i18n/runtime.js'
-import { writeClipboardText } from '../../../lib/clipboard.js'
-import { writeOsc52Clipboard } from '../../../lib/osc52.js'
+import { copyTextToClipboard } from '../../../lib/clipboard.js'
 import { writeSessionExport } from '../../../lib/sessionExport.js'
-import {
-  configureDetectedTerminalKeybindings,
-  configureTerminalKeybindings,
-  isRemoteShellSession
-} from '../../../lib/terminalSetup.js'
+import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -532,32 +527,25 @@ export const coreCommands: SlashCommand[] = [
         return sys(t('slashCmd.core.copy.nothingToCopy'))
       }
 
-      const shouldUseTerminalClipboard = isRemoteShellSession(process.env)
+      const result = await copyTextToClipboard(target.text)
 
-      if (shouldUseTerminalClipboard) {
-        writeOsc52Clipboard(target.text)
-
-        return sys(t('slashCmd.core.copy.sentOsc52'))
+      if (ctx.stale()) {
+        return
       }
 
-      void writeClipboardText(target.text)
-        .then(nativeOk => {
-          if (ctx.stale()) {
-            return
-          }
+      if (!result.success) {
+        return sys(t('slashCmd.core.copy.clipboardFailed'))
+      }
 
-          if (nativeOk) {
-            sys(t('slashCmd.core.copy.copied'))
-          } else {
-            writeOsc52Clipboard(target.text)
-            sys(t('slashCmd.core.copy.sentOsc52'))
-          }
-        })
-        .catch(error => {
-          if (!ctx.stale()) {
-            sys(t('slashCmd.core.copy.failed', String(error)))
-          }
-        })
+      if (result.path === 'native') {
+        return sys(t('slashCmd.core.copy.copied'))
+      }
+
+      if (result.path === 'tmux-buffer') {
+        return sys(t('slashCmd.core.copy.copiedTmuxBuffer'))
+      }
+
+      return sys(t('slashCmd.core.copy.sentOsc52'))
     }
   },
 

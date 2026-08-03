@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,12 +14,21 @@ from agent import relay_runtime
 
 
 class _FakeRelay:
-    def __init__(self, *, initialize_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        initialize_error: Exception | None = None,
+        dynamic_initialize_error: Exception | None = None,
+        activation_close_error: Exception | None = None,
+    ) -> None:
         self.events: list[tuple[Any, ...]] = []
         self.initialize_error = initialize_error
+        self.dynamic_initialize_error = dynamic_initialize_error
+        self.activation_close_error = activation_close_error
         self.ScopeType = SimpleNamespace(Agent="agent")
         self.plugin = SimpleNamespace(
             initialize=self._initialize_plugins,
+            initialize_with_dynamic_plugins=self._initialize_dynamic_plugins,
             clear=self._clear_plugins,
         )
         self.scope = SimpleNamespace(
@@ -36,6 +46,25 @@ class _FakeRelay:
             raise self.initialize_error
         return {"diagnostics": []}
 
+    async def _initialize_dynamic_plugins(
+        self,
+        config: dict[str, Any],
+        dynamic_plugins: list[dict[str, Any]],
+    ) -> Any:
+        self.events.append(("plugin.initialize_dynamic", config, dynamic_plugins))
+        if self.dynamic_initialize_error is not None:
+            raise self.dynamic_initialize_error
+
+        relay = self
+
+        class _Activation:
+            async def close(self) -> None:
+                relay.events.append(("plugin.activation.close",))
+                if relay.activation_close_error is not None:
+                    raise relay.activation_close_error
+
+        return _Activation()
+
     def _clear_plugins(self) -> None:
         self.events.append(("plugin.clear",))
 
@@ -49,6 +78,39 @@ class _FakeRelay:
 
     def _flush(self) -> None:
         self.events.append(("subscribers.flush",))
+
+
+class _AsyncCleanupRelay(_FakeRelay):
+    """Relay 0.7-shaped fake that rejects synchronous loop cleanup."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.plugin.clear_async = self._clear_plugins_async
+        self.subscribers.flush_async = self._flush_async
+
+    def _clear_plugins(self) -> None:
+        raise AssertionError("synchronous plugin.clear must not be called")
+
+    def _flush(self) -> None:
+        raise AssertionError("synchronous subscribers.flush must not be called")
+
+    async def _clear_plugins_async(self) -> None:
+        self.events.append(("plugin.clear_async",))
+
+    async def _flush_async(self) -> None:
+        self.events.append(("subscribers.flush_async",))
+
+
+class _BlockingFlushRelay(_FakeRelay):
+    def __init__(self) -> None:
+        super().__init__()
+        self.flush_started = threading.Event()
+        self.finish_flush = threading.Event()
+
+    def _flush(self) -> None:
+        self.events.append(("subscribers.flush",))
+        self.flush_started.set()
+        assert self.finish_flush.wait(5)
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +144,24 @@ def test_initialization_failure_is_fail_open(caplog):
         assert "Hermes Relay plugin initialization failed" in caplog.text
     finally:
         host.shutdown()
+
+
+def test_later_host_retries_after_initialization_failure():
+    relay = _FakeRelay(initialize_error=RuntimeError("transient failure"))
+    failed_host = relay_runtime.RelayRuntime(relay=relay, profile_key="failed")
+    assert not failed_host.managed_execution_enabled()
+
+    relay.initialize_error = None
+    recovered_host = relay_runtime.RelayRuntime(relay=relay, profile_key="recovered")
+    try:
+        assert recovered_host.managed_execution_enabled()
+        assert relay.events == [
+            ("plugin.initialize", {}),
+            ("plugin.initialize", {}),
+        ]
+    finally:
+        failed_host.shutdown()
+        recovered_host.shutdown()
 
 
 def test_missing_initialize_api_is_fail_open(caplog):
@@ -134,6 +214,421 @@ def test_plugin_initialization_inside_running_event_loop():
     try:
         assert relay.events == [("plugin.initialize", {})]
         assert host.managed_execution_enabled()
+    finally:
+        host.shutdown()
+
+
+def test_static_plugin_cleanup_uses_async_apis_inside_running_event_loop():
+    relay = _AsyncCleanupRelay()
+
+    async def run_lifecycle() -> None:
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+        host.shutdown()
+
+    asyncio.run(run_lifecycle())
+
+    assert relay.events == [
+        ("plugin.initialize", {}),
+        ("subscribers.flush_async",),
+        ("plugin.clear_async",),
+    ]
+
+
+def test_dynamic_plugins_share_owned_activation_until_final_host_shutdown(
+    tmp_path,
+    monkeypatch,
+):
+    config = tmp_path / ".nemo-relay" / "plugins.toml"
+    config.parent.mkdir()
+    config.write_text(
+        """
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 1
+
+[[dynamic_plugins]]
+plugin_id = "native.policy"
+kind = "rust_dynamic"
+manifest_ref = "plugins/native/relay-plugin.toml"
+
+[dynamic_plugins.config]
+mode = "strict"
+
+[[dynamic_plugins]]
+plugin_id = "worker.policy"
+kind = "worker"
+manifest_ref = "plugins/worker/relay-plugin.toml"
+environment_ref = "environments/worker"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    relay = _FakeRelay()
+
+    host_a = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-a")
+    host_b = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-b")
+
+    assert host_a.managed_execution_enabled()
+    assert host_b.managed_execution_enabled()
+    assert relay.events == [
+        (
+            "plugin.initialize_dynamic",
+            {
+                "version": 1,
+                "components": [
+                    {
+                        "kind": "observability",
+                        "enabled": True,
+                        "config": {"version": 1},
+                    }
+                ],
+            },
+            [
+                {
+                    "plugin_id": "native.policy",
+                    "kind": "rust_dynamic",
+                    "manifest_ref": str(
+                        config.parent / "plugins/native/relay-plugin.toml"
+                    ),
+                    "config": {"mode": "strict"},
+                },
+                {
+                    "plugin_id": "worker.policy",
+                    "kind": "worker",
+                    "manifest_ref": str(
+                        config.parent / "plugins/worker/relay-plugin.toml"
+                    ),
+                    "environment_ref": str(
+                        config.parent / "environments/worker"
+                    ),
+                    "config": {},
+                },
+            ],
+        )
+    ]
+
+    host_b.ensure_session({"session_id": "profile-b-session"})
+    host_a.shutdown()
+    assert ("plugin.activation.close",) not in relay.events
+
+    host_b.shutdown()
+    assert relay.events[-2:] == [
+        ("subscribers.flush",),
+        ("plugin.activation.close",),
+    ]
+    assert ("plugin.clear",) not in relay.events
+    assert relay.events.count(("plugin.activation.close",)) == 1
+    pop_index = next(
+        index for index, event in enumerate(relay.events) if event[0] == "scope.pop"
+    )
+    assert pop_index < relay.events.index(("plugin.activation.close",))
+
+
+def test_dynamic_activation_failure_falls_back_to_discovered_static_plugins(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    config = tmp_path / "plugins.toml"
+    config.write_text(
+        """
+[[dynamic_plugins]]
+plugin_id = "worker.policy"
+kind = "worker"
+manifest_ref = "relay-plugin.toml"
+environment_ref = "environment"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    relay = _FakeRelay(
+        dynamic_initialize_error=RuntimeError("worker rejected config")
+    )
+
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    try:
+        assert host.managed_execution_enabled()
+        assert [event[0] for event in relay.events] == [
+            "plugin.initialize_dynamic",
+            "plugin.initialize",
+        ]
+        assert "configured and discovered static plugins" in caplog.text
+    finally:
+        host.shutdown()
+
+    assert relay.events[-2:] == [
+        ("subscribers.flush",),
+        ("plugin.clear",),
+    ]
+
+
+def test_dynamic_activation_lifecycle_inside_running_event_loop(
+    tmp_path,
+    monkeypatch,
+):
+    config = tmp_path / "plugins.toml"
+    config.write_text(
+        """
+[[dynamic_plugins]]
+plugin_id = "native.policy"
+kind = "rust_dynamic"
+manifest_ref = "relay-plugin.toml"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    relay = _AsyncCleanupRelay()
+
+    async def run_lifecycle() -> None:
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+        assert host.managed_execution_enabled()
+        host.shutdown()
+
+    asyncio.run(run_lifecycle())
+
+    assert [event[0] for event in relay.events] == [
+        "plugin.initialize_dynamic",
+        "subscribers.flush_async",
+        "plugin.activation.close",
+    ]
+
+
+def test_shutdown_defers_dynamic_unload_until_async_operation_finishes(
+    tmp_path,
+    monkeypatch,
+):
+    config = tmp_path / "plugins.toml"
+    config.write_text(
+        """
+[[dynamic_plugins]]
+plugin_id = "worker.policy"
+kind = "worker"
+manifest_ref = "relay-plugin.toml"
+environment_ref = "environment"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    relay = _AsyncCleanupRelay()
+
+    async def run_lifecycle() -> None:
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+        session = host.ensure_session({"session_id": "session"})
+        assert session is not None
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def in_flight_call() -> None:
+            relay.events.append(("operation.start",))
+            started.set()
+            await finish.wait()
+            relay.events.append(("operation.end",))
+
+        operation = asyncio.create_task(
+            host.run_in_session_async(session, in_flight_call)
+        )
+        await started.wait()
+        host.shutdown()
+        assert host.ensure_session({"session_id": "late-session"}) is None
+        assert ("plugin.activation.close",) not in relay.events
+
+        finish.set()
+        await operation
+        assert await asyncio.to_thread(host._shutdown_complete.wait, 5)
+
+    asyncio.run(run_lifecycle())
+
+    assert relay.events.index(("operation.end",)) < relay.events.index(
+        ("plugin.activation.close",)
+    )
+
+
+def test_shutdown_waits_for_concurrent_session_close_before_dynamic_unload(
+    tmp_path,
+    monkeypatch,
+):
+    config = tmp_path / "plugins.toml"
+    config.write_text(
+        """
+[[dynamic_plugins]]
+plugin_id = "native.policy"
+kind = "rust_dynamic"
+manifest_ref = "relay-plugin.toml"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    relay = _BlockingFlushRelay()
+    host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    assert host.ensure_session({"session_id": "session"}) is not None
+
+    close_thread = threading.Thread(
+        target=host.close_session,
+        args=({"session_id": "session"},),
+    )
+    close_thread.start()
+    assert relay.flush_started.wait(5)
+
+    host.shutdown()
+    assert ("plugin.activation.close",) not in relay.events
+
+    relay.finish_flush.set()
+    close_thread.join(5)
+    assert not close_thread.is_alive()
+    assert host._shutdown_complete.wait(5)
+    assert relay.events.index(("subscribers.flush",)) < relay.events.index(
+        ("plugin.activation.close",)
+    )
+
+
+def test_failed_dynamic_teardown_retains_activation_and_blocks_replacement(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    config = tmp_path / "plugins.toml"
+    config.write_text(
+        """
+[[dynamic_plugins]]
+plugin_id = "worker.policy"
+kind = "worker"
+manifest_ref = "relay-plugin.toml"
+environment_ref = "environment"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    relay = _FakeRelay(activation_close_error=RuntimeError("worker still busy"))
+    host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+
+    with caplog.at_level("WARNING"):
+        host.shutdown()
+
+    assert "plugin configuration cleanup failed" in caplog.text
+    activation = relay_runtime._PLUGIN_CONFIGURATION._activation
+    assert activation is not None
+
+    with caplog.at_level("WARNING"):
+        replacement = relay_runtime.RelayRuntime(
+            relay=relay,
+            profile_key="replacement",
+        )
+    try:
+        assert not replacement.managed_execution_enabled()
+        assert relay_runtime._PLUGIN_CONFIGURATION._activation is activation
+        assert relay.events.count(("plugin.initialize_dynamic", {}, [
+            {
+                "plugin_id": "worker.policy",
+                "kind": "worker",
+                "manifest_ref": str(tmp_path / "relay-plugin.toml"),
+                "environment_ref": str(tmp_path / "environment"),
+                "config": {},
+            }
+        ])) == 1
+        assert relay.events.count(("plugin.activation.close",)) == 2
+        assert "refusing to replace" in caplog.text
+    finally:
+        replacement.shutdown()
+        # Relay treats a close failure as terminal; only reset the permissive
+        # fake so this process-global fixture cannot leak into later tests.
+        relay.activation_close_error = None
+        relay_runtime._PLUGIN_CONFIGURATION.reset_for_tests()
+
+
+def test_missing_dynamic_initializer_falls_back_to_static_plugins(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    config = tmp_path / "plugins.toml"
+    config.write_text(
+        """
+[[dynamic_plugins]]
+plugin_id = "native.policy"
+kind = "rust_dynamic"
+manifest_ref = "relay-plugin.toml"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    relay = _FakeRelay()
+    del relay.plugin.initialize_with_dynamic_plugins
+
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    try:
+        assert host.managed_execution_enabled()
+        assert relay.events == [("plugin.initialize", {})]
+        assert "require a binding" in caplog.text
+    finally:
+        host.shutdown()
+
+
+def test_gateway_dynamic_records_are_not_activated_without_cli_lifecycle_state(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    config = tmp_path / "plugins.toml"
+    config.write_text(
+        """
+[[plugins.dynamic]]
+manifest = "relay-plugin.toml"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    relay = _FakeRelay()
+
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    try:
+        assert host.managed_execution_enabled()
+        assert relay.events == [("plugin.initialize", {})]
+        assert "require lifecycle state" in caplog.text
+    finally:
+        host.shutdown()
+
+
+def test_invalid_dynamic_spec_rejects_explicit_file_atomically(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    config = tmp_path / "plugins.toml"
+    config.write_text(
+        """
+version = 1
+
+[[components]]
+kind = "observability"
+
+[[dynamic_plugins]]
+plugin_id = "valid.native"
+kind = "rust_dynamic"
+manifest_ref = "native/relay-plugin.toml"
+
+[[dynamic_plugins]]
+kind = "worker"
+manifest_ref = "worker/relay-plugin.toml"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    relay = _FakeRelay()
+
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    try:
+        assert host.managed_execution_enabled()
+        assert relay.events == [("plugin.initialize", {})]
+        assert "dynamic_plugins[1].plugin_id is required" in caplog.text
     finally:
         host.shutdown()
 

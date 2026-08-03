@@ -422,6 +422,14 @@ def test_real_binding_shares_plugin_configuration_across_two_profiles(
 
     monkeypatch.setattr(relay.plugin, "initialize", _initialize)
     monkeypatch.setattr(relay.plugin, "clear", _clear)
+    # This test exercises the bundled plugin's legacy configuration owner in
+    # isolation. Native and bundled-plugin ownership are intentionally not
+    # combined until their process-global lifetime models are unified.
+    monkeypatch.setattr(
+        relay_runtime._PLUGIN_CONFIGURATION,
+        "acquire",
+        lambda _owner, _relay: False,
+    )
     monkeypatch.setattr(
         plugin,
         "_load_settings",
@@ -480,5 +488,4 @@ def test_relay_tool_request_rewrite_precedes_hermes_authorization_boundary(
 
     assert result.payload == {"intercepted": True, "value": 1}
     assert result.trace[0] == {"source": "nemo_relay"}
-
 

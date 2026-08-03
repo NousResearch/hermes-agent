@@ -521,6 +521,15 @@ def _mask_control_split_tokens(text: str, mask_fn) -> str:
     return "".join(out)
 
 
+# Display-mask strip for mask_secret: EVERY control char incl. \n/\t, C1,
+# DEL, and zero-width/format chars — a masked secret must never emit
+# multiline, tabbed, or invisible bytes into config/status/dump display
+# output (#55319, #55321).
+_DISPLAY_CONTROL_RE = re.compile(
+    r"[\x00-\x1f\x7f\x80-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2064]"
+)
+
+
 def mask_secret(
     value: str,
     *,
@@ -561,6 +570,12 @@ def mask_secret(
         >>> mask_secret("long-token", head=6, tail=4, floor=18)
         '***'
     """
+    if not value:
+        return empty
+    # Visible head/tail must not carry control bytes (newline, NUL, DEL, C1)
+    # into config/status/dump output (#55319, #55321). Strip them before
+    # slicing — the length check below then sees the displayable length.
+    value = _DISPLAY_CONTROL_RE.sub("", value)
     if not value:
         return empty
     if len(value) < floor:

@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -1009,3 +1009,21 @@ class TestKeywordWordBoundary:
         assert "hunter2hunter2hunter2hh" not in result
 
 
+class TestMaskSecretControlStripping:
+    """Issue #55319/#55321: mask_secret() must not emit control bytes
+    (newline, NUL, DEL, C1) in the visible head/tail of a masked secret —
+    they corrupt config/status/dump display output."""
+
+    def test_newline_stripped_from_mask(self):
+        # The #55319 probe: a newline inside the preserved head.
+        assert mask_secret("ab\ncd0123456789zzzz") == "abcd...zzzz"
+
+    def test_c1_control_stripped_from_mask(self):
+        assert mask_secret("abcd0123456789zz\x85q") == "abcd...9zzq"
+
+    def test_printable_mask_unchanged(self):
+        assert mask_secret("abcdef0123456789zzzz") == "abcd...zzzz"
+
+    def test_all_control_value_returns_empty_fallback(self):
+        assert mask_secret("\n\x85\u200b") == ""
+        assert mask_secret("\n\x85\u200b", empty="(not set)") == "(not set)"

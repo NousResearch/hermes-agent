@@ -4081,7 +4081,7 @@ def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None
         config["image_gen"] = cur_cfg
     current_model = cur_cfg.get("model") or default_model
     if current_model not in catalog:
-        current_model = default_model
+        current_model = default_model if default_model in catalog else next(iter(catalog))
 
     model_ids = list(catalog.keys())
     ordered = [current_model] + [m for m in model_ids if m != current_model]

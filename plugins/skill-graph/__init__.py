@@ -1706,9 +1706,16 @@ def register(ctx):
         args_hint="rebuild|status|config [add|remove] <path>",
     )
 
-    # ── Hook: pre_tool_call — block find/read_file/recall if graph not searched ──
-    _gated_tools = frozenset({"find", "read_file"})
-    _graph_searched_turn: dict[str, bool] = {}  # turn_id → searched
+    # ── Hook: pre_tool_call — gate search_files behind skill_graph_search ──
+    # search_files: prevents the model from bypassing skill discovery by
+    #   going straight to filesystem search (e.g. "find project files").
+    # read_file is intentionally excluded — it's the execution step after a
+    #   skill has been loaded (or reading a known config/source file) and
+    #   should not be gated.
+    # find is not a real Hermes tool; search_files replaced it.
+    _gated_tools = frozenset({"search_files"})
+    _graph_searched: bool = False  # per-turn flag
+    _last_turn_id: str = ""  # for per-turn reset detection
 
     # Resolve skill_graph_mode from config at registration time (startup constant)
     _graph_mode = False
@@ -1719,31 +1726,29 @@ def register(ctx):
         pass
 
     def _on_pre_tool_call(tool_name: str, args: dict | None = None, **kw: Any) -> dict | str | None:
-        nonlocal _graph_searched_turn, _graph_mode
+        nonlocal _graph_searched, _graph_mode, _last_turn_id
         turn_id = kw.get("turn_id", "")
-        if not turn_id:
-            return None
 
-        # Turn boundary: reset flag for new turns
-        if turn_id not in _graph_searched_turn:
-            _graph_searched_turn.clear()
-            _graph_searched_turn[turn_id] = False
+        # Per-turn reset: when turn_id changes, clear the flag
+        if turn_id and turn_id != _last_turn_id:
+            _graph_searched = False
+            _last_turn_id = turn_id
 
         # If this IS skill_graph_search, mark it and allow
         if tool_name == "skill_graph_search":
-            _graph_searched_turn[turn_id] = True
+            _graph_searched = True
             return None
 
         # Check gating: skill-graph mode + restricted tool + not yet searched
         if (
             _graph_mode
             and tool_name in _gated_tools
-            and not _graph_searched_turn.get(turn_id, False)
+            and not _graph_searched
         ):
             return {"action": "block", "message":
                 f"Tool '{tool_name}' is blocked until you call "
                 f"skill_graph_search() first. This profile requires graph "
-                f"discovery before filesystem or session searches."
+                f"discovery before filesystem searches."
             }
         return None
 

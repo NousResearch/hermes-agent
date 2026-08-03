@@ -396,6 +396,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # its core operating instructions, not optional guidance).
     if getattr(agent, "_skill_graph_mode", False) and "skill_graph_search" in getattr(agent, "valid_tool_names", []):
         stable_parts.append(SKILL_GRAPH_IDENTITY)
+        logger.info("skill-graph: injected SKILL_GRAPH_IDENTITY into system prompt")
         # Build a minimal skill index containing only the skill-graph
         # companion, so the agent can discover and load it without graph
         # search. The description comes from the on-disk SKILL.md.
@@ -453,6 +454,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         for _gn, _gp in _gateway_extras:
             _avail.append(f"  {_gn} — {_gp[:100]}")
         stable_parts.append("Available Skills\n" + "\n".join(_avail) + "\n")
+        logger.info(
+            "skill-graph: injected available skills into system prompt: %s",
+            ", ".join(line.split(" — ")[0].strip() for line in _avail),
+        )
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
@@ -489,6 +494,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # agent to discover skills via the graph.
     if getattr(agent, "_skill_graph_mode", False):
         tool_guidance.append(SKILL_GRAPH_GUIDANCE)
+        logger.info("skill-graph: injected SKILL_GRAPH_GUIDANCE into tool guidance")
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see
@@ -562,6 +568,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     if getattr(agent, "_skill_graph_mode", False) and "skill_graph_search" in getattr(agent, "valid_tool_names", []):
         skills_prompt = ""  # graph handles discovery; no flat index needed
+        logger.info("skill-graph: flat skill index skipped (skill_graph_mode active)")
     elif has_skills_tools:
         avail_toolsets = {
             toolset
@@ -589,6 +596,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             compact_categories=_compact_cats or None,
             skills_dir_override=_agent_skills_dir(agent),
         )
+        if skills_prompt:
+            import re as _re
+            _skill_names = _re.findall(r'^\s+- (.+?)(?::\s|$)', skills_prompt, _re.MULTILINE)
+            logger.info(
+                "skill-graph: built flat skill index with %d skills: %s",
+                len(_skill_names),
+                ", ".join(_skill_names[:30]) + ("..." if len(_skill_names) > 30 else ""),
+            )
     else:
         skills_prompt = ""
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-31T15:41:39Z",
+  "updated_at": "2026-08-01T16:02:19Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -85,7 +85,19 @@
           "description": ""
         },
         {
+          "id": "google/gemini-3.5-flash",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-3.5-flash-lite",
+          "description": ""
+        },
+        {
           "id": "x-ai/grok-4.5",
+          "description": ""
+        },
+        {
+          "id": "x-ai/grok-build-0.1",
           "description": ""
         },
         {
@@ -105,8 +117,28 @@
           "description": ""
         },
         {
+          "id": "qwen/qwen3.7-plus",
+          "description": ""
+        },
+        {
+          "id": "qwen/qwen3.7-flash",
+          "description": ""
+        },
+        {
+          "id": "qwen/qwen3.6-35b-a3b",
+          "description": ""
+        },
+        {
           "id": "moonshotai/kimi-k3",
           "description": "recommended"
+        },
+        {
+          "id": "moonshotai/kimi-k2.6",
+          "description": ""
+        },
+        {
+          "id": "moonshotai/kimi-k2.7-code",
+          "description": ""
         },
         {
           "id": "minimax/minimax-m3",
@@ -138,7 +170,23 @@
           "description": ""
         },
         {
+          "id": "nvidia/nemotron-3-ultra-550b-a55b",
+          "description": ""
+        },
+        {
+          "id": "thinkingmachines/inkling",
+          "description": ""
+        },
+        {
+          "id": "meta/muse-spark-1.1",
+          "description": ""
+        },
+        {
           "id": "sakana/fugu-ultra",
+          "description": ""
+        },
+        {
+          "id": "poolside/laguna-s-2.1",
           "description": ""
         },
         {
@@ -146,15 +194,11 @@
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
         {
-          "id": "openrouter/elephant-alpha",
+          "id": "poolside/laguna-s-2.1:free",
           "description": "free"
         },
         {
-          "id": "poolside/laguna-m.1:free",
-          "description": "free"
-        },
-        {
-          "id": "tencent/hy3:free",
+          "id": "inclusionai/ling-3.0-flash:free",
           "description": "free"
         },
         {
@@ -163,10 +207,6 @@
         },
         {
           "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
-          "description": "free"
-        },
-        {
-          "id": "inclusionai/ring-2.6-1t:free",
           "description": "free"
         }
       ]
@@ -226,7 +266,16 @@
           "id": "google/gemini-3.6-flash"
         },
         {
+          "id": "google/gemini-3.5-flash"
+        },
+        {
+          "id": "google/gemini-3.5-flash-lite"
+        },
+        {
           "id": "x-ai/grok-4.5"
+        },
+        {
+          "id": "x-ai/grok-build-0.1"
         },
         {
           "id": "deepseek/deepseek-v4-pro"
@@ -241,7 +290,22 @@
           "id": "qwen/qwen3.7-max"
         },
         {
+          "id": "qwen/qwen3.7-plus"
+        },
+        {
+          "id": "qwen/qwen3.7-flash"
+        },
+        {
+          "id": "qwen/qwen3.6-35b-a3b"
+        },
+        {
           "id": "moonshotai/kimi-k3"
+        },
+        {
+          "id": "moonshotai/kimi-k2.6"
+        },
+        {
+          "id": "moonshotai/kimi-k2.7-code"
         },
         {
           "id": "minimax/minimax-m3"
@@ -266,7 +330,19 @@
           "id": "nvidia/nemotron-3-super-120b-a12b"
         },
         {
+          "id": "nvidia/nemotron-3-ultra-550b-a55b"
+        },
+        {
+          "id": "thinkingmachines/inkling"
+        },
+        {
+          "id": "meta/muse-spark-1.1"
+        },
+        {
           "id": "sakana/fugu-ultra"
+        },
+        {
+          "id": "poolside/laguna-s-2.1"
         }
       ]
     }

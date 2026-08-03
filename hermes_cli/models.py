@@ -65,16 +65,24 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Google
     ("google/gemini-3.1-pro-preview",          ""),
     ("google/gemini-3.6-flash",                ""),
+    ("google/gemini-3.5-flash",                ""),
+    ("google/gemini-3.5-flash-lite",           ""),
     # xAI
     ("x-ai/grok-4.5",                          ""),
+    ("x-ai/grok-build-0.1",                    ""),
     # DeepSeek
     ("deepseek/deepseek-v4-pro",               ""),
     ("deepseek/deepseek-v4-flash",             ""),
     ("deepseek/deepseek-v4-flash-0731",        "dated snapshot of v4-flash"),
     # Qwen
     ("qwen/qwen3.7-max",                       ""),
+    ("qwen/qwen3.7-plus",                      ""),
+    ("qwen/qwen3.7-flash",                     ""),
+    ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
     ("moonshotai/kimi-k3",                     "recommended"),
+    ("moonshotai/kimi-k2.6",                   ""),
+    ("moonshotai/kimi-k2.7-code",              ""),
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
@@ -88,17 +96,22 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("stepfun/step-3.7-flash",                 ""),
     # NVIDIA
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    ("nvidia/nemotron-3-ultra-550b-a55b",      ""),
+    # Thinking Machines
+    ("thinkingmachines/inkling",               ""),
+    # Meta
+    ("meta/muse-spark-1.1",                    ""),
     # Sakana
     ("sakana/fugu-ultra",                      ""),
+    # Poolside
+    ("poolside/laguna-s-2.1",                  ""),
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
-    ("openrouter/elephant-alpha",              "free"),
-    ("poolside/laguna-m.1:free",               "free"),
-    ("tencent/hy3:free",                       "free"),
+    ("poolside/laguna-s-2.1:free",             "free"),
+    ("inclusionai/ling-3.0-flash:free",        "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
-    ("inclusionai/ring-2.6-1t:free",           "free"),
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
@@ -237,16 +250,24 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # Google
         "google/gemini-3.1-pro-preview",
         "google/gemini-3.6-flash",
+        "google/gemini-3.5-flash",
+        "google/gemini-3.5-flash-lite",
         # xAI
         "x-ai/grok-4.5",
+        "x-ai/grok-build-0.1",
         # DeepSeek
         "deepseek/deepseek-v4-pro",
         "deepseek/deepseek-v4-flash",
         "deepseek/deepseek-v4-flash-0731",
         # Qwen
         "qwen/qwen3.7-max",
+        "qwen/qwen3.7-plus",
+        "qwen/qwen3.7-flash",
+        "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
         "moonshotai/kimi-k3",
+        "moonshotai/kimi-k2.6",
+        "moonshotai/kimi-k2.7-code",
         # MiniMax
         "minimax/minimax-m3",
         # Z-AI
@@ -260,8 +281,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "stepfun/step-3.7-flash",
         # NVIDIA
         "nvidia/nemotron-3-super-120b-a12b",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        # Thinking Machines
+        "thinkingmachines/inkling",
+        # Meta
+        "meta/muse-spark-1.1",
         # Sakana
         "sakana/fugu-ultra",
+        # Poolside
+        "poolside/laguna-s-2.1",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.

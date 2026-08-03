@@ -1106,7 +1106,8 @@ def _load_global_auth_store() -> Dict[str, Any]:
     Memoised keyed on the global auth file's path + mtime (same pattern as
     ``_nous_auth_status_cache``): read_credential_pool() -> load_pool() runs
     this once per provider row in the /model picker, and the path resolution
-    + JSON parse cost ~105us+ per call even when nothing changed. The global
+    (``_global_auth_file_path()`` -> ``get_default_hermes_root()``) + JSON
+    parse cost ~105us+ per call even when nothing changed. The global
     store only changes when the user authenticates at global scope (writes
     always go through _save_auth_store, which touches the file), so the mtime
     key keeps the memo freshness-correct. Callers must treat the returned

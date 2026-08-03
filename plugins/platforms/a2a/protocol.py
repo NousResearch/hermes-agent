@@ -40,6 +40,9 @@ ERR_UNAUTHORIZED, ERR_RATE_LIMITED, ERR_UNTRUSTED_PEER = -32050, -32051, -32052
 _DEFAULT_MAX_PINGPONG, _HARD_MAX_PINGPONG = 5, 20
 _RATE_LIMIT_DEFAULT, _RATE_WINDOW = 60, 60.0  # requests per minute, window seconds
 
+# Multi-turn history injection: max prior messages prepended when a caller resumes a context.
+_DEFAULT_HISTORY_LIMIT, _HARD_HISTORY_LIMIT = 20, 200
+
 
 def _env_int(name: str, default: int) -> int:
     return _coerce_int(os.getenv(name, default), default)
@@ -48,6 +51,17 @@ def _env_int(name: str, default: int) -> int:
 def max_pingpong_turns() -> int:
     v = _env_int("A2A_MAX_PINGPONG_TURNS", _DEFAULT_MAX_PINGPONG)
     return max(1, min(v, _HARD_MAX_PINGPONG))
+
+
+def history_injection_limit() -> int:
+    """Max prior messages prepended when a caller resumes a context_id.
+
+    The agent sees the full thread on multi-turn continuations instead of only
+    the latest message. 0 disables injection. Bounded so a long-lived context
+    cannot balloon a single prompt.
+    """
+    v = _env_int("A2A_HISTORY_INJECTION_LIMIT", _DEFAULT_HISTORY_LIMIT)
+    return max(0, min(v, _HARD_HISTORY_LIMIT))
 
 
 def now_iso() -> str:
@@ -470,6 +484,30 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
 def list_conversations() -> list[str]:
     """Context-ids that have persisted conversations."""
     return sorted(p.stem for p in (_hermes_home() / "a2a_conversations").glob("*.jsonl"))
+
+
+def format_history(context_id: str, limit: Optional[int] = None) -> str:
+    """Render prior messages of a resumed context as a plain-text prefix.
+
+    Returns "" when the context has no history yet (or when injection is
+    disabled via ``limit <= 0``). The adapter prepends this to an inbound
+    message when a caller reuses a ``contextId``, so the agent sees the full
+    thread (multi-turn) instead of only the latest message. Lines are
+    ``role: text`` with the A2A roles ``user`` / ``assistant``; non-user roles
+    are treated as assistant output.
+    """
+    limit = limit if limit is not None else history_injection_limit()
+    if limit <= 0:
+        return ""
+    recs = load_conversation(context_id, limit=limit)
+    if not recs:
+        return ""
+    lines = []
+    for rec in recs:
+        role = rec.get("role")
+        label = "user" if role == "user" else "assistant"
+        lines.append(f"{label}: {rec.get('text', '')}")
+    return "\n".join(lines) + "\n\n"
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

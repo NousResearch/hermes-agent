@@ -47,6 +47,41 @@ function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   return appended ? { ...message, parts } : message
 }
 
+/** Reasoning / tool-call parts that the gateway inflight dump cannot express. */
+function hasStructuralParts(message: ChatMessage): boolean {
+  return message.parts.some(part => part.type === 'reasoning' || part.type === 'tool-call')
+}
+
+/**
+ * A live-turn row — the gateway's text-only `inflight` projection, a
+ * still-streaming local bubble, or an interim row sealed inside the running
+ * turn — as opposed to a committed transcript row.
+ */
+function isLiveTailRow(message: ChatMessage): boolean {
+  return (
+    message.pending === true ||
+    message.id.startsWith('assistant-stream-') ||
+    message.id.startsWith('inflight-assistant-') ||
+    message.interim === true
+  )
+}
+
+/**
+ * True when `next` is a pure forward extension of the previous *answer* text.
+ * Empty previous answer never accepts a dump as an extension — that is how the
+ * mid-turn inflight flat dump used to sandwich structured rows (#76444).
+ */
+export function isStrictAnswerTextExtension(next: string, previous: string): boolean {
+  const n = next.trim()
+  const p = previous.trim()
+
+  if (!p || !n) {
+    return false
+  }
+
+  return n.startsWith(p)
+}
+
 /**
  * Carry structural parts an authoritative row cannot express.
  *
@@ -273,11 +308,36 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // for structural carry-over. Attachment refs and image re-appending stay on
     // the strict equality path — they reconcile a SETTLED row, and a growing
     // row is by definition not settled.
+    //
+    // Live-tail identity: structure-only same-turn carry is allowed only when
+    // the *structure-bearing cached row* is still the in-flight stream
+    // (pending / stream id / interim). Marking only the text-only next row
+    // live is not enough — after compression a new live assistant can share a
+    // role ordinal with an unrelated historical structured row and must not
+    // inherit its reasoning/tool parts (#76444 review / salvage).
     const sameTurn =
-      sameText || (nextText.length > 0 && previousTrimmed.length > 0 && nextText.startsWith(previousTrimmed))
+      sameText ||
+      (nextText.length > 0 && previousTrimmed.length > 0 && isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
+      (message.role === 'assistant' &&
+        previous.role === 'assistant' &&
+        hasStructuralParts(previous) &&
+        !hasStructuralParts(message) &&
+        isLiveTailRow(previous))
 
     if (sameTurn) {
       preserved = preserveStructuralParts(preserved, previous)
+
+      // Never replace structured answer text with a non-extending flat dump.
+      if (
+        message.role === 'assistant' &&
+        hasStructuralParts(previous) &&
+        !hasStructuralParts(message) &&
+        !isStrictAnswerTextExtension(nextText, previousVisibleText)
+      ) {
+        const nonText = preserved.parts.filter(part => part.type !== 'text')
+        const priorAnswer = previous.parts.filter(part => part.type === 'text')
+        preserved = { ...preserved, parts: [...nonText, ...priorAnswer] }
+      }
     }
 
     if (
@@ -343,19 +403,12 @@ const isGatewaySystemMarker = (message: ChatMessage): boolean =>
   message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
 
 /**
- * Does the local pending row carry anything a viewer would miss — streamed
- * text, reasoning, or tool calls? An empty inflight shell carries none of it.
+ * Does the row carry anything a viewer would miss — streamed answer text, or
+ * the reasoning / tool-call structure the gateway's flat dump cannot express?
+ * An empty inflight shell carries none of it.
  */
 const hasStreamedContent = (message: ChatMessage): boolean =>
-  chatMessageText(message).trim().length > 0 ||
-  message.parts.some(part => part.type === 'tool-call' || part.type === 'reasoning')
-
-/**
- * A live-turn projection row — the gateway's text-only `inflight` snapshot or a
- * still-streaming local bubble — as opposed to a committed transcript row.
- */
-const isLiveProjectionRow = (message: ChatMessage): boolean =>
-  message.pending === true || message.id.startsWith('assistant-stream-') || message.id.startsWith('inflight-assistant-')
+  chatMessageText(message).trim().length > 0 || hasStructuralParts(message)
 
 /**
  * May the cached local row stand in for this authoritative assistant?
@@ -368,11 +421,11 @@ const isLiveProjectionRow = (message: ChatMessage): boolean =>
  * from the local partial would hide the error and mark the turn healthy again.
  */
 const localPendingSupersedes = (local: ChatMessage, authoritative: ChatMessage): boolean => {
-  if (local.role !== 'assistant' || !isLiveProjectionRow(local)) {
+  if (local.role !== 'assistant' || !isLiveTailRow(local)) {
     return false
   }
 
-  if (!isLiveProjectionRow(authoritative) || authoritative.error) {
+  if (!isLiveTailRow(authoritative) || authoritative.error) {
     return false
   }
 
@@ -384,7 +437,7 @@ const localPendingSupersedes = (local: ChatMessage, authoritative: ChatMessage):
 
   const localText = chatMessageText(local).trim()
 
-  return localText.length > authoritativeText.length && localText.startsWith(authoritativeText)
+  return localText.length > authoritativeText.length && isStrictAnswerTextExtension(localText, authoritativeText)
 }
 
 /**
@@ -646,14 +699,54 @@ export function appendLiveSessionProjection(
 
   // Keep a pending assistant boundary even before the first delta when a
   // queued user turn follows it. This preserves the two distinct turns.
+  //
+  // When the *current live turn* already holds a structured mid-turn assistant
+  // row (reasoning / tool-call from the live stream or journal), do NOT append
+  // a pure-text projection of `inflight.assistant` — that flat dump re-renders
+  // thinking as answer text and sandwiches the structured parts (#76444).
+  // Only inspect the live tail after the latest user run — never a completed
+  // historical tool-bearing reply earlier in the transcript (review feedback).
+  const liveStreamId = `assistant-stream-${sessionId}`
+
+  const liveAssistantOfCurrentTurn = ((): ChatMessage | null => {
+    const byStreamId = messages.find(message => message.id === liveStreamId)
+
+    if (byStreamId) {
+      return byStreamId
+    }
+
+    // Assistants after the latest user row belong to this turn's tail.
+    if (latestUserIndex < 0) {
+      return null
+    }
+
+    for (let index = messages.length - 1; index > latestUserIndex; index -= 1) {
+      if (messages[index].role === 'assistant') {
+        return messages[index]
+      }
+    }
+
+    return null
+  })()
+
+  const turnAlreadyStructured = Boolean(
+    liveAssistantOfCurrentTurn &&
+    hasStructuralParts(liveAssistantOfCurrentTurn) &&
+    isLiveTailRow(liveAssistantOfCurrentTurn)
+  )
+
   if (inflightAssistant || inflightStreaming || inflightError || (inflightUser && queuedUser)) {
-    projected.push({
-      id: `assistant-stream-${sessionId}`,
-      role: 'assistant',
-      parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
-      pending: inflightStreaming,
-      ...(inflightError ? { error: inflightError } : {})
-    })
+    if (turnAlreadyStructured && !inflightError) {
+      // Structure is authoritative; skip the text-only dump row.
+    } else {
+      projected.push({
+        id: liveStreamId,
+        role: 'assistant',
+        parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
+        pending: inflightStreaming,
+        ...(inflightError ? { error: inflightError } : {})
+      })
+    }
   }
 
   if (queuedUser) {

@@ -179,7 +179,9 @@ describe('recoverInFlightTurnJournal', () => {
   it('overlays the backend text-only projection instead of dropping local tool progress', () => {
     // Sweeper regression on #44339: a backend `inflight` assistant snapshot
     // (text only) used to mark the richer local tail "caught up" and delete
-    // locally recorded tool calls.
+    // locally recorded tool calls. After #76444, longer text wins only when it
+    // is a strict extension of the journal answer (flat thinking dumps must
+    // not replace structured answer text).
     journalEntry([
       user('u1', 'do the thing'),
       assistantWithTool('assistant-stream-old', 'local part', { pending: true })
@@ -187,7 +189,7 @@ describe('recoverInFlightTurnJournal', () => {
 
     const base = [
       user('db-u1', 'do the thing'),
-      assistant('assistant-stream-rt9', 'longer partial text from the backend snapshot', { pending: true })
+      assistant('assistant-stream-rt9', 'local part and more from the backend snapshot', { pending: true })
     ]
 
     const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
@@ -200,11 +202,33 @@ describe('recoverInFlightTurnJournal', () => {
     // Keeps the BASE projection row id so live deltas keep landing on it.
     expect(merged.id).toBe('assistant-stream-rt9')
     expect(result.streamId).toBe('assistant-stream-rt9')
-    // Journal structure survives; the longer backend text wins.
+    // Journal structure survives; strict-extension backend text wins.
     expect(merged.parts[0]).toMatchObject({ type: 'tool-call', toolName: 'terminal' })
-    expect(merged.parts[1]).toMatchObject({ type: 'text', text: 'longer partial text from the backend snapshot' })
+    expect(merged.parts[1]).toMatchObject({ type: 'text', text: 'local part and more from the backend snapshot' })
     // Still in flight — the journal must NOT be cleared.
     expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+  })
+
+  it('keeps journal answer text when a longer flat dump is not a strict extension (#76444)', () => {
+    journalEntry([
+      user('u1', 'do the thing'),
+      assistantWithTool('assistant-stream-old', 'partial', { pending: true })
+    ])
+
+    const base = [
+      user('db-u1', 'do the thing'),
+      assistant(
+        'assistant-stream-rt9',
+        'thinking chatter\nRan terminal\npartial and unrelated dump longer than answer',
+        { pending: true }
+      )
+    ]
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
+    const merged = result.messages.at(-1)!
+
+    expect(merged.parts[0]).toMatchObject({ type: 'tool-call', toolName: 'terminal' })
+    expect(merged.parts[1]).toMatchObject({ type: 'text', text: 'partial' })
   })
 
   it('keeps the journal text when it is longer than the projection text', () => {

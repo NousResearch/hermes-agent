@@ -1085,6 +1085,85 @@ class TestEnvWriteDenylist:
             save_env_value_secure("LD_PRELOAD", "/tmp/evil.so")
 
 
+    @pytest.mark.skipif(os.name != "nt", reason="Windows ACL test")
+    def test_secure_file_restricts_acls_on_windows(self, tmp_path):
+        """#77462: ``_secure_file`` must restrict ACLs on Windows, where
+        ``os.chmod(0o600)`` only toggles the read-only bit and inherited
+        SYSTEM/Administrators entries keep full control.
+
+        E2E: write a real file with inherited ACLs, run the real
+        ``_secure_file``, then assert via ``icacls`` that (a) inheritance
+        is disabled and (b) only the current user retains access.
+        """
+        import subprocess as sp
+
+        from hermes_cli.config import _secure_file
+
+        target = tmp_path / "secret.env"
+        target.write_text("TOKEN=opaque\n", encoding="utf-8")
+
+        # The new file inherits ACLs from the temp dir (SYSTEM + Administrators).
+        before = sp.run(
+            ["icacls", str(target)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "Administrators" in before
+
+        _secure_file(target)
+
+        after = sp.run(
+            ["icacls", str(target)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        # /inheritance:r removed the inherited Administrators entry.
+        assert "Administrators" not in after
+        # The owner's grant survives.
+        user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+        assert user and user.lower() in after.lower()
+
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX chmod path")
+    def test_secure_file_chmods_0600_on_posix(self, tmp_path):
+        """The POSIX branch still applies 0600 (regression guard)."""
+        from hermes_cli.config import _secure_file
+
+        target = tmp_path / "secret.env"
+        target.write_text("TOKEN=opaque\n", encoding="utf-8")
+        _secure_file(target)
+        assert (target.stat().st_mode & 0o777) == 0o600
+
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows ACL test")
+    def test_save_env_value_restricts_acls_on_existing_windows_env(self, tmp_path):
+        """#77462 (QA follow-up): the mode-preservation branch in
+        save_env_value must still restrict ACLs on Windows — a rotation on
+        a pre-existing .env (e.g. a Docker volume mount) otherwise keeps
+        the inherited SYSTEM/Administrators entries the fix removes on the
+        new-file path.
+
+        E2E: create an existing .env, rotate a value through the real
+        save_env_value, then assert via icacls that Administrators is gone
+        and the owner retains access.
+        """
+        import subprocess as sp
+
+        from hermes_cli.config import save_env_value
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("OLD_TOKEN=old\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("SOME_TOKEN", "new-value")
+
+        after = sp.run(
+            ["icacls", str(env_path)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "Administrators" not in after, "inherited Administrators ACL survived rotation"
+        user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+        assert user and user.lower() in after.lower()
+
+
 
 class TestWriteApprovalMigration:
     """Version 28→29 renames memory/skills write_mode → write_approval (bool).

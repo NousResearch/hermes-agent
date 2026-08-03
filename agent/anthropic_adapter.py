@@ -2311,37 +2311,13 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     """Validate and convert a user message to anthropic format."""
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
-        # Drop individual blank/whitespace-only text blocks rather than an
-        # all-or-nothing check on the whole list. The prior all() check was
-        # vacuously true whenever there were zero text-type blocks (e.g. an
-        # image-only list), which nuked valid non-text blocks (images,
-        # documents) it never looked at — and, the opposite failure, left a
-        # blank text block sitting next to a *valid* text block untouched
-        # (all() is False as soon as one text block is non-blank), which is
-        # exactly the payload shape Anthropic 400s on: "text content blocks
-        # must contain non-whitespace text". Mirrors the per-block filtering
-        # already used for assistant content.
-        kept_blocks: List[Dict[str, Any]] = []
-        dropped_cache_control = None
-        for blk in converted_blocks:
-            if (
-                isinstance(blk, dict)
-                and blk.get("type") == "text"
-                and not (isinstance(blk.get("text"), str) and blk["text"].strip())
-            ):
-                if isinstance(blk.get("cache_control"), dict):
-                    dropped_cache_control = blk["cache_control"]
-                continue
-            kept_blocks.append(blk)
-        if not kept_blocks:
-            placeholder: Dict[str, Any] = {"type": "text", "text": "(empty message)"}
-            if dropped_cache_control is not None:
-                placeholder["cache_control"] = dropped_cache_control
-            kept_blocks = [placeholder]
-        elif dropped_cache_control is not None:
-            _apply_assistant_cache_control_to_last_cacheable_block(
-                kept_blocks, dropped_cache_control
-            )
+        kept_blocks = _fix_blank_text_blocks_in_list(
+            converted_blocks,
+            placeholder_text="(empty message)",
+            msg_index=-1,
+            role="user",
+            location="_convert_user_message",
+        )
         return {"role": "user", "content": kept_blocks}
     else:
         if not content or (isinstance(content, str) and not content.strip()):

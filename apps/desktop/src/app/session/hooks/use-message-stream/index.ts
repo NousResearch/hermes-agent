@@ -188,6 +188,9 @@ export function useMessageStream({
   // What the previous flush cost on the main thread — drives the adaptive
   // flush floor in scheduleDeltaFlush so multi-stream load yields to input.
   const lastFlushCostRef = useRef<number>(0)
+  // The pending commit-cost measurement rAF, so a newer flush (or unmount)
+  // can cancel it instead of letting parked callbacks pile up while hidden.
+  const measureRafRef = useRef<number | null>(null)
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
@@ -284,7 +287,16 @@ export function useMessageStream({
       // stays as the fallback.
       const writeCost = performance.now() - startedAt
       lastFlushCostRef.current = writeCost
-      window.requestAnimationFrame(frameStart => {
+      // At most one measurement rAF may be pending: only the newest flush's
+      // measurement matters (the guard below discards stale frames), and a
+      // hidden renderer parks rAF callbacks — without cancellation a long
+      // hidden stream at the floor would accumulate thousands of parked
+      // closures that all fire in the first frame on refocus.
+      if (measureRafRef.current !== null) {
+        window.cancelAnimationFrame(measureRafRef.current)
+      }
+      measureRafRef.current = window.requestAnimationFrame(frameStart => {
+        measureRafRef.current = null
         // A newer flush already started; its own measurement wins.
         if (lastFlushAtRef.current !== startedAt) {
           return
@@ -334,6 +346,12 @@ export function useMessageStream({
       }
 
       flushHandleRef.current = null
+
+      if (measureRafRef.current !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(measureRafRef.current)
+      }
+
+      measureRafRef.current = null
       flushQueuedDeltas()
     },
     [flushQueuedDeltas]

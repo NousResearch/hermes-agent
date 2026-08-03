@@ -193,6 +193,25 @@ class TestNextAvailableAt:
         pool = CredentialPool("openrouter", [])
         assert pool.next_available_at() is None
 
+    def test_runs_under_the_pool_lock(self):
+        """next_available_at must hold self._lock like every other
+        _available_entries caller — a concurrent select()/rotation can
+        otherwise tear self._entries mid-iteration (see has_available)."""
+        pool = CredentialPool("openrouter", [])
+        held = {}
+
+        original = pool._available_entries
+
+        def _probe(**kwargs):
+            held["locked"] = not pool._lock.acquire(blocking=False)
+            if not held["locked"]:
+                pool._lock.release()
+            return original(**kwargs)
+
+        pool._available_entries = _probe
+        pool.next_available_at()
+        assert held["locked"], "next_available_at called _available_entries without self._lock"
+
 
 # =============================================================================
 # restore_primary_runtime() gate

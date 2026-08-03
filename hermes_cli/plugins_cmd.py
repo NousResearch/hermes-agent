@@ -2324,7 +2324,7 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     For plugins that provide tools (toolsets), also toggles the toolset in
     ``platform_toolsets`` so the agent actually sees the tools in sessions.
     """
-    resolved = _resolve_plugin_key_and_source(name)
+    resolved = _resolve_plugin_key_and_source(name, for_enable=enabled)
     if resolved is None:
         return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
     key, source, manifest_name, kind = resolved

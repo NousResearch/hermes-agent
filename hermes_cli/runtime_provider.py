@@ -1177,6 +1177,34 @@ def _resolve_named_custom_runtime(
     return result
 
 
+def _runtime_provider_activation_id(
+    requested_provider: str,
+    *,
+    default_provider: str,
+) -> tuple[str, bool, bool]:
+    """Return ``(provider_id, use_custom_runtime, exact_canonical)``."""
+    requested_norm = (requested_provider or "").strip().lower()
+    if not requested_norm:
+        return default_provider, False, False
+    if default_provider in {"auto", "moa"}:
+        return default_provider, False, False
+    if requested_norm == "custom" or requested_norm.startswith("custom:"):
+        return "custom", True, False
+
+    try:
+        from providers import get_provider_identity_provenance
+        provenance = get_provider_identity_provenance(requested_norm)
+        if provenance == "canonical":
+            return requested_norm, False, True
+        has_named_custom = _get_named_custom_provider(requested_norm) is not None
+    except Exception:
+        return default_provider, default_provider == "custom", False
+
+    if has_named_custom:
+        return "custom", True, False
+    return default_provider, default_provider == "custom", False
+
+
 def _resolve_openrouter_runtime(
     *,
     requested_provider: str,
@@ -1670,10 +1698,22 @@ def resolve_runtime_provider(
     """
     requested_provider = resolve_requested_provider(requested)
 
-    def require_plugin_provider(provider_id: str) -> None:
-        from providers import is_provider_plugin_active
+    def require_plugin_provider(
+        provider_id: str,
+        *,
+        exact_canonical: bool = False,
+    ) -> None:
+        from providers import (
+            is_provider_canonical_identity_active,
+            is_provider_plugin_active,
+        )
 
-        if not is_provider_plugin_active(provider_id):
+        is_active = (
+            is_provider_canonical_identity_active(provider_id)
+            if exact_canonical
+            else is_provider_plugin_active(provider_id)
+        )
+        if not is_active:
             raise AuthError(
                 f"Provider '{provider_id}' is disabled by plugin configuration.",
                 code="invalid_provider",
@@ -1705,8 +1745,19 @@ def resolve_runtime_provider(
         "azure-ai",
     }:
         shortcut_provider = "azure-foundry"
-    if shortcut_provider not in {"auto", "moa"}:
-        require_plugin_provider(shortcut_provider)
+    (
+        activation_provider,
+        use_custom_runtime,
+        exact_canonical_activation,
+    ) = _runtime_provider_activation_id(
+        requested_provider,
+        default_provider=shortcut_provider,
+    )
+    if activation_provider not in {"auto", "moa"}:
+        require_plugin_provider(
+            activation_provider,
+            exact_canonical=exact_canonical_activation,
+        )
 
     # Honour ``providers.<name>.enabled: false`` for BOTH user-defined
     # custom providers and the built-in ones (openai / anthropic /
@@ -1784,7 +1835,11 @@ def resolve_runtime_provider(
     # the project ID + region. The token is re-minted per call (5-min refresh
     # margin) by get_vertex_config(); mid-session expiry is additionally
     # recovered on 401 by run_agent._try_refresh_vertex_client_credentials().
-    if requested_provider in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
+    if (
+        activation_provider != "custom"
+        and requested_provider
+        in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai")
+    ):
         from agent.vertex_adapter import get_vertex_config
 
         token, base_url = get_vertex_config()
@@ -1807,11 +1862,13 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
-    custom_runtime = _resolve_named_custom_runtime(
-        requested_provider=requested_provider,
-        explicit_api_key=explicit_api_key,
-        explicit_base_url=explicit_base_url,
-    )
+    custom_runtime = None
+    if use_custom_runtime:
+        custom_runtime = _resolve_named_custom_runtime(
+            requested_provider=requested_provider,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
     if custom_runtime:
         require_plugin_provider("custom")
         custom_runtime["requested_provider"] = requested_provider

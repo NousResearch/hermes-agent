@@ -89,8 +89,12 @@ class ProviderCatalogSnapshot:
     profiles: tuple[ProviderProfile, ...]
     plugin_managed_provider_ids: frozenset[str]
     active_plugin_provider_ids: frozenset[str]
+    active_canonical_provider_ids: frozenset[str]
     bundled_provider_ids: frozenset[str]
     known_provider_ids: frozenset[str]
+    current_canonical_provider_ids: frozenset[str]
+    observed_provider_canonical_ids: frozenset[str]
+    observed_provider_aliases: frozenset[str]
 
 
 @dataclass
@@ -109,9 +113,26 @@ _MODULE_PATHS: dict[str, str] = {}
 _OBSERVED_PROFILES: dict[tuple[str, str, str], ProviderProfile] = {}
 _OBSERVED_PROVIDER_ENV_VARS: set[str] = set()
 _OBSERVED_PROVIDER_IDS_BY_SCOPE: dict[tuple[str, str], set[str]] = {}
+_OBSERVED_PROVIDER_CANONICAL_IDS_BY_SCOPE: dict[
+    tuple[str, str], set[str]
+] = {}
+_OBSERVED_PROVIDER_ALIASES_BY_SCOPE: dict[tuple[str, str], set[str]] = {}
 _RUNTIME_REGISTRY: dict[str, ProviderProfile] = {}
 _RUNTIME_ALIASES: dict[str, str] = {}
 _RUNTIME_REGISTRATION_GENERATION = 0
+
+
+def _normalize_provider_identity(value: object) -> str:
+    """Normalize provider provenance identities at their trust boundary."""
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def _normalized_provider_identities(values) -> set[str]:
+    return {
+        normalized
+        for value in values
+        if (normalized := _normalize_provider_identity(value))
+    }
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -175,7 +196,82 @@ _RESERVED_PROVIDER_ENV_VARS = frozenset({
     "HERMES_CONFIG",
     "HERMES_ENV",
     "HERMES_DELEGATED_CHILD_CONTEXT",
+    # Host networking, trust-store, and SSH/Git transport configuration. These
+    # are operator controls, not provider credentials; stripping them can make
+    # every unrelated terminal child lose connectivity or authentication.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "FTP_PROXY",
+    "SOCKS_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "PIP_CERT",
+    "NPM_CONFIG_CAFILE",
+    "GIT_SSL_CAINFO",
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
+    "SSH_ASKPASS",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_ASKPASS",
+    # The general AWS operator credential chain deliberately remains available
+    # to local aws/terraform/cdk/boto3 commands. Bedrock's provider-owned bearer
+    # token is intentionally absent from this set and remains scrubbed.
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_CONFIG_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_ROLE_SESSION_NAME",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "AWS_SDK_LOAD_CONFIG",
 })
+
+# An inactive user/project manifest is untrusted declarative input. It may
+# contribute first-run secret protection only for names that look like provider
+# credentials. Once the plugin is explicitly activated, its imported
+# ``ProviderProfile.env_vars`` is authoritative and may use unconventional
+# names; those names are also retained in the profile-local historical cache.
+_DECLARATIVE_PROVIDER_CREDENTIAL_TAILS = (
+    "API_KEY",
+    "APIKEY",
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "CREDENTIALS",
+    "CREDS",
+    "AUTH",
+    "BEARER",
+    "DSN",
+    "WEBHOOK",
+    "ACCESS",
+    "BASE_URL",
+    "KEY_PATH",
+    "TOKEN_PATH",
+    "SECRET_PATH",
+    "CREDENTIALS_PATH",
+    "KEY_FILE",
+    "TOKEN_FILE",
+    "SECRET_FILE",
+    "CREDENTIALS_FILE",
+)
 
 
 def is_reserved_provider_env_var(name: object) -> bool:
@@ -224,6 +320,21 @@ def _provider_credential_env_names(values: object) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _declarative_provider_credential_env_names(
+    values: object,
+) -> tuple[str, ...]:
+    """Return the safe pre-activation subset of external manifest names."""
+    names = _provider_credential_env_names(values)
+    return tuple(
+        name
+        for name in names
+        if any(
+            name.upper() == tail or name.upper().endswith(f"_{tail}")
+            for tail in _DECLARATIVE_PROVIDER_CREDENTIAL_TAILS
+        )
+    )
+
+
 def _record_observed_profile_locked(
     source: str,
     path: str,
@@ -247,6 +358,18 @@ def register_provider(profile: ProviderProfile) -> None:
     # ProviderProfile is mutable by design. Normalize at the registration
     # boundary so active plugin metadata cannot reach auth/config indexes under
     # an OS-essential name through a path other than the observation set.
+    normalized_name = _normalize_provider_identity(profile.name)
+    if not normalized_name:
+        raise ValueError("provider profile name must be non-empty")
+    profile.name = normalized_name
+    profile.aliases = tuple(
+        dict.fromkeys(
+            alias
+            for value in profile.aliases
+            if (alias := _normalize_provider_identity(value))
+            and alias != normalized_name
+        )
+    )
     profile.env_vars = _provider_credential_env_names(profile.env_vars)
     build_state = getattr(_BUILD_LOCAL, "state", None)
     if isinstance(build_state, _ProviderBuildState):
@@ -272,17 +395,18 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 
     Returns None if the provider has no profile (falls back to generic).
     """
+    normalized = _normalize_provider_identity(name)
     build_state = getattr(_BUILD_LOCAL, "state", None)
     if isinstance(build_state, _ProviderBuildState):
-        canonical = build_state.aliases.get(name, name)
+        canonical = build_state.aliases.get(normalized, normalized)
         return build_state.registry.get(canonical)
 
     snapshot = _ensure_providers_discovered()
     if snapshot is None:
         with _DISCOVERY_LOCK:
-            canonical = _ALIASES.get(name, name)
+            canonical = _ALIASES.get(normalized, normalized)
             return _REGISTRY.get(canonical)
-    canonical = snapshot.aliases.get(name, name)
+    canonical = snapshot.aliases.get(normalized, normalized)
     return snapshot.registry.get(canonical)
 
 
@@ -333,11 +457,35 @@ def get_provider_catalog_snapshot() -> ProviderCatalogSnapshot:
                 origins=MappingProxyType(dict(_PROVIDER_PROFILE_ORIGINS)),
                 profiles=profiles,
                 plugin_managed_provider_ids=frozenset(
-                    _PLUGIN_MANAGED_PROVIDER_IDS
+                    _normalized_provider_identities(
+                        _PLUGIN_MANAGED_PROVIDER_IDS
+                    )
                 ),
-                active_plugin_provider_ids=frozenset(_REGISTRY),
+                active_plugin_provider_ids=frozenset(
+                    _normalized_provider_identities(_REGISTRY)
+                ),
+                active_canonical_provider_ids=frozenset(
+                    _normalized_provider_identities(_REGISTRY)
+                ),
                 bundled_provider_ids=frozenset(),
-                known_provider_ids=frozenset(_REGISTRY),
+                known_provider_ids=frozenset(
+                    _normalized_provider_identities(_REGISTRY)
+                ),
+                current_canonical_provider_ids=frozenset(
+                    _normalized_provider_identities(
+                        (*PROFILELESS_CORE_PROVIDER_IDS, *_REGISTRY)
+                    )
+                ),
+                observed_provider_canonical_ids=frozenset(
+                    _normalized_provider_identities(
+                        (*PROFILELESS_CORE_PROVIDER_IDS, *_REGISTRY)
+                    )
+                ),
+                observed_provider_aliases=frozenset(
+                    _normalized_provider_identities(
+                        (*PROFILELESS_CORE_PROVIDER_ALIASES, *_ALIASES)
+                    )
+                ),
             )
     return snapshot
 
@@ -377,17 +525,22 @@ def get_provider_discovery_identity() -> tuple[object, ...]:
         tuple(sorted(state.disabled)),
         *snapshot.fingerprint[3:],
         tuple(sorted(snapshot.origins.items())),
+        tuple(sorted(snapshot.active_canonical_provider_ids)),
+        tuple(sorted(snapshot.current_canonical_provider_ids)),
+        tuple(sorted(snapshot.observed_provider_canonical_ids)),
+        tuple(sorted(snapshot.observed_provider_aliases)),
     )
 
 
 def get_provider_profile_origin(name: str) -> tuple[str, str] | None:
     """Return ``(source, path)`` for the active provider profile."""
+    normalized = _normalize_provider_identity(name)
     snapshot = _ensure_providers_discovered()
     if snapshot is None:
         with _DISCOVERY_LOCK:
-            canonical = _ALIASES.get(name, name)
+            canonical = _ALIASES.get(normalized, normalized)
             return _PROVIDER_PROFILE_ORIGINS.get(canonical)
-    canonical = snapshot.aliases.get(name, name)
+    canonical = snapshot.aliases.get(normalized, normalized)
     return snapshot.origins.get(canonical)
 
 
@@ -425,32 +578,111 @@ def invalidate_provider_discovery() -> None:
 
 def is_plugin_managed_provider_id(provider_id: str) -> bool:
     """Return whether any model-provider plugin declares *provider_id*."""
+    normalized = _normalize_provider_identity(provider_id)
+    if not normalized:
+        return False
     snapshot = _ensure_providers_discovered()
     if snapshot is None:
         with _DISCOVERY_LOCK:
-            return provider_id in _PLUGIN_MANAGED_PROVIDER_IDS
-    return provider_id in snapshot.plugin_managed_provider_ids
+            return normalized in _normalized_provider_identities(
+                _PLUGIN_MANAGED_PROVIDER_IDS
+            )
+    return normalized in snapshot.plugin_managed_provider_ids
+
+
+def get_provider_identity_provenance(provider_id: str) -> str | None:
+    """Classify a provider ID as a canonical name or alias in this scope.
+
+    Current and historically observed canonical identities outrank aliases.
+    Both histories are monotonic only within the current
+    ``HERMES_HOME``/project scope, so one profile cannot change another
+    profile's routing decision.
+    """
+    normalized = _normalize_provider_identity(provider_id)
+    if not normalized:
+        return None
+    snapshot = _ensure_providers_discovered()
+    if snapshot is None:
+        with _DISCOVERY_LOCK:
+            registry_ids = _normalized_provider_identities(_REGISTRY)
+            core_ids = _normalized_provider_identities(
+                PROFILELESS_CORE_PROVIDER_IDS
+            )
+            aliases = _normalized_provider_identities(
+                (*PROFILELESS_CORE_PROVIDER_ALIASES, *_ALIASES)
+            )
+            managed_ids = _normalized_provider_identities(
+                _PLUGIN_MANAGED_PROVIDER_IDS
+            )
+            if normalized in registry_ids or normalized in core_ids:
+                return "canonical"
+            if normalized in aliases:
+                return "alias"
+            if normalized in managed_ids:
+                return "canonical"
+        return None
+    if normalized in snapshot.current_canonical_provider_ids:
+        return "canonical"
+    if normalized in snapshot.observed_provider_canonical_ids:
+        return "canonical"
+    if normalized in snapshot.observed_provider_aliases:
+        return "alias"
+    if normalized in snapshot.plugin_managed_provider_ids:
+        return "canonical"
+    return None
+
+
+def is_provider_canonical_identity_active(provider_id: str) -> bool:
+    """Return whether the exact canonical identity is active in this scope.
+
+    Alias activity is deliberately excluded.  A disabled manifest may declare
+    an ID that is also an active alias of another provider; treating the flat
+    alias/name union as proof of canonical activity would let that alias revive
+    the disabled canonical route.
+    """
+    normalized = _normalize_provider_identity(provider_id)
+    if not normalized:
+        return False
+    snapshot = _ensure_providers_discovered()
+    if snapshot is None:
+        with _DISCOVERY_LOCK:
+            managed_ids = _normalized_provider_identities(
+                _PLUGIN_MANAGED_PROVIDER_IDS
+            )
+            if normalized not in managed_ids:
+                return True
+            return normalized in _normalized_provider_identities(_REGISTRY)
+    if normalized not in snapshot.plugin_managed_provider_ids:
+        return True
+    return normalized in snapshot.active_canonical_provider_ids
 
 
 def is_provider_plugin_active(provider_id: str) -> bool:
     """Return whether a plugin-managed provider is active and registered."""
+    normalized = _normalize_provider_identity(provider_id)
+    if not normalized:
+        return False
     snapshot = _ensure_providers_discovered()
     if snapshot is None:
         with _DISCOVERY_LOCK:
-            if provider_id not in _PLUGIN_MANAGED_PROVIDER_IDS:
+            managed_ids = _normalized_provider_identities(
+                _PLUGIN_MANAGED_PROVIDER_IDS
+            )
+            if normalized not in managed_ids:
                 return True
-            return provider_id in _REGISTRY
-    if provider_id not in snapshot.plugin_managed_provider_ids:
+            return normalized in _normalized_provider_identities(_REGISTRY)
+    if normalized not in snapshot.plugin_managed_provider_ids:
         return True
-    return provider_id in snapshot.active_plugin_provider_ids
+    return normalized in snapshot.active_plugin_provider_ids
 
 
 def is_bundled_provider_id(provider_id: str) -> bool:
     """Return whether the trusted bundled catalog owns *provider_id*."""
+    normalized = _normalize_provider_identity(provider_id)
     snapshot = _ensure_providers_discovered()
     if snapshot is None:
         return False
-    return provider_id in snapshot.bundled_provider_ids
+    return normalized in snapshot.bundled_provider_ids
 
 
 def get_known_provider_ids() -> frozenset[str]:
@@ -719,7 +951,7 @@ def _provider_plugin(plugin_dir: Path, source: str) -> _ProviderPlugin:
     """Read provider identities without importing executable plugin code."""
     key = f"model-providers/{plugin_dir.name}"
     name = key
-    provider_ids = {plugin_dir.name}
+    provider_ids = _normalized_provider_identities((plugin_dir.name,))
     credential_env_vars: frozenset[str] = frozenset()
     manifest_file = plugin_dir / "plugin.yaml"
     if not manifest_file.exists():
@@ -733,11 +965,9 @@ def _provider_plugin(plugin_dir: Path, source: str) -> _ProviderPlugin:
                     name = manifest_name.strip()
                 declared_ids = data.get("provider_ids")
                 if isinstance(declared_ids, list):
-                    normalized_ids = {
-                        value.strip()
-                        for value in declared_ids
-                        if isinstance(value, str) and value.strip()
-                    }
+                    normalized_ids = _normalized_provider_identities(
+                        declared_ids
+                    )
                     if normalized_ids:
                         provider_ids = normalized_ids
                 credential_env_vars = _manifest_env_names(
@@ -877,7 +1107,7 @@ def _discover_providers(
     fingerprint: tuple[object, ...],
 ) -> ProviderCatalogSnapshot:
     """Build one provider snapshot without publishing process-global state."""
-    global _discovering
+    global _discovering, _LAST_SNAPSHOT_FINGERPRINT
     if _discovering:
         raise RuntimeError("recursive provider discovery")
 
@@ -902,6 +1132,16 @@ def _discover_providers(
                     continue
                 candidates.append(_provider_plugin(child, source))
 
+        current_canonical_provider_ids = _normalized_provider_identities(
+            (*PROFILELESS_CORE_PROVIDER_IDS, *build_state.registry)
+        )
+        for plugin in candidates:
+            current_canonical_provider_ids.update(
+                _normalized_provider_identities(plugin.provider_ids)
+            )
+        current_provider_aliases = _normalized_provider_identities(
+            (*PROFILELESS_CORE_PROVIDER_ALIASES, *build_state.aliases)
+        )
         grouped: dict[str, list[_ProviderPlugin]] = {}
         # Static core implementations and profiles registered outside plugin
         # discovery are trusted owners.  An inactive external manifest may
@@ -909,30 +1149,40 @@ def _discover_providers(
         # itself into an activation deny for the underlying implementation.
         # Bundled manifests remain activation-managed even when auth also has
         # static implementation metadata for the same ID.
-        bundled_declared_provider_ids = {
+        bundled_declared_provider_ids = _normalized_provider_identities(
             provider_id
             for plugin in candidates
             if plugin.source == "bundled"
             for provider_id in plugin.provider_ids
-        }
-        trusted_implementation_ids = set(PROFILELESS_CORE_PROVIDER_IDS)
-        trusted_implementation_ids.update(build_state.registry)
+        )
+        trusted_implementation_ids = _normalized_provider_identities(
+            (*PROFILELESS_CORE_PROVIDER_IDS, *build_state.registry)
+        )
         activation_exempt_ids = (
             trusted_implementation_ids - bundled_declared_provider_ids
         )
         trusted_aliases = dict(PROFILELESS_CORE_PROVIDER_ALIASES)
         trusted_aliases.update(build_state.aliases)
+        trusted_aliases = {
+            _normalize_provider_identity(alias): (
+                _normalize_provider_identity(canonical)
+            )
+            for alias, canonical in trusted_aliases.items()
+            if _normalize_provider_identity(alias)
+            and _normalize_provider_identity(canonical)
+        }
         activation_exempt_ids.update(
             alias
             for alias, canonical in trusted_aliases.items()
             if canonical in activation_exempt_ids
         )
-        managed_provider_ids: set[str] = set(
+        managed_provider_ids = _normalized_provider_identities(
             _OBSERVED_PROVIDER_IDS_BY_SCOPE.get(scope_identity, ())
         ) - activation_exempt_ids
         known_provider_ids: set[str] = set(managed_provider_ids)
         bundled_provider_ids: set[str] = set(bundled_declared_provider_ids)
         active_provider_ids: set[str] = set()
+        active_canonical_provider_ids: set[str] = set()
         for plugin in candidates:
             # Credential names are declarative security metadata, not an
             # activation grant. Read them for inactive/disabled plugins too so
@@ -944,9 +1194,19 @@ def _discover_providers(
             _OBSERVED_PROVIDER_ENV_VARS.update(
                 _provider_credential_env_names(cached_env_vars)
             )
-            _OBSERVED_PROVIDER_ENV_VARS.update(
-                _provider_credential_env_names(plugin.credential_env_vars)
-            )
+            manifest_env_vars = plugin.credential_env_vars
+            if plugin.source != "bundled":
+                # Presence on disk is not consent to let an inactive external
+                # manifest remove arbitrary operator variables from every
+                # child process. Credential-shaped declarations still get
+                # pre-import protection; active profiles publish the full,
+                # validated ``env_vars`` set from executable code below.
+                manifest_env_vars = frozenset(
+                    _declarative_provider_credential_env_names(
+                        manifest_env_vars
+                    )
+                )
+            _OBSERVED_PROVIDER_ENV_VARS.update(manifest_env_vars)
             # Rewrite legacy cache files through the current validator even
             # when the plugin is inactive or disabled. Otherwise a reserved
             # name removed from the in-memory index would remain poisoned on
@@ -1005,9 +1265,21 @@ def _discover_providers(
                     observed_plugin_env_vars.update(
                         _provider_credential_env_names(profile.env_vars)
                     )
-                    active_provider_ids.add(profile.name)
-                    active_provider_ids.update(profile.aliases)
-                    registered_ids = {profile.name, *profile.aliases}
+                    active_provider_ids.update(
+                        _normalized_provider_identities(
+                            (profile.name, *profile.aliases)
+                        )
+                    )
+                    normalized_name = _normalize_provider_identity(profile.name)
+                    if normalized_name:
+                        current_canonical_provider_ids.add(normalized_name)
+                        active_canonical_provider_ids.add(normalized_name)
+                    current_provider_aliases.update(
+                        _normalized_provider_identities(profile.aliases)
+                    )
+                    registered_ids = _normalized_provider_identities(
+                        (profile.name, *profile.aliases)
+                    )
                     if plugin.source != "bundled":
                         registered_ids.difference_update(activation_exempt_ids)
                     managed_provider_ids.update(registered_ids)
@@ -1071,10 +1343,24 @@ def _discover_providers(
                             _record_observed_profile_locked(
                                 "legacy", origin[1], profile
                             )
-                            active_provider_ids.add(profile.name)
-                            active_provider_ids.update(profile.aliases)
+                            active_provider_ids.update(
+                                _normalized_provider_identities(
+                                    (profile.name, *profile.aliases)
+                                )
+                            )
+                            normalized_name = _normalize_provider_identity(
+                                profile.name
+                            )
+                            if normalized_name:
+                                current_canonical_provider_ids.add(normalized_name)
+                                active_canonical_provider_ids.add(normalized_name)
+                            current_provider_aliases.update(
+                                _normalized_provider_identities(profile.aliases)
+                            )
                             managed_provider_ids.update(
-                                {profile.name, *profile.aliases}
+                                _normalized_provider_identities(
+                                    (profile.name, *profile.aliases)
+                                )
                                 - activation_exempt_ids
                             )
                             known_provider_ids.add(profile.name)
@@ -1105,10 +1391,58 @@ def _discover_providers(
         observed_ids = _OBSERVED_PROVIDER_IDS_BY_SCOPE.setdefault(
             scope_identity, set()
         )
+        previous_observed_ids = frozenset(observed_ids)
+        normalized_observed_ids = _normalized_provider_identities(observed_ids)
+        observed_ids.clear()
+        observed_ids.update(normalized_observed_ids)
         observed_ids.difference_update(activation_exempt_ids)
         observed_ids.update(managed_provider_ids)
         managed_provider_ids.update(observed_ids)
         known_provider_ids.update(observed_ids)
+        observed_canonical_ids = (
+            _OBSERVED_PROVIDER_CANONICAL_IDS_BY_SCOPE.setdefault(
+                scope_identity, set()
+            )
+        )
+        previous_observed_canonical_ids = frozenset(observed_canonical_ids)
+        normalized_observed_canonical_ids = _normalized_provider_identities(
+            observed_canonical_ids
+        )
+        observed_canonical_ids.clear()
+        observed_canonical_ids.update(normalized_observed_canonical_ids)
+        # Retain every identity that was canonical in this scope, including
+        # manifest-only provider_ids.  If a manifest later changes or is
+        # removed, the same raw request must not silently switch from a
+        # disabled plugin owner to a colliding named custom alias.
+        observed_canonical_ids.update(current_canonical_provider_ids)
+        observed_aliases = _OBSERVED_PROVIDER_ALIASES_BY_SCOPE.setdefault(
+            scope_identity, set()
+        )
+        previous_observed_aliases = frozenset(observed_aliases)
+        normalized_observed_aliases = _normalized_provider_identities(
+            observed_aliases
+        )
+        observed_aliases.clear()
+        observed_aliases.update(normalized_observed_aliases)
+        observed_aliases.update(current_provider_aliases)
+
+        if (
+            previous_observed_ids != observed_ids
+            or previous_observed_canonical_ids != observed_canonical_ids
+            or previous_observed_aliases != observed_aliases
+        ):
+            # Provenance is monotonic within a scope but snapshots freeze a
+            # point-in-time copy.  A stale activation snapshot must not survive
+            # learning a new canonical/alias deny in another interleaved build.
+            stale_fingerprints = [
+                cached_fingerprint
+                for cached_fingerprint, cached_snapshot in _SNAPSHOT_CACHE.items()
+                if cached_snapshot.scope_identity == scope_identity
+            ]
+            for cached_fingerprint in stale_fingerprints:
+                _SNAPSHOT_CACHE.pop(cached_fingerprint, None)
+                _NOTIFIED_SNAPSHOT_FINGERPRINTS.discard(cached_fingerprint)
+            _LAST_SNAPSHOT_FINGERPRINT = None
 
         profiles = tuple(_dedupe_profiles(build_state.registry.values()))
         return ProviderCatalogSnapshot(
@@ -1121,8 +1455,18 @@ def _discover_providers(
             profiles=profiles,
             plugin_managed_provider_ids=frozenset(managed_provider_ids),
             active_plugin_provider_ids=frozenset(active_provider_ids),
+            active_canonical_provider_ids=frozenset(
+                active_canonical_provider_ids
+            ),
             bundled_provider_ids=frozenset(bundled_provider_ids),
             known_provider_ids=frozenset(known_provider_ids),
+            current_canonical_provider_ids=frozenset(
+                current_canonical_provider_ids
+            ),
+            observed_provider_canonical_ids=frozenset(
+                observed_canonical_ids
+            ),
+            observed_provider_aliases=frozenset(observed_aliases),
         )
     finally:
         try:

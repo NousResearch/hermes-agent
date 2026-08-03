@@ -27,6 +27,28 @@ _RESERVED_OPERATIONAL_TEST_ENV = (
     "SHELL",
     "SystemRoot",
     "ComSpec",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_ASKPASS",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+)
+_UNSHAPED_EXTERNAL_ENV = "PROVIDER_RUNTIME_MODE"
+_SIMPLE_RESERVED_REQUIRES_ENV = "".join(
+    f"  - {name}\n" for name in _RESERVED_OPERATIONAL_TEST_ENV
+)
+_RICH_RESERVED_REQUIRES_ENV = "".join(
+    f"  - name: {name}\n" for name in _RESERVED_OPERATIONAL_TEST_ENV
 )
 
 
@@ -158,6 +180,7 @@ def _write_user_provider(
     marker: Path | None = None,
     fail_after_register: bool = False,
     provider_ids: tuple[str, ...] | None = None,
+    profile_name: str | None = None,
 ) -> None:
     plugin_dir = home / "plugins" / "model-providers" / name
     plugin_dir.mkdir(parents=True)
@@ -168,14 +191,15 @@ def _write_user_provider(
             f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
         )
     registered_env_vars = env_vars or (env_var,)
+    registered_name = profile_name or name
     failure = "raise RuntimeError('provider import failed')\n" if fail_after_register else ""
     (plugin_dir / "__init__.py").write_text(
         marker_write
         + "from providers import register_provider\n"
         + "from providers.base import ProviderProfile\n"
         + "register_provider(ProviderProfile(\n"
-        + f"    name={name!r},\n"
-        + f"    display_name={name!r},\n"
+        + f"    name={registered_name!r},\n"
+        + f"    display_name={registered_name!r},\n"
         + f"    aliases={aliases!r},\n"
         + f"    env_vars={registered_env_vars!r},\n"
         + f"    base_url={base_url!r},\n"
@@ -630,6 +654,246 @@ def test_disabled_external_manifest_provider_id_stays_activation_managed(
         runtime_provider.resolve_runtime_provider(requested=provider_id)
 
 
+def test_named_custom_alias_provenance_does_not_cross_profile_scopes(
+    tmp_path,
+    monkeypatch,
+):
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+    _write_user_provider(
+        home_a,
+        "a-alias-owner",
+        base_url="https://a.example/v1",
+        aliases=("acme",),
+    )
+    _write_activation(
+        home_a,
+        enabled=("model-providers/a-alias-owner",),
+    )
+    _write_activation(home_b)
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "process-home"))
+    import providers
+    from hermes_cli import runtime_provider
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    token_a = set_hermes_home_override(home_a)
+    try:
+        providers.invalidate_provider_discovery()
+        assert providers.get_provider_profile("acme") is not None
+        assert providers.get_provider_identity_provenance("acme") == "alias"
+    finally:
+        reset_hermes_home_override(token_a)
+
+    token_b = set_hermes_home_override(home_b)
+    try:
+        providers.invalidate_provider_discovery()
+        assert "acme" not in (
+            providers.get_provider_catalog_snapshot().observed_provider_aliases
+        )
+
+        # Build B's own alias history, then replace its active route with a
+        # disabled manifest that declares the same raw ID as canonical.
+        _write_user_provider(
+            home_b,
+            "b-alias-owner",
+            base_url="https://b-alias.example/v1",
+            aliases=("acme",),
+        )
+        _write_activation(
+            home_b,
+            enabled=("model-providers/b-alias-owner",),
+        )
+        providers.invalidate_provider_discovery()
+        assert providers.get_provider_identity_provenance("acme") == "alias"
+
+        _write_user_provider(
+            home_b,
+            "b-manifest-owner",
+            base_url="https://b.example/v1",
+            provider_ids=("acme",),
+        )
+        _write_activation(
+            home_b,
+            enabled=("model-providers/b-alias-owner",),
+            disabled=("model-providers/b-manifest-owner",),
+        )
+        config_b = home_b / "config.yaml"
+        config_b.write_text(
+            config_b.read_text(encoding="utf-8")
+            + "custom_providers:\n"
+            + "  - name: acme\n"
+            + "    base_url: https://custom-b.example/v1\n"
+            + "    api_key: custom-key\n",
+            encoding="utf-8",
+        )
+        providers.invalidate_provider_discovery()
+        snapshot_b = providers.get_provider_catalog_snapshot()
+        assert "acme" in snapshot_b.current_canonical_provider_ids
+        assert "acme" in snapshot_b.observed_provider_aliases
+        assert providers.get_provider_identity_provenance("acme") == "canonical"
+        assert providers.is_provider_plugin_active("acme")
+        assert not providers.is_provider_canonical_identity_active("acme")
+        with pytest.raises(runtime_provider.AuthError, match="disabled by plugin"):
+            runtime_provider.resolve_runtime_provider(requested="acme")
+    finally:
+        reset_hermes_home_override(token_b)
+
+
+def test_scoped_canonical_history_outranks_alias_after_disable(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_user_provider(
+        home,
+        "alias-owner",
+        base_url="https://alias.example/v1",
+        aliases=(" ACME ", " MANIFEST-ACME "),
+    )
+    _write_user_provider(
+        home,
+        "manifest-profile-mismatch",
+        base_url="https://canonical.example/v1",
+        provider_ids=(" MANIFEST-ACME ",),
+        profile_name=" ACME ",
+    )
+    plugin_keys = (
+        "model-providers/alias-owner",
+        "model-providers/manifest-profile-mismatch",
+    )
+    _write_activation(home, enabled=plugin_keys)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+    from hermes_cli import runtime_provider
+
+    providers.invalidate_provider_discovery()
+    active = providers.get_provider_catalog_snapshot()
+    colliding_ids = ("acme", "manifest-acme")
+    for provider_id in colliding_ids:
+        assert provider_id in active.current_canonical_provider_ids
+        assert provider_id in active.observed_provider_canonical_ids
+        assert provider_id in active.observed_provider_aliases
+        assert (
+            providers.get_provider_identity_provenance(
+                f"  {provider_id.upper()}  "
+            )
+            == "canonical"
+        )
+
+    # Change the manifest before disabling it.  ``manifest-acme`` now exists
+    # only in this scope's canonical history, while ``acme`` comes from the
+    # successfully imported (manifest/profile-mismatched) profile name.
+    manifest_path = (
+        home
+        / "plugins"
+        / "model-providers"
+        / "manifest-profile-mismatch"
+        / "plugin.yaml"
+    )
+    manifest_path.write_text(
+        "name: manifest-profile-mismatch\n"
+        "kind: model-provider\n"
+        "provider_ids: [replacement-route]\n",
+        encoding="utf-8",
+    )
+
+    _write_activation(home, disabled=plugin_keys)
+    config_path = home / "config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "custom_providers:\n"
+        + "  - name: acme\n"
+        + "    base_url: https://custom.example/v1\n"
+        + "    api_key: custom-key\n"
+        + "  - name: manifest-acme\n"
+        + "    base_url: https://custom-manifest.example/v1\n"
+        + "    api_key: custom-key\n",
+        encoding="utf-8",
+    )
+    providers.invalidate_provider_discovery()
+
+    disabled = providers.get_provider_catalog_snapshot()
+    for provider_id in colliding_ids:
+        assert provider_id not in disabled.current_canonical_provider_ids
+        assert provider_id in disabled.observed_provider_canonical_ids
+        assert provider_id in disabled.observed_provider_aliases
+        assert (
+            providers.get_provider_identity_provenance(provider_id)
+            == "canonical"
+        )
+        assert providers.is_plugin_managed_provider_id(provider_id)
+        assert not providers.is_provider_plugin_active(provider_id)
+        with pytest.raises(
+            runtime_provider.AuthError,
+            match="disabled by plugin",
+        ):
+            runtime_provider.resolve_runtime_provider(requested=provider_id)
+
+
+def test_provenance_growth_evicts_same_scope_activation_snapshots(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    plugin_key = "model-providers/history-owner"
+    _write_user_provider(
+        home,
+        "history-owner",
+        base_url="https://history.example/v1",
+        provider_ids=("manifest-route",),
+        profile_name="history-only-canonical",
+    )
+    _write_activation(home, disabled=(plugin_key,))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+    from hermes_cli.plugin_activation import PluginActivationState
+
+    providers.invalidate_provider_discovery()
+    disabled_snapshot = providers.get_provider_catalog_snapshot()
+    assert (
+        "history-only-canonical"
+        not in disabled_snapshot.observed_provider_canonical_ids
+    )
+
+    state = {
+        "value": PluginActivationState(
+            enabled=frozenset({plugin_key}),
+        )
+    }
+    monkeypatch.setattr(
+        providers,
+        "_current_activation_state",
+        lambda: state["value"],
+    )
+    enabled_snapshot = providers.get_provider_catalog_snapshot()
+    assert (
+        "history-only-canonical"
+        in enabled_snapshot.observed_provider_canonical_ids
+    )
+
+    state["value"] = PluginActivationState(
+        enabled=frozenset(),
+        disabled=frozenset({plugin_key}),
+    )
+    rebuilt_disabled = providers.get_provider_catalog_snapshot()
+
+    assert rebuilt_disabled is not disabled_snapshot
+    assert (
+        "history-only-canonical"
+        in rebuilt_disabled.observed_provider_canonical_ids
+    )
+
+
 def test_inactive_external_manifest_cannot_gate_runtime_registered_provider(
     tmp_path,
     monkeypatch,
@@ -720,23 +984,17 @@ def test_observed_provider_secret_names_remain_blocked_after_disable(
     (
         (
             "inactive",
-            "  - PATH\n"
-            "  - HOME\n"
-            "  - SHELL\n"
-            "  - SystemRoot\n"
-            "  - ComSpec\n"
-            "  - LC_VENDOR_ACCESS\n",
+            _SIMPLE_RESERVED_REQUIRES_ENV
+            + f"  - {_UNSHAPED_EXTERNAL_ENV}\n"
+            + "  - LC_VENDOR_ACCESS\n",
         ),
         (
             "disabled",
-            "  - name: PATH\n"
-            "  - name: HOME\n"
-            "  - name: SHELL\n"
-            "  - name: SystemRoot\n"
-            "  - name: ComSpec\n"
-            "  - name: LC_VENDOR_ACCESS\n"
-            "    description: Vendor API credential\n"
-            "    secret: true\n",
+            _RICH_RESERVED_REQUIRES_ENV
+            + f"  - name: {_UNSHAPED_EXTERNAL_ENV}\n"
+            + "  - name: LC_VENDOR_ACCESS\n"
+            + "    description: Vendor API credential\n"
+            + "    secret: true\n",
         ),
     ),
 )
@@ -781,8 +1039,11 @@ def test_inactive_manifest_credentials_are_blocked_after_process_restart(
         "observed_reserved": False,
         "profile_secret": False,
         "profile_reserved": False,
+        "unshaped_observed": False,
         "in_child": False,
         "in_code_child": False,
+        "unshaped_in_child": True,
+        "unshaped_in_code_child": True,
         "reserved_in_child": True,
         "reserved_in_code_child": True,
     }
@@ -805,7 +1066,8 @@ def _probe_provider_security_in_fresh_process(
             "from tools.environments.local import _sanitize_subprocess_env",
             f"reserved_env = {reserved_env!r}",
             f"profile = providers.get_provider_profile({provider_name!r})",
-            "source_env = {**reserved_env, 'LC_VENDOR_ACCESS': 'test-secret'}",
+            "source_env = {**reserved_env, 'LC_VENDOR_ACCESS': 'test-secret', "
+            f"{_UNSHAPED_EXTERNAL_ENV!r}: 'runtime-setting'}}",
             "sanitized = _sanitize_subprocess_env(source_env)",
             "scrubbed = _scrub_child_env(",
             "    source_env,",
@@ -819,8 +1081,11 @@ def _probe_provider_security_in_fresh_process(
             "    'observed_reserved': any(name in observed for name in reserved_env),",
             "    'profile_secret': bool(profile and 'LC_VENDOR_ACCESS' in profile.env_vars),",
             "    'profile_reserved': bool(profile and any(name in profile.env_vars for name in reserved_env)),",
+            f"    'unshaped_observed': {_UNSHAPED_EXTERNAL_ENV!r} in observed,",
             "    'in_child': 'LC_VENDOR_ACCESS' in sanitized,",
             "    'in_code_child': 'LC_VENDOR_ACCESS' in scrubbed,",
+            f"    'unshaped_in_child': {_UNSHAPED_EXTERNAL_ENV!r} in sanitized,",
+            f"    'unshaped_in_code_child': {_UNSHAPED_EXTERNAL_ENV!r} in scrubbed,",
             "    'reserved_in_child': all(name in sanitized for name in reserved_env),",
             "    'reserved_in_code_child': all(name in scrubbed for name in reserved_env),",
             "}))",
@@ -853,7 +1118,11 @@ def test_legacy_provider_observed_names_persist_across_disabled_restart(
         home,
         provider_name,
         base_url="https://legacy-secret.example/v1",
-        env_vars=("LC_VENDOR_ACCESS", *_RESERVED_OPERATIONAL_TEST_ENV),
+        env_vars=(
+            "LC_VENDOR_ACCESS",
+            _UNSHAPED_EXTERNAL_ENV,
+            *_RESERVED_OPERATIONAL_TEST_ENV,
+        ),
         marker=marker,
     )
     _write_activation(home, enabled=(f"model-providers/{provider_name}",))
@@ -865,8 +1134,11 @@ def test_legacy_provider_observed_names_persist_across_disabled_restart(
         "observed_reserved": False,
         "profile_secret": True,
         "profile_reserved": False,
+        "unshaped_observed": True,
         "in_child": False,
         "in_code_child": False,
+        "unshaped_in_child": False,
+        "unshaped_in_code_child": False,
         "reserved_in_child": True,
         "reserved_in_code_child": True,
     }
@@ -876,6 +1148,7 @@ def test_legacy_provider_observed_names_persist_across_disabled_restart(
     assert len(cache_files) == 1
     cache_text = cache_files[0].read_text(encoding="utf-8")
     assert "LC_VENDOR_ACCESS" in cache_text
+    assert _UNSHAPED_EXTERNAL_ENV in cache_text
     assert "test-secret" not in cache_text
     assert all(name not in cache_text for name in _RESERVED_OPERATIONAL_TEST_ENV)
 
@@ -894,14 +1167,18 @@ def test_legacy_provider_observed_names_persist_across_disabled_restart(
         "observed_reserved": False,
         "profile_secret": False,
         "profile_reserved": False,
+        "unshaped_observed": True,
         "in_child": False,
         "in_code_child": False,
+        "unshaped_in_child": False,
+        "unshaped_in_code_child": False,
         "reserved_in_child": True,
         "reserved_in_code_child": True,
     }
     assert not marker.exists()
     healed_cache_text = cache_files[0].read_text(encoding="utf-8")
     assert "LC_VENDOR_ACCESS" in healed_cache_text
+    assert _UNSHAPED_EXTERNAL_ENV in healed_cache_text
     assert all(
         name not in healed_cache_text
         for name in _RESERVED_OPERATIONAL_TEST_ENV
@@ -916,8 +1193,11 @@ def test_legacy_provider_observed_names_persist_across_disabled_restart(
         "observed_reserved": False,
         "profile_secret": False,
         "profile_reserved": False,
+        "unshaped_observed": False,
         "in_child": True,
         "in_code_child": True,
+        "unshaped_in_child": True,
+        "unshaped_in_code_child": True,
         "reserved_in_child": True,
         "reserved_in_code_child": True,
     }

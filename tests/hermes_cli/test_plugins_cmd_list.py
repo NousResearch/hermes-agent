@@ -87,7 +87,12 @@ def test_dashboard_toggle_response_keeps_input_name_and_adds_key(monkeypatch):
     monkeypatch.setattr(
         plugins_cmd,
         "_resolve_plugin_key_and_source",
-        lambda _name: ("image_gen/xai", "user", "xai", "standalone"),
+        lambda _name, *, for_enable=False: (
+            "image_gen/xai",
+            "user",
+            "xai",
+            "standalone",
+        ),
     )
     monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
     monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
@@ -99,6 +104,42 @@ def test_dashboard_toggle_response_keeps_input_name_and_adds_key(monkeypatch):
 
     assert result["name"] == "xai"
     assert result["key"] == "image_gen/xai"
+
+
+def test_dashboard_enable_targets_inactive_higher_precedence_override(monkeypatch):
+    key = "shared"
+    bundled = ("shared-bundled", "1.0.0", "", "bundled", None, key, "backend")
+    user = ("shared-user", "2.0.0", "", "user", None, key, "backend")
+    saved = {}
+
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_discover_plugin_candidates",
+        lambda: [bundled, user],
+    )
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: [bundled])
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_save_enabled_set",
+        lambda value: saved.__setitem__("enabled", set(value)),
+    )
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_save_disabled_set",
+        lambda value: saved.__setitem__("disabled", set(value)),
+    )
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_toggle_plugin_toolset",
+        lambda *args, **kwargs: None,
+    )
+
+    result = plugins_cmd.dashboard_set_agent_plugin_enabled(key, enabled=True)
+
+    assert result["unchanged"] is False
+    assert saved == {"enabled": {key}, "disabled": set()}
 
 
 def test_dashboard_enable_clears_manifest_deny_without_reviving_colliding_key(
@@ -123,7 +164,12 @@ def test_dashboard_enable_clears_manifest_deny_without_reviving_colliding_key(
     monkeypatch.setattr(
         plugins_cmd,
         "_resolve_plugin_key_and_source",
-        lambda _name: (key, "user", "web-firecrawl", "backend"),
+        lambda _name, *, for_enable=False: (
+            key,
+            "user",
+            "web-firecrawl",
+            "backend",
+        ),
     )
     monkeypatch.setattr(plugins_cmd, "_discover_plugin_candidates", lambda: candidates)
     monkeypatch.setattr(

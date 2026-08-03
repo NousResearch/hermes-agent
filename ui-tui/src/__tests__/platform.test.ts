@@ -8,7 +8,8 @@ import {
   isMac,
   isMacActionFallback,
   isVoiceToggleKey,
-  parseVoiceRecordKey
+  parseVoiceRecordKey,
+  resolveCopyOnSelect
 } from '../lib/platform.js'
 
 // These cover the non-macOS (host-native on the Linux CI lane) arms. The
@@ -20,6 +21,15 @@ describeHost('platform action modifier', () => {
   it('still uses Ctrl as the action modifier on non-macOS', () => {
     expect(isActionMod({ ctrl: true, meta: false, super: false })).toBe(true)
     expect(isActionMod({ ctrl: false, meta: false, super: true })).toBe(false)
+  })
+})
+
+describe('resolveCopyOnSelect', () => {
+  it('uses the platform default only when the config is unset', () => {
+    expect(resolveCopyOnSelect(undefined, false)).toBe(false)
+    expect(resolveCopyOnSelect(null, true)).toBe(true)
+    expect(resolveCopyOnSelect(true, false)).toBe(true)
+    expect(resolveCopyOnSelect(false, true)).toBe(false)
   })
 })
 

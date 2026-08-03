@@ -253,7 +253,14 @@ display:
                              #   all     — adds 1003 for hover (scrollbar paginate-on-hover,
                              #             link mouseenter, etc.)
   inline_images: auto        # auto | kitty | iterm | unicode | off — see the CLI guide's "Inline Images"
+  tui_copy_on_select: null   # true: copy when a mouse selection ends; false: disable.
+                             # null/unset: enabled on macOS, disabled elsewhere.
 ```
+
+`tui_copy_on_select` applies to transcript and composer selections, copies only
+after the drag has stabilized, and keeps the highlight visible. Mouse drag
+events must reach the TUI; inside tmux, keep `display.mouse_tracking` set to
+`buttons` or `all` and forward the relevant mouse events with `send-keys -M`.
 
 Runtime toggles:
 

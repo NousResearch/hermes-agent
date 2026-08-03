@@ -16,6 +16,7 @@ const buildUiState = (): UiState => ({
   busyInputMode: 'queue',
   compact: false,
   compacting: false,
+  copyOnSelect: null,
   destructiveSlashConfirm: true,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
@@ -47,6 +48,7 @@ const buildUiState = (): UiState => ({
 
 export const $uiState = atom<UiState>(buildUiState())
 
+export const $uiCopyOnSelect = computed($uiState, state => state.copyOnSelect)
 export const $uiTheme = computed($uiState, state => state.theme)
 export const $uiSessionId = computed($uiState, state => state.sid)
 export const $uiInlineImages = computed($uiState, state => state.inlineImages)

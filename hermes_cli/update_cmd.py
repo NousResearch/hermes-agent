@@ -3615,20 +3615,42 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 "  ✓ Reapplied your local commit(s) on top of the update."
                             )
                     else:
-                        subprocess.run(
+                        # cherry-pick can fail for reasons other than a
+                        # conflict — a merge commit needing -m, an empty
+                        # commit, a bad ref. Don't assert a cause we did not
+                        # determine; surface git's own stderr instead.
+                        abort_result = subprocess.run(
                             git_cmd + ["cherry-pick", "--abort"],
                             cwd=_m().PROJECT_ROOT,
                             capture_output=True,
+                            text=True, encoding="utf-8", errors="replace",
                         )
-                        if local_only > 0:
+                        count = (
+                            f"your {local_only} local commit(s)"
+                            if local_only > 0
+                            else "your local commit(s)"
+                        )
+                        print(f"  ⚠ Could not automatically reapply {count}.")
+                        cherry_err = (cherry_result.stderr or "").strip()
+                        if cherry_err:
+                            for line in cherry_err.splitlines():
+                                print(f"    {line}")
+                        # A failed --abort leaves the working tree mid
+                        # cherry-pick. Saying nothing here would let the user
+                        # believe the tree is clean while it still carries
+                        # conflict markers and a CHERRY_PICK_HEAD.
+                        if abort_result.returncode != 0:
                             print(
-                                f"  ⚠ Could not automatically reapply your {local_only} local "
-                                "commit(s) — they conflict with the update."
+                                "    ✗ 'git cherry-pick --abort' also failed — this "
+                                "checkout is still mid-cherry-pick."
                             )
-                        else:
+                            abort_err = (abort_result.stderr or "").strip()
+                            if abort_err:
+                                for line in abort_err.splitlines():
+                                    print(f"      {line}")
                             print(
-                                "  ⚠ Could not automatically reapply your local "
-                                "commit(s) — they conflict with the update."
+                                "      Clean it up before using the checkout:\n"
+                                "        git cherry-pick --abort   # or: git cherry-pick --quit"
                             )
                         print(f"    Nothing is lost — they're saved at: {backup_ref}")
                         print(f"    Review them with: git log {backup_ref}")

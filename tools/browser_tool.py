@@ -185,6 +185,40 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+def _reject_non_camofox_user_id(tool_name: str, user_id: Optional[str]) -> Optional[str]:
+    """Return an error payload when a per-call identity cannot be honoured.
+
+    ``user_id`` selects a Camofox browser profile, so it is meaningless for
+    agent-browser / CDP / cloud sessions. Failing loudly rather than dropping
+    it: the parameter's whole job is keeping accounts apart, and the way to
+    reach here is a backend that changed underneath the model (``/browser
+    connect`` mid-conversation, while the model still holds a tool schema built
+    when Camofox was active). Silently continuing would run the action on the
+    single shared browser — which may still be signed in as a different
+    account — while reporting success.
+
+    Under Camofox the parameter is not in the schema at all (see
+    ``_camofox_user_id_schema_override``), so this never fires in normal use.
+    """
+    if not user_id:
+        return None
+    logger.warning(
+        "%s: rejecting user_id — per-call Camofox identities require the "
+        "Camofox backend, which is not active",
+        tool_name,
+    )
+    return json.dumps({
+        "success": False,
+        "error": (
+            "user_id requires the Camofox backend, which is not active for "
+            "this session. The current browser backend has a single shared "
+            "profile and cannot isolate accounts, so this call was not run. "
+            "Retry without user_id only if acting as whatever account that "
+            "shared browser is already signed in as is acceptable."
+        ),
+    }, ensure_ascii=False)
+
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
 # Includes Android/Termux and macOS Homebrew locations needed for agent-browser,
 # npx, node, and Android's glibc runner (grun).
@@ -2942,13 +2976,17 @@ def _redact_browser_output(value: Any) -> Any:
 # Browser Tool Functions
 # ============================================================================
 
-def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
+def browser_navigate(url: str, task_id: Optional[str] = None,
+                     user_id: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
 
     Args:
         url: The URL to navigate to
         task_id: Task identifier for session isolation
+        user_id: Camofox account identity for this call.  Ignored on other
+            backends (the parameter is only exposed to the model when the
+            Camofox backend is active).
 
     Returns:
         JSON string with navigation result (includes stealth features info on first nav)
@@ -3037,7 +3075,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # Camofox backend — delegate after safety checks pass
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_navigate
-        return camofox_navigate(url, task_id)
+        return camofox_navigate(url, task_id, user_id)
+
+    _rejected = _reject_non_camofox_user_id("browser_navigate", user_id)
+    if _rejected is not None:
+        return _rejected
 
     if auto_local_this_nav:
         logger.info(
@@ -3171,7 +3213,8 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
 def browser_snapshot(
     full: bool = False,
     task_id: Optional[str] = None,
-    user_task: Optional[str] = None
+    user_task: Optional[str] = None,
+    user_id: Optional[str] = None
 ) -> str:
     """
     Get a text-based snapshot of the current page's accessibility tree.
@@ -3180,13 +3223,18 @@ def browser_snapshot(
         full: If True, return complete snapshot. If False, return compact view.
         task_id: Task identifier for session isolation
         user_task: The user's current task (for task-aware extraction)
+        user_id: Camofox account identity for this call (Camofox backend only)
 
     Returns:
         JSON string with page snapshot
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_snapshot
-        return camofox_snapshot(full, task_id, user_task)
+        return camofox_snapshot(full, task_id, user_task, user_id)
+
+    _rejected = _reject_non_camofox_user_id("browser_snapshot", user_id)
+    if _rejected is not None:
+        return _rejected
 
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -3268,20 +3316,26 @@ def browser_snapshot(
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_click(ref: str, task_id: Optional[str] = None) -> str:
+def browser_click(ref: str, task_id: Optional[str] = None,
+                  user_id: Optional[str] = None) -> str:
     """
     Click on an element.
 
     Args:
         ref: Element reference (e.g., "@e5")
         task_id: Task identifier for session isolation
+        user_id: Camofox account identity for this call (Camofox backend only)
 
     Returns:
         JSON string with click result
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_click
-        return camofox_click(ref, task_id)
+        return camofox_click(ref, task_id, user_id)
+
+    _rejected = _reject_non_camofox_user_id("browser_click", user_id)
+    if _rejected is not None:
+        return _rejected
 
     effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_action(effective_task_id, "click")
@@ -3308,7 +3362,8 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
+def browser_type(ref: str, text: str, task_id: Optional[str] = None,
+                 user_id: Optional[str] = None) -> str:
     """
     Type text into an input field.
 
@@ -3316,13 +3371,18 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         ref: Element reference (e.g., "@e3")
         text: Text to type
         task_id: Task identifier for session isolation
+        user_id: Camofox account identity for this call (Camofox backend only)
 
     Returns:
         JSON string with type result
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_type
-        return camofox_type(ref, text, task_id)
+        return camofox_type(ref, text, task_id, user_id)
+
+    _rejected = _reject_non_camofox_user_id("browser_type", user_id)
+    if _rejected is not None:
+        return _rejected
 
     effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_action(effective_task_id, "type")
@@ -3366,13 +3426,15 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         return json.dumps(response, ensure_ascii=False)
 
 
-def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
+def browser_scroll(direction: str, task_id: Optional[str] = None,
+                   user_id: Optional[str] = None) -> str:
     """
     Scroll the page.
 
     Args:
         direction: "up" or "down"
         task_id: Task identifier for session isolation
+        user_id: Camofox account identity for this call (Camofox backend only)
 
     Returns:
         JSON string with scroll result
@@ -3395,8 +3457,12 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
         _SCROLL_REPEATS = 5
         result = None
         for _ in range(_SCROLL_REPEATS):
-            result = camofox_scroll(direction, task_id)
+            result = camofox_scroll(direction, task_id, user_id)
         return result
+
+    _rejected = _reject_non_camofox_user_id("browser_scroll", user_id)
+    if _rejected is not None:
+        return _rejected
 
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -3415,19 +3481,25 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_back(task_id: Optional[str] = None) -> str:
+def browser_back(task_id: Optional[str] = None,
+                 user_id: Optional[str] = None) -> str:
     """
     Navigate back in browser history.
 
     Args:
         task_id: Task identifier for session isolation
+        user_id: Camofox account identity for this call (Camofox backend only)
 
     Returns:
         JSON string with navigation result
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_back
-        return camofox_back(task_id)
+        return camofox_back(task_id, user_id)
+
+    _rejected = _reject_non_camofox_user_id("browser_back", user_id)
+    if _rejected is not None:
+        return _rejected
 
     effective_task_id = _last_session_key(task_id or "default")
     result = _run_browser_command(effective_task_id, "back", [])
@@ -3466,20 +3538,26 @@ def browser_back(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_press(key: str, task_id: Optional[str] = None) -> str:
+def browser_press(key: str, task_id: Optional[str] = None,
+                  user_id: Optional[str] = None) -> str:
     """
     Press a keyboard key.
 
     Args:
         key: Key to press (e.g., "Enter", "Tab")
         task_id: Task identifier for session isolation
+        user_id: Camofox account identity for this call (Camofox backend only)
 
     Returns:
         JSON string with key press result
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_press
-        return camofox_press(key, task_id)
+        return camofox_press(key, task_id, user_id)
+
+    _rejected = _reject_non_camofox_user_id("browser_press", user_id)
+    if _rejected is not None:
+        return _rejected
 
     effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_action(effective_task_id, "press")
@@ -3518,7 +3596,9 @@ def _blocked_private_page_action(effective_task_id: str, action: str) -> Optiona
     }, ensure_ascii=False)
 
 
-def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
+def browser_console(clear: bool = False, expression: Optional[str] = None,
+                    task_id: Optional[str] = None,
+                    user_id: Optional[str] = None) -> str:
     """Get browser console messages and JavaScript errors, or evaluate JS in the page.
 
     When ``expression`` is provided, evaluates JavaScript in the page context
@@ -3529,6 +3609,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         clear: If True, clear the message/error buffers after reading
         expression: JavaScript expression to evaluate in the page context
         task_id: Task identifier for session isolation
+        user_id: Camofox account identity for this call (Camofox backend only)
 
     Returns:
         JSON string with console messages/errors, or eval result
@@ -3538,12 +3619,16 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         policy_error = _enforce_browser_eval_policy(expression)
         if policy_error:
             return json.dumps({"success": False, "error": policy_error}, ensure_ascii=False)
-        return _browser_eval(expression, task_id)
+        return _browser_eval(expression, task_id, user_id)
 
     # --- Console output mode (original behaviour) ---
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_console
-        return camofox_console(clear, task_id)
+        return camofox_console(clear, task_id, user_id)
+
+    _rejected = _reject_non_camofox_user_id("browser_console", user_id)
+    if _rejected is not None:
+        return _rejected
 
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -3816,7 +3901,8 @@ def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
     )
 
 
-def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
+def _browser_eval(expression: str, task_id: Optional[str] = None,
+                  user_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -3837,7 +3923,11 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     # id (matching every other Camofox tool) rather than the resolved
     # agent-browser session key.  The literal pre-scan above already ran.
     if _is_camofox_mode():
-        return _camofox_eval(expression, task_id)
+        return _camofox_eval(expression, task_id, user_id)
+
+    _rejected = _reject_non_camofox_user_id("browser_console", user_id)
+    if _rejected is not None:
+        return _rejected
 
     # ── Private-network guard (eval return-value path) ──────────────────────
     # The literal pre-scan above closes the direct-fetch sub-path
@@ -3997,14 +4087,23 @@ def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str
     return None
 
 
-def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
+def _camofox_eval(expression: str, task_id: Optional[str] = None,
+                  user_id: Optional[str] = None) -> str:
     """Evaluate JS via Camofox's /tabs/{tab_id}/evaluate endpoint (if available)."""
-    from tools.browser_camofox import _ensure_tab, _post
+    from tools.browser_camofox import InvalidCamofoxUserId, _ensure_tab, _post
     try:
-        tab_info = _ensure_tab(task_id or "default")
+        tab_info = _ensure_tab(task_id or "default", user_id=user_id)
+    except InvalidCamofoxUserId as e:
+        # Handled before the generic block below: its ("404","405","501")
+        # substring probe would match a rejected identity that merely contains
+        # "404", and report a charset error as "this server can't eval".
+        return tool_error(str(e), success=False)
+    try:
         tab_id = tab_info.get("tab_id") or tab_info.get("id")
-        user_id = tab_info["user_id"]
-        resp = _post(f"/tabs/{tab_id}/evaluate", body={"expression": expression, "userId": user_id})
+        # The session's identity, which is the requested ``user_id`` when one
+        # was supplied and the env/config/managed/random fallback otherwise.
+        user_id_used = tab_info["user_id"]
+        resp = _post(f"/tabs/{tab_id}/evaluate", body={"expression": expression, "userId": user_id_used})
 
         # Camofox returns the result in a JSON envelope
         raw_result = resp.get("result") if isinstance(resp, dict) else resp
@@ -4016,7 +4115,7 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
                 pass
 
         if _eval_ssrf_guard_active(task_id or "default"):
-            _blocked_url = _camofox_current_page_private_url(tab_id, user_id)
+            _blocked_url = _camofox_current_page_private_url(tab_id, user_id_used)
             if _blocked_url:
                 return json.dumps({
                     "success": False,
@@ -4025,12 +4124,14 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
                         f"({_blocked_url}). This may have been caused by a "
                         "JavaScript navigation via browser_console."
                     ),
+                    "user_id": user_id_used,
                 }, ensure_ascii=False)
 
         return json.dumps({
             "success": True,
             "result": _redact_browser_output(parsed),
             "result_type": type(parsed).__name__,
+            "user_id": user_id_used,
         }, ensure_ascii=False, default=str)
     except Exception as e:
         error_msg = str(e)
@@ -4093,19 +4194,25 @@ def _maybe_stop_recording(task_id: str):
             _recording_sessions.discard(task_id)
 
 
-def browser_get_images(task_id: Optional[str] = None) -> str:
+def browser_get_images(task_id: Optional[str] = None,
+                       user_id: Optional[str] = None) -> str:
     """
     Get all images on the current page.
 
     Args:
         task_id: Task identifier for session isolation
+        user_id: Camofox account identity for this call (Camofox backend only)
 
     Returns:
         JSON string with list of images (src and alt)
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_get_images
-        return camofox_get_images(task_id)
+        return camofox_get_images(task_id, user_id)
+
+    _rejected = _reject_non_camofox_user_id("browser_get_images", user_id)
+    if _rejected is not None:
+        return _rejected
 
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -4167,7 +4274,8 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> Union[str, Dict[str, Any]]:
+def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None,
+                   user_id: Optional[str] = None) -> Union[str, Dict[str, Any]]:
     """
     Take a screenshot of the current page for visual inspection.
 
@@ -4185,6 +4293,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         question: What you want to know about the page visually
         annotate: If True, overlay numbered [N] labels on interactive elements
         task_id: Task identifier for session isolation
+        user_id: Camofox account identity for this call (Camofox backend only)
 
     Returns:
         A JSON string with vision analysis results and screenshot_path, or a
@@ -4192,7 +4301,11 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_vision
-        return camofox_vision(question, annotate, task_id)
+        return camofox_vision(question, annotate, task_id, user_id)
+
+    _rejected = _reject_non_camofox_user_id("browser_vision", user_id)
+    if _rejected is not None:
+        return _rejected
 
     import base64
     import uuid as uuid_mod
@@ -5014,12 +5127,65 @@ from tools.registry import registry, tool_error
 
 _BROWSER_SCHEMA_MAP = {s["name"]: s for s in BROWSER_TOOL_SCHEMAS}
 
+# Per-call Camofox identity (issue #77273).  Camofox maps each userId to its
+# own browser profile, so passing a different one per call lets a single Hermes
+# process drive several signed-in accounts.  Meaningless for agent-browser /
+# CDP / cloud backends, so the property is grafted onto the schema only while
+# Camofox is the active backend — see _camofox_user_id_schema_override.
+_CAMOFOX_USER_ID_PARAM = {
+    "type": "string",
+    "description": (
+        "Optional Camofox account identity for this call. Each user_id maps to "
+        "its own browser profile with its own cookies, logins, and tabs, so "
+        "pass a distinct value per account to drive several signed-in accounts "
+        "in one session (e.g. 'acct-alice' then 'acct-bob'). Reuse the same "
+        "value to stay in that account's tab. IMPORTANT: omitting it does not "
+        "continue the account you last used — it switches to the default "
+        "session, which is a separate browser profile again. Once a sequence "
+        "is acting as an account, pass that same user_id on every call in the "
+        "sequence, and never reuse element refs from one account's snapshot "
+        "against another. Every result echoes the user_id it acted as. "
+        "Allowed characters: letters, digits, and '.', '_', '-', ':', '@' "
+        "(must start with a letter or digit, max 64 characters)."
+    ),
+}
+
+
+def _camofox_user_id_schema_override(tool_name: str):
+    """Build a ``dynamic_schema_overrides`` callable that adds ``user_id``.
+
+    Returns an empty override (i.e. the static schema) unless the Camofox
+    backend is active, so the parameter costs nothing for every other backend.
+
+    The parameter can therefore appear and disappear mid-conversation:
+    ``model_tools.get_tool_definitions`` memoizes on registry generation and
+    config mtime, both of which move for unrelated reasons (an MCP refresh, a
+    plugin load, a config edit), so a ``/browser connect`` will eventually be
+    reflected here. That costs a prompt-cache miss, the same as the other
+    dynamic schemas (discord, image/video generation). It also means a model
+    can still emit ``user_id`` against a schema that has since changed —
+    ``_reject_non_camofox_user_id`` catches exactly that and fails the call
+    rather than running it on the wrong browser.
+    """
+    def _build() -> dict:
+        if not _is_camofox_mode():
+            return {}
+        base = _BROWSER_SCHEMA_MAP[tool_name]["parameters"]
+        properties = {k: dict(v) for k, v in base.get("properties", {}).items()}
+        properties["user_id"] = dict(_CAMOFOX_USER_ID_PARAM)
+        return {"parameters": {**base, "properties": properties}}
+
+    return _build
+
+
 registry.register(
     name="browser_navigate",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
-    handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_navigate(
+        url=args.get("url", ""), task_id=kw.get("task_id"), user_id=args.get("user_id")),
     check_fn=check_browser_requirements,
+    dynamic_schema_overrides=_camofox_user_id_schema_override("browser_navigate"),
     emoji="🌐",
 )
 registry.register(
@@ -5027,48 +5193,62 @@ registry.register(
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_snapshot"],
     handler=lambda args, **kw: browser_snapshot(
-        full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
+        full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task"),
+        user_id=args.get("user_id")),
     check_fn=check_browser_requirements,
+    dynamic_schema_overrides=_camofox_user_id_schema_override("browser_snapshot"),
     emoji="📸",
 )
 registry.register(
     name="browser_click",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_click"],
-    handler=lambda args, **kw: browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_click(
+        ref=args.get("ref", ""), task_id=kw.get("task_id"), user_id=args.get("user_id")),
     check_fn=check_browser_requirements,
+    dynamic_schema_overrides=_camofox_user_id_schema_override("browser_click"),
     emoji="👆",
 )
 registry.register(
     name="browser_type",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_type"],
-    handler=lambda args, **kw: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_type(
+        ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id"),
+        user_id=args.get("user_id")),
     check_fn=check_browser_requirements,
+    dynamic_schema_overrides=_camofox_user_id_schema_override("browser_type"),
     emoji="⌨️",
 )
 registry.register(
     name="browser_scroll",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_scroll"],
-    handler=lambda args, **kw: browser_scroll(direction=args.get("direction", "down"), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_scroll(
+        direction=args.get("direction", "down"), task_id=kw.get("task_id"),
+        user_id=args.get("user_id")),
     check_fn=check_browser_requirements,
+    dynamic_schema_overrides=_camofox_user_id_schema_override("browser_scroll"),
     emoji="📜",
 )
 registry.register(
     name="browser_back",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_back"],
-    handler=lambda args, **kw: browser_back(task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_back(
+        task_id=kw.get("task_id"), user_id=args.get("user_id")),
     check_fn=check_browser_requirements,
+    dynamic_schema_overrides=_camofox_user_id_schema_override("browser_back"),
     emoji="◀️",
 )
 registry.register(
     name="browser_press",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_press"],
-    handler=lambda args, **kw: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_press(
+        key=args.get("key", ""), task_id=kw.get("task_id"), user_id=args.get("user_id")),
     check_fn=check_browser_requirements,
+    dynamic_schema_overrides=_camofox_user_id_schema_override("browser_press"),
     emoji="⌨️",
 )
 
@@ -5076,23 +5256,31 @@ registry.register(
     name="browser_get_images",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_get_images"],
-    handler=lambda args, **kw: browser_get_images(task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_get_images(
+        task_id=kw.get("task_id"), user_id=args.get("user_id")),
     check_fn=check_browser_requirements,
+    dynamic_schema_overrides=_camofox_user_id_schema_override("browser_get_images"),
     emoji="🖼️",
 )
 registry.register(
     name="browser_vision",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
-    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_vision(
+        question=args.get("question", ""), annotate=args.get("annotate", False),
+        task_id=kw.get("task_id"), user_id=args.get("user_id")),
     check_fn=check_browser_vision_requirements,
+    dynamic_schema_overrides=_camofox_user_id_schema_override("browser_vision"),
     emoji="👁️",
 )
 registry.register(
     name="browser_console",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_console"],
-    handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_console(
+        clear=args.get("clear", False), expression=args.get("expression"),
+        task_id=kw.get("task_id"), user_id=args.get("user_id")),
     check_fn=check_browser_requirements,
+    dynamic_schema_overrides=_camofox_user_id_schema_override("browser_console"),
     emoji="🖥️",
 )

@@ -21,7 +21,9 @@ PRIVATE_URL = "http://169.254.169.254/latest/meta-data/"
 @pytest.fixture
 def _session(monkeypatch):
     session = {"tab_id": "tab-1", "user_id": "user-1"}
-    monkeypatch.setattr(browser_camofox, "_get_session", lambda task_id: session)
+    monkeypatch.setattr(
+        browser_camofox, "_get_session", lambda task_id, user_id=None: session
+    )
     return session
 
 

@@ -910,9 +910,8 @@ class TestMemoryToolToolsetGate:
         assert "fact_store" in names
         assert any(t["function"]["name"] == "fact_store" for t in tools)
         assert (
-            tools[0]["function"]["parameters"]["properties"]
-            ["result_token_limit"]["default"]
-            == 10_000
+            "result_token_limit"
+            not in tools[0]["function"]["parameters"].get("properties", {})
         )
 
     def test_memory_in_toolsets_injects(self):
@@ -1124,10 +1123,7 @@ class TestMemoryInjectionRejectsMalformedSchema:
         assert len(agent.tools) == 1
         fn = agent.tools[0]["function"]
         assert fn["name"] == "x_grep"
-        assert (
-            fn["parameters"]["properties"]["result_token_limit"]["maximum"]
-            == 32_000
-        )
+        assert "result_token_limit" not in fn["parameters"].get("properties", {})
         # No nested double-wrap leaked through.
         assert fn.get("type") != "function"
         assert "x_grep" in agent.valid_tool_names

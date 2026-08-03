@@ -156,33 +156,24 @@ def _dispatch_with_result_budget(
 ) -> str:
     """Dispatch one MCP-exposed Hermes tool through the canonical result path."""
     from agent.tool_dispatch_helpers import make_tool_result_message
-    from tools.budget_config import extract_result_token_budget_for_tool
     from tools.tool_result_storage import finalize_model_visible_tool_result
 
-    args, budget, budget_error = extract_result_token_budget_for_tool(
-        tool_name, kwargs
-    )
-    if budget_error is not None:
-        raw_result = json.dumps({"error": budget_error}, ensure_ascii=False)
-    else:
-        try:
-            raw_result = handle_function_call(tool_name, args)
-        except Exception as exc:
-            # Tool-controlled exception text is still model-visible data. Keep
-            # it on the same wrapping and budget path as successful results.
-            logger.warning("tool %s raised %s", tool_name, type(exc).__name__)
-            raw_result = json.dumps(
-                {"error": str(exc), "tool": tool_name},
-                ensure_ascii=False,
-            )
+    try:
+        raw_result = handle_function_call(tool_name, kwargs)
+    except Exception as exc:
+        # Tool-controlled exception text is still model-visible data. Keep
+        # it on the same wrapping and budget path as successful results.
+        logger.warning("tool %s raised %s", tool_name, type(exc).__name__)
+        raw_result = json.dumps(
+            {"error": str(exc), "tool": tool_name},
+            ensure_ascii=False,
+        )
 
     message = make_tool_result_message(
         tool_name,
         raw_result,
         f"hermes-tools-mcp:{tool_name}",
-        result_token_limit=budget.limit_tokens,
-        override_requested=budget.override_requested,
-        source_args=args,
+        source_args=kwargs,
     )
     finalized = message["content"]
     if isinstance(finalized, str):
@@ -195,9 +186,7 @@ def _dispatch_with_result_budget(
         serialized,
         tool_name=tool_name,
         tool_use_id=f"hermes-tools-mcp:{tool_name}:serialized",
-        limit_tokens=budget.limit_tokens,
-        override_requested=budget.override_requested,
-        source_args=args,
+        source_args=kwargs,
     )
     return bounded
 

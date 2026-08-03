@@ -1,8 +1,7 @@
 """Unit tests for tools/budget_config.py.
 
 Covers default values, resolve_threshold() priority chain
-(pinned > tool_overrides > registry > default), immutability, and the
-universal call-local result-budget schema.
+(pinned > tool_overrides > registry > default), and immutability.
 """
 
 import dataclasses
@@ -13,11 +12,11 @@ import pytest
 from tools.budget_config import (
     DEFAULT_BUDGET,
     DEFAULT_PREVIEW_SIZE_CHARS,
+    DEFAULT_RESULT_TOKEN_LIMIT,
     DEFAULT_RESULT_SIZE_CHARS,
     DEFAULT_TURN_BUDGET_CHARS,
     PINNED_THRESHOLDS,
     BudgetConfig,
-    augment_function_schema_with_result_token_limit,
     budget_for_context_window,
 )
 
@@ -37,65 +36,15 @@ class TestModuleConstants:
     def test_default_preview_size(self):
         assert DEFAULT_PREVIEW_SIZE_CHARS == 1_500
 
+    def test_default_result_token_limit(self):
+        assert DEFAULT_RESULT_TOKEN_LIMIT == 10_000
+
 
 class TestPinnedThresholds:
     """PINNED_THRESHOLDS – tools whose values must never be overridden."""
 
     def test_read_file_has_no_unlimited_pin(self):
         assert "read_file" not in PINNED_THRESHOLDS
-
-
-def test_function_schema_augmentation_is_copy_safe_and_optional():
-    original = {
-        "name": "late_injected",
-        "parameters": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query", "result_token_limit"],
-        },
-    }
-
-    augmented = augment_function_schema_with_result_token_limit(original)
-
-    assert augmented is not original
-    assert "result_token_limit" not in original["parameters"]["properties"]
-    budget = augmented["parameters"]["properties"]["result_token_limit"]
-    assert budget == {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 32_000,
-        "default": 10_000,
-        "description": (
-            "Optional model-visible result budget for this call only. "
-            "Defaults to 10000; maximum 32000. Removed before tool execution."
-        ),
-    }
-    assert augmented["parameters"]["required"] == ["query"]
-
-
-def test_function_schema_augmentation_preserves_schema_owned_budget_parameter():
-    original_property = {
-        "type": "string",
-        "description": "Business argument owned by an external tool",
-    }
-    original = {
-        "name": "mcp__external__collision",
-        "parameters": {
-            "type": "object",
-            "properties": {"result_token_limit": original_property},
-            "required": ["result_token_limit"],
-        },
-    }
-
-    augmented = augment_function_schema_with_result_token_limit(original)
-
-    assert augmented["parameters"]["properties"]["result_token_limit"] == (
-        original_property
-    )
-    assert augmented["parameters"]["required"] == ["result_token_limit"]
-    assert original["parameters"]["properties"]["result_token_limit"] == (
-        original_property
-    )
 
 
 # ---------------------------------------------------------------------------

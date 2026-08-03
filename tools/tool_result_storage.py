@@ -34,7 +34,6 @@ from typing import Any, Mapping, Protocol
 
 from tools.budget_config import (
     DEFAULT_RESULT_TOKEN_LIMIT,
-    MAX_RESULT_TOKEN_LIMIT,
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
     DEFAULT_BUDGET,
@@ -95,7 +94,6 @@ class ToolResultBudgetOutcome:
     initial_utf8_bytes: int
     final_utf8_bytes: int
     truncated: bool
-    override_requested: bool
     persisted: bool
     persisted_path: str | None
 
@@ -406,7 +404,6 @@ def finalize_model_visible_tool_result(
     env=None,
     config: BudgetConfig = DEFAULT_BUDGET,
     limit_tokens: int = DEFAULT_RESULT_TOKEN_LIMIT,
-    override_requested: bool = False,
     source_args: Mapping[str, Any] | None = None,
     token_counter: TokenCounter | None = None,
     trusted_persisted: bool = False,
@@ -415,10 +412,9 @@ def finalize_model_visible_tool_result(
     if (
         isinstance(limit_tokens, bool)
         or not isinstance(limit_tokens, int)
-        or not 1 <= limit_tokens <= MAX_RESULT_TOKEN_LIMIT
+        or not 1 <= limit_tokens <= DEFAULT_RESULT_TOKEN_LIMIT
     ):
         limit_tokens = DEFAULT_RESULT_TOKEN_LIMIT
-        override_requested = False
 
     normalized = _normalize_model_visible_text(content)
     normalized, non_text_omitted = _bound_non_text_parts(normalized)
@@ -531,15 +527,14 @@ def finalize_model_visible_tool_result(
         initial_utf8_bytes=initial_utf8_bytes,
         final_utf8_bytes=final_utf8_bytes,
         truncated=needs_truncation,
-        override_requested=override_requested,
         persisted=persisted,
         persisted_path=persisted_path,
     )
-    if needs_truncation or override_requested:
+    if needs_truncation:
         logger.info(
             "tool_result_budget tool=%s call=%s method=%s initial=%d limit=%d "
             "final=%d initial_bytes=%d final_bytes=%d truncated=%s "
-            "override=%s persisted=%s",
+            "persisted=%s",
             tool_name,
             tool_use_id,
             outcome.counter_method,
@@ -549,7 +544,6 @@ def finalize_model_visible_tool_result(
             outcome.initial_utf8_bytes,
             outcome.final_utf8_bytes,
             outcome.truncated,
-            outcome.override_requested,
             outcome.persisted,
         )
     return final_content, outcome
@@ -560,9 +554,8 @@ def enforce_model_visible_tool_result_limits(
 ) -> list[dict]:
     """Return a wire-safe copy with every direct ``role=tool`` text bounded.
 
-    Call-local metadata is consumed here to preserve a validated override, then
-    removed. It remains on canonical history for auditability but must never be
-    sent to strict providers as an unknown message field.
+    Internal metadata remains on canonical history for auditability but must
+    never be sent to strict providers as an unknown message field.
     """
     bounded_messages: list[dict] = []
     for message in messages:
@@ -571,24 +564,14 @@ def enforce_model_visible_tool_result_limits(
             continue
 
         prior_metadata = message.get("_tool_result_budget")
-        limit_tokens = DEFAULT_RESULT_TOKEN_LIMIT
-        override_requested = False
-        if isinstance(prior_metadata, dict) and prior_metadata.get("override_requested") is True:
-            candidate = prior_metadata.get("limit_tokens")
-            if (
-                isinstance(candidate, int)
-                and not isinstance(candidate, bool)
-                and 1 <= candidate <= MAX_RESULT_TOKEN_LIMIT
-            ):
-                limit_tokens = candidate
-                override_requested = True
+        # The persisted marker avoids duplicate writes during replay. Legacy
+        # limit/override metadata is deliberately ignored: the fixed hardline
+        # cannot be raised by message data.
 
         content, _outcome = finalize_model_visible_tool_result(
             message.get("content", ""),
             tool_name=message.get("tool_name") or message.get("name") or "synthetic",
             tool_use_id=message.get("tool_call_id") or "synthetic",
-            limit_tokens=limit_tokens,
-            override_requested=override_requested,
             trusted_persisted=(
                 isinstance(prior_metadata, dict)
                 and prior_metadata.get("persisted") is True

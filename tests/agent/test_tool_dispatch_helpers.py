@@ -256,18 +256,16 @@ class TestMakeToolResultMessage:
         assert "/workspace/large.txt" in msg["content"]
         assert msg["_tool_result_budget"]["persisted"] is False
 
-    def test_explicit_override_is_bounded_and_traceable(self):
+    def test_result_budget_is_fixed_and_traceable(self):
         msg = make_tool_result_message(
             "terminal",
             "x" * 20_000,
-            "call_override",
-            result_token_limit=24_000,
-            override_requested=True,
+            "call_fixed_budget",
         )
 
-        assert len(msg["content"].encode("utf-8")) == 20_000
-        assert msg["_tool_result_budget"]["limit_tokens"] == 24_000
-        assert msg["_tool_result_budget"]["override_requested"] is True
+        assert len(msg["content"].encode("utf-8")) <= 10_000
+        assert msg["_tool_result_budget"]["limit_tokens"] == 10_000
+        assert "override_requested" not in msg["_tool_result_budget"]
 
 
 class TestFileMutationTargets:

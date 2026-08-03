@@ -6484,10 +6484,6 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     caller publishes this into ``agent._context_engine_tool_names`` atomically
     with the snapshot.
     """
-    from tools.budget_config import (
-        augment_function_schema_with_result_token_limit,
-    )
-
     def _add(schema: dict) -> bool:
         name = schema.get("name", "")
         if not name or name in name_set:
@@ -6495,9 +6491,7 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
         tools_list.append(
             {
                 "type": "function",
-                "function": augment_function_schema_with_result_token_limit(
-                    schema
-                ),
+                "function": schema,
             }
         )
         name_set.add(name)

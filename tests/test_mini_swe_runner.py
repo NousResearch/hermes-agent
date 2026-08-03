@@ -116,7 +116,7 @@ def test_run_task_bounds_tool_result_before_second_model_call():
     assert "_tool_result_budget" not in tool_message
 
 
-def test_runner_exposes_call_local_result_budget_schema():
+def test_runner_does_not_expose_result_budget_schema():
     with patch("openai.OpenAI") as mock_openai:
         mock_openai.return_value = MagicMock()
 
@@ -128,8 +128,5 @@ def test_runner_exposes_call_local_result_budget_schema():
             api_key="test-key",
         )
 
-    budget = runner.tools[0]["function"]["parameters"]["properties"][
-        "result_token_limit"
-    ]
-    assert budget["default"] == 10_000
-    assert budget["maximum"] == 32_000
+    properties = runner.tools[0]["function"]["parameters"]["properties"]
+    assert "result_token_limit" not in properties

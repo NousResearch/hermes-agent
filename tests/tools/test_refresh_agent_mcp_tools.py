@@ -91,8 +91,8 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
     }
     assert set(injected) == {"memory_search", "lcm_grep"}
     assert all(
-        schema["parameters"]["properties"]["result_token_limit"]["maximum"]
-        == 32_000
+        "result_token_limit"
+        not in schema["parameters"].get("properties", {})
         for schema in injected.values()
     )
 

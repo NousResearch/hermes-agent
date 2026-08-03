@@ -2139,8 +2139,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # sidecar-carrying message and re-prefilling the whole transcript
             # at exactly the moment the context is largest.
             substitute_api_content(api_msg)
-            # Keep validated tool-result budget metadata until the final
-            # pre-model sanitizer has applied its call-local override. The
+            # Keep internal tool-result budget metadata until the final
+            # pre-model sanitizer has re-applied the fixed hardline. The
             # sanitizer consumes and removes it before this direct provider
             # call, just like the regular transport path.
             for internal_key in [

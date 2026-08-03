@@ -490,7 +490,7 @@ def test_build_call_kwargs_bounds_tool_results_and_consumes_private_metadata():
     )
 
     sent = kwargs["messages"][0]
-    assert len(sent["content"].encode("utf-8")) <= 12_000
+    assert len(sent["content"].encode("utf-8")) <= 10_000
     assert "tool_name" not in sent
     assert "effect_disposition" not in sent
     assert "_tool_output_risk" not in sent

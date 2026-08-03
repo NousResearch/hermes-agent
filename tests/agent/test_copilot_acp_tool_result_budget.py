@@ -13,7 +13,6 @@ def test_prompt_formatter_bounds_tool_result_text():
                 "content": "x" * 20_000,
                 "_tool_result_budget": {
                     "limit_tokens": 10_000,
-                    "override_requested": False,
                 },
             },
         ]

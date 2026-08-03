@@ -111,8 +111,8 @@ def test_active_context_engine_tools_survive_explicit_platform_toolsets():
         if tool["function"]["name"] == "stub_recover"
     )
     assert (
-        stub_schema["parameters"]["properties"]["result_token_limit"]["default"]
-        == 10_000
+        "result_token_limit"
+        not in stub_schema["parameters"]["properties"]
     )
 
 

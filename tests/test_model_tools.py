@@ -1,6 +1,7 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
+from types import SimpleNamespace
 from unittest.mock import ANY, call, patch
 
 
@@ -29,39 +30,6 @@ class TestHandleFunctionCall:
         result = json.loads(handle_function_call("totally_fake_tool_xyz", {}))
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
-
-
-    def test_result_budget_override_is_removed_before_dispatch(self):
-        seen = {}
-
-        def dispatch(name, args, **kwargs):
-            seen["name"] = name
-            seen["args"] = dict(args)
-            return '{"ok":true}'
-
-        with (
-            patch("model_tools.registry.dispatch", side_effect=dispatch),
-            patch("hermes_cli.plugins.has_hook", return_value=False),
-        ):
-            result = handle_function_call(
-                "web_search",
-                {"q": "test", "result_token_limit": 12_000},
-            )
-
-        assert result == '{"ok":true}'
-        assert seen == {"name": "web_search", "args": {"q": "test"}}
-
-    def test_invalid_result_budget_fails_before_dispatch(self):
-        with patch("model_tools.registry.dispatch") as dispatch:
-            result = json.loads(
-                handle_function_call(
-                    "web_search",
-                    {"q": "never", "result_token_limit": 32_001},
-                )
-            )
-
-        dispatch.assert_not_called()
-        assert "result_token_limit" in result["error"]
 
     def test_schema_owned_result_token_limit_reaches_external_handler(self):
         seen = {}
@@ -96,6 +64,80 @@ class TestHandleFunctionCall:
             "name": "mcp__external__collision",
             "args": {"result_token_limit": "server-owned-value"},
         }
+
+    def test_result_budget_does_not_expand_model_tool_schemas(self):
+        from model_tools import get_tool_definitions
+
+        definitions = get_tool_definitions(
+            enabled_toolsets=["file_tools"],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        read_file = next(
+            tool for tool in definitions
+            if tool.get("function", {}).get("name") == "read_file"
+        )
+
+        properties = read_file["function"]["parameters"]["properties"]
+        assert "result_token_limit" not in properties
+
+    def test_mcp_schemas_survive_full_model_assembly(self, monkeypatch):
+        import model_tools
+        from tools.mcp_tool import _convert_mcp_schema
+
+        owned_parameters = {
+            "type": "object",
+            "properties": {
+                "result_token_limit": {"type": "string", "minLength": 1},
+            },
+            "required": ["result_token_limit"],
+            "additionalProperties": False,
+        }
+        ordinary_parameters = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": False,
+        }
+        schemas = [
+            _convert_mcp_schema(
+                "external",
+                SimpleNamespace(
+                    name="collision",
+                    description="Owns the colliding business argument.",
+                    inputSchema=owned_parameters,
+                ),
+            ),
+            _convert_mcp_schema(
+                "external",
+                SimpleNamespace(
+                    name="ordinary",
+                    description="Has no result-budget argument.",
+                    inputSchema=ordinary_parameters,
+                ),
+            ),
+        ]
+        monkeypatch.setattr(
+            model_tools.registry,
+            "get_definitions",
+            lambda *_args, **_kwargs: [
+                {"type": "function", "function": schema}
+                for schema in schemas
+            ],
+        )
+
+        definitions = model_tools._compute_tool_definitions(
+            enabled_toolsets=[],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        by_name = {
+            tool["function"]["name"]: tool["function"]["parameters"]
+            for tool in definitions
+        }
+
+        assert by_name["mcp__external__collision"] == owned_parameters
+        assert by_name["mcp__external__ordinary"] == ordinary_parameters
 
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (

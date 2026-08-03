@@ -2376,7 +2376,7 @@ class TestHandleMaxIterations:
             assert "codex_message_items" not in m, m
             assert not any(isinstance(k, str) and k.startswith("_") for k in m), m
         sent_tool = next(m for m in sent_msgs if m.get("role") == "tool")
-        assert len(sent_tool["content"].encode("utf-8")) == 20_000
+        assert len(sent_tool["content"].encode("utf-8")) <= 10_000
         # Internal history is untouched — the path copies each message.
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[2]["effect_disposition"] == "unknown"

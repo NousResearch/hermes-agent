@@ -48,7 +48,7 @@ def test_pre_model_boundary_caps_legacy_tool_messages_without_wire_metadata(capl
     assert "[][][][][][][][][][]" not in caplog.text
 
 
-def test_pre_model_boundary_consumes_valid_call_local_override():
+def test_pre_model_boundary_ignores_legacy_override_metadata():
     sanitized = sanitize_api_messages(
         _paired_messages(
             "x" * 20_000,
@@ -60,7 +60,7 @@ def test_pre_model_boundary_consumes_valid_call_local_override():
         )
     )
 
-    assert len(sanitized[-1]["content"].encode("utf-8")) == 20_000
+    assert len(sanitized[-1]["content"].encode("utf-8")) <= 10_000
     assert "_tool_result_budget" not in sanitized[-1]
 
 
@@ -84,7 +84,39 @@ def test_copilot_acp_prompt_formatter_bounds_tool_result_text():
     assert len(rendered.encode("utf-8")) <= 10_000
 
 
-def test_sequential_override_is_removed_and_does_not_leak_to_next_call():
+def test_executor_does_not_reserve_mcp_business_argument_name():
+    agent = _make_agent()
+    agent._flush_messages_to_session_db = MagicMock()
+    assistant = SimpleNamespace(
+        content="",
+        tool_calls=[
+            _mock_tool_call(
+                name="mcp__external__collision",
+                arguments=json.dumps(
+                    {"result_token_limit": "server-owned-value"}
+                ),
+                call_id="call_collision",
+            )
+        ],
+    )
+    seen = {}
+
+    def dispatch(name, args, _task, **_kwargs):
+        seen["name"] = name
+        seen["args"] = dict(args)
+        return '{"ok":true}'
+
+    messages = []
+    with patch("run_agent.handle_function_call", side_effect=dispatch):
+        agent._execute_tool_calls_sequential(assistant, messages, "task-budget")
+
+    assert seen == {
+        "name": "mcp__external__collision",
+        "args": {"result_token_limit": "server-owned-value"},
+    }
+
+
+def test_sequential_business_argument_is_preserved_with_fixed_budget():
     agent = _make_agent()
     agent._flush_messages_to_session_db = MagicMock()
     assistant = SimpleNamespace(
@@ -94,7 +126,7 @@ def test_sequential_override_is_removed_and_does_not_leak_to_next_call():
                 arguments=json.dumps(
                     {"query": "first", "result_token_limit": 24_000}
                 ),
-                call_id="call_override",
+                call_id="call_business_arg",
             ),
             _mock_tool_call(
                 arguments=json.dumps({"query": "second"}),
@@ -112,14 +144,17 @@ def test_sequential_override_is_removed_and_does_not_leak_to_next_call():
     with patch("run_agent.handle_function_call", side_effect=dispatch):
         agent._execute_tool_calls_sequential(assistant, messages, "task-budget")
 
-    assert seen_args == [{"query": "first"}, {"query": "second"}]
-    assert 10_000 < len(messages[0]["content"].encode("utf-8")) <= 24_000
-    assert messages[0]["_tool_result_budget"]["override_requested"] is True
-    assert len(messages[1]["content"].encode("utf-8")) <= 10_000
-    assert messages[1]["_tool_result_budget"]["limit_tokens"] == 10_000
+    assert seen_args == [
+        {"query": "first", "result_token_limit": 24_000},
+        {"query": "second"},
+    ]
+    assert all(
+        len(message["content"].encode("utf-8")) <= 10_000
+        for message in messages
+    )
 
 
-def test_concurrent_override_is_call_local_and_removed_before_handler():
+def test_concurrent_business_argument_is_preserved_with_fixed_budget():
     agent = _make_agent()
     agent._flush_messages_to_session_db = MagicMock()
     assistant = SimpleNamespace(
@@ -129,7 +164,7 @@ def test_concurrent_override_is_call_local_and_removed_before_handler():
                 arguments=json.dumps(
                     {"query": "first", "result_token_limit": 24_000}
                 ),
-                call_id="call_override",
+                call_id="call_business_arg",
             ),
             _mock_tool_call(
                 arguments=json.dumps({"query": "second"}),
@@ -148,39 +183,45 @@ def test_concurrent_override_is_call_local_and_removed_before_handler():
         agent._execute_tool_calls_concurrent(assistant, messages, "task-budget")
 
     assert seen_args == {
-        "call_override": {"query": "first"},
+        "call_business_arg": {"query": "first", "result_token_limit": 24_000},
         "call_default": {"query": "second"},
     }
-    assert 10_000 < len(messages[0]["content"].encode("utf-8")) <= 24_000
-    assert len(messages[1]["content"].encode("utf-8")) <= 10_000
+    assert all(
+        len(message["content"].encode("utf-8")) <= 10_000
+        for message in messages
+    )
 
 
 @pytest.mark.parametrize(
-    "invalid",
+    "value",
     [True, "12000", 12.5, 0, -1, 32_001],
 )
-def test_invalid_override_is_rejected_before_sequential_handler(invalid):
+def test_result_token_limit_business_values_are_not_interpreted(value):
     agent = _make_agent()
     agent._flush_messages_to_session_db = MagicMock()
     assistant = SimpleNamespace(
         content="",
         tool_calls=[
             _mock_tool_call(
-                arguments=json.dumps(
-                    {"query": "never-run", "result_token_limit": invalid}
-                ),
-                call_id="call_invalid",
+                name="mcp__external__collision",
+                arguments=json.dumps({"result_token_limit": value}),
+                call_id="call_business_value",
             )
         ],
     )
     messages = []
 
-    with patch("run_agent.handle_function_call") as dispatch:
+    with patch(
+        "run_agent.handle_function_call",
+        return_value='{"ok":true}',
+    ) as dispatch:
         agent._execute_tool_calls_sequential(assistant, messages, "task-budget")
 
-    dispatch.assert_not_called()
-    assert "result_token_limit" in messages[0]["content"]
-    assert "error" in messages[0]["content"]
+    assert dispatch.call_args.args[:2] == (
+        "mcp__external__collision",
+        {"result_token_limit": value},
+    )
+    assert len(messages[0]["content"].encode("utf-8")) <= 10_000
 
 
 def test_agent_level_session_search_uses_same_final_budget():
@@ -209,7 +250,7 @@ def test_agent_level_session_search_uses_same_final_budget():
     assert messages[0]["_tool_result_budget"]["truncated"] is True
 
 
-def test_tool_call_bridge_propagates_inner_override_and_strips_it():
+def test_tool_call_bridge_preserves_inner_business_argument():
     agent = _make_agent()
     agent._flush_messages_to_session_db = MagicMock()
     assistant = SimpleNamespace(
@@ -222,7 +263,7 @@ def test_tool_call_bridge_propagates_inner_override_and_strips_it():
                         "name": "mcp_budget_probe",
                         "arguments": {
                             "payload": "safe",
-                            "result_token_limit": 24_000,
+                            "result_token_limit": "server-owned-value",
                         },
                     }
                 ),
@@ -243,7 +284,7 @@ def test_tool_call_bridge_propagates_inner_override_and_strips_it():
             "tools.tool_search.resolve_underlying_call",
             return_value=(
                 "mcp_budget_probe",
-                {"payload": "safe", "result_token_limit": 24_000},
+                {"payload": "safe", "result_token_limit": "server-owned-value"},
                 None,
             ),
         ),
@@ -255,6 +296,11 @@ def test_tool_call_bridge_propagates_inner_override_and_strips_it():
     ):
         agent._execute_tool_calls_sequential(assistant, messages, "task-budget")
 
-    assert seen == {"name": "mcp_budget_probe", "args": {"payload": "safe"}}
-    assert 10_000 < len(messages[0]["content"].encode("utf-8")) <= 24_000
-    assert messages[0]["_tool_result_budget"]["override_requested"] is True
+    assert seen == {
+        "name": "mcp_budget_probe",
+        "args": {
+            "payload": "safe",
+            "result_token_limit": "server-owned-value",
+        },
+    }
+    assert len(messages[0]["content"].encode("utf-8")) <= 10_000

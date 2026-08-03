@@ -34,7 +34,7 @@ def _td(name: str, description: str = "", properties: Dict[str, Any] | None = No
     }
 
 
-def test_model_visible_tool_schemas_expose_bounded_result_override():
+def test_model_visible_tool_schemas_do_not_expose_result_budget_metadata():
     import model_tools
 
     definitions = model_tools.get_tool_definitions(
@@ -46,11 +46,11 @@ def test_model_visible_tool_schemas_expose_bounded_result_override():
         item for item in definitions
         if item.get("function", {}).get("name") == "terminal"
     )
-    override = terminal["function"]["parameters"]["properties"]["result_token_limit"]
 
-    assert override["type"] == "integer"
-    assert override["default"] == 10_000
-    assert override["maximum"] == 32_000
+    assert (
+        "result_token_limit"
+        not in terminal["function"]["parameters"]["properties"]
+    )
 
 
 # ---------------------------------------------------------------------------

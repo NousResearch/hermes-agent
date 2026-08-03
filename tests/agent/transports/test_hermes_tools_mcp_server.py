@@ -81,14 +81,14 @@ class TestSignatureFromSchema:
 
 
 class TestModelVisibleResultBudget:
-    def test_override_is_removed_bounded_and_call_local(self):
+    def test_business_argument_is_preserved_and_budget_remains_fixed(self):
         seen = []
 
         def handler(_name, args):
             seen.append(dict(args))
             return "x" * 20_000
 
-        overridden = _dispatch_with_result_budget(
+        with_business_argument = _dispatch_with_result_budget(
             "web_search",
             {"query": "one", "result_token_limit": 12_000},
             handler,
@@ -99,8 +99,11 @@ class TestModelVisibleResultBudget:
             handler,
         )
 
-        assert seen == [{"query": "one"}, {"query": "two"}]
-        assert len(overridden.encode("utf-8")) <= 12_000
+        assert seen == [
+            {"query": "one", "result_token_limit": 12_000},
+            {"query": "two"},
+        ]
+        assert len(with_business_argument.encode("utf-8")) <= 10_000
         assert len(defaulted.encode("utf-8")) <= 10_000
 
     def test_untrusted_callback_result_is_wrapped_before_return(self):
@@ -117,9 +120,13 @@ class TestModelVisibleResultBudget:
         assert payload in result
         assert result.endswith("</untrusted_tool_result>")
 
-    def test_invalid_override_fails_before_dispatch(self):
-        def handler(_name, _args):
-            raise AssertionError("business handler must not run")
+    def test_arbitrary_business_argument_value_reaches_handler(self):
+        seen = {}
+
+        def handler(name, args):
+            seen["name"] = name
+            seen["args"] = dict(args)
+            return '{"ok":true}'
 
         result = _dispatch_with_result_budget(
             "web_search",
@@ -127,8 +134,11 @@ class TestModelVisibleResultBudget:
             handler,
         )
 
-        assert "result_token_limit" in result
-        assert "error" in result
+        assert seen == {
+            "name": "web_search",
+            "args": {"query": "never", "result_token_limit": 32_001},
+        }
+        assert '"ok":true' in result
 
     def test_handler_exception_is_wrapped_and_bounded(self):
         payload = "E" * 20_000

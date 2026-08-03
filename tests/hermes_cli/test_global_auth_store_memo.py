@@ -20,10 +20,17 @@ import hermes_cli.auth as auth_mod
 
 
 @pytest.fixture(autouse=True)
-def _reset_cache():
-    auth_mod._global_auth_store_cache = None
+def _reset_cache(monkeypatch):
+    # raising=False: on pre-fix code the memo attribute doesn't exist (that
+    # IS the fix); the reset is a no-op there so the measured-work assertions
+    # fail genuinely instead of erroring.
+    monkeypatch.setattr(
+        auth_mod, "_global_auth_store_cache", None, raising=False
+    )
     yield
-    auth_mod._global_auth_store_cache = None
+    monkeypatch.setattr(
+        auth_mod, "_global_auth_store_cache", None, raising=False
+    )
 
 
 def _make_global_store(tmp_path) -> "os.PathLike[str]":

@@ -73,7 +73,12 @@ class TestGetDefaultHermesRoot:
         kanban, backup, gateway, update. The memo is keyed on
         (native home, HERMES_HOME) compared for free each call.
         """
-        monkeypatch.delenv("HERMES_HOME", raising=False)
+        # HERMES_HOME set to a Docker-profile path: every call resolves the
+        # env path against the native home (the ~80us work the memo skips).
+        docker_root = tmp_path / "opt" / "data"
+        profile = docker_root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         # Probe the expensive inner work: the memo check itself calls
@@ -88,7 +93,12 @@ class TestGetDefaultHermesRoot:
             return orig_resolve(self, *a, **k)
 
         monkeypatch.setattr(Path, "resolve", counting_resolve)
-        hermes_constants._default_hermes_root_memo = None
+        # raising=False: on pre-fix code the memo attribute doesn't exist
+        # (that IS the fix); the reset is a no-op there so the measured-work
+        # assertion below fails genuinely instead of erroring.
+        monkeypatch.setattr(
+            hermes_constants, "_default_hermes_root_memo", None, raising=False
+        )
 
         first = get_default_hermes_root()
         first_count = resolve_calls["n"]
@@ -98,12 +108,14 @@ class TestGetDefaultHermesRoot:
             "repeated calls must be memo hits (no path resolution on hits), "
             f"resolve went {first_count} -> {resolve_calls['n']}"
         )
-        assert first == tmp_path / ".hermes"
+        assert first == docker_root
 
         # HERMES_HOME change invalidates the memo (fresh resolution).
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "elsewhere"))
+        other_profile = docker_root / "profiles" / "writer"
+        other_profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(other_profile))
         before = resolve_calls["n"]
-        assert get_default_hermes_root() == tmp_path / "elsewhere"
+        assert get_default_hermes_root() == docker_root
         assert resolve_calls["n"] > before, (
             "HERMES_HOME change must force a fresh resolution"
         )

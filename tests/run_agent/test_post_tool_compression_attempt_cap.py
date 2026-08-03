@@ -197,3 +197,12 @@ class TestPostToolCompressionAttemptCap:
 
         assert len(first) == 3
         assert len(second) == 3
+
+    def test_effective_compactions_reset_streak_after_success(self, agent):
+        """A long tool turn may keep compacting when every pass really helps."""
+        agent.context_compressor.compression_made_progress.return_value = True
+
+        result, compress_calls = _run_tool_loop(agent, n_tool_iterations=7)
+
+        assert result["completed"] is True
+        assert len(compress_calls) == 7

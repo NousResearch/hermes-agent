@@ -4096,9 +4096,12 @@ class TestRunConversation:
         mock_compress.assert_not_called()
 
     def test_output_cap_retry_with_large_api_only_content(self, agent):
-        """When a large system prompt makes api_messages huge while persisted
-        messages stay tiny, the retry cap must still respect provider
-        available_tokens — not blow up to the full context window.
+        """Large API-only content is included in final admission pressure.
+
+        The ordinary output-cap retry remains covered above. Here the system
+        prompt alone makes the initial request unsafe, so it must be blocked
+        before any provider call rather than using the tiny persisted history
+        to admit an oversized request.
         """
         self._setup_agent(agent)
         agent.api_mode = "chat_completions"
@@ -4112,17 +4115,6 @@ class TestRunConversation:
         # Huge API-only system prompt; persisted messages are tiny.
         agent._cached_system_prompt = "S" * 796_000
 
-        error_msg = (
-            "max_tokens: 65536 > context_window: 200000 "
-            "- input_tokens: 199000 = available_tokens: 1000"
-        )
-        exc = Exception(error_msg)
-        exc.status_code = 400
-        exc.code = 400
-
-        ok_resp = _mock_response(content="done", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
-
         mock_compress = MagicMock()
         with (
             patch.object(agent, "_persist_session"),
@@ -4133,11 +4125,12 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello")
 
-        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
-        assert result["completed"] is True
-        # The current branch (messages-only estimate) would send max_tokens
-        # near 199927 — this test fails on it.
-        assert second_call["max_tokens"] <= 936
+        assert result["completed"] is False
+        assert result["provider_call_blocked"] is True
+        assert result["api_calls"] == 0
+        assert result["estimated_input_tokens"] > result["safe_input_limit"]
+        assert result["configured_context_limit"] == 200_000
+        agent.client.chat.completions.create.assert_not_called()
         assert agent.context_compressor.context_length == 200_000
         mock_compress.assert_not_called()
 

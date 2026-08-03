@@ -189,6 +189,14 @@ class ContextEngine(ABC):
                 host filters unsupported optional arguments by signature.
         """
 
+    def compression_made_progress(self) -> bool:
+        """Whether the most recent ``compress()`` call materially changed context.
+
+        Engines that do not expose a progress verdict keep the conservative
+        default so no-progress attempts still trip the anti-thrash backstop.
+        """
+        return False
+
     # -- Optional: proactive tool-result prune -----------------------------
 
     def prune_tool_results_only(

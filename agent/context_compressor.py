@@ -2426,6 +2426,10 @@ class ContextCompressor(ContextEngine):
         self._active_compression_telemetry: Optional[Dict[str, Any]] = None
         self._compression_telemetry_seed: Optional[Dict[str, Any]] = None
 
+    def compression_made_progress(self) -> bool:
+        """Return the built-in compressor's explicit per-call progress verdict."""
+        return self._last_compression_made_progress
+
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
@@ -4807,56 +4811,28 @@ This compaction should PRIORITISE preserving all information related to the focu
         cut_idx: int,
         head_end: int,
     ) -> int:
-        """Guarantee the most recent assistant message is in the protected tail.
+        """Keep the current turn's visible assistant reply in the tail.
 
-        WebUI / TUI / SessionsPage bug (#29824). Without this anchor,
-        ``_find_tail_cut_by_tokens`` can leave the user's most recent
-        visible assistant response inside the compressed middle region —
-        especially when the conversation has a single oversized tool
-        result or a long stretch of tool-call/result pairs after the
-        last assistant reply. The summariser then rolls that reply up
-        into the single ``[CONTEXT COMPACTION — REFERENCE ONLY]`` block
-        persisted as ``role="user"`` or ``role="assistant"``. From the
-        operator's perspective the WebUI session viewer
-        (``web/src/pages/SessionsPage.tsx``) and the TUI chat panel
-        both suddenly show the opaque "Context compaction" block in the
-        slot where they were just reading the assistant's actual reply:
-
-            User:       "i cant see the output of the last message you
-                         sent, i did see it previously, however now see
-                         'context compaction'"
-
-        Mirror of ``_ensure_last_user_message_in_tail`` but anchors on
-        the last assistant-role message. Re-runs the tool-group
-        alignment so we don't split a ``tool_call`` / ``tool_result``
-        group that immediately precedes the anchored message — orphaned
-        tool messages would otherwise be removed by
-        ``_sanitize_tool_pairs`` and trigger the same data-loss symptom
-        we're trying to prevent.
+        The #29824 UI anchor is only relevant when the reply belongs to the
+        latest actionable user turn.  A visible assistant message before a
+        newer user request is completed-turn history; letting it pull the cut
+        backward can make an entire long-running tool turn incompressible.
         """
         last_asst_idx = self._find_last_assistant_message_idx(messages, head_end)
-        if last_asst_idx < 0:
-            # No assistant message in the compressible region — nothing
-            # to anchor (single-turn pre-reply state, etc.).
+        latest_user_idx = self._find_last_user_message_idx(messages, head_end)
+        if (
+            last_asst_idx < 0
+            or last_asst_idx < latest_user_idx
+            or last_asst_idx >= cut_idx
+        ):
             return cut_idx
-        if last_asst_idx >= cut_idx:
-            # Already in the tail — the token-budget walk did the right
-            # thing on its own.
-            return cut_idx
-        # Pull cut_idx back to the assistant message, then re-align so
-        # we don't split a tool group that immediately precedes it
-        # (e.g. an ``assistant(tool_calls)`` → ``tool(result)`` →
-        # ``assistant(final reply)`` sequence would otherwise leave the
-        # ``tool`` orphan when cut lands at the final reply).
         new_cut = self._align_boundary_backward(messages, last_asst_idx)
         if not self.quiet_mode:
             logger.debug(
-                "Anchoring tail cut to last assistant message at index %d "
-                "(was %d, aligned to %d) to keep the previously-visible "
-                "reply out of the compaction summary (#29824)",
+                "Anchoring tail cut to current-turn assistant message at index %d "
+                "(was %d, aligned to %d) (#29824)",
                 last_asst_idx, cut_idx, new_cut,
             )
-        # Safety: never go back into the head region.
         return max(new_cut, head_end + 1)
 
     def _ensure_last_user_message_in_tail(
@@ -6050,6 +6026,13 @@ This compaction should PRIORITISE preserving all information related to the focu
             ]
             n_messages = len(messages)
         latest_actionable_idx = self._find_last_user_message_idx(messages, 0)
+        # Phase-1 pruning and blank-echo cleanup are real context reductions even
+        # when the protected-tail calculation leaves no summary window. Expose
+        # that progress so a successful provider response can reset the
+        # consecutive no-progress attempt streak.
+        self._last_compression_made_progress = bool(
+            pruned_count or blank_echo_indices
+        )
 
         # Phase 2: Determine boundaries
         compress_start = self._protect_head_size(messages)

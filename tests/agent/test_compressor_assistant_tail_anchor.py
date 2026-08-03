@@ -142,23 +142,28 @@ class TestEnsureLastAssistantMessageInTail:
         )
         assert new_cut == 1
 
-    def test_walks_cut_idx_back_to_include_reply(self, compressor):
+    def test_completed_turn_reply_does_not_expand_new_active_turn(self, compressor):
         messages = [
             {"role": "user", "content": "q1"},
             {"role": "assistant", "content": "REPLY"},  # idx 1
             {"role": "user", "content": "q2"},
             {"role": "user", "content": "q3"},
         ]
-        # cut_idx=2 leaves the reply outside the tail; anchor must pull
-        # cut_idx back to 1 so messages[1:] contains the reply.
         new_cut = compressor._ensure_last_assistant_message_in_tail(
             messages, cut_idx=2, head_end=0
         )
-        assert new_cut == 1
-        assert any(
-            isinstance(m.get("content"), str) and "REPLY" in m["content"]
-            for m in messages[new_cut:]
-        )
+        assert new_cut == 2
+
+    def test_walks_cut_idx_back_for_current_turn_reply(self, compressor):
+        messages = [
+            {"role": "user", "content": "q1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "REPLY"},
+            {"role": "assistant", "content": None, "tool_calls": []},
+        ]
+        assert compressor._ensure_last_assistant_message_in_tail(
+            messages, cut_idx=3, head_end=0
+        ) == 2
 
 
     def test_re_aligns_through_preceding_tool_group(self, compressor):
@@ -174,7 +179,7 @@ class TestEnsureLastAssistantMessageInTail:
                                           "arguments": "{}"}}]},
             {"role": "tool", "content": "result", "tool_call_id": "c1"},
             {"role": "assistant", "content": "REPLY"},  # idx 3
-            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": None, "tool_calls": []},
         ]
         # cut_idx=4 leaves the reply outside the tail. Anchor pulls
         # back to 3, then _align_boundary_backward sees the preceding
@@ -213,10 +218,9 @@ class TestFindTailCutByTokensAnchorsAssistant:
         messages = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "msg1"},                # head_end=2
-            {"role": "user", "content": "q1"},
+            {"role": "user", "content": "q2"},
             {"role": "assistant",
              "content": "PREVIOUSLY VISIBLE REPLY"},           # idx 3
-            {"role": "user", "content": "q2"},
             {"role": "assistant", "content": None,
              "tool_calls": [{"id": "c1",
                              "function": {"name": "t",
@@ -244,9 +248,9 @@ class TestFindTailCutByTokensAnchorsAssistant:
         c.tail_token_budget = 10
         messages = [
             {"role": "user", "content": "q1"},
-            {"role": "assistant", "content": "VISIBLE REPLY"},
             {"role": "user", "content": "follow-up question"},
-            {"role": "user", "content": "and another"},
+            {"role": "assistant", "content": "VISIBLE REPLY"},
+            {"role": "assistant", "content": None, "tool_calls": []},
         ]
         cut = c._find_tail_cut_by_tokens(messages, head_end=0)
         tail_contents = [
@@ -254,7 +258,36 @@ class TestFindTailCutByTokensAnchorsAssistant:
             if isinstance(m.get("content"), str)
         ]
         assert any("VISIBLE REPLY" in (t or "") for t in tail_contents)
-        assert any("and another" in (t or "") for t in tail_contents)
+        assert any("follow-up question" in (t or "") for t in tail_contents)
+
+    def test_stale_reply_does_not_pin_long_active_tool_turn(self, compressor):
+        """A completed-turn reply must not drag the tail ahead of a newer task."""
+        c = compressor
+        c.tail_token_budget = 100
+        messages: list[dict] = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old visible reply"},
+            {"role": "user", "content": "new long-running task"},
+        ]
+        for index in range(80):
+            call_id = f"call-{index}"
+            messages.extend([
+                {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": call_id,
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }]},
+                {"role": "tool", "tool_call_id": call_id, "content": "x" * 200},
+            ])
+
+        cut = c._find_tail_cut_by_tokens(messages, head_end=1)
+
+        assert cut >= 3
+        assert messages[3]["content"] == "new long-running task"
+        assert all(
+            message.get("content") != "old visible reply"
+            for message in messages[cut:]
+        )
 
     def test_oversized_tool_output_does_not_strand_reply(self, compressor):
         """The soft-ceiling logic in ``_find_tail_cut_by_tokens``
@@ -265,7 +298,6 @@ class TestFindTailCutByTokensAnchorsAssistant:
         messages = [
             {"role": "user", "content": "earlier"},
             {"role": "assistant", "content": "VISIBLE REPLY"},
-            {"role": "user", "content": "read big file"},
             {"role": "assistant", "content": None,
              "tool_calls": [{"id": "c1",
                              "function": {"name": "read",
@@ -273,7 +305,6 @@ class TestFindTailCutByTokensAnchorsAssistant:
             # ~500 chars ⇒ ~135 tokens, blows past soft ceiling of 150
             {"role": "tool", "content": "y" * 500,
              "tool_call_id": "c1"},
-            {"role": "user", "content": "ok"},
         ]
         cut = c._find_tail_cut_by_tokens(messages, head_end=0)
         tail_contents = [
@@ -320,9 +351,9 @@ class TestCompactionRollupReproduction:
             ]
             + [
                 {"role": "user", "content": "the visible question"},
+                {"role": "user", "content": "follow up"},
                 {"role": "assistant",
                  "content": "THE VISIBLE REPLY THE USER JUST READ"},
-                {"role": "user", "content": "follow up"},
                 {"role": "assistant", "content": None,
                  "tool_calls": [{"id": "c1",
                                  "function": {"name": "t",
@@ -388,9 +419,9 @@ class TestCompactionRollupReproduction:
             ]
             + [
                 {"role": "user", "content": "the visible question"},
+                {"role": "user", "content": "follow up"},
                 {"role": "assistant",
                  "content": "THE VISIBLE REPLY THE USER JUST READ"},
-                {"role": "user", "content": "follow up"},
             ]
         )
         with patch.object(

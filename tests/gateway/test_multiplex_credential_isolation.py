@@ -88,3 +88,81 @@ class TestProfilePathResolutionUnderMultiplexScope:
         assert b_seen == prof_b / "skills"
 
 
+def test_cold_profile_hydrates_external_source_without_global_env(
+    tmp_path, monkeypatch
+):
+    """The first routed secondary turn must resolve its own source locally."""
+    import os
+
+    from agent.secret_sources.base import FetchResult
+    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+    from agent.secret_sources import registry
+    from agent.secret_scope import get_secret
+    from hermes_cli import env_loader
+    from gateway.run import _profile_runtime_scope
+
+    profile = tmp_path / "profiles" / "secondary"
+    sibling = tmp_path / "profiles" / "sibling"
+    profile.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    (profile / ".env").write_text(
+        "EXPLICIT_API_KEY=dotenv-wins\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("TEST_PROVIDER_API_KEY", raising=False)
+    monkeypatch.delenv("EXPLICIT_API_KEY", raising=False)
+    monkeypatch.setattr(
+        env_loader,
+        "_load_secrets_config",
+        lambda home: (
+            {"fake-source": {"enabled": True}}
+            if Path(home).resolve() == profile.resolve()
+            else {}
+        ),
+    )
+
+    calls = {"count": 0}
+
+    def _fake_apply_all(_cfg, _home, *, environ=None):
+        calls["count"] += 1
+        assert environ is not os.environ
+        assert environ is not None
+        assert environ["EXPLICIT_API_KEY"] == "dotenv-wins"
+        environ["TEST_PROVIDER_API_KEY"] = "profile-only"
+        return ApplyReport(
+            sources=[
+                SourceReport(
+                    name="fake-source",
+                    label="Fake Source",
+                    result=FetchResult(),
+                    applied=["TEST_PROVIDER_API_KEY"],
+                )
+            ],
+            provenance={
+                "TEST_PROVIDER_API_KEY": AppliedVar(
+                    name="TEST_PROVIDER_API_KEY",
+                    source="fake-source",
+                    shape="mapped",
+                    overrode_env=False,
+                )
+            },
+        )
+
+    monkeypatch.setattr(registry, "apply_all", _fake_apply_all)
+    env_loader.reset_secret_source_cache()
+
+    with _profile_runtime_scope(profile):
+        assert get_secret("TEST_PROVIDER_API_KEY") == "profile-only"
+        assert get_secret("EXPLICIT_API_KEY") == "dotenv-wins"
+        assert env_loader.get_secret_source_values(profile) == {
+            "TEST_PROVIDER_API_KEY": "profile-only"
+        }
+    with _profile_runtime_scope(profile):
+        assert get_secret("TEST_PROVIDER_API_KEY") == "profile-only"
+    with _profile_runtime_scope(sibling):
+        assert get_secret("TEST_PROVIDER_API_KEY") is None
+
+    assert calls["count"] == 1
+    assert "TEST_PROVIDER_API_KEY" not in os.environ
+    assert "EXPLICIT_API_KEY" not in os.environ
+
+

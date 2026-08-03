@@ -27,7 +27,7 @@ def test_terminal_schema_advertises_persistent_env_state():
 
     assert "exported environment variables persist between calls" in description
     assert "activate a virtualenv" in description
-    assert "do not re-source the same environment before every command" in description
+    assert "once per session" in description
 
 
 def test_printf_literal_sudo_does_not_trigger_rewrite(monkeypatch):

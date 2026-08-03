@@ -100,6 +100,20 @@ def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_tok
     assert "homeassistant" in cli_enabled
 
 
+def test_get_platform_tools_homeassistant_uses_active_profile_token(monkeypatch):
+    from agent import secret_scope
+
+    monkeypatch.delenv("HASS_TOKEN", raising=False)
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({"HASS_TOKEN": "profile-token"})
+    try:
+        assert "homeassistant" in _get_platform_tools({}, "cron")
+        assert "homeassistant" in _get_platform_tools({}, "cli")
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(False)
+
+
 # ─── #35527: platform-restricted default-off toolsets (discord/discord_admin)
 # are stripped by _DEFAULT_OFF_TOOLSETS even when the user explicitly opts in
 # via the platform's native composite. The composite ``hermes-discord``

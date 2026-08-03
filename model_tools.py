@@ -29,7 +29,13 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import discover_builtin_tools, registry, tool_error
+from tools.registry import (
+    CHECK_FN_CACHE_BYPASS,
+    check_fn_cache_scope,
+    discover_builtin_tools,
+    registry,
+    tool_error,
+)
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -317,6 +323,7 @@ def get_tool_definitions(
     # user-visible config edits that affect dynamic schemas (execute_code
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
+    cache_key = None
     if quiet_mode:
         try:
             from hermes_cli.config import get_config_path
@@ -325,16 +332,19 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
-        cache_key = (
-            frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
-            frozenset(disabled_toolsets) if disabled_toolsets else None,
-            registry._generation,
-            cfg_fp,
-            bool(os.environ.get("HERMES_KANBAN_TASK")),
-            bool(skip_tool_search_assembly),
-            _is_delegated_child_context(),
-        )
-        cached = _tool_defs_cache.get(cache_key)
+        profile_scope = check_fn_cache_scope()
+        if profile_scope != CHECK_FN_CACHE_BYPASS:
+            cache_key = (
+                frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
+                frozenset(disabled_toolsets) if disabled_toolsets else None,
+                registry._generation,
+                cfg_fp,
+                bool(os.environ.get("HERMES_KANBAN_TASK")),
+                bool(skip_tool_search_assembly),
+                _is_delegated_child_context(),
+                profile_scope,
+            )
+        cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
         if cached is not None:
             # Update _last_resolved_tool_names so downstream callers see
             # consistent state even on a cache hit.
@@ -346,7 +356,7 @@ def get_tool_definitions(
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
                                        skip_tool_search_assembly=skip_tool_search_assembly)
-    if quiet_mode:
+    if quiet_mode and cache_key is not None:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
         # schemas to self.tools) don't poison the cache. Without this, a
@@ -360,6 +370,8 @@ def get_tool_definitions(
         if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
             _tool_defs_cache.pop(next(iter(_tool_defs_cache)))  # evict oldest
         _tool_defs_cache[cache_key] = result
+        return list(result)
+    if quiet_mode:
         return list(result)
     return result
 

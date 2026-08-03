@@ -230,6 +230,7 @@ def _media_cache_roots() -> list:
     home = get_hermes_home()
     return [
         home / "cache",  # cache/images, cache/vision, cache/video(s), cache/audio
+        home / "images",  # desktop/clipboard/PDF uploads (tui_gateway) — #69575
         home / "image_cache",
         home / "audio_cache",
         home / "video_cache",

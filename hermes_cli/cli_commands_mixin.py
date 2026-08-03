@@ -1055,6 +1055,12 @@ class CLICommandsMixin:
         # and a no-op when the session recorded no cwd. See #38562.
         self._restore_session_cwd(session_meta)
 
+        # Restore the target session's persisted YOLO bypass. Any bypass the
+        # PREVIOUS session had toggled on stops applying automatically because
+        # the approval session key just changed. Same contract as a startup
+        # --resume.
+        self._restore_session_yolo(session_meta)
+
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
 
@@ -3055,6 +3061,46 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}{behavior}{_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
+
+    def _handle_indicator_command(self, cmd: str):
+        """Handle /indicator — pick the TUI busy-indicator style.
+
+        Usage:
+            /indicator              Show the current busy-indicator style
+            /indicator status       Show the current busy-indicator style
+            /indicator kaomoji      Animated kaomoji faces (default)
+            /indicator emoji        Emoji spinner
+            /indicator unicode      Braille spinner
+            /indicator ascii        Plain ASCII spinner
+
+        Persists to ``display.tui_status_indicator`` — the same config key the
+        TUI reads — so the change is picked up the next time the TUI renders.
+        """
+        from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
+        from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
+        styles = INDICATOR_STYLES
+        current = (
+            (self.config.get("display") or {}).get("tui_status_indicator", DEFAULT_INDICATOR_STYLE)
+        )
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
+            _cprint(f"  {_ACCENT}Busy-indicator style: {current}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [{'|'.join(styles)}]{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+        if arg not in styles:
+            _cprint(f"  {_DIM}(._.) Unknown indicator style: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [{'|'.join(styles)}]{_RST}")
+            return
+
+        self.config.setdefault("display", {})["tui_status_indicator"] = arg
+        if save_config_value("display.tui_status_indicator", arg):
+            _cprint(f"  {_ACCENT}✓ Busy-indicator style set to '{arg}' (saved to config){_RST}")
+            _cprint(f"  {_DIM}The TUI picks up the new style on its next render.{_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ Busy-indicator style set to '{arg}' (session only){_RST}")
 
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).

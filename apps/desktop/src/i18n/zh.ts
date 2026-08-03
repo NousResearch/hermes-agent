@@ -129,6 +129,7 @@ export const zh: Translations = {
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒绝了该 API key (401)。',
+      diskFull: '磁盘已满 — 请腾出一些空间后再试。',
       gatewayAuthFailed: '网关认证失败 — 请检查你的 API_SERVER_KEY。',
       methodNotAllowed: '桌面后端拒绝了该请求 (405 Method Not Allowed)。请尝试重启 Hermes Desktop。',
       microphonePermission: '麦克风权限已被拒绝。',
@@ -430,6 +431,12 @@ export const zh: Translations = {
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      terminalFontTitle: '终端字体',
+      terminalFontDesc:
+        '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',
+      terminalFontPlaceholder: 'MesloLGS NF 或 CSS 字体栈',
+      terminalFontPreview: '字形预览',
+      terminalFontReset: '使用默认字体',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
       backdropTitle: '聊天背景',
@@ -918,6 +925,8 @@ export const zh: Translations = {
       sshHermesPathTitle: 'Hermes 路径（可选）',
       sshHermesPathDesc: '远程 hermes 可执行文件的完整路径。留空 = 自动检测。',
       sshHermesPathPlaceholder: '自动检测',
+      sshRemoteProfileTitle: '远程配置文件（可选）',
+      sshRemoteProfileDesc: '远程主机上的配置文件名称。留空 = 使用 Desktop 配置文件名称。',
       sshTestConnection: '测试 SSH',
       sshConnect: '连接',
       sshButtonsHint: '“保存”将在下次启动时生效，“连接”则立即重新连接。',
@@ -2164,6 +2173,7 @@ export const zh: Translations = {
       '调整或继续'
     ],
     startVoice: '开始语音对话',
+    openDirective: '打开',
     queueMessage: '排队消息',
     steer: '引导当前运行',
     stop: '停止',
@@ -2831,6 +2841,7 @@ export const zh: Translations = {
     closeRunningTitle: '关闭正在运行的标签？',
     closeRunningBody: '此对话仍在运行（或正在等待你的输入）。关闭标签只会隐藏它——会话将保留进度，可从侧边栏重新打开。',
     closeRunningConfirm: '关闭标签',
+    reload: '重新加载',
     closeOthers: '关闭其他',
     closeToRight: '关闭右侧',
     closeAll: '全部关闭',

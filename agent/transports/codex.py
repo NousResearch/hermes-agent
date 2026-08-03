@@ -583,6 +583,7 @@ class ResponsesApiTransport(ProviderTransport):
         allow_stream: bool = False,
         is_github_responses: bool = False,
         base_url: Any = None,
+        sanitize_harmony_tokens: bool = False,
     ) -> dict:
         """Validate and sanitize Codex API kwargs before the call.
 
@@ -590,6 +591,8 @@ class ResponsesApiTransport(ProviderTransport):
         ``base_url`` enables the Mantle reasoning gate (Issue #75471): the
         final preflight removes override-injected encrypted reasoning items
         and the ``reasoning.encrypted_content`` include value for Mantle.
+        ``sanitize_harmony_tokens`` is enabled only for the ChatGPT Codex
+        backend, which rejects literal reserved Harmony wire tokens in text.
         """
         from agent.codex_responses_adapter import _preflight_codex_api_kwargs
 
@@ -598,6 +601,7 @@ class ResponsesApiTransport(ProviderTransport):
             allow_stream=allow_stream,
             is_github_responses=is_github_responses,
             allow_encrypted_reasoning_replay=not _is_bedrock_mantle_base_url(base_url),
+            sanitize_harmony_tokens=sanitize_harmony_tokens,
         )
         if "prompt_cache_key" in normalized:
             bounded = _bounded_prompt_cache_key(normalized["prompt_cache_key"])

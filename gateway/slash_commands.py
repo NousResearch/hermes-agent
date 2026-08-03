@@ -1840,7 +1840,11 @@ class GatewaySlashCommandsMixin:
                                 enrich_model_switch_warnings_for_gateway,
                             )
 
-                            enrich_model_switch_warnings_for_gateway(
+                            # Offload: merge_preflight_compression_warning()
+                            # calls the sync resolve_display_context_length()
+                            # provider probe ladder — must not run on the loop.
+                            await asyncio.to_thread(
+                                enrich_model_switch_warnings_for_gateway,
                                 result,
                                 _self,
                                 session_key=_session_key,
@@ -2011,7 +2015,7 @@ class GatewaySlashCommandsMixin:
                         lines = [t("gateway.model.switched", model=format_model_for_display(result.new_model))]
                         lines.append(t("gateway.model.provider_label", provider=plabel))
                         mi = result.model_info
-                        from hermes_cli.model_switch import resolve_display_context_length
+                        from hermes_cli.model_switch import resolve_display_context_length_async
                         _sw_config_ctx = None
                         _sw_model_cfg = {}
                         try:
@@ -2025,7 +2029,7 @@ class GatewaySlashCommandsMixin:
                             pass
                         if not isinstance(_sw_model_cfg, dict):
                             _sw_model_cfg = {}
-                        ctx = resolve_display_context_length(
+                        ctx = await resolve_display_context_length_async(
                             result.new_model,
                             result.target_provider,
                             base_url=result.base_url or current_base_url or "",
@@ -2145,7 +2149,11 @@ class GatewaySlashCommandsMixin:
                 enrich_model_switch_warnings_for_gateway,
             )
 
-            enrich_model_switch_warnings_for_gateway(
+            # Offload: merge_preflight_compression_warning() calls the sync
+            # resolve_display_context_length() provider probe ladder — must
+            # not run on the loop.
+            await asyncio.to_thread(
+                enrich_model_switch_warnings_for_gateway,
                 result,
                 self,
                 session_key=session_key,
@@ -2333,7 +2341,7 @@ class GatewaySlashCommandsMixin:
             # Context: always resolve via the provider-aware chain so Codex OAuth,
             # Copilot, and Nous-enforced caps win over the raw models.dev entry.
             mi = result.model_info
-            from hermes_cli.model_switch import resolve_display_context_length
+            from hermes_cli.model_switch import resolve_display_context_length_async
             _sw2_config_ctx = None
             _sw2_model_cfg = {}
             try:
@@ -2347,7 +2355,7 @@ class GatewaySlashCommandsMixin:
                 pass
             if not isinstance(_sw2_model_cfg, dict):
                 _sw2_model_cfg = {}
-            ctx = resolve_display_context_length(
+            ctx = await resolve_display_context_length_async(
                 result.new_model,
                 result.target_provider,
                 base_url=result.base_url or current_base_url or "",
@@ -3790,6 +3798,28 @@ class GatewaySlashCommandsMixin:
         return t("gateway.footer.saved", state=state, example=example)
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
+        """Profile-scoping wrapper around manual /compress.
+
+        Multiplexed gateways resolve credentials through the fail-closed
+        per-profile secret scope (``agent.secret_scope``, Workstream A). The
+        agent turn installs it via ``_run_agent``'s wrapper, but slash-command
+        dispatch does not — so manual /compress reached the compressor's
+        provider resolution unscoped and died with ``UnscopedSecretError``
+        (``get_secret('OPENROUTER_BASE_URL') called with no profile secret
+        scope active``). Install the source profile's scope around the whole
+        handler, mirroring ``_run_agent``. Single-profile gateways skip this
+        — zero behavior change.
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return await self._handle_compress_command_inner(event)
+
+        from gateway.run import _profile_runtime_scope
+
+        profile_home = self._resolve_profile_home_for_source(event.source)
+        with _profile_runtime_scope(profile_home):
+            return await self._handle_compress_command_inner(event)
+
+    async def _handle_compress_command_inner(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
 
         Accepts an optional focus topic: ``/compress <focus>`` guides the
@@ -3975,9 +4005,13 @@ class GatewaySlashCommandsMixin:
                 if not compressor.has_content_to_compress(head):
                     return t("gateway.compress.nothing_to_do")
 
-                loop = asyncio.get_running_loop()
-                compressed, _ = await loop.run_in_executor(
-                    None,
+                # _run_in_executor_with_context (not a bare run_in_executor):
+                # the profile secret scope installed by the wrapper is a
+                # contextvar, and the default-executor hop would drop it —
+                # the compressor's aux-client provider resolution would then
+                # read credentials unscoped and fail closed under
+                # multiplexing.
+                compressed, _ = await self._run_in_executor_with_context(
                     lambda: tmp_agent._compress_context(
                         head,
                         "",
@@ -4307,7 +4341,9 @@ class GatewaySlashCommandsMixin:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
-        source = event.source
+        source = await asyncio.to_thread(
+            self._normalize_source_for_session_key, event.source
+        )
         session_key = self._session_key_for_source(source)
         raw_args = event.get_command_args().strip()
         try:
@@ -4330,7 +4366,12 @@ class GatewaySlashCommandsMixin:
 
         async def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = await self._session_db.list_sessions_rich(source=user_source, limit=10)
+            widen = allow_all and self._resume_caller_is_admin(source)
+            sessions = await self._session_db.list_sessions_rich(
+                source=user_source,
+                session_key=None if widen else session_key,
+                limit=10,
+            )
             return [s for s in sessions if s.get("title")][:10]
 
         if not name:
@@ -4474,7 +4515,6 @@ class GatewaySlashCommandsMixin:
             query_session_listing,
         )
 
-        source = event.source
         raw_args = event.get_command_args().strip()
         try:
             include_all, include_unnamed, target, search_query = (
@@ -4490,6 +4530,11 @@ class GatewaySlashCommandsMixin:
             resume_event = dataclasses.replace(event, text=f"/resume {target}")
             return await self._handle_resume_command(resume_event)
 
+        source = await asyncio.to_thread(
+            self._normalize_source_for_session_key, event.source
+        )
+        session_key = self._session_key_for_source(source)
+
         # A cross-origin listing (`/sessions all`) is honored only for an
         # admin, mirroring the `/resume --all` override. `all` is just a parsed
         # user argument, so without this gate any caller could run
@@ -4501,6 +4546,7 @@ class GatewaySlashCommandsMixin:
             query_session_listing,
             getattr(self._session_db, "_db", self._session_db),
             source=source.platform.value if source.platform else None,
+            session_key=None if cross_origin else session_key,
             current_session_id=current_entry.session_id,
             include_all_sources=cross_origin,
             include_unnamed=include_unnamed,

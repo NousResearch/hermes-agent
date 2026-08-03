@@ -13,6 +13,7 @@ import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
+from types import SimpleNamespace
 from typing import Any
 
 from agent.auxiliary_client import call_llm
@@ -382,6 +383,8 @@ def _merge_slot_extra_body(
 def _maybe_apply_moa_cache_control(
     messages: list[dict[str, Any]],
     runtime: dict[str, Any],
+    *,
+    cache_disabled: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Decorate an advisor or aggregator request with cache_control when its
     route honors it.
@@ -395,17 +398,27 @@ def _maybe_apply_moa_cache_control(
 
     Returns the messages unchanged on any resolution error or when the
     policy says the route doesn't honor markers.
+
+    ``cache_disabled`` (or the live config when omitted) is stamped onto the
+    policy stub so ``prompt_caching.cache_ttl: off`` is not bypassed by the
+    blank-agent pattern (#76085).
     """
     try:
-        from types import SimpleNamespace
-
-        from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
+        from agent.agent_runtime_helpers import (
+            anthropic_prompt_cache_policy,
+            blank_cache_policy_stub,
+        )
         from agent.prompt_caching import apply_anthropic_cache_control
 
+        # Prefer an explicit kwarg, then a snapshot on the runtime dict
+        # (threaded from the live agent), else config via the stub factory.
+        if cache_disabled is None and "_cache_disabled" in runtime:
+            cache_disabled = runtime.get("_cache_disabled")
+
         # The policy function reads agent.* only as fallbacks for kwargs we
-        # don't pass; provide a stub so the slot is judged purely on its own
-        # resolved runtime.
-        stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
+        # don't pass; blank_cache_policy_stub is the only sanctioned stub
+        # so _cache_disabled cannot be left off again (#76085).
+        stub = blank_cache_policy_stub(cache_disabled)
         should_cache, native_layout = anthropic_prompt_cache_policy(
             stub,
             provider=runtime.get("provider") or "",
@@ -431,6 +444,7 @@ def _run_reference(
     max_tokens: int | None = None,
     reference_timeout: float | None = None,
     context_length_cache: Any = None,
+    cache_disabled: bool | None = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, accounting)``.
 
@@ -492,7 +506,12 @@ def _run_reference(
         # caching is opt-in per request. OpenAI-family advisors are untouched
         # (their caching is automatic; markers are ignored harmlessly, but we
         # only decorate when the policy says the route honors them).
-        messages = _maybe_apply_moa_cache_control(messages, runtime)
+        # Pin the live agent disable onto the runtime so advisor decoration
+        # tracks conversation state, not a fresh config re-read (#76085).
+        cache_runtime = runtime
+        if cache_disabled is not None:
+            cache_runtime = {**runtime, "_cache_disabled": cache_disabled}
+        messages = _maybe_apply_moa_cache_control(messages, cache_runtime)
         # Per-slot max_tokens takes precedence over the preset-level
         # reference_max_tokens passed in by the caller. This lets each
         # reference model have its own output cap independently.
@@ -796,6 +815,9 @@ def _run_references_parallel(
     # instead of re-probing metadata sources per reference (dict get/set is
     # GIL-atomic; a rare duplicate probe on a first-use race is harmless).
     _ctx_len_cache: dict[tuple[str, str], int | None] = {}
+    cache_disabled = (
+        getattr(agent, "_cache_disabled", None) if agent is not None else None
+    )
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -814,6 +836,7 @@ def _run_references_parallel(
                     max_tokens=max_tokens,
                     reference_timeout=reference_timeout,
                     context_length_cache=_ctx_len_cache,
+                    cache_disabled=cache_disabled,
                 )
             ] = idx
 
@@ -1261,6 +1284,19 @@ def aggregate_moa_context(
 
     agg_label = _slot_label(aggregator)
     agg_runtime = _slot_runtime(aggregator)
+    # Pin the live agent disable onto synthesis decoration so mid-session
+    # config flips cannot re-enable markers on this path alone (#76085).
+    # Same not-None guard as _run_reference: stamping None would be a no-op
+    # (present-None falls through to the config fallback anyway).
+    agg_cache_runtime = agg_runtime
+    _agg_cache_disabled = (
+        getattr(agent, "_cache_disabled", None) if agent is not None else None
+    )
+    if _agg_cache_disabled is not None:
+        agg_cache_runtime = {
+            **agg_runtime,
+            "_cache_disabled": _agg_cache_disabled,
+        }
     try:
         # Same cache_control decoration as _run_reference's advisor calls
         # (see _maybe_apply_moa_cache_control) — this synthesis call is a
@@ -1273,7 +1309,7 @@ def aggregate_moa_context(
         # breakpoints, even when the resolved aggregator slot is a
         # cache-honoring route (e.g. Claude on OpenRouter/native Anthropic).
         agg_messages = _maybe_apply_moa_cache_control(
-            [{"role": "user", "content": synth_prompt}], agg_runtime
+            [{"role": "user", "content": synth_prompt}], agg_cache_runtime
         )
         response = call_llm(
             task="moa_aggregator",
@@ -1297,6 +1333,53 @@ def aggregate_moa_context(
         f"Aggregator: {agg_label}\n"
         f"References: {', '.join(_slot_label(slot) for slot in reference_models)}\n\n"
         f"{synthesis.strip()}"
+    )
+
+
+def _completed_response_as_stream_chunk(response: Any) -> Any:
+    """Convert a completed Chat Completions response into one delta stream chunk.
+
+    MoA's outer streaming consumer expects ``choices[0].delta`` chunks. A
+    completed aggregator response carries ``choices[0].message`` instead; adapt
+    it here, at the MoA facade boundary, so provider-specific Relay behavior and
+    other transports remain untouched.
+    """
+
+    choices = getattr(response, "choices", None)
+    first_choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+    message = getattr(first_choice, "message", None)
+    raw_tool_calls = getattr(message, "tool_calls", None)
+    tool_call_deltas = None
+    if isinstance(raw_tool_calls, (list, tuple)) and raw_tool_calls:
+        tool_call_deltas = []
+        for index, tc in enumerate(raw_tool_calls):
+            function = getattr(tc, "function", None)
+            tool_call_deltas.append(SimpleNamespace(
+                index=getattr(tc, "index", index),
+                id=getattr(tc, "id", None),
+                type=getattr(tc, "type", None) or "function",
+                function=SimpleNamespace(
+                    name=getattr(function, "name", None),
+                    arguments=getattr(function, "arguments", None),
+                ),
+            ))
+    delta = SimpleNamespace(
+        content=getattr(message, "content", None),
+        tool_calls=tool_call_deltas,
+        reasoning_content=getattr(message, "reasoning_content", None),
+        reasoning=getattr(message, "reasoning", None),
+        reasoning_details=getattr(message, "reasoning_details", None),
+    )
+    choice = SimpleNamespace(
+        index=getattr(first_choice, "index", 0),
+        delta=delta,
+        finish_reason=getattr(first_choice, "finish_reason", None) or "stop",
+    )
+    return SimpleNamespace(
+        id=getattr(response, "id", None),
+        model=getattr(response, "model", None),
+        choices=[choice],
+        usage=getattr(response, "usage", None),
     )
 
 
@@ -1609,6 +1692,52 @@ class MoAChatCompletions:
         max_tokens: Any = agg_kwargs.get("max_tokens")
         tools: Any = agg_kwargs.get("tools")
         extra_body: Any = agg_kwargs.get("extra_body")
+        agg_runtime = _slot_runtime(aggregator)
+        try:
+            from agent.agent_runtime_helpers import (
+                plan_cache_sections_for_destination,
+            )
+
+            guidance = prepared.get("guidance")
+            planning_messages = agg_messages
+            if guidance:
+                planning_messages = peel_reference_guidance(
+                    agg_messages,
+                    str(guidance),
+                )
+            # plan_cache_sections_for_destination never mutates its inputs
+            # and always returns request-local copies, so the prepared
+            # state stays canonical.
+            # Tri-state: only pass a bool when a live agent snapshot exists.
+            # Prepared-aggregator facades built via __new__ have no _agent;
+            # getattr(self._agent, ...) raises and bool(None-agent) would
+            # force False and suppress the planner's config fallback (#76085).
+            _agent = getattr(self, "_agent", None)
+            _cache_disabled = (
+                getattr(_agent, "_cache_disabled", None)
+                if _agent is not None
+                else None
+            )
+            agg_messages, tools = plan_cache_sections_for_destination(
+                planning_messages,
+                tools,
+                provider=agg_runtime.get("provider") or "",
+                base_url=agg_runtime.get("base_url") or "",
+                api_mode=agg_runtime.get("api_mode") or "",
+                model=agg_runtime.get("model") or "",
+                cache_disabled=_cache_disabled,
+            )
+            if guidance:
+                _attach_reference_guidance(agg_messages, str(guidance))
+        except Exception as exc:  # pragma: no cover - cache planning must not block MoA
+            # Warning, not debug: since the call-block site skips MoA, this
+            # block is the aggregator's ONLY decoration path — a silent
+            # failure here ships an undecorated request and regresses the
+            # exact 0%-cache MoA failure the planning exists to prevent.
+            logger.warning(
+                "MoA aggregator cache plan failed — sending undecorated "
+                "request (cache misses expected): %s", exc,
+            )
         # Record the exact aggregator INPUT (incl. the injected reference
         # context) into the pending trace so a trace captures what the
         # aggregator actually saw, not a reconstruction. Traces are a
@@ -1649,7 +1778,6 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
-        agg_runtime = _slot_runtime(aggregator)
         # _slot_runtime may carry the provider's request_overrides.extra_body;
         # pop it and merge with the caller's extra_body (caller wins) so the
         # explicit kwarg below never collides with **agg_runtime.
@@ -1685,6 +1813,14 @@ class MoAChatCompletions:
                     self._pending_trace["aggregator_output"] = _extract_text(_agg_response)
                 except Exception:  # pragma: no cover - defensive
                     self._pending_trace["aggregator_output"] = None
+        if stream and hasattr(_agg_response, "choices"):
+            # Some aggregator adapters (notably openai-codex Responses) consume
+            # their provider stream internally and return a completed response
+            # object even when the acting consumer requested token streaming.
+            # The outer chat-completions streaming loop expects delta chunks;
+            # hand it a one-chunk iterator instead of letting it iterate the
+            # SimpleNamespace response itself (#55933).
+            return iter((_completed_response_as_stream_chunk(_agg_response),))
         return _agg_response
 
     def create(self, **api_kwargs: Any) -> Any:
@@ -2174,8 +2310,24 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
         except Exception:
             pass
 
+    resolved_preset = preset_name
+    if resolved_preset is None and getattr(agent, "provider", None) == "moa":
+        resolved_preset = getattr(agent, "model", None)
+
+    resolved_preset = str(resolved_preset or "default")
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.moa_config import normalize_moa_config
+
+        moa_cfg = normalize_moa_config(load_config().get("moa") or {})
+        presets = moa_cfg.get("presets") or {}
+        if resolved_preset not in presets:
+            resolved_preset = moa_cfg.get("default_preset") or "default"
+    except Exception:
+        resolved_preset = "default"
+
     return MoAClient(
-        str(preset_name or getattr(agent, "model", None) or "default"),
+        resolved_preset,
         reference_callback=_moa_reference_relay,
         # Thread the agent through so the reference fan-out wait can be
         # aborted on a user interrupt (see _run_references_parallel).

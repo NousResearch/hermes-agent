@@ -264,6 +264,44 @@ def _is_html(text: str) -> bool:
     return bool(re.search(r"<(?:p|div|h[1-6]|table|ul|ol|blockquote|pre|br)\b", text, re.I))
 
 
+_HTML_START_RE = re.compile(
+    r"(?:<!DOCTYPE\s+html|<html[\s>]|<(?:div|table|h[1-6]|section|article|main|header|footer|style)\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+_BLOCK_CLOSE_RE = re.compile(
+    r"</(?:div|table|section|article|main|header|footer|body|ul|ol|p|h[1-6])>",
+    re.IGNORECASE,
+)
+
+
+def _trim_html_preamble_postamble(body: str) -> str:
+    """Strip non-HTML preamble (cron wrappers, model commentary) before the
+    first HTML tag and trailing prose after the last block-level tag.
+
+    Ported from PR #36853 (chtse53) — the HTML-body send path needs the
+    same trimming so cron wrappers like ``Cronjob Response: <name>`` do not
+    render as broken text inside an HTML email.
+    """
+    m = _HTML_START_RE.search(body)
+    if not m:
+        return body
+    body = body[m.start():]
+    html_end = body.lower().find("</html>")
+    if html_end >= 0:
+        return body[: html_end + len("</html>")]
+    # HTML fragment without </html>: strip trailing model commentary / cron
+    # footers that follow the last closing block-level tag as pure prose.
+    for cm in reversed(list(_BLOCK_CLOSE_RE.finditer(body))):
+        after_tag = body[cm.end():]
+        after_stripped = after_tag.strip()
+        if not after_stripped:
+            break  # clean end — nothing to strip
+        if re.search(r"<[a-zA-Z/!]", after_stripped):
+            continue  # still HTML — keep looking
+        return body[: cm.end()]  # pure prose = model commentary
+    return body
+
+
 def _markdown_to_html_email(body: str) -> str:
     """Convert Markdown body to styled HTML email content.
 
@@ -271,7 +309,8 @@ def _markdown_to_html_email(body: str) -> str:
     sanitize it directly instead of re-rendering through Markdown.
     """
     if _is_html(body):
-        # Body is already HTML — sanitize and wrap, don't re-render
+        # Body is already HTML — trim preamble/postamble, sanitize, don't re-render
+        body = _trim_html_preamble_postamble(body)
         sanitized = _sanitize_email_html(body)
         return _HERMES_EMAIL_HTML_TEMPLATE.replace("{body}", sanitized)
     import markdown as _md_mod

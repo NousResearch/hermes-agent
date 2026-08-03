@@ -918,6 +918,60 @@ def test_concurrent_turn_skips_shared_metrics_scope_creation(direct_runtime):
     coordinator.release_conversation(lease)
 
 
+def test_skipped_turn_stays_gated_after_instrumented_turn_ends(direct_runtime):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="shared-session",
+        platform="cli",
+    )
+    first = coordinator.begin_turn(lease, turn_id="first", task_id="first-task")
+    second = coordinator.begin_turn(lease, turn_id="second", task_id="second-task")
+    inherited = contextvars.copy_context()
+
+    coordinator.end_turn(first, outcome="success")
+
+    assert relay_runtime.current_turn() is second
+    assert inherited.run(relay_runtime.current_turn) is second
+    assert not relay_runtime.relay_instrumentation_enabled()
+    assert not inherited.run(relay_runtime.relay_instrumentation_enabled)
+    assert relay_runtime.resolve_execution_context("shared-session") == (
+        None,
+        None,
+        None,
+    )
+
+    relay_shared_metrics.observe_lifecycle(
+        "pre_llm_call",
+        session_id="shared-session",
+        task_id="second-task",
+        platform="cli",
+    )
+    inherited.run(
+        relay_shared_metrics.observe_lifecycle,
+        "pre_api_request",
+        session_id="shared-session",
+        task_id="second-task",
+        api_request_id="second-request",
+        platform="cli",
+    )
+
+    assert not [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.push"
+        and event[1]
+        in {relay_shared_metrics.TASK_SCOPE, relay_shared_metrics.MODEL_CALL_SCOPE}
+    ]
+
+    coordinator.end_turn(second, outcome="success")
+    assert relay_runtime.current_turn() is None
+    assert inherited.run(relay_runtime.current_turn) is second
+    assert not inherited.run(relay_runtime.relay_instrumentation_enabled)
+    coordinator.release_conversation(lease)
+
+
 
 
 
@@ -1093,7 +1147,5 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
     assert metrics["hermes.task_run.finished"]["value"] == 2
     assert flush_attempts == 2
     assert "Hermes shared-metrics task flush failed" in caplog.text
-
-
 
 

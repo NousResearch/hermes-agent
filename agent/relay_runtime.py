@@ -482,10 +482,7 @@ class RelayTurnContext:
         default_factory=threading.RLock,
         repr=False,
     )
-    _token: contextvars.Token[RelayTurnContext | None] | None = field(
-        default=None,
-        repr=False,
-    )
+    _previous_turn: RelayTurnContext | None = field(default=None, repr=False)
     _active_registered: bool = field(default=False, repr=False)
     relay_enabled: bool = True
     closed: bool = False
@@ -639,7 +636,8 @@ class RelaySessionCoordinator:
                 )
             except Exception:
                 logger.warning("Hermes Relay turn initialization failed", exc_info=True)
-        turn._token = _CURRENT_TURN.set(turn)
+        turn._previous_turn = _CURRENT_TURN.get()
+        _CURRENT_TURN.set(turn)
         return turn
 
     def end_turn(
@@ -773,16 +771,18 @@ class RelaySessionCoordinator:
 
     @staticmethod
     def _reset_turn_context(turn: RelayTurnContext) -> None:
-        """Reset the originating ContextVar token when called in that context."""
-        if turn._token is None:
+        """Unwind ``turn`` without disturbing a newer context-local turn."""
+        if _CURRENT_TURN.get() is not turn:
             return
-        try:
-            _CURRENT_TURN.reset(turn._token)
-        except ValueError:
-            # A copied async/thread context may own terminal cleanup. Keep the
-            # token so the originating context can clear its stale reference.
-            return
-        turn._token = None
+        previous = turn._previous_turn
+        seen = {id(turn)}
+        while previous is not None and previous.closed:
+            if id(previous) in seen:
+                previous = None
+                break
+            seen.add(id(previous))
+            previous = previous._previous_turn
+        _CURRENT_TURN.set(previous)
 
     @staticmethod
     def release_conversation(lease: ConversationLease) -> None:
@@ -814,7 +814,7 @@ def current_turn() -> RelayTurnContext | None:
 def relay_instrumentation_enabled() -> bool:
     """Return whether this inherited turn may create Relay instrumentation."""
     turn = current_turn()
-    return turn is None or turn.relay_enabled
+    return turn is None or (turn.relay_enabled and not turn.closed)
 
 
 def active_turn(session_id: str | None = None) -> RelayTurnContext | None:
@@ -844,7 +844,9 @@ def resolve_execution_context(
 ) -> tuple[RelayRuntime | None, RelaySession | None, Any]:
     """Resolve one active turn/session parent for managed Relay execution."""
     inherited_turn = current_turn()
-    if inherited_turn is not None and not inherited_turn.relay_enabled:
+    if inherited_turn is not None and (
+        not inherited_turn.relay_enabled or inherited_turn.closed
+    ):
         return None, None, None
     turn = active_turn(session_id)
     if (

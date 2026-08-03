@@ -3948,6 +3948,81 @@ class TestServeIndexMissingIndex:
         assert "SPA-rebuilt" in resp.text
 
 
+class TestHashedAssetCacheHeaders:
+    """Hashed /assets/* responses must be immutable-cacheable; index.html
+    must stay no-store so it always references the current hashes
+    (salvaged from PR #28543)."""
+
+    _IMMUTABLE = "public, max-age=31536000, immutable"
+
+    @staticmethod
+    def _client(tmp_path, monkeypatch):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<html><head></head><body>SPA</body></html>", encoding="utf-8"
+        )
+        (dist / "assets" / "index-abc123.js").write_text(
+            "console.log('bundle');", encoding="utf-8"
+        )
+        (dist / "assets" / "index-abc123.css").write_text(
+            "body{background:url(/ds-assets/bg.png);"
+            "font-family:url(/fonts-terminal/x.woff2)}",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+        spa_app = FastAPI()
+        ws.mount_spa(spa_app)
+        return TestClient(spa_app)
+
+    def test_hashed_js_asset_is_immutable(self, tmp_path, monkeypatch):
+        client = self._client(tmp_path, monkeypatch)
+        resp = client.get("/assets/index-abc123.js")
+        assert resp.status_code == 200
+        assert resp.headers["cache-control"] == self._IMMUTABLE
+
+    def test_serve_css_is_immutable_and_keeps_prefix_rewrites(
+        self, tmp_path, monkeypatch
+    ):
+        client = self._client(tmp_path, monkeypatch)
+        resp = client.get("/assets/index-abc123.css")
+        assert resp.status_code == 200
+        assert resp.headers["cache-control"] == self._IMMUTABLE
+
+        # The proxy-prefix rewrite path (main's ds-assets/fonts-terminal
+        # handling) must survive the header change.
+        prefixed = client.get(
+            "/assets/index-abc123.css",
+            headers={"X-Forwarded-Prefix": "/hermes"},
+        )
+        assert prefixed.status_code == 200
+        assert prefixed.headers["cache-control"] == self._IMMUTABLE
+        assert "url(/hermes/ds-assets/bg.png)" in prefixed.text
+        assert "url(/hermes/fonts-terminal/x.woff2)" in prefixed.text
+
+    def test_index_html_stays_no_store(self, tmp_path, monkeypatch):
+        client = self._client(tmp_path, monkeypatch)
+        for route in ("/", "/chat"):
+            resp = client.get(route)
+            assert resp.status_code == 200
+            cache_control = resp.headers["cache-control"]
+            assert "no-store" in cache_control
+            assert "immutable" not in cache_control
+
+    def test_missing_asset_is_not_marked_immutable(self, tmp_path, monkeypatch):
+        """A 404 must never be cached for a year — a later rebuild can
+        legitimately create the file."""
+        client = self._client(tmp_path, monkeypatch)
+        resp = client.get("/assets/nope-000000.js")
+        assert resp.status_code == 404
+        assert "immutable" not in resp.headers.get("cache-control", "")
+
+
 class TestDashboardComponentHealth:
     """Component-health rollup: error middleware, /api/status components, self-test."""
 

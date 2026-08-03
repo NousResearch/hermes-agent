@@ -8,10 +8,14 @@ import os
 import pytest
 
 from gateway.runtime_footer import (
+    _cwd_short,
     _home_relative_cwd,
     _model_short,
+    _reasoning_short,
     build_footer_line,
     format_runtime_footer,
+    provider_consumes_credits,
+    reasoning_effort_label,
     resolve_footer_config,
 )
 
@@ -40,6 +44,10 @@ def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
     sub.mkdir(parents=True)
     result = _home_relative_cwd(str(sub))
     assert result == "~/projects/hermes"
+
+
+def test_cwd_short_returns_only_directory_name():
+    assert _cwd_short("/opt/data/repos/ai-life") == "ai-life"
 
 
 # ---------------------------------------------------------------------------
@@ -74,10 +82,134 @@ def test_format_footer_skips_missing_context_length():
     assert "/tmp/wd" in out
 
 
+@pytest.mark.parametrize(
+    "field,effort,expected",
+    [
+        ("reasoning_effort", "high", "gpt-5.4 · 🧠 high"),
+        ("reasoning", "xhigh", "gpt-5.4 · 🧠 xhigh"),
+        ("reasoning_effort", "medium", "gpt-5.4 · 🧠 med"),
+        ("reasoning_effort", "minimal", "gpt-5.4 · 🧠 min"),
+        ("reasoning_effort", "none", "gpt-5.4 · 🧠 off"),
+        ("reasoning_effort", None, "gpt-5.4"),
+    ],
+)
+def test_format_footer_reasoning_effort(field, effort, expected):
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=100,
+        cwd="",
+        reasoning_effort=effort,
+        fields=("model", field),
+    )
+    assert out == expected
+
+
+@pytest.mark.parametrize(
+    "config,expected",
+    [
+        (None, "medium"),
+        ({"enabled": False, "effort": "high"}, "none"),
+        ({"enabled": True, "effort": "XHIGH"}, "xhigh"),
+        ({"enabled": True}, "medium"),
+    ],
+)
+def test_reasoning_effort_label(config, expected):
+    assert reasoning_effort_label(config) == expected
+
+
+@pytest.mark.parametrize(
+    "effort,expected",
+    [("minimal", "min"), ("medium", "med"), ("high", "high"), ("none", "off")],
+)
+def test_reasoning_short(effort, expected):
+    assert _reasoning_short(effort) == expected
+
+
+def test_format_footer_compact_style_with_fast():
+    out = format_runtime_footer(
+        model="openai-codex/gpt-5.6-sol",
+        context_tokens=37,
+        context_length=100,
+        cwd="/opt/data/repos/ai-life",
+        reasoning_effort="medium",
+        fast_mode=True,
+        fields=("model", "reasoning_effort", "fast", "context_pct", "dir"),
+        separator=" • ",
+    )
+    assert out == "gpt-5.6-sol ⚡️ • 🧠 med • 37% • ai-life"
+
+
+def test_format_footer_fast_field_hidden_when_normal():
+    out = format_runtime_footer(
+        model="gpt-5.6-sol",
+        context_tokens=37,
+        context_length=100,
+        reasoning_effort="low",
+        fast_mode=False,
+        fields=("model", "reasoning_effort", "fast", "context_pct"),
+        separator=" • ",
+    )
+    assert out == "gpt-5.6-sol • 🧠 low • 37%"
+
+
+def test_format_footer_fast_standalone_without_model_field():
+    out = format_runtime_footer(
+        model="gpt-5.6-sol",
+        context_tokens=37,
+        context_length=100,
+        fast_mode=True,
+        fields=("fast", "context_pct"),
+        separator=" • ",
+    )
+    assert out == "⚡️ • 37%"
+
+
+@pytest.mark.parametrize(
+    "provider,base_url,expected",
+    [
+        ("openrouter", None, True),
+        ("openai", "https://openrouter.ai/api/v1", True),
+        ("openai", None, True),
+        ("anthropic", None, True),
+        ("openai-codex", None, False),
+        ("xai-oauth", None, False),
+        ("ollama", None, False),
+        (None, None, False),
+    ],
+)
+def test_provider_consumes_credits(provider, base_url, expected):
+    assert provider_consumes_credits(provider, base_url) is expected
+
+
+def test_format_footer_puts_metered_provider_warning_on_second_line():
+    out = format_runtime_footer(
+        model="gpt-5.6-sol",
+        provider="openrouter",
+        context_tokens=37,
+        context_length=100,
+        reasoning_effort="medium",
+        fields=("model", "reasoning_effort", "context_pct"),
+        separator=" • ",
+    )
+    assert out == "gpt-5.6-sol • 🧠 med • 37%\n💸 consuming credits"
+
+
+def test_format_footer_does_not_warn_for_codex_oauth():
+    out = format_runtime_footer(
+        model="gpt-5.6-sol",
+        provider="openai-codex",
+        context_tokens=37,
+        context_length=100,
+        fields=("model", "context_pct"),
+        separator=" • ",
+    )
+    assert out == "gpt-5.6-sol • 37%"
+
+
 # ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------
-
 
 def test_resolve_platform_override_wins():
     user = {
@@ -109,6 +241,19 @@ def test_resolve_platform_can_add_fields_only():
     dc = resolve_footer_config(user, "discord")
     assert dc["enabled"] is True
     assert dc["fields"] == ["context_pct"]
+
+
+def test_resolve_platform_can_override_separator():
+    user = {
+        "display": {
+            "runtime_footer": {"enabled": True, "separator": " • "},
+            "platforms": {
+                "slack": {"runtime_footer": {"separator": " | "}},
+            },
+        },
+    }
+    assert resolve_footer_config(user, "telegram")["separator"] == " • "
+    assert resolve_footer_config(user, "slack")["separator"] == " | "
 
 
 # ---------------------------------------------------------------------------

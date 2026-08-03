@@ -366,12 +366,23 @@ class TestDockerHostBindApproval:
         # Other container backends never report host access.
         assert _tt_mod._docker_has_host_access(
             {"env_type": "modal", "docker_volumes": ["/tmp:/x"]}) is False
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "apple_container", "apple_container_volumes": []}) is False
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "apple_container",
+             "apple_container_volumes": ["/tmp:/workspace/host"]}) is True
 
     def test_should_skip_container_guards(self):
         """Docker skips only when isolated; other sandboxes always skip."""
         import tools.approval as A
         assert A._should_skip_container_guards("docker", has_host_access=False) is True
         assert A._should_skip_container_guards("docker", has_host_access=True) is False
+        assert A._should_skip_container_guards(
+            "apple_container", has_host_access=False
+        ) is True
+        assert A._should_skip_container_guards(
+            "apple_container", has_host_access=True
+        ) is False
         assert A._should_skip_container_guards("modal", has_host_access=True) is True
         assert A._should_skip_container_guards("singularity") is True
         assert A._should_skip_container_guards("daytona") is True

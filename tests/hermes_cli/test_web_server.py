@@ -2974,6 +2974,89 @@ class TestNewEndpoints:
         assert ssh["status"] == "ready"
         assert "hermes@devbox.example.com" in ssh["detail"]
 
+    @pytest.mark.parametrize(
+        ("executable", "runtime", "expected"),
+        [
+            (None, None, "needs_setup"),
+            ("/container", (False, "stopped"), "needs_setup"),
+            ("/container", (True, "running"), "ready"),
+        ],
+    )
+    def test_apple_container_backend_health(
+        self, monkeypatch, executable, runtime, expected
+    ):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.platform, "system", lambda: "Darwin", raising=False)
+        monkeypatch.setattr(web_server.platform, "machine", lambda: "arm64", raising=False)
+        monkeypatch.setattr(
+            web_server.platform, "mac_ver", lambda: ("26.0", ("", "", ""), "")
+        )
+        monkeypatch.setattr(
+            "tools.environments.apple_container.find_container_cli", lambda: executable
+        )
+        if runtime is not None:
+            monkeypatch.setattr(
+                "tools.environments.apple_container.container_system_status",
+                lambda _executable=None: runtime,
+            )
+
+        body = self.client.get("/api/tools/terminal/backends").json()
+        apple = next(row for row in body["backends"] if row["name"] == "apple_container")
+        assert apple["label"] == "Apple Container"
+        assert apple["status"] == expected
+
+    def test_apple_container_backend_unavailable_on_unsupported_host(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.platform, "system", lambda: "Linux", raising=False)
+        monkeypatch.setattr(web_server.platform, "machine", lambda: "x86_64", raising=False)
+        body = self.client.get("/api/tools/terminal/backends").json()
+        apple = next(row for row in body["backends"] if row["name"] == "apple_container")
+        assert apple["status"] == "unavailable"
+
+    def test_apple_container_backend_unavailable_on_macos_25_arm64(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(web_server.platform, "machine", lambda: "arm64")
+        monkeypatch.setattr(
+            web_server.platform, "mac_ver", lambda: ("25.6", ("", "", ""), "")
+        )
+        body = self.client.get("/api/tools/terminal/backends").json()
+        apple = next(row for row in body["backends"] if row["name"] == "apple_container")
+        assert apple["status"] == "unavailable"
+        assert "macOS 26" in apple["detail"]
+
+    def test_select_apple_container_backend_persists(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(web_server.platform, "machine", lambda: "arm64")
+        monkeypatch.setattr(
+            web_server.platform, "mac_ver", lambda: ("26.0", ("", "", ""), "")
+        )
+        response = self.client.put(
+            "/api/tools/terminal/backend", json={"backend": "apple_container"}
+        )
+        assert response.status_code == 200
+        from hermes_cli.config import load_config
+
+        assert load_config()["terminal"]["backend"] == "apple_container"
+
+    def test_select_apple_container_backend_rejects_unsupported_host(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(web_server.platform, "machine", lambda: "x86_64")
+
+        response = self.client.put(
+            "/api/tools/terminal/backend", json={"backend": "apple_container"}
+        )
+
+        assert response.status_code == 400
+        assert "macOS 26" in response.json()["detail"]
+
 
 
 

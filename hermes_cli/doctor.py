@@ -2498,28 +2498,29 @@ def run_doctor(args):
 
     # Apple Container (if using apple_container backend)
     if terminal_env == "apple_container":
-        container_bin = shutil.which("container")
-        if not container_bin:
-            for _path in ["/opt/homebrew/bin/container", "/usr/local/bin/container"]:
-                if os.path.isfile(_path) and os.access(_path, os.X_OK):
-                    container_bin = _path
-                    break
+        from tools.environments.apple_container import (
+            container_system_status,
+            find_container_cli,
+            is_apple_container_supported_host,
+        )
+
+        supported_host = is_apple_container_supported_host()
+        if not supported_host:
+            check_fail("Apple Container requires macOS 26 or later on Apple Silicon (arm64)")
+            issues.append("Use macOS 26 or later on Apple Silicon for Apple Container")
+            container_bin = None
+        else:
+            container_bin = find_container_cli()
         if container_bin:
-            try:
-                result = subprocess.run(
-                    [container_bin, "system", "status"],
-                    capture_output=True, text=True, timeout=10,
-                )
-            except subprocess.TimeoutExpired:
-                result = None
-            if result is not None and result.returncode == 0 and "running" in result.stdout.lower():
+            running, _detail = container_system_status(container_bin)
+            if running:
                 check_ok("Apple Container", "(system running)")
             else:
                 check_fail("Apple Container system not running")
-                issues.append("Start with: container system start")
-        else:
+                issues.append("Start manually with: container system start")
+        elif supported_host:
             check_fail("container CLI not found", "(required for TERMINAL_ENV=apple_container)")
-            issues.append("Install: brew install container (requires macOS 26+)")
+            issues.append("Install Apple Container manually (requires macOS 26+ on Apple Silicon)")
 
     # Plugin-registered terminal backends (if one is the active backend)
     if terminal_env not in {

@@ -150,6 +150,17 @@ class TestConfigYamlRouting:
         assert "vercel_runtime: python3.13" in config
         assert "TERMINAL_VERCEL_RUNTIME=python3.13" in env_content
 
+    def test_terminal_apple_settings_go_to_config_and_env(self, _isolated_hermes_home):
+        set_config_value("terminal.apple_container_image", "python:3.12-slim")
+        set_config_value(
+            "terminal.apple_container_volumes", '["/host/data:/workspace/data:ro"]'
+        )
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "apple_container_image: python:3.12-slim" in config
+        assert "TERMINAL_APPLE_CONTAINER_IMAGE=python:3.12-slim" in env_content
+        assert "TERMINAL_APPLE_CONTAINER_VOLUMES=" in env_content
+
 
 # ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277

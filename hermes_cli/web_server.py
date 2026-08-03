@@ -31,6 +31,7 @@ import logging
 import math
 import mimetypes
 import os
+import platform
 import queue
 import re
 import secrets
@@ -1340,7 +1341,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
+        "options": [
+            "local", "docker", "ssh", "modal", "daytona",
+            "vercel_sandbox", "singularity", "apple_container",
+        ],
     },
     "terminal.vercel_runtime": {
         "type": "select",
@@ -15681,6 +15685,11 @@ _TERMINAL_BACKENDS: List[Dict[str, str]] = [
         "label": "SSH",
         "description": "Run commands on a remote host over SSH.",
     },
+    {
+        "name": "apple_container",
+        "label": "Apple Container",
+        "description": "Run commands in a native Linux VM on macOS Apple Silicon.",
+    },
 ]
 
 _TERMINAL_BACKEND_NAMES = {row["name"] for row in _TERMINAL_BACKENDS}
@@ -15823,6 +15832,33 @@ def _probe_daytona_backend() -> tuple:
     return ("needs_setup", "Set DAYTONA_API_KEY to use the Daytona backend.")
 
 
+def _probe_apple_container_backend() -> tuple:
+    from tools.environments.apple_container import (
+        container_system_status,
+        find_container_cli,
+        is_apple_container_supported_host,
+    )
+
+    if not is_apple_container_supported_host():
+        return (
+            "unavailable",
+            "Apple Container requires macOS 26 or later on Apple Silicon (arm64).",
+        )
+    executable = find_container_cli()
+    if not executable:
+        return (
+            "needs_setup",
+            "Apple Container CLI not found — install it manually.",
+        )
+    running, _detail = container_system_status(executable)
+    if not running:
+        return (
+            "needs_setup",
+            "Apple Container system is stopped — run `container system start` manually.",
+        )
+    return ("ready", "")
+
+
 def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
     """Return ``(status, detail)`` for one backend. Never raises."""
     try:
@@ -15838,6 +15874,8 @@ def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
             return _probe_modal_backend()
         if name == "daytona":
             return _probe_daytona_backend()
+        if name == "apple_container":
+            return _probe_apple_container_backend()
         try:
             from agent.terminal_env_registry import get_provider
 

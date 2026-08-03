@@ -279,6 +279,74 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
     assert "snapshot filesystem only" in out
 
 
+@pytest.mark.parametrize(
+    ("executable", "status", "expected"),
+    [
+        (None, None, "container CLI not found"),
+        ("/container", (False, "stopped"), "Apple Container system not running"),
+        ("/container", (True, "running"), "Apple Container"),
+    ],
+)
+def test_doctor_reports_apple_container_health_without_secrets(
+    monkeypatch, executable, status, expected
+):
+    monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+    monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_VOLUMES", '["/secret-value:/data"]')
+    monkeypatch.setattr(
+        "tools.environments.apple_container.find_container_cli", lambda: executable
+    )
+    monkeypatch.setattr(
+        "tools.environments.apple_container.is_apple_container_supported_host",
+        lambda: True,
+    )
+    if status is not None:
+        monkeypatch.setattr(
+            "tools.environments.apple_container.container_system_status",
+            lambda _executable=None: status,
+            raising=False,
+        )
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *args, **kwargs: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    output = buf.getvalue()
+    assert expected in output
+    assert "secret-value" not in output
+    if executable and status == (False, "stopped"):
+        assert "container system start" in output
+
+
+def test_doctor_rejects_apple_container_on_macos_25_arm64(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+    import tools.environments.apple_container as apple
+
+    monkeypatch.setattr(apple.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(apple.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(
+        apple.platform, "mac_ver", lambda: ("25.6", ("", "", ""), "")
+    )
+    monkeypatch.setattr(
+        apple, "find_container_cli", lambda: pytest.fail("CLI must not be probed")
+    )
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *args, **kwargs: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert "requires macOS 26" in buf.getvalue()
+
+
 # ── Memory provider section (doctor should only check the *active* provider) ──
 
 

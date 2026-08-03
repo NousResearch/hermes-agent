@@ -103,6 +103,18 @@ class TestSkipsRemoteBackends:
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         assert env_probe.get_environment_probe_line() == ""
 
+    def test_apple_container_suppresses_all_host_probes(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+
+        def fail(*args, **kwargs):
+            raise AssertionError("host probe must not run")
+
+        monkeypatch.setattr(env_probe, "_python_version_of", fail)
+        monkeypatch.setattr(env_probe, "_has_pip_module", fail)
+        monkeypatch.setattr(env_probe, "_detect_pep668", fail)
+        monkeypatch.setattr(env_probe, "_pip_python_version", fail)
+        assert env_probe._build_probe_line() == ""
+
 
 class TestCaching:
     """The probe runs once per process — the result is deterministic for

@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import sys
@@ -1400,7 +1401,6 @@ def setup_tts(config: dict):
 
 def setup_terminal_backend(config: dict):
     """Configure the terminal execution backend."""
-    import platform as _platform
     print_header("Terminal Backend")
     print_info("Choose where Hermes runs shell commands and code.")
     print_info("This affects tool execution, file access, and isolation.")
@@ -1408,7 +1408,10 @@ def setup_terminal_backend(config: dict):
     print()
 
     current_backend = cfg_get(config, "terminal", "backend", default="local")
-    is_linux = _platform.system() == "Linux"
+    is_linux = platform.system() == "Linux"
+    from tools.environments.apple_container import is_apple_container_supported_host
+
+    supports_apple_container = is_apple_container_supported_host()
 
     # Build backend choices with descriptions
     terminal_choices = [
@@ -1423,6 +1426,13 @@ def setup_terminal_backend(config: dict):
     backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
 
     next_idx = 6
+    if supports_apple_container:
+        terminal_choices.append(
+            "Apple Container - native Linux VM isolation on Apple Silicon"
+        )
+        idx_to_backend[next_idx] = "apple_container"
+        backend_to_idx["apple_container"] = next_idx
+        next_idx += 1
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1689,6 +1699,33 @@ def setup_terminal_backend(config: dict):
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         _prompt_vercel_sandbox_settings(config)
+
+    elif selected_backend == "apple_container":
+        print_success("Terminal backend: Apple Container")
+        print_info("Runs commands in a Linux VM using Apple's container CLI.")
+        from tools.environments.apple_container import (
+            container_system_status,
+            find_container_cli,
+        )
+
+        executable = find_container_cli()
+        if not executable:
+            print_warning("Apple Container CLI not found.")
+            print_info("Install Apple Container manually, then run: container system start")
+        else:
+            running, _detail = container_system_status(executable)
+            if running:
+                print_info(f"Apple Container system running: {executable}")
+            else:
+                print_warning("Apple Container system is not running.")
+                print_info("Start it manually with: container system start")
+
+        terminal = config["terminal"]
+        terminal.setdefault("apple_container_image", "python:3.11-slim-bookworm")
+        terminal.setdefault("apple_container_volumes", [])
+        terminal["container_cpu"] = 4
+        terminal["container_memory"] = 5120
+        terminal["container_persistent"] = True
 
     elif selected_backend in plugin_backend_names:
         try:

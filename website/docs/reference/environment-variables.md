@@ -245,7 +245,7 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 
 | Variable | Description |
 |----------|-------------|
-| `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona`, `vercel_sandbox` |
+| `TERMINAL_ENV` | Backend: `local`, `docker`, `apple_container`, `ssh`, `singularity`, `modal`, `daytona`, `vercel_sandbox` |
 | `HERMES_DOCKER_BINARY` | Override the container binary Hermes shells out to (e.g. `podman`, `/usr/local/bin/docker`). When unset, Hermes auto-discovers `docker` or `podman` on `PATH`. Needed when both are installed and you want the non-default, or when the binary lives outside `PATH`. |
 | `TERMINAL_DOCKER_IMAGE` | Docker image (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
 | `TERMINAL_DOCKER_FORWARD_ENV` | JSON array of env var names to explicitly forward into Docker terminal sessions. Note: skill-declared `required_environment_variables` are forwarded automatically — you only need this for vars not declared by any skill. |
@@ -256,6 +256,8 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 | `TERMINAL_SINGULARITY_IMAGE` | Singularity image or `.sif` path |
 | `TERMINAL_MODAL_IMAGE` | Modal container image |
 | `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |
+| `TERMINAL_APPLE_CONTAINER_IMAGE` | Apple Container image (default: `python:3.11-slim-bookworm`) |
+| `TERMINAL_APPLE_CONTAINER_VOLUMES` | JSON array of Apple Container bind mounts in `HOST:TARGET[:ro]` form |
 | `TERMINAL_VERCEL_RUNTIME` | Vercel Sandbox runtime (`node24`, `node22`, `python3.13`) |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
@@ -274,7 +276,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_SSH_KEY` | Path to private key |
 | `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH (default: follows `TERMINAL_PERSISTENT_SHELL`) |
 
-## Container Resources (Docker, Singularity, Modal, Daytona)
+## Container Resources (Docker, Singularity, Modal, Daytona, Vercel Sandbox, Apple Container)
 
 | Variable | Description |
 |----------|-------------|

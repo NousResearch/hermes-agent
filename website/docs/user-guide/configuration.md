@@ -170,11 +170,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, an Apple Container Linux VM, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | apple_container | ssh | modal | daytona | vercel_sandbox | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
@@ -208,6 +208,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 |---------|-------------------|-----------|----------|
 | **local** | Your machine directly | None | Development, personal use |
 | **docker** | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
+| **apple_container** | Per-task Linux VM through Apple's `container` CLI | VM boundary | Native sandboxing on Apple Silicon Macs |
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
@@ -389,6 +390,35 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_TEMP_DIR` | `temp_dir` | Session temp root (local backend) |
 | `TERMINAL_TIMEOUT` | `timeout` | Per-command timeout |
 | `HERMES_DOCKER_BINARY` | _none_ | Force a specific docker/podman binary path |
+
+### Apple Container Backend
+
+Apple Container runs terminal, file, and `execute_code` operations for a task inside one Linux VM-backed container. It requires macOS 26 or later on Apple Silicon. Install Apple Container yourself and start its system service manually before selecting the backend:
+
+```bash
+container system start
+```
+
+Hermes setup, doctor, and Desktop only inspect the CLI and service status. They do not install software or start the service.
+
+```yaml
+terminal:
+  backend: apple_container
+  apple_container_image: "python:3.11-slim-bookworm"
+  apple_container_volumes:
+    - "/absolute/host/data:/workspace/data"
+    - "/absolute/host/config:/workspace/config:ro"
+  container_cpu: 4
+  container_memory: 5120
+  container_persistent: true
+  timeout: 180
+```
+
+User-declared volumes use `HOST:TARGET` or `HOST:TARGET:ro`. They are writable unless explicitly suffixed with `:ro`. Both paths must be absolute. Hermes automatically exposes configured credential files, skill directories, and cache directories with structured read-only bind mounts; persistent `/workspace` and `/root` storage remains writable.
+
+Commands execute in Linux, not on the macOS host. Host paths such as `/Users/name/project` and host-only tools are not directly available unless you explicitly mount them. The initial backend is one container per Hermes task; multi-container Compose-style services and custom container networking are not supported.
+
+Environment overrides are `TERMINAL_APPLE_CONTAINER_IMAGE` and `TERMINAL_APPLE_CONTAINER_VOLUMES` (the latter is a JSON array). Shared `TERMINAL_CONTAINER_CPU`, `TERMINAL_CONTAINER_MEMORY`, `TERMINAL_CONTAINER_PERSISTENT`, and `TERMINAL_TIMEOUT` overrides also apply.
 
 ### SSH Backend
 

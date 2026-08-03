@@ -22,6 +22,8 @@ def _reset_bridge_state(monkeypatch):
         "TERMINAL_ENV",
         "TERMINAL_CWD",
         "TERMINAL_DOCKER_IMAGE",
+        "TERMINAL_APPLE_CONTAINER_IMAGE",
+        "TERMINAL_APPLE_CONTAINER_VOLUMES",
         "TERMINAL_SSH_HOST",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -152,3 +154,36 @@ def test_bridge_config_failure_does_not_crash(monkeypatch):
 
     assert config["env_type"] == "ssh"
     assert config["ssh_host"] == "example.test"
+
+
+def test_apple_container_config_bridges_image_and_volumes():
+    _write_config(
+        "terminal:\n"
+        "  backend: apple_container\n"
+        "  apple_container_image: python:3.12-slim\n"
+        "  apple_container_volumes:\n"
+        "    - /host/data:/workspace/data:ro\n"
+    )
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "apple_container"
+    assert config["apple_container_image"] == "python:3.12-slim"
+    assert config["apple_container_volumes"] == ["/host/data:/workspace/data:ro"]
+
+
+def test_invalid_apple_volume_json_is_ignored_for_local(monkeypatch):
+    _write_config("{}\n")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_VOLUMES", "not-json")
+
+    assert terminal_tool._get_env_config()["apple_container_volumes"] == []
+
+
+def test_invalid_apple_volume_json_is_rejected_when_selected(monkeypatch):
+    _write_config("{}\n")
+    monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+    monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_VOLUMES", "not-json")
+
+    with pytest.raises(ValueError, match="TERMINAL_APPLE_CONTAINER_VOLUMES"):
+        terminal_tool._get_env_config()

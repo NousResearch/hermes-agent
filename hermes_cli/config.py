@@ -3942,6 +3942,8 @@ TERMINAL_CONFIG_ENV_MAP = {
     "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
     "modal_image": "TERMINAL_MODAL_IMAGE",
     "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "apple_container_image": "TERMINAL_APPLE_CONTAINER_IMAGE",
+    "apple_container_volumes": "TERMINAL_APPLE_CONTAINER_VOLUMES",
     "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
@@ -5224,6 +5226,12 @@ def show_config():
     elif terminal.get('backend') == 'vercel_sandbox':
         print(f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}")
         print(f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}")
+    elif terminal.get('backend') == 'apple_container':
+        print(f"  Apple image:  {terminal.get('apple_container_image', 'python:3.11-slim-bookworm')}")
+        print(f"  Apple volumes: {len(terminal.get('apple_container_volumes', []))} configured")
+        print(f"  CPUs:         {terminal.get('container_cpu', 4)}")
+        print(f"  Memory:       {terminal.get('container_memory', 5120)} MB")
+        print(f"  Persistent:   {'yes' if terminal.get('container_persistent', True) else 'no'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')

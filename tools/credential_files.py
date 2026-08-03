@@ -522,11 +522,11 @@ def from_agent_visible_cache_path(
     """Translate a sandbox/container cache path back to its host path.
 
     Inverse of :func:`to_agent_visible_cache_path`. Returns the input unchanged
-    when the active backend is not Docker, or when the path is not under any
+    when the active backend does not use local bind mounts, or when the path is not under any
     auto-mounted cache directory — the caller then treats a still-container
     path as "no host file" and falls back to an in-container read.
     """
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+    if os.environ.get("TERMINAL_ENV", "local") not in {"docker", "apple_container"}:
         return container_path
 
     path = Path(container_path)
@@ -553,8 +553,9 @@ def to_agent_visible_cache_path(
     tools/image_generation_tool.py, the proven heuristics for where each
     backend's Hermes cache lands):
 
-    * docker / modal — bind-mounted (docker) or per-file-synced (modal) at
-      ``/root/.hermes`` (the *container_base* default).
+    * docker / modal / apple_container — bind-mounted (docker, apple_container)
+      or per-file-synced (modal) at ``/root/.hermes`` (the *container_base*
+      default).
     * ssh / daytona / vercel_sandbox — file-synced under the remote user's
       home; ``~/.hermes`` is shell-expanded by the remote shell, so tool
       commands resolve it regardless of the actual remote home. Previously
@@ -568,7 +569,7 @@ def to_agent_visible_cache_path(
     tools/terminal_tool.py reads in _get_environment_config).
     """
     backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
-    if backend in ("docker", "modal"):
+    if backend in ("docker", "modal", "apple_container"):
         pass  # /root/.hermes default
     elif backend in ("ssh", "daytona", "vercel_sandbox"):
         container_base = "~/.hermes"
@@ -620,5 +621,4 @@ def iter_cache_files(
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
-
 

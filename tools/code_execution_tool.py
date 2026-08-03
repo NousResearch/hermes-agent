@@ -908,6 +908,11 @@ def _get_or_create_env(task_id: str):
             image = overrides.get("modal_image") or config["modal_image"]
         elif env_type == "daytona":
             image = overrides.get("daytona_image") or config["daytona_image"]
+        elif env_type == "apple_container":
+            image = (
+                overrides.get("apple_container_image")
+                or config["apple_container_image"]
+            )
         else:
             image = ""
 
@@ -923,6 +928,12 @@ def _get_or_create_env(task_id: str):
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
                 "vercel_runtime": config.get("vercel_runtime", ""),
+                "apple_container_image": config.get(
+                    "apple_container_image", "python:3.11-slim-bookworm"
+                ),
+                "apple_container_volumes": config.get(
+                    "apple_container_volumes", []
+                ),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 "docker_network": config.get("docker_network", True),

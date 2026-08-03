@@ -306,6 +306,7 @@ def _process_single_prompt(
             "modal_image": container_image,
             "singularity_image": f"docker://{container_image}",
             "daytona_image": container_image,
+            "apple_container_image": container_image,
         }
         if prompt_data.get("cwd"):
             overrides["cwd"] = prompt_data["cwd"]
@@ -1377,4 +1378,3 @@ def main(
 
 if __name__ == "__main__":
     fire.Fire(main)
-

@@ -778,6 +778,13 @@ async def select_terminal_backend(
                 if not isinstance(terminal_cfg, dict):
                     terminal_cfg = {}
                     config["terminal"] = terminal_cfg
+                if backend == "apple_container":
+                    status, detail = _probe_terminal_backend(backend, terminal_cfg)
+                    if status == "unavailable":
+                        raise HTTPException(
+                            status_code=400,
+                            detail=detail or "Apple Container is unavailable on this host.",
+                        )
                 terminal_cfg["backend"] = backend
                 save_config(config)
 

@@ -758,6 +758,25 @@ class TestEnvironmentHints:
         assert "Terminal backend: docker" in result
         assert "inside" in result.lower()
 
+    def test_build_environment_hints_suppresses_macos_host_for_apple_container(
+        self, monkeypatch
+    ):
+        import agent.prompt_builder as _pb
+        import sys
+
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _type: None)
+        _pb._clear_backend_probe_cache()
+
+        result = _pb.build_environment_hints()
+
+        assert "Host: macOS" not in result
+        assert "User home directory:" not in result
+        assert "Terminal backend: apple_container" in result
+        assert "Linux VM via Apple Container" in result
+
     def test_build_environment_hints_uses_terminal_cwd_over_launch_dir(self, monkeypatch, tmp_path):
         """THE BUG: gateway/cron set TERMINAL_CWD but the prompt emitted os.getcwd()
         (the daemon launch dir). Regression for #24882/#24969/#27383/#29265."""
@@ -942,6 +961,64 @@ class TestEnvironmentHints:
         assert _pb._probe_remote_backend("ssh") is not None
         assert calls == []
 
+    def test_probe_remote_backend_passes_apple_configuration(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool as _tt
+
+        _pb._clear_backend_probe_cache()
+        config = {
+            "apple_container_image": "python:3.12-slim",
+            "apple_container_volumes": ["/host/data:/workspace/data:ro"],
+            "cwd": "/workspace",
+            "timeout": 42,
+            "container_cpu": 4,
+            "container_memory": 6144,
+            "container_disk": 51200,
+            "container_persistent": True,
+        }
+        captured = {}
+
+        class FakeEnvironment:
+            def execute(self, command, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": "os=Linux\nkernel=6.8\nhome=/root\ncwd=/workspace\nuser=root\n",
+                }
+
+        monkeypatch.setattr(_tt, "_get_env_config", lambda: config)
+        monkeypatch.setattr(
+            _tt,
+            "_create_environment",
+            lambda **kwargs: captured.update(kwargs) or FakeEnvironment(),
+        )
+
+        line = _pb._probe_remote_backend("apple_container")
+
+        assert captured["image"] == "python:3.12-slim"
+        assert captured["container_config"]["apple_container_volumes"] == [
+            "/host/data:/workspace/data:ro"
+        ]
+        assert line is not None and "Linux 6.8" in line
+
+    def test_probe_remote_backend_cleans_up_temporary_environment(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool as _tt
+
+        _pb._clear_backend_probe_cache()
+        cleaned = []
+
+        class FakeEnvironment:
+            def execute(self, command, timeout=None):
+                raise RuntimeError("probe failed")
+
+            def cleanup(self):
+                cleaned.append(True)
+
+        monkeypatch.setattr(_tt, "_get_env_config", lambda: {})
+        monkeypatch.setattr(_tt, "_create_environment", lambda **_kwargs: FakeEnvironment())
+
+        assert _pb._probe_remote_backend("apple_container") is None
+        assert cleaned == [True]
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
@@ -960,7 +1037,10 @@ class TestEnvironmentHints:
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
         import agent.prompt_builder as _pb
-        for backend in ("docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox"):
+        for backend in (
+            "docker", "singularity", "modal", "daytona", "ssh",
+            "vercel_sandbox", "apple_container",
+        ):
             assert backend in _pb._REMOTE_TERMINAL_BACKENDS, (
                 f"{backend!r} must be in _REMOTE_TERMINAL_BACKENDS so its host "
                 f"info is suppressed in the system prompt"

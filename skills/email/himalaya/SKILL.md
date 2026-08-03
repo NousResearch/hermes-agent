@@ -27,7 +27,7 @@ This skill is separate from the Hermes Email gateway adapter. The gateway adapte
 | `folder.aliases.sent` (singular, TOML sub-table) | `mailbox.alias.sent` (plural, dotted key under account) |
 | `[accounts.X] backend = { type=imap, host=..., port=..., auth={...} }` | Flat keys: `imap.server`, `imap.sasl.plain.username`, `imap.sasl.plain.password.command` |
 | `envelope list from x` (positional filters) | `envelope list`; filters moved to separate `envelope search "from x"` subcommand with its own DSL |
-| `message write` (no piped input) / `message reply` | `message compose --to ... --subject ... --body ...`; rich MIME via piped `mml`; legacy `template send` still exists |
+| `message write` (no piped input) / `message reply` | `message compose --to ... --subject ... --body ...`; rich MIME via piped `mml`; `message write` is an alias of `message compose` (no editor) |
 | `--output json` / `plain` | `--json` (global flag) |
 | Native keyring support | Removed; use `pass`, `gopass`, `secret-tool` via `password.command` |
 | OAuth flows built in | None; use [ortie](https://github.com/pimalaya/ortie) as token broker |
@@ -228,17 +228,23 @@ himalaya message compose \
   --send
 ```
 
-The legacy path (piped RFC 822 over stdin) still works:
+For a body from stdin (replaces the removed `template send` subcommand), **omit `--body` and `--body-file` — stdin is the body** by default:
 
 ```bash
-cat << 'EOF' | himalaya template send
-From: you@example.com
-To: recipient@example.com
-Subject: Test Message
+echo "Hello from a piped body" | himalaya message compose \
+  --to you@example.com \
+  --subject "Test"
 
-Hello from Himalaya v2!
-EOF
+# Or read the body from a file
+himalaya message compose \
+  --to you@example.com \
+  --subject "Test" \
+  --body-file ./body.txt
 ```
+
+Note: `--body-file -` does NOT work — the binary tries to open a file literally named `-`. The `--body` / `--body-file` / implicit stdin paths are mutually exclusive; pick one.
+
+For rich MIME (multipart, attachments, signing), pipe `mml` output into `message compose` via stdin or process substitution; see `references/message-composition.md`.
 
 ### Reply to a message
 

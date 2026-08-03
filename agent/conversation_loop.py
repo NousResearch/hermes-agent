@@ -2055,6 +2055,13 @@ def run_conversation(
                 conversation_history = conversation_history_after_compression(
                     agent, messages, conversation_history
                 )
+                # Reset the compression attempt counter after a successful
+                # compaction.  Without this, each successful in-place
+                # compression consumes the same budget as a failed/no-progress
+                # retry, and the turn permanently loses the ability to
+                # compress once the cap is reached — even though every earlier
+                # compaction made substantial progress.  See #72451.
+                compression_attempts = 0
                 api_call_count -= 1
                 agent._api_call_count = api_call_count
                 agent.iteration_budget.refund()

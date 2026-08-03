@@ -1186,6 +1186,16 @@ class _SessionFlight:
         self.error: Optional[BaseException] = None
 
 
+@dataclass
+class _SessionRecoveryDecision:
+    """Outcome of evaluating one durable row for gateway recovery."""
+
+    entry: Optional["SessionEntry"] = None
+    previous_session_id: Optional[str] = None
+    reset_reason: Optional[str] = None
+    had_activity: bool = False
+
+
 class AsyncSessionStore:
     """Async boundary for the synchronous, thread-safe SessionStore."""
 
@@ -1812,11 +1822,20 @@ class SessionStore:
             created_at = datetime.fromtimestamp(float(started_at)) if started_at else now
         except (TypeError, ValueError, OSError):
             created_at = now
+        last_active = row.get("last_active")
+        try:
+            updated_at = (
+                datetime.fromtimestamp(float(last_active))
+                if last_active
+                else now
+            )
+        except (TypeError, ValueError, OSError):
+            updated_at = now
         return SessionEntry(
             session_key=session_key,
             session_id=str(row["id"]),
             created_at=created_at,
-            updated_at=now,
+            updated_at=updated_at,
             origin=source,
             display_name=source.chat_name,
             platform=source.platform,
@@ -1862,15 +1881,106 @@ class SessionStore:
                 raise
             return None
 
-    def _recover_session_from_db(
+    @staticmethod
+    def _recovered_row_had_activity(row: Dict[str, Any]) -> bool:
+        """Return whether the durable row still has transcript messages."""
+        has_messages = row.get("has_messages")
+        if has_messages is not None:
+            try:
+                return bool(int(has_messages))
+            except (TypeError, ValueError):
+                return bool(has_messages)
+        try:
+            return int(row.get("message_count") or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def _reopen_recovered_session_if_safe(self, session_id: str) -> bool:
+        """Atomically reopen only rows that remain recoverable in state.db."""
+        if not self._db:
+            return False
+        reopen_if_safe = getattr(self._db, "reopen_recoverable_session", None)
+        try:
+            if callable(reopen_if_safe):
+                return bool(reopen_if_safe(session_id))
+
+            # Backward compatibility for lightweight SessionDB doubles and
+            # older external implementations. The in-tree SessionDB always
+            # provides the conditional operation above.
+            self._db.reopen_session(session_id)
+            return True
+        except Exception as exc:
+            logger.debug(
+                "Gateway session DB safe reopen failed for %s: %s",
+                session_id,
+                exc,
+            )
+            return False
+
+    def _evaluate_recovered_session(
+        self,
+        *,
+        recovered: Dict[str, Any],
+        session_key: str,
+        source: SessionSource,
+        now: datetime,
+    ) -> _SessionRecoveryDecision:
+        """Apply reset policy before allowing a durable row to be recovered."""
+        entry = self._create_entry_from_recovered_row(
+            row=recovered,
+            session_key=session_key,
+            source=source,
+            now=now,
+        )
+        previous_session_id = entry.session_id
+        reset_reason = self._should_reset(entry, source)
+        if reset_reason:
+            # Expiry is an intentional boundary. Promote accidental recoverable
+            # closures too, so a later lookup cannot resurrect this transcript.
+            try:
+                promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(promote):
+                    promote(previous_session_id, reset_reason)
+                elif self._db:
+                    self._db.end_session(previous_session_id, reset_reason)
+            except Exception as exc:
+                logger.debug(
+                    "Gateway session DB reset promotion failed for %s: %s",
+                    previous_session_id,
+                    exc,
+                )
+            return _SessionRecoveryDecision(
+                previous_session_id=previous_session_id,
+                reset_reason=reset_reason,
+                had_activity=self._recovered_row_had_activity(recovered),
+            )
+
+        # The row can change after the SELECT. A conditional UPDATE is the
+        # commit point: if another process explicitly closed it meanwhile,
+        # refuse to reopen it and create a fresh session instead.
+        if not self._reopen_recovered_session_if_safe(previous_session_id):
+            logger.info(
+                "Gateway session DB recovery skipped %s because it is no "
+                "longer safely recoverable",
+                previous_session_id,
+            )
+            return _SessionRecoveryDecision()
+
+        # Reset policy was evaluated against the real last message time.
+        # Once this inbound access has been admitted, preserve the historical
+        # behavior of treating the recovered routing entry as active now.
+        entry.updated_at = now
+        return _SessionRecoveryDecision(entry=entry)
+
+    def _recover_session_decision(
         self,
         *,
         session_key: str,
         source: SessionSource,
         now: datetime,
         raise_on_lookup_error: bool = False,
-    ) -> Optional[SessionEntry]:
-        """Rebuild a missing session-key mapping from durable state.db data."""
+    ) -> _SessionRecoveryDecision:
+        """Look up and safely classify one durable gateway session."""
         legacy_key = self._legacy_slack_session_key(source)
         recovered = self._find_gateway_session_row(
             session_key=session_key,
@@ -1891,10 +2001,10 @@ class SessionStore:
                 raise_on_lookup_error=raise_on_lookup_error,
             )
             migrated_legacy = bool(recovered)
-        if not recovered:
-            return None
+        if not isinstance(recovered, dict):
+            return _SessionRecoveryDecision()
         if not self._recovered_row_matches_source_scope(recovered, source):
-            return None
+            return _SessionRecoveryDecision()
         if not self._recovered_row_allowed_for_active_profile(
             requested_session_key=session_key,
             recovered=recovered,
@@ -1906,83 +2016,54 @@ class SessionStore:
                 recovered.get("session_key"),
                 session_key,
             )
-            return None
-        try:
-            self._db.reopen_session(str(recovered["id"]))
-        except Exception as exc:
-            logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
-        entry = self._create_entry_from_recovered_row(
-            row=recovered,
+            return _SessionRecoveryDecision()
+
+        decision = self._evaluate_recovered_session(
+            recovered=recovered,
             session_key=session_key,
             source=source,
             now=now,
         )
-        if migrated_legacy:
+        if migrated_legacy and decision.entry is not None:
             self._record_gateway_session_peer(
-                entry.session_id,
+                decision.entry.session_id,
                 session_key,
                 source,
-                display_name=entry.display_name,
+                display_name=decision.entry.display_name,
             )
-        return entry
+        return decision
+
+    def _recover_session_from_db(
+        self,
+        *,
+        session_key: str,
+        source: SessionSource,
+        now: datetime,
+        raise_on_lookup_error: bool = False,
+    ) -> Optional[SessionEntry]:
+        """Rebuild a missing session-key mapping from durable state.db data."""
+        decision = self._recover_session_decision(
+            session_key=session_key,
+            source=source,
+            now=now,
+            raise_on_lookup_error=raise_on_lookup_error,
+        )
+        return decision.entry
 
     def _query_recoverable_session(
         self, *, session_key, source, now, lookup_session_key=None
-    ):
+    ) -> _SessionRecoveryDecision:
         """DB-only half of _recover_session_from_db (no lock needed).
 
-        Returns a SessionEntry or None.  Caller assigns _entries[key] under lock.
+        Returns a recovery decision. Caller publishes its entry or carries its
+        reset metadata into a new session under the routing lock.
         """
-        legacy_key = self._legacy_slack_session_key(source)
-        recovered = self._find_gateway_session_row(
+        return self._recover_session_decision(
             session_key=session_key,
             source=source,
-            allow_peer_fallback=legacy_key is None,
+            now=now,
         )
-        migrated_legacy = False
-        if (
-            not recovered
-            and legacy_key
-            and self._claim_legacy_slack_key(legacy_key)
-        ):
-            recovered = self._find_gateway_session_row(
-                session_key=legacy_key,
-                source=source,
-                allow_peer_fallback=False,
-            )
-            migrated_legacy = bool(recovered)
-        if not isinstance(recovered, dict):
-            return None
-        if not self._recovered_row_matches_source_scope(recovered, source):
-            return None
-        if not self._recovered_row_allowed_for_active_profile(
-            requested_session_key=session_key,
-            recovered=recovered,
-        ):
-            logger.warning(
-                "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
-                recovered.get("session_key"),
-                session_key,
-            )
-            return None
-        try:
-            self._db.reopen_session(str(recovered["id"]))
-        except Exception as exc:
-            logger.debug("Gateway session DB reopen failed for %s: %s",
-                         session_key, exc)
-        entry = self._create_entry_from_recovered_row(
-            row=recovered, session_key=session_key, source=source, now=now,
-        )
-        if migrated_legacy:
-            self._record_gateway_session_peer(
-                entry.session_id,
-                session_key,
-                source,
-                display_name=entry.display_name,
-            )
-        return entry
+
     def _record_gateway_session_peer(
         self,
         session_id: str,
@@ -2540,17 +2621,22 @@ class SessionStore:
             # _query_recoverable_session (#20583/#66398 design): it performs
             # the exact-key legacy lookup, claims the key once per process,
             # and rewrites the peer row to the scoped key on success.
-            recovered = self._query_recoverable_session(
+            recovery = self._query_recoverable_session(
                 session_key=session_key, source=source, now=now,
             )
-            if recovered is not None:
+            if recovery.entry is not None:
                 with self._lock:
                     published = self._entries.get(session_key)
                     if published is None:
-                        self._entries[session_key] = recovered
-                        published = recovered
+                        self._entries[session_key] = recovery.entry
+                        published = recovery.entry
                 entry = published
                 _needs_save = True
+            elif recovery.reset_reason:
+                was_auto_reset = True
+                auto_reset_reason = recovery.reset_reason
+                reset_had_activity = recovery.had_activity
+                prev_session_id = recovery.previous_session_id
 
         if entry is None:
             # Create a candidate outside the lock, then publish only if another

@@ -48,6 +48,7 @@ def _db_returning(rows: dict) -> MagicMock:
     # By default recovery finds nothing (forces a fresh session).
     db.find_latest_gateway_session_for_peer.return_value = None
     db.reopen_session.return_value = None
+    db.reopen_recoverable_session.return_value = True
     db.create_session.return_value = None
     # No compression continuation → the tip is the session itself (identity),
     # mirroring the real SessionDB.get_compression_tip. Without this a bare Mock
@@ -113,7 +114,7 @@ class TestRuntimeStaleGuard:
         result = store.get_or_create_session(source)
 
         assert result.session_id == "sid_stale"
-        db.reopen_session.assert_called_once_with("sid_stale")
+        db.reopen_recoverable_session.assert_called_once_with("sid_stale")
         db.create_session.assert_not_called()
 
 
@@ -186,5 +187,3 @@ class TestAdvanceCompressionSession:
         assert store.peek_session_id(key) == "sid_tip"
         db.end_session.assert_not_called()
         db.reopen_session.assert_not_called()
-
-

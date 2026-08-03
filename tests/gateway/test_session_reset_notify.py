@@ -174,6 +174,7 @@ def _make_db_mock() -> MagicMock:
     db.get_compression_tip.return_value = None  # avoids MagicMock leaking into session_id
     db.find_latest_gateway_session_for_peer.return_value = None
     db.reopen_session.return_value = None
+    db.reopen_recoverable_session.return_value = True
     db.create_session.return_value = None
     return db
 
@@ -282,4 +283,3 @@ class TestResumePendingExpiredAutoReset:
         db.promote_to_session_reset.assert_called_once()
         _, ended_reason = db.promote_to_session_reset.call_args.args
         assert ended_reason == "idle"
-

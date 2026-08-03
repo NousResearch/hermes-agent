@@ -62,6 +62,7 @@ def _db_with_rows(rows: dict) -> MagicMock:
     db.get_session.side_effect = lambda sid: rows.get(sid)
     db.find_latest_gateway_session_for_peer.return_value = None
     db.reopen_session.return_value = None
+    db.reopen_recoverable_session.return_value = True
     db.create_session.return_value = None
     # Identity compression tip (no child session).
     db.get_compression_tip.side_effect = lambda sid: sid
@@ -252,5 +253,3 @@ def test_auto_reset_does_not_recover_session_being_ended(tmp_path):
         old.session_id, "suspended"
     )
     db.end_session.assert_not_called()
-
-

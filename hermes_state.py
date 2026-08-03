@@ -3221,13 +3221,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         (dashboard viewer disconnect before #60609) are treated as recoverable;
         explicit conversation boundaries such as /new, /resume switches, and
         compression splits are not.
+
+        ``last_active`` is the newest durable message timestamp, falling back
+        to ``started_at`` when no message timestamp exists. ``has_messages``
+        reports whether transcript rows are still present. Recovery uses both
+        fields to apply reset policy before reopening the row.
         """
         if not session_key:
             return None
         with self._lock:
             row = self._conn.execute(
                 """
-                SELECT * FROM sessions
+                SELECT sessions.*,
+                       COALESCE(
+                           (SELECT MAX(m.timestamp) FROM messages m
+                            WHERE m.session_id = sessions.id),
+                           sessions.started_at
+                       ) AS last_active,
+                       EXISTS(
+                           SELECT 1 FROM messages m
+                           WHERE m.session_id = sessions.id
+                       ) AS has_messages
+                FROM sessions
                 WHERE session_key = ?
                   AND source = ?
                   AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
@@ -3249,7 +3264,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 return None
             row = self._conn.execute(
                 """
-                SELECT * FROM sessions
+                SELECT sessions.*,
+                       COALESCE(
+                           (SELECT MAX(m.timestamp) FROM messages m
+                            WHERE m.session_id = sessions.id),
+                           sessions.started_at
+                       ) AS last_active,
+                       EXISTS(
+                           SELECT 1 FROM messages m
+                           WHERE m.session_id = sessions.id
+                       ) AS has_messages
+                FROM sessions
                 WHERE source = ?
                   AND COALESCE(user_id, '') = COALESCE(?, '')
                   AND COALESCE(chat_id, '') = COALESCE(?, '')
@@ -3432,6 +3457,29 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (session_id,),
             )
         self._execute_write(_do)
+
+    def reopen_recoverable_session(self, session_id: str) -> bool:
+        """Atomically reopen a row only while gateway recovery still owns it.
+
+        The recovery SELECT and this write are separate operations. Another
+        process may establish an explicit conversation boundary between them;
+        in that case the conditional update must fail rather than resurrecting
+        the closed session. Live rows and the two known accidental closure
+        reasons remain recoverable.
+        """
+        if not session_id:
+            return False
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
+                "WHERE id = ? AND (ended_at IS NULL "
+                "OR end_reason IN ('agent_close', 'ws_orphan_reap'))",
+                (session_id,),
+            )
+            return cursor.rowcount
+
+        return bool(self._execute_write(_do))
 
     def promote_to_session_reset(
         self, session_id: str, reason: str = "session_reset"

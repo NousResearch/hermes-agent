@@ -53,6 +53,13 @@ class FactRetriever:
         """FTS5 candidates (limit*3) → Jaccard + HRR rerank → trust weighting → optional temporal decay
         0.5^(age_days / half_life). Returns fact dicts with 'score', sorted desc."""
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
+        # Entity names and aliases can describe a fact without appearing in its
+        # content. Keep the existing reranker, supplementing only thin recall.
+        if len(candidates) < limit:
+            candidates += self._entity_candidates(
+                query, category, min_trust, limit - len(candidates),
+                exclude_ids={f["fact_id"] for f in candidates},
+            )
         query_tokens = self._tokenize(query)
         # Query vector is loop-invariant; encode lazily on the first candidate that carries an HRR vector
         # so stores whose hrr_vector was never backfilled don't pay for it.
@@ -165,6 +172,50 @@ class FactRetriever:
         for fact in scored:
             fact["score"] = _shift(sim_fn(fact, self._phases(fact.pop("hrr_vector")))) * fact["trust_score"]
         return sorted(scored, key=lambda x: x["score"], reverse=True)[:limit]
+
+    def _entity_candidates(self, query: str, category: str | None, min_trust: float,
+                           limit: int, exclude_ids: set[int]) -> list[dict]:
+        """Supplement sparse lexical recall from stored entity names/aliases.
+
+        This is a lexical bridge through explicit links, not inferred semantic
+        synonym matching. Filter and deduplicate before applying the budget.
+        """
+        query_tokens = self._tokenize(query) - _FTS_STOPWORDS
+        if not query_tokens or limit <= 0:
+            return []
+        try:
+            conn = self.store._conn
+            matched_ids = [
+                row["entity_id"]
+                for row in conn.execute("SELECT entity_id, name, aliases FROM entities")
+                if query_tokens & self._tokenize(
+                    f"{row['name'] or ''} {(row['aliases'] or '').replace(',', ' ')}"
+                )
+            ]
+            if not matched_ids:
+                return []
+            # One JSON parameter avoids SQLite's variable limit for large
+            # entity catalogs; EXISTS prevents duplicate facts consuming slots.
+            import json
+            where = "f.trust_score >= ?"
+            params = [min_trust]
+            if category:
+                where += " AND f.category = ?"
+                params.append(category)
+            if exclude_ids:
+                where += " AND f.fact_id NOT IN (SELECT value FROM json_each(?))"
+                params.append(json.dumps(sorted(exclude_ids)))
+            params.extend([json.dumps(matched_ids), limit])
+            rows = conn.execute(
+                f"SELECT f.* FROM facts f WHERE {where} AND EXISTS ("
+                "SELECT 1 FROM fact_entities fe WHERE fe.fact_id = f.fact_id "
+                "AND fe.entity_id IN (SELECT value FROM json_each(?))) "
+                "ORDER BY f.trust_score DESC, f.fact_id LIMIT ?", params,
+            ).fetchall()
+        except Exception:
+            # An unavailable optional index must not discard working FTS hits.
+            return []
+        return [dict(row, fts_rank=0.0) for row in rows]
 
     def _fts_candidates(self, query: str, category: str | None, min_trust: float, limit: int) -> list[dict]:
         """Raw FTS5 MATCH candidates with rank normalized to [0, 1] as 'fts_rank'."""

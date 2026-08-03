@@ -4161,6 +4161,7 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     OpenCode routes different models behind different API surfaces:
 
     - GPT-5 / Codex models on Zen use ``/v1/responses``
+    - GPT models on Go (gpt-5.6-luna) use ``/v1/responses``
     - Claude models on Zen use ``/v1/messages``
     - MiniMax and Qwen models on Go use ``/v1/messages``
     - GLM / Kimi / DeepSeek / MiMo on Go use ``/v1/chat/completions``
@@ -4177,6 +4178,11 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
         return "chat_completions"
 
     if provider == "opencode-go":
+        if normalized.startswith("gpt-"):
+            # GPT models on Go (gpt-5.6-luna) are served via /v1/responses
+            # per the published Go endpoint table, same as GPT on Zen:
+            # https://opencode.ai/docs/go/#endpoints
+            return "codex_responses"
         if normalized.startswith("minimax-"):
             return "anthropic_messages"
         if normalized.startswith("qwen"):

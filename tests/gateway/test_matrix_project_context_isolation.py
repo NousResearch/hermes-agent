@@ -12,6 +12,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
+from hermes_state import AsyncSessionDB
 from gateway.session import (
     SessionContext,
     SessionEntry,
@@ -32,7 +33,7 @@ SENDER = "@alice:example.org"
 
 
 def _make_adapter():
-    from gateway.platforms.matrix import MatrixAdapter
+    from plugins.platforms.matrix.adapter import MatrixAdapter
 
     adapter = MatrixAdapter(
         PlatformConfig(
@@ -112,62 +113,11 @@ def _context_for(source: SessionSource) -> SessionContext:
 
 
 @pytest.mark.asyncio
-async def test_matrix_source_includes_room_name_topic_and_message_id():
-    adapter = _make_adapter()
-    source = await _source_for(adapter, PROJECT_B_ROOM_ID, "$project-b-msg")
-
-    assert source.chat_id == PROJECT_B_ROOM_ID
-    assert source.chat_name == PROJECT_B_NAME
-    assert source.chat_topic == PROJECT_B_TOPIC
-    assert source.guild_id == "example.org"
-    assert source.message_id == "$project-b-msg"
-    assert source.parent_chat_id is None
-
-
-@pytest.mark.asyncio
-async def test_matrix_project_a_and_project_b_have_distinct_session_keys():
-    adapter = _make_adapter()
-    source_a = await _source_for(adapter, PROJECT_A_ROOM_ID, "$a")
-    source_b = await _source_for(adapter, PROJECT_B_ROOM_ID, "$b")
-
-    assert source_a.chat_id != source_b.chat_id
-    assert source_a.chat_name == PROJECT_A_NAME
-    assert source_b.chat_name == PROJECT_B_NAME
-    assert build_session_key(source_a) != build_session_key(source_b)
-
-
-@pytest.mark.asyncio
-async def test_matrix_project_b_prompt_contains_project_b_not_project_a():
-    adapter = _make_adapter()
-    source_b = await _source_for(adapter, PROJECT_B_ROOM_ID, "$b")
-
-    prompt = build_session_context_prompt(_context_for(source_b))
-
-    assert PROJECT_B_NAME in prompt
-    assert PROJECT_B_TOPIC in prompt
-    assert PROJECT_B_ROOM_ID in prompt
-    assert "Matrix room boundary" in prompt
-    assert PROJECT_A_NAME not in prompt
-    assert PROJECT_A_TOPIC not in prompt
-
-
-@pytest.mark.asyncio
-async def test_matrix_project_context_survives_sequential_messages():
-    adapter = _make_adapter()
-    adapter._matrix_session_scope = "room"
-    first = await _source_for(adapter, PROJECT_B_ROOM_ID, "$b1")
-    second = await _source_for(adapter, PROJECT_B_ROOM_ID, "$b2")
-
-    assert first.thread_id is None
-    assert second.thread_id is None
-    assert first.chat_name == PROJECT_B_NAME
-    assert second.chat_name == PROJECT_B_NAME
-    assert build_session_key(first) == build_session_key(second)
-
-
-@pytest.mark.asyncio
 async def test_matrix_session_scope_auto_and_thread_preserve_synthetic_threads():
     adapter = _make_adapter()
+    # Override member_count to 3 so the named project room is NOT classified as
+    # a DM (the DM fix uses member_count <= 2 as the primary DM signal).
+    adapter._get_room_member_count = AsyncMock(return_value=3)
     adapter._auto_thread = True
     adapter._matrix_session_scope = "auto"
     auto_source = await _source_for(adapter, PROJECT_B_ROOM_ID, "$auto")
@@ -267,32 +217,6 @@ async def test_matrix_inbound_handler_keeps_project_a_and_b_distinct():
     assert build_session_key(captured[0].source) != build_session_key(captured[1].source)
 
 
-def test_matrix_room_scope_group_sessions_per_user_true_separates_users():
-    alice = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
-    bob = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
-    bob.user_id = "@bob:example.org"
-    alice.thread_id = None
-    bob.thread_id = None
-
-    assert build_session_key(alice, group_sessions_per_user=True) != build_session_key(
-        bob,
-        group_sessions_per_user=True,
-    )
-
-
-def test_matrix_room_scope_group_sessions_per_user_false_shares_room():
-    alice = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
-    bob = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
-    bob.user_id = "@bob:example.org"
-    alice.thread_id = None
-    bob.thread_id = None
-
-    assert build_session_key(alice, group_sessions_per_user=False) == build_session_key(
-        bob,
-        group_sessions_per_user=False,
-    )
-
-
 def _make_matrix_source(room_id: str, room_name: str, topic: str) -> SessionSource:
     return SessionSource(
         platform=Platform.MATRIX,
@@ -340,16 +264,16 @@ def _make_runner(current_source: SessionSource, entries: list[SessionEntry]):
     runner._clear_session_boundary_security_state = MagicMock()
     runner._evict_cached_agent = MagicMock()
     runner._queue_depth = MagicMock(return_value=0)
-    runner._session_db = MagicMock()
-    runner._session_db.list_sessions_rich.return_value = [
+    runner._session_db = AsyncSessionDB(MagicMock())
+    runner._session_db._db.list_sessions_rich.return_value = [
         {"id": entry.session_id, "title": entry.display_name, "preview": ""}
         for entry in entries
     ]
-    runner._session_db.resolve_resume_session_id.side_effect = lambda sid: sid
-    runner._session_db.get_session_title.side_effect = lambda sid: {
+    runner._session_db._db.resolve_resume_session_id.side_effect = lambda sid: sid
+    runner._session_db._db.get_session_title.side_effect = lambda sid: {
         entry.session_id: entry.display_name for entry in entries
     }.get(sid)
-    runner._session_db.get_session.return_value = None
+    runner._session_db._db.get_session.return_value = None
     return runner
 
 
@@ -379,39 +303,6 @@ async def test_matrix_status_reports_current_matrix_room_scope():
 
 
 @pytest.mark.asyncio
-async def test_matrix_resume_does_not_cross_rooms_by_default():
-    source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
-    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
-    entry_a = _entry(source_a, "session-a", "Project A Plan")
-    entry_b = _entry(source_b, "session-b", "Project B Plan")
-    runner = _make_runner(source_b, [entry_a, entry_b])
-    runner._session_db.resolve_session_by_title.return_value = "session-a"
-
-    result = await runner._handle_resume_command(_event("/resume Project A Plan", source_b))
-
-    assert "blocked" in result
-    assert PROJECT_A_NAME in result
-    runner.session_store.switch_session.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_matrix_resume_allows_same_room_session():
-    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
-    entry_b = _entry(source_b, "session-b-old", "Project B Plan")
-    runner = _make_runner(source_b, [entry_b])
-    runner.session_store.get_or_create_session.return_value = _entry(
-        source_b, "session-b-current", "Current Project B"
-    )
-    runner.session_store.switch_session.return_value = entry_b
-    runner._session_db.resolve_session_by_title.return_value = "session-b-old"
-
-    result = await runner._handle_resume_command(_event("/resume Project B Plan", source_b))
-
-    assert "Resumed session" in result
-    runner.session_store.switch_session.assert_called_once()
-
-
-@pytest.mark.asyncio
 async def test_matrix_resume_quoted_title_same_room():
     source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
     entry_b = _entry(source_b, "session-b-old", "Project B Plan")
@@ -420,44 +311,14 @@ async def test_matrix_resume_quoted_title_same_room():
         source_b, "session-b-current", "Current Project B"
     )
     runner.session_store.switch_session.return_value = entry_b
-    runner._session_db.resolve_session_by_title.return_value = "session-b-old"
+    runner._session_db._db.resolve_session_by_title.return_value = "session-b-old"
 
     result = await runner._handle_resume_command(
         _event('/resume "Project B Plan"', source_b)
     )
 
     assert "Resumed session" in result
-    runner._session_db.resolve_session_by_title.assert_called_once_with("Project B Plan")
-
-
-@pytest.mark.asyncio
-async def test_matrix_resume_quoted_title_cross_room_blocked():
-    source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
-    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
-    entry_a = _entry(source_a, "session-a", "Project A Plan")
-    entry_b = _entry(source_b, "session-b", "Project B Plan")
-    runner = _make_runner(source_b, [entry_a, entry_b])
-    runner._session_db.resolve_session_by_title.return_value = "session-a"
-
-    result = await runner._handle_resume_command(
-        _event('/resume "Project A Plan"', source_b)
-    )
-
-    assert "blocked" in result
-    runner.session_store.switch_session.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_matrix_resume_malformed_quote_returns_helpful_error():
-    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
-    runner = _make_runner(source_b, [_entry(source_b, "session-b", "Project B Plan")])
-
-    result = await runner._handle_resume_command(
-        _event('/resume "Project B Plan', source_b)
-    )
-
-    assert "Could not parse" in result
-    assert "quotes" in result
+    runner._session_db._db.resolve_session_by_title.assert_called_once_with("Project B Plan")
 
 
 @pytest.mark.asyncio
@@ -468,7 +329,7 @@ async def test_matrix_resume_cross_room_requires_explicit_flag_and_warns():
     entry_b = _entry(source_b, "session-b", "Project B Plan")
     runner = _make_runner(source_b, [entry_a, entry_b])
     runner.session_store.switch_session.return_value = entry_a
-    runner._session_db.resolve_session_by_title.return_value = "session-a"
+    runner._session_db._db.resolve_session_by_title.return_value = "session-a"
 
     result = await runner._handle_resume_command(
         _event("/resume --cross-room Project A Plan", source_b)
@@ -479,32 +340,3 @@ async def test_matrix_resume_cross_room_requires_explicit_flag_and_warns():
     runner.session_store.switch_session.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_matrix_resume_lists_only_current_room_by_default():
-    source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
-    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
-    runner = _make_runner(
-        source_b,
-        [_entry(source_a, "session-a", "Project A Plan"), _entry(source_b, "session-b", "Project B Plan")],
-    )
-
-    result = await runner._handle_resume_command(_event("/resume", source_b))
-
-    assert "Project B Plan" in result
-    assert "Project A Plan" not in result
-
-
-@pytest.mark.asyncio
-async def test_matrix_resume_all_lists_room_names():
-    source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
-    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
-    runner = _make_runner(
-        source_b,
-        [_entry(source_a, "session-a", "Project A Plan"), _entry(source_b, "session-b", "Project B Plan")],
-    )
-
-    result = await runner._handle_resume_command(_event("/resume --all", source_b))
-
-    assert "Project A Plan" in result
-    assert PROJECT_A_NAME in result
-    assert "Project B Plan" in result

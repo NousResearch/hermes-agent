@@ -23,10 +23,16 @@ except ModuleNotFoundError:
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
+else:
+    # Stop a ``utils/``/``proxy/``/``ui/`` package in the launch directory from
+    # shadowing Hermes's own modules — ``hermes acp`` can be started from any
+    # cwd, including a project that has same-named packages on its path.
+    hermes_bootstrap.harden_import_path()
 
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -185,7 +191,7 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
     """Bootstrap agent-browser + Chromium.
 
     Routes through dep_ensure -> install.{sh,ps1} --ensure, sharing code
-    with ``hermes postinstall`` and the runtime lazy installer.
+    with the runtime lazy installer.
 
     Returns 0 on success, 1 on failure.
     """
@@ -241,16 +247,24 @@ def main(argv: list[str] | None = None) -> None:
     import acp
     from .server import HermesACPAgent
 
-    # MCP tool discovery from config.yaml — run before asyncio.run() so
-    # it's safe to use blocking waits.  (ACP also registers per-session
-    # MCP servers dynamically via asyncio.to_thread inside the event
-    # loop; that path is unaffected.)  Moved from model_tools.py module
-    # scope to avoid freezing the gateway's loop on lazy import (#16856).
-    try:
-        from tools.mcp_tool import discover_mcp_tools
-        discover_mcp_tools()
-    except Exception:
-        logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
+    # MCP tool discovery from config.yaml — fire-and-forget in a
+    # background daemon thread so the ACP server becomes responsive
+    # immediately while MCP servers connect.  Previously this blocked
+    # asyncio.run() for 2-5 s.  (ACP also registers per-session MCP
+    # servers dynamically via asyncio.to_thread inside the event loop;
+    # that path is unaffected.)  Moved from model_tools.py module scope
+    # to avoid freezing the gateway's loop on lazy import (#16856).
+    # Metadata-only hosts can opt out of unrelated global MCP startup.
+    if os.environ.get("HERMES_ACP_SKIP_CONFIGURED_MCP", "").strip() != "1":
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
+
+            start_background_mcp_discovery(
+                logger=logger,
+                thread_name="acp-mcp-discovery",
+            )
+        except Exception:
+            logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
     agent = HermesACPAgent()
     try:

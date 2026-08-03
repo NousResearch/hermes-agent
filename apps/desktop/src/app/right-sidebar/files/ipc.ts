@@ -1,7 +1,8 @@
 import ignore from 'ignore'
 
-import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
+import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { ALWAYS_EXCLUDED } from '@/lib/excluded-paths'
 
 export type ProjectTreeEntry = HermesReadDirEntry
 
@@ -31,16 +32,25 @@ function clean(path: string) {
   return path.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
 }
 
+// Windows path identity is case-insensitive. Fold only comparison keys so the
+// relative path returned below keeps the filesystem's original spelling;
+// POSIX paths remain case-sensitive.
+function comparisonPath(path: string) {
+  return /^[A-Za-z]:(?:\/|$)/.test(path) || path.startsWith('//') ? path.toLowerCase() : path
+}
+
 /** Strict POSIX-style relative path; null if `child` is not inside `root`. */
 function relativeTo(root: string, child: string) {
   const r = clean(root)
   const c = clean(child)
+  const rKey = comparisonPath(r)
+  const cKey = comparisonPath(c)
 
-  if (c === r) {
+  if (cKey === rKey) {
     return ''
   }
 
-  return c.startsWith(`${r}/`) ? c.slice(r.length + 1) : null
+  return cKey.startsWith(`${rKey}/`) ? c.slice(r.length + 1) : null
 }
 
 /** Repo-root → repo-root/a → repo-root/a/b → … for every dir between root and `dir`. */
@@ -68,7 +78,7 @@ async function gitRootFor(start: string) {
   let cached = gitRootCache.get(key)
 
   if (!cached) {
-    cached = desktopGitRoot(start)
+    cached = desktopGitRoot(clean(start))
     gitRootCache.set(key, cached)
   }
 
@@ -136,7 +146,7 @@ export async function readProjectDir(dirPath: string, rootPath = dirPath): Promi
   }
 
   const result = await readDesktopDir(dirPath)
-  const entries = result?.entries ?? []
+  const entries = (result?.entries ?? []).filter(entry => !ALWAYS_EXCLUDED.has(entry.name))
 
   return { ...result, entries: await filterIgnored(entries, rootPath, dirPath) }
 }

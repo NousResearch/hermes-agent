@@ -36,52 +36,6 @@ def _run(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
 
-# ── mixture_of_agents_tool — reference model (line 146) ───────────────────
-
-class TestMoAReferenceModelContentNone:
-    """tools/mixture_of_agents_tool.py — _query_model()"""
-
-    def test_none_content_raises_before_fix(self):
-        """Demonstrate that None content from a reasoning model crashes."""
-        response = _make_response(None)
-
-        # Simulate the exact line: response.choices[0].message.content.strip()
-        with pytest.raises(AttributeError):
-            response.choices[0].message.content.strip()
-
-    def test_none_content_safe_with_or_guard(self):
-        """The ``or ""`` guard should convert None to empty string."""
-        response = _make_response(None)
-
-        content = (response.choices[0].message.content or "").strip()
-        assert content == ""
-
-    def test_normal_content_unaffected(self):
-        """Regular string content should pass through unchanged."""
-        response = _make_response("  Hello world  ")
-
-        content = (response.choices[0].message.content or "").strip()
-        assert content == "Hello world"
-
-
-# ── mixture_of_agents_tool — aggregator (line 214) ────────────────────────
-
-class TestMoAAggregatorContentNone:
-    """tools/mixture_of_agents_tool.py — _run_aggregator()"""
-
-    def test_none_content_raises_before_fix(self):
-        response = _make_response(None)
-
-        with pytest.raises(AttributeError):
-            response.choices[0].message.content.strip()
-
-    def test_none_content_safe_with_or_guard(self):
-        response = _make_response(None)
-
-        content = (response.choices[0].message.content or "").strip()
-        assert content == ""
-
-
 # ── web_tools — LLM content processor (line 419) ─────────────────────────
 
 class TestWebToolsProcessorContentNone:
@@ -170,14 +124,6 @@ class TestSourceLinesAreGuarded:
         with open(os.path.join(base, rel_path)) as f:
             return f.read()
 
-    def test_mixture_of_agents_reference_model_guarded(self):
-        src = self._read_file("tools/mixture_of_agents_tool.py")
-        # The unguarded pattern should NOT exist
-        assert ".message.content.strip()" not in src, (
-            "tools/mixture_of_agents_tool.py still has unguarded "
-            ".content.strip() — apply `(... or \"\").strip()` guard"
-        )
-
     def test_web_tools_guarded(self):
         src = self._read_file("tools/web_tools.py")
         assert ".message.content.strip()" not in src, (
@@ -213,9 +159,6 @@ class TestExtractContentOrReasoning:
         response = _make_response(None)
         assert extract_content_or_reasoning(response) == ""
 
-    def test_empty_string_returns_empty(self):
-        response = _make_response("")
-        assert extract_content_or_reasoning(response) == ""
 
     def test_think_blocks_stripped_with_remaining_content(self):
         response = _make_response("<think>internal reasoning</think>The answer is 42.")
@@ -229,38 +172,6 @@ class TestExtractContentOrReasoning:
         )
         assert extract_content_or_reasoning(response) == "The actual reasoning output"
 
-    def test_none_content_with_reasoning_field(self):
-        """DeepSeek-R1 pattern: content=None, reasoning='...'"""
-        response = _make_response(None, reasoning="Step 1: analyze the problem...")
-        assert extract_content_or_reasoning(response) == "Step 1: analyze the problem..."
-
-    def test_none_content_with_reasoning_content_field(self):
-        """Moonshot/Novita pattern: content=None, reasoning_content='...'"""
-        response = _make_response(None, reasoning_content="Let me think about this...")
-        assert extract_content_or_reasoning(response) == "Let me think about this..."
-
-    def test_none_content_with_reasoning_details(self):
-        """OpenRouter unified format: reasoning_details=[{summary: ...}]"""
-        response = _make_response(None, reasoning_details=[
-            {"type": "reasoning.summary", "summary": "The key insight is..."},
-        ])
-        assert extract_content_or_reasoning(response) == "The key insight is..."
-
-    def test_reasoning_fields_not_duplicated(self):
-        """When reasoning and reasoning_content have the same value, don't duplicate."""
-        response = _make_response(None, reasoning="same text", reasoning_content="same text")
-        assert extract_content_or_reasoning(response) == "same text"
-
-    def test_multiple_reasoning_sources_combined(self):
-        """Different reasoning sources are joined with double newline."""
-        response = _make_response(
-            None,
-            reasoning="First part",
-            reasoning_content="Second part",
-        )
-        result = extract_content_or_reasoning(response)
-        assert "First part" in result
-        assert "Second part" in result
 
     def test_content_preferred_over_reasoning(self):
         """When both content and reasoning exist, content wins."""

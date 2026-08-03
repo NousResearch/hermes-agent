@@ -70,6 +70,15 @@ class FactRetriever:
 
         # Stage 2: Rerank with Jaccard + trust + optional decay
         query_tokens = self._tokenize(query)
+        # The query vector is loop-invariant — encode it at most once, on
+        # the first candidate that actually carries an HRR vector. Lazy on
+        # purpose: migrated stores can have FTS candidates whose hrr_vector
+        # was never backfilled (MemoryStore._init_db adds the column
+        # without backfilling), and those must not pay for an encode
+        # nothing will use. encode_text is deterministic (SHA-256 counter
+        # blocks), so the hoisted vector is bit-identical to what the
+        # per-candidate calls produced.
+        query_vec = None
         scored = []
 
         for fact in candidates:
@@ -82,8 +91,9 @@ class FactRetriever:
 
             # HRR similarity
             if self.hrr_weight > 0 and fact.get("hrr_vector"):
-                fact_vec = hrr.bytes_to_phases(fact["hrr_vector"])
-                query_vec = hrr.encode_text(query, self.hrr_dim)
+                fact_vec = hrr.bytes_to_phases(fact["hrr_vector"], dim=self.hrr_dim)
+                if query_vec is None:
+                    query_vec = hrr.encode_text(query, self.hrr_dim)
                 hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0  # shift to [0,1]
             else:
                 hrr_sim = 0.5  # neutral
@@ -144,7 +154,7 @@ class FactRetriever:
                 (bank_name,),
             ).fetchone()
             if bank_row:
-                bank_vec = hrr.bytes_to_phases(bank_row["vector"])
+                bank_vec = hrr.bytes_to_phases(bank_row["vector"], dim=self.hrr_dim)
                 extracted = hrr.unbind(bank_vec, probe_key)
                 # Use extracted signal to score individual facts
                 return self._score_facts_by_vector(
@@ -173,14 +183,16 @@ class FactRetriever:
             # Final fallback: keyword search
             return self.search(entity, category=category, limit=limit)
 
+        # role_content is loop-invariant — encode it once (deterministic
+        # SHA-256-based atom) instead of once per fact row.
+        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
             # Unbind probe key from fact to see if entity is structurally present
             residual = hrr.unbind(fact_vec, probe_key)
             # Compare residual against content signal
-            role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
             content_vec = hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)
             sim = hrr.similarity(residual, content_vec)
             fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
@@ -234,17 +246,19 @@ class FactRetriever:
 
         # Score each fact by how much the entity's atom appears in its vector
         # This catches both role-bound entity matches AND content word matches
+        # Both role atoms are loop-invariant — encode them once here
+        # (deterministic SHA-256-based atoms) instead of twice per fact row.
+        role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
+        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
 
             # Check structural similarity: unbind entity from fact
             residual = hrr.unbind(fact_vec, entity_vec)
             # A high-similarity residual to ANY known role vector means this entity
             # plays a structural role in the fact
-            role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
-            role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
 
             entity_role_sim = hrr.similarity(residual, role_entity)
             content_role_sim = hrr.similarity(residual, role_content)
@@ -320,7 +334,7 @@ class FactRetriever:
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
 
             entity_scores = []
             for probe_key in entity_residuals:
@@ -417,8 +431,8 @@ class FactRetriever:
                     continue  # Not enough entity overlap to be contradictory
 
                 # Content similarity via HRR vectors
-                v1 = hrr.bytes_to_phases(f1["hrr_vector"])
-                v2 = hrr.bytes_to_phases(f2["hrr_vector"])
+                v1 = hrr.bytes_to_phases(f1["hrr_vector"], dim=self.hrr_dim)
+                v2 = hrr.bytes_to_phases(f2["hrr_vector"], dim=self.hrr_dim)
                 content_sim = hrr.similarity(v1, v2)
 
                 # High entity overlap + low content similarity = potential contradiction
@@ -470,7 +484,7 @@ class FactRetriever:
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
             sim = hrr.similarity(target_vec, fact_vec)
             fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
             scored.append(fact)
@@ -496,7 +510,11 @@ class FactRetriever:
         # We need to join facts_fts with facts to get all columns
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
+        # FTS5 defaults to AND-between-tokens, which kills recall on
+        # natural-language queries ("what happened with the deployment
+        # rollback"). Sanitize: drop stopwords, OR-join content tokens, so
+        # any significant term can match.
+        params.append(self._sanitize_fts_query(query))
 
         if category:
             where_clauses.append("f.category = ?")
@@ -556,6 +574,63 @@ class FactRetriever:
             if cleaned:
                 tokens.add(cleaned)
         return tokens
+
+    # Stopwords dropped before FTS5 OR-expansion. Short English function
+    # words that carry no retrieval signal and force false-negative AND
+    # matches when left in the query.
+    _FTS_STOPWORDS = frozenset({
+        "a", "about", "above", "after", "again", "all", "am", "an", "and",
+        "any", "are", "as", "at", "be", "because", "been", "before", "being",
+        "between", "both", "but", "by", "can", "could", "did", "do", "does",
+        "doing", "don", "down", "during", "each", "few", "for", "from",
+        "further", "had", "has", "have", "having", "he", "her", "here",
+        "hers", "herself", "him", "himself", "his", "how", "i", "if", "in",
+        "into", "is", "it", "its", "itself", "just", "me", "more", "most",
+        "my", "myself", "no", "nor", "not", "now", "of", "off", "on", "once",
+        "only", "or", "other", "our", "ours", "ourselves", "out", "over",
+        "own", "same", "she", "should", "so", "some", "such", "than", "that",
+        "the", "their", "theirs", "them", "themselves", "then", "there",
+        "these", "they", "this", "those", "through", "to", "too", "under",
+        "until", "up", "very", "was", "we", "were", "what", "when", "where",
+        "which", "while", "who", "whom", "why", "will", "with", "would",
+        "you", "your", "yours", "yourself", "yourselves",
+    })
+
+    @classmethod
+    def _sanitize_fts_query(cls, query: str) -> str:
+        """Convert a natural-language query to an FTS5-safe OR expression.
+
+        FTS5 treats a multi-word MATCH argument as AND-joined by default,
+        which tanks recall on prose queries. This helper:
+          - tokenizes the query
+          - drops stopwords and short (<2 char) tokens
+          - strips FTS5 special characters from each token
+          - OR-joins the survivors
+
+        If nothing remains (pathological query), falls back to the raw
+        query so the caller sees zero results instead of a SQL error.
+        """
+        if not query:
+            return ""
+        # Strip FTS5 operator characters from EACH token to avoid
+        # accidentally creating a malformed query.
+        _FTS_SPECIAL = '"()*^:-+'
+        tokens: list[str] = []
+        for raw in query.lower().split():
+            cleaned = raw.strip(".,;:!?\"'()[]{}#@<>") .translate(
+                str.maketrans("", "", _FTS_SPECIAL)
+            )
+            if len(cleaned) < 2:
+                continue
+            if cleaned in cls._FTS_STOPWORDS:
+                continue
+            # FTS5 phrase-literal each token to ensure no special chars
+            # sneak through as operators.
+            tokens.append(f'"{cleaned}"')
+        if not tokens:
+            # Fallback: raw query (likely returns 0, but never crashes)
+            return query
+        return " OR ".join(tokens)
 
     @staticmethod
     def _jaccard_similarity(set_a: set, set_b: set) -> float:

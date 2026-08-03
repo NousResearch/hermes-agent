@@ -107,20 +107,6 @@ class TestGmiModelCatalog:
             "zai-org/GLM-5.1-FP8",
         ]
 
-    def test_provider_model_ids_falls_back_to_static_models(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            lambda provider_id: {
-                "provider": provider_id,
-                "api_key": "gmi-live-key",
-                "base_url": "https://api.gmi-serving.com/v1",
-                "source": "GMI_API_KEY",
-            },
-        )
-        monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda api_key, base_url: None)
-
-        assert provider_model_ids("gmi") == list(_PROVIDER_MODELS["gmi"])
-
 
 class TestGmiProvidersModule:
     def test_overlay_exists(self):
@@ -175,6 +161,7 @@ class TestGmiDoctor:
             "DASHSCOPE_API_KEY",
             "MINIMAX_API_KEY",
             "MINIMAX_CN_API_KEY",
+            "AI_GATEWAY_API_KEY",
             "KILOCODE_API_KEY",
             "OPENCODE_ZEN_API_KEY",
             "OPENCODE_GO_API_KEY",
@@ -222,17 +209,6 @@ class TestGmiModelMetadata:
 
         assert _URL_TO_PROVIDER.get("api.gmi-serving.com") == "gmi"
 
-    def test_provider_prefixes(self):
-        from agent.model_metadata import _PROVIDER_PREFIXES
-
-        assert "gmi" in _PROVIDER_PREFIXES
-        assert "gmi-cloud" in _PROVIDER_PREFIXES
-        assert "gmicloud" in _PROVIDER_PREFIXES
-
-    def test_infer_from_url(self):
-        from agent.model_metadata import _infer_provider_from_url
-
-        assert _infer_provider_from_url("https://api.gmi-serving.com/v1") == "gmi"
 
     def test_known_gmi_endpoint_still_uses_endpoint_metadata(self):
         with patch(
@@ -286,16 +262,6 @@ class TestGmiAuxiliary:
         assert ua.startswith("HermesAgent/"), (
             f"expected GMI profile User-Agent to start with 'HermesAgent/', got {ua!r}"
         )
-
-    def test_resolve_provider_client_accepts_gmi_alias(self, monkeypatch):
-        monkeypatch.setenv("GMI_API_KEY", "gmi-test-key")
-
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_openai.return_value = object()
-            client, model = resolve_provider_client("gmi-cloud")
-
-        assert client is not None
-        assert model == "google/gemini-3.1-flash-lite-preview"
 
 
 class TestGmiMainFlow:

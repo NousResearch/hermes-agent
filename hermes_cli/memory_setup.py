@@ -8,6 +8,7 @@ the provider's config schema. Writes config to config.yaml + .env.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import shlex
 from pathlib import Path
@@ -15,24 +16,76 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from hermes_cli.secret_prompt import masked_secret_prompt
 
+_CANCELLED = -1
+
+
+def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
+    """Return the pip deps a provider actually needs on THIS install.
+
+    ``plugin.yaml`` declares the provider's baseline bridge packages, but
+    some providers install mode-dependent extras at setup time that the
+    manifest can't express. Hindsight's ``local_embedded`` mode installs
+    ``hindsight-all`` (daemon + embedder + client) during
+    ``hermes memory setup`` — if the update-time refresh only reinstalled
+    the declared ``hindsight-client``, the embedded daemon would stay
+    broken after a venv rebuild stripped ``hindsight-embed`` (#70636).
+    """
+    deps = list(declared or [])
+    if provider_name == "hindsight":
+        try:
+            import json
+            cfg_path = get_hermes_home() / "hindsight" / "config.json"
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+            mode = cfg.get("mode", "")
+            # "local" is a legacy alias for "local_embedded"
+            if mode in {"local", "local_embedded"}:
+                deps.append("hindsight-all")
+        except Exception:
+            pass
+    return deps
+
 
 # ---------------------------------------------------------------------------
 # Curses-based interactive picker (same pattern as hermes tools)
 # ---------------------------------------------------------------------------
 
-def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -> int:
+def _curses_select(
+    title: str,
+    items: list[tuple[str, str]],
+    default: int = 0,
+    *,
+    cancel_returns: int | None = None,
+) -> int:
     """Interactive single-select with arrow keys.
 
     items: list of (label, description) tuples.
-    Returns selected index, or default on escape/quit.
+    Returns selected index, or cancel_returns/default on escape/quit.
     """
     from hermes_cli.curses_ui import curses_radiolist
+
+    if cancel_returns is None:
+        cancel_returns = default
+
     # Format (label, desc) tuples into display strings
     display_items = [
-        f"{label}  {desc}" if desc else label
+        f"{label} - {desc}" if desc else label
         for label, desc in items
     ]
-    return curses_radiolist(title, display_items, selected=default, cancel_returns=default)
+    result = curses_radiolist(title, display_items, selected=default, cancel_returns=cancel_returns)
+    _clear_interactive_transition()
+    return result
+
+
+def _print_cancelled_setup() -> None:
+    print("\n  Cancelled. No changes saved.\n")
+
+
+def _clear_interactive_transition() -> None:
+    """Clear stale curses content before entering a follow-up setup screen."""
+    if not sys.stdout.isatty():
+        return
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
@@ -51,8 +104,16 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
-def _install_dependencies(provider_name: str) -> None:
-    """Install pip dependencies declared in plugin.yaml."""
+def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
+    """Install pip dependencies declared in ``plugin.yaml``.
+
+    When ``force`` is true, every declared dependency is handed to the
+    installer even if its import currently succeeds — the resolver then
+    reinstalls anything missing or version-drifted and no-ops on satisfied
+    ranges. This is how ``hermes update`` heals the active memory provider
+    after a venv rebuild/sync removed or downgraded its bridge packages
+    (#53272, #70636).
+    """
     import subprocess
     from plugins.memory import find_provider_dir
 
@@ -70,7 +131,7 @@ def _install_dependencies(provider_name: str) -> None:
     except Exception:
         return
 
-    pip_deps = meta.get("pip_dependencies", [])
+    pip_deps = _provider_pip_dependencies(provider_name, meta.get("pip_dependencies", []))
     if not pip_deps:
         return
 
@@ -82,10 +143,15 @@ def _install_dependencies(provider_name: str) -> None:
         "hindsight-all": "hindsight",
     }
 
-    # Check which packages are missing
+    # Check which packages need installation.
     missing = []
     for dep in pip_deps:
-        import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
+        if force:
+            missing.append(dep)
+            continue
+        dep_name = re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*", dep)
+        base = dep_name.group(0) if dep_name else dep
+        import_name = _IMPORT_NAMES.get(base, base.replace("-", "_").split("[")[0])
         try:
             __import__(import_name)
         except ImportError:
@@ -96,36 +162,25 @@ def _install_dependencies(provider_name: str) -> None:
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
-    import shutil
+    # Environment-aware install: on immutable hosted images the agent venv
+    # is sealed read-only and installs must go to the durable target on the
+    # data volume (HERMES_LAZY_INSTALL_TARGET). install_specs handles the
+    # routing/gating; on normal installs it is venv-scoped as before (NS-605).
+    from tools.lazy_deps import install_specs
 
-    uv_path = shutil.which("uv")
-    if uv_path:
-        install_cmd = [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing
-        manual_cmd = f"uv pip install --python {sys.executable} {' '.join(missing)}"
-    else:
-        pip_cmd = shutil.which("pip3") or shutil.which("pip")
-        if not pip_cmd:
-            print(f"  ⚠ uv not found — cannot install dependencies")
-            print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
-            print(f"  Then re-run: hermes memory setup")
-            return
-        print(f"  ⚠ uv not found. Falling back to standard pip...")
-        install_cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + missing
-        manual_cmd = f"{sys.executable} -m pip install {' '.join(missing)}"
-
+    manual_cmd = f"uv pip install {' '.join(missing)}"
     try:
-        subprocess.run(
-            install_cmd,
-            check=True, timeout=120,
-            capture_output=True,
-        )
-        print(f"  ✓ Installed {', '.join(missing)}")
-    except subprocess.CalledProcessError as e:
-        print(f"  ⚠ Failed to install {', '.join(missing)}")
-        stderr = (e.stderr or b"").decode()[:200]
-        if stderr:
-            print(f"    {stderr}")
-        print(f"  Run manually: {manual_cmd}")
+        outcome = install_specs(missing, timeout=120)
+        if outcome.ok:
+            print(f"  ✓ Installed {', '.join(missing)}")
+        elif outcome.blocked:
+            print(f"  ⚠ Cannot install {', '.join(missing)}: {outcome.reason}")
+        else:
+            print(f"  ⚠ Failed to install {', '.join(missing)}")
+            stderr = (outcome.stderr or "")[:200]
+            if stderr:
+                print(f"    {stderr}")
+            print(f"  Run manually: {manual_cmd}")
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
         print(f"  Run manually: {manual_cmd}")
@@ -205,6 +260,8 @@ def cmd_setup_provider(provider_name: str) -> None:
 
     name, _, provider = match
 
+    _clear_interactive_transition()
+
     _install_dependencies(name)
 
     config = load_config()
@@ -220,7 +277,7 @@ def cmd_setup_provider(provider_name: str) -> None:
     config["memory"]["provider"] = name
     save_config(config)
     print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml\n")
+    print("  Activation saved to config.yaml\n")
 
 
 def cmd_setup(args) -> None:
@@ -241,14 +298,17 @@ def cmd_setup(args) -> None:
     items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
 
     builtin_idx = len(items) - 1
-    selected = _curses_select("Memory provider setup", items, default=builtin_idx)
+    selected = _curses_select("Memory provider setup", items, default=builtin_idx, cancel_returns=_CANCELLED)
+    if selected == _CANCELLED:
+        _print_cancelled_setup()
+        return
 
     config = load_config()
     if not isinstance(config.get("memory"), dict):
         config["memory"] = {}
 
     # Built-in only
-    if selected >= len(providers) or selected < 0:
+    if selected >= len(providers):
         config["memory"]["provider"] = ""
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
@@ -256,6 +316,8 @@ def cmd_setup(args) -> None:
         return
 
     name, _, provider = providers[selected]
+
+    _clear_interactive_transition()
 
     # Install pip dependencies if declared in plugin.yaml
     _install_dependencies(name)
@@ -309,7 +371,10 @@ def cmd_setup(args) -> None:
                 current_idx = 0
                 if current and current in choices:
                     current_idx = choices.index(current)
-                sel = _curses_select(f"  {desc}", choice_items, default=current_idx)
+                sel = _curses_select(f"  {desc}", choice_items, default=current_idx, cancel_returns=_CANCELLED)
+                if sel == _CANCELLED:
+                    _print_cancelled_setup()
+                    return
                 provider_config[key] = choices[sel]
             elif is_secret:
                 # Prompt for secret
@@ -352,12 +417,27 @@ def cmd_setup(args) -> None:
         _write_env_vars(env_path, env_writes)
 
     print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml")
+    print("  Activation saved to config.yaml")
     if provider_config:
-        print(f"  Provider config saved")
+        print("  Provider config saved")
     if env_writes:
-        print(f"  API keys saved to .env")
-    print(f"\n  Start a new session to activate.\n")
+        print("  API keys saved to .env")
+    print("\n  Start a new session to activate.\n")
+
+
+def _env_line_safe(value) -> str:
+    """Neutralize characters that would break ``.env`` line structure.
+
+    ``.env`` is strictly line-oriented (one ``KEY=VALUE`` per line) and
+    values are interpolated straight into that line. A pasted secret with an
+    embedded CR/LF would spill onto a new line and be re-parsed as a
+    *separate* ``KEY=VALUE`` entry on the next read — injecting an arbitrary
+    variable into the credentials file. Strip every separator recognized by
+    ``str.splitlines()`` plus NUL so a value can only occupy its own line.
+    Mirrors the openviking plugin's writer and ``config.save_env_value``.
+    """
+    text = value if isinstance(value, str) else str(value)
+    return "".join(text.replace("\x00", "").splitlines())
 
 
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
@@ -373,14 +453,14 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
     for line in existing_lines:
         key_match = line.split("=", 1)[0].strip() if "=" in line else ""
         if key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
+            new_lines.append(f"{key_match}={_env_line_safe(env_writes[key_match])}")
             updated_keys.add(key_match)
         else:
             new_lines.append(line)
 
     for key, val in env_writes.items():
         if key not in updated_keys:
-            new_lines.append(f"{key}={val}")
+            new_lines.append(f"{key}={_env_line_safe(val)}")
 
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
     # Restrict permissions — .env holds API keys and tokens.
@@ -403,49 +483,75 @@ def cmd_status(args) -> None:
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
 
-    print(f"\nMemory status\n" + "─" * 40)
-    print(f"  Built-in:  always active")
+    memory_enabled = mem_config.get("memory_enabled", True)
+    user_profile_enabled = mem_config.get("user_profile_enabled", True)
+
+    mem_mark = "enabled ✓" if memory_enabled else "disabled ✗"
+    user_mark = "enabled ✓" if user_profile_enabled else "disabled ✗"
+
+    # Check if the memory tool is enabled for the CLI platform via the
+    # canonical resolver (handles composite toolsets like hermes-cli).
+    from hermes_cli.tools_config import _get_platform_tools
+    cli_tools = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    memory_tool_enabled = "memory" in cli_tools
+    tool_mark = "enabled ✓" if memory_tool_enabled else "disabled ✗"
+
+    print("\nMemory status\n" + "─" * 40)
+    print("  Built-in (MEMORY.md / USER.md):")
+    print(f"    Memory injection:   {mem_mark}")
+    print(f"    User profile:       {user_mark}")
+    print(f"    Memory tool:        {tool_mark}")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
+
+    providers = _get_available_providers()
+    provider = None
+    for pname, _, candidate in providers:
+        if pname == provider_name:
+            provider = candidate
+            break
 
     if provider_name:
         provider_config = mem_config.get(provider_name, {})
-        if provider_config:
+        display_config = provider_config
+        if provider and hasattr(provider, "get_status_config"):
+            try:
+                display_config = provider.get_status_config(provider_config)
+            except Exception as e:
+                display_config = dict(provider_config) if isinstance(provider_config, dict) else provider_config
+                if isinstance(display_config, dict):
+                    display_config["status_config_error"] = str(e)
+
+        if display_config:
             print(f"\n  {provider_name} config:")
-            for key, val in provider_config.items():
+            for key, val in display_config.items():
                 print(f"    {key}: {val}")
 
-        providers = _get_available_providers()
-        found = any(name == provider_name for name, _, _ in providers)
-        if found:
-            print(f"\n  Plugin:    installed ✓")
-            for pname, _, p in providers:
-                if pname == provider_name:
-                    if p.is_available():
-                        print(f"  Status:    available ✓")
-                    else:
-                        print(f"  Status:    not available ✗")
-                        schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
-                        # Check all fields that have env_var (both secret and non-secret)
-                        required_fields = [f for f in schema if f.get("env_var")]
-                        if required_fields:
-                            print(f"  Missing:")
-                            for f in required_fields:
-                                env_var = f.get("env_var", "")
-                                url = f.get("url", "")
-                                is_set = bool(os.environ.get(env_var))
-                                mark = "✓" if is_set else "✗"
-                                line = f"    {mark} {env_var}"
-                                if url and not is_set:
-                                    line += f"  → {url}"
-                                print(line)
-                    break
+        if provider:
+            print("\n  Plugin:    installed ✓")
+            if provider.is_available():
+                print("  Status:    available ✓")
+            else:
+                print("  Status:    not available ✗")
+                schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
+                # Check all fields that have env_var (both secret and non-secret)
+                required_fields = [f for f in schema if f.get("env_var")]
+                if required_fields:
+                    print("  Missing:")
+                    for f in required_fields:
+                        env_var = f.get("env_var", "")
+                        url = f.get("url", "")
+                        is_set = bool(os.environ.get(env_var))
+                        mark = "✓" if is_set else "✗"
+                        line = f"    {mark} {env_var}"
+                        if url and not is_set:
+                            line += f"  → {url}"
+                        print(line)
         else:
-            print(f"\n  Plugin:    NOT installed ✗")
+            print("\n  Plugin:    NOT installed ✗")
             print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
-    providers = _get_available_providers()
     if providers:
-        print(f"\n  Installed plugins:")
+        print("\n  Installed plugins:")
         for pname, desc, _ in providers:
             active = " ← active" if pname == provider_name else ""
             print(f"    • {pname}  ({desc}){active}")

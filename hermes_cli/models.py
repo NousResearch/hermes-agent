@@ -7,8 +7,12 @@ Add, remove, or reorder entries here — both `hermes setup` and
 
 from __future__ import annotations
 
+import copy
 import json
+import logging
 import os
+import re
+import threading
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -18,6 +22,9 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.urllib_security import open_credentialed_url
+
+logger = logging.getLogger(__name__)
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -29,55 +36,66 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
+def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float):
+    """Open catalog requests without forwarding headers across origins."""
+    return open_credentialed_url(req, timeout=timeout)
+
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Anthropic
+    ("anthropic/claude-fable-5",               ""),
+    ("anthropic/claude-opus-5",                ""),
+    ("anthropic/claude-opus-5-fast",           "2x price, higher output speed"),
     ("anthropic/claude-opus-4.8",              ""),
     ("anthropic/claude-opus-4.8-fast",         "2x price, higher output speed"),
-    ("anthropic/claude-sonnet-4.6",            ""),
+    ("anthropic/claude-sonnet-5",              ""),
     ("anthropic/claude-haiku-4.5",             ""),
     # OpenAI
+    ("openai/gpt-5.6-sol",                     ""),
+    ("openai/gpt-5.6-sol-pro",                 ""),
+    ("openai/gpt-5.6-terra",                   ""),
+    ("openai/gpt-5.6-terra-pro",               ""),
+    ("openai/gpt-5.6-luna",                    ""),
+    ("openai/gpt-5.6-luna-pro",                ""),
     ("openai/gpt-5.5",                         ""),
     ("openai/gpt-5.5-pro",                     ""),
     ("openai/gpt-5.4-mini",                    ""),
     # Google
-    ("google/gemini-3-pro-preview",            ""),
     ("google/gemini-3.1-pro-preview",          ""),
-    ("google/gemini-3.5-flash",                ""),
+    ("google/gemini-3.6-flash",                ""),
     # xAI
-    ("x-ai/grok-4.3",                          ""),
+    ("x-ai/grok-4.5",                          ""),
     # DeepSeek
     ("deepseek/deepseek-v4-pro",               ""),
     ("deepseek/deepseek-v4-flash",             ""),
+    ("deepseek/deepseek-v4-flash-0731",        "dated snapshot of v4-flash"),
     # Qwen
     ("qwen/qwen3.7-max",                       ""),
-    ("qwen/qwen3.7-plus",                      ""),
-    ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
-    ("moonshotai/kimi-k2.6",                   "recommended"),
-    ("moonshotai/kimi-k2.7-code",              ""),
+    ("moonshotai/kimi-k3",                     "recommended"),
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
-    ("z-ai/glm-5.2",                           ""),
+    ("z-ai/glm-5.2",                           "default"),
     ("z-ai/glm-5.1",                           ""),
     # Xiaomi
     ("xiaomi/mimo-v2.5-pro",                   ""),
     # Tencent
-    ("tencent/hy3-preview",                    ""),
+    ("tencent/hy3",                            ""),
     # StepFun
     ("stepfun/step-3.7-flash",                 ""),
     # NVIDIA
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    # Sakana
+    ("sakana/fugu-ultra",                      ""),
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
-    ("openrouter/owl-alpha",                   "free"),
     ("poolside/laguna-m.1:free",               "free"),
-    ("tencent/hy3-preview:free",               "free"),
+    ("tencent/hy3:free",                       "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
     ("inclusionai/ring-2.6-1t:free",           "free"),
@@ -86,6 +104,29 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 
+# Fallback Vercel AI Gateway snapshot used when the live catalog is unavailable.
+# OSS / open-weight models prioritized first, then closed-source by family.
+# Slugs match Vercel's actual /v1/models catalog (e.g. alibaba/ for Qwen,
+# zai/ and xai/ without hyphens).
+VERCEL_AI_GATEWAY_MODELS: list[tuple[str, str]] = [
+    ("moonshotai/kimi-k2.6",                 "recommended"),
+    ("alibaba/qwen3.6-plus",                 ""),
+    ("zai/glm-5.1",                          ""),
+    ("minimax/minimax-m2.7",                 ""),
+    ("anthropic/claude-sonnet-4.6",          ""),
+    ("anthropic/claude-opus-4.7",            ""),
+    ("anthropic/claude-opus-4.6",            ""),
+    ("anthropic/claude-haiku-4.5",           ""),
+    ("openai/gpt-5.4",                       ""),
+    ("openai/gpt-5.4-mini",                  ""),
+    ("openai/gpt-5.3-codex",                 ""),
+    ("google/gemini-3.1-pro-preview",        ""),
+    ("google/gemini-3-flash",                ""),
+    ("google/gemini-3.1-flash-lite-preview", ""),
+    ("xai/grok-4.20-reasoning",              ""),
+]
+
+_ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
 def _codex_curated_models() -> list[str]:
@@ -111,6 +152,7 @@ def _codex_curated_models() -> list[str]:
 #  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
 _XAI_STATIC_FALLBACK: list[str] = [
     "grok-build-0.1",
+    "grok-4.5",
     "grok-4.3",
     "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning",
@@ -119,6 +161,7 @@ _XAI_STATIC_FALLBACK: list[str] = [
 
 # Callable via xAI OAuth but omitted from models.dev and /v1/models listings.
 _XAI_CURATED_EXTRAS: list[str] = [
+    "grok-4.5",  # GA 2026-07 — kept until the models.dev disk cache refreshes
     "grok-composer-2.5-fast",
 ]
 
@@ -173,31 +216,37 @@ def _xai_curated_models() -> list[str]:
 
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
+    "moa": ["default"],
     "nous": [
         # Anthropic
+        "anthropic/claude-fable-5",
+        "anthropic/claude-opus-5",
         "anthropic/claude-opus-4.8",
-        "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-sonnet-5",
         "anthropic/claude-haiku-4.5",
         # OpenAI
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-sol-pro",
+        "openai/gpt-5.6-terra",
+        "openai/gpt-5.6-terra-pro",
+        "openai/gpt-5.6-luna",
+        "openai/gpt-5.6-luna-pro",
         "openai/gpt-5.5",
         "openai/gpt-5.5-pro",
         "openai/gpt-5.4-mini",
         # Google
-        "google/gemini-3-pro-preview",
         "google/gemini-3.1-pro-preview",
-        "google/gemini-3.5-flash",
+        "google/gemini-3.6-flash",
         # xAI
-        "x-ai/grok-4.3",
+        "x-ai/grok-4.5",
         # DeepSeek
         "deepseek/deepseek-v4-pro",
         "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash-0731",
         # Qwen
         "qwen/qwen3.7-max",
-        "qwen/qwen3.7-plus",
-        "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
-        "moonshotai/kimi-k2.6",
-        "moonshotai/kimi-k2.7-code",
+        "moonshotai/kimi-k3",
         # MiniMax
         "minimax/minimax-m3",
         # Z-AI
@@ -206,11 +255,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # Xiaomi
         "xiaomi/mimo-v2.5-pro",
         # Tencent
-        "tencent/hy3-preview",
+        "tencent/hy3",
         # StepFun
         "stepfun/step-3.7-flash",
         # NVIDIA
         "nvidia/nemotron-3-super-120b-a12b",
+        # Sakana
+        "sakana/fugu-ultra",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
@@ -225,6 +276,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o-mini",
     ],
     "openai-api": [
+        "gpt-5.6-sol",
+        "gpt-5.6-sol-pro",
+        "gpt-5.6-terra",
+        "gpt-5.6-terra-pro",
+        "gpt-5.6-luna",
+        "gpt-5.6-luna-pro",
         "gpt-5.5",
         "gpt-5.5-pro",
         "gpt-5.4",
@@ -251,6 +308,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
         "claude-sonnet-4.6",
+        "claude-sonnet-5",
         "claude-sonnet-4",
         "claude-sonnet-4.5",
         "claude-haiku-4.5",
@@ -262,19 +320,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "gemini": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
-        "gemini-3.5-flash",
+        "gemini-3.6-flash",
         "gemini-3.1-flash-lite-preview",
-    ],
-    "google-gemini-cli": [
-        "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        # Code Assist serves two flash slugs with different access gates
-        # (gemini-cli models.ts): gemini-3-flash-preview is the preview flash
-        # that subscription/free-tier OAuth users actually reach, while
-        # gemini-3.5-flash is GA-channel-gated. Offer both so non-GA users
-        # aren't stuck with a slug cloudcode-pa 404s for them.
-        "gemini-3-flash-preview",
-        "gemini-3.5-flash",
     ],
     "zai": [
         "glm-5.2",
@@ -289,29 +336,31 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "xai": _xai_curated_models(),
     "nvidia": [
         # NVIDIA flagship reasoning models
+        "nvidia/nemotron-3-ultra-550b-a55b",
         "nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nemotron-3-nano-30b-a3b",
-        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         # Third-party agentic models hosted on build.nvidia.com
         # (map to OpenRouter defaults — users get familiar picks on NIM)
-        "qwen/qwen3.5-397b-a17b",
-        "deepseek-ai/deepseek-v3.2",
+        "z-ai/glm-5.2",
         "moonshotai/kimi-k2.6",
-        "minimaxai/minimax-m2.5",
-        "z-ai/glm5",
-        "openai/gpt-oss-120b",
+        "minimaxai/minimax-m3",
     ],
     "kimi-coding": [
+        "kimi-k3",
         "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-for-coding",
+        "kimi-for-coding-highspeed",
         "kimi-k2-thinking",
         "kimi-k2-thinking-turbo",
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
     "kimi-coding-cn": [
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -323,6 +372,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "step-3.5-flash-2603",
     ],
     "moonshot": [
+        "kimi-k3",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -350,6 +400,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "anthropic": [
         "claude-fable-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -363,8 +414,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "deepseek": [
         "deepseek-v4-pro",
         "deepseek-v4-flash",
-        "deepseek-chat",
-        "deepseek-reasoner",
     ],
     "xiaomi": [
         "mimo-v2.5-pro",
@@ -386,14 +435,21 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-ai/DeepSeek-V3.2",
         "moonshotai/Kimi-K2.5",
         "google/gemini-3.1-flash-lite-preview",
+        "anthropic/claude-sonnet-5",
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
     ],
     "opencode-zen": [
         "kimi-k2.5",
+        "kimi-k2.6",
+        "gpt-5.5",
+        "gpt-5.5-pro",
         "gpt-5.4-pro",
         "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
         "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
         "gpt-5.2",
         "gpt-5.2-codex",
         "gpt-5.1",
@@ -403,6 +459,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5",
         "gpt-5-codex",
         "gpt-5-nano",
+        "claude-fable-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-opus-4-5",
         "claude-opus-4-1",
@@ -410,34 +470,47 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-5",
         "claude-sonnet-4",
         "claude-haiku-4-5",
-        "claude-3-5-haiku",
+        "gemini-3.5-flash",
         "gemini-3.1-pro",
-        "gemini-3-pro",
         "gemini-3-flash",
+        "minimax-m3",
         "minimax-m2.7",
         "minimax-m2.5",
-        "minimax-m2.5-free",
-        "minimax-m2.1",
+        "glm-5.2",
+        "glm-5.1",
         "glm-5",
-        "glm-4.7",
-        "glm-4.6",
-        "kimi-k2-thinking",
-        "kimi-k2",
-        "qwen3-coder",
+        "kimi-k2.7-code",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-free",
+        "qwen3.7-plus",
+        "qwen3.6-plus",
+        "qwen3.5-plus",
+        "grok-build-0.1",
         "big-pickle",
+        "mimo-v2.5-free",
+        "north-mini-code-free",
+        "nemotron-3-ultra-free",
     ],
     "opencode-go": [
+        "kimi-k3",
+        "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
         "mimo-v2.5-pro",
         "mimo-v2.5",
         "mimo-v2-pro",
         "mimo-v2-omni",
+        "minimax-m3",
         "minimax-m2.7",
         "minimax-m2.5",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
         "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
     ],
@@ -455,6 +528,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
         "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "kimi-k2.5",
         "qwen3.5-plus",
@@ -468,9 +542,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
     # separate provider ID with its own base_url_env_var.
     "alibaba-coding-plan": [
-        "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
+        "qwen3-max-2026-01-23",
         "qwen3-coder-plus",
         "qwen3-coder-next",
         "kimi-k2.5",
@@ -495,6 +570,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
     # Use inference profile IDs (us.*) since most models require them.
     "bedrock": [
+        "us.anthropic.claude-sonnet-5",
         "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -509,6 +585,23 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Azure Foundry: user-provided endpoint and model.
     # Empty list because models depend on the endpoint configuration.
     "azure-foundry": [],
+    # Google Vertex AI — static curated list.  Vertex's OpenAI-compatible
+    # endpoint has no /models listing route, so without this entry the
+    # /model picker only ever shows the currently-configured model.
+    # Model IDs use the "google/" publisher prefix Vertex's openapi
+    # endpoint expects (see hermes_cli/model_setup_flows.py).
+    # Entries validated live against a GCP project (global region,
+    # HTTP 200) as of 2026-07-21 (PR #68767).
+    "vertex": [
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3.6-flash",
+        "google/gemini-3.5-flash",
+        "google/gemini-3.5-flash-lite",
+        "google/gemini-3-flash-preview",
+        "google/gemini-3.1-flash-lite-preview",
+        "google/gemini-3.1-flash-lite",
+    ],
     "novita": [
         "moonshotai/kimi-k2.5",
         "minimax/minimax-m2.7",
@@ -518,6 +611,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen/qwen3-235b-a22b-fp8",
     ],
 }
+
+# Vercel AI Gateway: derive the bare-model-id catalog from the curated
+# ``VERCEL_AI_GATEWAY_MODELS`` snapshot so both the picker (tuples with descriptions)
+# and the static fallback catalog (bare ids) stay in sync from a single
+# source of truth.
+_PROVIDER_MODELS["ai-gateway"] = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
 
 # ---------------------------------------------------------------------------
 # Nous Portal free-model helper
@@ -888,7 +987,7 @@ def fetch_nous_recommended_models(
             url,
             headers={"Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
         if not isinstance(data, dict):
             data = {}
@@ -1013,7 +1112,9 @@ class ProviderEntry(NamedTuple):
 
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
+    ProviderEntry("fireworks",      "Fireworks AI",             "Fireworks AI (OpenAI-compatible direct model API)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
+    ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
@@ -1028,7 +1129,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
-    ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (Code Assist OAuth flow)"),
+    ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, coder, direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI Grok (Direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),
@@ -1046,6 +1147,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (Open models subscription)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
+    ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (Multi-model aggregator)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
 ]
 
@@ -1059,7 +1161,7 @@ try:
     for _pp in _list_providers_for_canonical():
         if _pp.name in _canonical_slugs:
             continue
-        if _pp.auth_type in {"oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot"}:
+        if _pp.auth_type in {"oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex"}:
             continue  # non-api-key flows need bespoke picker UX; skip auto-inject
         _label = _pp.display_name or _pp.name
         _desc = _pp.description or f"{_label} (direct API)"
@@ -1099,8 +1201,9 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
-    "google":   ("Google Gemini",   "AI Studio API or OAuth + Code Assist",            ["gemini", "google-gemini-cli"]),
+    "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
+    "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
 }
@@ -1190,6 +1293,10 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "google-vertex": "vertex",
+    "vertex-ai": "vertex",
+    "gcp-vertex": "vertex",
+    "vertexai": "vertex",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
@@ -1200,6 +1307,8 @@ _PROVIDER_ALIASES = {
     "arceeai": "arcee",
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+    "fireworks-ai": "fireworks",
+    "fw": "fireworks",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "minimax-portal": "minimax-oauth",
@@ -1212,6 +1321,9 @@ _PROVIDER_ALIASES = {
     "zen": "opencode-zen",
     "go": "opencode-go",
     "opencode-go-sub": "opencode-go",
+    "aigateway": "ai-gateway",
+    "vercel": "ai-gateway",
+    "vercel-ai-gateway": "ai-gateway",
     "kilo": "kilocode",
     "kilo-code": "kilocode",
     "kilo-gateway": "kilocode",
@@ -1220,8 +1332,6 @@ _PROVIDER_ALIASES = {
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
     "qwen-portal": "qwen-oauth",
-    "gemini-cli": "google-gemini-cli",
-    "gemini-oauth": "google-gemini-cli",
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
@@ -1256,25 +1366,72 @@ _PROVIDER_ALIASES = {
 }
 
 
-# Cost-safe overrides for the *silent* auto-default
-# (``get_default_model_for_provider``). Most providers' curated lists lead with a
-# sensible default, but Nous Portal is a per-token *metered aggregator* whose
-# list is ordered best-/most-capable-first — entry [0] is the priciest flagship
-# (``anthropic/claude-opus-4.8``, $5/$25 per Mtok). Using that as the
-# non-interactive fallback when a profile sets ``provider: nous`` with no model
-# silently bills the most expensive model for traffic the user never opted into
-# (a missing default escalated to Opus and billed 863 requests before the user
-# noticed). Pin the silent default to a low-cost curated model instead so a
-# missing model can never escalate to the flagship.
+# In-repo fallback for the model Hermes silently lands on when the user never
+# picked one (GUI onboarding confirm card, empty ``model.default``,
+# provider-set-but-model-missing resolution). The AUTHORITATIVE source is the
+# remote model catalog: the manifest labels exactly one entry per provider
+# with ``"default": true`` (see get_default_model_from_cache in
+# model_catalog.py), so maintainers can rotate the default without shipping a
+# release. This constant is the offline/fresh-install fallback and MUST match
+# the labeled entry in website/static/api/model-catalog.json. Deliberately a
+# capable low-cost model rather than the curated lists' entry [0]: aggregator
+# lists are ordered most-capable-first, so [0] is the priciest Anthropic
+# flagship (claude-fable-5 / opus) — silently billing the most expensive model
+# for traffic the user never opted into.
+PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.2"
+
+
+def get_preferred_silent_default_model(provider: str = "openrouter") -> str:
+    """Return the silent-default model id — catalog label first, constant second.
+
+    Reads the ``"default": true`` label from the cached remote catalog
+    (never hits the network — safe on hot resolution paths), falling back to
+    :data:`PREFERRED_SILENT_DEFAULT_MODEL` when no cached manifest exists or
+    the provider block carries no label.
+    """
+    try:
+        from hermes_cli.model_catalog import get_default_model_from_cache
+        labeled = get_default_model_from_cache(provider)
+        if labeled:
+            return labeled
+    except Exception:
+        pass
+    return PREFERRED_SILENT_DEFAULT_MODEL
+
+
+def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter") -> str:
+    """Pick the silent default from an available-models list.
+
+    Returns the catalog-labeled default (see
+    :func:`get_preferred_silent_default_model`) when the list carries it,
+    else the first entry, else "". Used by every surface that must choose a
+    model on the user's behalf without an interactive picker (GUI onboarding
+    recommended-default, empty-model runtime fallback).
+    """
+    preferred = get_preferred_silent_default_model(provider)
+    if preferred in model_ids:
+        return preferred
+    return model_ids[0] if model_ids else ""
+
+
+# Providers whose *silent* auto-default must go through the cost-safe
+# catalog-labeled default (``get_preferred_silent_default_model``) instead of
+# curated-list entry [0]. Metered aggregators (Nous Portal, OpenRouter) order
+# their lists best-/most-capable-first — entry [0] is the priciest flagship
+# (``anthropic/claude-fable-5``). Using that as the non-interactive fallback
+# when a profile sets a provider with no model silently bills the most
+# expensive model for traffic the user never opted into (a missing default
+# escalated to Opus and billed 863 requests before the user noticed). The
+# catalog manifest labels the default entry (``"default": true``) so it can
+# rotate without a release; a missing model must never escalate to the
+# flagship.
 #
-# This is deliberately a fixed, side-effect-free default for the hot resolution
-# path. The *interactive* default (GUI onboarding / ``hermes model``) uses the
-# richer free/paid-tier-aware resolver — see ``get_recommended_default_model``
-# in hermes_cli/web_server.py and ``partition_nous_models_by_tier`` — which can
-# hit the Portal; this fallback must stay cheap and network-free.
-_PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
-    "nous": "deepseek/deepseek-v4-flash",
-}
+# This is deliberately a network-free lookup for the hot resolution path
+# (cache-only catalog read). The *interactive* default (GUI onboarding /
+# ``hermes model``) uses the richer free/paid-tier-aware resolver — see
+# ``get_recommended_default_model`` in hermes_cli/web_server.py and
+# ``partition_nous_models_by_tier`` — which can hit the Portal.
+_SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset({"nous", "openrouter"})
 
 
 def get_default_model_for_provider(provider: str) -> str:
@@ -1287,15 +1444,19 @@ def get_default_model_for_provider(provider: str) -> str:
     For most providers this is the first entry in ``_PROVIDER_MODELS`` — the
     same model the ``hermes model`` picker offers first. For metered aggregators
     whose curated list is ordered most-capable-first, that entry is also the
-    most EXPENSIVE one, so silently defaulting to it is a billing footgun. Such
-    providers carry an explicit low-cost override in
-    ``_PROVIDER_SILENT_DEFAULT_OVERRIDES``; a missing model must never
-    auto-escalate to the flagship.
+    most EXPENSIVE one, so silently defaulting to it is a billing footgun.
+    Those providers (``_SILENT_DEFAULT_PROVIDERS``) resolve through the
+    catalog-labeled default instead; a missing model must never auto-escalate
+    to the flagship.
     """
     models = _PROVIDER_MODELS.get(provider, [])
-    override = _PROVIDER_SILENT_DEFAULT_OVERRIDES.get(provider)
-    if override and override in models:
-        return override
+    if provider in _SILENT_DEFAULT_PROVIDERS:
+        preferred = get_preferred_silent_default_model(provider)
+        # Trust the preferred default even when the provider has no static
+        # catalog (OpenRouter's picker list is fetched live; its curated
+        # snapshot carries the default).
+        if preferred and (preferred in models or not models):
+            return preferred
     return models[0] if models else ""
 
 
@@ -1362,7 +1523,7 @@ def fetch_openrouter_models(
             "https://openrouter.ai/api/v1/models",
             headers={"Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
         return list(_openrouter_catalog_cache or fallback)
@@ -1381,6 +1542,7 @@ def fetch_openrouter_models(
         live_by_id[mid] = item
 
     curated: list[tuple[str, str]] = []
+    silent_default = get_preferred_silent_default_model("openrouter")
     for preferred_id in preferred_ids:
         live_item = live_by_id.get(preferred_id)
         if live_item is None:
@@ -1390,14 +1552,20 @@ def fetch_openrouter_models(
         # when the user selects them. Ported from Kilo-Org/kilocode#9068.
         if not _openrouter_model_supports_tools(live_item):
             continue
-        desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
+        if preferred_id == silent_default:
+            # Keep the silent-default badge through the live refresh so the
+            # picker shows which model Hermes lands on when none is selected.
+            desc = "default"
+        else:
+            desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
 
     if not curated:
         return list(_openrouter_catalog_cache or fallback)
 
-    first_id, _ = curated[0]
-    curated[0] = (first_id, "recommended")
+    first_id, first_desc = curated[0]
+    if not first_desc:
+        curated[0] = (first_id, "recommended")
     _openrouter_catalog_cache = curated
     return list(curated)
 
@@ -1425,6 +1593,95 @@ def get_curated_nous_model_ids() -> list[str]:
     return list(_PROVIDER_MODELS.get("nous", []))
 
 
+def _ai_gateway_model_is_free(pricing: Any) -> bool:
+    """Return True if an AI Gateway model has $0 input AND output pricing."""
+    if not isinstance(pricing, dict):
+        return False
+    try:
+        return float(pricing.get("input", "0")) == 0 and float(pricing.get("output", "0")) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def fetch_ai_gateway_models(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> list[tuple[str, str]]:
+    """Return the curated AI Gateway picker list, refreshed from the live catalog when possible."""
+    global _ai_gateway_catalog_cache
+
+    if _ai_gateway_catalog_cache is not None and not force_refresh:
+        return list(_ai_gateway_catalog_cache)
+
+    from hermes_constants import AI_GATEWAY_BASE_URL
+
+    fallback = list(VERCEL_AI_GATEWAY_MODELS)
+    preferred_ids = [mid for mid, _ in fallback]
+
+    try:
+        req = urllib.request.Request(
+            f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    live_items = payload.get("data", [])
+    if not isinstance(live_items, list):
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    live_by_id: dict[str, dict[str, Any]] = {}
+    for item in live_items:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        live_by_id[mid] = item
+
+    curated: list[tuple[str, str]] = []
+    for preferred_id in preferred_ids:
+        live_item = live_by_id.get(preferred_id)
+        if live_item is None:
+            continue
+        desc = "free" if _ai_gateway_model_is_free(live_item.get("pricing")) else ""
+        curated.append((preferred_id, desc))
+
+    if not curated:
+        return list(_ai_gateway_catalog_cache or fallback)
+
+    # If the live catalog offers a free Moonshot model, auto-promote it to
+    # position #1 as "recommended" — dynamic discovery without a PR.
+    free_moonshot = next(
+        (
+            mid
+            for mid, item in live_by_id.items()
+            if mid.startswith("moonshotai/")
+            and _ai_gateway_model_is_free(item.get("pricing"))
+        ),
+        None,
+    )
+    if free_moonshot:
+        curated = [(mid, desc) for mid, desc in curated if mid != free_moonshot]
+        curated.insert(0, (free_moonshot, "recommended"))
+    else:
+        first_id, _ = curated[0]
+        curated[0] = (first_id, "recommended")
+
+    _ai_gateway_catalog_cache = curated
+    return list(curated)
+
+
+def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
+    """Return just the AI Gateway model-id strings."""
+    return [mid for mid, _ in fetch_ai_gateway_models(force_refresh=force_refresh)]
+
+
+
+
 # ---------------------------------------------------------------------------
 # Pricing helpers — fetch live pricing from OpenRouter-compatible /v1/models
 # ---------------------------------------------------------------------------
@@ -1439,13 +1696,19 @@ def _format_price_per_mtok(per_token_str: str) -> str:
     Always uses 2 decimal places so that prices align vertically when
     right-justified in a column (the decimal point stays in the same position).
 
+    Sub-cent prices (e.g. deep-discount cache-hit promos) extend precision
+    instead of collapsing to "$0.00": the smallest decimal place that makes
+    the value non-zero is found, then one extra digit is kept and trailing
+    zeros trimmed.
+
     Examples:
-        "0.000003"   → "$3.00"      (per million tokens)
-        "0.00003"    → "$30.00"
-        "0.00000015" → "$0.15"
-        "0.0000001"  → "$0.10"
-        "0.00018"    → "$180.00"
-        "0"          → "free"
+        "0.000003"        → "$3.00"      (per million tokens)
+        "0.00003"         → "$30.00"
+        "0.00000015"      → "$0.15"
+        "0.0000001"       → "$0.10"
+        "0.00018"         → "$180.00"
+        "0.0000000018"    → "$0.0018"    (promo: $0.0018/Mtok)
+        "0"               → "free"
     """
     try:
         val = float(per_token_str)
@@ -1454,7 +1717,90 @@ def _format_price_per_mtok(per_token_str: str) -> str:
     if val == 0:
         return "free"
     per_m = val * 1_000_000
-    return f"${per_m:.2f}"
+    text = f"{per_m:.2f}"
+    if per_m < 0.01:
+        # Non-zero price below one cent per Mtok — widen precision until the
+        # value shows, keep one extra significant digit, trim trailing zeros.
+        prec = 3
+        while prec < 12 and round(per_m, prec) == 0:
+            prec += 1
+        text = f"{per_m:.{min(prec + 1, 12)}f}".rstrip("0").rstrip(".")
+    return f"${text}"
+
+
+def compute_sale_discount(
+    prompt: str,
+    completion: str,
+    original: Any,
+) -> tuple[int, str, str] | None:
+    """Derive sale chrome from gateway ``pricing.original`` when cheaper.
+
+    Nous Portal-only feature: callers gate on the provider; this helper only
+    sees ``original`` because the Nous fetch path opted in via
+    ``include_sale_original=True``.
+
+    Returns ``(discount_percent, was_prompt_raw, was_completion_raw)`` only when
+    ``original`` is a dict and the current prompt (fallback: completion) rate
+    is strictly below the corresponding original. Percent is
+    ``round((1 - current/original) * 100)`` — never hardcoded, and a discount
+    that rounds below 1% is treated as no sale (never render "-0%"). Returns
+    ``None`` when there is no sale (missing/equal/invalid original), so UIs
+    show normal prices.
+    """
+    if not isinstance(original, dict):
+        return None
+
+    was_prompt = original.get("prompt")
+    was_completion = original.get("completion")
+    if was_prompt in (None, "") and was_completion in (None, ""):
+        return None
+
+    def _finite(raw: Any) -> float | None:
+        try:
+            n = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return n if n > 0 and n == n else None  # n == n rejects NaN
+
+    def _nonneg(raw: Any) -> float | None:
+        try:
+            n = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return n if n >= 0 and n == n else None
+
+    # Free / $0 models never show sale chrome, even if a leftover list price
+    # is higher (e.g. a :free sibling that inherited pricing.original).
+    cur_prompt_any = _nonneg(prompt) if prompt not in (None, "") else None
+    cur_comp_any = _nonneg(completion) if completion not in (None, "") else None
+    if cur_prompt_any == 0 and cur_comp_any == 0:
+        return None
+
+    cur_prompt = _finite(prompt) if prompt not in (None, "") else None
+    orig_prompt = _finite(was_prompt) if was_prompt not in (None, "") else None
+    if cur_prompt is not None and orig_prompt is not None and cur_prompt < orig_prompt:
+        pct = int(round((1.0 - (cur_prompt / orig_prompt)) * 100))
+        if pct < 1:
+            return None
+        return (
+            pct,
+            str(was_prompt),
+            str(was_completion) if was_completion not in (None, "") else "",
+        )
+
+    cur_comp = _finite(completion) if completion not in (None, "") else None
+    orig_comp = _finite(was_completion) if was_completion not in (None, "") else None
+    if cur_comp is not None and orig_comp is not None and cur_comp < orig_comp:
+        pct = int(round((1.0 - (cur_comp / orig_comp)) * 100))
+        if pct < 1:
+            return None
+        return (
+            pct,
+            str(was_prompt) if was_prompt not in (None, "") else "",
+            str(was_completion),
+        )
+
+    return None
 
 
 def fetch_models_with_pricing(
@@ -1463,17 +1809,26 @@ def fetch_models_with_pricing(
     timeout: float = 8.0,
     *,
     force_refresh: bool = False,
-) -> dict[str, dict[str, str]]:
-    """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion}}`` pricing.
+    include_sale_original: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion, ...}}``.
 
     Results are cached per *base_url* so repeated calls are free.
     Works with any OpenRouter-compatible endpoint (OpenRouter, Nous Portal).
+
+    When *include_sale_original* is true (Nous Portal only) and the gateway
+    advertises a global discount under ``pricing.original``, those
+    pre-discount rates are copied through as a nested ``original`` dict so
+    pickers can show sale chrome. Other providers never opt in — OpenRouter
+    (and anything else sharing this helper) keeps the legacy
+    ``{prompt, completion}`` shape even if a response happens to nest
+    ``original``.
     """
     cache_key = (base_url or "").rstrip("/")
     if not force_refresh and cache_key in _pricing_cache:
         return _pricing_cache[cache_key]
 
-    url = cache_key.rstrip("/") + "/v1/models"
+    url = cache_key + "/v1/models"
     headers: dict[str, str] = {
         "Accept": "application/json",
         "User-Agent": _HERMES_USER_AGENT,
@@ -1483,6 +1838,69 @@ def fetch_models_with_pricing(
 
     try:
         req = urllib.request.Request(url, headers=headers)
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        _pricing_cache[cache_key] = {}
+        return {}
+
+    result: dict[str, dict[str, Any]] = {}
+    for item in payload.get("data", []):
+        mid = item.get("id")
+        pricing = item.get("pricing")
+        if mid and isinstance(pricing, dict):
+            entry: dict[str, Any] = {
+                "prompt": str(pricing.get("prompt", "")),
+                "completion": str(pricing.get("completion", "")),
+            }
+            if pricing.get("input_cache_read"):
+                entry["input_cache_read"] = str(pricing["input_cache_read"])
+            if pricing.get("input_cache_write"):
+                entry["input_cache_write"] = str(pricing["input_cache_write"])
+            # Sale chrome is Nous Portal-only. Never copy pricing.original for
+            # OpenRouter / other OpenAI-compatible catalogs.
+            if include_sale_original:
+                original = pricing.get("original")
+                if isinstance(original, dict):
+                    orig_entry: dict[str, str] = {}
+                    for key in (
+                        "prompt",
+                        "completion",
+                        "input_cache_read",
+                        "input_cache_write",
+                    ):
+                        if original.get(key) not in (None, ""):
+                            orig_entry[key] = str(original[key])
+                    if orig_entry.get("prompt") or orig_entry.get("completion"):
+                        entry["original"] = orig_entry
+            result[mid] = entry
+
+    _pricing_cache[cache_key] = result
+    return result
+
+
+def fetch_ai_gateway_pricing(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Fetch Vercel AI Gateway /v1/models and return hermes-shaped pricing.
+
+    Vercel uses ``input`` / ``output`` field names; hermes's picker expects
+    ``prompt`` / ``completion``. This translates. Cache read/write field names
+    already match.
+    """
+    from hermes_constants import AI_GATEWAY_BASE_URL
+
+    cache_key = AI_GATEWAY_BASE_URL.rstrip("/")
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    try:
+        req = urllib.request.Request(
+            f"{cache_key}/models",
+            headers={"Accept": "application/json"},
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
@@ -1491,18 +1909,21 @@ def fetch_models_with_pricing(
 
     result: dict[str, dict[str, str]] = {}
     for item in payload.get("data", []):
+        if not isinstance(item, dict):
+            continue
         mid = item.get("id")
         pricing = item.get("pricing")
-        if mid and isinstance(pricing, dict):
-            entry: dict[str, str] = {
-                "prompt": str(pricing.get("prompt", "")),
-                "completion": str(pricing.get("completion", "")),
-            }
-            if pricing.get("input_cache_read"):
-                entry["input_cache_read"] = str(pricing["input_cache_read"])
-            if pricing.get("input_cache_write"):
-                entry["input_cache_write"] = str(pricing["input_cache_write"])
-            result[mid] = entry
+        if not (mid and isinstance(pricing, dict)):
+            continue
+        entry: dict[str, str] = {
+            "prompt": str(pricing.get("input", "")),
+            "completion": str(pricing.get("output", "")),
+        }
+        if pricing.get("input_cache_read"):
+            entry["input_cache_read"] = str(pricing["input_cache_read"])
+        if pricing.get("input_cache_write"):
+            entry["input_cache_write"] = str(pricing["input_cache_write"])
+        result[mid] = entry
 
     _pricing_cache[cache_key] = result
     return result
@@ -1522,24 +1943,47 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
     The Nous inference ``/v1/models`` endpoint exposes pricing without
     authentication, so the api_key is best-effort: when runtime credential
     resolution fails (expired refresh token, missing auth.json, etc.) we
-    still return the default inference base URL so the picker keeps
-    working with anonymous pricing data.  Free-tier users in particular
-    need this — pricing drives the free/paid partition, and silently
-    returning empty pricing because of an auth blip makes the picker
-    look broken ("No free models currently available").
+    still return a usable inference base URL so the picker keeps working
+    with anonymous pricing data.  Free-tier users in particular need this
+    — pricing drives the free/paid partition, and silently returning empty
+    pricing because of an auth blip makes the picker look broken ("No free
+    models currently available").
+
+    Base URL precedence (mirrors runtime credential resolution):
+    1. ``NOUS_INFERENCE_BASE_URL`` env override (staging / preview)
+    2. Resolved runtime credential ``base_url``
+    3. Production default
+
+    Without (1), a staging profile's sale ``pricing.original`` never
+    reaches the pickers — the anonymous fallback would hit prod, which
+    has no ``original`` field.
     """
+    env_base = None
+    try:
+        from hermes_cli.auth import _nous_inference_env_override
+
+        env_base = _nous_inference_env_override()
+    except Exception:
+        env_base = None
+
+    api_key = ""
+    creds_base = ""
     try:
         from hermes_cli.auth import resolve_nous_runtime_credentials
+
         creds = resolve_nous_runtime_credentials()
         if creds:
-            return (creds.get("api_key", ""), creds.get("base_url", ""))
+            api_key = creds.get("api_key", "") or ""
+            creds_base = (creds.get("base_url", "") or "").strip()
     except Exception:
         pass
-    return ("", _DEFAULT_NOUS_INFERENCE_BASE)
+
+    base_url = (env_base or creds_base or _DEFAULT_NOUS_INFERENCE_BASE).rstrip("/")
+    return (api_key, base_url)
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """Return live pricing for providers that support it (openrouter, nous, novita)."""
+    """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita)."""
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return fetch_models_with_pricing(
@@ -1547,8 +1991,14 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
             base_url="https://openrouter.ai/api",
             force_refresh=force_refresh,
         )
+    if normalized == "ai-gateway":
+        return fetch_ai_gateway_pricing(force_refresh=force_refresh)
     if normalized == "novita":
         return _fetch_novita_pricing(force_refresh=force_refresh)
+    if normalized == "deepinfra":
+        return _fetch_deepinfra_pricing(force_refresh=force_refresh)
+    if normalized == "fireworks":
+        return _fireworks_pricing_from_models_dev(force_refresh=force_refresh)
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:
@@ -1561,8 +2011,59 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
                 api_key=api_key,
                 base_url=stripped,
                 force_refresh=force_refresh,
+                # Sale chrome (pricing.original) is Nous Portal-only.
+                include_sale_original=True,
             )
     return {}
+
+
+def _fireworks_pricing_from_models_dev(
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Derive Fireworks picker pricing from the models.dev registry cache.
+
+    No dedicated network fetch: ``fetch_models_dev()`` already maintains an
+    in-memory + disk cache (1h TTL) that every picker surface shares, so this
+    is a pure dict transform on the picker path — no added latency and no
+    per-render network call. Results are additionally memoized in
+    ``_pricing_cache`` so repeated menu renders within a process are free.
+
+    models.dev publishes Fireworks costs in USD per 1M tokens; the shared
+    pricing formatter expects per-token strings, so divide by 1M.
+    """
+    cache_key = "models.dev/fireworks"
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    result: dict[str, dict[str, str]] = {}
+    try:
+        from agent.models_dev import _get_provider_models
+
+        models = _get_provider_models("fireworks") or {}
+        for mid, entry in models.items():
+            if not isinstance(entry, dict):
+                continue
+            cost = entry.get("cost")
+            if not isinstance(cost, dict):
+                continue
+            inp = cost.get("input")
+            out = cost.get("output")
+            if inp is None and out is None:
+                continue
+            row: dict[str, str] = {
+                "prompt": str(float(inp or 0) / 1_000_000),
+                "completion": str(float(out or 0) / 1_000_000),
+            }
+            cache_read = cost.get("cache_read")
+            if cache_read:
+                row["input_cache_read"] = str(float(cache_read) / 1_000_000)
+            result[str(mid)] = row
+    except Exception:
+        result = {}
+
+    _pricing_cache[cache_key] = result
+    return result
 
 
 def _fetch_novita_pricing(
@@ -1576,8 +2077,9 @@ def _fetch_novita_pricing(
     0.0001 USD. Convert them to the per-token strings used by the shared
     pricing formatter.
 
-    Results are cached in ``_pricing_cache`` keyed on the resolved base URL —
-    without this, every menu render or pricing lookup re-hits the network.
+    Results are cached in ``_pricing_cache`` keyed on the resolved base URL,
+    matching the pattern used by ``fetch_ai_gateway_pricing`` — without this,
+    every menu render or pricing lookup re-hits the network.
     """
     api_key = os.getenv("NOVITA_API_KEY", "").strip()
     if not api_key:
@@ -1597,7 +2099,7 @@ def _fetch_novita_pricing(
 
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
         _pricing_cache[cache_key] = {}
@@ -1776,16 +2278,47 @@ def _provider_keys(provider: str) -> set[str]:
     return {k for k in (key, normalized) if k}
 
 
+# Retired model IDs kept for /model auto-detect only — not shown in pickers.
+# DeepSeek cut these off on 2026-07-24; model_normalize remaps them on the wire.
+_PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
+    "deepseek": ("deepseek-chat", "deepseek-reasoner"),
+}
+
+
+def _provider_catalog_names(provider: str) -> tuple[str, ...]:
+    """Active picker models plus retired aliases recognized for detection."""
+    active = tuple(_PROVIDER_MODELS.get(provider, []))
+    retired = _PROVIDER_RETIRED_ALIASES.get(provider, ())
+    return active + retired
+
+
 def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
     return any(
         name_lower == model.lower()
         for provider in providers
-        for model in _PROVIDER_MODELS.get(provider, [])
+        for model in _provider_catalog_names(provider)
     )
 
 
 _AGGREGATOR_PROVIDERS = frozenset(
-    {"nous", "openrouter", "copilot", "kilocode"}
+    {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
+)
+
+# Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
+# would be listed here (tried only as a last resort for bare short-alias
+# resolution, after every native-vendor catalog, so they never hijack an alias
+# away from the model's native vendor). None are currently defined.
+_BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
+
+# Providers whose live /v1/models endpoint is the authoritative catalog, so the
+# curated list is a discovery-only fallback. For these, the picker merges
+# live-first (live entries lead, curated-only entries append). Every OTHER
+# provider keeps curated-first (commit 658ac1d86, #46309) so a deliberately
+# surfaced newest model stays at the top even when the live API lags. OpenCode
+# Zen / Go re-expose dozens of upstream vendors and rotate them frequently, so
+# their stale curated entries must not pollute the top of the picker. (#49129)
+_LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
+    {"opencode-zen", "opencode-go"}
 )
 
 
@@ -1825,12 +2358,23 @@ def _resolve_static_model_alias(
             return provider, matched
 
     for provider in _PROVIDER_MODELS:
-        if provider in current_keys or provider in _AGGREGATOR_PROVIDERS:
+        if (
+            provider in current_keys
+            or provider in _AGGREGATOR_PROVIDERS
+            or provider in _BORROWED_MODEL_PROVIDERS
+        ):
             continue
         if matched := _match(provider):
             return provider, matched
 
     for provider in _AGGREGATOR_PROVIDERS:
+        if provider in current_keys and (matched := _match(provider)):
+            return provider, matched
+
+    # Last resort: providers that re-expose other vendors' models. Only reached
+    # when no native-vendor catalog matched — so `sonnet` resolves to anthropic.
+    # None are currently defined (_BORROWED_MODEL_PROVIDERS is empty).
+    for provider in _BORROWED_MODEL_PROVIDERS:
         if provider in current_keys and (matched := _match(provider)):
             return provider, matched
 
@@ -1871,7 +2415,18 @@ def detect_static_provider_for_model(
             and default_models
             and resolved_provider not in current_keys
         ):
-            return (resolved_provider, default_models[0])
+            # Route through the cost-safe default rather than picking
+            # ``default_models[0]`` directly. For metered aggregators whose
+            # curated list is ordered most-capable-first (e.g. Nous Portal),
+            # entry [0] is the priciest flagship, and typing ``/model nous``
+            # would silently escalate to it — the exact billing footgun the
+            # catalog-labeled silent default (``_SILENT_DEFAULT_PROVIDERS``)
+            # exists to prevent. For providers outside that set this is
+            # unchanged (it returns ``models[0]``).
+            return (
+                resolved_provider,
+                get_default_model_for_provider(resolved_provider) or default_models[0],
+            )
 
     # Aggregators list other providers' models — never auto-switch TO them
     # If the model belongs to the current provider's catalog, don't suggest switching
@@ -1879,10 +2434,32 @@ def detect_static_provider_for_model(
         return None
 
     # --- Step 1: check static provider catalogs for a direct match ---
-    for pid, models in _PROVIDER_MODELS.items():
-        if pid in current_keys or pid in _AGGREGATOR_PROVIDERS:
+    # If the current provider is a custom endpoint (custom or custom:*), never
+    # auto-switch away from it based on a static catalog match — the user
+    # explicitly configured their own endpoint and the same model name may be
+    # served there (#48305).
+    _is_custom_current = (
+        current_provider == "custom"
+        or current_provider.startswith("custom:")
+    )
+    for pid in _PROVIDER_MODELS:
+        if (
+            pid in current_keys
+            or pid in _AGGREGATOR_PROVIDERS
+            or pid in _BORROWED_MODEL_PROVIDERS
+        ):
             continue
-        if any(name_lower == m.lower() for m in models):
+        if _is_custom_current:
+            continue
+        if any(name_lower == m.lower() for m in _provider_catalog_names(pid)):
+            return (pid, name)
+
+    # Borrow-list providers (re-expose other vendors' models) only after every
+    # native-vendor catalog, and only when one is the current provider.
+    for pid in _BORROWED_MODEL_PROVIDERS:
+        if pid in current_keys:
+            continue
+        if any(name_lower == m.lower() for m in _provider_catalog_names(pid)):
             return (pid, name)
 
     return None
@@ -2134,7 +2711,7 @@ def _resolve_copilot_catalog_api_key() -> str:
 #   - "nous": curated list and Portal /models endpoint are the source of
 #     truth for the subscription tier.
 # Also excluded: providers that already have dedicated live-endpoint
-# branches below (copilot, anthropic, ollama-cloud, custom,
+# branches below (copilot, anthropic, ai-gateway, ollama-cloud, custom,
 # stepfun, openai-codex) — those paths handle freshness themselves.
 _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "opencode-go",
@@ -2153,6 +2730,24 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "gemini",
     "google",
 })
+
+
+def _model_dedup_key(model_id: str) -> str:
+    """Case-insensitive dedup key that also folds picker-search aliases.
+
+    Some providers serve the same model under both a curated public slug and
+    a bare live wire id (Kimi Coding Plan lists its flagship as ``k3`` while
+    the curated catalog carries ``kimi-k3``). Folding through the search-alias
+    table keeps the curated-first merge from emitting both as separate rows.
+    The row that survives is the primary list's entry; selection still sends
+    whichever id the surviving row carries.
+    """
+    key = str(model_id).strip().lower()
+    try:
+        from hermes_cli.model_search import model_alias_canonical
+        return model_alias_canonical(key)
+    except Exception:
+        return key
 
 
 def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
@@ -2190,6 +2785,31 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
         seen_lower.add(key)
         merged.append(mid)
     return merged
+
+
+def _openai_discovery_base_url(provider: str) -> str:
+    """Effective OpenAI endpoint for model discovery.
+
+    Mirrors the runtime precedence so discovery probes the SAME endpoint
+    inference uses: ``$OPENAI_BASE_URL`` (explicit env override) →
+    ``model.base_url`` from config.yaml when the configured provider matches
+    → the canonical default. Previously this read the env var only, so a
+    config-set data-residency host (``us.api.openai.com``) was ignored and
+    the catalog kept coming from ``api.openai.com``.
+    """
+    env_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+    if env_raw:
+        return env_raw
+    try:
+        model_cfg = _get_model_config_dict()
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        if cfg_provider in ("openai", "openai-api") and normalize_provider(provider) == normalize_provider(cfg_provider):
+            cfg_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if cfg_url:
+                return cfg_url
+    except Exception:
+        pass
+    return "https://api.openai.com/v1"
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
@@ -2291,6 +2911,15 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     merged_lower.add(m.lower())
             return merged
         return list(_PROVIDER_MODELS.get("anthropic", []))
+    if normalized == "ai-gateway":
+        live = _fetch_ai_gateway_models()
+        if live:
+            return live
+    if normalized == "deepinfra":
+        # DeepInfra's generic /models endpoint mixes chat, image, video,
+        # speech, and embedding models. The tagged catalog helper is the only
+        # safe source for the chat picker, including its empty/failure result.
+        return _fetch_deepinfra_models(force_refresh=force_refresh) or []
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
@@ -2298,19 +2927,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized in ("openai", "openai-api"):
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
-            base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
-            base = base_raw or "https://api.openai.com/v1"
+            base = _openai_discovery_base_url(normalized)
             # Custom OpenAI-compatible endpoints (proxies, gateways, self-hosted)
             # may serve a small curated catalog — use the live list verbatim so
-            # discovery works. But the canonical api.openai.com /v1/models dump
-            # is 120+ entries of embeddings, whisper, tts, dall-e, moderation and
-            # legacy chat models — none of which belong in the agent model picker.
-            # For the default endpoint, intersect the live list with our curated
-            # agentic catalog so ``/model`` matches what ``hermes model`` shows.
-            is_default_openai = base.rstrip("/") in (
-                "https://api.openai.com/v1",
-                "https://api.openai.com",
-            )
+            # discovery works. But the official OpenAI hosts (canonical AND the
+            # data-residency regional hosts, which serve the identical dump)
+            # return 120+ entries of embeddings, whisper, tts, dall-e,
+            # moderation and legacy chat models — none of which belong in the
+            # agent model picker. For official hosts, intersect the live list
+            # with our curated agentic catalog so ``/model`` matches what
+            # ``hermes model`` shows.
+            from hermes_cli.providers import is_official_openai_host
+
+            is_default_openai = is_official_openai_host(base)
             try:
                 live = fetch_api_models(api_key, base)
                 if live:
@@ -2393,18 +3022,33 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     # Merge static curated list with live API results so
                     # models that the live endpoint omits (stale cache,
                     # partial rollout) still appear in the picker.
-                    # Curated entries come first so deliberately-surfaced
-                    # newest models (e.g. kimi-k2.7-code, #46309) stay at
-                    # the top of the picker; live-only entries are appended
-                    # afterwards for discovery.  (#46850)
-                    curated = list(_PROVIDER_MODELS.get(normalized, []))
+                    #
+                    # Single providers (kimi, zai) use curated-first
+                    # (commit 658ac1d86) to surface newest models even when live
+                    # API lags (#46309). OpenCode Zen / Go are different: their
+                    # live API is the authoritative catalog, so they merge
+                    # live-first — live entries lead and stale curated entries
+                    # no longer pollute the top of the picker. (#49129)
+                    #
+                    # Plugin providers with no static _PROVIDER_MODELS entry fall
+                    # back to the profile's curated fallback_models so their
+                    # agentic picks lead the picker instead of whatever the live
+                    # catalog happens to return first (e.g. Fireworks lists an
+                    # image model, flux-*, ahead of its chat models).
+                    curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(
+                        _p.fallback_models or ()
+                    )
                     if curated:
-                        merged = list(curated)
-                        merged_lower = {m.lower() for m in curated}
-                        for m in live:
-                            if m.lower() not in merged_lower:
+                        if normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+                            primary, secondary = live, curated
+                        else:
+                            primary, secondary = curated, live
+                        merged = list(primary)
+                        merged_lower = {_model_dedup_key(m) for m in primary}
+                        for m in secondary:
+                            if _model_dedup_key(m) not in merged_lower:
                                 merged.append(m)
-                                merged_lower.add(m.lower())
+                                merged_lower.add(_model_dedup_key(m))
                         return merged
                     return live
             # Use profile's fallback_models if defined
@@ -2441,6 +3085,56 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 #     to a live fetch — the picker keeps working.
 
 _PROVIDER_MODELS_CACHE_TTL = 3600  # 1h
+# Stale-while-revalidate window: an expired-but-same-credentials entry is
+# served IMMEDIATELY (picker opens stay instant) while a background daemon
+# thread re-fetches the live catalog and rewrites the disk cache for the
+# next open. Beyond this bound the entry is considered too old to trust and
+# the caller blocks on a live fetch as before. Rationale: the /model picker's
+# provider listing runs 8-9 serial /v1/models round-trips (~2-3s) whenever
+# the 1h TTL lapses mid-session — model catalogs change on release timescales,
+# not hourly, so serving hour-old data while refreshing off-thread is strictly
+# better than stalling every picker surface (CLI, TUI, dashboard, gateway).
+_PROVIDER_MODELS_STALE_SERVE_MAX = 7 * 24 * 3600  # 7d
+
+# Providers with a background SWR refresh currently in flight — dedupes
+# concurrent refreshes so repeated picker opens during one refresh don't
+# stack threads or duplicate network calls.
+_swr_refresh_inflight: set = set()
+_swr_refresh_lock = threading.Lock()
+
+
+def _spawn_swr_refresh(provider: str) -> None:
+    """Kick a background refresh of *provider*'s model-id cache entry.
+
+    Fire-and-forget daemon thread; at most one in flight per provider.
+    Failures are swallowed — the stale entry stays served until a later
+    refresh succeeds (same degradation the blocking path already had).
+    """
+    with _swr_refresh_lock:
+        if provider in _swr_refresh_inflight:
+            return
+        _swr_refresh_inflight.add(provider)
+
+    def _refresh() -> None:
+        try:
+            live = provider_model_ids(provider, force_refresh=True)
+            if live:
+                cache = _load_provider_models_cache()
+                cache[provider] = {
+                    "fp": _credential_fingerprint(provider),
+                    "at": time.time(),
+                    "models": list(live),
+                }
+                _save_provider_models_cache(cache)
+        except Exception:
+            logger.debug("SWR refresh failed for %s", provider, exc_info=True)
+        finally:
+            with _swr_refresh_lock:
+                _swr_refresh_inflight.discard(provider)
+
+    threading.Thread(
+        target=_refresh, daemon=True, name=f"model-cache-swr-{provider}"
+    ).start()
 
 
 def _provider_models_cache_path() -> Path:
@@ -2478,6 +3172,17 @@ def _credential_fingerprint(provider: str) -> str:
                 parts.append(f"{bev}={_os.environ.get(bev, '')}")
     except Exception:
         pass
+
+    # Effective configured endpoint: config.yaml's model.base_url changes the
+    # endpoint discovery probes (data-residency hosts) without touching any
+    # env var, so it must change the fingerprint too or `hermes config set
+    # model.base_url ...` keeps serving the previous endpoint's cached
+    # catalog until TTL expiry.
+    if provider in ("openai", "openai-api"):
+        try:
+            parts.append(f"effective_base={_openai_discovery_base_url(provider)}")
+        except Exception:
+            pass
 
     # OAuth / external-file mtimes that change on re-auth
     try:
@@ -2569,9 +3274,16 @@ def cached_provider_model_ids(
         and entry.get("fp") == fp
         and isinstance(entry.get("models"), list)
         and entry["models"]
-        and (now - float(entry.get("at", 0))) < ttl_seconds
     ):
-        return list(entry["models"])
+        age = now - float(entry.get("at", 0))
+        if age < ttl_seconds:
+            return list(entry["models"])
+        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+            # Stale-while-revalidate: serve the expired entry immediately so
+            # interactive picker opens never block on serial /v1/models
+            # round-trips; refresh the cache off-thread for the next open.
+            _spawn_swr_refresh(normalized)
+            return list(entry["models"])
 
     # Cache miss / stale / forced refresh — call the live path.
     live = provider_model_ids(normalized, force_refresh=force_refresh)
@@ -2654,7 +3366,7 @@ def _fetch_anthropic_models(
             _anthropic_models_url(base_url),
             headers=h,
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
 
     try:
@@ -2707,7 +3419,7 @@ def _payload_items(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def copilot_default_headers() -> dict[str, str]:
+def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
     """Standard headers for Copilot API requests.
 
     Includes Openai-Intent and x-initiator headers that opencode and the
@@ -2715,13 +3427,13 @@ def copilot_default_headers() -> dict[str, str]:
     """
     try:
         from hermes_cli.copilot_auth import copilot_request_headers
-        return copilot_request_headers(is_agent_turn=True)
+        return copilot_request_headers(is_agent_turn=is_agent_turn)
     except ImportError:
         return {
             "Editor-Version": COPILOT_EDITOR_VERSION,
             "User-Agent": "HermesAgent/1.0",
             "Openai-Intent": "conversation-edits",
-            "x-initiator": "agent",
+            "x-initiator": "agent" if is_agent_turn else "user",
         }
 
 
@@ -2754,10 +3466,37 @@ def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
     return True
 
 
+# Module-level cache for the GitHub Copilot /models catalog.
+# The picker path can ask for it multiple times in one process via:
+#   list_authenticated_providers -> cached_provider_model_ids -> provider_model_ids -> _fetch_github_models
+# and later get_copilot_model_context()/normalize helpers. Cache the raw filtered
+# catalog for a short TTL so we don't pay repeated TLS handshakes on every picker open.
+# Keyed by the api_key used for the successful fetch so a credential swap
+# mid-process never serves the previous account's catalog. Uses a monotonic
+# clock so wall-clock adjustments can't extend the TTL. Lock-free like the
+# other module caches here — a racing thread at worst duplicates one fetch.
+_github_model_catalog_cache: Optional[list[dict[str, Any]]] = None
+_github_model_catalog_cache_key: Optional[str] = None
+_github_model_catalog_cache_time: float = 0.0
+_GITHUB_MODEL_CATALOG_CACHE_TTL = 300  # 5 minutes
+
+
 def fetch_github_model_catalog(
     api_key: Optional[str] = None, timeout: float = 5.0
 ) -> Optional[list[dict[str, Any]]]:
     """Fetch the live GitHub Copilot model catalog for this account."""
+    global _github_model_catalog_cache, _github_model_catalog_cache_key
+    global _github_model_catalog_cache_time
+
+    if (
+        _github_model_catalog_cache is not None
+        and _github_model_catalog_cache_key == api_key
+        and (time.monotonic() - _github_model_catalog_cache_time) < _GITHUB_MODEL_CATALOG_CACHE_TTL
+    ):
+        # Deep copy: catalog items are dicts, and a shallow copy would let
+        # callers mutate the cached entries in place.
+        return copy.deepcopy(_github_model_catalog_cache)
+
     attempts: list[dict[str, str]] = []
     if api_key:
         attempts.append({
@@ -2769,7 +3508,7 @@ def fetch_github_model_catalog(
     for headers in attempts:
         req = urllib.request.Request(COPILOT_MODELS_URL, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 items = _payload_items(data)
                 models: list[dict[str, Any]] = []
@@ -2783,6 +3522,9 @@ def fetch_github_model_catalog(
                     seen_ids.add(model_id)
                     models.append(item)
                 if models:
+                    _github_model_catalog_cache = copy.deepcopy(models)
+                    _github_model_catalog_cache_key = api_key
+                    _github_model_catalog_cache_time = time.monotonic()
                     return models
         except Exception:
             continue
@@ -2844,13 +3586,19 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
 
 
 def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
-    """Strip ``/v1`` suffix from an LM Studio base URL to get the native API root.
+    """Return the LM Studio server root for native ``/api/v1`` endpoints.
 
+    Users commonly copy either the OpenAI-compatible runtime URL
+    (``.../v1``) or the native API prefix (``.../api`` / ``.../api/v1``).
+    Native probes append ``/api/v1/...`` themselves, so normalize all accepted
+    forms back to the bare server root to avoid ``/api/api/v1`` requests.
     Returns ``None`` when the base URL is empty/invalid.
     """
     root = (base_url or "").strip().rstrip("/")
-    if root.endswith("/v1"):
-        root = root[:-3].rstrip("/")
+    for suffix in ("/api/v1", "/api", "/v1"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+            break
     return root or None
 
 
@@ -2880,7 +3628,7 @@ def _lmstudio_fetch_raw_models(
     headers = _lmstudio_request_headers(api_key)
     request = urllib.request.Request(server_root + "/api/v1/models", headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(request, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
@@ -2963,23 +3711,69 @@ def fetch_lmstudio_models(
     return models or []
 
 
+class LMStudioLoadResult(NamedTuple):
+    """Verified LM Studio runtime plus load-attempt provenance."""
+
+    context_length: Optional[int]
+    load_attempted: bool = False
+    rejected: bool = False
+
+
 def ensure_lmstudio_model_loaded(
     model: str,
     base_url: Optional[str],
     api_key: Optional[str],
-    target_context_length: int,
+    target_context_length: Optional[int],
     timeout: float = 120.0,
-) -> Optional[int]:
-    """Ensure LM Studio has ``model`` loaded with at least ``target_context_length``.
+    *,
+    return_load_result: bool = False,
+) -> Optional[int] | LMStudioLoadResult:
+    """Ensure ``model`` is loaded and return verified runtime context.
 
-    No-op when an instance is already loaded with sufficient context. Otherwise
-    POSTs ``/api/v1/models/load`` to (re)load with the target context, capped
-    at the model's ``max_context_length``. Returns the resolved loaded context
-    length, or ``None`` when the probe / load failed.
+    Existing loaded-instance context is authoritative. Cold loads omit
+    ``context_length`` unless the caller supplied an explicit override; the
+    returned context must come from LM Studio's echoed or refreshed state.
     """
+
+    def _result(
+        context_length: Optional[int],
+        *,
+        load_attempted: bool = False,
+        rejected: bool = False,
+    ) -> Optional[int] | LMStudioLoadResult:
+        value = LMStudioLoadResult(context_length, load_attempted, rejected)
+        return value if return_load_result else context_length
+
+    def _positive_int(value: Any) -> Optional[int]:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        return None
+
+    def _loaded_context(entry: dict) -> Optional[int]:
+        instances = entry.get("loaded_instances")
+        if not isinstance(instances, list):
+            return None
+        for instance in instances:
+            config = instance.get("config") if isinstance(instance, dict) else None
+            context = config.get("context_length") if isinstance(config, dict) else None
+            parsed = _positive_int(context)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _find_entry(raw_models: list[dict]) -> Optional[dict]:
+        for raw in raw_models:
+            if isinstance(raw, dict) and (raw.get("key") == model or raw.get("id") == model):
+                return raw
+        return None
+
     server_root = _lmstudio_server_root(base_url)
     if not server_root:
-        return None
+        return _result(None)
+
+    explicit_context = _positive_int(target_context_length)
+    if target_context_length is not None and explicit_context is None:
+        return _result(None)
 
     headers = _lmstudio_request_headers(api_key)
 
@@ -2988,48 +3782,64 @@ def ensure_lmstudio_model_loaded(
     except Exception:
         raw_models = None
     if raw_models is None:
-        return None
+        return _result(None)
 
-    target_entry = None
-    for raw in raw_models:
-        if not isinstance(raw, dict):
-            continue
-        if raw.get("key") == model or raw.get("id") == model:
-            target_entry = raw
-            break
+    target_entry = _find_entry(raw_models)
     if target_entry is None:
-        return None
+        return _result(None)
 
-    max_ctx = target_entry.get("max_context_length")
-    if isinstance(max_ctx, int) and max_ctx > 0:
-        target_context_length = min(target_context_length, max_ctx)
+    max_ctx = _positive_int(target_entry.get("max_context_length"))
+    if explicit_context is not None and max_ctx is not None and explicit_context > max_ctx:
+        return _result(None, rejected=True)
 
-    for inst in target_entry.get("loaded_instances") or []:
-        cfg = inst.get("config") if isinstance(inst, dict) else None
-        loaded_ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
-        if isinstance(loaded_ctx, int) and loaded_ctx >= target_context_length:
-            return loaded_ctx
+    current_context = _loaded_context(target_entry)
+    if current_context is not None:
+        return _result(current_context)
 
-    body = json.dumps({
-        "model": model,
-        "context_length": target_context_length,
-    }).encode()
+    loaded_instances = target_entry.get("loaded_instances")
+    if not isinstance(loaded_instances, list) or loaded_instances:
+        return _result(None)
+
+    load_payload: dict[str, Any] = {"model": model, "echo_load_config": True}
+    if explicit_context is not None:
+        load_payload["context_length"] = explicit_context
+    body = json.dumps(load_payload).encode()
     load_headers = dict(headers)
     load_headers["Content-Type"] = "application/json"
     try:
-        with urllib.request.urlopen(
-            urllib.request.Request(
-                server_root + "/api/v1/models/load",
-                data=body,
-                headers=load_headers,
-                method="POST",
-            ),
-            timeout=timeout,
-        ) as resp:
-            resp.read()
+        load_request = urllib.request.Request(
+            server_root + "/api/v1/models/load",
+            data=body,
+            headers=load_headers,
+            method="POST",
+        )
+        with _urlopen_model_catalog_request(load_request, timeout=timeout) as resp:
+            response_body = resp.read()
     except Exception:
-        return None
-    return target_context_length
+        return _result(None, load_attempted=True)
+
+    try:
+        response_payload = json.loads(response_body.decode())
+    except Exception:
+        response_payload = None
+    load_config = response_payload.get("load_config") if isinstance(response_payload, dict) else None
+    applied_context = (
+        _positive_int(load_config.get("context_length"))
+        if isinstance(load_config, dict)
+        else None
+    )
+    if applied_context is not None:
+        return _result(applied_context, load_attempted=True)
+
+    try:
+        refreshed_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=10)
+    except Exception:
+        refreshed_models = None
+    if refreshed_models is None:
+        return _result(None, load_attempted=True)
+    refreshed_entry = _find_entry(refreshed_models)
+    refreshed_context = _loaded_context(refreshed_entry) if refreshed_entry is not None else None
+    return _result(refreshed_context, load_attempted=True)
 
 
 def lmstudio_model_reasoning_options(
@@ -3065,6 +3875,54 @@ def lmstudio_model_reasoning_options(
     return []
 
 
+def ollama_model_supports_thinking(
+    model: str,
+    base_url: Optional[str],
+    api_key: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[bool]:
+    """Return True if an Ollama (Cloud or local) model advertises ``thinking``.
+
+    Probes the native ``/api/show`` endpoint and checks the ``capabilities``
+    list, which Ollama populates from the model's metadata (e.g.
+    ``deepseek-v4-pro`` → ``["completion", "tools", "thinking"]`` while
+    ``gemma3:27b`` → ``["completion", "vision"]``). This is the authoritative
+    capability source — the OpenAI-compat ``/v1/models`` endpoint omits it.
+
+    Returns:
+        True  — the model declares the ``thinking`` capability.
+        False — ``/api/show`` succeeded but the model has no ``thinking`` cap.
+        None  — the probe failed (unreachable / non-Ollama / error); the caller
+                decides the fallback (we treat None as "don't emit").
+    """
+    import httpx
+
+    server_url = (base_url or "").strip().rstrip("/")
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+    if not server_url:
+        return None
+
+    bare_model = _strip_ollama_cloud_suffix((model or "").strip())
+    if not bare_model:
+        return None
+
+    token = str(api_key or "").strip()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    try:
+        with httpx.Client(timeout=timeout, headers=headers) as client:
+            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
+            if resp.status_code != 200:
+                return None
+            caps = resp.json().get("capabilities")
+            if isinstance(caps, list):
+                return "thinking" in caps
+    except Exception:
+        return None
+    return None
+
+
 def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0) -> Optional[list[str]]:
     catalog = fetch_github_model_catalog(api_key=api_key, timeout=timeout)
     if not catalog:
@@ -3089,6 +3947,7 @@ _COPILOT_MODEL_ALIASES = {
     "openai/o3-mini": "gpt-5-mini",
     "openai/o4-mini": "gpt-5-mini",
     "anthropic/claude-opus-4.6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-5": "claude-sonnet-5",
     "anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4": "claude-sonnet-4",
     "anthropic/claude-sonnet-4.5": "claude-sonnet-4.5",
@@ -3098,12 +3957,14 @@ _COPILOT_MODEL_ALIASES = {
     # dot-notation.  Accept both so users who configure copilot + a
     # default hyphenated Claude model don't hit HTTP 400
     # "model_not_supported".  See issue #6879.
+    "claude-sonnet-5": "claude-sonnet-5",
     "claude-opus-4-6": "claude-opus-4.6",
     "claude-sonnet-4-6": "claude-sonnet-4.6",
     "claude-sonnet-4-0": "claude-sonnet-4",
     "claude-sonnet-4-5": "claude-sonnet-4.5",
     "claude-haiku-4-5": "claude-haiku-4.5",
     "anthropic/claude-opus-4-6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-5": "claude-sonnet-5",
     "anthropic/claude-sonnet-4-6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4-0": "claude-sonnet-4",
     "anthropic/claude-sonnet-4-5": "claude-sonnet-4.5",
@@ -3219,19 +4080,11 @@ def copilot_model_api_mode(
     if _should_use_copilot_responses_api(normalized):
         return "codex_responses"
 
-    # Secondary: check catalog for non-GPT-5 models (Claude via /v1/messages, etc.)
-    if catalog:
-        catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
-        if isinstance(catalog_entry, dict):
-            supported_endpoints = {
-                str(endpoint).strip()
-                for endpoint in (catalog_entry.get("supported_endpoints") or [])
-                if str(endpoint).strip()
-            }
-            # For non-GPT-5 models, check if they only support messages API
-            if "/v1/messages" in supported_endpoints and "/chat/completions" not in supported_endpoints:
-                return "anthropic_messages"
-
+    # Copilot's Claude models are exposed through its OpenAI-compatible chat
+    # endpoint, not through Hermes' native Anthropic adapter. The live catalog may
+    # advertise /v1/messages, but the Copilot token/header scheme is handled by
+    # the OpenAI client path; selecting anthropic_messages would send the wrong
+    # auth/wire shape. Keep non-GPT Copilot slots on chat_completions.
     return "chat_completions"
 
 
@@ -3301,12 +4154,14 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
 
     - GPT-5 / Codex models on Zen use ``/v1/responses``
     - Claude models on Zen use ``/v1/messages``
-    - MiniMax models on Go use ``/v1/messages``
-    - GLM / Kimi on Go use ``/v1/chat/completions``
-    - Other Zen models (Gemini, GLM, Kimi, MiniMax, Qwen, etc.) use
+    - MiniMax and Qwen models on Go use ``/v1/messages``
+    - GLM / Kimi / DeepSeek / MiMo on Go use ``/v1/chat/completions``
+    - Qwen models on Zen use ``/v1/messages``
+    - Other Zen models (Gemini, GLM, Kimi, MiniMax, DeepSeek, etc.) use
       ``/v1/chat/completions``
 
-    This follows the published OpenCode docs for Zen and Go endpoints.
+    This follows the published OpenCode docs for Zen and Go endpoints
+    (https://opencode.ai/docs/zen/ and https://opencode.ai/docs/go/).
     """
     provider = normalize_provider(provider_id)
     normalized = normalize_opencode_model_id(provider_id, model_id).lower()
@@ -3316,7 +4171,9 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     if provider == "opencode-go":
         if normalized.startswith("minimax-"):
             return "anthropic_messages"
-        if normalized.startswith("qwen3.7-max"):
+        if normalized.startswith("qwen"):
+            # All Qwen models on Go (qwen3.7-max, qwen3.7-plus, qwen3.6-plus)
+            # are served via /v1/messages per the published Go endpoint table.
             return "anthropic_messages"
         return "chat_completions"
 
@@ -3325,9 +4182,59 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
             return "anthropic_messages"
         if normalized.startswith("gpt-"):
             return "codex_responses"
+        if normalized.startswith("qwen"):
+            # Qwen models on Zen moved to /v1/messages per the published
+            # Zen endpoint table.
+            return "anthropic_messages"
         return "chat_completions"
 
     return "chat_completions"
+
+
+def normalize_opencode_base_url(
+    provider_id: Optional[str], api_mode: Optional[str], base_url: Optional[str]
+) -> str:
+    """Normalize an OpenCode Zen / Go base URL for the target API mode.
+
+    OpenCode's OpenAI-compatible endpoints live under ``/v1`` (the OpenAI SDK
+    appends ``/chat/completions`` or ``/responses``), while the Anthropic SDK
+    appends its own ``/v1/messages`` — so anthropic_messages needs the ``/v1``
+    suffix stripped.
+
+    Crucially this must be SYMMETRIC.  The stripped URL gets persisted to
+    config (``model.base_url``) by the TUI/desktop and gateway after switching
+    into an anthropic-routed model (e.g. minimax-m2.7 on Go).  A later switch
+    to a chat_completions model (glm, deepseek, kimi) then inherited the
+    stripped URL and POSTed to ``https://opencode.ai/zen/go/chat/completions``
+    — a 404 (the marketing site).  Re-append ``/v1`` for non-anthropic modes
+    so previously-stripped URLs heal themselves.
+
+    Only opencode.ai-hosted URLs are re-suffixed; custom proxy overrides via
+    ``OPENCODE_*_BASE_URL`` are left alone unless they already carry ``/v1``.
+    """
+    url = str(base_url or "").strip().rstrip("/")
+    if not url:
+        return url
+    provider = normalize_provider(provider_id)
+    if provider not in {"opencode-zen", "opencode-go"}:
+        return url
+
+    import re as _re
+
+    if api_mode == "anthropic_messages":
+        return _re.sub(r"/v1$", "", url)
+
+    # chat_completions / codex_responses: ensure the /v1 suffix is present on
+    # official opencode.ai hosts (heals a persisted anthropic-stripped URL).
+    if url.endswith("/v1"):
+        return url
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower()
+    except Exception:
+        host = ""
+    if host == "opencode.ai" or host.endswith(".opencode.ai"):
+        return url + "/v1"
+    return url
 
 
 def github_model_reasoning_efforts(
@@ -3379,6 +4286,7 @@ def probe_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
+    request_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics.
 
@@ -3418,6 +4326,8 @@ def probe_api_models(
 
     tried: list[str] = []
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
+    if urllib.parse.urlparse(normalized).hostname == "generativelanguage.googleapis.com":
+        headers["X-Goog-Api-Client"] = f"hermes-agent/{_HERMES_VERSION}"
     if api_key and api_mode == "anthropic_messages":
         headers["x-api-key"] = api_key
         headers["anthropic-version"] = "2023-06-01"
@@ -3425,13 +4335,19 @@ def probe_api_models(
         headers["Authorization"] = f"Bearer {api_key}"
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
+    if isinstance(request_headers, dict):
+        # Per-provider custom headers can contain auth/proxy secrets. Merge
+        # last so endpoint-specific config wins, and never log the values.
+        from hermes_cli.config import normalize_extra_headers
+
+        headers.update(normalize_extra_headers(request_headers))
 
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
         req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 return {
                     "models": [m.get("id", "") for m in data.get("data", [])],
@@ -3452,18 +4368,276 @@ def probe_api_models(
     }
 
 
+# Legacy filter — used when an item has no surface tag (rolling out
+# 2026-05). Once every model returned by the catalog endpoint carries an
+# explicit surface tag (``chat``/``embed``/``image-gen``/``tts``/``stt``)
+# the regex path becomes unreachable and can be removed.
+_DEEPINFRA_EXCLUDE_RE = re.compile(
+    r"(?i)(embed|rerank|whisper|stable-diffusion|flux|sdxl|"
+    r"tts|bark|speech|image-gen|clip|vit-|dpt-)",
+)
+
+# Surface tags announce *what kind of model* this is. When none of these
+# are present on a catalog entry, the tags array only carries capability
+# tags (``reasoning``, ``vision``, ``prompt_cache``, …) and we have to
+# fall back to id-regex inference for the chat surface.
+_DEEPINFRA_SURFACE_TAGS: frozenset[str] = frozenset({
+    "chat", "embed", "image-gen", "tts", "stt", "video-gen",
+})
+
+_DEEPINFRA_DEFAULT_BASE_URL = "https://api.deepinfra.com/v1/openai"
+_DEEPINFRA_MODELS_QUERY = "filter=true&sort_by=hermes"
+
+# Module-level cache for the full tagged catalog response, keyed by base URL.
+# Each value is the parsed ``data`` list. Surface-specific filters read from
+# this cache so a single network round-trip serves chat / image-gen / tts /
+# stt callers across the whole process lifetime.
+_deepinfra_catalog_cache: dict[str, list[dict]] = {}
+
+# Negative cache: monotonic timestamp of the last failed fetch, keyed by base
+# URL. Without this, an unreachable catalog (offline / DNS / firewall) makes
+# every surface helper (chat picker, pricing, image/video/tts/stt defaults,
+# vision) re-attempt a fresh blocking fetch that eats the full timeout each
+# time — several sequential stalls in one user-visible operation. A short TTL
+# lets connectivity recover without a process restart.
+_deepinfra_catalog_neg_cache: dict[str, float] = {}
+_DEEPINFRA_CATALOG_NEG_TTL = 60.0  # seconds
+
+
+def _deepinfra_catalog_url() -> tuple[str, str]:
+    """Return ``(cache_key, full_url)`` for the DeepInfra catalog endpoint."""
+    base = os.getenv("DEEPINFRA_BASE_URL", "").strip() or _DEEPINFRA_DEFAULT_BASE_URL
+    cache_key = base.rstrip("/")
+    return cache_key, f"{cache_key}/models?{_DEEPINFRA_MODELS_QUERY}"
+
+
+def _fetch_deepinfra_catalog(
+    *,
+    timeout: float = 5.0,
+    force_refresh: bool = False,
+) -> Optional[list[dict]]:
+    """Fetch the raw DeepInfra catalog list with module-level caching.
+
+    The endpoint serves chat + embed + image-gen + tts + stt models in one
+    response. Authentication is optional but Bearer-attached when available
+    so user-scoped catalogs (private fine-tunes etc.) are visible.
+    """
+    cache_key, url = _deepinfra_catalog_url()
+    if not force_refresh:
+        if cache_key in _deepinfra_catalog_cache:
+            return _deepinfra_catalog_cache[cache_key]
+        last_fail = _deepinfra_catalog_neg_cache.get(cache_key)
+        if last_fail is not None and (time.monotonic() - last_fail) < _DEEPINFRA_CATALOG_NEG_TTL:
+            return None
+
+    headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
+    api_key = os.getenv("DEEPINFRA_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        _deepinfra_catalog_neg_cache[cache_key] = time.monotonic()
+        return None
+
+    data = payload.get("data")
+    if not isinstance(data, list):
+        _deepinfra_catalog_neg_cache[cache_key] = time.monotonic()
+        return None
+
+    _deepinfra_catalog_cache[cache_key] = data
+    _deepinfra_catalog_neg_cache.pop(cache_key, None)
+    return data
+
+
+def _fetch_deepinfra_models_by_tag(
+    tag: str,
+    *,
+    timeout: float = 5.0,
+    force_refresh: bool = False,
+) -> Optional[list[dict]]:
+    """Return DeepInfra models whose ``metadata.tags`` includes *tag*.
+
+    Each returned item is ``{"id": str, "metadata": dict}`` so callers can
+    inspect context length, pricing, default dimensions (image-gen),
+    pricing units (tts ``input_characters``, stt ``input_seconds``), etc.
+
+    For the chat surface, items without any ``tags`` field fall through
+    to the legacy name-regex exclusion so this keeps working while the
+    tag rollout (mid-2026) is still in flight.
+
+    Returns ``None`` on network failure.
+    """
+    data = _fetch_deepinfra_catalog(timeout=timeout, force_refresh=force_refresh)
+    if data is None:
+        return None
+
+    matched: list[dict] = []
+    for item in data:
+        mid = item.get("id")
+        if not mid:
+            continue
+        # ``metadata is None`` means DeepInfra returns a stub without
+        # pricing/context — typically a model that's listed but not
+        # served. Skip those for every surface.
+        raw_metadata = item.get("metadata")
+        if raw_metadata is None:
+            continue
+        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+        raw_tags = metadata.get("tags")
+        tags = raw_tags if isinstance(raw_tags, list) else []
+        has_surface_tag = any(t in _DEEPINFRA_SURFACE_TAGS for t in tags)
+
+        if has_surface_tag:
+            if tag in tags:
+                matched.append({"id": mid, "metadata": metadata})
+            continue
+        # Surface-tag rollout incomplete — fall back to id-regex inference.
+        # Only meaningful for the chat surface; embed/image-gen/tts/stt
+        # cannot be safely inferred from an id alone.
+        if tag == "chat" and not _DEEPINFRA_EXCLUDE_RE.search(mid):
+            matched.append({"id": mid, "metadata": metadata})
+
+    return matched
+
+
+def _fetch_deepinfra_models(
+    timeout: float = 5.0,
+    *,
+    force_refresh: bool = False,
+) -> Optional[list[str]]:
+    """Return DeepInfra chat-model ids (tag-aware, regex fallback).
+
+    Thin wrapper over :func:`_fetch_deepinfra_models_by_tag` so historical
+    callers in :func:`provider_model_ids` keep their string-list contract.
+    Returns ``None`` on network failure, an empty list if the catalog
+    contains no chat-tagged ids (which would itself be surprising).
+    """
+    items = _fetch_deepinfra_models_by_tag(
+        "chat", timeout=timeout, force_refresh=force_refresh
+    )
+    if items is None:
+        return None
+    return [item["id"] for item in items] or None
+
+
+def deepinfra_model_ids(tag: str, *, force_refresh: bool = False) -> list[str]:
+    """Return DeepInfra model ids carrying surface *tag* (``[]`` on failure).
+
+    Single source of truth for the per-surface model shims (TTS/STT/vision),
+    replacing the copy-pasted ``import _fetch_deepinfra_models_by_tag → fetch
+    → [item["id"] …]`` wrapper each of them used to carry.
+    """
+    items = _fetch_deepinfra_models_by_tag(tag, force_refresh=force_refresh)
+    return [item["id"] for item in items] if items else []
+
+
+def deepinfra_base_url(section: Optional[dict] = None) -> str:
+    """Resolve the DeepInfra OpenAI-compatible base URL, normalized.
+
+    Precedence: config-section ``base_url`` → ``DEEPINFRA_BASE_URL`` env →
+    default. Always stripped with any trailing slash removed. Single source
+    of truth for the base-URL chain the TTS/STT/image/video shims each used
+    to re-code (with subtly divergent normalization).
+    """
+    candidate = section.get("base_url") if isinstance(section, dict) else None
+    value = candidate or os.getenv("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL
+    return str(value).strip().rstrip("/")
+
+
+def _fetch_deepinfra_pricing(
+    timeout: float = 5.0,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Return picker-shape pricing for DeepInfra chat models.
+
+    DeepInfra publishes ``input_tokens`` / ``output_tokens`` /
+    ``cache_read_tokens`` in $/MTok; the picker expects per-token strings
+    under ``prompt`` / ``completion`` / ``input_cache_read`` (mirrors the
+    OpenRouter shape consumed by
+    :func:`format_model_pricing_table`). Cached via the catalog helper so
+    repeated picker renders are free.
+    """
+    items = _fetch_deepinfra_models_by_tag(
+        "chat", timeout=timeout, force_refresh=force_refresh
+    )
+    if not items:
+        return {}
+
+    result: dict[str, dict[str, str]] = {}
+    for item in items:
+        metadata = item.get("metadata") or {}
+        pricing = metadata.get("pricing") if isinstance(metadata, dict) else None
+        if not isinstance(pricing, dict):
+            continue
+        entry: dict[str, str] = {}
+        inp = pricing.get("input_tokens")
+        out = pricing.get("output_tokens")
+        cache_read = pricing.get("cache_read_tokens")
+        if inp is not None:
+            entry["prompt"] = str(float(inp) / 1_000_000)
+        if out is not None:
+            entry["completion"] = str(float(out) / 1_000_000)
+        if cache_read is not None:
+            entry["input_cache_read"] = str(float(cache_read) / 1_000_000)
+        if entry:
+            result[item["id"]] = entry
+    return result
+
+
+def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
+    """Fetch available language models with tool-use from AI Gateway."""
+    api_key = os.getenv("AI_GATEWAY_API_KEY", "").strip()
+    if not api_key:
+        return None
+    base_url = os.getenv("AI_GATEWAY_BASE_URL", "").strip()
+    if not base_url:
+        from hermes_constants import AI_GATEWAY_BASE_URL
+        base_url = AI_GATEWAY_BASE_URL
+
+    url = base_url.rstrip("/") + "/models"
+    headers: dict[str, str] = {
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": _HERMES_USER_AGENT,
+    }
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            return [
+                m["id"]
+                for m in data.get("data", [])
+                if m.get("id")
+                and m.get("type") == "language"
+                and "tool-use" in (m.get("tags") or [])
+            ]
+    except Exception:
+        return None
+
+
 def fetch_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
 ) -> Optional[list[str]]:
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
     Returns a list of model ID strings, or ``None`` if the endpoint could not
     be reached (network error, timeout, auth failure, etc.).
     """
-    return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+    return probe_api_models(
+        api_key,
+        base_url,
+        timeout=timeout,
+        api_mode=api_mode,
+        request_headers=headers,
+    ).get("models")
 
 
 # ---------------------------------------------------------------------------
@@ -3638,6 +4812,24 @@ def validate_requested_model(
             "message": "Model name cannot be empty.",
         }
 
+    if normalized == "moa":
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import normalize_moa_config
+
+            cfg = normalize_moa_config(load_config().get("moa") or {})
+            if requested in cfg["presets"]:
+                return {"accepted": True, "persist": True, "recognized": True, "message": None}
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"MoA preset `{requested}` was not found. Run `hermes moa list`.",
+            }
+        except Exception as exc:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"Could not read MoA presets: {exc}",
+            }
+
     if any(ch.isspace() for ch in requested):
         return {
             "accepted": False,
@@ -3778,6 +4970,37 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
             provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
+            # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists
+            # for entitlement-gated *hidden* slugs the curated listing hasn't
+            # caught up with — but those are always the provider's own family
+            # (openai-codex -> gpt-*; xai-oauth -> grok-*). Accepting an
+            # unrelated typed name (e.g. `qwen3.5-4b`, `llama-3.1-8b`) here turns
+            # what should be an actionable "did you mean --provider <x>?" error
+            # into a confusing success that 400s on the next turn. Only soft-
+            # accept names that share the provider's family prefix; reject the
+            # rest with guidance to pin the right provider.
+            _family_prefixes = {
+                "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
+                "xai-oauth": ("grok-",),
+            }.get(normalized, ())
+            _lower = requested_for_lookup.strip().lower()
+            _plausible = (not _family_prefixes) or any(
+                _lower.startswith(p) for p in _family_prefixes
+            )
+            if not _plausible:
+                return {
+                    "accepted": False,
+                    "persist": False,
+                    "recognized": False,
+                    "message": (
+                        f"`{requested}` doesn't look like a {provider_label} model "
+                        f"and isn't in its listing, so it was not accepted. If it "
+                        f"belongs to another configured provider, switch with "
+                        f"`--provider <slug>` (or select it from the `/model` "
+                        f"picker)."
+                        f"{suggestion_text}"
+                    ),
+                }
             return {
                 "accepted": True,
                 "persist": True,
@@ -3966,7 +5189,20 @@ def validate_requested_model(
             # listing that are still valid (stale cache, partial rollout,
             # gated previews).  Use the pure-catalog helper (no extra live
             # fetch) so we only accept models Hermes actually ships.  (#46850)
-            if _model_in_provider_catalog(
+            #
+            # EXCEPTION: official OpenAI hosts (canonical api.openai.com and
+            # the data-residency regional hosts).  Their /v1/models listing is
+            # access-scoped and authoritative — a model absent from it is one
+            # this key CANNOT serve, so the curated soft-accept would
+            # manufacture a selection that 400s at first use.  Custom
+            # OpenAI-compatible proxies keep the fallback (incomplete
+            # listings are common there).
+            _openai_listing_is_authoritative = False
+            if normalized in ("openai", "openai-api"):
+                from hermes_cli.providers import is_official_openai_host
+
+                _openai_listing_is_authoritative = is_official_openai_host(base_url)
+            if not _openai_listing_is_authoritative and _model_in_provider_catalog(
                 requested_for_lookup.lower(), _provider_keys(normalized)
             ):
                 return {

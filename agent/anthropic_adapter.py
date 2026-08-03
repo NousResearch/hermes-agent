@@ -23,7 +23,19 @@ from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
-from utils import base_url_host_matches, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
+from agent.secret_scope import get_secret as _get_secret
+
+
+def _getenv(name: str, default: str = "") -> str:
+    """Profile-scoped replacement for os.getenv on credential reads.
+
+    Routes through the secret scope (Workstream A): identical to os.getenv
+    when multiplexing is off, scope-aware (and fail-closed on an unscoped
+    read) when on. Mirrors the same wrapper in hermes_cli/runtime_provider.py.
+    """
+    val = _get_secret(name, default)
+    return val if val is not None else default
 
 # NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
 # ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
@@ -65,6 +77,7 @@ THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # maps to low on every model.  See:
 # https://platform.claude.com/docs/en/about-claude/models/migration-guide
 ADAPTIVE_EFFORT_MAP = {
+    "ultra":   "max",
     "max":     "max",
     "xhigh":   "xhigh",
     "high":    "high",
@@ -126,6 +139,8 @@ _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 _ANTHROPIC_OUTPUT_LIMITS = {
     # Mythos-class named models (claude-fable-5, …) — 1M context, reasoning
     "claude-fable":      128_000,
+    # Claude Sonnet 5
+    "claude-sonnet-5":   128_000,
     # Claude 4.8
     "claude-opus-4-8":   128_000,
     # Claude 4.7
@@ -246,7 +261,13 @@ def _supports_adaptive_thinking(model: str) -> bool:
     only returns False for the explicit legacy list of older Claude families
     that require manual budget-based thinking. Non-Claude Anthropic-Messages
     models (minimax, qwen3, …) return False so they keep the manual path.
+
+    Kimi / Moonshot models are the exception: their Anthropic-compatible
+    endpoints implement the adaptive contract (``thinking.type="adaptive"``
+    + ``output_config.effort``, including ``xhigh`` and ``display``).
     """
+    if _model_name_is_kimi_family(model):
+        return True
     if not _is_claude_model(model):
         return False
     m = model.lower()
@@ -359,7 +380,7 @@ def _detect_claude_code_version() -> str:
         try:
             result = _sp.run(
                 [cmd, "--version"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 # Output is like "2.1.74 (Claude Code)" or just "2.1.74"
@@ -448,7 +469,8 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
 
 # Model-name prefixes that identify the Kimi / Moonshot family.  Covers
 # - official slugs: ``kimi-k2.5``, ``kimi_thinking``, ``moonshot-v1-8k``
-# - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``
+# - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``,
+#   and the bare Coding Plan slug ``k3`` (plus ``k3.x``/``k3-...`` variants)
 # Matched case-insensitively against the post-``normalize_model_name`` form,
 # so a caller's ``provider/vendor/model`` slug is handled the same as a
 # bare name.
@@ -458,7 +480,13 @@ _KIMI_FAMILY_MODEL_PREFIXES = (
     "k1.", "k1-",
     "k2.", "k2-",
     "k25", "k2.5",
+    "k3.", "k3-",
 )
+
+# Bare release slugs with no separator suffix (Kimi Coding Plan serves K3
+# as the exact slug ``k3``). Kept exact-match so unrelated model names that
+# merely start with the same characters don't get misclassified.
+_KIMI_FAMILY_EXACT_SLUGS = frozenset({"k3"})
 
 
 def _model_name_is_kimi_family(model: str | None) -> bool:
@@ -470,6 +498,8 @@ def _model_name_is_kimi_family(model: str | None) -> bool:
     # Strip vendor prefix (e.g. ``moonshotai/kimi-k2.5`` → ``kimi-k2.5``)
     if "/" in m:
         m = m.rsplit("/", 1)[-1]
+    if m in _KIMI_FAMILY_EXACT_SLUGS:
+        return True
     return m.startswith(_KIMI_FAMILY_MODEL_PREFIXES)
 
 
@@ -528,14 +558,49 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     return "/anthropic" in normalized.rstrip("/").lower()
 
 
+def _is_nous_portal_endpoint(base_url: str | None) -> bool:
+    """Return True for Nous Portal's Anthropic Messages route.
+
+    Portal serves its ``anthropic/*`` catalog natively at
+    ``https://inference-api.nousresearch.com/v1/messages``.  Portal-specific
+    behaviours key off this: Bearer JWT auth, verbatim catalog model ids,
+    and native thinking-signature replay.
+
+    Trusted hosts only:
+
+    1. Prod hostname ``inference-api.nousresearch.com``
+    2. The operator-set ``NOUS_INFERENCE_BASE_URL`` hostname (staging/preview)
+
+    Lookalikes such as ``inference-api.nousresearch.com.attacker.test`` are
+    rejected (hostname match, not substring).
+    """
+    if base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):
+        return True
+    try:
+        from hermes_cli.auth import _nous_inference_env_override
+
+        override = _nous_inference_env_override()
+    except Exception:
+        return False
+    if not override:
+        return False
+    # Exact host equality (not subdomain) so the env override can't broaden
+    # into sibling hosts the operator did not set.
+    override_host = base_url_hostname(override)
+    return bool(override_host) and base_url_hostname(base_url or "") == override_host
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
     require Authorization: Bearer instead of Anthropic's native x-api-key header.
-    MiniMax's global and China Anthropic-compatible endpoints, and Azure AI
-    Foundry's Anthropic-style endpoint follow this pattern.
+    MiniMax's global and China Anthropic-compatible endpoints, Azure AI
+    Foundry's Anthropic-style endpoint, Palantir Foundry's LLM proxy, and Nous
+    Portal's Messages route follow this pattern.
     """
+    if _is_nous_portal_endpoint(base_url):
+        return True
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False
@@ -543,6 +608,11 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     return (
         normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
         or "azure.com" in normalized
+        # Palantir Foundry LLM proxy (<org>.palantirfoundry.com/api/v2/llm/proxy/anthropic)
+        # rejects x-api-key with 401 and requires Authorization: Bearer.
+        # Hostname match (not substring) so e.g. evil.com/palantirfoundry
+        # paths don't trigger Bearer auth.
+        or base_url_host_matches(normalized, "palantirfoundry.com")
     )
 
 
@@ -673,6 +743,9 @@ def _build_anthropic_client_with_bearer_hook(
     kwargs = {
         "timeout": timeout_obj,
         "http_client": http_client,
+        # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
+        # default max_retries=2 ignores it and double-retries. (#26293)
+        "max_retries": 0,
         # The SDK requires *something* for api_key/auth_token. Our
         # event hook overrides Authorization per request so this value
         # is never sent. The sentinel string makes accidental leaks
@@ -694,7 +767,11 @@ def _build_anthropic_client_with_bearer_hook(
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
-    return _anthropic_sdk.Anthropic(**kwargs)
+    client = _anthropic_sdk.Anthropic(**kwargs)
+    # Same env-inference trap as build_anthropic_client: auth_token-only
+    # construction would otherwise also send ANTHROPIC_API_KEY as X-Api-Key.
+    client.api_key = None
+    return client
 
 
 def build_anthropic_client(
@@ -757,6 +834,12 @@ def build_anthropic_client(
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
+        # Delegate all rate-limit / 5xx retry to hermes's outer conversation
+        # loop, which honors Retry-After. The SDK default (max_retries=2) uses
+        # its own 1-2s backoff that ignores Retry-After and double-retries
+        # inside our loop — burning request slots against a bucket that won't
+        # refill for minutes. (#26293)
+        "max_retries": 0,
     }
     if normalized_base_url:
         # Azure Anthropic endpoints require an ``api-version`` query parameter.
@@ -808,7 +891,7 @@ def build_anthropic_client(
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
-            "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+            "user-agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
             "x-app": "cli",
         }
     else:
@@ -817,7 +900,16 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
-    return _anthropic_sdk.Anthropic(**kwargs)
+    client = _anthropic_sdk.Anthropic(**kwargs)
+    # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it
+    # from ``ANTHROPIC_API_KEY`` (Hermes loads that into the process env from
+    # ``~/.hermes/.env``). The result is dual auth —
+    # ``X-Api-Key: sk-ant-…`` *and* ``Authorization: Bearer <portal-jwt>`` —
+    # on every Portal / MiniMax / OAuth Messages request. Clear the env-filled
+    # key whenever we intentionally authenticated via auth_token alone.
+    if "auth_token" in kwargs and "api_key" not in kwargs:
+        client.api_key = None
+    return client
 
 
 def build_anthropic_bedrock_client(region: str):
@@ -852,6 +944,9 @@ def build_anthropic_bedrock_client(region: str):
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
+        # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
+        # default max_retries=2 ignores it and double-retries. (#26293)
+        max_retries=0,
         default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
     )
 
@@ -878,7 +973,7 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
              "-s", "Claude Code-credentials",
              "-w"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=5,
             stdin=subprocess.DEVNULL,
         )
@@ -914,44 +1009,72 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     return None
 
 
+def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
+    """Read Claude Code OAuth credentials from ~/.claude/.credentials.json.
+
+    Returns dict with {accessToken, refreshToken?, expiresAt?, source} or None.
+    """
+    cred_path = Path.home() / ".claude" / ".credentials.json"
+    if not cred_path.exists():
+        return None
+    try:
+        data = json.loads(cred_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, IOError) as e:
+        logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+        return None
+
+    oauth_data = data.get("claudeAiOauth")
+    if not (oauth_data and isinstance(oauth_data, dict)):
+        return None
+    access_token = oauth_data.get("accessToken", "")
+    if not access_token:
+        return None
+    return {
+        "accessToken": access_token,
+        "refreshToken": oauth_data.get("refreshToken", ""),
+        "expiresAt": oauth_data.get("expiresAt", 0),
+        "source": "claude_code_credentials_file",
+    }
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials.
 
-    Checks two sources in order:
+    Reads from two possible sources and reconciles them:
       1. macOS Keychain (Darwin only) — "Claude Code-credentials" entry
       2. ~/.claude/.credentials.json file
+
+    Selection rules when both are present:
+      - If exactly one is non-expired, prefer that one. (Handles the case
+        where Claude Code refreshes one source but not the other — observed
+        in the wild on Claude Code 2.1.x.)
+      - Otherwise, prefer the source with the later ``expiresAt`` so that
+        any subsequent refresh uses the most recent ``refreshToken``.
 
     This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
     subscription flow is OAuth/setup-token based with refreshable credentials,
     and native direct Anthropic provider usage should follow that path rather
     than auto-detecting Claude's first-party managed key.
 
-    Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
+    Returns dict with {accessToken, refreshToken?, expiresAt?, source} or None.
     """
-    # Try macOS Keychain first (covers Claude Code >=2.1.114)
     kc_creds = _read_claude_code_credentials_from_keychain()
-    if kc_creds:
-        return kc_creds
+    file_creds = _read_claude_code_credentials_from_file()
 
-    # Fall back to JSON file
-    cred_path = Path.home() / ".claude" / ".credentials.json"
-    if cred_path.exists():
-        try:
-            data = json.loads(cred_path.read_text(encoding="utf-8"))
-            oauth_data = data.get("claudeAiOauth")
-            if oauth_data and isinstance(oauth_data, dict):
-                access_token = oauth_data.get("accessToken", "")
-                if access_token:
-                    return {
-                        "accessToken": access_token,
-                        "refreshToken": oauth_data.get("refreshToken", ""),
-                        "expiresAt": oauth_data.get("expiresAt", 0),
-                        "source": "claude_code_credentials_file",
-                    }
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+    if kc_creds and file_creds:
+        kc_valid = is_claude_code_token_valid(kc_creds)
+        file_valid = is_claude_code_token_valid(file_creds)
+        if kc_valid and not file_valid:
+            return kc_creds
+        if file_valid and not kc_valid:
+            return file_creds
+        # Both valid or both expired: prefer the later expiresAt so the
+        # downstream refresh path uses the freshest refresh_token.
+        kc_exp = kc_creds.get("expiresAt", 0) or 0
+        file_exp = file_creds.get("expiresAt", 0) or 0
+        return kc_creds if kc_exp >= file_exp else file_creds
 
-    return None
+    return kc_creds or file_creds
 
 
 def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
@@ -1005,7 +1128,7 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
             data=data,
             headers={
                 "Content-Type": content_type,
-                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+                "User-Agent": _OAUTH_TOKEN_USER_AGENT,
             },
             method="POST",
         )
@@ -1034,8 +1157,40 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
 
 
 def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
-    """Attempt to refresh an expired Claude Code OAuth token."""
-    refresh_token = creds.get("refreshToken", "")
+    """Attempt to refresh an expired Claude Code OAuth token.
+
+    Claude Code's OAuth refresh tokens are single-use: a successful refresh
+    rotates the pair and invalidates the old refresh token. Claude Code itself
+    also refreshes on its own schedule (IDE/CLI activity), so by the time
+    Hermes notices an expired token, Claude Code may have already rotated it.
+    POSTing our now-stale refresh token in that window races Claude Code and
+    fails with ``invalid_grant``.
+
+    So before refreshing, re-read the live credential sources. If Claude Code
+    has already produced a valid token, adopt it and skip the POST entirely.
+    Only fall back to refreshing ourselves when no fresh credential is found.
+    """
+    # Claude Code may have already refreshed — adopt its token rather than
+    # racing it with our (possibly already-rotated) refresh token. Only adopt
+    # when the live re-read produced a DIFFERENT token with a real future
+    # expiry: re-adopting the same credential we were just handed would be a
+    # no-op, and a 0/absent ``expiresAt`` means "managed key / unknown expiry"
+    # (see is_claude_code_token_valid) which must NOT be treated as a fresh
+    # refresh here.
+    current = read_claude_code_credentials()
+    if current:
+        current_token = current.get("accessToken", "")
+        current_exp = current.get("expiresAt", 0) or 0
+        if (
+            current_token
+            and current_token != creds.get("accessToken", "")
+            and current_exp > 0
+            and is_claude_code_token_valid(current)
+        ):
+            logger.debug("Adopted Claude Code's already-refreshed OAuth token")
+            return current_token
+
+    refresh_token = (current or {}).get("refreshToken", "") or creds.get("refreshToken", "")
     if not refresh_token:
         logger.debug("No refresh token available — cannot refresh")
         return None
@@ -1159,6 +1314,46 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
+def _resolve_anthropic_pool_token() -> Optional[str]:
+    """Return the first available Anthropic OAuth token from credential_pool.
+
+    Read-only: enumerates with ``clear_expired=False, refresh=False`` so a bare
+    token *resolve* (which runs from diagnostic/read-only call sites such as
+    ``account_usage`` and ``hermes models``) never mutates ``~/.hermes/auth.json``
+    or makes a network refresh call. Refresh-on-expiry is owned by the API call
+    path's pool recovery, not the resolver.
+    """
+    try:
+        from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
+    except Exception:
+        return None
+
+    try:
+        pool = load_pool("anthropic")
+        # Enumerate read-only (clear_expired=False, refresh=False): never persist
+        # to auth.json or trigger a network refresh from a bare resolve. select()
+        # is deliberately NOT used — it runs clear_expired=True, refresh=True,
+        # which would violate this read-only contract.
+        entries, _pending = pool._available_entries(clear_expired=False, refresh=False)
+    except Exception:
+        logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
+        return None
+
+    for entry in entries:
+        if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH:
+            continue
+        # access_token is a declared field but a persisted entry can carry an
+        # explicit null (or a partially-written OAuth entry), so coerce before
+        # strip — a bare None.strip() here would escape the try/excepts above
+        # and crash the whole resolver, taking down the source #5 fallback too.
+        # Matches the aux-client analog (auxiliary_client.py: str(key or "")).
+        token = (getattr(entry, "access_token", None) or "").strip()
+        if token:
+            return token
+
+    return None
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -1167,14 +1362,15 @@ def resolve_anthropic_token() -> Optional[str]:
       2. CLAUDE_CODE_OAUTH_TOKEN env var
       3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
-      4. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      4. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
+      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
     creds = read_claude_code_credentials()
 
     # 1. Hermes-managed OAuth/setup token env var
-    token = os.getenv("ANTHROPIC_TOKEN", "").strip()
+    token = _getenv("ANTHROPIC_TOKEN").strip()
     if token:
         preferred = _prefer_refreshable_claude_code_token(token, creds)
         if preferred:
@@ -1182,7 +1378,7 @@ def resolve_anthropic_token() -> Optional[str]:
         return token
 
     # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
-    cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    cc_token = _getenv("CLAUDE_CODE_OAUTH_TOKEN").strip()
     if cc_token:
         preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
         if preferred:
@@ -1194,9 +1390,14 @@ def resolve_anthropic_token() -> Optional[str]:
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 4. Hermes credential_pool OAuth entry.
+    resolved_pool_token = _resolve_anthropic_pool_token()
+    if resolved_pool_token:
+        return resolved_pool_token
+
+    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    api_key = _getenv("ANTHROPIC_API_KEY").strip()
     if api_key:
         return api_key
 
@@ -1239,7 +1440,7 @@ def run_oauth_setup_token() -> Optional[str]:
 
     # Check env vars that may have been set
     for env_var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_TOKEN"):
-        val = os.getenv(env_var, "").strip()
+        val = _getenv(env_var).strip()
         if val:
             return val
 
@@ -1251,10 +1452,29 @@ def run_oauth_setup_token() -> Optional[str]:
 # Stores credentials in ~/.hermes/.anthropic_oauth.json (our own file).
 
 _OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-_OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
+# Anthropic migrated the OAuth token endpoint to platform.claude.com;
+# console.anthropic.com now 404s. Callers should iterate _OAUTH_TOKEN_URLS
+# (new host first, console fallback). _OAUTH_TOKEN_URL is kept as the primary
+# for backward compatibility with existing imports and now points at the live host.
+_OAUTH_TOKEN_URLS = [
+    "https://platform.claude.com/v1/oauth/token",
+    "https://console.anthropic.com/v1/oauth/token",
+]
+_OAUTH_TOKEN_URL = _OAUTH_TOKEN_URLS[0]
+# User-Agent sent on the OAuth *token endpoint* (login exchange + refresh).
+# Anthropic rate-limits (HTTP 429) any token-endpoint request whose UA starts
+# with ``claude-code/`` — verified empirically against platform.claude.com:
+# ``claude-code/2.1.200`` and ``Mozilla/5.0`` -> 429; ``axios/*``, ``node``,
+# and SDK-style UAs -> 400 (reached code validation). The real Claude Code CLI
+# exchanges the auth code with a bare axios client (``axios/<ver>``), NOT its
+# ``claude-code/`` inference UA. We mirror that here. NOTE: the *inference* path
+# (build_anthropic_kwargs) still uses the ``claude-code/`` UA + ``x-app: cli`` —
+# that fingerprint is required there and is NOT throttled on the messages API.
+_OAUTH_TOKEN_USER_AGENT = "axios/1.7.9"
 _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
-_HERMES_OAUTH_FILE = get_hermes_home() / ".anthropic_oauth.json"
+def _get_hermes_oauth_file() -> Path:
+    return get_hermes_home() / ".anthropic_oauth.json"
 
 
 def _generate_pkce() -> tuple:
@@ -1349,18 +1569,37 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             "code_verifier": verifier,
         }).encode()
 
-        req = urllib.request.Request(
-            _OAUTH_TOKEN_URL,
-            data=exchange_data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
-            },
-            method="POST",
-        )
+        # Anthropic migrated the OAuth token endpoint to platform.claude.com;
+        # console.anthropic.com now 404s. Try the new host first, then fall
+        # back to console for older deployments (mirrors the refresh path).
+        # UA is _OAUTH_TOKEN_USER_AGENT (a non-claude-code UA) — see the
+        # constant's definition for why the token endpoint must not send
+        # claude-code/ (429 UA-prefix block).
+        result = None
+        last_error = None
+        for endpoint in _OAUTH_TOKEN_URLS:
+            req = urllib.request.Request(
+                endpoint,
+                data=exchange_data,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": _OAUTH_TOKEN_USER_AGENT,
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    result = json.loads(resp.read().decode())
+                break
+            except Exception as exc:
+                last_error = exc
+                logger.debug("Anthropic token exchange failed at %s: %s", endpoint, exc)
+                continue
 
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read().decode())
+        if result is None:
+            raise last_error if last_error is not None else ValueError(
+                "Anthropic token exchange failed"
+            )
     except Exception as e:
         print(f"Token exchange failed: {e}")
         return None
@@ -1383,9 +1622,10 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
 
 def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
     """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
-    if _HERMES_OAUTH_FILE.exists():
+    oauth_file = _get_hermes_oauth_file()
+    if oauth_file.exists():
         try:
-            data = json.loads(_HERMES_OAUTH_FILE.read_text(encoding="utf-8"))
+            data = json.loads(oauth_file.read_text(encoding="utf-8"))
             if data.get("accessToken"):
                 return data
         except (json.JSONDecodeError, OSError, IOError) as e:
@@ -1410,7 +1650,10 @@ def _is_bedrock_model_id(model: str) -> bool:
     """
     lower = model.lower()
     # Regional inference-profile prefixes
-    if any(lower.startswith(p) for p in ("global.", "us.", "eu.", "ap.", "jp.")):
+    if any(lower.startswith(p) for p in (
+        "global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.",
+        "ca.", "sa.", "me.", "af.",
+    )):
         return True
     # Bare Bedrock model IDs: provider.model-family
     if lower.startswith("anthropic."):
@@ -1697,6 +1940,28 @@ def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
     return out
 
 
+_EMPTY_TEXT_PLACEHOLDER = "(empty)"
+
+
+def _safe_text(text: Any) -> str:
+    """Return ``text`` if it's non-whitespace, else a non-whitespace placeholder.
+
+    The Anthropic Messages API rejects requests where a text content block is
+    empty or whitespace-only (HTTP 400 "text content blocks must contain
+    non-whitespace text"). When such a block gets stored in session history —
+    e.g. produced by context compression — it is replayed verbatim on every
+    subsequent turn, permanently wedging the session. Coercing to a
+    non-whitespace placeholder is self-healing: the next API call recovers.
+
+    Mirrors ``bedrock_adapter._safe_text`` (#9486); ref #69512.
+    """
+    if text is None:
+        return _EMPTY_TEXT_PLACEHOLDER
+    if not isinstance(text, str):
+        text = str(text)
+    return text if text.strip() else _EMPTY_TEXT_PLACEHOLDER
+
+
 def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Strip output-only fields from a stored Anthropic content block so it is
     valid as REQUEST input on replay.
@@ -1714,7 +1979,18 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     btype = b.get("type")
     if btype == "text":
-        out: Dict[str, Any] = {"type": "text", "text": b.get("text", "")}
+        text_val = b.get("text", "")
+        # Bedrock and strict Anthropic-compatible endpoints reject text
+        # blocks where "text" is empty or whitespace-only (#69512). Drop the
+        # blank block (the caller relocates any cache_control it carried and
+        # falls back to a non-whitespace placeholder when nothing survives)
+        # rather than coercing in place — a coerced "(empty)" block would be
+        # model-visible noise next to surviving thinking/tool_use blocks.
+        # Type-safe: captured blocks can carry text=None from an invalid
+        # upstream payload, which a bare .strip() would crash on.
+        if not isinstance(text_val, str) or not text_val.strip():
+            return None
+        out: Dict[str, Any] = {"type": "text", "text": text_val}
         # citations is input-valid ONLY when it's a non-empty list; the SDK
         # emits citations=None on responses, which the input schema rejects.
         cits = b.get("citations")
@@ -1747,6 +2023,18 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # Unknown/unsupported block type on the input path — drop rather than risk
     # another "Extra inputs are not permitted".
     return None
+
+
+def _apply_assistant_cache_control_to_last_cacheable_block(
+    blocks: List[Dict[str, Any]],
+    cache_control: Any,
+) -> None:
+    if not isinstance(cache_control, dict):
+        return
+    for block in reversed(blocks):
+        if isinstance(block, dict) and block.get("type") in {"text", "tool_use"}:
+            block.setdefault("cache_control", dict(cache_control))
+            break
 
 
 def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
@@ -1790,9 +2078,17 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
                 parsed_args = {}
             redacted_input_by_id[_sanitize_tool_id(tc.get("id", ""))] = parsed_args
         replayed: List[Dict[str, Any]] = []
+        _relocated_replay_cache_control = None
+        _dropped_blank_text = False
         for b in ordered_blocks:
             clean = _sanitize_replay_block(b)
             if clean is None:
+                if isinstance(b, dict) and b.get("type") == "text":
+                    _dropped_blank_text = True
+                if isinstance(b, dict) and isinstance(b.get("cache_control"), dict):
+                    # A dropped blank text block can still carry the cache
+                    # breakpoint marker -- relocate it rather than losing it.
+                    _relocated_replay_cache_control = b["cache_control"]
                 continue
             if clean.get("type") == "tool_use":
                 # Override raw (un-redacted) input with the redacted copy when
@@ -1802,17 +2098,90 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
                 if redacted is not None:
                     clean["input"] = redacted
             replayed.append(clean)
+        # When every text block was blank and nothing cacheable survived
+        # (e.g. signed thinking + a blank text block, or a SOLE blank
+        # cache-marked block), emit the non-whitespace placeholder so the
+        # replayed message stays schema-valid (#69512) and a relocated cache
+        # marker still has a carrier instead of being silently lost.
+        _has_cacheable_replay = any(
+            isinstance(b, dict) and b.get("type") in {"text", "tool_use"}
+            for b in replayed
+        )
+        if not _has_cacheable_replay and (
+            _dropped_blank_text or _relocated_replay_cache_control is not None
+        ):
+            replayed.append({"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER})
         if replayed:
+            if _relocated_replay_cache_control is not None:
+                _apply_assistant_cache_control_to_last_cacheable_block(
+                    replayed, _relocated_replay_cache_control
+                )
+            _apply_assistant_cache_control_to_last_cacheable_block(
+                replayed, m.get("cache_control")
+            )
+            # apply_anthropic_cache_control marks an assistant turn with
+            # non-empty text by writing cache_control INTO ``content`` (see
+            # _apply_cache_marker's list branch), not at the top level. This
+            # branch rebuilds the message from ordered_blocks and never reads
+            # ``content``, so that marker would be dropped -- and because
+            # _can_carry_marker already counted this message as a carrier, the
+            # breakpoint is burned rather than relocated. #56195 covered the
+            # complementary shape (blank content -> top-level marker); this is
+            # the interleaved thinking + preamble-text + tool_use shape.
+            _inline_cc = None
+            _msg_content = m.get("content")
+            if isinstance(_msg_content, list):
+                for _blk in _msg_content:
+                    if isinstance(_blk, dict) and isinstance(
+                        _blk.get("cache_control"), dict
+                    ):
+                        _inline_cc = _blk["cache_control"]
+                        break
+            if _inline_cc is not None:
+                _apply_assistant_cache_control_to_last_cacheable_block(
+                    replayed, _inline_cc
+                )
             return {"role": "assistant", "content": replayed}
 
     blocks = _extract_preserved_thinking_blocks(m)
+    # Cache markers dropped along with a blank block are relocated onto the
+    # last surviving cacheable block below (via
+    # _apply_assistant_cache_control_to_last_cacheable_block), rather than
+    # lost -- prompt_caching.py's _apply_cache_marker() sets cache_control
+    # directly on content[-1] for list content, so if that last part happens
+    # to be blank text, dropping it silently would lose the breakpoint.
+    _relocated_cache_control = None
     if content:
         if isinstance(content, list):
             converted_content = _convert_content_to_anthropic(content)
             if isinstance(converted_content, list):
-                blocks.extend(converted_content)
+                # Bedrock and strict Anthropic-compatible endpoints reject
+                # text blocks where "text" is empty or whitespace-only. The
+                # ordered-replay path enforces the same invariant via
+                # _sanitize_replay_block(). Type-safe against ANY invalid
+                # "text" value from an upstream payload -- None, or a
+                # truthy non-string like an int -- not just None: checking
+                # isinstance() first (rather than `blk.get("text") or ""`)
+                # means a non-string value is treated as blank/invalid
+                # instead of reaching .strip() and raising AttributeError.
+                for blk in converted_content:
+                    _blk_text = blk.get("text") if isinstance(blk, dict) else None
+                    if (
+                        isinstance(blk, dict)
+                        and blk.get("type") == "text"
+                        and (not isinstance(_blk_text, str) or not _blk_text.strip())
+                    ):
+                        if isinstance(blk.get("cache_control"), dict):
+                            _relocated_cache_control = blk["cache_control"]
+                        continue
+                    blocks.append(blk)
         else:
-            blocks.append({"type": "text", "text": str(content)})
+            # Scalar (non-list) content: a whitespace-only string is the
+            # same invalid-payload case as an empty list block -- drop it
+            # rather than emitting a blank text block.
+            text_str = str(content)
+            if text_str.strip():
+                blocks.append({"type": "text", "text": text_str})
     for tc in m.get("tool_calls", []):
         if not tc or not isinstance(tc, dict):
             continue
@@ -1853,10 +2222,26 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     )
     if isinstance(reasoning_content, str) and not _already_has_thinking:
         blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
-    # Anthropic rejects empty assistant content
-    effective = blocks or content
-    if not effective or effective == "":
-        effective = [{"type": "text", "text": "(empty)"}]
+    # Anthropic rejects empty assistant content. IMPORTANT: fall back only
+    # to the placeholder, never to the raw `content` variable -- `content`
+    # is the UNFILTERED original message content, and can itself be exactly
+    # the blank/whitespace-only payload the filtering above just removed
+    # (a sole blank text block, or scalar whitespace with no tool_calls).
+    # `blocks or content` there would silently restore the invalid provider
+    # payload this function exists to prevent (#69512).
+    effective = blocks if blocks else [{"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}]
+    # Applied here (after the empty-fallback resolution) rather than
+    # earlier against `blocks` directly, so a cache_control relocated from
+    # a dropped blank block that was the ONLY block still lands on the
+    # (empty) placeholder instead of being silently lost when blocks was
+    # empty at the point the marker would otherwise have been applied.
+    if _relocated_cache_control is not None:
+        _apply_assistant_cache_control_to_last_cacheable_block(
+            effective, _relocated_cache_control
+        )
+    _apply_assistant_cache_control_to_last_cacheable_block(
+        effective, m.get("cache_control")
+    )
     return {"role": "assistant", "content": effective}
 
 
@@ -1926,13 +2311,14 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     """Validate and convert a user message to anthropic format."""
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
-        if not converted_blocks or all(
-            b.get("text", "").strip() == ""
-            for b in converted_blocks
-            if isinstance(b, dict) and b.get("type") == "text"
-        ):
-            converted_blocks = [{"type": "text", "text": "(empty message)"}]
-        return {"role": "user", "content": converted_blocks}
+        kept_blocks = _fix_blank_text_blocks_in_list(
+            converted_blocks,
+            placeholder_text="(empty message)",
+            msg_index=-1,
+            role="user",
+            location="_convert_user_message",
+        )
+        return {"role": "user", "content": kept_blocks}
     else:
         if not content or (isinstance(content, str) and not content.strip()):
             content = "(empty message)"
@@ -1943,57 +2329,81 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
     """Strip tool_use blocks with no matching tool_result, and vice versa.
 
     Context compression or session truncation can remove either side of a
-    tool-call pair.  Anthropic rejects both orphans with HTTP 400.
-
+    tool-call pair, or insert messages between a tool_use and its result.
+    Anthropic requires each tool_use to have a matching tool_result in the
+    IMMEDIATELY FOLLOWING user message — a global ID match is not enough.
     Mutates ``result`` in place.
     """
-    # Strip orphaned tool_use blocks (no matching tool_result follows)
-    tool_result_ids = set()
-    for m in result:
-        if m["role"] == "user" and isinstance(m["content"], list):
-            for block in m["content"]:
-                if block.get("type") == "tool_result":
-                    tool_result_ids.add(block.get("tool_use_id"))
-    for m in result:
-        if m["role"] == "assistant" and isinstance(m["content"], list):
-            kept = [
-                b
-                for b in m["content"]
-                if b.get("type") != "tool_use" or b.get("id") in tool_result_ids
-            ]
-            # If stripping an orphaned tool_use mutated a turn that also carries a
-            # signed thinking block, that block's Anthropic signature was computed
-            # against the ORIGINAL (un-stripped) turn content and is now invalid.
-            # Anthropic rejects the replayed turn with HTTP 400 "thinking blocks in
-            # the latest assistant message cannot be modified".  Flag the turn so
-            # _manage_thinking_signatures can demote the dead signature instead of
-            # replaying it verbatim.  See hermes-agent: extended-thinking + parallel
-            # tool batch interrupted mid-flight → non-retryable 400 crash-loop.
-            if len(kept) != len(m["content"]) and any(
-                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
-                for b in m["content"]
-            ):
-                m["_thinking_signature_invalidated"] = True
-            m["content"] = kept
-            if not m["content"]:
-                m["content"] = [{"type": "text", "text": "(tool call removed)"}]
+    # Pass 1: For each assistant message with tool_use blocks, check that
+    # EACH tool_use ID has a matching tool_result in the immediately following
+    # user message.  Strip tool_use blocks that lack an adjacent result —
+    # Anthropic rejects non-adjacent pairs with HTTP 400 even when the IDs
+    # match somewhere later in the conversation.
+    for i, m in enumerate(result):
+        if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
+            continue
+        tool_use_ids_in_turn = {
+            b.get("id")
+            for b in m["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        }
+        if not tool_use_ids_in_turn:
+            continue
 
-    # Strip orphaned tool_result blocks (no matching tool_use precedes them)
-    tool_use_ids = set()
+        # Collect result IDs from the immediately following user message only.
+        adjacent_result_ids: set = set()
+        if i + 1 < len(result):
+            nxt = result[i + 1]
+            if nxt.get("role") == "user" and isinstance(nxt.get("content"), list):
+                for block in nxt["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        adjacent_result_ids.add(block.get("tool_use_id"))
+
+        orphaned = tool_use_ids_in_turn - adjacent_result_ids
+        if not orphaned:
+            continue
+
+        kept = [
+            b
+            for b in m["content"]
+            if not (isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") in orphaned)
+        ]
+        # If stripping an orphaned tool_use mutated a turn that also carries a
+        # signed thinking block, that block's Anthropic signature was computed
+        # against the ORIGINAL (un-stripped) turn content and is now invalid.
+        # Anthropic rejects the replayed turn with HTTP 400 "thinking blocks in
+        # the latest assistant message cannot be modified".  Flag the turn so
+        # _manage_thinking_signatures can demote the dead signature instead of
+        # replaying it verbatim.  See hermes-agent: extended-thinking + parallel
+        # tool batch interrupted mid-flight → non-retryable 400 crash-loop.
+        if len(kept) != len(m["content"]) and any(
+            isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
+            for b in m["content"]
+        ):
+            m["_thinking_signature_invalidated"] = True
+        m["content"] = kept if kept else [{"type": "text", "text": "(tool call removed)"}]
+
+    # Pass 2: Rebuild the set of tool_use IDs that survived pass 1, then
+    # strip tool_result blocks that no longer have any matching tool_use
+    # anywhere in the conversation.
+    surviving_tool_use_ids: set = set()
     for m in result:
-        if m["role"] == "assistant" and isinstance(m["content"], list):
+        if m.get("role") == "assistant" and isinstance(m.get("content"), list):
             for block in m["content"]:
-                if block.get("type") == "tool_use":
-                    tool_use_ids.add(block.get("id"))
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    surviving_tool_use_ids.add(block.get("id"))
+
     for m in result:
-        if m["role"] == "user" and isinstance(m["content"], list):
-            m["content"] = [
-                b
-                for b in m["content"]
-                if b.get("type") != "tool_result" or b.get("tool_use_id") in tool_use_ids
-            ]
-            if not m["content"]:
-                m["content"] = [{"type": "text", "text": "(tool result removed)"}]
+        if m.get("role") != "user" or not isinstance(m.get("content"), list):
+            continue
+        new_content = [
+            b
+            for b in m["content"]
+            if not (isinstance(b, dict) and b.get("type") == "tool_result")
+            or b.get("tool_use_id") in surviving_tool_use_ids
+        ]
+        if len(new_content) != len(m["content"]):
+            m["content"] = new_content if new_content else [{"type": "text", "text": "(tool result removed)"}]
 
 
 def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2066,16 +2476,21 @@ def _manage_thinking_signatures(
     replayed assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
     hermes-agent#16748 (DeepSeek).
 
+    Nous Portal's ``/v1/messages`` route is the exception among third-party
+    hosts: it proxies Claude to Anthropic/Vertex/Bedrock and validates the
+    same signed thinking blocks.  Sticky ``session_id`` keeps a conversation
+    on one upstream instance so those signatures stay warm — stripping them
+    here would 400 the first tool-loop turn ("thinking must be passed back").
+    Portal therefore takes the native Anthropic replay path below.
+
     Mutates ``result`` in place.
     """
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
-    _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    # Kimi / DeepSeek share a contract: strip signed Anthropic blocks
-    # (neither upstream can validate Anthropic signatures), preserve unsigned
-    # ones synthesised from reasoning_content.  See #13848, #16748.
-    _preserve_unsigned_thinking = (
-        _is_kimi_family_endpoint(base_url, model)
-        or _is_deepseek_anthropic_endpoint(base_url)
+    # Portal speaks Anthropic's thinking contract end-to-end; do not treat it
+    # as a signature-blind proxy even though the host is not anthropic.com.
+    _is_third_party = (
+        _is_third_party_anthropic_endpoint(base_url)
+        and not _is_nous_portal_endpoint(base_url)
     )
 
     last_assistant_idx = None
@@ -2088,8 +2503,12 @@ def _manage_thinking_signatures(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _preserve_unsigned_thinking:
-            # Kimi / DeepSeek: strip signed, preserve unsigned.
+        if _is_kimi_family_endpoint(base_url, model):
+            # Kimi does not enforce thinking signatures — replay as-is
+            # (shared cleanup below still strips cache markers + the internal flag).
+            pass
+        elif _is_deepseek_anthropic_endpoint(base_url):
+            # DeepSeek: strip signed, preserve unsigned.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
@@ -2189,6 +2608,129 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
                 ]
 
 
+def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
+    """Anthropic requires messages[0] to have role=user.
+
+    After a second context compaction on the auto path the summary can be
+    emitted as role=assistant with nothing in front of it (the system prompt
+    lives outside messages[] or is extracted into the separate ``system``
+    param), so messages[0] ends up assistant and the Messages API rejects
+    the request with HTTP 400 — often masked by a misleading
+    "tool_use ids were found without tool_result blocks" error (#52160).
+
+    Mirror the Bedrock Converse adapter, which unconditionally prepends a
+    minimal user turn when the first message is not user
+    (convert_messages_to_converse).
+
+    The inserted text block must be non-whitespace: Anthropic separately
+    rejects any text content block whose text is empty or whitespace-only
+    ("text content blocks must contain non-whitespace text"), so a single
+    space here traded the "leading assistant turn" 400 for that one (#69512
+    class). Uses the same placeholder as every other synthesized filler
+    block in this module for consistency.
+    """
+    if result and result[0].get("role") != "user":
+        result.insert(
+            0, {"role": "user", "content": [{"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}]}
+        )
+
+
+def _fix_blank_text_blocks_in_list(
+    blocks: List[Any],
+    *,
+    placeholder_text: str,
+    msg_index: int,
+    role: Any,
+    location: str,
+) -> List[Any]:
+    """Drop blank/whitespace-only text blocks from ``blocks``, in place logic.
+
+    Non-text blocks (tool_use, tool_result, image, document, thinking, …)
+    and the relative order of everything else are left untouched. A
+    cache_control marker riding on a dropped block is relocated onto the
+    last surviving text/tool_use block so a breakpoint is never silently
+    lost. If nothing survives, a single non-blank placeholder text block
+    takes the dropped blocks' place (carrying the relocated cache_control,
+    if any) so the message never has empty content.
+
+    Returns a new list; does not mutate ``blocks``.
+    """
+    kept: List[Any] = []
+    relocated_cache_control = None
+    for block_index, blk in enumerate(blocks):
+        if (
+            isinstance(blk, dict)
+            and blk.get("type") == "text"
+            and not (isinstance(blk.get("text"), str) and blk["text"].strip())
+        ):
+            if isinstance(blk.get("cache_control"), dict):
+                relocated_cache_control = blk["cache_control"]
+            logger.warning(
+                "Pre-call sanitizer: dropped blank text content block "
+                "(message_index=%d role=%s location=%s block_index=%d "
+                "block_type=text)",
+                msg_index,
+                role,
+                location,
+                block_index,
+            )
+            continue
+        kept.append(blk)
+    if not kept:
+        placeholder: Dict[str, Any] = {"type": "text", "text": placeholder_text}
+        if relocated_cache_control is not None:
+            placeholder["cache_control"] = relocated_cache_control
+        kept.append(placeholder)
+    elif relocated_cache_control is not None:
+        _apply_assistant_cache_control_to_last_cacheable_block(kept, relocated_cache_control)
+    return kept
+
+
+def _scrub_blank_text_blocks(result: List[Dict[str, Any]]) -> None:
+    """Final provider-boundary guard against blank Anthropic text blocks.
+
+    Anthropic rejects any text content block whose ``text`` is empty or
+    whitespace-only with HTTP 400 ("text content blocks must contain
+    non-whitespace text"). ``_convert_assistant_message``,
+    ``_convert_user_message`` and ``_ensure_leading_user_turn`` already
+    avoid emitting these for the paths that build them, but this pass runs
+    last — after every other transform in ``convert_messages_to_anthropic``
+    — so a blank block from any current or future producer (including one
+    nested inside a ``tool_result``'s own content list) never reaches the
+    wire. Diagnostics are structural only: message index, role, content
+    location, block index/type. Never logs message text, tool arguments,
+    tokens, or credentials. Mutates ``result`` in place.
+    """
+    for msg_index, msg in enumerate(result):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        if not isinstance(content, list) or not content:
+            continue
+        placeholder_text = _EMPTY_TEXT_PLACEHOLDER if role == "assistant" else "(empty message)"
+        new_content = _fix_blank_text_blocks_in_list(
+            content,
+            placeholder_text=placeholder_text,
+            msg_index=msg_index,
+            role=role,
+            location="content",
+        )
+        for blk in new_content:
+            if not isinstance(blk, dict) or blk.get("type") != "tool_result":
+                continue
+            inner = blk.get("content")
+            if isinstance(inner, list) and inner:
+                blk["content"] = _fix_blank_text_blocks_in_list(
+                    inner,
+                    placeholder_text="(no output)",
+                    msg_index=msg_index,
+                    role=role,
+                    location="tool_result",
+                )
+        msg["content"] = new_content
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
@@ -2247,8 +2789,10 @@ def convert_messages_to_anthropic(
 
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
+    _ensure_leading_user_turn(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
+    _scrub_blank_text_blocks(result)
 
     return system, result
 
@@ -2310,7 +2854,12 @@ def build_anthropic_kwargs(
     )
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
-    model = normalize_model_name(model, preserve_dots=preserve_dots)
+    # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``);
+    # normalizing to the bare Anthropic slug would make the model unresolvable
+    # there. Skipping the call preserves the prefix AND the dots, so
+    # ``preserve_dots`` stays irrelevant for Portal.
+    if not _is_nous_portal_endpoint(base_url):
+        model = normalize_model_name(model, preserve_dots=preserve_dots)
     # effective_max_tokens = output cap for this call (≠ total context window)
     # Use the resolver helper so non-positive values (negative ints,
     # fractional floats, NaN, non-numeric) fail locally with a clear error
@@ -2421,25 +2970,19 @@ def build_anthropic_kwargs(
     # MiniMax Anthropic-compat endpoints support thinking (manual mode only,
     # not adaptive).  Haiku does NOT support extended thinking — skip entirely.
     #
-    # Kimi's /coding endpoint speaks the Anthropic Messages protocol but has
-    # its own thinking semantics: when ``thinking.enabled`` is sent, Kimi
-    # validates the message history and requires every prior assistant
-    # tool-call message to carry OpenAI-style ``reasoning_content``.  The
-    # Anthropic path never populates that field, and
-    # ``convert_messages_to_anthropic`` strips all Anthropic thinking blocks
-    # on third-party endpoints — so the request fails with HTTP 400
-    # "thinking is enabled but reasoning_content is missing in assistant
-    # tool call message at index N".  Kimi's reasoning is driven server-side
-    # on the /coding route, so skip Anthropic's thinking parameter entirely
-    # for that host.  (Kimi on chat_completions enables thinking via
-    # extra_body in the ChatCompletionsTransport — see #13503.)
+    # Kimi / Moonshot models also use adaptive thinking: their
+    # Anthropic-compatible endpoints (api.moonshot.cn/anthropic,
+    # api.kimi.com/coding) accept ``thinking.type="adaptive"`` +
+    # ``output_config.effort``, and the replay-validation 400s that
+    # originally motivated dropping the parameter (#13848) no longer
+    # occur.  (Kimi on chat_completions enables thinking via extra_body
+    # in the ChatCompletionsTransport — see #13503.)
     #
     # On 4.7+ the `thinking.display` field defaults to "omitted", which
     # silently hides reasoning text that Hermes surfaces in its CLI. We
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
-    _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
-    if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
+    if reasoning_config and isinstance(reasoning_config, dict):
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
@@ -2535,3 +3078,92 @@ def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
             sorted(leaked),
         )
     return api_kwargs
+
+
+def _is_stream_unavailable_error(exc: Exception) -> bool:
+    """Return True when an Anthropic stream call should fall back to create()."""
+    err_lower = str(exc).lower()
+    if "stream" in err_lower and "not supported" in err_lower:
+        return True
+    if "invokemodelwithresponsestream" in err_lower:
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+
+        return is_streaming_access_denied_error(exc)
+    return False
+
+
+def create_anthropic_message(
+    client: Any,
+    api_kwargs: dict,
+    *,
+    log_prefix: str = "",
+    prefer_stream: bool = True,
+    on_stream_event=None,
+    on_response=None,
+) -> Any:
+    """Create an Anthropic message, aggregating via stream when available.
+
+    Some Anthropic-compatible gateways are SSE-only: they ignore non-streaming
+    requests and return ``text/event-stream`` even for ``messages.create()``.
+    The SDK can surface that as raw text, so callers that expect a Message then
+    crash on ``.content``.  Prefer ``messages.stream().get_final_message()`` to
+    match the main turn path, falling back to ``create()`` only for providers
+    that explicitly do not support streaming, such as restricted Bedrock roles.
+
+    ``on_stream_event``: optional callable invoked once per streamed event
+    (best-effort, exceptions swallowed). Lets callers report forward progress
+    to liveness watchdogs — e.g. the auxiliary compression path ticking its
+    progress hook so a slow-but-generating summary model isn't treated as
+    hung. Only fires on the streaming path; the ``create()`` fallback has no
+    events to report.
+
+    ``on_response``: optional callable invoked once with the underlying httpx
+    response before the message is aggregated (best-effort, exceptions
+    swallowed). Response *headers* carry out-of-band provider state that the
+    parsed ``Message`` drops — Nous Portal's ``x-nous-credits-*`` balance family
+    in particular. Only fires on the streaming path, which is the one the main
+    turn loop takes.
+    """
+    sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
+
+    messages_api = getattr(client, "messages", None)
+    stream_fn = getattr(messages_api, "stream", None)
+    if prefer_stream and callable(stream_fn):
+        stream_kwargs = dict(api_kwargs)
+        stream_kwargs.pop("stream", None)
+        try:
+            with stream_fn(**stream_kwargs) as stream:
+                if callable(on_response):
+                    try:
+                        on_response(getattr(stream, "response", None))
+                    except Exception:
+                        logger.debug(
+                            "%son_response callback failed",
+                            log_prefix, exc_info=True,
+                        )
+                if callable(on_stream_event):
+                    # Consume the event stream manually so each event can
+                    # tick the caller's progress callback; get_final_message
+                    # then returns the accumulated snapshot.
+                    for _event in stream:
+                        try:
+                            on_stream_event(_event)
+                        except Exception:
+                            logger.debug(
+                                "%son_stream_event callback failed",
+                                log_prefix, exc_info=True,
+                            )
+                return stream.get_final_message()
+        except Exception as exc:
+            if not _is_stream_unavailable_error(exc):
+                raise
+            logger.debug(
+                "%sAnthropic Messages stream unavailable; falling back to "
+                "messages.create(): %s",
+                log_prefix,
+                exc,
+            )
+
+    create_kwargs = dict(api_kwargs)
+    create_kwargs.pop("stream", None)
+    return messages_api.create(**create_kwargs)

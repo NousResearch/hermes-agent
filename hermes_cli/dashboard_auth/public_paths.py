@@ -31,6 +31,11 @@ the SPA should bootstrap it after login instead.
 from __future__ import annotations
 
 PUBLIC_API_PATHS: frozenset[str] = frozenset({
+    # Minimal process liveness probe for desktop/backend boot handshakes. It
+    # intentionally avoids gateway config, platform discovery, MCP setup, and
+    # host-local detail so readiness checks cannot spend their budget inside
+    # cold plugin imports.
+    "/api/health",
     # Liveness probe target. Returns version, gateway state, active
     # session count, and the dashboard auth-gate shape. No bodies, no
     # session content, no secrets. Documented as the portal's wildcard
@@ -46,4 +51,10 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Read-only theme + plugin manifests for the dashboard skin engine.
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
+    # Chronos managed-cron fire webhook (NAS -> agent). NOT cookie-gated: it
+    # carries its own short-lived NAS-minted JWT (purpose=cron_fire), which the
+    # handler verifies as the real auth. Must bypass the dashboard auth gate so
+    # the NAS relay's bearer-only callback reaches the verifier instead of a
+    # 401 no_cookie. The JWT — not this allowlist — is the security boundary.
+    "/api/cron/fire",
 })

@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { capitalize } from '@/lib/text'
+
 export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
 export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
 
@@ -66,12 +68,7 @@ const compact = (text: string, max = PREVIEW_MAX) => {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
 
-const toolLabel = (name: string) =>
-  name
-    .split('_')
-    .filter(Boolean)
-    .map(p => p[0]!.toUpperCase() + p.slice(1))
-    .join(' ') || name
+const toolLabel = (name: string) => name.split('_').filter(Boolean).map(capitalize).join(' ') || name
 
 const formatTool = (name: string, preview = '') => {
   const snippet = compact(preview, TOOL_PREVIEW_MAX)
@@ -192,6 +189,35 @@ export function clearSessionSubagents(sid: string) {
   $subagentsBySession.set(rest)
 }
 
+/**
+ * Prune terminal-status subagent rows for a session, leaving running/queued
+ * entries untouched. Used at the `message.start` boundary in the desktop
+ * message-stream hook so that the *previous* turn's finished rows get flushed
+ * from the display while background subagents that outlived the spawning turn
+ * remain visible (and still accept late progress/complete events).
+ *
+ * Distinct from `clearSessionSubagents` (used by the Stop action, which
+ * genuinely cancels running subagents and so should drop them all) and from
+ * `pruneDelegateFallbackSubagents` (which filters by id prefix to remove
+ * placeholder rows once the real native event arrives).
+ */
+export function pruneFinishedSessionSubagents(sid: string) {
+  const map = $subagentsBySession.get()
+  const list = map[sid]
+
+  if (!list?.length) {
+    return
+  }
+
+  const next = list.filter(item => item.status === 'running' || item.status === 'queued')
+
+  if (next.length === list.length) {
+    return
+  }
+
+  $subagentsBySession.set({ ...map, [sid]: next })
+}
+
 export function pruneDelegateFallbackSubagents(sid: string) {
   const map = $subagentsBySession.get()
   const list = map[sid]
@@ -261,3 +287,10 @@ export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentN
 
 export const activeSubagentCount = (items: readonly SubagentProgress[]) =>
   items.filter(item => item.status === 'queued' || item.status === 'running').length
+
+export const failedSubagentCount = (items: readonly SubagentProgress[]) =>
+  items.filter(item => item.status === 'failed' || item.status === 'interrupted').length
+
+/** Flatten every session's subagents — the scope the Spawn-tree panel and the
+ *  status-bar indicator must agree on. */
+export const allSubagents = (bySession: Record<string, SubagentProgress[]>) => Object.values(bySession).flat()

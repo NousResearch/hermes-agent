@@ -18,6 +18,8 @@ import pytest
 
 @pytest.fixture()
 def server():
+    # Mocks are scoped to the initial import only (see
+    # tests/tui_gateway/test_protocol.py for the rationale).
     with patch.dict(
         "sys.modules",
         {
@@ -32,18 +34,17 @@ def server():
         import importlib
 
         mod = importlib.import_module("tui_gateway.server")
-        yield mod
-        # Reset module-level session state without re-importing. importlib.reload
-        # would re-register the module's atexit hooks (ThreadPoolExecutor
-        # shutdown, _shutdown_sessions); the duplicates race the stderr
-        # buffer at interpreter shutdown and surface as Fatal Python error:
-        # _enter_buffered_busy. Clearing the per-session dicts gives the
-        # next test a clean slate; _methods is NOT cleared because it's
-        # populated at module import time and re-registration only happens
-        # via reload (which we don't do).
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
+
+    yield mod
+    # Reset module-level session state without re-importing. importlib.reload
+    # would re-register the module's atexit hooks (ThreadPoolExecutor
+    # shutdown, _shutdown_sessions); the duplicates race the stderr
+    # buffer at interpreter shutdown and surface as Fatal Python error:
+    # _enter_buffered_busy. Clearing the per-session dicts gives the
+    # next test a clean slate.
+    mod._sessions.clear()
+    mod._pending.clear()
+    mod._answers.clear()
 
 
 def test_init_session_attaches_background_review_callback(server, monkeypatch):
@@ -120,3 +121,24 @@ def test_review_summary_callback_survives_agent_without_attribute(server, monkey
     # LockedAgent's __slots__ blocks background_review_callback assignment.
     server._init_session("sid-x", "key-x", LockedAgent(), [], cols=80)
     # If we got here, _init_session swallowed the AttributeError gracefully.
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (None, "on"),       # unset → default on
+        ("on", "on"),
+        ("off", "off"),
+        ("verbose", "verbose"),
+        ("VERBOSE", "verbose"),  # case-normalized
+        (True, "on"),       # bool back-compat
+        (False, "off"),
+    ],
+)
+def test_load_memory_notifications_normalization(server, monkeypatch, raw, expected):
+    """_load_memory_notifications mirrors the gateway's bool→str normalization
+    and defaults to 'on' when the key is absent."""
+    display = {} if raw is None else {"memory_notifications": raw}
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": display})
+    assert server._load_memory_notifications() == expected
+

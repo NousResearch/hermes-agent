@@ -148,6 +148,47 @@ def test_authorization_url_state_is_not_pkce_verifier(monkeypatch, tmp_path):
     )
 
 
+def test_login_token_exchange_uses_platform_claude_host(monkeypatch, tmp_path):
+    """The login token exchange must hit ``platform.claude.com`` first.
+
+    Anthropic migrated the OAuth token endpoint to ``platform.claude.com``;
+    ``console.anthropic.com`` now 404s, so a hardcoded console host makes a
+    fresh login impossible (issue #45250 / #49821). The refresh path already
+    iterates the new host first — the login path must do the same.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    captured_token: Dict[str, Any] = {}
+    captured_url: Dict[str, str] = {}
+    _patch_oauth_flow(
+        monkeypatch,
+        callback_code="placeholder",
+        capture_token_request=captured_token,
+        capture_auth_url=captured_url,
+    )
+
+    import builtins
+
+    def fake_input(*_a, **_kw):
+        qs = parse_qs(urlparse(captured_url.get("url", "")).query)
+        state = qs.get("state", [""])[0]
+        return f"auth-code#{state}"
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+
+    from agent.anthropic_adapter import run_hermes_oauth_login_pure
+
+    result = run_hermes_oauth_login_pure()
+
+    assert result is not None, "login should succeed against the live host"
+    assert captured_token["url"] == "https://platform.claude.com/v1/oauth/token", (
+        "login token exchange must target platform.claude.com first, not the "
+        "dead console.anthropic.com host (regression of #45250 / #49821)"
+    )
+
+
+
+
 def test_callback_state_mismatch_aborts(monkeypatch, tmp_path, caplog):
     """If the state returned in the callback does not match the one we sent
     in the authorization URL, the flow must abort before exchanging the code.

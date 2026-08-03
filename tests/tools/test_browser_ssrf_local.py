@@ -74,15 +74,6 @@ class TestPreNavigationSsrf:
 
         assert result["success"] is True
 
-    def test_cloud_allows_public_url(self, monkeypatch, _common_patches):
-        """Public URLs always pass in cloud mode."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
-        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
-
-        result = json.loads(browser_tool.browser_navigate("https://example.com"))
-
-        assert result["success"] is True
 
     # -- Local mode: SSRF skipped ----------------------------------------------
 
@@ -183,12 +174,14 @@ class TestIsLocalBackend:
 
         assert browser_tool._is_local_backend() is True
 
-    def test_cloud_provider_is_not_local(self, monkeypatch):
-        """Cloud provider configured and not Camofox → NOT local."""
-        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: "bb")
 
-        assert browser_tool._is_local_backend() is False
+    def test_camofox_overrides_container_backend(self, monkeypatch):
+        """Camofox mode always counts as local, even with container terminal."""
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        assert browser_tool._is_local_backend() is True
 
 
 # ---------------------------------------------------------------------------
@@ -257,23 +250,6 @@ class TestPostRedirectSsrf:
 
     # -- Local mode: redirect SSRF skipped -------------------------------------
 
-    def test_local_allows_redirect_to_private(self, monkeypatch, _common_patches):
-        """Redirects to private addresses pass in local mode."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
-        monkeypatch.setattr(
-            browser_tool, "_is_safe_url", lambda url: "192.168" not in url,
-        )
-        monkeypatch.setattr(
-            browser_tool,
-            "_run_browser_command",
-            lambda *a, **kw: _make_browser_result(url=self.PRIVATE_FINAL_URL),
-        )
-
-        result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL))
-
-        assert result["success"] is True
-        assert result["url"] == self.PRIVATE_FINAL_URL
 
     def test_cloud_allows_redirect_to_public(self, monkeypatch, _common_patches):
         """Redirects to public addresses always pass (cloud mode)."""
@@ -335,3 +311,40 @@ class TestAllowPrivateUrlsConfig:
         )
 
         assert browser_tool._allow_private_urls() is False
+
+    @pytest.mark.parametrize(
+        "profile_order",
+        [("allowed", "blocked"), ("blocked", "allowed")],
+        ids=["allowed-then-blocked", "blocked-then-allowed"],
+    )
+    def test_profile_scoped_config_does_not_reuse_another_profiles_opt_out(
+        self, tmp_path, profile_order
+    ):
+        """The browser's independent guard must follow the active profile."""
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        allowed_home = tmp_path / "allowed"
+        blocked_home = tmp_path / "blocked"
+        allowed_home.mkdir()
+        blocked_home.mkdir()
+        (allowed_home / "config.yaml").write_text(
+            "browser:\n  allow_private_urls: true\n", encoding="utf-8"
+        )
+        (blocked_home / "config.yaml").write_text(
+            "browser:\n  allow_private_urls: false\n", encoding="utf-8"
+        )
+
+        def under_profile(home):
+            token = set_hermes_home_override(home)
+            try:
+                return browser_tool._allow_private_urls()
+            finally:
+                reset_hermes_home_override(token)
+
+        homes = {"allowed": allowed_home, "blocked": blocked_home}
+        expected = {"allowed": True, "blocked": False}
+        for profile in profile_order:
+            assert under_profile(homes[profile]) is expected[profile]

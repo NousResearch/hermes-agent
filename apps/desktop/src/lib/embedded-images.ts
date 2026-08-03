@@ -1,7 +1,11 @@
-const EMBEDDED_IMAGE_RE =
-  /(\{\s*"type"\s*:\s*"image_url"\s*,\s*"image_url"\s*:\s*\{\s*"url"\s*:\s*")?(data:image\/[\w.+-]+;base64,[A-Za-z0-9+/=]{64,})("\s*\}\s*\})?/g
-
 const DATA_URL_RE = /^data:([\w./+-]+);base64,(.*)$/i
+const DATA_IMAGE_PREFIX = 'data:image/'
+const BASE64_MARKER = ';base64,'
+const MIN_EMBEDDED_IMAGE_BASE64_LENGTH = 64
+const JSON_IMAGE_OPEN_RE = /\{\s*"type"\s*:\s*"image_url"\s*,\s*"image_url"\s*:\s*\{\s*"url"\s*:\s*"$/
+const JSON_IMAGE_CLOSE_RE = /^"\s*\}\s*\}/
+const JSON_IMAGE_OPEN_MAX = 96
+const JSON_IMAGE_CLOSE_MAX = 16
 
 export const DATA_IMAGE_URL_RE = /^data:image\/[\w.+-]+;base64,/i
 
@@ -31,24 +35,122 @@ export function dataUrlToBlob(dataUrl: string): Blob | null {
   }
 }
 
+function isImageMimeCode(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 43 ||
+    code === 45 ||
+    code === 46 ||
+    code === 95
+  )
+}
+
+function isBase64Code(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 43 ||
+    code === 47 ||
+    code === 61
+  )
+}
+
+function readDataImageUrl(text: string, start: number): { end: number; url: string } | null {
+  if (!text.startsWith(DATA_IMAGE_PREFIX, start)) {
+    return null
+  }
+
+  let cursor = start + DATA_IMAGE_PREFIX.length
+
+  while (cursor < text.length && isImageMimeCode(text.charCodeAt(cursor))) {
+    cursor += 1
+  }
+
+  if (cursor === start + DATA_IMAGE_PREFIX.length || !text.startsWith(BASE64_MARKER, cursor)) {
+    return null
+  }
+
+  cursor += BASE64_MARKER.length
+  const base64Start = cursor
+
+  while (cursor < text.length && isBase64Code(text.charCodeAt(cursor))) {
+    cursor += 1
+  }
+
+  if (cursor - base64Start < MIN_EMBEDDED_IMAGE_BASE64_LENGTH) {
+    return null
+  }
+
+  return { end: cursor, url: text.slice(start, cursor) }
+}
+
+function embeddedImageRemovalRange(text: string, dataStart: number, dataEnd: number): { end: number; start: number } {
+  let start = dataStart
+  let end = dataEnd
+  const openSearchStart = Math.max(0, dataStart - JSON_IMAGE_OPEN_MAX)
+  const openMatch = text.slice(openSearchStart, dataStart).match(JSON_IMAGE_OPEN_RE)
+
+  if (openMatch?.index !== undefined) {
+    const close = text.slice(dataEnd, dataEnd + JSON_IMAGE_CLOSE_MAX).match(JSON_IMAGE_CLOSE_RE)
+
+    if (close) {
+      start = openSearchStart + openMatch.index
+      end = dataEnd + close[0].length
+    }
+  }
+
+  return { end, start }
+}
+
+function normalizeCleanedText(text: string): string {
+  return text
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 export function extractEmbeddedImages(text: string): EmbeddedImageExtraction {
-  if (!text || !text.includes('data:image/')) {
+  if (!text || !text.includes(DATA_IMAGE_PREFIX)) {
     return { cleanedText: text, images: [] }
   }
 
   const images: string[] = []
+  const pieces: string[] = []
+  let appendCursor = 0
+  let searchCursor = 0
 
-  const cleanedText = text
-    .replace(EMBEDDED_IMAGE_RE, (_match, _open, dataUrl: string) => {
-      images.push(dataUrl)
+  while (searchCursor < text.length) {
+    const dataStart = text.indexOf(DATA_IMAGE_PREFIX, searchCursor)
 
-      return ''
-    })
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+    if (dataStart === -1) {
+      break
+    }
 
-  return { cleanedText, images }
+    const dataUrl = readDataImageUrl(text, dataStart)
+
+    if (!dataUrl) {
+      searchCursor = dataStart + DATA_IMAGE_PREFIX.length
+
+      continue
+    }
+
+    const range = embeddedImageRemovalRange(text, dataStart, dataUrl.end)
+    pieces.push(text.slice(appendCursor, range.start))
+    images.push(dataUrl.url)
+    appendCursor = range.end
+    searchCursor = range.end
+  }
+
+  if (!images.length) {
+    return { cleanedText: text, images: [] }
+  }
+
+  pieces.push(text.slice(appendCursor))
+
+  return { cleanedText: normalizeCleanedText(pieces.join('')), images }
 }
 
 export function embeddedImageUrls(text: string): string[] {
@@ -57,4 +159,46 @@ export function embeddedImageUrls(text: string): string[] {
 
 export function textWithoutEmbeddedImages(text: string): string {
   return extractEmbeddedImages(text).cleanedText
+}
+
+// The gateway persists attached images as `@image:<path>` directive lines
+// (see tui_gateway/server.py's persist-time rewrite), prepended before the
+// user's own text. The composer's own optimistic/local turn never carries
+// this prefix — it keeps the attachment as separate `attachmentRefs`
+// metadata, not inline text. The turn-equality comparisons in
+// preserveLocalPendingTurnMessages / appendLiveSessionProjection strip ALL
+// reference-directive lines (not just images) via
+// `textWithoutReferenceLines` in components/assistant-ui/reference-kinds.ts;
+// IMAGE_REF_LINE_RE remains here for extractImageRefs below, which moves the
+// image directives into attachmentRefs metadata.
+const IMAGE_REF_LINE_RE = /^@image:[^\n]*\n?/gm
+
+// Same directive lines as IMAGE_REF_LINE_RE, but keeps them instead of
+// discarding — used when converting persisted server messages into
+// ChatMessage/ThreadMessageLike shape, where `@image:<path>` refs need to
+// move from inline text into the `attachmentRefs` metadata field (mirroring
+// how the local optimistic composer represents attachments) rather than stay
+// embedded in the bubble's clamped text body, where a large inline thumbnail
+// pushes the caption text out of the clamp's visible area.
+// Native-vision turns are stored as a parts list, which the session store
+// flattens by replacing each image part with a literal `[screenshot]` line. The
+// `@image:` ref describes that same attachment, so keeping both renders the
+// placeholder as stray text under the thumbnail. Drop it only when a ref was
+// actually lifted, so a `[screenshot]` in a message without attachments stays.
+const SCREENSHOT_PLACEHOLDER_LINE_RE = /^\[screenshot\]\n?/gm
+
+export function extractImageRefs(text: string): { cleanedText: string; refs: string[] } {
+  const refs: string[] = []
+
+  let cleanedText = text.replace(IMAGE_REF_LINE_RE, match => {
+    refs.push(match.trim())
+
+    return ''
+  })
+
+  if (refs.length) {
+    cleanedText = cleanedText.replace(SCREENSHOT_PLACEHOLDER_LINE_RE, '')
+  }
+
+  return { cleanedText: cleanedText.trim(), refs }
 }

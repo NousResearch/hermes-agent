@@ -287,3 +287,19 @@ AI 歌手不是在阅读——它们是在发音。帮助它们：
   都能产生更大的差异。
 - 不要对规则过于执着。如果一行打破了韵律但冲击力更强，
   就保留它。感受才是关键。技艺服务于艺术，而不是反过来。
+---
+
+## 10. 本地 / 开源音乐生成
+
+如果想在本地用 GPU 生成音乐而不是使用 Suno，有两个可选 skill
+覆盖此场景（依赖较重，默认不安装）：
+
+- **heartmula** — 从歌词 + 标签生成带人声的完整歌曲
+  （开源 Suno 替代品，需 8-16GB 显存）：
+  `hermes skills install official/creative/heartmula`
+- **audiocraft** — Meta 的 MusicGen（文本转纯音乐）和
+  AudioGen（音效生成）：
+  `hermes skills install official/creative/audiocraft-audio-generation`
+
+本 skill 中的歌词写作与提示词技巧同样适用于 heartmula —
+它的输入格式是带方括号结构标签的歌词，加上逗号分隔的风格标签。

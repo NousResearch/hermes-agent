@@ -1,6 +1,4 @@
 """Qwen Portal provider profile."""
-
-import copy
 from typing import Any
 
 from providers import register_provider
@@ -10,6 +8,15 @@ from providers.base import ProviderProfile
 class QwenProfile(ProviderProfile):
     """Qwen Portal — message normalization, vl_high_resolution, metadata top-level."""
 
+    @staticmethod
+    def _copy_part_if_request_mutable(part: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        image_url = part.get("image_url")
+        if isinstance(image_url, dict):
+            copied = dict(part)
+            copied["image_url"] = dict(image_url)
+            return copied, True
+        return part, False
+
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Normalize content to list-of-dicts format.
 
@@ -17,37 +24,56 @@ class QwenProfile(ProviderProfile):
 
         Matches the behavior of run_agent.py:_qwen_prepare_chat_messages().
         """
-        prepared = copy.deepcopy(messages)
-        if not prepared:
-            return prepared
+        if not messages:
+            return []
 
-        for msg in prepared:
+        prepared = list(messages)
+        system_idx: int | None = None
+
+        for idx, msg in enumerate(messages):
             if not isinstance(msg, dict):
                 continue
+            if system_idx is None and msg.get("role") == "system":
+                system_idx = idx
             content = msg.get("content")
             if isinstance(content, str):
-                msg["content"] = [{"type": "text", "text": content}]
+                msg_copy = dict(msg)
+                msg_copy["content"] = [{"type": "text", "text": content}]
+                prepared[idx] = msg_copy
             elif isinstance(content, list):
                 normalized_parts = []
+                changed = False
                 for part in content:
                     if isinstance(part, str):
                         normalized_parts.append({"type": "text", "text": part})
+                        changed = True
                     elif isinstance(part, dict):
-                        normalized_parts.append(part)
-                if normalized_parts:
-                    msg["content"] = normalized_parts
+                        normalized_part, copied = self._copy_part_if_request_mutable(part)
+                        normalized_parts.append(normalized_part)
+                        changed = changed or copied
+                    else:
+                        changed = True
+                if normalized_parts and changed:
+                    msg_copy = dict(msg)
+                    msg_copy["content"] = normalized_parts
+                    prepared[idx] = msg_copy
 
         # Inject cache_control on the last part of the system message.
-        for msg in prepared:
-            if isinstance(msg, dict) and msg.get("role") == "system":
+        if system_idx is not None:
+            msg = prepared[system_idx]
+            if isinstance(msg, dict):
                 content = msg.get("content")
                 if (
                     isinstance(content, list)
                     and content
                     and isinstance(content[-1], dict)
                 ):
-                    content[-1]["cache_control"] = {"type": "ephemeral"}
-                break
+                    msg_copy = dict(msg)
+                    content_copy = list(content)
+                    content_copy[-1] = dict(content_copy[-1])
+                    content_copy[-1]["cache_control"] = {"type": "ephemeral"}
+                    msg_copy["content"] = content_copy
+                    prepared[system_idx] = msg_copy
 
         return prepared
 

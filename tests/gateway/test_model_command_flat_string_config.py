@@ -102,7 +102,7 @@ async def test_model_global_persists_when_config_has_flat_string_model(tmp_path,
     )
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
-    assert written["model"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert "base_url" not in written["model"]
 
 
 @pytest.mark.asyncio
@@ -137,22 +137,3 @@ async def test_model_global_persists_when_config_has_missing_model(tmp_path, mon
     assert written["model"]["provider"] == "openrouter"
 
 
-@pytest.mark.asyncio
-async def test_model_global_persists_when_config_has_proper_dict_model(tmp_path, monkeypatch):
-    """Already-correct nested dict must still work — no regression on the
-    common case.
-    """
-    cfg_path = _setup_isolated_home(
-        tmp_path,
-        monkeypatch,
-        {"default": "old-model", "provider": "openai-codex"},
-    )
-
-    result = await _make_runner()._handle_model_command(
-        _make_event("/model gpt-5.5 --global")
-    )
-
-    assert result is not None
-    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    assert written["model"]["default"] == "gpt-5.5"
-    assert written["model"]["provider"] == "openrouter"

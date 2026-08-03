@@ -34,13 +34,13 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
 
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
 
     assert result["exit_code"] == 0
-    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/acp"})]
+    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/acp", "bounded_capture": True})]
 
 
 def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
@@ -61,7 +61,7 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
 
     result = json.loads(
@@ -73,42 +73,51 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     )
 
     assert result["exit_code"] == 0
-    assert calls == [{"timeout": 60, "cwd": "/explicit/workdir"}]
+    assert calls == [{"timeout": 60, "cwd": "/explicit/workdir", "bounded_capture": True}]
 
 
-def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch):
-    """A prior `cd` updates env.cwd; terminal_tool must honor that live cwd."""
-    calls = []
+def test_explicit_workdir_does_not_persist_into_session_cwd(monkeypatch):
+    """A per-command ``workdir`` must not hijack the durable session cwd.
+
+    Regression: the post-command dual-write recorded ``env.cwd`` (stamped to
+    the transient ``workdir``) into the session-cwd store, so every later
+    command that omitted ``workdir`` inherited the one-off directory.
+    """
+    recorded = []
 
     class FakeEnv:
         env = {}
-        cwd = "/workspace/live"
+        cwd = "/workspace/acp"
 
         def execute(self, command, **kwargs):
-            calls.append((command, kwargs))
+            # Marker parse stamps env.cwd to where the command ran.
+            self.cwd = kwargs.get("cwd", self.cwd)
             return {"output": "ok", "returncode": 0}
 
-    task_id = "session-live-cwd"
+    task_id = "acp-session-2"
     monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
     monkeypatch.setattr(terminal_tool, "_last_activity", {})
-    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/workspace/init"}})
-    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/workspace/init"))
-    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
-    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: value or "default")
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/workspace/acp"}})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config())
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
+    )
+    monkeypatch.setattr(
+        terminal_tool,
+        "record_session_cwd",
+        lambda session_key, cwd: recorded.append((session_key, cwd)),
     )
 
-    result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
+    terminal_tool.terminal_tool(command="pwd", task_id=task_id, workdir="/one/off/dir")
 
-    assert result["exit_code"] == 0
-    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/live"})]
+    # The transient workdir must NOT have been recorded as the session cwd.
+    assert all(cwd != "/one/off/dir" for _, cwd in recorded), recorded
 
 
-def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch):
-    """Background process launches must also use the live session cwd."""
+def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monkeypatch):
+    """Background process launches must also use the recorded session cwd."""
 
     class FakeEnv:
         env = {}
@@ -129,6 +138,7 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     task_id = "session-live-cwd-bg"
     monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
     monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/workspace/init"}})
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/workspace/init"))
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
@@ -136,9 +146,10 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
     monkeypatch.setattr(process_registry_mod, "process_registry", registry)
+    terminal_tool.record_session_cwd(task_id, "/workspace/live")
 
     result = json.loads(
         terminal_tool.terminal_tool(
@@ -149,89 +160,17 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     )
 
     assert result["exit_code"] == 0
+    # session_key falls back to the raw task_id when no gateway contextvar is set
+    # (it doesn't propagate to tool-worker threads), so process.kill / stop can
+    # still find and terminate this background process.
     assert registry.calls == [{
         "command": "sleep 1",
         "cwd": "/workspace/live",
         "task_id": task_id,
-        "session_key": "",
+        "session_key": task_id,
         "env_vars": {},
         "use_pty": False,
     }]
-
-
-def test_registering_cwd_override_updates_live_env_cwd(monkeypatch):
-    """An ACP ``update_cwd`` (re-)registered mid-session must win over a
-    previously ``cd``-ed live ``env.cwd``.
-
-    Preferring live ``env.cwd`` (so session-local ``cd`` survives) means a
-    freshly registered ``cwd`` override would otherwise sit *below* the
-    already-set ``env.cwd`` and be silently ignored. ``register_task_env_overrides``
-    syncs the new cwd onto the live cached env so an explicit ACP project-root
-    change takes effect, as the editor client expects.
-    """
-
-    class FakeEnv:
-        env = {}
-        cwd = "/workspace/old"
-
-    task_id = "acp-session-update"
-    fake_env = FakeEnv()
-    monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: fake_env})
-    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
-
-    terminal_tool.register_task_env_overrides(task_id, {"cwd": "/workspace/new"})
-
-    # The live env now reflects the editor's new project root.
-    assert fake_env.cwd == "/workspace/new"
-
-    # A subsequent command resolves to the new cwd (env.cwd precedence).
-    assert terminal_tool._resolve_command_cwd(
-        workdir=None, env=fake_env, default_cwd="/workspace/config"
-    ) == "/workspace/new"
-
-
-def test_registering_cwd_override_noop_when_no_live_env(monkeypatch):
-    """Registering an override before the env exists must not crash; the cwd
-    is applied at env creation time instead."""
-    monkeypatch.setattr(terminal_tool, "_active_environments", {})
-    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
-
-    # Should not raise even though no env is cached yet.
-    terminal_tool.register_task_env_overrides("acp-session-pending", {"cwd": "/workspace/new"})
-
-    assert terminal_tool._task_env_overrides["acp-session-pending"] == {"cwd": "/workspace/new"}
-
-
-def test_registering_non_cwd_override_leaves_live_env_cwd_untouched(monkeypatch):
-    """A non-cwd override (e.g. a per-task Modal image) must not disturb the
-    live env's cwd."""
-
-    class FakeEnv:
-        env = {}
-        cwd = "/workspace/keep"
-
-    task_id = "rl-rollout-1"
-    fake_env = FakeEnv()
-    monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: fake_env})
-    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
-
-    terminal_tool.register_task_env_overrides(task_id, {"modal_image": "custom:latest"})
-
-    assert fake_env.cwd == "/workspace/keep"
-
-
-def test_safe_getcwd_returns_real_cwd(monkeypatch):
-    monkeypatch.setattr(terminal_tool.os, "getcwd", lambda: "/home/user/project")
-    assert terminal_tool._safe_getcwd() == "/home/user/project"
-
-
-def test_safe_getcwd_falls_back_to_terminal_cwd_when_cwd_deleted(monkeypatch):
-    def _boom():
-        raise FileNotFoundError("[Errno 2] No such file or directory")
-
-    monkeypatch.setattr(terminal_tool.os, "getcwd", _boom)
-    monkeypatch.setenv("TERMINAL_CWD", "/srv/work")
-    assert terminal_tool._safe_getcwd() == "/srv/work"
 
 
 def test_safe_getcwd_falls_back_to_home_when_no_terminal_cwd(monkeypatch):

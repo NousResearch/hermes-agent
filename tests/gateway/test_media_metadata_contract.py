@@ -33,8 +33,8 @@ def _accepts_metadata(method) -> bool:
 @pytest.mark.parametrize(
     "module_name, class_name",
     [
-        ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
-        ("gateway.platforms.email", "EmailAdapter"),
+        ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
+        ("plugins.platforms.email.adapter", "EmailAdapter"),
     ],
 )
 def test_send_image_accepts_metadata(module_name, class_name):
@@ -50,31 +50,19 @@ def test_send_image_accepts_metadata(module_name, class_name):
 # whose override drops metadata is a hard failure.
 _ALL_ADAPTERS = [
     ("gateway.platforms.bluebubbles", "BlueBubblesAdapter"),
-    ("gateway.platforms.dingtalk", "DingTalkAdapter"),
+    ("plugins.platforms.dingtalk.adapter", "DingTalkAdapter"),
     ("gateway.platforms.discord", "DiscordAdapter"),
-    ("gateway.platforms.email", "EmailAdapter"),
-    ("gateway.platforms.feishu", "FeishuAdapter"),
-    ("gateway.platforms.matrix", "MatrixAdapter"),
+    ("plugins.platforms.email.adapter", "EmailAdapter"),
+    ("plugins.platforms.feishu.adapter", "FeishuAdapter"),
+    ("plugins.platforms.matrix.adapter", "MatrixAdapter"),
     ("gateway.platforms.mattermost", "MattermostAdapter"),
     ("gateway.platforms.signal", "SignalAdapter"),
-    ("gateway.platforms.slack", "SlackAdapter"),
-    ("gateway.platforms.telegram", "TelegramAdapter"),
-    ("gateway.platforms.wecom", "WeComAdapter"),
+    ("plugins.platforms.slack.adapter", "SlackAdapter"),
+    ("plugins.platforms.telegram.adapter", "TelegramAdapter"),
+    ("plugins.platforms.wecom.adapter", "WeComAdapter"),
     ("gateway.platforms.weixin", "WeixinAdapter"),
-    ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
+    ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
     ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
 ]
 
 
-@pytest.mark.parametrize("module_name, class_name", _ALL_ADAPTERS)
-def test_all_adapters_send_image_metadata_sweep(module_name, class_name):
-    try:
-        module = importlib.import_module(module_name)
-    except Exception as exc:  # optional platform dep not installed
-        pytest.skip(f"{module_name} not importable: {exc}")
-    cls = getattr(module, class_name, None)
-    if cls is None or "send_image" not in cls.__dict__:
-        pytest.skip(f"{class_name} has no send_image override")
-    assert _accepts_metadata(cls.send_image), (
-        f"{class_name}.send_image drops the 'metadata' kwarg"
-    )

@@ -59,7 +59,7 @@ Hermes Kanban 是一个持久化任务看板，在所有 Hermes 配置文件之�
 - **Link（链接）** —— `task_links` 行，记录父 → 子依赖关系。当所有父任务变为 `done` 时，调度器将 `todo → ready`。
 - **Comment（评论）** —— agent 间协议。Agent 和人类追加评论；当 worker 被（重新）启动时，它将完整的评论线程作为上下文的一部分读取。
 - **Workspace（工作区）** —— worker 操作的目录。三种类型：
-  - `scratch`（默认）—— 在 `~/.hermes/kanban/workspaces/<id>/` 下（非默认看板为 `~/.hermes/kanban/boards/<slug>/workspaces/<id>/`）创建的临时目录。**任务完成时删除** —— scratch 是临时性的，worker（或 `hermes kanban complete <id>`）将任务标记为完成的那一刻，目录即被清除。如果想保留 worker 的输出，请使用 `worktree:` 或 `dir:<path>`。在某次安装中首次创建 scratch 工作区时，调度器会记录警告并在任务上发出 `tip_scratch_workspace` 事件（可通过 `hermes kanban show <id>` 查看）。
+  - `scratch`（默认）—— 在 `~/.hermes/kanban/workspaces/<id>/` 下（非默认看板为 `~/.hermes/kanban/boards/<slug>/workspaces/<id>/`）创建的临时目录。**任务完成时删除** —— scratch 按设计是临时性的。通过 `kanban_complete(artifacts=[...])` 明确声明的文件会在清理前复制到持久的任务附件存储；旧版完成摘要中已存在的交付文件路径也会得到同样处理。其他 scratch 文件仍会被删除。如果声明的 scratch 交付文件不存在，任务会保持进行中，worker 可修正路径后重试。需要保留整个工作区时，请使用 `worktree:` 或 `dir:<path>`。在某次安装中首次创建 scratch 工作区时，调度器会记录警告并在任务上发出 `tip_scratch_workspace` 事件（可通过 `hermes kanban show <id>` 查看）。
   - `dir:<path>` —— 现有的共享目录（Obsidian vault、邮件运维目录、每账号文件夹）。**必须是绝对路径。** 像 `dir:../tenants/foo/` 这样的相对路径在调度时会被拒绝，因为它们会相对于调度器碰巧所在的 CWD 解析，这是模糊的，也是混淆代理（confused-deputy）逃逸向量。路径本身是受信任的 —— 这是你的机器、你的文件系统，worker 以你的 uid 运行。这是受信任本地用户的威胁模型；kanban 设计为单主机。**完成时保留。**
   - `worktree` —— 用于编码任务的 git worktree，位于 `.worktrees/<id>/` 下。使用 `worktree:<path>` 固定确切的目标路径。Worker 端的 `git worktree add` 创建它，提供 `--branch` 时使用该分支。**完成时保留。**
 - **Dispatcher（调度器）** —— 一个长期运行的循环，每 N 秒（默认 60 秒）执行一次：回收过期的认领、回收崩溃的 worker（PID 消失但 TTL 尚未过期）、推进就绪任务、原子性认领、启动已分配的配置文件。默认**在 gateway 内部运行**（`kanban.dispatch_in_gateway: true`）。每次 tick 一个调度器扫描所有看板；worker 启动时固定了 `HERMES_KANBAN_BOARD`，因此无法看到其他看板。在同一任务上连续启动失败 `kanban.failure_limit` 次（默认：2）后，调度器会以最后一个错误为原因自动阻塞该任务 —— 防止因配置文件不存在、工作区无法挂载等原因导致的反复抖动。
@@ -240,7 +240,7 @@ kanban_create(
 kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dependencies")
 ```
 
-"（编排器）"工具 —— `kanban_list`、`kanban_create`、`kanban_link`、`kanban_unblock`，以及对外部任务的 `kanban_comment` —— 通过同一工具集提供；约定（由 `kanban-orchestrator` skill 强制执行）是 worker 配置文件不进行扇出或路由无关工作，编排器配置文件不执行实现工作。调度器启动的 worker 仍然针对破坏性生命周期操作限定在任务范围内，无法修改无关任务。
+"（编排器）"工具 —— `kanban_list`、`kanban_create`、`kanban_link`、`kanban_unblock`，以及对外部任务的 `kanban_comment` —— 通过同一工具集提供；约定（编码在自动注入的 kanban 指引中）是 worker 配置文件不进行扇出或路由无关工作，编排器配置文件不执行实现工作。调度器启动的 worker 仍然针对破坏性生命周期操作限定在任务范围内，无法修改无关任务。
 
 ### 为什么使用工具而不是 shell 执行 `hermes kanban`
 
@@ -252,7 +252,7 @@ kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dep
 
 **对普通会话零 schema 占用。** 普通的 `hermes chat` 会话在其 schema 中没有任何 `kanban_*` 工具，除非活动配置文件为编排器工作显式启用了 `kanban` 工具集。调度器启动的任务 worker 因为设置了 `HERMES_KANBAN_TASK` 而获得任务范围的工具；编排器配置文件通过配置获得更广泛的路由界面。对于从不使用 kanban 的用户，没有工具膨胀。
 
-`kanban-worker` 和 `kanban-orchestrator` skill 教导模型何时调用哪个工具以及调用顺序。
+自动注入的 kanban 指引教导模型何时调用哪个工具以及调用顺序。
 
 ### 推荐的交接证据
 
@@ -280,9 +280,9 @@ kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dep
 
 不要将密钥、原始日志、token（令牌）、OAuth 材料和无关记录放入 `metadata`。改为存储指针和摘要。如果任务没有文件或测试，在 `summary` 中明确说明，并在 `metadata` 中放置确实存在的证据，例如来源 URL、issue id 或手动审查步骤。
 
-### Worker skill
+### Worker 生命周期
 
-任何应该能够处理 kanban 任务的配置文件都必须加载 `kanban-worker` skill。它通过**工具调用**（而非 CLI 命令）教导 worker 完整的生命周期：
+任何处理 kanban 任务的配置文件都会**自动**获得 worker 生命周期 —— 它在启动时被注入到 worker 的系统 prompt 中（`KANBAN_GUIDANCE` 块），因此**无需安装或配置任何东西**。它通过**工具调用**（而非 CLI 命令）教导 worker 完整的生命周期：
 
 1. 启动时，调用 `kanban_show()` 读取标题 + 正文 + 父级交接 + 先前尝试 + 完整评论线程。
 2. 通过终端工具执行 `cd $HERMES_KANBAN_WORKSPACE`，在那里完成工作。
@@ -290,20 +290,6 @@ kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dep
 4. 以 `kanban_complete(summary="...", metadata={...})` 完成，或在卡住时以 `kanban_block(reason="...")` 完成。
 
 最终的 `kanban_complete` / `kanban_block` 调用是 worker 协议的一部分。如果 worker 进程以状态 0 退出而任务仍处于 `running` 状态，调度器将其视为协议违规，发出 `protocol_violation` 事件，并在下一个 tick 自动阻塞任务而不是重新启动它进入同一循环。这通常意味着模型写了一个纯文本答案并退出，而没有使用 Kanban 工具界面。
-
-`kanban-worker` 是一个内置 skill，在安装和更新期间同步到每个配置文件 —— 无需单独的 Skills Hub 安装步骤。验证它是否存在于你用于 kanban worker 的配置文件中（`researcher`、`writer`、`ops` 等）：
-
-```bash
-hermes -p <your-worker-profile> skills list | grep kanban-worker
-```
-
-如果内置副本丢失，为该配置文件恢复它：
-
-```bash
-hermes -p <your-worker-profile> skills reset kanban-worker --restore
-```
-
-调度器在启动每个 worker 时也会自动传递 `--skills kanban-worker`，因此即使配置文件的默认 skills 配置不包含它，worker 也始终拥有该模式库。
 
 ### 为特定任务固定额外 skill
 
@@ -340,11 +326,11 @@ hermes kanban create "audit auth flow" \
 
 **从仪表盘**，在内联创建表单的 **skills** 字段中以逗号分隔输入 skill 名称。
 
-这些 skill 是对内置 `kanban-worker` 的**补充** —— 调度器为每个 skill（以及内置的）发出一个 `--skills <name>` 标志，因此 worker 启动时加载了所有这些 skill。skill 名称必须与受让人配置文件上实际安装的 skill 匹配（运行 `hermes skills list` 查看可用内容）；没有运行时安装。
+调度器为列出的每个 skill 发出一个 `--skills <name>` 标志，因此 worker 在自动注入的 kanban 指引之上加载了所有这些 skill。skill 名称必须与受让人配置文件上实际安装的 skill 匹配（运行 `hermes skills list` 查看可用内容）；没有运行时安装。
 
-### 编排器 skill
+### 编排器的行为方式
 
-**行为良好的编排器不会自己做工作。** 它将用户的目标分解为任务，链接它们，将每个任务分配给你设置的配置文件之一，然后退后。`kanban-orchestrator` skill 将此编码为工具调用模式：反诱惑规则、Step-0 配置文件发现提示（调度器在未知受让人名称上静默失败，因此编排器必须将每张卡片落地到你机器上实际存在的配置文件），以及以 `kanban_create` / `kanban_link` / `kanban_comment` 为核心的分解手册。
+**行为良好的编排器不会自己做工作。** 它将用户的目标分解为任务，链接它们，将每个任务分配给你设置的配置文件之一，然后退后。编排器指引 —— 反诱惑规则、Step-0 配置文件发现提示（调度器在未知受让人名称上静默失败，因此编排器必须将每张卡片落地到你机器上实际存在的配置文件），以及以 `kanban_create` / `kanban_link` / `kanban_comment` 为核心的分解手册 —— 会自动注入到 worker 的系统 prompt 中；无需安装任何东西。
 
 典型的编排器轮次（两个并行研究员交接给一个写作者）：
 
@@ -365,17 +351,7 @@ kanban_complete(
 )
 ```
 
-`kanban-orchestrator` 是一个内置 skill。它在安装和更新期间同步到每个配置文件，因此无需单独的 Skills Hub 安装步骤。验证它是否存在于你的编排器配置文件中：
-
-```bash
-hermes -p orchestrator skills list | grep kanban-orchestrator
-```
-
-如果内置副本丢失，为该配置文件恢复它：
-
-```bash
-hermes -p orchestrator skills reset kanban-orchestrator --restore
-```
+编排器指引随 worker 的系统 prompt 自动提供 —— 无需按配置文件安装或同步任何东西。
 
 为获得最佳效果，将其与工具集限制为看板操作（`kanban`、`gateway`、`memory`）的配置文件配对，这样编排器即使尝试也无法执行实现任务。
 
@@ -431,6 +407,7 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 | `auto_decompose_per_tick` | `3` | 每个调度器 tick 的分解上限。超出部分推迟到下一个 tick。 |
 | `orchestrator_profile` | `""` | 拥有分解权的配置文件。空 = 回退到活动默认配置文件。 |
 | `default_assignee` | `""` | LLM 选择未知配置文件时子任务的落地位置。空 = 回退到活动默认配置文件。 |
+| `auto_subscribe_on_create` | `true` | 当 worker 在具有持久投递通道的会话（消息网关或 TUI）内调用 `kanban_create` 时，原始会话会自动订阅新任务的完成/阻塞事件。调度器仍负责驱动投递 —— 此设置只决定调用者的聊天/密钥是否出现在通知订阅表中。设为 `false` 则要求对每个任务显式调用 `kanban_notify-subscribe`。 |
 
 以及两个辅助 LLM 槽：
 
@@ -686,6 +663,26 @@ hermes kanban notify-unsubscribe t_abcd \
 ```
 
 订阅在任务达到 `done` 或 `archived` 后自动移除；无需清理。
+
+### 多 profile 部署：投递按 profile 归属
+
+在每个 profile 一个 gateway 的部署中（单一调度器，`writer`、`admin` 等各自
+运行独立的 gateway 进程 —— 参见[多 gateway 指南](https://github.com/NousResearch/hermes-agent/blob/main/docs/kanban/multi-gateway.md)），
+调度与投递的归属是分开的：
+
+- **调度保持单一所有者。** 只有一个 gateway 保持
+  `kanban.dispatch_in_gateway: true` 并运行调度器；其余 gateway 都设为
+  `false`。
+- **通知投递按 profile 归属。** 每个 gateway —— 包括非调度 gateway ——
+  都运行通知器，且只轮询标记了其所托管 profile 的订阅。从 `writer`
+  profile 的 Telegram 创建的任务，其 `completed`/`blocked` 消息由
+  `writer` gateway 投递，即使调度是由 `default` gateway 完成的。
+- **遗留订阅**（在 profile 标记之前创建、行上没有 `notifier_profile`
+  的订阅）只由实际持有调度器单例锁的 gateway 投递，因此两个 gateway
+  永远不会争抢它们。
+
+board 数据库中的原子化逐事件认领可防止跨 gateway 的重复投递。不需要中继、
+凭证共享或额外的调度器 —— 每个 profile gateway 只通过它自己的适配器投递。
 
 ## 运行记录 —— 每次尝试一行
 

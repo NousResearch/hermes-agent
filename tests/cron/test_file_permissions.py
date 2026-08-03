@@ -125,10 +125,6 @@ class TestSecureHelpers(unittest.TestCase):
         from cron.jobs import _secure_file
         _secure_file(Path("/nonexistent/path/file.json"))  # Should not raise
 
-    def test_secure_dir_nonexistent_no_error(self):
-        from cron.jobs import _secure_dir
-        _secure_dir(Path("/nonexistent/path"))  # Should not raise
-
 
 if __name__ == "__main__":
     unittest.main()

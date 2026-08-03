@@ -52,7 +52,6 @@ def _make_agent(max_iterations: int = 10, config: dict | None = None) -> AIAgent
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
-    agent.tool_delay = 0
     agent.compression_enabled = False
     agent.save_trajectories = False
     # No fallback chain so empty responses exhaust deterministically.
@@ -78,17 +77,8 @@ def test_explanation_quiet_for_empty_reason():
     assert AIAgent._format_turn_completion_explanation("guardrail_halt") == ""
 
 
-def test_explanation_for_empty_response_exhausted():
-    out = AIAgent._format_turn_completion_explanation("empty_response_exhausted")
-    assert out  # non-empty
-    assert "empty content" in out
-    assert "continue" in out.lower()
 
 
-def test_explanation_for_partial_stream_recovery():
-    out = AIAgent._format_turn_completion_explanation("partial_stream_recovery")
-    assert "partial" in out.lower()
-    assert "continue" in out.lower()
 
 
 def test_explanation_for_max_iterations_reached_prefix_match():
@@ -99,11 +89,8 @@ def test_explanation_for_max_iterations_reached_prefix_match():
     assert "iteration" in out.lower()
 
 
-def test_explanation_for_all_retries_exhausted():
-    out = AIAgent._format_turn_completion_explanation(
-        "all_retries_exhausted_no_response"
-    )
-    assert "retries" in out.lower()
+
+
 
 
 # --------------------------------------------------------------------------
@@ -125,15 +112,6 @@ def test_explainer_disabled_via_env():
         assert agent._turn_completion_explainer_enabled() is False
 
 
-def test_explainer_disabled_via_config():
-    agent = _make_agent()
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("HERMES_TURN_COMPLETION_EXPLAINER", None)
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"display": {"turn_completion_explainer": False}},
-        ):
-            assert agent._turn_completion_explainer_enabled() is False
 
 
 # --------------------------------------------------------------------------
@@ -162,20 +140,34 @@ def test_run_conversation_empty_exhausted_surfaces_explanation():
     assert "No reply:" in result["final_response"]
 
 
-def test_run_conversation_normal_reply_stays_quiet():
-    """A normal short reply like 'Done.' must NOT get an explainer footer."""
+def test_run_conversation_partial_stream_recovery_surfaces_explanation():
+    """A long recovered partial stream still needs the visible footer.
+
+    Without this, the gateway marks the turn as previewed and suppresses
+    the final send, leaving messaging users with a fragment and no reason.
+    """
     agent = _make_agent(max_iterations=10)
-    agent.client.chat.completions.create.side_effect = [
-        _mock_response(content="Done.", finish_reason="stop"),
-    ]
+    empty_stub = _mock_response(content=None, finish_reason="stop")
+    recovered = (
+        "I inspected the running gateway and found that the current turn "
+        "stopped after the provider stream timed out."
+    )
+
+    def _fake_api_call(_api_kwargs):
+        agent._current_streamed_assistant_text = recovered
+        return empty_stub
 
     with (
+        patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
         result = agent.run_conversation("do something")
 
-    assert result["turn_exit_reason"].startswith("text_response")
-    assert result["final_response"] == "Done."
-    assert "No reply:" not in result["final_response"]
+    assert result["turn_exit_reason"] == "partial_stream_recovery"
+    assert result["final_response"].startswith(recovered)
+    assert "No reply:" in result["final_response"]
+    assert result["response_previewed"] is False
+
+

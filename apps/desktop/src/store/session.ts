@@ -1,3 +1,4 @@
+import type { ConnectionState } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
@@ -8,6 +9,7 @@ import { persistBoolean, persistString, storedBoolean, storedString } from '@/li
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
+export type ComposerModelSource = '' | 'default' | 'manual'
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
@@ -18,8 +20,77 @@ const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 // that profile's default, while within a profile new chats keep your last pick.
 const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
+const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
+
+// The last chat the user had open, so a relaunch lands back on it instead of an
+// empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
+//
+// Scoped per profile: a single global key remembered ONE session across every
+// profile, so relaunching (or a cold start) under profile B would try to
+// restore a session that belongs to profile A — one of the ways a conversation
+// appears to bleed between profiles (#63590). Each profile now remembers its
+// own last session. The default profile keeps the original unsuffixed key so
+// existing installs' remembered session survives the upgrade.
+const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
+
+function rememberedSessionKey(profile?: null | string): string {
+  const key = (profile ?? '').trim()
+
+  return !key || key === 'default' ? LAST_SESSION_KEY : `${LAST_SESSION_KEY}.${key}`
+}
+
+export const getRememberedSessionId = (profile?: null | string): null | string =>
+  storedString(rememberedSessionKey(profile))
+export const setRememberedSessionId = (id: null | string, profile?: null | string) =>
+  persistString(rememberedSessionKey(profile), id)
+
+/**
+ * The profile a routed session belongs to, for keying the remembered id.
+ *
+ * Prefer the owning profile recorded on the session row (the cross-profile
+ * aggregator tags each row), so the session is remembered under ITS profile
+ * even while a different one is live. Falls back to the active gateway profile
+ * for a session not yet in the in-memory list.
+ */
+export function rememberedSessionProfile(
+  sessions: readonly SessionInfo[],
+  sessionId: null | string,
+  activeProfile: null | string
+): string {
+  if (sessionId) {
+    const owner = sessions.find(session => sessionMatchesStoredId(session, sessionId))?.profile?.trim()
+
+    if (owner) {
+      return owner
+    }
+  }
+
+  return (activeProfile ?? '').trim() || 'default'
+}
+
+// The last non-overlay route (a page like /skills, or a session route), so a
+// relaunch lands back where you were instead of a bare new-chat.
+//
+// Scoped per profile for the same reason the remembered session id is: a single
+// global key remembered ONE route across every profile, and a session route
+// carries a session id in its path. Restoring under profile B would navigate to
+// a session owned by profile A — the remembered-id scoping above is bypassed
+// entirely, because the route is preferred over the id on cold start
+// (#67603 family). The default profile keeps the original unsuffixed key so
+// existing installs' remembered route survives the upgrade.
+const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
+
+function rememberedRouteKey(profile?: null | string): string {
+  const key = (profile ?? '').trim()
+
+  return !key || key === 'default' ? LAST_ROUTE_KEY : `${LAST_ROUTE_KEY}.${key}`
+}
+
+export const getRememberedRoute = (profile?: null | string): null | string => storedString(rememberedRouteKey(profile))
+export const setRememberedRoute = (path: null | string, profile?: null | string) =>
+  persistString(rememberedRouteKey(profile), path)
 
 let configuredDefaultProjectDir = ''
 
@@ -30,10 +101,12 @@ function workspaceCwdKey(connection: HermesConnection | null = $connection.get()
 
   const base = encodeURIComponent(connection.baseUrl || 'remote')
   const profile = encodeURIComponent(connection.profile || 'default')
+
   return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
 }
 
 export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
+export type NewChatWorkspaceTarget = null | string | undefined
 
 export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
 
@@ -75,6 +148,7 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
 
   if ($connection.get()?.mode === 'remote') {
     seedLiveCwd(remembered)
+
     return
   }
 
@@ -93,12 +167,6 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
 
 export function applyConfiguredDefaultProjectDir(dir: null | string | undefined): void {
   configuredDefaultProjectDir = dir?.trim() || ''
-
-  // Cache only — new chats read this via workspaceCwdForNewSession(). Do not
-  // rewrite the live workspace (or localStorage) while a session is active.
-  if (configuredDefaultProjectDir && !$activeSessionId.get()) {
-    setCurrentCwd(configuredDefaultProjectDir)
-  }
 }
 
 interface AppAtom<T> {
@@ -115,6 +183,71 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
  *  lineage root is stable across every compression, so we pin on that. */
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
+
+/** True when a stored/lineage id resolves to this session — it matches either
+ *  the live id or the stable lineage root (see sessionPinId). The one place the
+ *  "same conversation across compression" test lives. */
+export const sessionMatchesStoredId = (
+  session: Pick<SessionInfo, '_lineage_root_id' | 'id'>,
+  storedSessionId: string
+): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
+
+/** True when two ids name the same conversation across compression tip rotation. */
+export function idsShareLineage(
+  a: string,
+  b: string,
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]
+): boolean {
+  if (a === b) {
+    return true
+  }
+
+  return sessions.some(session => sessionMatchesStoredId(session, a) && sessionMatchesStoredId(session, b))
+}
+
+/**
+ * Whether a composer draft/queue key should move from `fromKey` onto `toKey`.
+ *
+ * Only same-conversation rekeys are allowed (compression tip → lineage root).
+ * A session-switch window where the route already points at B while the store
+ * selection still holds A must NOT migrate — that would re-home Session A's
+ * queued prompts onto B and auto-drain them into the wrong chat.
+ */
+export function shouldMigrateComposerScope(
+  fromKey: string | null | undefined,
+  toKey: string | null | undefined,
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]
+): boolean {
+  const from = fromKey?.trim()
+  const to = toKey?.trim()
+
+  if (!from || !to || from === to) {
+    return false
+  }
+
+  return idsShareLineage(from, to, sessions)
+}
+
+/**
+ * Stable composer + `/queue` scope for a selected stored session.
+ *
+ * Same durability rule as {@link sessionPinId}: prefer the lineage root so
+ * auto-compression tip rotation does not remount the composer onto an empty
+ * draft/queue key mid-keystroke. Falls back to the live id when the row is
+ * not in the in-memory list yet.
+ */
+export function resolveComposerSessionKey(
+  selectedSessionId: string | null | undefined,
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]
+): string | null {
+  if (!selectedSessionId) {
+    return null
+  }
+
+  const row = sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))
+
+  return row ? sessionPinId(row) : selectedSessionId
+}
 
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
@@ -146,18 +279,37 @@ export function mergeSessionPage(
 ): SessionInfo[] {
   const keep = keepIds instanceof Set ? keepIds : new Set(keepIds)
 
+  // Carry a known title onto a row that arrives title-less, so a freshly
+  // submitted session (e.g. a branch draft) holds its placeholder instead of
+  // flashing its raw message preview in the gap between persist and the async
+  // auto-titler. A real clear sets the local title null first, so this never
+  // masks one.
+  const prevById = new Map(previous.map(session => [session.id, session]))
+  // Tip rotation changes the live id — carry activity/title across the lineage
+  // root so a mid-turn refresh can't drop a touchSessionActivity bump.
+  const prevByLineage = new Map(previous.map(session => [session._lineage_root_id ?? session.id, session]))
+
+  const merged = incoming.map(session => {
+    const prev = prevById.get(session.id) ?? prevByLineage.get(session._lineage_root_id ?? session.id)
+    // User-send stamps last_active before the DB flushes the user row
+    // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
+    const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
+    const title = session.title?.trim() ? session.title : prev?.title?.trim() ? prev.title : session.title
+
+    return last_active === session.last_active && title === session.title ? session : { ...session, last_active, title }
+  })
+
   if (keep.size === 0) {
-    return incoming
+    return merged
   }
 
-  const incomingIds = new Set(incoming.map(session => session.id))
+  const incomingIds = new Set(merged.map(session => session.id))
+
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
   // rows survive as separate sidebar entries (fixes #43483).
-  const incomingLineageKeys = new Set(
-    incoming.map(session => session._lineage_root_id ?? session.id)
-  )
+  const incomingLineageKeys = new Set(merged.map(session => session._lineage_root_id ?? session.id))
 
   const survivors = previous.filter(
     session =>
@@ -166,13 +318,49 @@ export function mergeSessionPage(
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 
-  return survivors.length ? [...survivors, ...incoming] : incoming
+  return survivors.length ? [...survivors, ...merged] : merged
+}
+
+/** Raise a session in recents on user send (before stream / turn resolve). */
+export function touchSessionActivity(
+  sessionId: string | null | undefined,
+  options?: { at?: number; preview?: string }
+): void {
+  const id = sessionId?.trim()
+
+  if (!id) {
+    return
+  }
+
+  const at = options?.at ?? Date.now() / 1000
+  const preview = options?.preview?.trim().slice(0, 200) || undefined
+
+  setSessions(prev => {
+    let changed = false
+
+    const next = prev.map(session => {
+      if (!sessionMatchesStoredId(session, id)) {
+        return session
+      }
+
+      const last_active = Math.max(session.last_active ?? 0, at)
+
+      if (last_active === session.last_active && (!preview || preview === session.preview)) {
+        return session
+      }
+
+      changed = true
+
+      return preview ? { ...session, last_active, preview } : { ...session, last_active }
+    })
+
+    return changed ? next : prev
+  })
 }
 
 export const $connection = atom<HermesConnection | null>(null)
-export const $gatewayState = atom('idle')
+export const $gatewayState = atom<ConnectionState>('idle')
 export const $sessions = atom<SessionInfo[]>([])
-export const $sessionsTotal = atom<number>(0)
 // Cron-job sessions (source === 'cron') are fetched as their own list so the
 // scheduler's always-newest sessions never crowd recents out of the page
 // budget. Powers the collapsed "Cron jobs" sidebar section.
@@ -196,15 +384,28 @@ export const $messagingPlatformTotals = atom<Record<string, number>>({})
 // True when the combined seed fetch hit MESSAGING_SECTION_LIMIT, so at least
 // one platform may have more rows on disk than were loaded.
 export const $messagingTruncated = atom<boolean>(false)
-// Listable conversation count per profile (children excluded), keyed by profile
-// name. Lets the sidebar scope its "Load more" footer to the active profile so a
-// huge default profile doesn't keep "Load more" visible while browsing a small
-// one. Empty for single-profile users (fall back to $sessionsTotal).
-export const $sessionProfileTotals = atom<Record<string, number>>({})
+// Whether a profile's last session page was CAPPED by the request limit, keyed
+// by profile name — i.e. more rows exist on disk than were loaded. Replaces the
+// old exact per-profile totals: rendering `loaded/total` in the sidebar cost a
+// COUNT(*) per profile DB on every refresh and only ever confused people, while
+// "is there another page?" is what pagination actually needs and comes free
+// from the row count the query already returned.
+export const $sessionProfilesTruncated = atom<Record<string, boolean>>({})
 export const $sessionsLoading = atom(true)
-export const $workingSessionIds = atom<string[]>([])
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
+export interface ActiveSessionStoredIdRotation {
+  nextStoredSessionId: string
+  previousStoredSessionId: string
+  runtimeSessionId: string
+}
+
+// One-shot event for when auto-compression rotates the active runtime's stored
+// id. Carrying the runtime + previous id is load-bearing: a bare next id cannot
+// tell whether the user has already navigated away while React is waiting to
+// run the route-following effect, which lets a background session steal the
+// foreground route.
+export const $activeSessionStoredIdRotation = atom<ActiveSessionStoredIdRotation | null>(null)
 export const $messages = atom<ChatMessage[]>([])
 
 // Streaming-stable derivations of $messages. During a token stream the array
@@ -245,6 +446,8 @@ export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 // reflection of the truth the gateway reports rather than its own store.
 export const $yoloActive = atom(false)
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
+export const $newChatWorkspaceTarget = atom<NewChatWorkspaceTarget>(undefined)
+export const $newChatWorkspaceTargetGeneration = atom(0)
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
   calls: 0,
@@ -263,20 +466,34 @@ export const $modelPickerOpen = atom(false)
 export const $sessionPickerOpen = atom(false)
 
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
-export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
+export const setGatewayState = (next: Updater<ConnectionState>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
-export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setMessagingSessions = (next: Updater<SessionInfo[]>) => updateAtom($messagingSessions, next)
 export const setMessagingPlatformTotals = (next: Updater<Record<string, number>>) =>
   updateAtom($messagingPlatformTotals, next)
 export const setMessagingTruncated = (next: Updater<boolean>) => updateAtom($messagingTruncated, next)
-export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =>
-  updateAtom($sessionProfileTotals, next)
+export const setSessionProfilesTruncated = (next: Updater<Record<string, boolean>>) =>
+  updateAtom($sessionProfilesTruncated, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
-export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
-export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
+export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStoredIdRotation | null>) =>
+  updateAtom($activeSessionStoredIdRotation, next)
+
+// Transient: a background session finished and the user hasn't opened it since.
+// Written by session-states.ts (handleTransition), cleared here on session open.
+export const $unreadFinishedSessionIds = atom<string[]>([])
+
+export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
+  updateAtom($selectedStoredSessionId, next)
+  // Opening a session clears its unread state — the user is now looking at it.
+  const id = $selectedStoredSessionId.get()
+
+  if (id && $unreadFinishedSessionIds.get().includes(id)) {
+    $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(x => x !== id))
+  }
+}
+
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
@@ -294,10 +511,47 @@ export const setCurrentProvider = (next: Updater<string>) => {
   persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
 }
 
+export const getCurrentModelSource = (): ComposerModelSource => {
+  const source = storedString(COMPOSER_MODEL_SOURCE_KEY)
+
+  return source === 'default' || source === 'manual' ? source : ''
+}
+
+// Reactive mirror of the persisted source so UI (the composer pill's
+// override badge) can subscribe. The getter above stays storage-backed —
+// it's read cross-window, where this atom wouldn't see writes.
+export const $currentModelSource = atom<ComposerModelSource>(getCurrentModelSource())
+
+export const setCurrentModelSource = (source: ComposerModelSource) => {
+  persistString(COMPOSER_MODEL_SOURCE_KEY, source || null)
+  $currentModelSource.set(source)
+}
+
+// Monotonic intent token for async default refreshes. A profile/config request
+// may start before the user opens the picker and finish after their click; the
+// token lets that older response stand down even when the selected value is
+// unchanged (value comparisons alone cannot detect re-selecting the same row).
+let composerSelectionGeneration = 0
+
+export const getComposerSelectionGeneration = (): number => composerSelectionGeneration
+
+export const markComposerSelectionManual = (): void => {
+  composerSelectionGeneration += 1
+  setCurrentModelSource('manual')
+}
+
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
 }
+
+// The profile's `agent.reasoning_effort`, mirrored from config so surfaces that
+// need to render or apply "the default" resolve the user's configured level
+// instead of assuming DEFAULT_REASONING_EFFORT (lib/reasoning-effort). Empty
+// until config loads, and re-seeded on every profile switch by useHermesConfig.
+export const $defaultReasoningEffort = atom('')
+
+export const setDefaultReasoningEffort = (next: string) => updateAtom($defaultReasoningEffort, next)
 
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 
@@ -313,12 +567,28 @@ export const setCurrentCwd = (next: Updater<string>) => {
   persistString(workspaceCwdKey(), $currentCwd.get().trim() || null)
 }
 
+export const setCurrentCwdTransient = (next: Updater<string>) => updateAtom($currentCwd, next)
+
+export const setNewChatWorkspaceTarget = (next: NewChatWorkspaceTarget): number => {
+  const generation = $newChatWorkspaceTargetGeneration.get() + 1
+  $newChatWorkspaceTarget.set(next)
+  $newChatWorkspaceTargetGeneration.set(generation)
+
+  return generation
+}
+
 export const workspaceCwdForNewSession = (): string => {
   if ($connection.get()?.mode === 'remote') {
     return getRememberedWorkspaceCwd()
   }
 
-  return getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
+  // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
+  // rail (which keys off $currentCwd) shows no branch and the first message runs
+  // in the gateway's default rather than silently in the last repo you touched.
+  // Only an explicit default-project-dir setting pre-attaches. Entering a
+  // project/worktree attaches its cwd directly (startSessionInWorkspace), so the
+  // "remember where I was when I'm in a project" case is unaffected.
+  return getConfiguredDefaultProjectDir()
 }
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
@@ -332,145 +602,3 @@ export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, ne
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
 export const setSessionPickerOpen = (next: Updater<boolean>) => updateAtom($sessionPickerOpen, next)
-
-// Watchdog tracking — when does a "working" session count as stuck?
-// Long-running tool calls (LLM inference, long shell commands, web fetches)
-// can take a few minutes legitimately. We allow 8 minutes of complete
-// silence on the stream before clearing the working flag; in practice this
-// catches gateway hangs and dropped streams without false-positive-clearing
-// real long turns.
-const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
-const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-function armSessionWatchdog(sessionId: string) {
-  const existing = sessionWatchdogTimers.get(sessionId)
-
-  if (existing) {
-    clearTimeout(existing)
-  }
-
-  const timer = setTimeout(() => {
-    sessionWatchdogTimers.delete(sessionId)
-
-    // Re-check the latest state at fire-time. If the user already navigated
-    // away or the session genuinely finished, the timer is a no-op.
-    if ($workingSessionIds.get().includes(sessionId)) {
-      setWorkingSessionIds(current => current.filter(id => id !== sessionId))
-    }
-  }, SESSION_WATCHDOG_TIMEOUT_MS)
-
-  sessionWatchdogTimers.set(sessionId, timer)
-}
-
-function clearSessionWatchdog(sessionId: string) {
-  const existing = sessionWatchdogTimers.get(sessionId)
-
-  if (existing) {
-    clearTimeout(existing)
-    sessionWatchdogTimers.delete(sessionId)
-  }
-}
-
-// A session's "working" flag clears the instant its turn ends, but the
-// cross-profile aggregator (listSessions with min_messages=1) only sees the
-// just-persisted first turn a beat later. The active chat is shielded from that
-// race by sessionsToKeep(), but a brand-new session that finished *while you
-// were viewing a different chat* is, at the next refresh, neither working,
-// pinned, nor active — so mergeSessionPage() evicts it. Nothing re-fetches
-// afterward, so it stays gone until the app restarts. (Repro: start a new chat,
-// then click another session before the first reply lands.)
-//
-// To bridge that window we keep a session in the merge keep-set for a short
-// grace period after its turn settles, giving the aggregator time to catch up.
-// Entries auto-expire, so this never accumulates and can't resurrect a deleted
-// session (mergeSessionPage only revives rows still present in the in-memory
-// list, which optimistic delete/archive already drops).
-const SESSION_SETTLE_GRACE_MS = 30 * 1000
-const settledSessionExpiry = new Map<string, number>()
-
-function markSessionSettled(sessionId: string) {
-  settledSessionExpiry.set(sessionId, Date.now() + SESSION_SETTLE_GRACE_MS)
-}
-
-function clearSessionSettled(sessionId: string) {
-  settledSessionExpiry.delete(sessionId)
-}
-
-/** Stored ids of sessions whose turn ended within the grace window. Prunes
- *  expired entries as it reads, so it stays bounded without a timer. */
-export function getRecentlySettledSessionIds(now: number = Date.now()): string[] {
-  const live: string[] = []
-
-  for (const [id, expiry] of settledSessionExpiry) {
-    if (expiry > now) {
-      live.push(id)
-    } else {
-      settledSessionExpiry.delete(id)
-    }
-  }
-
-  return live
-}
-
-/** Call when a streaming event for a session lands. Refreshes the watchdog
- *  so the session keeps its "working" status as long as data keeps coming. */
-export function noteSessionActivity(sessionId: string | null | undefined) {
-  if (!sessionId || !$workingSessionIds.get().includes(sessionId)) {
-    return
-  }
-
-  armSessionWatchdog(sessionId)
-}
-
-// Toggle an id's membership in a string-set atom, no-op when unchanged (keeps
-// the same array reference so subscribers don't churn).
-const toggleMembership = (set: (next: Updater<string[]>) => void, id: string, on: boolean) =>
-  set(current => {
-    const present = current.includes(id)
-
-    if (on) {
-      return present ? current : [...current, id]
-    }
-
-    return present ? current.filter(x => x !== id) : current
-  })
-
-// Stored session ids with a blocking prompt (clarify) waiting on the user.
-// Separate from $workingSessionIds: a session can be "working" (turn running)
-// AND need input. The sidebar row reads this for a persistent indicator that,
-// unlike a toast, survives window blur / alt-tab.
-export const $attentionSessionIds = atom<string[]>([])
-export const setAttentionSessionIds = (next: Updater<string[]>) => updateAtom($attentionSessionIds, next)
-
-export function setSessionAttention(sessionId: string | null | undefined, needsInput: boolean) {
-  if (sessionId) {
-    toggleMembership(setAttentionSessionIds, sessionId, needsInput)
-  }
-}
-
-export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {
-  if (!sessionId) {
-    return
-  }
-
-  const wasWorking = $workingSessionIds.get().includes(sessionId)
-
-  toggleMembership(setWorkingSessionIds, sessionId, working)
-
-  // Bookend the watchdog: arm on enter, disarm on leave. A later
-  // noteSessionActivity() from a streaming event refreshes the timer.
-  if (working) {
-    clearSessionSettled(sessionId)
-    armSessionWatchdog(sessionId)
-  } else {
-    clearSessionWatchdog(sessionId)
-
-    // Only grant grace on a real working→idle transition (updateSessionState
-    // re-asserts `false` on every state tick, which must not keep extending the
-    // window). This keeps the just-finished session visible long enough for the
-    // aggregator to return its now-persisted row.
-    if (wasWorking) {
-      markSessionSettled(sessionId)
-    }
-  }
-}

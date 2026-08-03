@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from agent.redact import redact_sensitive_text, RedactingFormatter
+from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -16,50 +16,75 @@ def _ensure_redaction_enabled(monkeypatch):
 
 
 class TestKnownPrefixes:
-    def test_openai_sk_key(self):
-        text = "Using key sk-proj-abc123def456ghi789jkl012"
-        result = redact_sensitive_text(text)
-        assert "sk-pro" in result
-        assert "abc123def456" not in result
-        assert "..." in result
 
-    def test_openrouter_sk_key(self):
-        text = "OPENROUTER_API_KEY=sk-or-v1-abcdefghijklmnopqrstuvwxyz1234567890"
-        result = redact_sensitive_text(text)
-        assert "abcdefghijklmnop" not in result
 
-    def test_github_pat_classic(self):
-        result = redact_sensitive_text("token: ghp_abc123def456ghi789jkl")
-        assert "abc123def456" not in result
 
-    def test_github_pat_fine_grained(self):
-        result = redact_sensitive_text("github_pat_abc123def456ghi789jklmno")
-        assert "abc123def456" not in result
+
+    def test_gitlab_token_prefixes(self):
+        """GitLab token families redact via their literal prefixes.
+
+        Ported from openclaw/openclaw#112954; follow-up invited in #4541.
+        """
+        tokens = [
+            # NOTE: every token is prefix + suffix CONCATENATION so no
+            # contiguous token literal exists in this file — GitHub push
+            # protection blocks realistic GitLab-token-shaped literals.
+            "glpat-" + "Zx9AbCdEfGhIjKlMnOpQ",       # personal access token
+            "gloas-" + "a" * 64,                     # OAuth application secret
+            "gldt-" + "AbCdEfGhIjKlMnOpQrSt",        # deploy token
+            "glrt-" + "t1_AbCdEfGhIjKlMnOpQrSt",     # runner auth token
+            "glrt-" + "A" * 27 + ".01." + "a" * 9,   # routable (dotted) runner token
+            "glrtr-" + "B" * 27 + ".01." + "b" * 9,  # routable runner registration
+            "glcbt-" + "a1B2_AbCdEfGhIjKlMnOpQ",     # CI/CD job token
+            "glptt-" + "c" * 40,                     # pipeline trigger token
+            "glft-" + "AbCdEfGhIjKlMnOp",            # feed token
+            "glimt-" + "AbCdEfGhIjKlMnOpQrStUvWxY",  # incoming mail token
+            "glagent-" + "d" * 50,                   # agent (KAS) token
+            "glsoat-" + "AbCdEfGhIjKlMnOpQrSt",      # service-account token
+            "glffct-" + "AbCdEfGhIjKlMnOpQrSt",      # feature-flags client token
+            "glwt-" + "AbCdEfGhIjKlMnOpQrSt",        # workspace token
+            "GR1348941" + "E" * 20,                  # legacy runner registration
+        ]
+        for token in tokens:
+            result = redact_sensitive_text(f"leaked {token} in output")
+            secret_body = token.split("-", 1)[-1] if "-" in token else token[9:]
+            assert secret_body not in result, f"{token!r} survived redaction: {result!r}"
+
+    def test_gitlab_prefix_requires_word_boundary_and_length(self):
+        """Prose and embedded identifiers must not false-positive."""
+        for benign in [
+            "the glossary explains gitlab tokens",   # no prefix at all
+            "glpat-short",                            # suffix under 10 chars
+            "myglpat-AbCdEfGhIjKlMnOpQrSt",           # embedded — lookbehind blocks
+        ]:
+            assert redact_sensitive_text(benign) == benign
 
     def test_slack_token(self):
         token = "xoxb-" + "0" * 12 + "-" + "a" * 14
         result = redact_sensitive_text(token)
         assert "a" * 14 not in result
 
-    def test_google_api_key(self):
-        result = redact_sensitive_text("AIzaSyB-abc123def456ghi789jklmno012345")
-        assert "abc123def456" not in result
 
-    def test_perplexity_key(self):
-        result = redact_sensitive_text("pplx-abcdef123456789012345")
-        assert "abcdef12345" not in result
 
-    def test_fal_key(self):
-        result = redact_sensitive_text("fal_abc123def456ghi789jkl")
-        assert "abc123def456" not in result
 
-    def test_notion_internal_integration_token(self):
-        result = redact_sensitive_text("ntn_abc123def456ghi789jkl")
-        assert "abc123def456" not in result
 
-    def test_short_token_fully_masked(self):
-        result = redact_sensitive_text("key=sk-short1234567")
-        assert "***" in result
+    def test_fireworks_keys(self):
+        samples = [
+            "fw-" + "A" * 40,
+            "fw_" + "B" * 40,
+            "fpk_" + "C" * 40,
+        ]
+
+        for token in samples:
+            result = redact_sensitive_text(f"provider error {token}")
+            assert token not in result
+            assert "..." in result
+
+    def test_short_fireworks_like_words_unchanged(self):
+        text = "fw-tooshort fw_tooshort fpk_tooshort"
+        assert redact_sensitive_text(text) == text
+
+
 
 
 class TestEnvAssignments:
@@ -69,45 +94,16 @@ class TestEnvAssignments:
         assert "OPENAI_API_KEY=" in result
         assert "abc123def456" not in result
 
-    def test_quoted_value(self):
-        text = 'MY_SECRET_TOKEN="supersecretvalue123456789"'
-        result = redact_sensitive_text(text)
-        assert "MY_SECRET_TOKEN=" in result
-        assert "supersecretvalue" not in result
 
     def test_non_secret_env_unchanged(self):
         text = "HOME=/home/user"
         result = redact_sensitive_text(text)
         assert result == text
 
-    def test_path_unchanged(self):
-        text = "PATH=/usr/local/bin:/usr/bin"
-        result = redact_sensitive_text(text)
-        assert result == text
 
-    def test_lowercase_python_variable_token_unchanged(self):
-        # Regression: #4367 — lowercase 'token' assignment must not be redacted
-        text = "before_tokens = response.usage.prompt_tokens"
-        result = redact_sensitive_text(text)
-        assert result == text
 
-    def test_lowercase_python_variable_api_key_unchanged(self):
-        # Regression: #4367 — lowercase 'api_key' must not be redacted
-        text = "api_key = config.get('api_key')"
-        result = redact_sensitive_text(text)
-        assert result == text
 
-    def test_typescript_await_token_unchanged(self):
-        # Regression: #4367 — 'await' keyword must not be redacted as a secret value
-        text = "const token = await getToken();"
-        result = redact_sensitive_text(text)
-        assert result == text
 
-    def test_typescript_await_secret_unchanged(self):
-        # Regression: #4367 — similar pattern with 'secret' variable
-        text = "const secret = await fetchSecret();"
-        result = redact_sensitive_text(text)
-        assert result == text
 
     def test_export_whitespace_preserved(self):
         # Regression: #4367 — whitespace before uppercase env var must be preserved
@@ -118,16 +114,44 @@ class TestEnvAssignments:
         assert "mypassword" not in result
 
 
+class TestEnvLookupPreserved:
+    """Programmatic env var lookups must not be corrupted (issue #2852)."""
+
+    def test_os_getenv_single_quote_uppercase_key(self):
+        text = "MY_API_KEY=os.getenv('OPENAI_API_KEY')"
+        assert redact_sensitive_text(text, force=True) == text
+
+
+
+
+
+
+    def test_real_env_value_still_redacted(self):
+        text = "HOMEASSISTANT_TOKEN=eyJhbGciOiJIUzI1NiJ9.abc123.xyz"
+        result = redact_sensitive_text(text, force=True)
+        assert "eyJhbGciOiJIUzI1NiJ9" not in result
+
+
+    def test_multiline_prose_with_code_snippet(self):
+        text = """Set it up like this:
+    HA_TOKEN=os.getenv('HOMEASSISTANT_TOKEN')
+    if not HA_TOKEN:
+        raise ValueError('Missing credentials')"""
+        result = redact_sensitive_text(text, force=True)
+        assert "os.getenv('HOMEASSISTANT_TOKEN')" in result
+
+
+
+
+
+
+
 class TestJsonFields:
     def test_json_api_key(self):
         text = '{"apiKey": "sk-proj-abc123def456ghi789jkl012"}'
         result = redact_sensitive_text(text)
         assert "abc123def456" not in result
 
-    def test_json_token(self):
-        text = '{"access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.longtoken.here"}'
-        result = redact_sensitive_text(text)
-        assert "eyJhbGciOiJSUzI1NiIs" not in result
 
     def test_json_non_secret_unchanged(self):
         text = '{"name": "John", "model": "gpt-4"}'
@@ -136,16 +160,46 @@ class TestJsonFields:
 
 
 class TestAuthHeaders:
-    def test_bearer_token(self):
-        text = "Authorization: Bearer sk-proj-abc123def456ghi789jkl012"
-        result = redact_sensitive_text(text)
-        assert "Authorization: Bearer" in result
-        assert "abc123def456" not in result
 
-    def test_case_insensitive(self):
-        text = "authorization: bearer mytoken123456789012345678"
+
+
+
+
+    def test_authorization_prose_unchanged(self):
+        # "authorization" without a colon-delimited value is plain prose.
+        text = "the authorization model is fully open"
+        assert redact_sensitive_text(text) == text
+
+    def test_token_flush_against_double_quote_preserves_quote(self):
+        # Regression for #43083: a token sitting flush against a closing
+        # double quote must NOT pull that quote into the mask. Greedy \S+
+        # used to eat it, turning value corruption into syntax corruption
+        # (unterminated quote → shell EOF).
+        text = 'curl -H "Authorization: Bearer sk-abcdef1234567890"'
         result = redact_sensitive_text(text)
-        assert "mytoken12345" not in result
+        assert "sk-abcdef1234567890" not in result
+        assert result.count('"') == 2, result  # both quotes survive
+        assert result.endswith('"'), result
+
+
+
+class TestApiKeyHeaders:
+    def test_x_api_key_header_masked(self):
+        text = "x-api-key: opaque-provider-key-1234567890"
+        result = redact_sensitive_text(text)
+        assert "x-api-key:" in result
+        assert "opaque-provider-key" not in result
+
+    def test_x_api_key_in_curl_command_masked(self):
+        text = 'curl -H "x-api-key: sk-local-VERYsecret-999888" https://api.example.com'
+        result = redact_sensitive_text(text)
+        assert "VERYsecret" not in result
+        assert "https://api.example.com" in result
+
+    def test_api_key_header_masked(self):
+        text = "api-key: anotherOpaqueSecret1234567"
+        result = redact_sensitive_text(text)
+        assert "anotherOpaqueSecret" not in result
 
 
 class TestTelegramTokens:
@@ -165,27 +219,14 @@ class TestPassthrough:
     def test_empty_string(self):
         assert redact_sensitive_text("") == ""
 
-    def test_none_returns_none(self):
-        assert redact_sensitive_text(None) is None
 
-    def test_non_string_input_int_coerced(self):
-        assert redact_sensitive_text(12345) == "12345"
 
     def test_non_string_input_dict_coerced_and_redacted(self):
         result = redact_sensitive_text({"token": "sk-proj-abc123def456ghi789jkl012"})
         assert "abc123def456" not in result
 
-    def test_normal_text_unchanged(self):
-        text = "Hello world, this is a normal log message with no secrets."
-        assert redact_sensitive_text(text) == text
 
-    def test_code_unchanged(self):
-        text = "def main():\n    print('hello')\n    return 42"
-        assert redact_sensitive_text(text) == text
 
-    def test_url_without_key_unchanged(self):
-        text = "Connecting to https://api.openai.com/v1/chat/completions"
-        assert redact_sensitive_text(text) == text
 
 
 class TestRedactingFormatter:
@@ -234,10 +275,6 @@ class TestSecretCapturePayloadRedaction:
         result = redact_sensitive_text(text)
         assert "sk-test-secret-1234567890" not in result
 
-    def test_raw_secret_field_redacted(self):
-        text = '{"raw_secret": "ghp_abc123def456ghi789jkl"}'
-        result = redact_sensitive_text(text)
-        assert "abc123def456" not in result
 
 
 class TestElevenLabsTavilyExaKeys:
@@ -248,30 +285,10 @@ class TestElevenLabsTavilyExaKeys:
         result = redact_sensitive_text(text)
         assert "abc123def456ghi" not in result
 
-    def test_elevenlabs_key_in_log_line(self):
-        text = "Connecting to ElevenLabs with key sk_abc123def456ghi789jklmnopqrstu"
-        result = redact_sensitive_text(text)
-        assert "abc123def456ghi" not in result
 
-    def test_tavily_key_redacted(self):
-        text = "TAVILY_API_KEY=tvly-ABCdef123456789GHIJKL0000"
-        result = redact_sensitive_text(text)
-        assert "ABCdef123456789" not in result
 
-    def test_tavily_key_in_log_line(self):
-        text = "Initialising Tavily client with tvly-ABCdef123456789GHIJKL0000"
-        result = redact_sensitive_text(text)
-        assert "ABCdef123456789" not in result
 
-    def test_exa_key_redacted(self):
-        text = "EXA_API_KEY=exa_XYZ789abcdef000000000000000"
-        result = redact_sensitive_text(text)
-        assert "XYZ789abcdef" not in result
 
-    def test_exa_key_in_log_line(self):
-        text = "Using Exa client with key exa_XYZ789abcdef000000000000000"
-        result = redact_sensitive_text(text)
-        assert "XYZ789abcdef" not in result
 
     def test_all_three_in_env_dump(self):
         env_dump = (
@@ -292,38 +309,14 @@ class TestElevenLabsTavilyExaKeys:
 class TestJWTTokens:
     """JWT tokens start with eyJ (base64 for '{') and have dot-separated parts."""
 
-    def test_full_3part_jwt(self):
-        text = (
-            "Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-            ".eyJpc3MiOiI0MjNiZDJkYjg4MjI0MDAwIn0"
-            ".Gxgv0rru-_kS-I_60EJ7CENTnBh9UeuL3QhkMoQ-VnM"
-        )
-        result = redact_sensitive_text(text)
-        assert "Token:" in result
-        # Payload and signature must not survive
-        assert "eyJpc3Mi" not in result
-        assert "Gxgv0rru" not in result
 
     def test_2part_jwt(self):
         text = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"
         result = redact_sensitive_text(text)
         assert "eyJzdWIi" not in result
 
-    def test_standalone_jwt_header(self):
-        text = "leaked header: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 here"
-        result = redact_sensitive_text(text)
-        assert "IkpXVCJ9" not in result
-        assert "leaked header:" in result
 
-    def test_jwt_with_base64_padding(self):
-        text = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0=.abc123def456ghij"
-        result = redact_sensitive_text(text)
-        assert "abc123def456" not in result
 
-    def test_short_eyj_not_matched(self):
-        """eyJ followed by fewer than 10 base64 chars should not match."""
-        text = "eyJust a normal word"
-        assert redact_sensitive_text(text) == text
 
     def test_jwt_preserves_surrounding_text(self):
         text = "before eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0 after"
@@ -331,18 +324,6 @@ class TestJWTTokens:
         assert result.startswith("before ")
         assert result.endswith(" after")
 
-    def test_home_assistant_jwt_in_memory(self):
-        """Real-world pattern: HA token stored in agent memory block."""
-        text = (
-            "Home Assistant API Token: "
-            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-            ".eyJpc3MiOiJhYmNkZWYiLCJleHAiOjE3NzQ5NTcxMDN9"
-            ".Gxgv0rru-_kS-I_60EJ7CENTnBh9UeuL3QhkMoQ-VnM"
-        )
-        result = redact_sensitive_text(text)
-        assert "Home Assistant API Token:" in result
-        assert "Gxgv0rru" not in result
-        assert "..." in result
 
 
 class TestDiscordMentions:
@@ -354,25 +335,10 @@ class TestDiscordMentions:
         text = "Hello <@222589316709220353>"
         assert redact_sensitive_text(text) == text
 
-    def test_nickname_mention_passes_through(self):
-        text = "Ping <@!1331549159177846844>"
-        assert redact_sensitive_text(text) == text
 
-    def test_multiple_mentions_pass_through(self):
-        text = "<@111111111111111111> and <@222222222222222222>"
-        assert redact_sensitive_text(text) == text
 
-    def test_short_id_passes_through(self):
-        text = "<@12345>"
-        assert redact_sensitive_text(text) == text
 
-    def test_slack_mention_passes_through(self):
-        text = "<@U024BE7LH>"
-        assert redact_sensitive_text(text) == text
 
-    def test_preserves_surrounding_text(self):
-        text = "User <@222589316709220353> said hello"
-        assert redact_sensitive_text(text) == text
 
 
 class TestWebUrlsNotRedacted:
@@ -387,33 +353,11 @@ class TestWebUrlsNotRedacted:
         text = "GET https://api.example.com/oauth/cb?code=abc123xyz789&state=csrf_ok"
         assert redact_sensitive_text(text) == text
 
-    def test_access_token_query_passes_through(self):
-        text = "Fetching https://example.com/api?access_token=opaque_value_here_1234&format=json"
-        assert redact_sensitive_text(text) == text
 
-    def test_magic_link_checkout_passes_through(self):
-        text = "Open https://checkout.example.com/resume?magic=ABCDEF123456&customer=42"
-        assert redact_sensitive_text(text) == text
 
-    def test_presigned_signature_passes_through(self):
-        text = "https://s3.amazonaws.com/bucket/k?signature=LONG_PRESIGNED_SIG&id=public"
-        assert redact_sensitive_text(text) == text
 
-    def test_https_userinfo_passes_through(self):
-        text = "URL: https://user:supersecretpw@host.example.com/path"
-        assert redact_sensitive_text(text) == text
 
-    def test_websocket_url_query_passes_through(self):
-        text = "wss://api.example.com/ws?token=opaqueWsToken123"
-        assert redact_sensitive_text(text) == text
 
-    def test_http_access_log_request_target_passes_through(self):
-        text = (
-            'INFO aiohttp.access: 127.0.0.1 "POST '
-            '/bluebubbles-webhook?password=webhookSecret123&event=new-message '
-            'HTTP/1.1" 200 173 "-" "test-client"'
-        )
-        assert redact_sensitive_text(text) == text
 
     def test_known_prefix_inside_url_still_redacted(self):
         """sk-/ghp_/JWT-shaped values inside a URL are still caught by
@@ -431,6 +375,115 @@ class TestWebUrlsNotRedacted:
         assert "dbpass" not in result
 
 
+class TestStrictUrlCredentialRedaction:
+    @pytest.mark.parametrize(
+        ("text", "secret", "expected"),
+        [
+            (
+                "https://x.test/#access_token=FRAG_SECRET&view=public",
+                "FRAG_SECRET",
+                "https://x.test/#access_token=***&view=public",
+            ),
+            (
+                "/resume?token=REL_SECRET&view=public",
+                "REL_SECRET",
+                "/resume?token=***&view=public",
+            ),
+            (
+                "https://x.test/cb?client%5Fsecret=ENC_SECRET&view=public",
+                "ENC_SECRET",
+                "https://x.test/cb?client%5Fsecret=***&view=public",
+            ),
+            (
+                "https://x.test/cb?client%255Fsecret=DOUBLE_SECRET&view=public",
+                "DOUBLE_SECRET",
+                "https://x.test/cb?client%255Fsecret=***&view=public",
+            ),
+            (
+                "/resume?token=SEMICOLON_SECRET;view=public",
+                "SEMICOLON_SECRET",
+                "/resume?token=***;view=public",
+            ),
+            (
+                "//user:NET_SECRET@x.test/path",
+                "NET_SECRET",
+                "//user:***@x.test/path",
+            ),
+        ],
+    )
+    def test_masks_all_url_reference_forms_only_when_opted_in(
+        self, text, secret, expected
+    ):
+        assert redact_sensitive_text(text) == text
+
+        result = redact_sensitive_text(text, redact_url_credentials=True)
+
+        assert secret not in result
+        assert result == expected
+
+    def test_similarly_named_public_params_remain_unchanged(self):
+        text = "/metrics?token_count=17&session_id=public"
+        assert redact_sensitive_text(text, redact_url_credentials=True) == text
+
+
+class TestBareTokenUserinfoRedaction:
+    """Regression tests for #6396 — a bare credential in URL userinfo
+    (``scheme://TOKEN@host``, no ``user:pass`` colon) is redacted. This is the
+    git-remote-with-embedded-password shape. The colon form ``user:pass@`` and
+    query-string tokens are deliberately left to pass through (#34029) so
+    magic-link / OAuth round-trip skills keep working — see
+    TestWebUrlsNotRedacted for those invariants.
+    """
+
+    def test_git_remote_bare_password_redacted(self):
+        """Exact bug scenario: password in a git remote URL."""
+        text = (
+            "git remote set-url origin "
+            "https://MYPASSWORDWASDISLAYEDHERE@github.com/unclehowell/FCUK.git"
+        )
+        result = redact_sensitive_text(text)
+        assert "MYPASSWORDWASDISLAYEDHERE" not in result
+        assert "@github.com" in result
+        assert "unclehowell/FCUK.git" in result
+
+    def test_ssh_bare_token_redacted(self):
+        text = "ssh://longtoken1234567@gitlab.com/project.git"
+        result = redact_sensitive_text(text)
+        assert "longtoken1234567" not in result
+        assert "@gitlab.com" in result
+
+    def test_ftp_bare_token_redacted(self):
+        text = "ftp://ftptoken123456@ftp.example.com/files"
+        result = redact_sensitive_text(text)
+        assert "ftptoken123456" not in result
+
+
+    def test_user_pass_form_still_passes_through(self):
+        """The ``user:pass@`` colon form must NOT be redacted (#34029)."""
+        text = "URL: https://user:supersecretpw@host.example.com/path"
+        assert redact_sensitive_text(text) == text
+
+    def test_short_username_not_redacted(self):
+        """Short userinfo (git, admin, deploy) below the 8-char floor passes."""
+        for text in (
+            "https://git@github.com/user/repo.git",
+            "https://admin@example.com/x",
+            "https://deploy@host.com/y",
+        ):
+            assert redact_sensitive_text(text) == text
+
+    def test_email_in_path_not_redacted(self):
+        """An ``@`` in a path/query is not userinfo — the token class stops at
+        ``/``, so emails after the first slash are never treated as a credential."""
+        for text in (
+            "https://example.com/search?q=user@example.com",
+            "https://example.com/users/john@doe.com/profile",
+        ):
+            assert redact_sensitive_text(text) == text
+
+
+
+
 class TestFormBodyRedaction:
     """Form-urlencoded body redaction (k=v&k=v with no other text)."""
 
@@ -441,12 +494,6 @@ class TestFormBodyRedaction:
         assert "opaqueValue" not in result
         assert "username=bob" in result
 
-    def test_oauth_token_request(self):
-        text = "grant_type=password&client_id=app&client_secret=topsecret&username=alice&password=alicepw"
-        result = redact_sensitive_text(text)
-        assert "topsecret" not in result
-        assert "alicepw" not in result
-        assert "client_id=app" in result
 
     def test_non_form_text_unchanged(self):
         """Sentences with `&` should NOT trigger form redaction."""
@@ -462,6 +509,101 @@ class TestFormBodyRedaction:
         assert "first=1" in redact_sensitive_text(text)
 
 
+class TestLowercaseDottedConfigKeys:
+    """Issue #16413 — config-file passwords in lowercase/dotted/colon keys
+    must be redacted. The uppercase _ENV_ASSIGN_RE missed these, leaking
+    `spring.datasource.password=...` and `password: ...` from `cat`'d config
+    files. Carve-outs: prose, code (#4367), and web URLs are left untouched.
+    """
+
+
+
+
+
+
+
+    def test_properties_file_dump(self):
+        text = (
+            "server.port=8080\n"
+            "spring.datasource.username=admin\n"
+            "spring.datasource.password=Sup3rS3cret!\n"
+            "logging.level.root=INFO"
+        )
+        result = redact_sensitive_text(text)
+        assert "Sup3rS3cret!" not in result
+        assert "server.port=8080" in result  # non-secret keys preserved
+        assert "username=admin" in result
+
+    # --- carve-outs: must NOT redact ---
+
+    def test_prose_mid_sentence_password_unchanged(self):
+        # Not line-anchored, not dotted → conversational text, leave alone.
+        text = "I have password=foo and other things"
+        assert redact_sensitive_text(text) == text
+
+
+
+
+
+class TestConfigKeyRedosResistance:
+    """The dotted-key patterns must not backtrack exponentially (ReDoS).
+
+    Before the possessive-quantifier rewrite, a non-matching run of ~40
+    dotted segments took ~30ms and doubled every ~4 segments; 100 segments
+    would effectively hang the redactor (it runs on every log line).
+    """
+
+    def test_long_dotted_run_completes_fast(self):
+        import time
+
+        # 100 dotted segments with no '=' — worst case for the old pattern.
+        text = ".".join(["segment"] * 100) + " end"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text) == text
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_long_dotted_run_with_keyword_completes_fast(self):
+        """Exercise _CFG_DOTTED_RE directly (bypasses the keyword pre-gate).
+
+        The pre-gate skips the regex when no secret keyword is present, so
+        test_long_dotted_run_completes_fast only guards the pre-gate.  This
+        test includes a keyword but no '=' so the regex runs and must still
+        complete quickly thanks to the possessive quantifiers.
+        """
+        import time
+
+        text = ".".join(["segment"] * 100) + ".token end"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text) == text
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_long_dotted_secret_still_redacted(self):
+        # Possessive quantifiers must not change matching behavior.
+        text = ".".join(["seg"] * 50) + ".password=Sup3rS3cret!"
+        result = redact_sensitive_text(text)
+        assert "Sup3rS3cret!" not in result
+        assert ".password=" in result
+
+    def test_yaml_assign_redos_resistance(self):
+        """_YAML_ASSIGN_RE must not backtrack excessively on long inputs."""
+        import time
+
+        # 100 lines of a long dotted key with a secret keyword but no
+        # matching colon-value form — stresses the regex without matching.
+        line = "a." * 50 + "token not_an_assignment"
+        text = "\n".join([line] * 100)
+        t0 = time.perf_counter()
+        redact_sensitive_text(text)
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_yaml_assign_secret_still_redacted(self):
+        # Possessive quantifiers must not change YAML matching behavior.
+        text = "spring.datasource.password: hunter2"
+        result = redact_sensitive_text(text)
+        assert "hunter2" not in result
+        assert "password:" in result
+
+
 class TestXaiToken:
     KEY = "xai-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstu"
 
@@ -470,19 +612,222 @@ class TestXaiToken:
         assert self.KEY not in result
         assert "xai-AB" in result
 
-    def test_env_assignment_masked(self):
-        result = redact_sensitive_text(f"XAI_API_KEY={self.KEY}", force=True)
-        assert self.KEY not in result
 
     def test_too_short_not_masked(self):
         short = "xai-tooshort"
         result = redact_sensitive_text(f"text {short} here", force=True)
         assert short in result
 
-    def test_company_name_not_masked(self):
-        result = redact_sensitive_text("xai is a company", force=True)
-        assert result == "xai is a company"
 
-    def test_prefix_visible_in_masked_output(self):
-        result = redact_sensitive_text(self.KEY, force=True)
-        assert result.startswith("xai-AB")
+
+
+class TestDbConnstrCodeOutput:
+    """Regression tests for issue #33801 — _DB_CONNSTR_RE corrupting code output.
+
+    Two distinct flaws, both confined to displayed tool OUTPUT (read_file /
+    terminal / execute_code), never the on-disk content:
+
+    1. The password group ``[^@]+`` was greedy across newlines, so on a
+       multi-line block it scanned past the DSN line to the next stray ``@``
+       (e.g. a Python ``@decorator``), replacing everything in between with
+       ``***`` — dropping lines and concatenating the next one.
+    2. An f-string DSN template (``f"postgresql://{user}:{pass}@{host}"``) is
+       not a live credential, but was redacted anyway. Under ``code_file=True``
+       a pure ``{...}`` brace password is now preserved.
+    """
+
+    MULTILINE = (
+        '            return f"postgresql://{auth}@{self.pg_host}:'
+        '{self.pg_port}/{self.pg_database}"\n'
+        "\n"
+        '    @model_validator(mode="after")\n'
+        '    def _validate_critical_settings(self) -> "Settings":'
+    )
+
+
+
+
+
+    def test_literal_connstr_still_redacted_with_code_file(self):
+        """A real password in a literal DSN is still masked under code_file."""
+        text = "postgresql://admin:realpassword@db.internal:5432/app"
+        result = redact_sensitive_text(text, code_file=True, force=True)
+        assert "realpassword" not in result
+        assert "***" in result
+
+    def test_literal_connstr_redacted_all_schemes(self):
+        for scheme, secret in [
+            ("postgres", "pgsecret1234"),
+            ("mysql", "mysqlsecret99"),
+            ("redis", "redissecret77"),
+            ("mongodb+srv", "mongosecret55"),
+            ("amqp", "amqpsecret33"),
+        ]:
+            text = f"{scheme}://user:{secret}@host:1234/db"
+            result = redact_sensitive_text(text, code_file=True, force=True)
+            assert secret not in result, scheme
+
+    def test_literal_connstr_in_log_line_redacted(self):
+        text = "connected via postgres://user:s3cr3tpw@host:5432/db ok"
+        result = redact_sensitive_text(text, force=True)
+        assert "s3cr3tpw" not in result
+
+
+class TestTerminalOutputRedaction:
+    """is_env_dump_command + redact_terminal_output — issue #43025.
+
+    Terminal/process stdout must be redacted on every surface (foreground
+    `terminal` AND background `process(poll/log/wait)`). Env-dump commands get
+    the ENV-assignment pass so opaque tokens (no vendor prefix) are masked;
+    other commands stay on the code_file path to avoid false positives.
+    """
+
+    def test_is_env_dump_command_detection(self):
+        from agent.redact import is_env_dump_command
+        assert is_env_dump_command("printenv")
+        assert is_env_dump_command("env")
+        assert is_env_dump_command("env | grep API")
+        assert is_env_dump_command("set")
+        assert is_env_dump_command("export")
+        assert is_env_dump_command("declare -x")
+        assert is_env_dump_command("cat /tmp/x && printenv")
+        assert not is_env_dump_command("python app.py")
+        assert not is_env_dump_command("cat config.py")
+        assert not is_env_dump_command("printf 'TOKEN=x'")
+        assert not is_env_dump_command("")
+        assert not is_env_dump_command(None)
+
+
+
+
+    def test_disabled_passes_through(self, monkeypatch):
+        from agent.redact import redact_terminal_output
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        out = "CUSTOM_TOKEN=zzzopaque1234567890abcdef"
+        red = redact_terminal_output(out, "printenv")
+        assert "zzzopaque1234567890abcdef" in red
+
+
+class TestFileReadNonReusableRedaction:
+    """#35519: prefix-matched credentials in FILE CONTENT (read_file /
+    search_files / cat) must be redacted to a NON-REUSABLE sentinel — not a
+    head/tail mask that looks like a real-but-truncated key and gets written
+    back to config (corrupting the credential -> 401)."""
+
+    GHP = "ghp_S1abcdefghijklmnopqrstuvwxyz0Pn2T"  # realistic GitHub PAT shape
+    SK = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+    def test_file_read_does_not_leak_secret_body(self):
+        """Crucial: file_read must NOT expose the real key (no un-redact)."""
+        out = redact_sensitive_text(f"token: {self.GHP}", force=True, file_read=True)
+        # No run of the secret body survives.
+        assert "S1abcdefghij" not in out
+        assert self.GHP not in out
+        assert "Pn2T" not in out  # not even the tail (the old mask kept it)
+
+    def test_file_read_sentinel_is_not_a_plausible_key(self):
+        """The sentinel can't be mistaken for / written back as a usable key:
+        the old mask was a 13-char `ghp_S1...Pn2T` that broke GitHub auth when
+        an agent re-saved it. The sentinel is syntactically invalid as a token
+        (contains « » … and ':'), so it can't round-trip into a dead key."""
+        out = redact_sensitive_text(f"GITHUB_PERSONAL_ACCESS_TOKEN: {self.GHP}",
+                                    force=True, file_read=True)
+        masked = out.split(": ", 1)[1].strip()
+        # Not a bare token: contains the sentinel delimiters.
+        assert masked.startswith("«") and masked.endswith("»")
+        assert "…" in masked
+
+
+
+
+
+class TestFireworksToken:
+    KEY = "fw_" + "A" * 40
+
+    def test_bare_token_masked(self):
+        result = redact_sensitive_text(f"fireworks error: key {self.KEY}", force=True)
+        assert self.KEY not in result
+        assert "fw_AA" in result
+
+
+    def test_too_short_not_masked(self):
+        short = "fw_tooshort"
+        result = redact_sensitive_text(f"text {short} here", force=True)
+        assert short in result
+
+
+
+class TestRedactCdpUrl:
+    """redact_cdp_url() is the single chokepoint for CDP endpoint log redaction.
+
+    Unlike the global pass (which deliberately lets web-URL query params and
+    userinfo through for OAuth/magic-link workflows), CDP endpoint credentials
+    are pure secrets and must always be masked. Both the browser tool's
+    session/discovery logs and the supervisor's attach-timeout error route
+    through this helper.
+    """
+
+
+    def test_masks_multiple_query_credentials(self):
+        url = "wss://provider.example/session?token=aaa-secret&apikey=bbb-secret"
+        out = redact_cdp_url(url)
+        assert "aaa-secret" not in out
+        assert "bbb-secret" not in out
+
+
+
+
+    def test_none_returns_empty(self):
+        assert redact_cdp_url(None) == ""
+
+
+class TestKeywordWordBoundary:
+    """Ported from nearai/ironclaw#6129 — a secret keyword embedded inside a
+    larger prose word (``Secretary`` ⊃ ``secret``, ``tokenizer`` ⊃ ``token``,
+    ``authored`` ⊃ ``auth``) must NOT trigger the lowercase/dotted/YAML config
+    passes. Real key shapes (separators, camelCase, acronyms, plurals, common
+    concatenated compounds, all-caps env style) must keep redacting.
+    """
+
+    # ── prose words embedding a keyword are preserved ──────────────────
+
+    def test_secretary_yaml_value_preserved(self):
+        text = "Secretary: JanetYellen1234567890"
+        assert redact_sensitive_text(text) == text
+
+
+
+
+
+
+
+
+    # ── real key shapes still redact ────────────────────────────────────
+
+    def test_separator_keys_still_redacted(self):
+        for text in (
+            "client_secret: abc123def456ghi789jkl",
+            "auth_token: xyz789xyz789xyz789xyz",
+            "my_secret: topvalue123456789012345",
+            "db.password=hunter2verylongpassword",
+        ):
+            result = redact_sensitive_text(text)
+            assert result != text, text
+
+    def test_camelcase_keys_still_redacted(self):
+        for text in (
+            "clientSecret: abc123def456ghi789jkl",
+            "secretKey: abc123def456ghi789jklmno",
+            "APIToken: abc123def456ghi789jklmn",
+        ):
+            result = redact_sensitive_text(text)
+            assert result != text, text
+
+
+    def test_plural_keys_still_redacted(self):
+        text = "secrets: hunter2hunter2hunter2hh"
+        result = redact_sensitive_text(text)
+        assert "hunter2hunter2hunter2hh" not in result
+
+

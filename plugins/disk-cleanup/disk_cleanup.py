@@ -110,12 +110,12 @@ def load_tracked() -> List[Dict[str, Any]]:
         return []
 
     try:
-        return json.loads(tf.read_text())
+        return json.loads(tf.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, ValueError):
         bak = tf.with_suffix(".json.bak")
         if bak.exists():
             try:
-                data = json.loads(bak.read_text())
+                data = json.loads(bak.read_text(encoding="utf-8"))
                 _log("WARN: tracked.json corrupted — restored from .bak")
                 return data
             except Exception:
@@ -129,7 +129,7 @@ def save_tracked(tracked: List[Dict[str, Any]]) -> None:
     tf = get_tracked_file()
     tf.parent.mkdir(parents=True, exist_ok=True)
     tmp = tf.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(tracked, indent=2))
+    tmp.write_text(json.dumps(tracked, indent=2), encoding="utf-8")
     if tf.exists():
         shutil.copy2(tf, tf.with_suffix(".json.bak"))
     tmp.replace(tf)
@@ -148,6 +148,9 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
     "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
     "hermes-agent", "backups", "profiles", ".worktrees",
+    # User-authored project trees — never sweep empty directories
+    # inside these (#75403).
+    "patches", "projects", "skins", "themes", "contributors",
 })
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
@@ -166,9 +169,13 @@ def _is_protected_cron_path(p: Path) -> bool:
     """Return True if *p* is a cron control-plane file/directory that must
     never be deleted.
 
-    This only matches the directory itself and known control-plane files
-    (``jobs.json``, ``.tick.lock``) — it does NOT blanket-protect
-    everything under ``cron/`` because ``cron/output/`` is disposable.
+    This matches, by EXACT path only, the ``cron/`` directory itself, known
+    control-plane files (``jobs.json``, ``.tick.lock``), and the ``output/``
+    root directory. It does NOT (and must not be "simplified" to) blanket-match
+    everything under ``cron/output/`` — those run artifacts are disposable and
+    are cleaned by retention policy; only the ``output/`` root itself is
+    protected, because deleting it wholesale erases every job's retained run
+    history at once.
     """
     # Lazily build the set once per process so HERMES_HOME is resolved
     # exactly once.
@@ -177,6 +184,7 @@ def _is_protected_cron_path(p: Path) -> bool:
         for parent in ("cron", "cronjobs"):
             base = hermes_home / parent
             _PROTECTED_CRON_PATHS.add(str(base))
+            _PROTECTED_CRON_PATHS.add(str(base / "output"))
             _PROTECTED_CRON_PATHS.add(str(base / "jobs.json"))
             _PROTECTED_CRON_PATHS.add(str(base / ".tick.lock"))
     resolved = str(p.resolve())
@@ -329,6 +337,21 @@ def quick() -> Dict[str, Any]:
                     f"(re-classified as {re_cat!r})"
                 )
                 # Drop the stale entry — it was misclassified.
+                continue
+
+        # ---- stale-state migration for 'test' category (fixes #75403) ----
+        # Old tracked.json entries may carry a "test" category for paths
+        # that are now under protected project directories (patches/,
+        # projects/, etc.).  guess_category() was tightened in the fix for
+        # #75403, but existing entries are never re-validated.  Re-classify
+        # here so stale entries for protected paths are not deleted.
+        if cat == "test":
+            re_cat = guess_category(p)
+            if re_cat != "test":
+                _log(
+                    f"SKIP stale test entry: {p} "
+                    f"(re-classified as {re_cat!r} — under protected tree)"
+                )
                 continue
 
         # Hard safety net: never delete cron control-plane state even if
@@ -558,6 +581,11 @@ def guess_category(path: Path) -> Optional[str]:
             "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
             "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
             "auth.json", "hermes-agent",
+            # User-authored and project trees — never auto-delete files
+            # inside these just because they happen to be named test_* or
+            # tmp_* (#75403, also #32164, #37721).
+            "patches", "projects", "skins", "themes", "contributors",
+            "profiles", "backups", "optional-skills",
         }:
             return None
         if top == "cron" or top == "cronjobs":
@@ -566,7 +594,7 @@ def guess_category(path: Path) -> Optional[str]:
             # (e.g. ``jobs.json``, ``.tick.lock``) must never be
             # auto-tracked — deleting it wipes the live scheduler
             # registry. See issue #32164.
-            if len(rel.parts) >= 2 and rel.parts[1] == "output":
+            if len(rel.parts) >= 3 and rel.parts[1] == "output":
                 return "cron-output"
             return None
         if top == "cache":

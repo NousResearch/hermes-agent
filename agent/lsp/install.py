@@ -30,10 +30,12 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_constants import find_node_executable
 
 logger = logging.getLogger("agent.lsp.install")
 
@@ -102,6 +104,11 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     # Lua — manual (LuaLS is platform-specific binaries from GitHub
     # releases; complex enough that we punt to the user)
     "lua-language-server": {"strategy": "manual", "pkg": "", "bin": "lua-language-server"},
+    # PowerShell — PowerShellEditorServices ships as a GitHub release
+    # zip driven by a pwsh bootstrap script, not a single binary.  We
+    # require a manual bundle install and probe for the pwsh host so
+    # `hermes lsp status` reports the host's presence.
+    "powershell": {"strategy": "manual", "pkg": "", "bin": "pwsh"},
 }
 
 
@@ -117,10 +124,9 @@ def _is_windows() -> bool:
 
 def hermes_lsp_bin_dir() -> Path:
     """Return the Hermes-owned bin staging dir for LSP servers."""
-    home = os.environ.get("HERMES_HOME")
-    if home is None:
-        home = os.path.join(os.path.expanduser("~"), ".hermes")
-    p = Path(home) / "lsp" / "bin"
+    from hermes_constants import get_hermes_home
+
+    p = get_hermes_home() / "lsp" / "bin"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -244,9 +250,12 @@ def _install_npm(
     peer deps that npm doesn't auto-pull (typescript-language-server
     needs ``typescript`` next to it; intelephense ships standalone).
     """
-    npm = shutil.which("npm")
+    # Managed npm first: $HERMES_HOME/node is not on an arbitrary process's
+    # PATH, so a bare which() misses the Node that Hermes installed and
+    # reports "npm not on PATH" on a machine that has a perfectly good one.
+    npm = find_node_executable("npm")
     if npm is None:
-        logger.info("[install] cannot install %s: npm not on PATH", pkg)
+        logger.info("[install] cannot install %s: no usable npm found", pkg)
         return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
     install_targets = [pkg] + list(extra_pkgs or [])
@@ -260,9 +269,10 @@ def _install_npm(
             [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets],
             check=False,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=300,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         if proc.returncode != 0:
             logger.warning(
@@ -308,10 +318,11 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
             [go, "install", pkg],
             check=False,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=600,
             env=env,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         if proc.returncode != 0:
             logger.warning(
@@ -343,17 +354,15 @@ def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
     pip_target.mkdir(parents=True, exist_ok=True)
     try:
         logger.info("[install] pip install --target %s %s", pip_target, pkg)
-        proc = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--target", str(pip_target), "--quiet", pkg],
-            check=False,
-            capture_output=True,
-            text=True,
+        from hermes_cli.tools_config import _pip_install
+
+        proc = _pip_install(
+            ["--target", str(pip_target), "--quiet", pkg],
             timeout=300,
-            stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
             logger.warning(
-                "[install] pip install failed for %s: %s", pkg, proc.stderr.strip()[:500]
+                "[install] pip install failed for %s: %s", pkg, (proc.stderr or "").strip()[:500]
             )
             return None
     except (subprocess.TimeoutExpired, OSError) as e:

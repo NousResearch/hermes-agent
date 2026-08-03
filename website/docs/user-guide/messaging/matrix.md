@@ -97,6 +97,7 @@ matrix:
   session_scope: room             # auto|room|thread; room is recommended for project rooms
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
+  max_message_length: 16000       # Outbound chunk size in chars (default: 16000, max: 65535)
 ```
 
 Or via environment variables:
@@ -362,7 +363,7 @@ E2EE requires the `mautrix` library with encryption extras and the `libolm` C li
 pip install 'mautrix[encryption]'
 
 # Or install with hermes extras
-pip install 'hermes-agent[matrix]'
+cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
 
 You also need `libolm` installed on your system:
@@ -417,11 +418,7 @@ In Matrix conversations, Hermes exposes Matrix-specific tools to the agent:
 - `matrix_set_presence`
 
 These tools are scoped to Matrix contexts and are not available in non-Matrix toolsets. Admin-style tools are disabled by default: redaction requires `MATRIX_TOOLS_ALLOW_REDACTION=true`, invites require `MATRIX_TOOLS_ALLOW_INVITES=true`, and room creation requires `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`. Public room creation also requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
-Matrix tools are limited to the current Matrix room by default. Explicit
-cross-room targets require `MATRIX_TOOLS_ALLOW_CROSS_ROOM=true`; redaction and
-invite-like cross-room actions additionally require
-`MATRIX_TOOLS_ALLOW_CROSS_ROOM_DESTRUCTIVE=true`. If `MATRIX_ALLOWED_ROOMS` is
-set, Matrix tools may only target those rooms.
+If `MATRIX_ALLOWED_ROOMS` is set, Matrix tools may only target those rooms.
 
 Reaction controls use:
 
@@ -445,24 +442,6 @@ MATRIX_MAX_MEDIA_BYTES=104857600
 Inbound media must use Matrix `mxc://` content URIs. Hermes rejects arbitrary
 HTTP(S) media URLs in Matrix events to avoid turning a federated room into an
 unrestricted downloader.
-
-## Synapse Integration Tests
-
-Hermes includes an opt-in Synapse harness for local validation:
-
-```bash
-docker compose -f tests/e2e/matrix_synapse_gateway/docker-compose.yml up -d
-HERMES_MATRIX_SYNAPSE_INTEGRATION=1 \
-  scripts/run_tests.sh -m "integration and matrix_synapse" \
-  tests/e2e/matrix_synapse_gateway/test_gateway.py
-docker compose -f tests/e2e/matrix_synapse_gateway/docker-compose.yml down -v
-```
-
-The harness creates temporary users through Synapse shared-secret registration
-and covers private-room send/receive, named-room invite/join, media
-upload/download, bot response delivery, and startup old-event filtering. E2EE
-smoke coverage is separately marked with `matrix_e2ee` so it can stay opt-in on
-developer machines.
 
 ### Cross-Signing Verification (Recommended)
 
@@ -644,7 +623,7 @@ pip install 'mautrix[encryption]'
 Or with Hermes extras:
 
 ```bash
-pip install 'hermes-agent[matrix]'
+cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
 
 ### Encryption errors / "could not decrypt event"
@@ -824,7 +803,7 @@ services:
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y libolm-dev && rm -rf /var/lib/apt/lists/*
-RUN pip install 'hermes-agent[matrix]'
+RUN cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 
 CMD ["hermes", "gateway"]
 ```

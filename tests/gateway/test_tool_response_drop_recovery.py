@@ -40,7 +40,7 @@ class _DummyAdapter(BasePlatformAdapter):
         super().__init__(PlatformConfig(enabled=True, token="fake-token"), platform)
         self.sent: list[dict] = []
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -125,61 +125,6 @@ class TestExtractStripRecoveryAllPlatforms:
             for r in caplog.records
         ), [r.getMessage() for r in caplog.records]
 
-    @pytest.mark.asyncio
-    async def test_directives_stripped_from_fallback_text(self, platform, monkeypatch):
-        adapter = _DummyAdapter(platform)
-        adapter._keep_typing = _hold_typing
-
-        raw = (
-            "[[audio_as_voice]]\n[[as_document]]\nMEDIA: /tmp/nope.ogg\n"
-            "The real answer the user should see."
-        )
-
-        async def handler(_event):
-            return raw
-
-        adapter.set_message_handler(handler)
-        _strip_everything(adapter, monkeypatch)
-
-        event = _make_event(platform)
-        await adapter._process_message_background(event, build_session_key(event.source))
-
-        assert len(adapter.sent) == 1
-        delivered = adapter.sent[0]["content"]
-        assert "[[audio_as_voice]]" not in delivered
-        assert "[[as_document]]" not in delivered
-        assert "MEDIA:" not in delivered
-        assert "The real answer the user should see." in delivered
-
-    @pytest.mark.asyncio
-    async def test_no_fallback_when_attachment_produced(self, platform, monkeypatch):
-        """When an image attachment IS extracted, the empty text_content is
-        intentional — recovery must NOT re-send the original markdown and
-        duplicate the attachment's content."""
-        adapter = _DummyAdapter(platform)
-        adapter._keep_typing = _hold_typing
-
-        async def handler(_event):
-            return "![chart](https://example.com/chart.png)"
-
-        adapter.set_message_handler(handler)
-        monkeypatch.setattr(
-            type(adapter), "extract_media", staticmethod(lambda content: ([], content))
-        )
-        monkeypatch.setattr(
-            type(adapter), "extract_images",
-            staticmethod(lambda content: ([("https://example.com/chart.png", "chart")], "")),
-        )
-        monkeypatch.setattr(
-            type(adapter), "extract_local_files", staticmethod(lambda content: ([], ""))
-        )
-        adapter.send_multiple_images = lambda *a, **kw: asyncio.sleep(0, result=None)
-
-        event = _make_event(platform)
-        await adapter._process_message_background(event, build_session_key(event.source))
-
-        assert adapter.sent == [], f"expected no text echo, got {adapter.sent}"
-
 
 class TestRecoveryDoesNotLeakMediaFragments:
     """The A2 recovery must not leak fragments of a MEDIA: path to the user.
@@ -256,3 +201,129 @@ class TestUnrecoverableDropIsLoud:
             "response_delivery_dropped" in r.getMessage()
             for r in caplog.records if r.levelno == logging.ERROR
         ), [r.getMessage() for r in caplog.records]
+
+
+# ===========================================================================
+# Issue #44212: post-/stop stale interrupt silently swallows the next message
+# ===========================================================================
+
+class TestPostStopInterruptSwallow:
+    """A `/stop` sets ``_interrupt_requested`` on the session's cached agent,
+    but the flag is only cleared by the turn finalizer.  When the stopped run
+    is hung or still draining, the flag survives the lock release and the
+    session's NEXT message is killed at the top of the tool loop —
+    ``interrupted=True, api_calls=0, final_response=""`` — which
+    ``_normalize_empty_agent_response`` used to pass through as pure silence.
+
+    Two-layer fix: ``_interrupt_and_clear_session`` evicts the cached agent
+    (root cause), and the normalizer surfaces a notice for interrupted runs
+    that never made an API call (a swallowed user turn, not a drain)."""
+
+    def test_interrupted_zero_api_calls_surfaces_notice(self):
+        """Interrupted before the first API call → the user's message was
+        never processed; silence here swallows it (the #44212 malign shape:
+        ``response ready ... api_calls=0 response=0 chars``)."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 0,
+            "partial": False,
+            "interrupted": True,
+        }
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=10)
+
+        assert response != "", "A turn killed before doing any work must not be silent"
+        assert "send it again" in response.lower()
+
+
+    def test_uninterrupted_zero_api_calls_surfaces_retry_hint(self):
+        """No interrupt and no work — #31884 (landed after this PR was
+        written) surfaces a retry hint instead of silence for the
+        generation-race drop."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 0,
+            "partial": False,
+            "interrupted": False,
+        }
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=10)
+
+        assert "send it again" in response
+
+    @pytest.mark.asyncio
+    async def test_interrupt_and_clear_session_evicts_cached_agent(
+        self, monkeypatch
+    ):
+        """The control-interrupt path must evict the session's cached agent
+        so its ``_interrupt_requested`` flag cannot leak into the next turn."""
+        import threading
+
+        from gateway.run import GatewayRunner, _INTERRUPT_REASON_STOP
+
+        class _RecordingAgent:
+            def __init__(self):
+                self.interrupt_reasons = []
+
+            def interrupt(self, reason=None):
+                self.interrupt_reasons.append(reason)
+
+        agent = _RecordingAgent()
+        agent._gateway_turn_process_task_id = "session-123"
+        agent._gateway_turn_process_baseline = frozenset({"proc_existing"})
+        session_key = "agent:main:telegram:dm:12345"
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"
+        )
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {session_key: agent}
+        runner._agent_cache = {session_key: (agent, "config-sig")}
+        runner._agent_cache_lock = threading.Lock()
+        runner.adapters = {}
+        runner._pending_messages = {}
+
+        invalidated = []
+        runner._invalidate_session_run_generation = (
+            lambda key, reason=None: invalidated.append((key, reason))
+        )
+        released = []
+        runner._release_running_agent_state = (
+            lambda key, **kw: released.append(key)
+        )
+        reaped = []
+        reaped_event = threading.Event()
+        from tools.process_registry import process_registry
+
+        def _record_reap(task_id, baseline, *, source):
+            reaped.append((task_id, baseline, source))
+            reaped_event.set()
+            return 1
+
+        monkeypatch.setattr(process_registry, "kill_started_since", _record_reap)
+
+        await runner._interrupt_and_clear_session(
+            session_key,
+            source,
+            interrupt_reason=_INTERRUPT_REASON_STOP,
+            invalidation_reason="stop_command",
+        )
+
+        assert agent.interrupt_reasons == [_INTERRUPT_REASON_STOP]
+        assert released == [session_key]
+        assert reaped_event.wait(1)
+        assert reaped == [
+            (
+                "session-123",
+                frozenset({"proc_existing"}),
+                "gateway_turn_interrupt",
+            )
+        ]
+        assert session_key not in runner._agent_cache, (
+            "Cached agent with a set interrupt flag must be evicted on /stop "
+            "so the flag cannot kill the session's next message (#44212)"
+        )

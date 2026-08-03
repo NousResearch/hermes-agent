@@ -1,10 +1,16 @@
 import json
+import os
+import socket
+import stat
+import threading
+import time
 import zipfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+import plugins.memory.openviking as openviking_module
 from plugins.memory.openviking import (
     OpenVikingMemoryProvider,
     _DEFERRED_COMMIT_TIMEOUT,
@@ -15,6 +21,633 @@ from plugins.memory.openviking import (
 def _clear_openviking_tenant_env(monkeypatch):
     for name in ("OPENVIKING_ACCOUNT", "OPENVIKING_USER", "OPENVIKING_AGENT"):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_openviking_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: home))
+
+
+def _clear_openviking_env(monkeypatch):
+    for key in (
+        "OPENVIKING_ENDPOINT",
+        "OPENVIKING_API_KEY",
+        "OPENVIKING_ACCOUNT",
+        "OPENVIKING_USER",
+        "OPENVIKING_AGENT",
+        "OPENVIKING_CLI_CONFIG_FILE",
+        "OPENVIKING_PROFILE_TOKEN_BUDGET",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def _prompt_from_values(values: dict[str, str], *, forbidden: set[str] | None = None):
+    forbidden = forbidden or set()
+
+    def _prompt(label, default=None, secret=False):
+        if label in forbidden:
+            raise AssertionError(f"{label} should not be prompted")
+        return values.get(label, default or "")
+
+    return _prompt
+
+
+def _allow_setup_validation(monkeypatch, *, root_access: bool = False):
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_reachability",
+        lambda endpoint: (True, ""),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_auth",
+        lambda values: (True, ""),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_root_access",
+        lambda values: (root_access, "" if root_access else "Requires role: root"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_setup_values",
+        lambda values, *, require_api_key=False: (
+            True,
+            "",
+            "root" if root_access else ("user" if values.get("api_key") else None),
+        ),
+        raising=False,
+    )
+
+
+def test_openviking_provider_config_loader_uses_readonly_config(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    calls = []
+    backing_config = {
+        "memory": {
+            "openviking": {
+                "endpoint": "http://127.0.0.1:19472",
+                "api_key": "test-key",
+            }
+        }
+    }
+
+    def load_config_readonly():
+        calls.append("readonly")
+        return backing_config
+
+    def load_config():
+        raise AssertionError("OpenViking config loader should use readonly config")
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", load_config_readonly)
+    monkeypatch.setattr(config_mod, "load_config", load_config)
+
+    config = openviking_module._load_hermes_openviking_config()
+
+    assert calls == ["readonly"]
+    assert config == {
+        "endpoint": "http://127.0.0.1:19472",
+        "api_key": "test-key",
+    }
+    assert config is not backing_config["memory"]["openviking"]
+
+
+def test_connection_settings_read_dashboard_config_file(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """\
+memory:
+  provider: openviking
+  openviking:
+    endpoint: http://saved.test:1933
+    account: saved-account
+    user: saved-user
+    agent: saved-agent
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    settings = openviking_module._resolve_connection_settings(
+        openviking_module._load_hermes_openviking_config()
+    )
+
+    assert settings["endpoint"] == "http://saved.test:1933"
+    assert settings["account"] == "saved-account"
+    assert settings["user"] == "saved-user"
+    assert settings["agent"] == "saved-agent"
+    assert settings["api_key"] == ""
+
+
+def test_linked_ovcli_config_is_read_at_runtime(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "http://openviking-one.test",
+            "api_key": "key-one",
+            "account": "acct-one",
+            "user": "alice",
+            "agent_id": "agent-one",
+        }),
+        encoding="utf-8",
+    )
+    provider_config = {"use_ovcli_config": True, "ovcli_config_path": str(ovcli_path)}
+
+    settings = openviking_module._resolve_connection_settings(provider_config)
+
+    assert settings == {
+        "endpoint": "http://openviking-one.test",
+        "api_key": "key-one",
+        "account": "",
+        "user": "",
+        "agent": "agent-one",
+    }
+
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "http://openviking-two.test",
+            "api_key": "key-two",
+            "agent_id": "agent-two",
+        }),
+        encoding="utf-8",
+    )
+
+    settings = openviking_module._resolve_connection_settings(provider_config)
+
+    assert settings == {
+        "endpoint": "http://openviking-two.test",
+        "api_key": "key-two",
+        "account": "",
+        "user": "",
+        "agent": "agent-two",
+    }
+
+
+def test_linked_ovcli_without_url_falls_through_to_dashboard_endpoint(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(json.dumps({"api_key": "linked-key"}), encoding="utf-8")
+
+    settings = openviking_module._resolve_connection_settings({
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(ovcli_path),
+        "endpoint": "http://saved.test:1933",
+    })
+
+    assert settings["endpoint"] == "http://saved.test:1933"
+    assert settings["api_key"] == "linked-key"
+
+
+def test_profile_discovery_warns_when_skipping_unsafe_ovcli_endpoint(tmp_path, caplog):
+    profile_path = tmp_path / "ovcli.conf.blocked"
+    profile_path.write_text(
+        json.dumps({"url": "http://169.254.169.254/latest/meta-data"}),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("WARNING", logger=openviking_module.__name__):
+        assert (
+            openviking_module._load_profile(
+                profile_path,
+                source="saved",
+                name="blocked",
+            )
+            is None
+        )
+
+    assert "Skipping invalid OpenViking CLI config" in caplog.text
+    assert str(profile_path) in caplog.text
+
+
+def test_connection_values_omit_stale_identity_for_user_key_with_root_key():
+    values = openviking_module._connection_values_from_ovcli({
+        "url": "https://openviking.example",
+        "api_key": "user-key",
+        "root_api_key": "root-key",
+        "account": "stale-account",
+        "user": "stale-user",
+    })
+
+    assert values["api_key"] == "user-key"
+    assert values["account"] == ""
+    assert values["user"] == ""
+
+
+def test_link_ovcli_profile_removes_stale_inline_config(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENVIKING_ENDPOINT=http://old.test\nOTHER_KEY=keep\n", encoding="utf-8")
+    config = {"memory": {}}
+    provider_config = {
+        "use_ovcli_config": False,
+        "endpoint": "http://stale.test",
+        "api_key": "stale-key",
+        "account": "default",
+        "user": "default",
+        "agent": "stale-agent",
+        "api_key_type": "root",
+    }
+    ovcli_path = tmp_path / "ovcli.conf.VPS_ROOT"
+
+    openviking_module._link_ovcli_profile(
+        config=config,
+        provider_config=provider_config,
+        env_path=env_path,
+        ovcli_path=ovcli_path,
+    )
+
+    assert config["memory"]["openviking"] == {
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(ovcli_path),
+    }
+    assert "OPENVIKING_ENDPOINT" not in env_path.read_text(encoding="utf-8")
+    assert "OTHER_KEY=keep" in env_path.read_text(encoding="utf-8")
+
+
+def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    env_path = hermes_home / ".env"
+    env_path.write_text("OPENVIKING_ENDPOINT=http://old.test\nOTHER_KEY=keep\n", encoding="utf-8")
+    openviking_home = tmp_path / ".openviking"
+    openviking_home.mkdir()
+    active_path = openviking_home / "ovcli.conf"
+    saved_path = openviking_home / "ovcli.conf.VPS"
+    active_path.write_text(json.dumps({"url": "http://active.test"}), encoding="utf-8")
+    saved_path.write_text(
+        json.dumps({"url": "https://vps.example", "api_key": "user-key"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
+
+    from hermes_cli import memory_setup
+
+    validate_calls = []
+
+    def validate_values(values, *, require_api_key=False):
+        validate_calls.append(dict(values))
+        return True, "", "user"
+
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_setup_values",
+        validate_values,
+        raising=False,
+    )
+    choices = iter([0, 0])
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(choices))
+    config = {"memory": {}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    assert validate_calls == [{
+        "endpoint": "https://vps.example",
+        "api_key": "user-key",
+        "root_api_key": "",
+        "account": "",
+        "user": "",
+        "agent": "",
+    }]
+    assert config["memory"]["provider"] == "openviking"
+    assert config["memory"]["openviking"] == {
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(saved_path),
+    }
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "OPENVIKING_" not in env_text
+    assert "OTHER_KEY=keep" in env_text
+
+
+def test_local_setup_recommends_user_api_key_before_unauthenticated_mode(monkeypatch):
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_reachability",
+        lambda endpoint: (True, ""),
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_setup_values",
+        lambda values, *, require_api_key=False: (True, "", "user"),
+    )
+    credential_menu = {}
+
+    def select(title, options, *, default=0, cancel_returns=None):
+        assert title == "  OpenViking credential"
+        credential_menu["options"] = options
+        credential_menu["default"] = default
+        return 0
+
+    def prompt(label, default=None, secret=False):
+        if label == "OpenViking server URL":
+            return default
+        if label == "OpenViking user API key":
+            assert secret is True
+            return "user-key"
+        if label == openviking_module._AGENT_PROMPT_LABEL:
+            return default
+        raise AssertionError(f"Unexpected prompt: {label}")
+
+    values = openviking_module._prompt_manual_connection_values(
+        prompt,
+        select,
+        -1,
+    )
+
+    assert [label for label, _description in credential_menu["options"]] == [
+        "User API key",
+        "Root API key",
+        "No API key",
+    ]
+    assert credential_menu["default"] == 0
+    assert values["api_key"] == "user-key"
+    assert values["api_key_type"] == "user"
+
+
+def test_start_local_openviking_server_uses_endpoint_host_and_port(monkeypatch):
+    popen_calls = []
+
+    def fake_popen(args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return object()
+
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", lambda host, port: False)
+    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
+    monkeypatch.setattr(openviking_module.subprocess, "Popen", fake_popen)
+
+    state, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+
+    assert state == openviking_module._LOCAL_SERVER_STARTED
+    assert "127.0.0.1:1934" in message
+    args, kwargs = popen_calls[0]
+    assert args == ["/usr/local/bin/openviking-server", "--host", "127.0.0.1", "--port", "1934"]
+    assert kwargs["start_new_session"] is True
+
+
+def test_start_local_openviking_server_does_not_spawn_when_port_already_open(monkeypatch):
+    """A live listener means a second server would just die on DataDirectoryLocked."""
+    probed = []
+
+    def fake_probe(host, port):
+        probed.append((host, port))
+        return True
+
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", fake_probe)
+    monkeypatch.setattr(
+        openviking_module,
+        "_describe_local_port_listener",
+        lambda host, port: "python-test-server (PID 4242)",
+    )
+    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
+    monkeypatch.setattr(
+        openviking_module.subprocess,
+        "Popen",
+        MagicMock(side_effect=AssertionError("must not spawn while a server is already listening")),
+    )
+
+    state, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+
+    assert state == openviking_module._LOCAL_SERVER_OCCUPIED
+    assert "python-test-server (PID 4242)" in message
+    assert "not passed OpenViking's /health check" in message
+    assert "already running" not in message
+    assert probed == [("127.0.0.1", 1934)]
+
+
+def test_start_local_openviking_server_reports_occupied_port_without_cli_on_path(monkeypatch):
+    """The port probe outranks PATH but never claims the listener is OpenViking."""
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", lambda host, port: True)
+    monkeypatch.setattr(
+        openviking_module,
+        "_describe_local_port_listener",
+        lambda host, port: "an unidentified process",
+    )
+    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        openviking_module.subprocess,
+        "Popen",
+        MagicMock(side_effect=AssertionError("must not spawn")),
+    )
+
+    state, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+
+    assert state == openviking_module._LOCAL_SERVER_OCCUPIED
+    assert "unidentified process" in message
+
+
+def test_start_local_openviking_server_rejects_unparseable_url_before_probing(monkeypatch):
+    monkeypatch.setattr(
+        openviking_module,
+        "_local_openviking_port_is_open",
+        MagicMock(side_effect=AssertionError("must not probe an unparseable endpoint")),
+    )
+
+    state, message = openviking_module._start_local_openviking_server("http://127.0.0.1:not-a-port")
+
+    assert state == openviking_module._LOCAL_SERVER_FAILED
+    assert "Could not parse local OpenViking URL" in message
+
+
+def test_local_openviking_port_is_open_detects_listener_and_closed_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        _host, port = listener.getsockname()
+        assert openviking_module._local_openviking_port_is_open("127.0.0.1", port) is True
+
+    # Socket closed: the same port no longer accepts connections.
+    assert openviking_module._local_openviking_port_is_open("127.0.0.1", port) is False
+
+
+def test_describe_local_port_listener_reports_process(monkeypatch):
+    import psutil
+
+    connection = SimpleNamespace(
+        status=psutil.CONN_LISTEN,
+        laddr=SimpleNamespace(ip="0.0.0.0", port=1934),
+        pid=4242,
+    )
+    monkeypatch.setattr(psutil, "net_connections", lambda *, kind: [connection])
+    monkeypatch.setattr(
+        psutil,
+        "Process",
+        lambda pid: SimpleNamespace(name=lambda: "postgres"),
+    )
+
+    assert openviking_module._describe_local_port_listener("127.0.0.1", 1934) == (
+        "postgres (PID 4242)"
+    )
+
+
+def test_runtime_reports_occupied_port_and_does_not_wait_or_spawn(monkeypatch):
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        lambda endpoint: (
+            openviking_module._LOCAL_SERVER_OCCUPIED,
+            "Port 127.0.0.1:1934 is occupied by postgres (PID 99).",
+        ),
+    )
+    provider = OpenVikingMemoryProvider()
+    provider._endpoint = "http://127.0.0.1:1934"
+    provider._start_runtime_openviking_waiter = MagicMock()
+    warnings = []
+
+    provider._handle_runtime_openviking_unreachable(warning_callback=warnings.append)
+
+    provider._start_runtime_openviking_waiter.assert_not_called()
+    assert provider._client is None
+    assert len(warnings) == 1
+    assert "postgres (PID 99)" in warnings[0]
+    assert "temporarily unavailable" in warnings[0]
+
+
+def test_https_local_endpoint_is_not_runtime_autostart_eligible(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://localhost:1934")
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "https://localhost:1934"
+
+        def health(self):
+            return False
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        MagicMock(side_effect=AssertionError("https localhost endpoint should not auto-start")),
+    )
+
+    warnings = []
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1", platform="cli", warning_callback=warnings.append)
+
+    assert provider._client is None
+    assert warnings == [
+        "Remote OpenViking server at https://localhost:1934 is not reachable. "
+        "OpenViking memory is temporarily unavailable; Hermes will retry on a later access or when "
+        "the config changes. "
+        "Check the configured endpoint and network connectivity."
+    ]
+
+
+def test_runtime_does_not_autostart_when_local_server_reports_unhealthy(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://localhost:1934"
+
+        def health(self):
+            return False
+
+        def health_payload(self):
+            return {"healthy": False}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        MagicMock(side_effect=AssertionError("responding unhealthy server should not auto-start another process")),
+    )
+
+    warnings = []
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1", platform="cli", warning_callback=warnings.append)
+
+    assert provider._client is None
+    assert warnings == [
+        "Service at http://localhost:1934 responded but reported unhealthy OpenViking status. "
+        "OpenViking memory is temporarily unavailable; Hermes will retry on a later access "
+        "or when the config changes."
+    ]
+
+
+def test_handle_unreachable_endpoint_waits_long_enough_after_autostart(monkeypatch, capsys):
+    wait_calls = []
+
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        lambda endpoint: (
+            openviking_module._LOCAL_SERVER_STARTED,
+            "Started openviking-server on 127.0.0.1:1934 in the background.",
+        ),
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_wait_for_openviking_health",
+        lambda endpoint, *, timeout_seconds=0: wait_calls.append((endpoint, timeout_seconds)) or True,
+    )
+
+    result = openviking_module._handle_unreachable_endpoint(
+        "http://127.0.0.1:1934",
+        "OpenViking server is not reachable.",
+        lambda *args, **kwargs: 0,
+        -1,
+    )
+
+    assert result is True
+    assert wait_calls == [("http://127.0.0.1:1934", 60.0)]
+    output = capsys.readouterr().out
+    assert "Waiting for OpenViking server to become reachable..." in output
+
+
+def test_initialize_autostarts_local_openviking_in_background_when_runtime_health_fails(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:1934")
+    health_calls = []
+    start_calls = []
+    waiter_calls = []
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://127.0.0.1:1934"
+
+        def health(self):
+            health_calls.append("health")
+            return False
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        lambda endpoint: start_calls.append(endpoint)
+        or (openviking_module._LOCAL_SERVER_STARTED, "started"),
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_wait_for_openviking_health",
+        MagicMock(side_effect=AssertionError("runtime init should not wait synchronously")),
+    )
+
+    provider = OpenVikingMemoryProvider()
+    monkeypatch.setattr(
+        provider,
+        "_start_runtime_openviking_waiter",
+        lambda **kwargs: waiter_calls.append(kwargs),
+        raising=False,
+    )
+    statuses = []
+    provider.initialize("session-1", platform="cli", status_callback=statuses.append)
+
+    assert provider._client is None
+    assert health_calls == ["health"]
+    assert start_calls == ["http://127.0.0.1:1934"]
+    assert len(waiter_calls) == 1
+    assert waiter_calls[0]["status_callback"] == statuses.append
+    assert any("starting in the background" in message for message in statuses)
 
 
 def test_tool_search_sorts_by_raw_score_across_buckets():
@@ -46,406 +679,239 @@ def test_tool_search_sorts_by_raw_score_across_buckets():
     assert result["total"] == 3
 
 
-def test_tool_search_sorts_missing_raw_score_after_negative_scores():
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._client.post.return_value = {
-        "result": {
-            "memories": [
-                {"uri": "viking://memories/missing", "abstract": "missing score"},
-            ],
-            "resources": [
-                {"uri": "viking://resources/negative", "score": -0.25, "abstract": "negative score"},
-            ],
-            "skills": [
-                {"uri": "viking://skills/positive", "score": 0.1, "abstract": "positive score"},
-            ],
-            "total": 3,
-        }
-    }
+def test_tool_add_resource_rejects_hermes_credential_file_upload(tmp_path, monkeypatch):
+    import agent.file_safety as fs
 
-    result = json.loads(provider._tool_search({"query": "ranking"}))
-
-    assert [entry["uri"] for entry in result["results"]] == [
-        "viking://skills/positive",
-        "viking://memories/missing",
-        "viking://resources/negative",
-    ]
-    assert [entry["score"] for entry in result["results"]] == [0.1, 0.0, -0.25]
-    assert result["total"] == 3
-
-
-def test_tool_search_sends_limit_not_legacy_top_k():
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._client.post.return_value = {
-        "result": {"memories": [], "resources": [], "skills": [], "total": 0}
-    }
-
-    provider._tool_search({"query": "session switch", "limit": 7})
-
-    provider._client.post.assert_called_once()
-    payload = provider._client.post.call_args.args[1]
-    assert payload["limit"] == 7
-    assert "top_k" not in payload
-
-
-def test_tool_add_resource_uploads_existing_local_file(tmp_path):
-    sample = tmp_path / "sample.md"
-    sample.write_text("# Local resource\n", encoding="utf-8")
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._client.upload_temp_file.return_value = "upload_sample.md"
-    provider._client.post.return_value = {
-        "status": "ok",
-        "result": {"root_uri": "viking://resources/sample"},
-    }
-
-    result = json.loads(provider._tool_add_resource({
-        "url": str(sample),
-        "reason": "local test",
-        "wait": True,
-    }))
-
-    provider._client.upload_temp_file.assert_called_once_with(sample)
-    provider._client.post.assert_called_once_with("/api/v1/resources", {
-        "reason": "local test",
-        "wait": True,
-        "source_name": "sample.md",
-        "temp_file_id": "upload_sample.md",
-    })
-    assert result["status"] == "added"
-    assert result["root_uri"] == "viking://resources/sample"
-
-
-def test_tool_add_resource_uploads_file_uri(tmp_path):
-    sample = tmp_path / "sample.md"
-    sample.write_text("# Local resource\n", encoding="utf-8")
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._client.upload_temp_file.return_value = "upload_sample.md"
-    provider._client.post.return_value = {
-        "status": "ok",
-        "result": {"root_uri": "viking://resources/sample"},
-    }
-
-    result = json.loads(provider._tool_add_resource({
-        "url": sample.as_uri(),
-        "reason": "file uri test",
-    }))
-
-    provider._client.upload_temp_file.assert_called_once_with(sample)
-    provider._client.post.assert_called_once_with("/api/v1/resources", {
-        "reason": "file uri test",
-        "source_name": "sample.md",
-        "temp_file_id": "upload_sample.md",
-    })
-    assert result["status"] == "added"
-    assert result["root_uri"] == "viking://resources/sample"
-
-
-def test_tool_add_resource_uploads_existing_local_directory_and_cleans_zip(tmp_path):
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    (docs / "guide.md").write_text("# Guide\n", encoding="utf-8")
-    nested = docs / "nested"
-    nested.mkdir()
-    (nested / "api.md").write_text("# API\n", encoding="utf-8")
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    uploaded_paths = []
-    provider._client.upload_temp_file.side_effect = (
-        lambda path: uploaded_paths.append(path) or "upload_docs.zip"
-    )
-    provider._client.post.return_value = {
-        "status": "ok",
-        "result": {"root_uri": "viking://resources/docs"},
-    }
-
-    result = json.loads(provider._tool_add_resource({
-        "url": str(docs),
-        "reason": "directory test",
-        "wait": True,
-    }))
-
-    assert uploaded_paths
-    assert uploaded_paths[0].suffix == ".zip"
-    assert not uploaded_paths[0].exists()
-    provider._client.post.assert_called_once_with("/api/v1/resources", {
-        "reason": "directory test",
-        "wait": True,
-        "source_name": "docs",
-        "temp_file_id": "upload_docs.zip",
-    })
-    assert result["status"] == "added"
-    assert result["root_uri"] == "viking://resources/docs"
-
-
-def test_tool_add_resource_directory_zip_skips_symlink_escape(tmp_path):
-    secret = tmp_path / "outside-secret.txt"
-    secret.write_text("do not upload\n", encoding="utf-8")
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    (docs / "guide.md").write_text("# Guide\n", encoding="utf-8")
-    link = docs / "leak.txt"
-    try:
-        link.symlink_to(secret)
-    except OSError as exc:
-        pytest.skip(f"symlinks unavailable in test environment: {exc}")
+    hermes_home = tmp_path / "hermes_home"
+    hermes_home.mkdir()
+    auth_json = hermes_home / "auth.json"
+    auth_json.write_text('{"OPENROUTER_API_KEY":"sk-test-secret"}', encoding="utf-8")
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: hermes_home)
 
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
-    archive_entries = {}
 
-    def inspect_upload(path):
-        with zipfile.ZipFile(path) as archive:
-            archive_entries["names"] = archive.namelist()
-            archive_entries["payloads"] = {
-                name: archive.read(name)
-                for name in archive.namelist()
-            }
-        return "upload_docs.zip"
+    result = json.loads(provider._tool_add_resource({"url": str(auth_json)}))
 
-    provider._client.upload_temp_file.side_effect = inspect_upload
-    provider._client.post.return_value = {
-        "status": "ok",
-        "result": {"root_uri": "viking://resources/docs"},
-    }
-
-    json.loads(provider._tool_add_resource({"url": str(docs)}))
-
-    assert archive_entries["names"] == ["guide.md"]
-    assert b"do not upload" not in b"".join(archive_entries["payloads"].values())
-
-
-def test_tool_add_resource_cleans_local_directory_zip_when_add_fails(tmp_path):
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    (docs / "guide.md").write_text("# Guide\n", encoding="utf-8")
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    uploaded_paths = []
-    provider._client.upload_temp_file.side_effect = (
-        lambda path: uploaded_paths.append(path) or "upload_docs.zip"
-    )
-    provider._client.post.side_effect = RuntimeError("add failed")
-
-    with pytest.raises(RuntimeError, match="add failed"):
-        provider._tool_add_resource({"url": str(docs)})
-
-    assert uploaded_paths
-    assert not uploaded_paths[0].exists()
-
-
-def test_tool_add_resource_cleans_local_directory_zip_when_upload_fails(tmp_path):
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    (docs / "guide.md").write_text("# Guide\n", encoding="utf-8")
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    uploaded_paths = []
-
-    def fail_upload(path):
-        uploaded_paths.append(path)
-        raise RuntimeError("upload failed")
-
-    provider._client.upload_temp_file.side_effect = fail_upload
-
-    with pytest.raises(RuntimeError, match="upload failed"):
-        provider._tool_add_resource({"url": str(docs)})
-
-    assert uploaded_paths
-    assert not uploaded_paths[0].exists()
-    provider._client.post.assert_not_called()
-
-
-def test_tool_add_resource_rejects_missing_local_path(tmp_path):
-    missing = tmp_path / "missing.md"
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-
-    result = json.loads(provider._tool_add_resource({"url": str(missing)}))
-
-    assert result["error"] == f"Local resource path does not exist: {missing}"
+    assert "error" in result
+    assert "credential store" in result["error"]
     provider._client.upload_temp_file.assert_not_called()
     provider._client.post.assert_not_called()
 
 
-def test_tool_add_resource_sends_remote_url_as_path():
+def test_get_tool_schemas_omits_profile_and_keeps_narrow_forget_tools():
     provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._client.post.return_value = {
-        "status": "ok",
-        "result": {"root_uri": "viking://resources/remote"},
-    }
 
-    provider._tool_add_resource({"url": "https://example.com/doc.md"})
+    names = [schema["name"] for schema in provider.get_tool_schemas()]
 
-    provider._client.upload_temp_file.assert_not_called()
-    provider._client.post.assert_called_once_with("/api/v1/resources", {
-        "path": "https://example.com/doc.md",
-    })
+    assert "viking_profile" not in names
+    assert "viking_forget" in names
 
 
-@pytest.mark.parametrize("url", [
-    "git@github.com:org/repo.git",
-    "git@ssh.dev.azure.com:v3/org/project/repo",
-    "ssh://git@github.com/org/repo.git",
-    "git://github.com/org/repo.git",
-])
-def test_tool_add_resource_sends_git_remote_sources_as_path(url):
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._client.post.return_value = {
-        "status": "ok",
-        "result": {"root_uri": "viking://resources/repo"},
-    }
-
-    provider._tool_add_resource({"url": url})
-
-    provider._client.upload_temp_file.assert_not_called()
-    provider._client.post.assert_called_once_with("/api/v1/resources", {
-        "path": url,
-    })
-
-
-def test_viking_client_upload_temp_file_uses_multipart_identity_headers(tmp_path, monkeypatch):
-    sample = tmp_path / "sample.md"
-    sample.write_text("# Local resource\n", encoding="utf-8")
-    client = _VikingClient(
-        "https://example.com",
-        api_key="test-key",
-        account="test-account",
-        user="test-user",
-        agent="test-agent",
-    )
-    captured_kwargs = {}
-
-    def capture_httpx_post(url, **kwargs):
-        captured_kwargs.update(kwargs)
-        return SimpleNamespace(
-            status_code=200,
-            text="",
-            json=lambda: {"status": "ok", "result": {"temp_file_id": "upload_sample.md"}},
-            raise_for_status=lambda: None,
-        )
-
-    monkeypatch.setattr(client._httpx, "post", capture_httpx_post)
-
-    assert client.upload_temp_file(sample) == "upload_sample.md"
-
-    assert "files" in captured_kwargs
-    assert "json" not in captured_kwargs
-    headers = captured_kwargs["headers"]
-    assert headers["X-OpenViking-Account"] == "test-account"
-    assert headers["X-OpenViking-User"] == "test-user"
-    assert headers["X-OpenViking-Agent"] == "test-agent"
-    assert headers["X-API-Key"] == "test-key"
-    assert "Content-Type" not in headers
-
-
-def test_viking_client_raises_structured_server_error():
-    client = _VikingClient.__new__(_VikingClient)
-    response = SimpleNamespace(
-        status_code=403,
-        text='{"status":"error"}',
-        json=lambda: {
-            "status": "error",
-            "error": {
-                "code": "PERMISSION_DENIED",
-                "message": "direct host filesystem paths are not allowed",
-            },
-        },
-        raise_for_status=lambda: None,
-    )
-
-    with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
-        client._parse_response(response)
-
-
-def test_viking_client_headers_include_bearer_when_api_key_set():
+def test_viking_client_delete_uses_identity_headers(monkeypatch):
     client = _VikingClient(
         "https://example.com",
         api_key="test-key",
         account="acct",
-        user="usr",
-        agent="hermes",
-    )
-    headers = client._headers()
-    assert headers["X-API-Key"] == "test-key"
-    assert headers["Authorization"] == "Bearer test-key"
-
-
-def test_viking_client_headers_send_tenant_when_default():
-    # account/user set to the literal string "default". OpenViking 0.3.x
-    # requires X-OpenViking-Account and X-OpenViking-User for ROOT API key
-    # requests to tenant-scoped APIs — omitting them causes
-    # INVALID_ARGUMENT errors even when account="default".
-    client = _VikingClient(
-        "https://example.com",
-        api_key="test-key",
-        account="default",
-        user="default",
-        agent="hermes",
-    )
-    headers = client._headers()
-    assert headers["X-OpenViking-Account"] == "default"
-    assert headers["X-OpenViking-User"] == "default"
-    assert headers["X-OpenViking-Agent"] == "hermes"
-    assert headers["Authorization"] == "Bearer test-key"
-
-
-def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default(monkeypatch):
-    _clear_openviking_tenant_env(monkeypatch)
-    # Empty account/user strings fall back to "default" via the constructor.
-    # Headers are sent even for the default value — ROOT API keys need them.
-    client = _VikingClient(
-        "https://example.com",
-        api_key="",
-        account="",
-        user="",
-        agent="hermes",
-    )
-    headers = client._headers()
-    assert headers["X-OpenViking-Account"] == "default"
-    assert headers["X-OpenViking-User"] == "default"
-    assert "Authorization" not in headers
-    assert "X-API-Key" not in headers
-
-
-def test_viking_client_headers_sent_with_real_tenant_values():
-    client = _VikingClient(
-        "https://example.com",
-        api_key="test-key",
-        account="real-account",
-        user="real-user",
-        agent="hermes",
-    )
-    headers = client._headers()
-    assert headers["X-OpenViking-Account"] == "real-account"
-    assert headers["X-OpenViking-User"] == "real-user"
-
-
-def test_viking_client_health_sends_auth_headers(monkeypatch):
-    _clear_openviking_tenant_env(monkeypatch)
-    client = _VikingClient(
-        "https://example.com",
-        api_key="test-key",
-        account="",
-        user="",
+        user="alice",
         agent="hermes",
     )
     captured = {}
 
-    def capture_get(url, **kwargs):
+    def capture_delete(url, **kwargs):
         captured["url"] = url
-        captured["headers"] = kwargs.get("headers") or {}
-        return SimpleNamespace(status_code=200)
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "result": {"uri": "viking://user/memories/x.md"}},
+            raise_for_status=lambda: None,
+        )
 
-    monkeypatch.setattr(client._httpx, "get", capture_get)
+    monkeypatch.setattr(client._httpx, "delete", capture_delete)
+
+    assert client.delete("/api/v1/fs", params={"uri": "viking://user/memories/x.md"}) == {
+        "status": "ok",
+        "result": {"uri": "viking://user/memories/x.md"},
+    }
+    assert captured["url"] == "https://example.com/api/v1/fs"
+    assert captured["kwargs"]["params"] == {"uri": "viking://user/memories/x.md"}
+    assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+
+
+def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(monkeypatch):
+    calls = []
+
+    def response(payload):
+        return SimpleNamespace(status_code=200, text="", json=lambda: payload)
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs["headers"]))
+        if url.endswith("/health"):
+            return response({"status": "ok"})
+        if url.endswith("/openapi.json"):
+            return response({"info": {"title": "OpenViking API"}})
+        if url.endswith("/api/v1/system/status"):
+            return response({"status": "ok"})
+        if url.endswith("/api/v1/admin/accounts"):
+            return response({"status": "ok", "result": []})
+        raise AssertionError(f"unexpected request: {url}")
+
+    monkeypatch.setattr(
+        openviking_module,
+        "_get_httpx",
+        lambda: SimpleNamespace(get=fake_get),
+    )
+
+    valid, message, role = openviking_module._validate_openviking_setup_values({
+        "endpoint": "https://openviking.example",
+        "api_key": "secret-key",
+        "account": "acct",
+        "user": "alice",
+        "agent": "hermes",
+    })
+
+    assert (valid, message, role) == (True, "", "root")
+    assert [url.removeprefix("https://openviking.example") for url, _headers in calls] == [
+        "/health",
+        "/openapi.json",
+        "/api/v1/system/status",
+        "/api/v1/admin/accounts",
+    ]
+    assert calls[0][1] == {"Accept": "application/json"}
+    assert calls[1][1] == {"Accept": "application/json"}
+    for _url, headers in calls[2:]:
+        assert headers["X-API-Key"] == "secret-key"
+        assert headers["Authorization"] == "Bearer secret-key"
+
+
+def test_repeated_openviking_health_probes_never_send_identity_headers(monkeypatch):
+    captured_headers = []
+    client = _VikingClient(
+        "https://openviking.example",
+        api_key="secret-key",
+        account="acct",
+        user="alice",
+        agent="hermes",
+    )
+
+    def fake_get(_url, **kwargs):
+        captured_headers.append(kwargs["headers"])
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "healthy": True, "version": "0.2.10"},
+        )
+
+    monkeypatch.setattr(client._httpx, "get", fake_get)
+
     assert client.health() is True
-    assert captured["url"] == "https://example.com/health"
-    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert client.health() is True
+    assert captured_headers == [
+        {"Accept": "application/json"},
+        {"Accept": "application/json"},
+    ]
+
+
+def test_modern_openviking_identity_does_not_probe_openapi():
+    client = MagicMock()
+    client.health_payload.return_value = {
+        "status": "ok",
+        "healthy": True,
+        "version": "0.2.10",
+    }
+
+    state, health = openviking_module._probe_openviking_identity(client)
+
+    assert state == "modern"
+    assert health["version"] == "0.2.10"
+    client.openapi_payload.assert_not_called()
+
+
+def test_legacy_health_requires_openviking_openapi_identity_before_auth(monkeypatch):
+    events = []
+
+    class ForeignServiceClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health_payload(self):
+            events.append("health")
+            return {"status": "ok"}
+
+        def openapi_payload(self):
+            events.append("openapi")
+            return {"info": {"title": "Unrelated Service"}}
+
+        def validate_auth(self):
+            raise AssertionError("credentials must not be sent before identity is verified")
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", ForeignServiceClient)
+
+    valid, message, role = openviking_module._validate_openviking_setup_values({
+        "endpoint": "https://foreign.example",
+        "api_key": "secret-key",
+    })
+
+    assert valid is False
+    assert role is None
+    assert "0.2.6 or earlier" in message
+    assert "0.2.10 or newer" in message
+    assert events == ["health", "openapi"]
+
+
+def test_verified_legacy_openviking_is_healthy_for_reachability_and_runtime(monkeypatch):
+    events = []
+
+    class LegacyOpenVikingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health_payload(self):
+            events.append("health")
+            return {"status": "ok"}
+
+        def openapi_payload(self):
+            events.append("openapi")
+            return {"info": {"title": "OpenViking API"}}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", LegacyOpenVikingClient)
+
+    reachable, message = openviking_module._validate_openviking_reachability(
+        "https://legacy.example"
+    )
+    runtime_state, runtime_message = openviking_module._classify_runtime_openviking_health(
+        LegacyOpenVikingClient(),
+        "https://legacy.example",
+    )
+
+    assert (reachable, message) == (True, "")
+    assert (runtime_state, runtime_message) == ("healthy", "")
+    assert events == ["health", "openapi", "health", "openapi"]
+
+
+def test_validate_openviking_reachability_uses_health_only(monkeypatch):
+    events = []
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "https://openviking.example"
+            assert api_key == ""
+
+        def health(self):
+            events.append("health")
+            return True
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    ok, message = openviking_module._validate_openviking_reachability(
+        "https://openviking.example"
+    )
+
+    assert ok is True
+    assert message == ""
+    assert events == ["health"]
 
 
 # ---------------------------------------------------------------------------
@@ -465,108 +931,12 @@ def test_on_session_switch_commits_old_session_and_rotates_id():
 
     provider.on_session_switch("new-sid", parent_session_id="old-sid")
 
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
-
-
-def test_on_session_switch_skips_commit_for_empty_old_session():
-    """No turns accumulated → nothing to extract → no commit call."""
-    provider = _make_provider_with_session("old-sid", turn_count=0)
-
-    provider.on_session_switch("new-sid")
-
-    provider._client.post.assert_not_called()
-    assert provider._session_id == "new-sid"
-    assert provider._turn_count == 0
-
-
-def test_on_session_switch_commits_pending_tokens_without_turn_count():
-    provider = _make_provider_with_session("old-sid", turn_count=0)
-    provider._client.get.return_value = {"result": {"pending_tokens": 42}}
-
-    provider.on_session_switch("new-sid")
-
-    provider._client.get.assert_called_once_with("/api/v1/sessions/old-sid")
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
-    assert provider._session_id == "new-sid"
-    assert provider._turn_count == 0
-
-
-def test_on_session_switch_rewound_same_session_only_invalidates_prefetch():
-    provider = _make_provider_with_session("same-sid", turn_count=3)
-    provider._prefetch_generation = 9
-    provider._prefetch_result = "stale recall"
-
-    provider.on_session_switch("same-sid", rewound=True)
-
-    provider._client.get.assert_not_called()
-    provider._client.post.assert_not_called()
-    assert provider._session_id == "same-sid"
-    assert provider._turn_count == 3
-    assert provider._prefetch_generation == 10
-    assert provider._prefetch_result == ""
-
-
-def test_on_session_switch_clears_stale_prefetch_result():
-    provider = _make_provider_with_session("old-sid", turn_count=1)
-    provider._prefetch_result = "stale recall from old session"
-
-    provider.on_session_switch("new-sid")
-
-    assert provider._prefetch_result == ""
-
-
-def test_on_session_switch_waits_for_inflight_sync_thread():
-    """In-flight sync_turn write must drain before the commit fires —
-    otherwise the commit can race the last message write."""
-    provider = _make_provider_with_session("old-sid", turn_count=2)
-
-    join_calls = []
-
-    class FakeThread:
-        def __init__(self):
-            self._alive = True
-
-        def is_alive(self):
-            return self._alive
-
-        def join(self, timeout=None):
-            join_calls.append(timeout)
-            # Simulate a worker that finishes within the join window.
-            self._alive = False
-
-    provider._inflight_writers["old-sid"] = {FakeThread()}
-
-    provider.on_session_switch("new-sid")
-
-    assert join_calls, "expected on_session_switch to join the in-flight sync thread"
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
-
-
-def test_on_session_switch_noop_on_empty_new_id():
-    provider = _make_provider_with_session("old-sid", turn_count=5)
-
-    provider.on_session_switch("")
-    provider.on_session_switch("   ")
-
-    provider._client.post.assert_not_called()
-    assert provider._session_id == "old-sid"
-    assert provider._turn_count == 5
-
-
-def test_on_session_switch_noop_when_client_missing():
-    provider = OpenVikingMemoryProvider()
-    provider._client = None
-    provider._session_id = "old-sid"
-    provider._turn_count = 4
-
-    # Must not raise even though no client is configured.
-    provider.on_session_switch("new-sid")
-
-    # State stays untouched — provider is effectively disabled.
-    assert provider._session_id == "old-sid"
-    assert provider._turn_count == 4
 
 
 def test_sync_turn_captures_session_id_before_worker_runs():
@@ -626,99 +996,19 @@ def test_sync_turn_captures_session_id_before_worker_runs():
     assert captured_payloads == [{
         "messages": [
             {"role": "user", "parts": [{"type": "text", "text": "u"}]},
-            {"role": "assistant", "parts": [{"type": "text", "text": "a"}]},
+            {"role": "assistant", "parts": [{"type": "text", "text": "a"}], "peer_id": "hermes"},
         ]
     }]
 
 
-def test_sync_turn_retries_batch_write_with_fresh_client():
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._endpoint = "http://test"
-    provider._api_key = ""
-    provider._account = "acct"
-    provider._user = "usr"
-    provider._agent = "hermes"
-    provider._session_id = "sid-1"
-
-    clients = []
-    captured = []
-
-    class StubClient:
-        def __init__(self, *a, **kw):
-            self.index = len(clients)
-            clients.append(self)
-
-        def post(self, path, payload=None, **kwargs):
-            if self.index == 0:
-                raise RuntimeError("transient")
-            captured.append((path, payload))
-            return {}
-
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.sync_turn("u", "a")
-        assert provider._drain_writers("sid-1", timeout=2.0)
-    finally:
-        _mod._VikingClient = real_client_cls
-
-    assert len(clients) == 2
-    assert captured == [(
-        "/api/v1/sessions/sid-1/messages/batch",
-        {
-            "messages": [
-                {"role": "user", "parts": [{"type": "text", "text": "u"}]},
-                {"role": "assistant", "parts": [{"type": "text", "text": "a"}]},
-            ]
-        },
-    )]
-
-
-def test_sync_turn_noop_when_session_id_blank():
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._session_id = ""
-
-    provider.sync_turn("u", "a")
-
-    # No turn counted, no worker spawned.
-    assert provider._turn_count == 0
-    assert provider._inflight_writers == {}
-
-
-def test_on_session_end_marks_session_clean_after_successful_commit():
-    """After a successful commit on_session_end must reset _turn_count so a
-    subsequent on_session_switch (fired by /new and compression right after
-    commit_memory_session) skips its commit instead of double-committing."""
-    provider = _make_provider_with_session("old-sid", turn_count=3)
-
-    provider.on_session_end([])
-
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
-    assert provider._turn_count == 0
-
-
-def test_on_session_end_keeps_dirty_when_commit_fails():
-    """If the commit fails, leave _turn_count > 0 so on_session_switch retries
-    rather than silently dropping extraction for the old session."""
-    provider = _make_provider_with_session("old-sid", turn_count=3)
-    provider._client.post.side_effect = RuntimeError("commit boom")
-
-    provider.on_session_end([])
-
-    assert provider._turn_count == 3
-
-
-def test_on_session_end_commits_pending_tokens_without_turn_count():
-    provider = _make_provider_with_session("old-sid", turn_count=0)
-    provider._client.get.return_value = {"result": {"pending_tokens": 42}}
-
-    provider.on_session_end([])
-
-    provider._client.get.assert_called_once_with("/api/v1/sessions/old-sid")
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+def _long_structured_turn(assistant_count=204):
+    return [
+        {"role": "user", "content": "u"},
+        *[
+            {"role": "assistant", "content": f"assistant-{index}"}
+            for index in range(assistant_count)
+        ],
+    ]
 
 
 def test_end_then_switch_does_not_double_commit():
@@ -731,19 +1021,10 @@ def test_end_then_switch_does_not_double_commit():
     provider.on_session_switch("new-sid", parent_session_id="old-sid")
 
     # Exactly one commit call, on the OLD session, fired by on_session_end.
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
-    assert provider._session_id == "new-sid"
-    assert provider._turn_count == 0
-
-
-def test_end_then_switch_with_pending_tokens_does_not_double_commit():
-    provider = _make_provider_with_session("old-sid", turn_count=0)
-    provider._client.get.return_value = {"result": {"pending_tokens": 42}}
-
-    provider.on_session_end([])
-    provider.on_session_switch("new-sid", parent_session_id="old-sid")
-
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
 
@@ -764,19 +1045,6 @@ def test_session_needs_commit_guard_wins_over_stale_turn_count():
     assert provider._session_needs_commit("fresh-sid", 5) is True
 
 
-def test_on_session_switch_swallows_commit_failure():
-    """Commit-on-switch must not propagate exceptions: a failing commit on the
-    old session must still allow the rotate to the new session to complete,
-    otherwise subsequent sync_turn writes would land in the wrong session."""
-    provider = _make_provider_with_session("old-sid", turn_count=2)
-    provider._client.post.side_effect = RuntimeError("commit boom")
-
-    provider.on_session_switch("new-sid")
-
-    assert provider._session_id == "new-sid"
-    assert provider._turn_count == 0
-
-
 # ---------------------------------------------------------------------------
 # Hung-writer protection: the sync worker can outlive the bounded join
 # because each OpenViking POST has _TIMEOUT=30s and there are two per turn.
@@ -795,34 +1063,6 @@ class _HungThread:
         return None
 
 
-def test_on_session_end_skips_commit_when_sync_worker_outlives_join():
-    """If the sync worker is still alive after the 10s join, the commit must
-    be skipped — late writes from the worker would otherwise land in an
-    already-committed session and never be extracted. Leave _turn_count
-    intact so the session stays marked dirty."""
-    provider = _make_provider_with_session("old-sid", turn_count=3)
-    provider._inflight_writers["old-sid"] = {_HungThread()}
-
-    provider.on_session_end([])
-
-    provider._client.post.assert_not_called()
-    assert provider._turn_count == 3
-
-
-def test_on_session_switch_skips_commit_when_sync_worker_outlives_join():
-    """Same hazard on the switch path. Rotation must still proceed (the new
-    session needs to start) but the old-session commit is skipped to avoid
-    orphaning the worker's late writes past commit."""
-    provider = _make_provider_with_session("old-sid", turn_count=2)
-    provider._inflight_writers["old-sid"] = {_HungThread()}
-
-    provider.on_session_switch("new-sid")
-
-    provider._client.post.assert_not_called()
-    assert provider._session_id == "new-sid"
-    assert provider._turn_count == 0
-
-
 # ---------------------------------------------------------------------------
 # Orphaned-writer hazard: commit must wait for ALL writers for the session,
 # not just the latest tracked one. sync_turn's bounded rate-limit can drop a
@@ -830,146 +1070,73 @@ def test_on_session_switch_skips_commit_when_sync_worker_outlives_join():
 # old sid and would otherwise land its writes past the commit boundary.
 # ---------------------------------------------------------------------------
 
-def test_on_session_end_waits_for_all_writers_not_just_latest():
-    provider = _make_provider_with_session("old-sid", turn_count=2)
-    provider._inflight_writers["old-sid"] = {_HungThread()}
 
-    provider.on_session_end([])
-
-    provider._client.post.assert_not_called()
-    assert provider._turn_count == 2
-
-
-def test_on_session_switch_waits_for_all_writers_not_just_latest():
-    provider = _make_provider_with_session("old-sid", turn_count=2)
-    provider._inflight_writers["old-sid"] = {_HungThread()}
-
-    provider.on_session_switch("new-sid")
-
-    provider._client.post.assert_not_called()
-    assert provider._session_id == "new-sid"
-    assert provider._turn_count == 0
-
-
-def test_on_session_switch_does_not_block_caller_on_slow_drain():
-    """Regression for hermes-agent#28296 review (H1): on_session_switch must
-    NOT run the old-session drain/commit on the caller's thread. /new, /branch,
-    /resume, /undo call this synchronously on the command thread, so a slow
-    writer drain (up to _SESSION_DRAIN_TIMEOUT/_DEFERRED_COMMIT_TIMEOUT) or a
-    wedged commit POST must not stall the user-facing command. The rotation is
-    cheap and synchronous; the commit is offloaded. Mirrors the #41945
-    'do not block the turn thread' contract."""
-    import threading
-    import time
-
-    provider = _make_provider_with_session("old-sid", turn_count=2)
-
-    drain_entered = threading.Event()
-    release_drain = threading.Event()
-
-    def slow_drain(sid, timeout):
-        drain_entered.set()
-        # Simulate a writer that takes a long time to drain.
-        release_drain.wait(timeout=10.0)
-        return True
-
-    provider._drain_writers = slow_drain
-
-    start = time.monotonic()
-    provider.on_session_switch("new-sid")
-    elapsed = time.monotonic() - start
-
-    # The caller returned promptly with state already rotated, even though the
-    # drain is still parked on the finalizer thread.
-    assert elapsed < 1.0, f"on_session_switch blocked the caller for {elapsed:.2f}s"
-    assert provider._session_id == "new-sid"
-    assert provider._turn_count == 0
-    assert drain_entered.wait(timeout=2.0), "finalizer never started draining"
-    # No commit yet — drain is still blocked off-thread.
-    provider._client.post.assert_not_called()
-    # Let the finalizer finish so it doesn't leak past the test.
-    release_drain.set()
-    assert provider._drain_finalizers(timeout=5.0)
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
-
-
-def test_on_session_switch_defers_old_commit_to_finalizer_thread():
-    """The switch path rotates session state synchronously (cheap, in-memory)
-    but offloads the old-session drain + commit onto a daemon finalizer so the
-    caller's command thread (/new, /branch, /resume) never blocks on the up-to
-    -_DEFERRED_COMMIT_TIMEOUT drain or the commit POST. See hermes-agent#28296
-    review (the #41945 'do not block the turn thread' contract)."""
+@pytest.mark.skipif(os.name == "nt", reason="POSIX advisory locks")
+@pytest.mark.parametrize("owner_run_id", ["dead-owner", ""])
+def test_concurrent_providers_claim_unlocked_pending_owner_once(
+    tmp_path,
+    monkeypatch,
+    owner_run_id,
+):
+    """Only one provider may recover a missing or legacy owner lock."""
     import threading
 
-    provider = _make_provider_with_session("old-sid", turn_count=2)
-    committed = threading.Event()
-    drain_timeouts = []
+    pytest.importorskip("fcntl")
+    _clear_openviking_env(monkeypatch)
 
-    def fake_post(path):
-        committed.set()
-        return {}
+    pending_dir = tmp_path / openviking_module._PENDING_SESSIONS_RELATIVE_DIR
+    pending_dir.mkdir(parents=True)
+    marker = pending_dir / "old-sid.json"
+    marker.write_text(
+        json.dumps({"session_id": "old-sid", "owner_run_id": owner_run_id}),
+        encoding="utf-8",
+    )
 
-    def fake_drain(sid, timeout):
-        drain_timeouts.append(timeout)
-        return True
-
-    provider._client.post.side_effect = fake_post
-    provider._drain_writers = fake_drain
-
-    provider.on_session_switch("new-sid")
-
-    # Rotation is synchronous and immediate — the new session is live at once.
-    assert provider._session_id == "new-sid"
-    assert provider._turn_count == 0
-    # The old-session commit lands on the finalizer thread, not inline.
-    assert committed.wait(timeout=5.0), "old session was not finalized off-thread"
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
-    # The finalizer drains with the deferred (longer) budget, not inline 10s.
-    assert drain_timeouts == [_DEFERRED_COMMIT_TIMEOUT]
-
-
-def test_sync_turn_tracks_writer_under_session_id():
-    """Every sync_turn writer must register under its captured sid so the
-    drain at end/switch sees it even if a later sync_turn replaces the
-    latest-tracked reference."""
-    import threading
-
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._endpoint = "http://test"
-    provider._api_key = ""
-    provider._account = "acct"
-    provider._user = "usr"
-    provider._agent = "hermes"
-    provider._session_id = "sid-1"
-
-    release = threading.Event()
-    started = threading.Event()
+    posts = []
+    posts_lock = threading.Lock()
+    commit_started = threading.Event()
+    release_commit = threading.Event()
 
     class StubClient:
-        def __init__(self, *a, **kw):
-            pass
-
         def post(self, path, payload=None, **kwargs):
-            started.set()
-            release.wait(timeout=2.0)
+            with posts_lock:
+                posts.append((path, payload))
+            commit_started.set()
+            release_commit.wait(timeout=5.0)
             return {}
 
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.sync_turn("u", "a")
-        assert started.wait(timeout=2.0), "worker never entered post()"
-        assert len(provider._inflight_writers.get("sid-1", set())) == 1
-        release.set()
-        for t in list(provider._inflight_writers.get("sid-1", set())):
-            t.join(timeout=2.0)
-    finally:
-        _mod._VikingClient = real_client_cls
+    providers = [OpenVikingMemoryProvider(), OpenVikingMemoryProvider()]
+    scan_barrier = threading.Barrier(len(providers))
+    for provider in providers:
+        provider._client = StubClient()
+        provider._hermes_home = str(tmp_path)
+        pending_sessions = provider._pending_sessions
 
-    # Worker should have removed itself from the inflight set on exit.
-    assert provider._inflight_writers.get("sid-1", set()) == set()
+        def _scan_together(scan=pending_sessions):
+            sessions = scan()
+            scan_barrier.wait(timeout=2.0)
+            return sessions
+
+        provider._pending_sessions = _scan_together
+
+    recovery_threads = [
+        threading.Thread(target=provider._recover_pending_sessions)
+        for provider in providers
+    ]
+    for thread in recovery_threads:
+        thread.start()
+    for thread in recovery_threads:
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+
+    assert commit_started.wait(timeout=2.0), "recovery commit did not start"
+    release_commit.set()
+    assert all(provider._drain_finalizers(timeout=2.0) for provider in providers)
+
+    assert posts.count((
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -977,7 +1144,8 @@ def test_sync_turn_tracks_writer_under_session_id():
 # the session transcript/commit boundary.
 # ---------------------------------------------------------------------------
 
-def test_on_memory_write_uses_content_write_independent_of_session_rotation():
+
+def test_shutdown_waits_for_memory_write_worker(monkeypatch):
     import threading
 
     provider = OpenVikingMemoryProvider()
@@ -987,58 +1155,45 @@ def test_on_memory_write_uses_content_write_independent_of_session_rotation():
     provider._account = "acct"
     provider._user = "usr"
     provider._agent = "hermes"
-    provider._session_id = "old-sid"
 
-    in_ctor = threading.Event()
-    release = threading.Event()
-    done = threading.Event()
-    captured_paths = []
-    captured_payloads = []
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    worker_finished = threading.Event()
+    shutdown_returned = threading.Event()
 
     class StubClient:
         def __init__(self, *a, **kw):
-            in_ctor.set()
-            release.wait(timeout=2.0)
+            pass
 
         def post(self, path, payload=None, **kwargs):
-            captured_paths.append(path)
-            captured_payloads.append(payload)
-            done.set()
+            assert path == "/api/v1/content/write"
+            worker_started.set()
+            release_worker.wait(timeout=2.0)
+            worker_finished.set()
             return {}
 
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.on_memory_write("add", "user", "remember this")
-        assert in_ctor.wait(timeout=2.0), "worker never entered ctor"
-        # Rotate provider's session id while the worker is parked. Memory writes
-        # must not become session messages in either the old or new session.
-        provider._session_id = "new-sid"
-        release.set()
-        assert done.wait(timeout=2.0), "worker never reached post()"
-    finally:
-        _mod._VikingClient = real_client_cls
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
 
-    assert captured_paths == ["/api/v1/content/write"]
-    assert captured_payloads[0]["content"] == "remember this"
-    assert captured_payloads[0]["mode"] == "create"
-    assert captured_payloads[0]["uri"].startswith(
-        "viking://user/usr/agent/hermes/memories/preferences/mem_"
+    provider.on_memory_write("add", "user", "remember this")
+    assert worker_started.wait(timeout=2.0), "worker never entered post()"
+
+    shutdown_thread = threading.Thread(
+        target=lambda: (provider.shutdown(), shutdown_returned.set()),
+        daemon=True,
     )
+    shutdown_thread.start()
+
+    returned_before_worker_finished = shutdown_returned.wait(timeout=0.1)
+    release_worker.set()
+    assert shutdown_returned.wait(timeout=2.0), "shutdown did not return after worker finished"
+    shutdown_thread.join(timeout=2.0)
+
+    assert not returned_before_worker_finished
+    assert worker_finished.is_set()
+    assert provider._memory_write_threads == set()
 
 
-# ---------------------------------------------------------------------------
-# Prefetch staleness: a prefetch worker that finishes AFTER a session switch
-# must drop its result instead of repopulating the new session with stale
-# recall from the old generation. Bump the generation directly (rather than
-# calling on_session_switch, whose own join blocks on the test worker) so
-# the test isolates the generation-gating behavior.
-# ---------------------------------------------------------------------------
-
-def test_queue_prefetch_drops_result_when_generation_changed_mid_flight():
-    import threading
-
+def _make_prefetch_provider() -> OpenVikingMemoryProvider:
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
     provider._endpoint = "http://test"
@@ -1046,76 +1201,411 @@ def test_queue_prefetch_drops_result_when_generation_changed_mid_flight():
     provider._account = "acct"
     provider._user = "usr"
     provider._agent = "hermes"
-    provider._session_id = "old-sid"
+    return provider
 
-    started = threading.Event()
-    release = threading.Event()
+
+_SESSION_START_LIST_PARAMS = {
+    "output": "agent",
+    "recursive": True,
+    "abs_limit": 512,
+    "node_limit": 512,
+}
+
+
+def _memory_listing(*entries):
+    return list(entries)
+
+
+def _mock_session_start_reads(
+    provider: OpenVikingMemoryProvider,
+    responses: dict[tuple[str, str], object],
+):
+    calls = []
+
+    def fake_get(path, params=None, **kwargs):
+        request_params = dict(params or {})
+        uri = request_params.get("uri", "")
+        calls.append((path, request_params, kwargs.get("timeout")))
+        response = responses.get((path, uri), "")
+        if isinstance(response, Exception):
+            raise response
+        return {"result": response}
+
+    provider._client.get.side_effect = fake_get
+    return calls
+
+
+def test_session_start_token_estimator_matches_shared_openviking_contract():
+    provider = OpenVikingMemoryProvider
+
+    assert provider._estimate_tokens("abcd") == 1
+    assert provider._estimate_tokens("设") == 2
+    assert provider._estimate_tokens("设置") == 3
+    assert provider._estimate_tokens("设置ab") == 4
+
+
+def test_prefetch_prepends_session_start_memory_context_once_per_session():
+    provider = _make_prefetch_provider()
+    calls = _mock_session_start_reads(
+        provider,
+        {
+            ("/api/v1/content/read", "viking://user/memories/profile.md"): (
+                "User prefers concise answers."
+            ),
+            ("/api/v1/fs/ls", "viking://user/memories/preferences"): _memory_listing(
+                {"isDir": True, "rel_path": "owner"},
+                {
+                    "isDir": False,
+                    "rel_path": "owner/z-last.md",
+                    "abstract": "  Keep   replies compact.  ",
+                },
+                {
+                    "isDir": False,
+                    "rel_path": "owner/a-first.md",
+                    "abstract": "Verify source before editing.",
+                },
+                {"isDir": False, "rel_path": "owner/ignored.txt", "abstract": "ignore"},
+            ),
+            ("/api/v1/fs/ls", "viking://user/memories/entities"): _memory_listing(
+                {
+                    "isDir": False,
+                    "rel_path": "people/ada.md",
+                    "abstract": "Ada Lovelace is a collaborator.",
+                },
+            ),
+        },
+    )
+    provider._search_prefetch_context = MagicMock(return_value="- [events]\n  recalled context")
+
+    first = provider.prefetch("What should we recall?", session_id="sid-123")
+    second = provider.prefetch("What should we recall?", session_id="sid-123")
+
+    assert '<user-profile uri="viking://user/memories/profile.md">' in first
+    assert "User prefers concise answers." in first
+    assert "<available-memories>" in first
+    assert "viking://user/memories/preferences/" in first
+    assert "owner/z-last.md — Keep replies compact." in first
+    assert first.index("owner/a-first.md") < first.index("owner/z-last.md")
+    assert "viking://user/memories/entities/" in first
+    assert "people/ada.md — Ada Lovelace is a collaborator." in first
+    assert "owner/ignored.txt" not in first
+    assert "<preferences" not in first
+    assert "<entities" not in first
+    assert "recalled context" in first
+    assert "<user-profile" not in second
+    assert "recalled context" in second
+    assert [(path, params) for path, params, _timeout in calls] == [
+        ("/api/v1/content/read", {"uri": "viking://user/memories/profile.md"}),
+        (
+            "/api/v1/fs/ls",
+            {"uri": "viking://user/memories/preferences", **_SESSION_START_LIST_PARAMS},
+        ),
+        (
+            "/api/v1/fs/ls",
+            {"uri": "viking://user/memories/entities", **_SESSION_START_LIST_PARAMS},
+        ),
+    ]
+    assert provider._search_prefetch_context.call_count == 2
+
+
+def test_prefetch_reinjects_after_in_place_compression_same_session():
+    provider = _make_prefetch_provider()
+    provider._session_id = "sid-123"
+    profiles = iter(["Profile before compression.", "Profile after compression."])
+
+    def fake_get(path, params=None, **kwargs):
+        uri = (params or {}).get("uri", "")
+        if uri == "viking://user/memories/profile.md":
+            return {"result": next(profiles)}
+        return {"result": []}
+
+    provider._client.get.side_effect = fake_get
+    provider._search_prefetch_context = MagicMock(return_value="should not run")
+
+    first = provider.prefetch("hi", session_id="sid-123")
+    provider._turn_count = 3
+    provider.on_session_switch("sid-123", reason="compression")
+    second = provider.prefetch("hi", session_id="sid-123")
+
+    assert "Profile before compression." in first
+    assert "Profile after compression." in second
+
+
+def test_queue_prefetch_is_noop_for_openviking_recall(monkeypatch):
+    provider = _make_prefetch_provider()
+    constructed_clients = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            constructed_clients.append((a, kw))
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    provider.queue_prefetch("anything", session_id="sid-123")
+
+    assert constructed_clients == []
+
+
+def test_prefetch_sends_contract_safe_memory_context_payload(monkeypatch):
+    provider = _make_prefetch_provider()
+
+    captured_calls = []
 
     class StubClient:
         def __init__(self, *a, **kw):
             pass
 
         def post(self, path, payload=None, **kwargs):
-            started.set()
-            release.wait(timeout=2.0)
-            return {
-                "result": {
-                    "memories": [
-                        {"uri": "viking://memories/old", "score": 0.9,
-                         "abstract": "stale from old session"},
-                    ],
-                    "resources": [],
-                }
-            }
-
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.queue_prefetch("anything")
-        assert started.wait(timeout=2.0), "prefetch worker never entered post()"
-        # Simulate a session switch by bumping the generation directly.
-        # The worker captured the pre-bump generation when it was spawned.
-        provider._prefetch_generation += 1
-        release.set()
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=2.0)
-    finally:
-        _mod._VikingClient = real_client_cls
-
-    # The stale result from the pre-bump generation must NOT have been written
-    # into the new generation's prefetch slot.
-    assert provider._prefetch_result == ""
-
-
-def test_queue_prefetch_sends_limit_not_legacy_top_k():
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._endpoint = "http://test"
-    provider._api_key = ""
-    provider._account = "acct"
-    provider._user = "usr"
-    provider._agent = "hermes"
-
-    captured_payloads = []
-
-    class StubClient:
-        def __init__(self, *a, **kw):
-            pass
-
-        def post(self, path, payload=None, **kwargs):
-            captured_payloads.append(payload)
+            captured_calls.append((path, payload))
             return {"result": {"memories": [], "resources": []}}
 
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.queue_prefetch("anything")
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=2.0)
-    finally:
-        _mod._VikingClient = real_client_cls
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
 
-    assert captured_payloads == [{"query": "anything", "limit": 5}]
-    assert "top_k" not in captured_payloads[0]
+    provider.prefetch("anything")
+
+    assert captured_calls == [
+        (
+            "/api/v1/search/find",
+            {
+                "query": "anything",
+                "limit": 24,
+                "score_threshold": 0,
+                "context_type": "memory",
+            },
+        )
+    ]
+    payload = captured_calls[0][1]
+    assert "top_k" not in payload
+    assert "mode" not in payload
+    assert "target_uri" not in payload
+
+def test_in_place_compression_rearms_commit_guard():
+    """Post-compression turns must still be committable (#74695).
+
+    ``compress_context()`` commits before rewriting the transcript, which
+    latches the per-sid guard. In-place mode (the default) keeps the SAME sid,
+    so the latch then rejected every later commit for a still-live session —
+    the next compression, /new, normal session end and startup recovery all
+    silently did nothing, and post-compression turns were never extracted.
+    """
+    provider = _make_provider_with_session("sid-123", turn_count=4)
+    provider._ensure_client = lambda: True
+
+    # Compression commits the live session, latching the guard.
+    provider._mark_session_committed("sid-123")
+    assert provider._session_needs_commit("sid-123", 4) is False
+
+    # In-place compression: same id in, no rotation.
+    provider.on_session_switch("sid-123", reason="compression")
+
+    # The session is still live, so new turns must be committable again.
+    assert provider._has_committed_session("sid-123") is False
+    assert provider._turn_count == 0
+    assert provider._session_needs_commit("sid-123", 2) is True
+
+
+def test_rotating_compression_keeps_old_session_latched():
+    """Rotation mode must keep the guard, which dedupes the old id's finalize.
+
+    With ``compression.in_place: false`` a fresh child id is minted. The old id
+    stays committed so its ``_finalize_session_async`` does not double-commit
+    what compression already committed — the behavior the guard exists for.
+    """
+    provider = _make_provider_with_session("old-sid", turn_count=4)
+    provider._ensure_client = lambda: True
+    provider._finalize_session_async = MagicMock()
+
+    provider._mark_session_committed("old-sid")
+    provider.on_session_switch("new-sid", reason="compression")
+
+    assert provider._has_committed_session("old-sid") is True
+    assert provider._session_needs_commit("old-sid", 4) is False
+
+
+def test_undo_rewind_does_not_rearm_commit_guard():
+    """Only compression re-arms; a same-session /undo must not."""
+    provider = _make_provider_with_session("sid-123", turn_count=4)
+    provider._ensure_client = lambda: True
+
+    provider._mark_session_committed("sid-123")
+    provider.on_session_switch("sid-123", rewound=True)
+
+    assert provider._has_committed_session("sid-123") is True
+
+
+def test_in_place_compression_lifecycle_allows_a_later_commit():
+    """End-to-end wiring, not a hand-set latch (#74695).
+
+    Drives the real sequence a session goes through: commit at the compression
+    boundary, same-id ``on_session_switch``, a post-compression turn via
+    ``sync_turn``, then a later commit. Before the fix the second commit never
+    reached the server, so every turn after the first compression was lost.
+    """
+    provider = _make_provider_with_session("sid-123", turn_count=3)
+    provider._ensure_client = lambda: True
+    provider._new_client = lambda: provider._client
+
+    def _commit_calls():
+        return [
+            c for c in provider._client.post.call_args_list
+            if c.args and str(c.args[0]).endswith("/commit")
+        ]
+
+    # 1. Compression commits the live session through the real path.
+    provider.on_session_end([{"role": "user", "content": "before"}])
+    assert len(_commit_calls()) == 1
+    assert provider._has_committed_session("sid-123") is True
+
+    # 2. In-place compression: same id back in, no rotation.
+    provider.on_session_switch("sid-123", reason="compression")
+
+    # No new turns means no duplicate extraction at an immediate boundary.
+    provider.on_session_end([])
+    assert len(_commit_calls()) == 1
+
+    # 3. A genuinely new turn lands on the still-live session.
+    provider.sync_turn("after compression", "reply", session_id="sid-123")
+    assert provider._drain_writers("sid-123", timeout=5.0)
+    assert provider._turn_count > 0
+    assert any(
+        call.args and str(call.args[0]).endswith("/messages/batch")
+        for call in provider._client.post.call_args_list
+    )
+
+    # 4. That turn must still be committable.
+    provider.on_session_end([{"role": "user", "content": "after"}])
+    assert len(_commit_calls()) == 2, (
+        "post-compression turns were never committed: "
+        f"{provider._client.post.call_args_list}"
+    )
+
+def test_resolve_connection_settings_reads_config_yaml_non_secret_fields(monkeypatch):
+    """#68209: non-secret fields saved to config.yaml feed the resolution chain."""
+    _clear_openviking_env(monkeypatch)
+    provider_config = {
+        "endpoint": "http://saved.test:1933",
+        "account": "cfg-account",
+        "user": "cfg-user",
+        "agent": "cfg-agent",
+    }
+
+    settings = openviking_module._resolve_connection_settings(provider_config)
+
+    assert settings["endpoint"] == "http://saved.test:1933"
+    assert settings["account"] == "cfg-account"
+    assert settings["user"] == "cfg-user"
+    assert settings["agent"] == "cfg-agent"
+
+
+def test_env_overrides_config_yaml_non_secret_fields(monkeypatch):
+    """env still wins over config.yaml (env -> ovcli -> config.yaml -> default)."""
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://env.test")
+    monkeypatch.setenv("OPENVIKING_AGENT", "env-agent")
+
+    settings = openviking_module._resolve_connection_settings(
+        {"endpoint": "http://saved.test", "agent": "cfg-agent"}
+    )
+
+    assert settings["endpoint"] == "http://env.test"
+    assert settings["agent"] == "env-agent"
+
+
+def test_blocked_endpoint_does_not_fall_back_or_construct_client(monkeypatch, tmp_path):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv(
+        "OPENVIKING_ENDPOINT",
+        "http://169.254.169.254/latest/meta-data/temporary-credential",
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_VikingClient",
+        MagicMock(side_effect=AssertionError("blocked endpoint must not construct a client")),
+    )
+    warnings = []
+    provider = OpenVikingMemoryProvider()
+
+    provider.initialize(
+        "session-1",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        warning_callback=warnings.append,
+    )
+
+    assert provider._client is None
+    assert provider._endpoint == ""
+    assert len(warnings) == 1
+    assert "blocked metadata address" in warnings[0]
+    assert "temporary-credential" not in warnings[0]
+    assert openviking_module._DEFAULT_ENDPOINT not in warnings[0]
+
+
+@pytest.mark.parametrize(
+    "health_payload",
+    [
+        {"status": "ok", "healthy": True},
+        ["not", "openviking"],
+    ],
+)
+def test_runtime_rejects_unrelated_json_health_response(
+    monkeypatch, tmp_path, health_payload
+):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
+
+    class UnrelatedJsonService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health_payload(self):
+            return health_payload
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", UnrelatedJsonService)
+    monkeypatch.setattr(
+        openviking_module,
+        "_local_openviking_port_is_open",
+        lambda host, port: True,
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_describe_local_port_listener",
+        lambda host, port: "python-http-server (PID 4242)",
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        MagicMock(side_effect=AssertionError("responding non-OpenViking service must not auto-start")),
+    )
+    warnings = []
+    provider = OpenVikingMemoryProvider()
+
+    provider.initialize(
+        "session-1",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        warning_callback=warnings.append,
+    )
+
+    assert provider._client is None
+    assert len(warnings) == 1
+    assert "/health response is not valid OpenViking" in warnings[0]
+    assert "python-http-server (PID 4242)" in warnings[0]
+
+
+def test_is_available_true_for_config_yaml_endpoint(monkeypatch):
+    """#68209: a config.yaml endpoint (no env, no ovcli) counts as available."""
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {"endpoint": "http://saved.test:1933"},
+    )
+    assert OpenVikingMemoryProvider().is_available() is True
+
+
+def test_is_available_false_without_any_endpoint(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setattr(
+        openviking_module, "_load_hermes_openviking_config", lambda: {}
+    )
+    assert OpenVikingMemoryProvider().is_available() is False

@@ -12,9 +12,9 @@ Configuration in config.yaml:
           app_id: "your-app-id"            # or QQ_APP_ID env var
           client_secret: "your-secret"     # or QQ_CLIENT_SECRET env var
           markdown_support: true           # enable QQ markdown (msg_type 2)
-          dm_policy: "open"                # open | allowlist | disabled
+          dm_policy: "pairing"             # open | allowlist | disabled | pairing
           allow_from: ["openid_1"]
-          group_policy: "open"             # open | allowlist | disabled
+          group_policy: "pairing"          # open | allowlist | disabled | pairing
           group_allow_from: ["group_openid_1"]
           stt:                             # Voice-to-text config (optional)
             provider: "zai"                # zai (GLM-ASR), openai (Whisper), etc.
@@ -71,6 +71,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.media_cache import ext_for_mime
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,31 @@ def _coerce_list(value: Any) -> List[str]:
     return _coerce_list_impl(value)
 
 
+def _resolve_qq_secret(name: str, default: str = "") -> str:
+    """Resolve a per-profile ``QQ_*`` setting honoring the active secret scope.
+
+    When a profile secret scope is installed — every secondary multiplex
+    profile is constructed and handled inside ``_profile_runtime_scope``
+    (``gateway/run.py``), as is each per-turn inbound message — read from it so
+    profiles never see each other's ``os.environ`` values. This is the
+    cross-profile credential collision fixed for the WeChat adapter in #59662.
+
+    The primary/active profile is constructed without a scope and legitimately
+    owns ``os.environ``, so fall back to it there instead of failing closed: a
+    bare ``get_secret`` would raise ``UnscopedSecretError`` on the active
+    profile's ``__init__`` and break its startup. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway.platforms.whatsapp_common._get_wsecret``.
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret
+
+    try:
+        val = get_secret(name, default)
+    except UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
 # ---------------------------------------------------------------------------
 # QQAdapter
 # ---------------------------------------------------------------------------
@@ -201,18 +227,20 @@ class QQAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.QQBOT)
 
         extra = config.extra or {}
-        self._app_id = str(extra.get("app_id") or os.getenv("QQ_APP_ID", "")).strip()
+        self._app_id = str(
+            extra.get("app_id") or _resolve_qq_secret("QQ_APP_ID", "")
+        ).strip()
         self._client_secret = str(
-            extra.get("client_secret") or os.getenv("QQ_CLIENT_SECRET", "")
+            extra.get("client_secret") or _resolve_qq_secret("QQ_CLIENT_SECRET", "")
         ).strip()
         self._markdown_support = bool(extra.get("markdown_support", True))
 
         # Auth/ACL policies
-        self._dm_policy = str(extra.get("dm_policy", "open")).strip().lower()
+        self._dm_policy = str(extra.get("dm_policy", "pairing")).strip().lower()
         self._allow_from = _coerce_list(
             extra.get("allow_from") or extra.get("allowFrom")
         )
-        self._group_policy = str(extra.get("group_policy", "open")).strip().lower()
+        self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(
             extra.get("group_allow_from") or extra.get("groupAllowFrom")
         )
@@ -278,8 +306,16 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
-        """Authenticate, obtain gateway URL, and open the WebSocket."""
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """
+        Authenticate, obtain gateway URL, and open the WebSocket.
+
+        Args:
+            is_reconnect: False on a cold first boot; True when the
+                reconnect watcher is re-establishing this platform after
+                an outage. QQBot has no server-side update queue so this
+                flag is accepted for interface conformance only.
+        """
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
             self._set_fatal_error("qq_missing_dependency", message, retryable=True)
@@ -304,7 +340,8 @@ class QQAdapter(BasePlatformAdapter):
             # Tighter keepalive pool so idle CLOSE_WAIT sockets drain
             # faster behind proxies like Cloudflare Warp (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(
+            from tools.url_safety import create_ssrf_safe_async_client
+            self._http_client = create_ssrf_safe_async_client(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
@@ -1193,7 +1230,7 @@ class QQAdapter(BasePlatformAdapter):
             home = get_hermes_home()
             response_path = home / ".update_response"
             tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer)
+            tmp.write_text(answer, encoding="utf-8")
             tmp.replace(response_path)
             logger.info(
                 "QQ update prompt answered %r by %s",
@@ -1214,7 +1251,7 @@ class QQAdapter(BasePlatformAdapter):
         user_openid = str(author.get("user_openid", ""))
         if not user_openid:
             return
-        if not self._is_dm_allowed(user_openid):
+        if not self._is_dm_intake_allowed(user_openid):
             return
 
         text = content
@@ -1454,7 +1491,7 @@ class QQAdapter(BasePlatformAdapter):
         # Without this check any member of any guild the bot is in could
         # bypass the configured allowlist via direct messages.
         author_id = str(author.get("id", ""))
-        if not self._is_dm_allowed(author_id):
+        if not self._is_dm_intake_allowed(author_id):
             logger.debug(
                 "[%s] Guild DM blocked by ACL: guild=%s user=%s",
                 self._log_tag, guild_id, author_id,
@@ -1782,7 +1819,14 @@ class QQAdapter(BasePlatformAdapter):
             return None
 
         if content_type.startswith("image/"):
-            ext = mimetypes.guess_extension(content_type) or ".jpg"
+            # preserves historical qqbot mapping: trust mimetypes'
+            # guess (never the shared table) and fall back to .jpg.
+            ext = ext_for_mime(
+                content_type,
+                use_defaults=False,
+                use_mimetypes=True,
+                fallback=".jpg",
+            ) or ".jpg"
             return cache_image_from_bytes(data, ext)
         elif content_type == "voice" or content_type.startswith("audio/"):
             # QQ voice messages are typically .amr or .silk format.
@@ -1803,16 +1847,14 @@ class QQAdapter(BasePlatformAdapter):
         fn = filename.strip().lower()
         if ct == "voice" or ct.startswith("audio/"):
             return True
+        # QQ file uploads have content_type="file".  Without this guard,
+        # any uploaded audio file (e.g. .wav, .mp3) would be misrouted into
+        # the STT pipeline and never be received as a normal file attachment.
+        if ct == "file":
+            return False
         _VOICE_EXTENSIONS = (
-            ".silk",
-            ".amr",
-            ".mp3",
-            ".wav",
-            ".ogg",
-            ".m4a",
-            ".aac",
-            ".speex",
-            ".flac",
+            ".silk", ".amr", ".mp3", ".wav", ".ogg",
+            ".m4a", ".aac", ".speex", ".flac",
         )
         if any(fn.endswith(ext) for ext in _VOICE_EXTENSIONS):
             return True
@@ -1929,15 +1971,15 @@ class QQAdapter(BasePlatformAdapter):
                     )
                     return None
 
-            # 4. Call STT API
+            # 4. Call STT API and always clean up the temp WAV afterward.
             logger.debug("[%s] STT: calling ASR on %s", self._log_tag, wav_path)
-            transcript = await self._call_stt(wav_path)
-
-            # 5. Cleanup temp file
             try:
-                os.unlink(wav_path)
-            except OSError:
-                pass
+                transcript = await self._call_stt(wav_path)
+            finally:
+                try:
+                    os.unlink(wav_path)
+                except OSError:
+                    pass
 
             if transcript:
                 logger.debug("[%s] STT success: %r", self._log_tag, transcript[:100])
@@ -2187,13 +2229,13 @@ class QQAdapter(BasePlatformAdapter):
                     }
 
         # 2. QQ-specific env vars (set by `hermes setup gateway` / `hermes gateway`)
-        qq_stt_key = os.getenv("QQ_STT_API_KEY", "")
+        qq_stt_key = _resolve_qq_secret("QQ_STT_API_KEY", "")
         if qq_stt_key:
-            base_url = os.getenv(
+            base_url = _resolve_qq_secret(
                 "QQ_STT_BASE_URL",
                 "https://open.bigmodel.cn/api/coding/paas/v4",
             )
-            model = os.getenv("QQ_STT_MODEL", "glm-asr")
+            model = _resolve_qq_secret("QQ_STT_MODEL", "glm-asr")
             return {
                 "base_url": base_url.rstrip("/"),
                 "api_key": qq_stt_key,
@@ -2640,7 +2682,10 @@ class QQAdapter(BasePlatformAdapter):
         return await self.send_with_keyboard(
             chat_id,
             build_approval_text(req),
-            build_approval_keyboard(req.session_key),
+            build_approval_keyboard(
+                req.session_key,
+                allow_permanent=getattr(req, "allow_permanent", True),
+            ),
             reply_to=reply_to,
         )
 
@@ -2660,6 +2705,9 @@ class QQAdapter(BasePlatformAdapter):
             session_key: str,
             description: str = "dangerous command",
             metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send a button-based exec-approval prompt for a dangerous command.
 
@@ -2669,6 +2717,9 @@ class QQAdapter(BasePlatformAdapter):
         adapter's interaction callback (:meth:`_default_interaction_dispatch`).
         """
         del metadata  # QQ doesn't have thread_id / DM targeting overrides.
+        del allow_session  # QQ's 3-button keyboard has no session tier (once/always/deny).
+        if smart_denied:
+            description += " Owner override applies to this one operation only."
 
         # Use the reply-to message for passive-message context when we have one.
         # QQ requires a msg_id on outbound messages to a user we've never
@@ -2677,10 +2728,11 @@ class QQAdapter(BasePlatformAdapter):
 
         req = ApprovalRequest(
             session_key=session_key,
-            title=f"Execute this command?",
+            title="Execute this command?",
             description=description,
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
+            allow_permanent=allow_permanent and not smart_denied,
         )
         return await self.send_approval_request(
             chat_id, req, reply_to=msg_id,
@@ -3142,19 +3194,44 @@ class QQAdapter(BasePlatformAdapter):
         stripped = re.sub(r"^@\S+\s*", "", content.strip())
         return stripped
 
+    def _open_dm_opted_in(self) -> bool:
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        return _resolve_qq_secret("QQ_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
     def _is_dm_allowed(self, user_id: str) -> bool:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
             return self._entry_matches(self._allow_from, user_id)
-        return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
+
+    def _is_dm_intake_allowed(self, user_id: str) -> bool:
+        principal = str(user_id or "").strip()
+        if not principal:
+            return False
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return self._entry_matches(self._allow_from, principal)
+        if self._dm_policy == "pairing":
+            return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     def _is_group_allowed(self, group_id: str, user_id: str) -> bool:
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
             return self._entry_matches(self._group_allow_from, group_id)
-        return True
+        if self._group_policy == "pairing":
+            return False
+        if self._group_policy == "open":
+            return True
+        return False
 
     @staticmethod
     def _entry_matches(entries: List[str], target: str) -> bool:

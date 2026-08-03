@@ -1,22 +1,38 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ClientSessionState } from '@/app/types'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
   $activeSessionId,
-  $attentionSessionIds,
   $connection,
   $currentCwd,
-  $workingSessionIds,
+  $selectedStoredSessionId,
+  $sessions,
+  $unreadFinishedSessionIds,
   applyConfiguredDefaultProjectDir,
-  getRecentlySettledSessionIds,
+  getRememberedRoute,
+  getRememberedSessionId,
   mergeSessionPage,
+  rememberedSessionProfile,
+  resolveComposerSessionKey,
   sessionPinId,
   setCurrentCwd,
-  setSessionAttention,
-  setSessionWorking,
+  setRememberedRoute,
+  setRememberedSessionId,
+  setSelectedStoredSessionId,
+  setSessions,
+  shouldMigrateComposerScope,
+  touchSessionActivity,
   workspaceCwdForNewSession
 } from './session'
+import {
+  $attentionSessionIds,
+  clearAllSessionStates,
+  getRecentlySettledSessionIds,
+  publishSessionState
+} from './session-states'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -37,30 +53,32 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   ...over
 })
 
-describe('setSessionAttention', () => {
-  it('adds and removes a session id without duplicating it', () => {
-    $attentionSessionIds.set([])
-
-    setSessionAttention('s1', true)
-    setSessionAttention('s1', true)
-    expect($attentionSessionIds.get()).toEqual(['s1'])
-
-    setSessionAttention('s2', true)
-    expect($attentionSessionIds.get()).toEqual(['s1', 's2'])
-
-    setSessionAttention('s1', false)
-    expect($attentionSessionIds.get()).toEqual(['s2'])
-
-    $attentionSessionIds.set([])
+describe('computed $attentionSessionIds', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
   })
 
-  it('ignores empty ids and no-op clears', () => {
-    $attentionSessionIds.set([])
+  afterEach(() => {
+    clearAllSessionStates()
+  })
 
-    setSessionAttention(null, true)
-    setSessionAttention(undefined, true)
-    setSessionAttention('', true)
-    setSessionAttention('missing', false)
+  it('reflects sessions with needsInput=true and a storedSessionId', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), needsInput: true })
+    publishSessionState('rt2', { ...createClientSessionState('s2'), needsInput: false })
+
+    expect($attentionSessionIds.get()).toEqual(['s1'])
+  })
+
+  it('updates when needsInput changes', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), needsInput: true })
+    expect($attentionSessionIds.get()).toEqual(['s1'])
+
+    publishSessionState('rt1', { ...createClientSessionState('s1'), needsInput: false })
+    expect($attentionSessionIds.get()).toEqual([])
+  })
+
+  it('ignores sessions without a storedSessionId', () => {
+    publishSessionState('rt1', { ...createClientSessionState(null), needsInput: true })
     expect($attentionSessionIds.get()).toEqual([])
   })
 })
@@ -77,12 +95,58 @@ describe('sessionPinId', () => {
   })
 })
 
+describe('resolveComposerSessionKey', () => {
+  it('keeps the lineage root across compression tip rotation', () => {
+    const tipBefore = '20260720_062637_ad96b3'
+    const tipAfter = '20260720_071049_a28905'
+    const sessions = [session({ id: tipAfter, _lineage_root_id: tipBefore })]
+
+    expect(resolveComposerSessionKey(tipBefore, [session({ id: tipBefore })])).toBe(tipBefore)
+    expect(resolveComposerSessionKey(tipAfter, sessions)).toBe(tipBefore)
+  })
+
+  it('falls back to the live id when the tip row is not loaded yet', () => {
+    expect(resolveComposerSessionKey('tip-new', [])).toBe('tip-new')
+  })
+})
+
+describe('shouldMigrateComposerScope', () => {
+  it('allows tip → lineage-root rekey within the same conversation', () => {
+    const sessions = [session({ id: 'tip-a', _lineage_root_id: 'root-a' })]
+
+    expect(shouldMigrateComposerScope('tip-a', 'root-a', sessions)).toBe(true)
+  })
+
+  it('blocks cross-session migrate when route flipped but store selection lags', () => {
+    // ChatView mid-switch: selectedStoredSessionId still A, route-driven
+    // queueSessionKey already B. Migrating would re-home A's queue onto B.
+    const sessions = [
+      session({ id: 'tip-a', _lineage_root_id: 'root-a' }),
+      session({ id: 'tip-b', _lineage_root_id: 'root-b' })
+    ]
+
+    expect(shouldMigrateComposerScope('tip-a', 'root-b', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope('root-a', 'root-b', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope('tip-a', 'tip-b', sessions)).toBe(false)
+  })
+
+  it('is a no-op for identical or missing keys', () => {
+    const sessions = [session({ id: 'tip-a', _lineage_root_id: 'root-a' })]
+
+    expect(shouldMigrateComposerScope('root-a', 'root-a', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope(null, 'root-a', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope('root-a', null, sessions)).toBe(false)
+  })
+})
+
 describe('mergeSessionPage', () => {
   it('returns the server page untouched when there is nothing to keep', () => {
     const previous = [session({ id: 'a' }), session({ id: 'b' })]
     const incoming = [session({ id: 'a' })]
 
-    expect(mergeSessionPage(previous, incoming, [])).toBe(incoming)
+    // Content, not identity: the title-carry map rebuilds the array even when
+    // nothing is carried, and `incoming` is a fresh server page every fetch.
+    expect(mergeSessionPage(previous, incoming, [])).toEqual(incoming)
   })
 
   it('keeps a still-working session the server omitted', () => {
@@ -148,13 +212,9 @@ describe('mergeSessionPage', () => {
     // the sidebar showed both the old tip and the new tip as separate rows.
     // The old tip must be evicted because its lineage key matches the incoming
     // new tip's lineage key.
-    const previous = [
-      session({ id: 'tip-4', _lineage_root_id: 'root' }),
-      session({ id: 'other' }),
-    ] as SessionInfo[]
-    const incoming = [
-      session({ id: 'tip-5', _lineage_root_id: 'root' }),
-    ] as SessionInfo[]
+    const previous = [session({ id: 'tip-4', _lineage_root_id: 'root' }), session({ id: 'other' })] as SessionInfo[]
+
+    const incoming = [session({ id: 'tip-5', _lineage_root_id: 'root' })] as SessionInfo[]
 
     // 'tip-4' is in the keep set (e.g. it was the active/working session),
     // but should still be evicted because the incoming page carries the same
@@ -171,15 +231,74 @@ describe('mergeSessionPage', () => {
     // from a different lineage that happen to be in the keep set.
     const previous = [
       session({ id: 'a-old', _lineage_root_id: 'lineage-a' }),
-      session({ id: 'b', _lineage_root_id: 'lineage-b' }),
+      session({ id: 'b', _lineage_root_id: 'lineage-b' })
     ] as SessionInfo[]
-    const incoming = [
-      session({ id: 'a-new', _lineage_root_id: 'lineage-a' }),
-    ] as SessionInfo[]
+
+    const incoming = [session({ id: 'a-new', _lineage_root_id: 'lineage-a' })] as SessionInfo[]
 
     const merged = mergeSessionPage(previous, incoming, ['b'])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
+  })
+
+  it('never regresses last_active behind an optimistic user-send bump', () => {
+    const previous = [session({ id: 'old', last_active: 9_000 })]
+    const incoming = [session({ id: 'old', last_active: 100, message_count: 4 })]
+
+    const merged = mergeSessionPage(previous, incoming, [])
+
+    expect(merged[0]?.last_active).toBe(9_000)
+    expect(merged[0]?.message_count).toBe(4)
+  })
+
+  it('carries an optimistic last_active across a compression tip rotation', () => {
+    const previous = [session({ id: 'tip-4', _lineage_root_id: 'root', last_active: 9_000 })] as SessionInfo[]
+    const incoming = [session({ id: 'tip-5', _lineage_root_id: 'root', last_active: 50 })] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['tip-4'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip-5'])
+    expect(merged[0]?.last_active).toBe(9_000)
+  })
+})
+
+describe('touchSessionActivity', () => {
+  afterEach(() => {
+    setSessions([])
+  })
+
+  it('bumps last_active for a live id and a lineage-root pin target', () => {
+    setSessions([
+      session({ id: 'tip', _lineage_root_id: 'root', last_active: 10, preview: 'old' }),
+      session({ id: 'other', last_active: 20 })
+    ] as SessionInfo[])
+
+    touchSessionActivity('root', { at: 99, preview: 'just sent' })
+
+    const rows = $sessions.get()
+    const tip = rows.find(s => s.id === 'tip')
+    const other = rows.find(s => s.id === 'other')
+
+    expect(tip?.last_active).toBe(99)
+    expect(tip?.preview).toBe('just sent')
+    expect(other?.last_active).toBe(20)
+  })
+
+  it('is monotonic — a stale stamp does not pull the row down', () => {
+    setSessions([session({ id: 'a', last_active: 50 })])
+
+    touchSessionActivity('a', { at: 10 })
+
+    expect($sessions.get()[0]?.last_active).toBe(50)
+  })
+
+  it('preserves array identity when nothing matched', () => {
+    const prev = [session({ id: 'a', last_active: 1 })]
+    setSessions(prev)
+
+    touchSessionActivity('missing', { at: 99 })
+
+    expect($sessions.get()).toBe(prev)
   })
 })
 
@@ -201,16 +320,23 @@ describe('workspaceCwdForNewSession', () => {
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
   })
 
-  it('falls back to the remembered workspace when no configured default is set', () => {
-    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
+  it('keeps the configured default separate from a selected workspace', () => {
+    setCurrentCwd('/home/user/repo/.worktrees/feature')
 
-    expect(workspaceCwdForNewSession()).toBe('/home/user/sticky')
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
+    expect($currentCwd.get()).toBe('/home/user/repo/.worktrees/feature')
   })
 
-  it('falls back to the live cwd when neither configured nor remembered values exist', () => {
+  it('starts detached (no inherited cwd) when no default project dir is configured', () => {
+    // A bare new chat must NOT inherit the sticky/remembered or live workspace —
+    // that's the "why is my new session already on a branch" bug. Only an
+    // explicit configured default pre-attaches.
+    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
     $currentCwd.set('/home/user/live')
 
-    expect(workspaceCwdForNewSession()).toBe('/home/user/live')
+    expect(workspaceCwdForNewSession()).toBe('')
   })
 
   it('does not rewrite the live cwd while a session is active', () => {
@@ -238,30 +364,43 @@ describe('workspaceCwdForNewSession', () => {
     setCurrentCwd('/backend/project-b')
     expect(workspaceCwdForNewSession()).toBe('/backend/project-b')
 
+    // Back on local with no configured default: a bare new chat is detached and
+    // never reads the remote keys (nor inherits the sticky local workspace).
     $connection.set(null)
-    expect(workspaceCwdForNewSession()).toBe('/local/project')
+    expect(workspaceCwdForNewSession()).toBe('')
   })
 })
 
+function makeState(over: Partial<ClientSessionState> = {}): ClientSessionState {
+  return { ...createClientSessionState('s1'), ...over }
+}
+
 describe('getRecentlySettledSessionIds', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    // clearAllSessionStates also drops settle-grace entries + watchdog timers,
+    // so nothing leaks in from a previous test.
+    clearAllSessionStates()
+    $selectedStoredSessionId.set(null)
+    $unreadFinishedSessionIds.set([])
+  })
+
   afterEach(() => {
     vi.useRealTimers()
-    $workingSessionIds.set([])
-
-    // Drain anything left in the grace map so tests stay isolated.
-    for (const id of getRecentlySettledSessionIds(Number.MAX_SAFE_INTEGER)) {
-      void id
-    }
+    clearAllSessionStates()
+    $selectedStoredSessionId.set(null)
+    $unreadFinishedSessionIds.set([])
   })
 
   it('keeps a session for the grace window after its turn settles, then drops it', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(0)
-    $workingSessionIds.set([])
-
     // A turn starts then ends: the working→idle transition grants grace.
-    setSessionWorking('s1', true)
-    setSessionWorking('s1', false)
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    const idle = { ...working, busy: false }
+    publishSessionState('rt1', idle)
+
     expect(getRecentlySettledSessionIds()).toEqual(['s1'])
 
     // Still inside the window.
@@ -274,29 +413,204 @@ describe('getRecentlySettledSessionIds', () => {
   })
 
   it('does not grant grace when the session was never working (idle re-asserts)', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(0)
-    $workingSessionIds.set([])
-
-    // updateSessionState re-asserts `false` for idle sessions on every tick;
-    // these must not pin an idle chat into the keep-set indefinitely.
-    setSessionWorking('idle', false)
-    setSessionWorking('idle', false)
+    const idle = makeState({ busy: false, storedSessionId: 'idle' })
+    publishSessionState('rt1', idle)
     expect(getRecentlySettledSessionIds()).toEqual([])
   })
 
   it('clears the grace timer when the session goes busy again', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(0)
-    $workingSessionIds.set([])
+    const working = makeState({ busy: true, storedSessionId: 's2' })
+    publishSessionState('rt1', working)
 
-    setSessionWorking('s2', true)
-    setSessionWorking('s2', false)
+    const idle = { ...working, busy: false }
+    publishSessionState('rt1', idle)
+
     expect(getRecentlySettledSessionIds()).toEqual(['s2'])
 
     // A new turn for the same session is "working" again — drop it from the
     // settled set so it's tracked as working, not recently-finished.
-    setSessionWorking('s2', true)
+    const workingAgain = { ...idle, busy: true }
+    publishSessionState('rt1', workingAgain)
+
     expect(getRecentlySettledSessionIds()).toEqual([])
+  })
+})
+
+describe('unread finished sessions', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
+    $unreadFinishedSessionIds.set([])
+    $selectedStoredSessionId.set(null)
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $unreadFinishedSessionIds.set([])
+    $selectedStoredSessionId.set(null)
+  })
+
+  it('marks a session unread when its turn finishes in the background', () => {
+    $selectedStoredSessionId.set('other-session')
+
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    const idle = { ...working, busy: false }
+    publishSessionState('rt1', idle)
+
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+  })
+
+  it('does NOT mark unread when the finishing session is the active one', () => {
+    $selectedStoredSessionId.set('s1')
+
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    const idle = { ...working, busy: false }
+    publishSessionState('rt1', idle)
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('does NOT mark unread on idle→idle re-asserts (no prior working state)', () => {
+    $selectedStoredSessionId.set('other-session')
+
+    const idle = makeState({ busy: false, storedSessionId: 's1' })
+    publishSessionState('rt1', idle)
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('clears unread when the user opens the session', () => {
+    $selectedStoredSessionId.set('other')
+
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    const idle = { ...working, busy: false }
+    publishSessionState('rt1', idle)
+
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+
+    setSelectedStoredSessionId('s1')
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+})
+
+describe('remembered session id (per profile)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it('scopes the remembered session by profile so one profile cannot read another', () => {
+    setRememberedSessionId('work-session', 'ai-engineer')
+    setRememberedSessionId('personal-session', 'default')
+
+    expect(getRememberedSessionId('ai-engineer')).toBe('work-session')
+    expect(getRememberedSessionId('default')).toBe('personal-session')
+    // A profile with nothing remembered does not inherit another's session.
+    expect(getRememberedSessionId('research')).toBeNull()
+  })
+
+  it('keeps the default profile on the legacy unsuffixed key for back-compat', () => {
+    // An existing install remembered its session under the pre-per-profile key.
+    localStorage.setItem('hermes.desktop.lastSessionId', 'legacy-session')
+
+    expect(getRememberedSessionId('default')).toBe('legacy-session')
+    // Absent/blank profile normalizes to the default key too.
+    expect(getRememberedSessionId(undefined)).toBe('legacy-session')
+    expect(getRememberedSessionId('')).toBe('legacy-session')
+    expect(getRememberedSessionId(null)).toBe('legacy-session')
+  })
+
+  it('clearing one profile leaves the others intact', () => {
+    setRememberedSessionId('work-session', 'ai-engineer')
+    setRememberedSessionId('personal-session', 'default')
+
+    setRememberedSessionId(null, 'ai-engineer')
+
+    expect(getRememberedSessionId('ai-engineer')).toBeNull()
+    expect(getRememberedSessionId('default')).toBe('personal-session')
+  })
+})
+
+describe('remembered route (per profile)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it('scopes the remembered route by profile so one profile cannot restore another', () => {
+    // A session route embeds a session id. Remembered globally, a cold start
+    // under 'default' would navigate straight into ai-engineer's conversation.
+    setRememberedRoute('/session/work-session', 'ai-engineer')
+    setRememberedRoute('/session/personal-session', 'default')
+
+    expect(getRememberedRoute('ai-engineer')).toBe('/session/work-session')
+    expect(getRememberedRoute('default')).toBe('/session/personal-session')
+    expect(getRememberedRoute('research')).toBeNull()
+  })
+
+  it('keeps the default profile on the legacy unsuffixed key for back-compat', () => {
+    localStorage.setItem('hermes.desktop.lastRoute', '/skills')
+
+    expect(getRememberedRoute('default')).toBe('/skills')
+    expect(getRememberedRoute(undefined)).toBe('/skills')
+    expect(getRememberedRoute('')).toBe('/skills')
+    expect(getRememberedRoute(null)).toBe('/skills')
+  })
+
+  it('clearing one profile leaves the others intact', () => {
+    setRememberedRoute('/session/work-session', 'ai-engineer')
+    setRememberedRoute('/session/personal-session', 'default')
+
+    setRememberedRoute(null, 'ai-engineer')
+
+    expect(getRememberedRoute('ai-engineer')).toBeNull()
+    expect(getRememberedRoute('default')).toBe('/session/personal-session')
+  })
+
+  it('route and session id agree on the owner, so restore cannot cross profiles', () => {
+    // The cold-start restore prefers the route over the id, so the two keys
+    // must be written under the same owner or the id scoping is bypassed.
+    const owner = rememberedSessionProfile([session({ id: 'stored-1', profile: 'ai-engineer' })], 'stored-1', 'default')
+
+    setRememberedSessionId('stored-1', owner)
+    setRememberedRoute('/session/stored-1', owner)
+
+    expect(getRememberedRoute('default')).toBeNull()
+    expect(getRememberedSessionId('default')).toBeNull()
+    expect(getRememberedRoute('ai-engineer')).toBe('/session/stored-1')
+  })
+})
+
+describe('rememberedSessionProfile', () => {
+  it('keys by the session row owning profile, not the active one', () => {
+    const sessions = [session({ id: 'stored-1', profile: 'ai-engineer' })]
+
+    expect(rememberedSessionProfile(sessions, 'stored-1', 'default')).toBe('ai-engineer')
+  })
+
+  it('matches on the lineage root so a compressed tip resolves its owner', () => {
+    const sessions = [session({ _lineage_root_id: 'root-1', id: 'tip-2', profile: 'work' })]
+
+    expect(rememberedSessionProfile(sessions, 'root-1', 'default')).toBe('work')
+  })
+
+  it('falls back to the active profile for a session not yet in the list', () => {
+    expect(rememberedSessionProfile([], 'uncached', 'research')).toBe('research')
+  })
+
+  it('normalizes a blank active profile to default', () => {
+    expect(rememberedSessionProfile([], null, '')).toBe('default')
+    expect(rememberedSessionProfile([], null, null)).toBe('default')
   })
 })

@@ -62,6 +62,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@hermes/shared": path.resolve(__dirname, "../apps/shared/src"),
     },
     // When @nous-research/ui is symlinked via `file:../../design-language`,
     // Node's module resolution would pick up shared deps from
@@ -85,6 +86,51 @@ export default defineConfig({
   build: {
     outDir: "../hermes_cli/web_dist",
     emptyOutDir: true,
+    // Shell stays a bit over Vite's 500 kB default after vendor splits;
+    // page/xterm chunks load on demand. Keep a modest ceiling so a true
+    // regression still warns.
+    chunkSizeWarningLimit: 600,
+    // Split heavy vendors so the first dashboard paint does not download
+    // xterm/three/plot/etc. until a route actually needs them. Lazy page
+    // imports in App.tsx create the route boundaries; these groups keep
+    // shared node_modules out of every page chunk.
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          minSize: 20_000,
+          groups: [
+            {
+              name: "react-vendor",
+              test: /node_modules[\\/](react|react-dom|scheduler|react-router|react-router)([\\/]|$)/,
+            },
+            {
+              name: "xterm",
+              test: /node_modules[\\/]@xterm[\\/]/,
+            },
+            {
+              name: "three",
+              test: /node_modules[\\/](three|@react-three)([\\/]|$)/,
+            },
+            {
+              name: "plot",
+              test: /node_modules[\\/]@observablehq[\\/]plot([\\/]|$)/,
+            },
+            {
+              name: "motion",
+              test: /node_modules[\\/](motion|framer-motion)([\\/]|$)/,
+            },
+            {
+              name: "ui",
+              test: /node_modules[\\/]@nous-research[\\/]ui([\\/]|$)/,
+            },
+            {
+              name: "vendor",
+              test: /node_modules[\\/]/,
+            },
+          ],
+        },
+      },
+    },
   },
   server: {
     proxy: {

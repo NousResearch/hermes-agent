@@ -31,7 +31,7 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
     honcho_cfg = SimpleNamespace(enabled=True, api_key="stale-key", base_url=None)
 
     with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("hermes_cli.config.save_config") as save_config,
         patch(
             "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
@@ -64,7 +64,7 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     cfg = {"memory": {"provider": "recording"}, "agent": {}}
 
     with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.memory.load_memory_provider", return_value=provider),
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("run_agent.get_tool_definitions", return_value=[]),
@@ -90,6 +90,8 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert provider.init_kwargs["user_id"] == "open-id"
     assert provider.init_kwargs["user_id_alt"] == "union-id"
     assert provider.init_kwargs["platform"] == "feishu"
+    assert "warning_callback" not in provider.init_kwargs
+    assert "status_callback" not in provider.init_kwargs
 
 
 class CoreShadowProvider:
@@ -132,3 +134,5 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "clarify" not in schema_names
     assert "delegate_task" not in schema_names
     assert "honcho_search" in schema_names
+
+

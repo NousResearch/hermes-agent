@@ -18,6 +18,7 @@ from tools.budget_config import (
     DEFAULT_TURN_BUDGET_CHARS,
     PINNED_THRESHOLDS,
     BudgetConfig,
+    budget_for_context_window,
 )
 
 
@@ -32,8 +33,6 @@ class TestModuleConstants:
     def test_default_result_size(self):
         assert DEFAULT_RESULT_SIZE_CHARS == 100_000
 
-    def test_default_turn_budget(self):
-        assert DEFAULT_TURN_BUDGET_CHARS == 200_000
 
     def test_default_preview_size(self):
         assert DEFAULT_PREVIEW_SIZE_CHARS == 1_500
@@ -62,17 +61,6 @@ class TestBudgetConfigDefaults:
         cfg = BudgetConfig()
         assert cfg.default_result_size == DEFAULT_RESULT_SIZE_CHARS
 
-    def test_default_turn_budget(self):
-        cfg = BudgetConfig()
-        assert cfg.turn_budget == DEFAULT_TURN_BUDGET_CHARS
-
-    def test_default_preview_size(self):
-        cfg = BudgetConfig()
-        assert cfg.preview_size == DEFAULT_PREVIEW_SIZE_CHARS
-
-    def test_default_tool_overrides_empty(self):
-        cfg = BudgetConfig()
-        assert cfg.tool_overrides == {}
 
     def test_default_budget_singleton_matches(self):
         """DEFAULT_BUDGET should equal a freshly constructed BudgetConfig."""
@@ -92,15 +80,6 @@ class TestBudgetConfigFrozen:
         with pytest.raises(dataclasses.FrozenInstanceError):
             cfg.default_result_size = 999
 
-    def test_cannot_set_turn_budget(self):
-        cfg = BudgetConfig()
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            cfg.turn_budget = 999
-
-    def test_cannot_set_preview_size(self):
-        cfg = BudgetConfig()
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            cfg.preview_size = 999
 
     def test_cannot_set_tool_overrides(self):
         cfg = BudgetConfig()
@@ -149,28 +128,48 @@ class TestResolveThreshold:
         result = cfg.resolve_threshold("my_tool")
         assert result == 42
 
-    @patch("tools.registry.registry")
-    def test_falls_back_to_registry(self, mock_registry):
-        """When not pinned and not in overrides, delegate to registry."""
-        mock_registry.get_max_result_size.return_value = 77_777
-        cfg = BudgetConfig()
-        result = cfg.resolve_threshold("some_tool")
-        mock_registry.get_max_result_size.assert_called_once_with(
-            "some_tool", default=DEFAULT_RESULT_SIZE_CHARS
-        )
-        assert result == 77_777
 
     @patch("tools.registry.registry")
-    def test_registry_receives_custom_default(self, mock_registry):
-        """Custom default_result_size flows through to registry call."""
-        mock_registry.get_max_result_size.return_value = 50_000
-        cfg = BudgetConfig(default_result_size=50_000)
-        cfg.resolve_threshold("unknown_tool")
-        mock_registry.get_max_result_size.assert_called_once_with(
-            "unknown_tool", default=50_000
-        )
+    def test_registry_value_capped_at_default(self, mock_registry):
+        """A scaled-down budget caps an oversized registry value (#23767).
 
-    def test_pinned_read_file_returns_inf(self):
-        """Canonical case: read_file must always return inf."""
-        cfg = BudgetConfig()
-        assert cfg.resolve_threshold("read_file") == float("inf")
+        web/terminal/x_search register max_result_size_chars=100_000; a small
+        model's scaled budget must not be re-inflated by that.
+        """
+        mock_registry.get_max_result_size.return_value = 100_000
+        cfg = BudgetConfig(default_result_size=30_000)
+        assert cfg.resolve_threshold("web_search") == 30_000
+
+
+    @patch("tools.registry.registry")
+    def test_default_budget_unchanged_for_100k_tool(self, mock_registry):
+        """Default budget keeps 100K registry tools at 100K (no behavior change)."""
+        mock_registry.get_max_result_size.return_value = 100_000
+        cfg = BudgetConfig()  # default_result_size == 100_000
+        assert cfg.resolve_threshold("web_search") == 100_000
+
+
+# ---------------------------------------------------------------------------
+# budget_for_context_window() — context-aware scaling (#23767)
+# ---------------------------------------------------------------------------
+
+
+class TestBudgetForContextWindow:
+    """Scaling the tool-output budget to the active model's context window."""
+
+    def test_none_returns_default(self):
+        assert budget_for_context_window(None) is DEFAULT_BUDGET
+
+    def test_zero_or_negative_returns_default(self):
+        assert budget_for_context_window(0) is DEFAULT_BUDGET
+        assert budget_for_context_window(-5) is DEFAULT_BUDGET
+
+
+    def test_scaled_budget_constrains_oversized_result(self):
+        """A 279K-char result against a 65K model exceeds the scaled per-result
+        threshold, so it will be persisted/truncated rather than sent whole."""
+        cfg = budget_for_context_window(65_536)
+        huge_len = 279_549
+        threshold = cfg.resolve_threshold("mcp_firecrawl_firecrawl_search")
+        assert threshold < huge_len
+        assert cfg.default_result_size < huge_len

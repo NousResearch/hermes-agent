@@ -14,6 +14,7 @@ re-exports from ``run_agent`` remain in place so existing imports
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -279,6 +280,38 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     return "{}"
 
 
+def close_interrupted_tool_sequence(messages: list, final_response: Any = None) -> bool:
+    """Append a synthetic assistant turn when an interrupted tail is a tool result.
+
+    A turn cut short by ``/stop`` can leave the transcript ending on a raw
+    ``tool`` message (a tool finished, or its execution was cancelled, but the
+    model never streamed a closing assistant turn). Persisting that tail means
+    the next user message lands as ``… tool → user`` — a role-alternation
+    violation that strict providers (Gemini, Claude) react to by hallucinating
+    a continuation of the user's message and ignoring prior context, which
+    reads to the user as "lost context" (#48879).
+
+    ``finalize_turn`` closes this on the happy interrupt path, but the
+    retry/backoff/error interrupt aborts in ``conversation_loop`` ``return``
+    early and never reach it — this shared helper closes the sequence on all of
+    them. ``final_response`` is usually empty on an interrupt, so an explicit
+    placeholder is used rather than an empty-content assistant turn.
+
+    Mutates ``messages`` in place. Returns True if a closing turn was appended.
+    """
+    if not messages:
+        return False
+    last = messages[-1]
+    if not isinstance(last, dict) or last.get("role") != "tool":
+        return False
+    text = final_response if isinstance(final_response, str) else ""
+    messages.append({
+        "role": "assistant",
+        "content": text.strip() or "Operation interrupted.",
+    })
+    return True
+
+
 def _strip_non_ascii(text: str) -> str:
     """Remove non-ASCII characters, replacing with closest ASCII equivalent or removing.
 
@@ -431,6 +464,7 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 
 __all__ = [
     "_SURROGATE_RE",
+    "close_interrupted_tool_sequence",
     "_sanitize_surrogates",
     "_sanitize_structure_surrogates",
     "_sanitize_messages_surrogates",
@@ -441,4 +475,378 @@ __all__ = [
     "_sanitize_tools_non_ascii",
     "_strip_images_from_messages",
     "_sanitize_structure_non_ascii",
+    # call_id policy owners (F4 consolidation)
+    "deterministic_call_id",
+    "coalesce_tool_call_id",
+    "uniquify_tool_call_ids",
+    # reasoning_content policy owners (F4 consolidation)
+    "reasoning_echo_family",
+    "matches_reasoning_echo_family",
+    "needs_reasoning_echo",
+    "apply_reasoning_content_policy",
+    "reapply_reasoning_echo",
 ]
+
+
+# ---------------------------------------------------------------------------
+# call_id policy — single owner (audit F4, incident chain I4)
+# ---------------------------------------------------------------------------
+#
+# Three forked policy sites converged here:
+#   * agent/codex_responses_adapter.py `_deterministic_call_id` — hash
+#     synthesis when a provider omits call_id (fa3ab2ffd0 → e45f2b39e2).
+#   * run_agent.AIAgent._get_tool_call_id_static — `call_id or id`
+#     coalescing for dicts and SDK objects.
+#   * run_agent.AIAgent._uniquify_tool_call_ids — duplicate-id repair with
+#     deterministic `_d<n>` suffixes (#58327 loss class).
+#
+# NOT consolidated (different scheme on purpose):
+#   agent/transports/codex_event_projector._deterministic_call_id maps codex
+#   app-server ITEM ids (`codex_<type>_<item_id>`), not chat tool-call
+#   content; merging the two would change ids and invalidate prompt caches.
+#
+# HARD INVARIANT: everything here must stay deterministic (never uuid4) and
+# byte-identical for existing inputs — these ids feed prompt-cache prefixes.
+
+
+def deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
+    """Generate a deterministic call_id from tool call content.
+
+    Used as a fallback when the API doesn't provide a call_id.
+    Deterministic IDs prevent cache invalidation — random UUIDs would
+    make every API call's prefix unique, breaking OpenAI's prompt cache.
+    """
+    seed = f"{fn_name}:{arguments}:{index}"
+    digest = hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:12]
+    return f"call_{digest}"
+
+
+def coalesce_tool_call_id(tc: Any) -> str:
+    """Extract the effective call ID from a tool_call entry (dict or object).
+
+    Single owner for the ``call_id or id`` coalescing rule: Codex Responses
+    tool calls carry ``call_id`` (authoritative pairing key), Chat
+    Completions ones carry ``id`` only. Returns ``""`` when neither is set.
+    """
+    if isinstance(tc, dict):
+        return (tc.get("call_id", "") or tc.get("id", "") or "").strip()
+    return (getattr(tc, "call_id", "") or getattr(tc, "id", "") or "").strip()
+
+
+def uniquify_tool_call_ids(tool_calls: list) -> list:
+    """Ensure every tool call in a single assistant turn has a distinct id.
+
+    Some models/providers reuse one call id across different calls in a
+    single batch (observed with native Kimi Responses replays, Ollama-
+    compatible endpoints, and degraded models at long context; same bug
+    class as openclaw/openclaw#110518 / #110956). Duplicate ids are lossy
+    downstream: the pre-API sanitizer keeps only the first call/result
+    pair per id (#58327), so the later call's result silently vanishes
+    from every replayed payload, and strict providers (Anthropic
+    tool_use, DeepSeek) reject duplicate ids outright.
+
+    The first occurrence keeps its id; later collisions get a
+    deterministic ``<id>_d<n>`` suffix — never a random UUID, which would
+    break prompt-cache prefix stability across replays. Mutates the
+    entries in place (SDK models / SimpleNamespace / dicts) and returns
+    the same list. Blank/missing ids are left for the deterministic
+    fallback in ``build_assistant_message``.
+    """
+    seen: set = set()
+    for tc in tool_calls or []:
+        # Same coalescing rule as ``coalesce_tool_call_id`` but tolerant of
+        # non-string ids (degraded models can emit ints/None here).
+        if isinstance(tc, dict):
+            raw = tc.get("call_id") or tc.get("id") or ""
+        else:
+            raw = getattr(tc, "call_id", None) or getattr(tc, "id", None) or ""
+        raw = raw.strip() if isinstance(raw, str) else ""
+        if not raw:
+            continue
+        # Composite Responses ids ("call_x|fc_y") collide on the call
+        # half — that's the pairing key providers enforce per turn.
+        cid = raw.split("|", 1)[0]
+        if not cid:
+            continue
+        if cid not in seen:
+            seen.add(cid)
+            continue
+        n = 2
+        new_id = f"{cid}_d{n}"
+        while new_id in seen:
+            n += 1
+            new_id = f"{cid}_d{n}"
+        seen.add(new_id)
+
+        def _renamed(value):
+            # Preserve a composite id's response-item half so the
+            # provider's real fc_/item id survives the rename.
+            if isinstance(value, str) and "|" in value:
+                return f"{new_id}|{value.split('|', 1)[1]}"
+            return new_id
+
+        try:
+            if isinstance(tc, dict):
+                if tc.get("id"):
+                    tc["id"] = _renamed(tc["id"])
+                else:
+                    tc["id"] = new_id
+                if tc.get("call_id"):
+                    tc["call_id"] = new_id
+            else:
+                tc.id = _renamed(getattr(tc, "id", None))
+                if getattr(tc, "call_id", None):
+                    tc.call_id = new_id
+        except Exception:
+            logger.warning(
+                "Could not uniquify duplicate tool call id %s", cid
+            )
+            continue
+        _fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+        _fn_name = (_fn.get("name") if isinstance(_fn, dict) else getattr(_fn, "name", None)) or "?"
+        logger.warning(
+            "Model reused tool call id %s within one turn; renamed the "
+            "duplicate to %s (tool=%s) to keep call/result pairing "
+            "lossless.", cid, new_id, _fn_name,
+        )
+    return tool_calls
+
+
+# ---------------------------------------------------------------------------
+# reasoning_content policy — single owner (audit F4)
+# ---------------------------------------------------------------------------
+#
+# The strip-vs-repad decision was previously forked across the wire files in
+# separate incident commits (2b3a4f0af8 strip for strict providers,
+# b5495db701 re-pad for require-side, 94b3131be7/9a9f8a6d99 kimi pad).  The
+# POLICY — which provider direction gets which treatment — lives here as one
+# rule table + apply functions; adapters keep only SYNTAX mapping (e.g.
+# anthropic_adapter turning reasoning_content into a thinking block).
+#
+# Direction table:
+#   require-side (echo-back enforced; replays 400 without the field):
+#     kimi     — provider kimi-coding/kimi-coding-cn, or host api.kimi.com /
+#                moonshot.ai / moonshot.cn.  Host-driven on purpose:
+#                aggregators re-exporting kimi models reject the echo.
+#     deepseek — provider "deepseek", model contains "deepseek", or host
+#                api.deepseek.com (#15250; V4 rejects empty-string pads,
+#                hence the " " single-space pad, #17341).
+#     mimo     — provider "xiaomi", model contains "mimo", or host
+#                *.xiaomimimo.com.
+#   strict side (field rejected with 400/422 "Extra inputs are not
+#     permitted"): everyone else — Mistral, Cerebras, Groq, SambaNova, …
+#     (#45655). Strip the key entirely, even a single-space pad.
+
+_REASONING_ECHO_RULES: tuple = (
+    # (family, exact providers (raw), exact providers (lowered),
+    #  model substrings (lowered), base_url hosts)
+    ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (),
+     ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
+    ("deepseek", frozenset(), frozenset({"deepseek"}), ("deepseek",),
+     ("api.deepseek.com",)),
+    ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",),
+     ("api.xiaomimimo.com", "xiaomimimo.com")),
+)
+
+
+def _family_rule(family: str) -> tuple:
+    for rule in _REASONING_ECHO_RULES:
+        if rule[0] == family:
+            return rule
+    raise KeyError(family)
+
+
+def matches_reasoning_echo_family(
+    family: str, provider: Any, model: Any, base_url: Any
+) -> bool:
+    """True when (provider, model, base_url) matches one echo-back family.
+
+    Families can overlap (e.g. a deepseek-named model pointed at a kimi
+    host); this membership test is independent per family so per-family
+    predicates keep their original semantics.
+    """
+    from utils import base_url_host_matches
+
+    _, raw_providers, lowered_providers, model_subs, hosts = _family_rule(family)
+    provider_lower = (provider or "").lower()
+    model_lower = (model or "").lower()
+    if provider in raw_providers or provider_lower in lowered_providers:
+        return True
+    if any(sub in model_lower for sub in model_subs):
+        return True
+    return any(base_url_host_matches(base_url, host) for host in hosts)
+
+
+def reasoning_echo_family(provider: Any, model: Any, base_url: Any) -> "str | None":
+    """Classify the provider direction for the reasoning_content echo policy.
+
+    Returns ``"kimi"``, ``"deepseek"``, or ``"mimo"`` (first match in table
+    order) when the target endpoint enforces reasoning_content echo-back on
+    assistant turns, else ``None`` (strict/indifferent side — the field must
+    be stripped).
+    """
+    for rule in _REASONING_ECHO_RULES:
+        if matches_reasoning_echo_family(rule[0], provider, model, base_url):
+            return rule[0]
+    return None
+
+
+def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
+    """True when the endpoint requires reasoning_content echo-back."""
+    return reasoning_echo_family(provider, model, base_url) is not None
+
+
+def apply_reasoning_content_policy(
+    source_msg: dict, api_msg: dict, needs_thinking_pad: bool
+) -> None:
+    """Copy provider-facing reasoning fields onto an API replay message.
+
+    ``needs_thinking_pad`` is the require-side flag (see
+    ``needs_reasoning_echo`` / the agent's cached
+    ``_needs_thinking_reasoning_pad``). Mutates ``api_msg`` in place.
+    """
+    if source_msg.get("role") != "assistant":
+        return
+
+    # 1. Explicit reasoning_content already set.
+    #
+    # When the active provider enforces the thinking-mode echo-back
+    # (DeepSeek / Kimi / MiMo), preserve it verbatim — that includes their
+    # own space-placeholder written at creation time and any valid reasoning
+    # from the same provider. Sessions persisted BEFORE #17341 have
+    # empty-string placeholders pinned at creation time; DeepSeek V4 Pro
+    # rejects those with HTTP 400, so upgrade "" → " " on replay.
+    #
+    # When the active provider does NOT enforce echo-back, strip the field
+    # entirely. Strict OpenAI-compatible providers (Mistral, Cerebras, Groq,
+    # SambaNova, …) reject ANY reasoning_content key in input messages with
+    # HTTP 400/422 ("Extra inputs are not permitted"), even an empty string
+    # or a single-space pad. This is the cross-provider fallback case: a
+    # reasoning primary (DeepSeek/Kimi/MiMo) pads history with " ", then a
+    # fallback to a strict provider replays that pad and 422s. Stripping
+    # here covers the rebuild path; ``reapply_reasoning_echo`` covers the
+    # already-built api_messages path. Refs #45655.
+    existing = source_msg.get("reasoning_content")
+    if isinstance(existing, str):
+        if not needs_thinking_pad:
+            api_msg.pop("reasoning_content", None)
+        elif existing == "":
+            api_msg["reasoning_content"] = " "
+        else:
+            api_msg["reasoning_content"] = existing
+        return
+
+    # 2. Cross-provider poisoned history (#15748): on DeepSeek/Kimi,
+    # if the source turn has tool_calls AND a 'reasoning' field but no
+    # 'reasoning_content' key, the 'reasoning' text was written by a
+    # prior provider (e.g. MiniMax) — DeepSeek's own _build_assistant_message
+    # pins reasoning_content at creation time for tool-call turns, so the
+    # shape (reasoning set, reasoning_content absent, tool_calls present)
+    # is unreachable from same-provider DeepSeek history after this fix.
+    # Inject a single space to satisfy the API without leaking another
+    # provider's chain of thought to DeepSeek/Kimi. Space (not "")
+    # because DeepSeek V4 Pro rejects empty-string reasoning_content
+    # in thinking mode (refs #17341).
+    normalized_reasoning = source_msg.get("reasoning")
+    if (
+        needs_thinking_pad
+        and source_msg.get("tool_calls")
+        and isinstance(normalized_reasoning, str)
+        and normalized_reasoning
+    ):
+        api_msg["reasoning_content"] = " "
+        return
+
+    # 3. Healthy session: promote 'reasoning' field to 'reasoning_content'
+    # for providers that use the internal 'reasoning' key.
+    # This must happen before the unconditional empty-string fallback so
+    # genuine reasoning content is not overwritten (#15812 regression in
+    # PR #15478). Only promote for providers that enforce echo-back —
+    # strict providers reject the field (refs #45655).
+    if isinstance(normalized_reasoning, str) and normalized_reasoning:
+        if needs_thinking_pad:
+            api_msg["reasoning_content"] = normalized_reasoning
+        else:
+            api_msg.pop("reasoning_content", None)
+        return
+
+    # 4. DeepSeek / Kimi thinking mode: all assistant messages need
+    # reasoning_content. Inject a single space to satisfy the provider's
+    # requirement when no explicit reasoning content is present. Covers
+    # both tool-call turns (already-poisoned history with no reasoning
+    # at all) and plain text turns. Space (not "") because DeepSeek V4
+    # Pro tightened validation and rejects empty string with HTTP 400
+    # ("The reasoning content in the thinking mode must be passed back
+    # to the API"). Refs #17341.
+    if needs_thinking_pad:
+        api_msg["reasoning_content"] = " "
+        return
+
+    # 5. reasoning_content was present but not a string (e.g. None after
+    # context compaction).  Don't pass null to the API.
+    api_msg.pop("reasoning_content", None)
+
+
+def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
+    """Re-pad (or strip) assistant turns' reasoning_content for the active provider.
+
+    ``api_messages`` is built once, before the retry loop, while the *primary*
+    provider is active.  A mid-conversation fallback can then switch providers,
+    so the reasoning fields baked into ``api_messages`` are shaped for the
+    *prior* provider and must be reconciled against the *current* one:
+
+    * Switching TO a require-side provider (DeepSeek / Kimi / MiMo thinking
+      mode): assistant turns built when the prior provider did NOT need the
+      echo-back go out without ``reasoning_content`` and the new provider
+      rejects them with HTTP 400 ("The reasoning_content in the thinking mode
+      must be passed back").  Re-apply the pad.
+
+    * Switching TO a strict provider that rejects the field (Mistral,
+      Cerebras, Groq, SambaNova, …): assistant turns built under a reasoning
+      primary carry a ``reasoning_content`` pad (often a single space ``" "``),
+      and the strict provider rejects it with HTTP 400/422 ("Extra inputs are
+      not permitted").  Strip the field.  This is the exact cross-provider
+      fallback bug from #45655 — a DeepSeek primary pads history with ``" "``,
+      the request falls back to Mistral, and Mistral 422s on the stale pad.
+
+    Calling this immediately before building the request kwargs reconciles the
+    fields against the *current* provider.  It is idempotent and safe to call
+    every iteration; it covers every fallback path.
+
+    Returns the number of assistant turns whose reasoning_content was added or
+    removed.
+    """
+    changed = 0
+    for api_msg in api_messages:
+        if api_msg.get("role") != "assistant":
+            continue
+        if needs_thinking_pad:
+            if api_msg.get("reasoning_content"):
+                continue
+            apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad)
+            if api_msg.get("reasoning_content"):
+                changed += 1
+        else:
+            # Strict provider — strip any stale reasoning_content pad left
+            # over from a reasoning primary so the fallback request doesn't
+            # 400/422 on it.
+            if "reasoning_content" in api_msg:
+                api_msg.pop("reasoning_content", None)
+                changed += 1
+    return changed
+
+
+# ---------------------------------------------------------------------------
+# Image / multimodal parts — evaluated, NOT consolidated (verdict: syntax)
+# ---------------------------------------------------------------------------
+#
+# The per-adapter image handling is format-specific SYNTAX, not shared policy:
+#   * anthropic_adapter (~1817): data-URL → Anthropic `source: {type: base64}`
+#     block mapping — Anthropic wire shape only.
+#   * codex_responses_adapter (~113/165/812): chat `image_url` parts →
+#     Responses `input_image` items and image counting for log summaries —
+#     Responses wire shape only.
+#   * transports/chat_completions: pass-through (native format).
+# The one genuinely shared image POLICY — removing images when a server
+# rejects them while preserving tool_call_id pairing — already has a single
+# owner here: ``_strip_images_from_messages`` above.

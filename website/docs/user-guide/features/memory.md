@@ -206,6 +206,24 @@ See [Session Search Tool](/user-guide/sessions#session-search-tool) for the thre
 
 **Memory** is for critical facts that should always be in context. **Session search** is for "did we discuss X last week?" queries where the agent needs to recall specifics from past conversations.
 
+## Learning Journey (`/journey`)
+
+The learning journey is a timeline view of everything Hermes has learned — saved skills and memory entries plotted over time (oldest at top, newest at bottom), with a playable "constellation" scrubber that replays the build-up. The same graph data drives three surfaces:
+
+- **Classic CLI / standalone** — `hermes journey` (aliases: `hermes learning`, `hermes memory-graph`) renders the timeline in the terminal. Flags: `--play` animates the build-up (`--fps` to tune it), `--width`/`--height` override the render size, `--no-color` disables color, and `--json` dumps the raw graph payload.
+- **TUI** — `/journey` (aliases: `/learning`, `/memory-graph`) opens the timeline as an overlay.
+- **Desktop app** — `/journey` opens the Star Map / memory-graph panel, an interactive visual of the same nodes.
+
+Beyond viewing, the journey is also where you **prune and correct** what Hermes has learned:
+
+| Command | What it does |
+|---------|--------------|
+| `hermes journey list` | List node ids — skill names and `memory:<source>:<index>` ids for memory chunks. |
+| `hermes journey delete <node> [-y]` | Delete a node. Skills are **archived** (restorable), memory chunks are removed. `-y` skips the confirmation. |
+| `hermes journey edit <node>` | Open the node's content (a skill's `SKILL.md` or the memory chunk) in `$EDITOR`. |
+
+The same `list` / `delete <id>` / `edit <id>` subcommands work from the in-chat `/journey` command on the CLI, and the desktop panel offers edit/delete on nodes directly.
+
 ## Configuration
 
 ```yaml
@@ -248,8 +266,12 @@ ones — waits for your yes/no before it ever enters your profile.
 ## Background review notifications (`display.memory_notifications`)
 
 After a turn, the background self-improvement review may quietly save a memory
-or update a skill. By default it surfaces a short `💾 Memory updated` line in
-chat so you know it happened. Control how chatty that is:
+or update a skill. This is Hermes' consent-aware learning loop: repeated
+corrections and durable workflow lessons become compact memory entries or
+procedural skills, while `write_approval` can stage those writes for review
+before they affect future sessions. By default it surfaces a short
+`💾 Memory updated` line in chat so you know it happened. Control how chatty
+that is:
 
 ```yaml
 display:
@@ -265,6 +287,31 @@ display:
 > This only governs the **gateway** chat notification. The review itself, and
 > writes to your memory/skill stores, are unaffected by this setting. Set it
 > per-platform via `display.platforms.<platform>.memory_notifications`.
+
+## Running the review on a cheaper model (`auxiliary.background_review`)
+
+The review runs on your **main chat model** by default, replaying the
+conversation — which is already warm in the prompt cache, so it's cheap cache
+reads. On an expensive main model you can run the review on a cheaper model
+instead:
+
+```yaml
+auxiliary:
+  background_review:
+    provider: openrouter
+    model: google/gemini-3-flash-preview   # auto (default) = main chat model
+```
+
+When you point it at a model **different** from your main one, the review runs
+there for substantially lower cost (~3–5× in benchmarks). Because a different
+model can't reuse your main model's prompt cache anyway, the fork automatically
+replays a compact **digest** of the conversation (recent turns verbatim + a
+summary of older ones) rather than the full transcript — minimizing what it
+writes to the new cache. Capture holds: in testing, memory capture was
+identical and skill capture near-identical to the main-model review.
+
+Leave it at `auto` (or set it to your main model) and nothing changes — the
+review keeps running on the main model with the full warm-cache replay.
 
 ## Controlling skill writes (`skills.write_approval`)
 

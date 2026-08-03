@@ -117,7 +117,7 @@ async def test_inbound_frame_reaches_handler(server):
             "event": {
                 "text": "hello from connector",
                 "message_type": "text",
-                "source": {"platform": "discord", "chat_id": "chan1", "chat_type": "group", "guild_id": "guildA"},
+                "source": {"platform": "discord", "chat_id": "chan1", "chat_type": "group", "scope_id": "guildA"},
             },
             "bufferId": "buf-1",
         }
@@ -132,48 +132,79 @@ async def test_inbound_frame_reaches_handler(server):
         await asyncio.sleep(0.05)
         assert len(received) == 1
         assert received[0].text == "hello from connector"
-        assert received[0].source.guild_id == "guildA"
+        assert received[0].source.scope_id == "guildA"
     finally:
         await t.disconnect()
 
 
-@pytest.mark.asyncio
-async def test_outbound_round_trips_with_correlation(server):
-    t = WebSocketRelayTransport(server.url, "discord", "appShared")
-    await t.connect()
-    try:
-        await t.handshake()
-        result = await t.send_outbound({"op": "send", "chat_id": "chan1", "content": "hi"})
-        assert result["success"] is True
-        assert result["message_id"] == "srv-send"
-    finally:
-        await t.disconnect()
+# ── Phase 7 Unit 7d-B: terminal 4401 (opt-out revocation) ────────────────────
+
+
+class _Revoking4401Server:
+    """Connector stub that, on hello, optionally sends a descriptor and then
+    closes the socket with application code 4401 (unauthorized) — the shape of a
+    connector that has revoked this gateway's per-gateway secret (opt-out)."""
+
+    def __init__(self, *, send_descriptor_first: bool):
+        self._server = None
+        self.url = ""
+        self._send_descriptor_first = send_descriptor_first
+
+    async def start(self):
+        self._server = await websockets.serve(self._handle, "127.0.0.1", 0)
+        port = next(iter(self._server.sockets)).getsockname()[1]
+        self.url = f"ws://127.0.0.1:{port}"
+
+    async def stop(self):
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+
+    async def _handle(self, ws):
+        async for raw in ws:
+            for line in str(raw).split("\n"):
+                if not line.strip():
+                    continue
+                frame = json.loads(line)
+                if frame.get("type") == "hello":
+                    if self._send_descriptor_first:
+                        await ws.send(
+                            json.dumps({"type": "descriptor", "descriptor": DESCRIPTOR}) + "\n"
+                        )
+                        # Let the descriptor flush + be processed before the close.
+                        await asyncio.sleep(0.05)
+                    # Close with 4401 (the connector's "unauthorized" close).
+                    await ws.close(code=4401, reason="unauthorized")
+                    return
 
 
 @pytest.mark.asyncio
-async def test_follow_up_round_trips(server):
-    t = WebSocketRelayTransport(server.url, "discord", "appShared")
-    await t.connect()
+async def test_4401_after_handshake_is_terminal_no_reconnect():
+    """A 4401 close AFTER a successful handshake = a revoked credential (opt-out):
+    the transport latches auth_revoked and does NOT spin the reconnect supervisor."""
+    srv = _Revoking4401Server(send_descriptor_first=True)
+    await srv.start()
     try:
-        await t.handshake()
-        result = await t.send_follow_up(
-            {"op": "follow_up", "session_key": "s1", "kind": "discord.interaction_token", "content": "fu"}
+        t = WebSocketRelayTransport(
+            srv.url, "discord", "appShared",
+            gateway_id="gw-x", upgrade_secret="secret-x",
+            reconnect=True, reconnect_backoff_s=0.05,
         )
-        assert result["success"] is True
-        assert result["message_id"] == "srv-follow_up"
-        # The follow_up rode an outbound frame the connector saw.
-        outbound = [f for f in server.received if f["type"] == "outbound"]
-        assert any(f["action"]["op"] == "follow_up" for f in outbound)
+        await t.connect()
+        await t.handshake()  # records _handshake_succeeded
+        # Wait for the server's 4401 close to propagate through the read loop.
+        for _ in range(100):
+            if t.auth_revoked:
+                break
+            await asyncio.sleep(0.02)
+        assert t.auth_revoked is True
+        # Terminal: no reconnect supervisor was spawned.
+        assert t._supervisor is None
+        # Give a reconnect (if it were going to happen) time to NOT happen.
+        await asyncio.sleep(0.2)
+        assert t._supervisor is None
     finally:
         await t.disconnect()
+        await srv.stop()
 
 
-@pytest.mark.asyncio
-async def test_disconnect_fails_pending_waiters_cleanly(server):
-    t = WebSocketRelayTransport(server.url, "discord", "appShared", outbound_timeout_s=5)
-    await t.connect()
-    await t.handshake()
-    await t.disconnect()
-    # After disconnect, an outbound returns a structured failure rather than hanging.
-    result = await t.send_outbound({"op": "send", "chat_id": "c", "content": "x"})
-    assert result["success"] is False

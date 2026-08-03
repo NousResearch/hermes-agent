@@ -86,6 +86,18 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "enable", help="Enable a disabled plugin"
     )
     plugins_enable.add_argument("name", help="Plugin name to enable")
+    _enable_override_group = plugins_enable.add_mutually_exclusive_group()
+    _enable_override_group.add_argument(
+        "--allow-tool-override",
+        action="store_true",
+        help="Grant this plugin permission to replace built-in tools "
+        "(e.g. shell_exec, write_file). Skips the confirmation prompt.",
+    )
+    _enable_override_group.add_argument(
+        "--no-allow-tool-override",
+        action="store_true",
+        help="Enable without granting built-in tool override (skip prompt).",
+    )
 
     plugins_disable = plugins_subparsers.add_parser(
         "disable", help="Disable a plugin without removing it"

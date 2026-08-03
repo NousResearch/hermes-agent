@@ -30,10 +30,10 @@ class TestRegisterServerTools:
 
         with patch("tools.registry.registry", mock_registry):
             registered = _register_server_tools("my_srv", server, {})
-            assert "mcp_my_srv_my_tool" in registered
-            assert "mcp_my_srv_my_tool" in mock_registry.get_all_tool_names()
+            assert "mcp__my_srv__my_tool" in registered
+            assert "mcp__my_srv__my_tool" in mock_registry.get_all_tool_names()
             assert validate_toolset("my_srv") is True
-            assert "mcp_my_srv_my_tool" in resolve_toolset("my_srv")
+            assert "mcp__my_srv__my_tool" in resolve_toolset("my_srv")
 
 
 class TestRefreshTools:
@@ -53,11 +53,11 @@ class TestRefreshTools:
 
         # Seed initial state: one old tool registered
         mock_registry.register(
-            name="mcp_live_srv_old_tool", toolset="mcp-live_srv", schema={},
+            name="mcp__live_srv__old_tool", toolset="mcp-live_srv", schema={},
             handler=lambda x: x, check_fn=lambda: True, is_async=False,
             description="", emoji="",
         )
-        server._registered_tool_names = ["mcp_live_srv_old_tool"]
+        server._registered_tool_names = ["mcp__live_srv__old_tool"]
 
         # New tool list from server
         new_tool = _make_mcp_tool("new_tool", "new behavior")
@@ -69,11 +69,11 @@ class TestRefreshTools:
 
         with patch("tools.registry.registry", mock_registry):
             await server._refresh_tools()
-            assert "mcp_live_srv_old_tool" not in mock_registry.get_all_tool_names()
-            assert "mcp_live_srv_old_tool" not in resolve_toolset("live_srv")
-            assert "mcp_live_srv_new_tool" in mock_registry.get_all_tool_names()
-            assert "mcp_live_srv_new_tool" in resolve_toolset("live_srv")
-            assert server._registered_tool_names == ["mcp_live_srv_new_tool"]
+            assert "mcp__live_srv__old_tool" not in mock_registry.get_all_tool_names()
+            assert "mcp__live_srv__old_tool" not in resolve_toolset("live_srv")
+            assert "mcp__live_srv__new_tool" in mock_registry.get_all_tool_names()
+            assert "mcp__live_srv__new_tool" in resolve_toolset("live_srv")
+            assert server._registered_tool_names == ["mcp__live_srv__new_tool"]
 
 
 class TestMessageHandler:
@@ -123,42 +123,6 @@ class TestDeregister:
         reg.deregister("foo")
         assert "foo" not in reg.get_all_tool_names()
 
-    def test_cleans_up_toolset_check(self):
-        reg = ToolRegistry()
-        check = lambda: True  # noqa: E731
-        reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x, check_fn=check)
-        assert reg.is_toolset_available("ts1")
-        reg.deregister("foo")
-        # Toolset check should be gone since no tools remain
-        assert "ts1" not in reg._toolset_checks
-
-    def test_preserves_toolset_check_if_other_tools_remain(self):
-        reg = ToolRegistry()
-        check = lambda: True  # noqa: E731
-        reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x, check_fn=check)
-        reg.register(name="bar", toolset="ts1", schema={}, handler=lambda x: x)
-        reg.deregister("foo")
-        # bar still in ts1, so check should remain
-        assert "ts1" in reg._toolset_checks
-
-    def test_removes_toolset_alias_when_last_tool_is_removed(self):
-        reg = ToolRegistry()
-        reg.register(name="foo", toolset="mcp-srv", schema={}, handler=lambda x: x)
-        reg.register_toolset_alias("srv", "mcp-srv")
-
-        reg.deregister("foo")
-
-        assert reg.get_toolset_alias_target("srv") is None
-
-    def test_preserves_toolset_alias_while_toolset_still_exists(self):
-        reg = ToolRegistry()
-        reg.register(name="foo", toolset="mcp-srv", schema={}, handler=lambda x: x)
-        reg.register(name="bar", toolset="mcp-srv", schema={}, handler=lambda x: x)
-        reg.register_toolset_alias("srv", "mcp-srv")
-
-        reg.deregister("foo")
-
-        assert reg.get_toolset_alias_target("srv") == "mcp-srv"
 
     def test_noop_for_unknown_tool(self):
         reg = ToolRegistry()

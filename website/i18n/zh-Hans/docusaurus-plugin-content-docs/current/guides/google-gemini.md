@@ -1,14 +1,12 @@
 ---
 sidebar_position: 16
 title: "Google Gemini"
-description: "将 Hermes Agent 与 Google Gemini 配合使用——原生 AI Studio API、API 密钥配置、OAuth 选项、工具调用、流式传输及配额说明"
+description: "将 Hermes Agent 与 Google Gemini 配合使用——原生 AI Studio API、API 密钥配置、工具调用、流式传输及配额说明"
 ---
 
 # Google Gemini
 
 Hermes Agent 通过 **Google AI Studio / Gemini API** 原生支持 Google Gemini——而非 OpenAI 兼容端点。这使 Hermes 能够将其内部 OpenAI 格式的消息和工具循环转换为 Gemini 原生的 `generateContent` API，同时保留工具调用、流式传输、多模态输入以及 Gemini 特有的响应元数据。
-
-Hermes 还支持独立的 **Google Gemini（OAuth）** provider，使用与 Google Gemini CLI 相同的 Cloud Code Assist 后端。如需最低风险的官方 API 路径，请使用 API 密钥 provider（`gemini`）。
 
 ## 前提条件
 
@@ -100,17 +98,6 @@ https://generativelanguage.googleapis.com/v1beta/openai/
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 ```
 
-### OAuth Provider
-
-Hermes 还提供 `google-gemini-cli` provider：
-
-```bash
-hermes model
-# → 选择 "Google Gemini (OAuth)"
-```
-
-该方式使用浏览器 PKCE 登录和 Cloud Code Assist 后端。对于希望使用 Gemini CLI 风格 OAuth 的用户可能有用，但 Hermes 会显示明确警告，因为 Google 可能将第三方软件使用 Gemini CLI OAuth 客户端的行为视为违反政策。对于生产环境或最低风险使用场景，请优先使用上述 API 密钥 provider。
-
 ## 可用模型
 
 `hermes model` 选择器显示 Hermes provider 注册表中维护的 Gemini 模型。常见选项包括：
@@ -192,16 +179,7 @@ hermes doctor
 doctor 命令检查：
 
 - `GOOGLE_API_KEY` 或 `GEMINI_API_KEY` 是否可用
-- `google-gemini-cli` 的 Gemini OAuth 凭据是否存在
 - 已配置的 provider 凭据是否可以解析
-
-如需查看 OAuth 配额使用情况，请在 Hermes 会话中运行：
-
-```text
-/gquota
-```
-
-`/gquota` 适用于 `google-gemini-cli` OAuth provider，不适用于 AI Studio API 密钥 provider。
 
 ## Gateway（消息平台）
 
@@ -263,10 +241,6 @@ GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
 ```bash
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 ```
-
-### OAuth 登录警告
-
-`google-gemini-cli` provider 使用 Gemini CLI / Cloud Code Assist OAuth 流程。Hermes 在启动前会发出警告，因为这与官方 AI Studio API 密钥路径不同。如需官方 API 密钥集成，请使用 `provider: gemini` 配合 `GOOGLE_API_KEY`。
 
 ### 工具调用因 schema 错误而失败
 

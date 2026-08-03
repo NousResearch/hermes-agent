@@ -10,6 +10,7 @@ import codecs
 import json
 import logging
 import os
+import re
 import select
 import shlex
 import subprocess
@@ -17,10 +18,12 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections import deque
 from pathlib import Path
-from typing import IO, Callable, Protocol
+from typing import IO, Callable, Iterable, Protocol
 
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
@@ -43,12 +46,177 @@ if _DEBUG_INTERRUPT:
 _activity_callback_local = threading.local()
 
 
+# Sentinel capacity for full-fidelity capture (internal consumers). Large
+# enough that the collector never evicts in practice, keeping a single code
+# path for both bounded and unbounded modes.
+_UNBOUNDED_CAPTURE_CHARS = 2**63 - 1
+
+
+class _BoundedOutputCollector:
+    """Retain a bounded 40/60 head-tail window of streamed text.
+
+    When ``spill_path`` is set, the collector also tees the FULL stream to
+    that file once eviction begins (up to ``_SPILL_CAP_CHARS``), so a
+    truncated foreground result is recoverable without re-running the
+    command. Memory stays bounded either way — the spill is disk-only.
+    """
+
+    # Hard ceiling on spill file size. Beyond this the file stops growing
+    # (marker appended); protects disk from pathological runaway output.
+    _SPILL_CAP_CHARS = 5_000_000
+
+    def __init__(self, max_chars: int, spill_path: "Path | None" = None):
+        self.max_chars = max(1, int(max_chars))
+        self._head_limit = int(self.max_chars * 0.4)
+        self._tail_limit = self.max_chars - self._head_limit
+        self._head: list[str] = []
+        self._tail: deque[str] = deque()
+        self._head_chars = 0
+        self._tail_chars = 0
+        self._total_chars = 0
+        self._lock = threading.Lock()
+        self._spill_path = spill_path
+        self._spill_fh: IO[str] | None = None
+        self._spill_chars = 0
+        self._spill_capped = False
+
+    def _maybe_spill(self, text: str) -> None:
+        """Tee ``text`` to the spill file (opened lazily on first overflow)."""
+        if self._spill_path is None or self._spill_capped:
+            return
+        try:
+            if self._spill_fh is None:
+                self._spill_path.parent.mkdir(parents=True, exist_ok=True)
+                self._spill_fh = open(self._spill_path, "w", encoding="utf-8", errors="replace")
+                # Backfill everything retained so far so the file holds the
+                # stream from byte 0, not just from the overflow point.
+                backlog = "".join(self._head) + "".join(self._tail)
+                self._spill_fh.write(backlog)
+                self._spill_chars = len(backlog)
+            budget = self._SPILL_CAP_CHARS - self._spill_chars
+            if budget <= 0 or len(text) > budget:
+                self._spill_fh.write(text[:max(0, budget)])
+                self._spill_fh.write("\n... [spill capped at 5,000,000 chars] ...\n")
+                self._spill_capped = True
+            else:
+                self._spill_fh.write(text)
+            self._spill_chars += len(text)
+        except OSError:
+            # Disk trouble must never break command execution.
+            self._spill_capped = True
+
+    def close_spill(self) -> "str | None":
+        """Close the spill file and return its path if it was used."""
+        with self._lock:
+            if self._spill_fh is None:
+                return None
+            try:
+                self._spill_fh.close()
+            except OSError:
+                pass
+            self._spill_fh = None
+            return str(self._spill_path)
+
+    @property
+    def buffered_chars(self) -> int:
+        with self._lock:
+            return self._head_chars + self._tail_chars
+
+    @property
+    def total_chars(self) -> int:
+        with self._lock:
+            return self._total_chars
+
+    def append(self, text: str) -> None:
+        if not text:
+            return
+        with self._lock:
+            text_len = len(text)
+            # Spill tee: activates at the first overflow (backfilling what's
+            # retained so far), then mirrors every subsequent chunk.
+            if self._spill_path is not None and (
+                self._spill_fh is not None
+                or self._total_chars + text_len > self.max_chars
+            ):
+                self._maybe_spill(text)
+            self._total_chars += text_len
+            start = 0
+
+            if self._head_chars < self._head_limit:
+                take = min(self._head_limit - self._head_chars, text_len)
+                if take:
+                    self._head.append(text[:take])
+                    self._head_chars += take
+                    start = take
+
+            remaining = text_len - start
+            if remaining <= 0 or self._tail_limit <= 0:
+                return
+            if remaining >= self._tail_limit:
+                self._tail.clear()
+                self._tail.append(text[-self._tail_limit :])
+                self._tail_chars = self._tail_limit
+                return
+
+            chunk = text[start:]
+            self._tail.append(chunk)
+            self._tail_chars += len(chunk)
+            while self._tail_chars > self._tail_limit:
+                excess = self._tail_chars - self._tail_limit
+                first = self._tail[0]
+                if len(first) <= excess:
+                    self._tail.popleft()
+                    self._tail_chars -= len(first)
+                else:
+                    self._tail[0] = first[excess:]
+                    self._tail_chars -= excess
+
+    def render(self, *, suffix: str = "") -> str:
+        """Render within ``max_chars``, preserving a required status suffix."""
+        with self._lock:
+            if len(suffix) >= self.max_chars:
+                return suffix[-self.max_chars :]
+
+            head = "".join(self._head)
+            tail = "".join(self._tail)
+            available = self.max_chars - len(suffix)
+            if self._total_chars <= available:
+                return head + tail + suffix
+
+            notice = ""
+            for _ in range(4):
+                content_budget = max(0, available - len(notice))
+                head_chars = int(content_budget * 0.4)
+                tail_chars = content_budget - head_chars
+                omitted = max(0, self._total_chars - head_chars - tail_chars)
+                updated = (
+                    f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "
+                    f"out of {self._total_chars:,} total] ...\n\n"
+                )
+                if updated == notice:
+                    break
+                notice = updated
+
+            content_budget = max(0, available - len(notice))
+            head_chars = int(content_budget * 0.4)
+            tail_chars = content_budget - head_chars
+            rendered_tail = tail[-tail_chars:] if tail_chars else ""
+            return head[:head_chars] + notice[:available] + rendered_tail + suffix
+
+
 def set_activity_callback(cb: Callable[[str], None] | None) -> None:
     """Register a callback that _wait_for_process fires periodically."""
     _activity_callback_local.callback = cb
 
 
-def _get_activity_callback() -> Callable[[str], None] | None:
+def get_activity_callback() -> Callable[[str], None] | None:
+    """Return the thread-local activity callback (see ``set_activity_callback``).
+
+    Public accessor for callers outside this module that need to capture the
+    calling thread's callback before handing work to another thread (the
+    callback is thread-local, so a freshly spawned thread cannot read it
+    back) — e.g. the manual cron-run heartbeat (#76502).
+    """
     return getattr(_activity_callback_local, "callback", None)
 
 
@@ -70,7 +238,7 @@ def touch_activity_if_due(
         return
     state["last_touch"] = now
     try:
-        cb = _get_activity_callback()
+        cb = get_activity_callback()
         if cb:
             elapsed = int(now - state["start"])
             cb(f"{label} ({elapsed}s elapsed)")
@@ -141,12 +309,13 @@ def _popen_bash(
     Backends with special Popen needs (e.g. local's ``preexec_fn``) can bypass
     this and call :func:`_pipe_stdin` directly.
     """
+    kwargs.setdefault("creationflags", windows_hide_flags())
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         **kwargs,
     )
     if stdin_data is not None:
@@ -280,6 +449,76 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
+# Per-session variables that the gateway bridges freshly onto every command's
+# process environment (via tools/environments/local._inject_session_context_env,
+# reading gateway.session_context._VAR_MAP). They must NEVER be persisted into
+# the shared bash session snapshot: a single long-lived backend serves many
+# concurrent sessions (the messaging gateway, TUI, desktop/web dashboard all
+# collapse the terminal to one "default" environment), so ``export -p`` dumping
+# the FIRST session's HERMES_SESSION_ID into the snapshot makes every LATER
+# session ``source`` that stale value and see a FOREIGN session's identity —
+# overriding the correct per-command Popen env (issue: cross-session
+# HERMES_SESSION_ID leak via the shared snapshot). Stripping them from the
+# snapshot is safe because they are re-injected on every command; a snapshot
+# should only carry the user's own shell state (PATH, functions, exports they
+# set), not Hermes' per-turn session identity.
+#
+# Kept in sync with gateway.session_context._VAR_MAP: every bridged name starts
+# with one of these prefixes (or is HERMES_UI_SESSION_ID). Used by unit tests
+# as the Python-side contract for the exclusion set; the dump path unsets by
+# name/prefix instead of grepping declare lines (see below / issue #71296).
+_SNAPSHOT_EXCLUDED_ENV_REGEX = (
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION)"
+)
+_SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _export_dump_excluding_session_vars(
+    tmp_path: str,
+    excluded_names: Iterable[str] = (),
+) -> str:
+    """Return a shell snippet that dumps ``export -p`` to *tmp_path* minus the
+    per-session bridged vars (see ``_SNAPSHOT_EXCLUDED_ENV_REGEX``) and any
+    additional names supplied by the caller.
+
+    Unset the bridged vars in a subshell *before* ``export -p``. A line-based
+    ``grep -vE`` filter is unsafe: bash 3.2 prints a value containing a newline
+    as a multi-line ``declare -x NAME="…`` block, so only the opener matches the
+    regex and continuation lines (e.g. ``curl … | bash #`` smuggled into a
+    Matrix room/display name via ``HERMES_SESSION_CHAT_NAME``) land in the
+    snapshot and execute on the next ``source`` (issue #71296). Unsetting first
+    means ``export -p`` never emits those vars — including any continuation
+    lines. ``|| true`` keeps the success contract for callers that chain on it.
+
+    The dump MUST be wrapped in a brace group with the redirection applied to
+    the group. *tmp_path* is typically a shell-variable expansion (a
+    mktemp-allocated per-writer temp name); a redirection attached to a
+    pipeline segment would expand it inside that segment's subshell,
+    potentially inconsistently with the parent that expands the follow-up
+    ``mv``. The brace-group redirect is expanded in the current shell,
+    keeping both expansions consistent.
+    """
+    # ${!PREFIX*} is bash 3.2+ name-prefix expansion; empty matches are fine
+    # because ``unset`` with only missing names is ignored under 2>/dev/null.
+    # Quote caller-provided names so malformed configuration can never become
+    # shell syntax. Valid environment names remain unquoted by shlex.quote().
+    safe_names = {
+        name for name in excluded_names
+        if isinstance(name, str) and name
+    }
+    extra_unset = " ".join(shlex.quote(name) for name in sorted(safe_names))
+    if extra_unset:
+        extra_unset = f" {extra_unset}"
+    return (
+        "{ ( "
+        "unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
+        f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
+        "export -p; "
+        ") || true; } "
+        f"> {tmp_path}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
@@ -298,6 +537,11 @@ class BaseEnvironment(ABC):
 
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
+
+    # Local and Docker override this because they resolve allowlisted values
+    # through the active profile scope. Other backends keep their existing
+    # snapshot semantics until they implement the same resolver contract.
+    _profile_scoped_passthrough: bool = False
 
     def get_temp_dir(self) -> str:
         """Return the backend temp directory used for session artifacts.
@@ -319,6 +563,11 @@ class BaseEnvironment(ABC):
         self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
+        self._snapshot_passthrough_names: set[str] = set()
+        # When True, login bash is unusable (e.g. broken Git-for-Windows
+        # ``Directory \\drivers\\etc`` startup) so execute() must not fall
+        # back to ``bash -l`` per command — use non-login ``bash -c`` instead.
+        self._prefer_nonlogin = False
 
     # ------------------------------------------------------------------
     # Abstract methods
@@ -348,6 +597,40 @@ class BaseEnvironment(ABC):
     # Session snapshot (init_session)
     # ------------------------------------------------------------------
 
+    def _additional_profile_scoped_passthrough_names(self) -> Iterable[str]:
+        """Return backend-specific names that must not persist in snapshots."""
+        return ()
+
+    def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
+        """Return profile-scoped names that must not persist in the snapshot.
+
+        The set is monotonic for the environment lifetime. A skill/config
+        allowlist can be cleared after a value was captured; retaining the
+        exclusion prevents that old value from becoming visible to a later
+        profile through the shared snapshot.
+        """
+        if not self._profile_scoped_passthrough:
+            return ()
+        try:
+            from agent.secret_scope import is_multiplex_active
+            if is_multiplex_active():
+                from tools.env_passthrough import get_all_passthrough
+                names = (
+                    *get_all_passthrough(),
+                    *self._additional_profile_scoped_passthrough_names(),
+                )
+                self._snapshot_passthrough_names.update(
+                    name
+                    for name in names
+                    if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name)
+                )
+        except Exception:
+            logger.debug(
+                "Could not refresh profile-scoped snapshot exclusions",
+                exc_info=True,
+            )
+        return tuple(sorted(self._snapshot_passthrough_names))
+
     def init_session(self):
         """Capture login shell environment into a snapshot file.
 
@@ -355,34 +638,82 @@ class BaseEnvironment(ABC):
         ``_snapshot_ready = True`` so subsequent commands source the snapshot
         instead of running with ``bash -l``.
         """
-        # Full capture: env vars, functions (filtered), aliases, shell options.
+        # Full capture: env vars, functions, aliases, shell options.
         # Restore configured cwd after login shell profile scripts, which may
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
-        _quoted_cwd = shlex.quote(self.cwd)
-        # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
-        # ``C:/Users/...``-shaped paths without glob-splitting the colon or
-        # tripping on drive letters.  On POSIX this is a no-op (no colons /
-        # special chars in a /tmp path).  Previously unquoted interpolation
-        # caused ``C:/Users/.../hermes-snap-*.sh: No such file or directory``
-        # errors on Windows, leaking via stderr (merged into stdout on Linux
-        # backends) into every terminal-tool response.
-        _quoted_snap = shlex.quote(self._snapshot_path)
-        _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Route through ``_quote_cwd_for_cd`` (not a bare ``shlex.quote``) so
+        # the Windows subclass override converts a native ``C:\Users\x`` cwd to
+        # the Git-Bash ``/c/Users/x`` form the bootstrap ``cd`` can resolve.
+        # Without this the snapshot bootstrap ``cd`` below fails on Windows and
+        # ``pwd -P`` captures the login shell's directory, not ``terminal.cwd``.
+        _quoted_cwd = self._quote_cwd_for_cd(self.cwd)
+        # Quote snapshot / cwd-file paths via ``_quote_shell_path`` so the
+        # LocalEnvironment override can rewrite ``C:/...`` (and mixed
+        # ``/c/Users\\...``) to ``/c/...`` before quoting — bare drive paths
+        # in the bootstrap script trip MSYS into the
+        # ``Directory \\drivers\\etc does not exist`` failure class.
+        # On POSIX this is plain ``shlex.quote``.
+        _quoted_snap = self._quote_shell_path(self._snapshot_path)
+        # Use atomic file replacement: assemble the snapshot in a temp file,
+        # then mv it over the final path.  This prevents concurrent source()
+        # calls from reading a half-written snapshot when another terminal
+        # command finishes and rewrites the env vars (issue #38249).  `mv` is
+        # atomic on POSIX when src and dest are on the same filesystem, so
+        # source() either sees the old complete snapshot or the new complete
+        # one — never a partial/truncated file.
+        #
+        # The temp name MUST be unique per concurrent writer.  ``$$`` is the
+        # bash PID, but in ``&``-launched subshells (how concurrent terminal
+        # calls run) ``$$`` stays the *parent* shell's PID — so two concurrent
+        # writers would pick the SAME temp name, clobber each other's temp
+        # mid-write, and mv would then publish a torn file (the corruption is
+        # only narrowed, not closed).  ``$BASHPID`` would be unique per writer,
+        # but macOS ships bash 3.2 which does NOT provide it — the name expands
+        # empty there, so every writer shares one temp path and the race is
+        # back.  ``mktemp`` allocates a per-writer unique path portably across
+        # bash versions.  The template is shell-quoted (Windows/Git-Bash drive
+        # letters, spaces) and the resulting path lives in a shell variable so
+        # every later expansion is consistent.
+        _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
+        _snap_tmp = '"$__hermes_snap_tmp"'
+        snapshot_excluded = self._snapshot_excluded_passthrough_names()
         bootstrap = (
-            f"export -p > {_quoted_snap}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
-            f"alias -p >> {_quoted_snap}\n"
-            f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
-            f"echo 'set +e' >> {_quoted_snap}\n"
-            f"echo 'set +u' >> {_quoted_snap}\n"
-            f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
-            f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
+            f"umask 077\n"
+            f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) || exit 1\n"
+            f"{_export_dump_excluding_session_vars(_snap_tmp, snapshot_excluded)}\n"
+            # Dump function definitions, filtering out private (``_``-prefixed)
+            # helpers — mainly bash-completion internals (``_git``, ``_make``…)
+            # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
+            # is line-based: it strips the function *header* line but leaves the
+            # orphaned ``{ … }`` body behind, which corrupts the snapshot and
+            # makes every sourced command fail (e.g. exit 127).  Selecting the
+            # wanted names with ``declare -F`` first, then dumping only those
+            # whole definitions, preserves the filter's intent without ever
+            # tearing a function body.  The non-empty guard matters: bare
+            # ``declare -f`` with no name args dumps ALL functions, so an empty
+            # name list (only private funcs present) would otherwise leak the
+            # very functions we meant to drop.
+            f"__hermes_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]') || true\n"
+            f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns "
+            f">> {_snap_tmp} 2>/dev/null || true\n"
+            f"alias -p >> {_snap_tmp}\n"
+            f"echo 'shopt -s expand_aliases' >> {_snap_tmp}\n"
+            f"echo 'set +e' >> {_snap_tmp}\n"
+            f"echo 'set +u' >> {_snap_tmp}\n"
+            # Publish atomically only if assembly succeeded; otherwise drop the
+            # partial temp rather than leave it to be sourced or orphaned.
+            f"mv -f {_snap_tmp} {_quoted_snap} || rm -f {_snap_tmp}\n"
+            f"builtin cd -- {_quoted_cwd} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
         try:
             proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
+            if int(result.get("returncode") or 0) != 0:
+                raise RuntimeError(
+                    f"snapshot bootstrap failed with exit code {result.get('returncode')}"
+                )
             self._snapshot_ready = True
             self._update_cwd(result)
             logger.info(
@@ -391,13 +722,37 @@ class BaseEnvironment(ABC):
                 self.cwd,
             )
         except Exception as exc:
-            logger.warning(
-                "init_session failed (session=%s): %s — "
-                "falling back to bash -l per command",
-                self._session_id,
-                exc,
-            )
             self._snapshot_ready = False
+            # Default fallback is bash -l per command so PATH/nvm/etc still
+            # load.  If login itself is dead (classic Windows Git Bash
+            # ``Directory \\drivers\\etc does not exist``), that fallback
+            # would brick every tool — prefer non-login bash -c instead.
+            detail = str(exc)
+            prefer_nonlogin = False
+            try:
+                probe = self._run_bash("true", login=False, timeout=min(15, self._snapshot_timeout))
+                probe_result = self._wait_for_process(probe, timeout=min(15, self._snapshot_timeout))
+                prefer_nonlogin = int(probe_result.get("returncode") or 0) == 0
+                if not prefer_nonlogin:
+                    detail = (probe_result.get("stdout") or detail).strip() or detail
+            except Exception as probe_exc:
+                detail = f"{detail}; non-login probe: {probe_exc}"
+
+            self._prefer_nonlogin = prefer_nonlogin
+            if prefer_nonlogin:
+                logger.warning(
+                    "init_session failed (session=%s): %s — "
+                    "login bash unusable; falling back to non-login bash -c",
+                    self._session_id,
+                    exc,
+                )
+            else:
+                logger.warning(
+                    "init_session failed (session=%s): %s — "
+                    "falling back to bash -l per command",
+                    self._session_id,
+                    detail,
+                )
 
     # ------------------------------------------------------------------
     # Command wrapping
@@ -414,19 +769,50 @@ class BaseEnvironment(ABC):
             return f"$HOME/{shlex.quote(cwd[2:])}"
         return shlex.quote(cwd)
 
+    def _quote_shell_path(self, path: str) -> str:
+        """Quote *path* for interpolation into a bash script.
+
+        LocalEnvironment overrides this to rewrite native/mixed Windows
+        paths to ``/c/...`` before quoting. Remote backends leave paths
+        as-is (they already speak POSIX).
+        """
+        return shlex.quote(path)
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
         escaped = command.replace("'", "'\\''")
 
-        # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
-        # ``C:/Users/...``-shaped paths without glob-splitting the colon or
-        # tripping on drive letters.  POSIX paths are unaffected.  See
-        # :meth:`init_session` for the same fix on the bootstrap block.
-        _quoted_snap = shlex.quote(self._snapshot_path)
-        _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Quote the snapshot path (see init_session — LocalEnvironment
+        # rewrites ``C:/...`` to ``/c/...`` so MSYS doesn't mangle it).
+        _quoted_snap = self._quote_shell_path(self._snapshot_path)
+        # Use atomic file replacement for env snapshot updates (issue #38249).
+        # Assemble into a per-writer-unique temp file, then mv to atomically
+        # replace the snapshot so concurrent source() calls never read a
+        # truncated/half-written file.  ``mktemp`` is used instead of
+        # ``$BASHPID``/``$$`` because macOS bash 3.2 lacks ``$BASHPID`` (it
+        # expands empty, collapsing every writer onto one temp name) and ``$$``
+        # is shared by ``&``-launched subshells.  Template shell-quoted
+        # (Windows/spaces); the allocated path lives in a shell variable.
+        _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
+        _snap_tmp = '"$__hermes_snap_tmp"'
 
         parts = []
+        passthrough_names = self._snapshot_excluded_passthrough_names()
+
+        # A shared snapshot may contain the previous profile's value. Save
+        # the current process environment before sourcing it, then restore the
+        # current profile's value (or unset the name) immediately afterwards.
+        # Values stay in environment memory and never enter the shell command
+        # string, so secrets are not exposed through process arguments/logs.
+        saved_names: list[tuple[str, str, str]] = []
+        for name in passthrough_names:
+            marker = f"_HERMES_RUNTIME_PASSTHROUGH_{name}"
+            present = f"{marker}_PRESENT"
+            value = f"{marker}_VALUE"
+            saved_names.append((name, present, value))
+            parts.append(f"{present}=${{{name}+x}}")
+            parts.append(f"{value}=${{{name}-}}")
 
         # Source snapshot (env vars from previous commands).
         # Redirect stdout to /dev/null: on macOS (bash 3.2 and certain
@@ -439,6 +825,13 @@ class BaseEnvironment(ABC):
                 f"source {_quoted_snap} >/dev/null 2>&1 || true"
             )
 
+        for name, present, value in saved_names:
+            parts.append(
+                f'if [ "${present}" = x ]; then export {name}="${value}"; '
+                f'else unset {name}; fi'
+            )
+            parts.append(f"unset {present} {value}")
+
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.
         quoted_cwd = self._quote_cwd_for_cd(cwd)
@@ -448,13 +841,28 @@ class BaseEnvironment(ABC):
         # Run the actual command
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
+        # Restrict Hermes metadata files without changing the user's command
+        # umask. Snapshot files may contain env-carried secrets.
+        parts.append("umask 077")
 
-        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
+        # Re-dump env vars to snapshot (atomic replacement to avoid races).
+        # Chain mv on the export succeeding so a failed/partial dump never
+        # replaces a good snapshot; drop the temp on failure so it isn't
+        # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
+        # NOTE: the temp path is allocated with mktemp into a shell variable
+        # first — the redirection inside _export_dump_excluding_session_vars is
+        # attached to a brace group so the variable expands in the same shell
+        # that later expands the ``mv`` operand, keeping both consistent.
         if self._snapshot_ready:
-            parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
+            parts.append(
+                f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) && "
+                f"{{ {_export_dump_excluding_session_vars(_snap_tmp, passthrough_names)} "
+                f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
+            )
 
-        # Write CWD to file (local reads this) and stdout marker (remote parses this)
-        parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
+        # Emit the CWD stdout marker; all backends (including local, since
+        # PR #63255) parse it from output — no temp-file write needed.
         # Use a distinct line for the marker. The leading \n ensures
         # the marker starts on its own line even if the command doesn't
         # end with a newline (e.g. printf 'exact'). We'll strip this
@@ -480,10 +888,20 @@ class BaseEnvironment(ABC):
     # Process lifecycle
     # ------------------------------------------------------------------
 
-    def _wait_for_process(self, proc: ProcessHandle, timeout: int = 120) -> dict:
+    def _wait_for_process(
+        self, proc: ProcessHandle, timeout: int = 120, *, bounded_capture: bool = False
+    ) -> dict:
         """Poll-based wait with interrupt checking and stdout draining.
 
         Shared across all backends — not overridden.
+
+        ``bounded_capture=True`` (foreground terminal-tool path only) retains
+        at most ``tool_output.max_bytes`` of output in a head/tail window
+        while draining, so a verbose subprocess cannot OOM the process
+        (#64435). The default (False) preserves full-fidelity capture for
+        internal consumers — file-operation ``cat`` reads feeding the patch
+        engine, code-execution RPC reads, log reads — where truncation would
+        corrupt data.
 
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
@@ -496,7 +914,38 @@ class BaseEnvironment(ABC):
         an orphan with ``PPID=1`` when python is shut down mid-tool — the
         ``sleep 300``-survives-30-min bug Physikal and I both hit.
         """
-        output_chunks: list[str] = []
+        if bounded_capture:
+            try:
+                from tools.tool_output_limits import get_max_bytes
+
+                capture_limit = get_max_bytes()
+            except Exception:
+                capture_limit = 50_000
+        else:
+            # Full fidelity: effectively unbounded collector (single head
+            # segment, no eviction) so behavior matches the historical
+            # accumulate-everything semantics.
+            capture_limit = _UNBOUNDED_CAPTURE_CHARS
+        spill_path = None
+        if bounded_capture:
+            # Foreground terminal path: tee overflow to a spill file so a
+            # truncated result is recoverable without re-running (the file
+            # only gets created if output actually exceeds the cap).
+            try:
+                spill_dir = get_hermes_home() / "cache" / "terminal-output"
+                spill_path = spill_dir / f"out-{int(time.time())}-{os.getpid()}-{id(proc) & 0xffff:x}.log"
+                # Opportunistic cleanup of spills older than 7 days.
+                if spill_dir.is_dir():
+                    cutoff = time.time() - 7 * 86400
+                    for old in spill_dir.glob("out-*.log"):
+                        try:
+                            if old.stat().st_mtime < cutoff:
+                                old.unlink()
+                        except OSError:
+                            pass
+            except Exception:
+                spill_path = None
+        output = _BoundedOutputCollector(capture_limit, spill_path=spill_path)
 
         # Non-blocking drain via select().
         #
@@ -537,16 +986,16 @@ class BaseEnvironment(ABC):
                     if piece is None:
                         continue
                     if isinstance(piece, bytes):
-                        output_chunks.append(decoder.decode(piece))
+                        output.append(decoder.decode(piece))
                     else:
-                        output_chunks.append(str(piece))
+                        output.append(str(piece))
             except Exception:
                 pass
             finally:
                 try:
                     tail = decoder.decode(b"", final=True)
                     if tail:
-                        output_chunks.append(tail)
+                        output.append(tail)
                 except Exception:
                     pass
 
@@ -577,14 +1026,14 @@ class BaseEnvironment(ABC):
                         chunk = os.read(fd, 4096)
                         if not chunk:
                             break
-                        output_chunks.append(decoder.decode(chunk))
+                        output.append(decoder.decode(chunk))
                 except (ValueError, OSError):
                     pass
                 finally:
                     try:
                         tail = decoder.decode(b"", final=True)
                         if tail:
-                            output_chunks.append(tail)
+                            output.append(tail)
                     except Exception:
                         pass
                 return
@@ -602,7 +1051,7 @@ class BaseEnvironment(ABC):
                             break
                         if not chunk:
                             break  # true EOF — all writers closed
-                        output_chunks.append(decoder.decode(chunk))
+                        output.append(decoder.decode(chunk))
                         idle_after_exit = 0
                     elif proc.poll() is not None:
                         # bash is gone and the pipe was idle for ~100ms.  Give
@@ -618,7 +1067,7 @@ class BaseEnvironment(ABC):
                 try:
                     tail = decoder.decode(b"", final=True)
                     if tail:
-                        output_chunks.append(tail)
+                        output.append(tail)
                 except Exception:
                     pass
 
@@ -640,7 +1089,7 @@ class BaseEnvironment(ABC):
         _iter_count = 0
         _last_heartbeat = _now
         _last_interrupt_state = False
-        _cb_was_none = _get_activity_callback() is None
+        _cb_was_none = get_activity_callback() is None
         if _DEBUG_INTERRUPT:
             logger.info(
                 "[interrupt-debug] _wait_for_process ENTER tid=%s pid=%s "
@@ -663,10 +1112,11 @@ class BaseEnvironment(ABC):
                         )
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
-                    return {
-                        "output": "".join(output_chunks) + "\n[Command interrupted]",
-                        "returncode": 130,
-                    }
+                    return self._finalize_wait_result(
+                        output,
+                        output.render(suffix="\n[Command interrupted]"),
+                        130,
+                    )
                 if time.monotonic() > deadline:
                     if _DEBUG_INTERRUPT:
                         logger.info(
@@ -676,14 +1126,14 @@ class BaseEnvironment(ABC):
                         )
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
-                    partial = "".join(output_chunks)
                     timeout_msg = f"\n[Command timed out after {timeout}s]"
-                    return {
-                        "output": partial + timeout_msg
-                        if partial
-                        else timeout_msg.lstrip(),
-                        "returncode": 124,
-                    }
+                    return self._finalize_wait_result(
+                        output,
+                        output.render(suffix=timeout_msg).lstrip()
+                        if output.total_chars == 0
+                        else output.render(suffix=timeout_msg),
+                        124,
+                    )
                 # Periodic activity touch so the gateway knows we're alive
                 touch_activity_if_due(_activity_state, "terminal command running")
 
@@ -691,7 +1141,7 @@ class BaseEnvironment(ABC):
                 # the activity-callback state (thread-local, can get clobbered
                 # by nested tool calls or executor thread reuse).
                 if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
-                    _cb_now_none = _get_activity_callback() is None
+                    _cb_now_none = get_activity_callback() is None
                     logger.info(
                         "[interrupt-debug] _wait_for_process HEARTBEAT "
                         "tid=%s pid=%s iter=%d elapsed=%.0fs "
@@ -757,7 +1207,18 @@ class BaseEnvironment(ABC):
                 proc.returncode,
             )
 
-        return {"output": "".join(output_chunks), "returncode": proc.returncode}
+        return self._finalize_wait_result(output, output.render(), proc.returncode)
+
+    @staticmethod
+    def _finalize_wait_result(collector: "_BoundedOutputCollector",
+                              rendered: str, returncode: int | None) -> dict:
+        """Assemble a wait result, attaching spill metadata when overflow occurred."""
+        result = {"output": rendered, "returncode": returncode}
+        spill = collector.close_spill()
+        if spill:
+            result["output_total_chars"] = collector.total_chars
+            result["full_output_path"] = spill
+        return result
 
     def _kill_process(self, proc: ProcessHandle):
         """Terminate a process. Subclasses may override for process-group kill."""
@@ -834,8 +1295,19 @@ class BaseEnvironment(ABC):
         timeout: int | None = None,
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
+        bounded_capture: bool = False,
     ) -> dict:
-        """Execute a command, return {"output": str, "returncode": int}."""
+        """Execute a command, return {"output": str, "returncode": int}.
+
+        ``bounded_capture=True`` caps stdout/stderr retention at
+        ``tool_output.max_bytes`` WHILE the stream is drained (head/tail
+        window) instead of holding the full output in memory (#64435).
+        It must only be set by callers whose output is destined for the
+        model/tool payload (the foreground terminal tool). Internal
+        full-fidelity consumers — file operations ``cat`` reads that feed
+        the patch engine, code-execution RPC reads, log reads — MUST leave
+        it False: truncating those corrupts data, not just display.
+        """
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
@@ -863,13 +1335,16 @@ class BaseEnvironment(ABC):
 
         wrapped = self._wrap_command(exec_command, effective_cwd)
 
-        # Use login shell if snapshot failed (so user's profile still loads)
-        login = not self._snapshot_ready
+        # Use login shell if snapshot failed (so user's profile still loads),
+        # unless login itself is broken — then non-login is the only path.
+        login = not self._snapshot_ready and not self._prefer_nonlogin
 
         proc = self._run_bash(
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
         )
-        result = self._wait_for_process(proc, timeout=effective_timeout)
+        result = self._wait_for_process(
+            proc, timeout=effective_timeout, bounded_capture=bounded_capture
+        )
         self._update_cwd(result)
 
         return result

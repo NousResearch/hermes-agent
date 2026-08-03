@@ -1,36 +1,32 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
-import {
-  $previewTarget,
-  dismissPreviewTarget,
-  type PreviewRecordSource,
-  setCurrentSessionPreviewTarget
-} from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $previewTabSources, closePreviewForSource, openPreview, type PreviewRecordSource } from '@/store/preview'
 
 export function PreviewAttachment({ source = 'manual', target }: { source?: PreviewRecordSource; target: string }) {
   const { t } = useI18n()
-  const cwd = useStore($currentCwd)
-  const activePreview = useStore($previewTarget)
+  // This link lives in one session's transcript; resolve it against THAT
+  // session's cwd, not the primary chat's.
+  const cwd = useStore(useSessionView().$cwd)
+  const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
-  const activePreviewRef = useRef(activePreview)
   const cwdRef = useRef(cwd)
   const mountedRef = useRef(false)
   const requestTokenRef = useRef(0)
   const targetRef = useRef(target)
   const name = previewName(target)
-  const isActive = activePreview?.source === target
+  const isActive = openSources.includes(target)
 
-  activePreviewRef.current = activePreview
   cwdRef.current = cwd
   targetRef.current = target
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     mountedRef.current = true
 
@@ -40,6 +36,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
     }
   }, [])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     requestTokenRef.current += 1
     setOpening(false)
@@ -51,7 +48,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
     }
 
     if (isActive) {
-      dismissPreviewTarget()
+      closePreviewForSource(target)
 
       return
     }
@@ -78,13 +75,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
         throw new Error(`Could not open preview target: ${requestTarget}`)
       }
 
-      const currentPreview = activePreviewRef.current
-
-      if (currentPreview?.source === preview.source && currentPreview.url === preview.url) {
-        return
-      }
-
-      setCurrentSessionPreviewTarget(preview, source, requestTarget)
+      openPreview(preview, source)
     } catch (error) {
       if (
         !mountedRef.current ||
@@ -104,16 +95,15 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
   }
 
   return (
-    <div className="flex w-full max-w-160 flex-wrap items-center gap-2.5 rounded-lg border border-border/55 bg-card/55 px-2.5 py-1.5 text-sm">
-      <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted/55 text-muted-foreground/85">
+    <div className="flex w-full max-w-160 items-center gap-2 rounded-lg border border-(--ui-stroke-tertiary) bg-card/55 px-2.5 py-1.5 text-sm">
+      <span className="grid size-6 shrink-0 place-items-center rounded-md bg-muted/55 text-muted-foreground/85">
         <MonitorPlay className="size-3.5" />
       </span>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[0.78rem] font-medium leading-[1.15rem] text-foreground/90">{name}</div>
-        <div className="truncate font-mono text-[0.66rem] leading-4 text-muted-foreground/70">{target}</div>
-      </div>
+      <span className="min-w-0 flex-1 truncate text-[0.78rem] font-medium text-foreground/90" title={target}>
+        {name}
+      </span>
       <button
-        className="ml-auto shrink-0 rounded-md border border-border/55 bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50 max-[28rem]:ml-9 max-[28rem]:w-[calc(100%-2.25rem)]"
+        className="shrink-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
         disabled={opening}
         onClick={() => void togglePreview()}
         type="button"

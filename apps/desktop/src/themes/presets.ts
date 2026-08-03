@@ -9,15 +9,13 @@ import type { DesktopTheme, DesktopThemeTypography } from './types'
 // text/mono fonts carry emoji glyphs, so without this emoji render as tofu
 // boxes on platforms whose default text font lacks them (e.g. Linux/#40364).
 // Covers macOS, Windows, Linux, plus the `emoji` generic for anything else.
-export const EMOJI_FALLBACK =
-  '"Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji'
+export const EMOJI_FALLBACK = '"Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji'
 
 const SYSTEM_SANS =
   '"Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, ' +
   EMOJI_FALLBACK
 
-const SYSTEM_MONO =
-  '"Cascadia Code", "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace, ' + EMOJI_FALLBACK
+const SYSTEM_MONO = 'Menlo, Monaco, "SF Mono", "Courier Prime", monospace, ' + EMOJI_FALLBACK
 
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
 
@@ -93,7 +91,7 @@ export const nousTheme: DesktopTheme = {
   },
   typography: {
     fontSans: SYSTEM_SANS,
-    fontMono: `"Courier Prime", ${SYSTEM_MONO}`,
+    fontMono: SYSTEM_MONO,
     fontUrl: 'https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap'
   }
 }

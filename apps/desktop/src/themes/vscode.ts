@@ -143,7 +143,10 @@ const HEX_RE = /^#[0-9a-f]{3,8}$/i
  * palette only when the full base set is present. ANSI slots flatten alpha over
  * the editor background; selection keeps its alpha so xterm can blend it.
  */
-function extractTerminalPalette(colors: Record<string, unknown>, background: string): DesktopTerminalPalette | undefined {
+function extractTerminalPalette(
+  colors: Record<string, unknown>,
+  background: string
+): DesktopTerminalPalette | undefined {
   const hex = (key: string): string | undefined =>
     normalizeHex(typeof colors[key] === 'string' ? (colors[key] as string) : null, background) ?? undefined
 
@@ -163,7 +166,9 @@ function extractTerminalPalette(colors: Record<string, unknown>, background: str
 
   const foreground = hex('terminal.foreground')
   const cursor = hex('terminalCursor.foreground') ?? hex('terminalCursor.background')
-  const selection = typeof colors['terminal.selectionBackground'] === 'string' ? colors['terminal.selectionBackground'].trim() : ''
+
+  const selection =
+    typeof colors['terminal.selectionBackground'] === 'string' ? colors['terminal.selectionBackground'].trim() : ''
 
   if (foreground) {
     palette.foreground = foreground
@@ -207,7 +212,12 @@ export function convertVscodeColorTheme(raw: VscodeColorTheme, opts: ConvertOpti
   const derived: string[] = []
 
   // Background first: it's the backdrop every other token flattens alpha over.
-  const backgroundHit = pick(colors, ['editor.background', 'editorPane.background', 'editorGroup.background'], '#000000')
+  const backgroundHit = pick(
+    colors,
+    ['editor.background', 'editorPane.background', 'editorGroup.background'],
+    '#000000'
+  )
+
   const dark = isDarkType(raw, backgroundHit?.value ?? '#1e1e1e')
   const background = backgroundHit?.value ?? (dark ? '#1e1e1e' : '#ffffff')
 
@@ -254,7 +264,13 @@ export function convertVscodeColorTheme(raw: VscodeColorTheme, opts: ConvertOpti
   )
 
   const elevated = take(
-    ['editorWidget.background', 'dropdown.background', 'menu.background', 'quickInput.background', 'editorSuggestWidget.background'],
+    [
+      'editorWidget.background',
+      'dropdown.background',
+      'menu.background',
+      'quickInput.background',
+      'editorSuggestWidget.background'
+    ],
     mix(background, foreground, dark ? 0.08 : 0.05)
   )
 
@@ -263,7 +279,10 @@ export function convertVscodeColorTheme(raw: VscodeColorTheme, opts: ConvertOpti
     mix(background, foreground, dark ? 0.04 : 0.025)
   )
 
-  const sidebar = take(['sideBar.background', 'activityBar.background'], mix(background, foreground, dark ? 0.02 : 0.012))
+  const sidebar = take(
+    ['sideBar.background', 'activityBar.background'],
+    mix(background, foreground, dark ? 0.02 : 0.012)
+  )
 
   // The accent labels the sidebar (--theme-primary), so guarantee it reads
   // there — otherwise low-contrast brand colors leave invisible section headers.
@@ -274,7 +293,10 @@ export function convertVscodeColorTheme(raw: VscodeColorTheme, opts: ConvertOpti
     mix(background, foreground, dark ? 0.16 : 0.14)
   )
 
-  const input = take(['input.background', 'dropdown.background', 'quickInput.background'], mix(background, foreground, dark ? 0.1 : 0.06))
+  const input = take(
+    ['input.background', 'dropdown.background', 'quickInput.background'],
+    mix(background, foreground, dark ? 0.1 : 0.06)
+  )
 
   const mutedForeground = take(
     ['descriptionForeground', 'editorLineNumber.foreground', 'tab.inactiveForeground', 'disabledForeground'],
@@ -282,7 +304,12 @@ export function convertVscodeColorTheme(raw: VscodeColorTheme, opts: ConvertOpti
   )
 
   const destructive = take(
-    ['editorError.foreground', 'errorForeground', 'editorOverviewRuler.errorForeground', 'notificationsErrorIcon.foreground'],
+    [
+      'editorError.foreground',
+      'errorForeground',
+      'editorOverviewRuler.errorForeground',
+      'notificationsErrorIcon.foreground'
+    ],
     '#e25563'
   )
 

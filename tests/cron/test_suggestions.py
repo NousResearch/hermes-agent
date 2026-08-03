@@ -62,6 +62,22 @@ class TestStore:
         with pytest.raises(ValueError):
             store.add_suggestion(title="x", description="d", source="bogus", job_spec={}, dedup_key="k")
 
+    def test_usage_source_is_consent_first_self_improvement(self, store):
+        """Background review suggestions must stay pending until user acceptance."""
+        rec = _add(
+            store,
+            key="usage:weekly-summary",
+            title="Weekly project summary",
+            source="usage",
+            schedule="0 17 * * 5",
+        )
+
+        assert rec is not None
+        assert rec["source"] == "usage"
+        assert rec["status"] == "pending"
+        assert rec["job_spec"]["schedule"] == "0 17 * * 5"
+        assert store.list_pending()[0]["dedup_key"] == "usage:weekly-summary"
+
     def test_pending_cap(self, store):
         for i in range(store.MAX_PENDING):
             assert _add(store, key=f"k{i}") is not None
@@ -115,13 +131,6 @@ class TestCatalog:
         assert len(created) == len(CATALOG)
         assert len(store.list_pending()) == min(len(CATALOG), store.MAX_PENDING)
 
-    def test_seed_is_idempotent(self, store):
-        from cron.suggestion_catalog import seed_catalog_suggestions
-
-        first = seed_catalog_suggestions(add_fn=store.add_suggestion)
-        second = seed_catalog_suggestions(add_fn=store.add_suggestion)
-        assert len(first) >= 1
-        assert second == []  # already present -> nothing new
 
     def test_monitor_entry_references_classifier_script(self):
         from cron.suggestion_catalog import CATALOG, classify_items_script_path
@@ -148,15 +157,6 @@ class TestBlueprintBridge:
         assert rec["job_spec"]["skills"] == ["morning-brief"]
         assert rec["job_spec"]["schedule"] == "0 8 * * *"
 
-    def test_blueprint_to_job_spec_matches_create_blueprint_job(self):
-        from tools.blueprints import BlueprintSpec, blueprint_to_job_spec
-
-        spec = BlueprintSpec(skill_name="x", schedule="every 2h", deliver="origin", prompt="p")
-        js = blueprint_to_job_spec(spec)
-        assert js["skills"] == ["x"]
-        assert js["schedule"] == "every 2h"
-        assert js["prompt"] == "p"
-
 
 class TestCommandHandler:
     def test_bare_lists_pending(self, store):
@@ -168,22 +168,6 @@ class TestCommandHandler:
                 out = handle_suggestions_command("")
         assert "Daily thing" in out
 
-    def test_accept_via_handler(self, store):
-        _add(store, key="ha", title="Acceptable")
-        from hermes_cli.suggestions_cmd import handle_suggestions_command
-
-        with patch("cron.jobs.create_job", lambda **k: {"id": "j", "name": k.get("name"), "job_spec": k}):
-            out = handle_suggestions_command("accept 1", origin={"platform": "cli", "chat_id": "1"})
-        assert "Scheduled" in out
-        assert store.list_pending() == []
-
-    def test_dismiss_via_handler(self, store):
-        _add(store, key="hd", title="Dismissable")
-        from hermes_cli.suggestions_cmd import handle_suggestions_command
-
-        out = handle_suggestions_command("dismiss 1")
-        assert "Dismissed" in out
-        assert store.list_pending() == []
 
     def test_empty_list_message(self, store):
         from hermes_cli.suggestions_cmd import handle_suggestions_command

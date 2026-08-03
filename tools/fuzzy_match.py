@@ -6,7 +6,7 @@ Implements a multi-strategy matching chain to robustly find and replace text,
 accommodating variations in whitespace, indentation, and escaping common
 in LLM-generated code.
 
-The 8-strategy chain (inspired by OpenCode), tried in order:
+The 9-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
 2. Line-trimmed - Strip leading/trailing whitespace per line
 3. Whitespace normalized - Collapse multiple spaces/tabs to single space
@@ -38,6 +38,23 @@ UNICODE_MAP = {
     "\u2018": "'", "\u2019": "'",  # smart single quotes
     "\u2014": "--", "\u2013": "-", # em/en dashes
     "\u2026": "...", "\u00a0": " ", # ellipsis and non-breaking space
+    # Unicode minus sign — models type ASCII '-' for file content that uses
+    # the typographic minus (math/scientific docs).
+    "\u2212": "-",
+    # Space-separator family (Zs) beyond NBSP.  Files with typographic
+    # spacing (en/em/thin spaces, narrow NBSP in French text, ideographic
+    # space in CJK text) never match a model's ASCII-space old_string via
+    # the precise strategies, falling through to the similarity-based
+    # context_aware fallback — which can pick the wrong region and flattens
+    # the file's Unicode on replacement.  (anomalyco/opencode#38133 corpus)
+    "\u2000": " ", "\u2001": " ",  # en/em quad
+    "\u2002": " ", "\u2003": " ",  # en/em space
+    "\u2004": " ", "\u2005": " ", "\u2006": " ",  # three/four/six-per-em
+    "\u2007": " ", "\u2008": " ",  # figure/punctuation space
+    "\u2009": " ", "\u200a": " ",  # thin/hair space
+    "\u202f": " ",  # narrow no-break space
+    "\u205f": " ",  # medium mathematical space
+    "\u3000": " ",  # ideographic (CJK full-width) space
 }
 
 def _unicode_normalize(text: str) -> str:
@@ -45,6 +62,58 @@ def _unicode_normalize(text: str) -> str:
     for char, repl in UNICODE_MAP.items():
         text = text.replace(char, repl)
     return text
+
+
+def is_already_applied(content: str, old_string: str, new_string: str) -> bool:
+    """Return True when the requested edit is already present in the file.
+
+    Production trajectory mining shows the most common patch failure is a
+    re-send of an edit that already landed (old_string == new_string, or
+    old_string gone while new_string is present) — the model's intent is
+    "make the file contain this text", and it already does. Callers use
+    this to convert those errors into an explicit success-shaped no-op so
+    the model moves on instead of re-reading and re-patching.
+
+    Deliberately conservative:
+    - new_string must be non-trivial (>= 8 chars stripped) — a tiny target
+      matching by coincidence must not mask a genuine typo'd edit;
+    - new_string must appear EXACTLY in the content (no fuzzy matching —
+      approximate presence is not proof the edit landed);
+    - when old_string differs from new_string, old_string must be GONE
+      (still-present old text means the edit is at best half-applied).
+    """
+    if not new_string or len(new_string.strip()) < 8:
+        return False
+    if new_string not in content:
+        return False
+    if old_string == new_string:
+        return True
+    return old_string not in content
+
+
+def _format_match_locations(content: str, matches: List[Tuple[int, int]],
+                            cap: int = 5) -> str:
+    """Render up to ``cap`` match positions as 'L<line>: <snippet>' rows.
+
+    Gives the model the information it needs to disambiguate an ambiguous
+    old_string in ONE follow-up (add neighboring context, or choose
+    replace_all) instead of re-reading the file to find the occurrences.
+    """
+    rows = []
+    for start, _end in matches[:cap]:
+        line_no = content.count("\n", 0, start) + 1
+        line_start = content.rfind("\n", 0, start) + 1
+        line_end = content.find("\n", line_start)
+        if line_end == -1:
+            line_end = len(content)
+        snippet = content[line_start:line_end].strip()
+        if len(snippet) > 80:
+            snippet = snippet[:77] + "..."
+        rows.append(f"  L{line_no}: {snippet}")
+    extra = len(matches) - cap
+    if extra > 0:
+        rows.append(f"  ... and {extra} more")
+    return "\n".join(rows)
 
 
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
@@ -66,6 +135,13 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     if not old_string:
         return content, 0, None, "old_string cannot be empty"
 
+    if not old_string.strip():
+        # A whitespace-only old_string matches trivially (a blank line, run of
+        # spaces, etc.) and, when it recurs, either mass-replaces under
+        # replace_all or raises a hard-to-diagnose ambiguity error. It's never
+        # a meaningful anchor — reject it so the caller provides real context.
+        return content, 0, None, "old_string is only whitespace — provide non-blank text to match"
+
     if old_string == new_string:
         return content, 0, None, "old_string and new_string are identical"
 
@@ -82,15 +158,36 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         ("context_aware", _strategy_context_aware),
     ]
 
+    # Strategies whose matches are similarity-based rather than exact-content:
+    # they can accept a region that only *approximately* resembles old_string.
+    # Safe for a single unique replacement (the caller asked to change that one
+    # spot), but NEVER safe under replace_all — "replace every approximate
+    # match" silently rewrites regions that don't actually contain old_string.
+    _SIMILARITY_STRATEGIES = {"block_anchor", "context_aware"}
+
     for strategy_name, strategy_fn in strategies:
         matches = strategy_fn(content, old_string)
 
         if matches:
             # Found matches with this strategy
             if len(matches) > 1 and not replace_all:
+                locations = _format_match_locations(content, matches)
                 return content, 0, None, (
                     f"Found {len(matches)} matches for old_string. "
-                    f"Provide more context to make it unique, or use replace_all=True."
+                    f"Provide more context to make it unique, or use replace_all=True. "
+                    f"Matches:\n{locations}"
+                )
+
+            # replace_all with a similarity-based strategy would overwrite
+            # every approximately-matching block, not just exact ones — refuse
+            # and make the caller narrow old_string to something a precise
+            # strategy can match exactly.
+            if replace_all and len(matches) > 1 and strategy_name in _SIMILARITY_STRATEGIES:
+                return content, 0, None, (
+                    f"Found {len(matches)} approximate matches via the "
+                    f"'{strategy_name}' strategy; replace_all only applies to exact "
+                    f"matches. Provide the precise text (whitespace included) so an "
+                    f"exact/line-trimmed match can be made."
                 )
 
             # Escape-drift guard: when the matched strategy is NOT `exact`,
@@ -134,6 +231,18 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             effective_new = _maybe_unescape_new_string(
                 new_string, content, matches,
             )
+            # Unicode-preservation guard: when strategy 7 (unicode_normalized)
+            # matched, the file has Unicode characters (em-dashes, smart quotes,
+            # ellipsis) but old_string/new_string from the LLM are ASCII
+            # equivalents.  Writing new_string verbatim would silently corrupt
+            # the file's Unicode — em-dashes become two hyphens, smart quotes
+            # become straight quotes.  Align the replacement with the file's
+            # actual Unicode so only the LLM's intended changes are applied
+            # and unchanged portions keep their original characters.
+            if strategy_name == "unicode_normalized":
+                effective_new = _preserve_unicode_in_replacement(
+                    content, matches, old_string, effective_new,
+                )
             new_content = _apply_replacements(
                 content, matches, effective_new,
                 old_string=old_string if strategy_name != "exact" else None,
@@ -304,6 +413,74 @@ def _maybe_unescape_new_string(new_string: str,
     return out
 
 
+def _preserve_unicode_in_replacement(
+    content: str, matches: List[Tuple[int, int]],
+    old_string: str, new_string: str,
+) -> str:
+    """Preserve Unicode characters from the file in the replacement string.
+
+    When strategy 7 (unicode_normalized) matched, the file has Unicode
+    characters (em-dashes, smart quotes, ellipsis, non-breaking spaces)
+    but old_string/new_string from the LLM are ASCII equivalents.
+    Writing new_string verbatim would silently corrupt the file's
+    Unicode — em-dashes become two hyphens, smart quotes become
+    straight quotes.
+
+    This function aligns the replacement with the file's actual Unicode
+    by diffing old_string→new_string and applying only the actual edits
+    to the file's original text, preserving Unicode for unchanged portions.
+    """
+    # Aggregate the matched file regions
+    file_region = "".join(content[start:end] for start, end in matches)
+
+    # Normalize both for comparison
+    norm_old = _unicode_normalize(old_string)
+    norm_file = _unicode_normalize(file_region)
+
+    # If the normalized forms don't match, the strategy shouldn't have
+    # fired — fall back to direct replacement.
+    if norm_old != norm_file:
+        return new_string
+
+    # Build position maps from normalized space back to original space
+    # for both old_string and file_region.  UNICODE_MAP replacements can
+    # expand characters (em-dash → '--'), so normalized positions don't
+    # map 1:1 to original positions.  Reuse the module-level
+    # _build_orig_to_norm_map, then invert it (same inversion as
+    # _map_positions_norm_to_orig) to get norm→orig lookups.
+    file_orig_to_norm = _build_orig_to_norm_map(file_region)
+    file_norm_to_orig: dict[int, int] = {}
+    for orig_pos, np in enumerate(file_orig_to_norm[:-1]):
+        if np not in file_norm_to_orig:
+            file_norm_to_orig[np] = orig_pos
+
+    # Diff norm_old → new_string to find the actual edits
+    sm = SequenceMatcher(None, norm_old, new_string)
+    opcodes = sm.get_opcodes()
+
+    # Apply edits to file_region, preserving Unicode for unchanged spans
+    result_parts: List[str] = []
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "equal":
+            # Keep the original file_region text for this span
+            orig_start = file_norm_to_orig.get(i1, 0)
+            orig_end = orig_start
+            while (
+                orig_end < len(file_region)
+                and file_orig_to_norm[orig_end] < i2
+            ):
+                orig_end += 1
+            result_parts.append(file_region[orig_start:orig_end])
+        elif tag == "replace":
+            result_parts.append(new_string[j1:j2])
+        elif tag == "delete":
+            pass  # skip deleted portion
+        elif tag == "insert":
+            result_parts.append(new_string[j1:j2])
+
+    return "".join(result_parts)
+
+
 def _apply_replacements(content: str, matches: List[Tuple[int, int]],
                         new_string: str, old_string: Optional[str] = None) -> str:
     """
@@ -349,7 +526,12 @@ def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
         if pos == -1:
             break
         matches.append((pos, pos + len(pattern)))
-        start = pos + 1
+        # Advance past the whole match, not just one char, so self-overlapping
+        # patterns (e.g. "aa" in "aaaa") produce non-overlapping spans matching
+        # str.replace() semantics. Advancing by 1 yielded overlapping matches
+        # that corrupt the file under replace_all=True (reverse-order apply on
+        # stale offsets).
+        start = pos + len(pattern)
     return matches
 
 
@@ -610,36 +792,67 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
 
 def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    Strategy 9: Line-by-line similarity with 50% threshold.
-    
-    Finds blocks where at least 50% of lines have high similarity.
+    Strategy 9 (last resort): anchored line-by-line similarity.
+
+    Only considers blocks whose first AND last lines closely match the
+    pattern's first/last lines (an anchor pre-filter), then requires EVERY
+    non-blank pattern line to be highly similar (>=0.80) to the aligned
+    content line. The anchor filter keeps this from being an O(file x pattern)
+    scan on every miss, and the all-lines requirement stops a single
+    coincidental line-match from silently replacing an unrelated block
+    (the old 50%-of-lines threshold accepted half-garbage patterns and
+    destroyed the non-matching lines).
     """
     pattern_lines = pattern.split('\n')
     content_lines = content.split('\n')
-    
+
     if not pattern_lines:
         return []
-    
-    matches = []
+
     pattern_line_count = len(pattern_lines)
-    
+    if pattern_line_count > len(content_lines):
+        return []
+
+    # Anchor pre-filter: a block is only a candidate when its first and last
+    # lines are strong matches for the pattern's first/last lines. This is the
+    # cheap gate that avoids scoring every window in the file.
+    first_pat = pattern_lines[0].strip()
+    last_pat = pattern_lines[-1].strip()
+    ANCHOR_THRESHOLD = 0.80
+
+    def _sim(a: str, b: str) -> float:
+        if a == b:
+            return 1.0
+        return SequenceMatcher(None, a, b).ratio()
+
+    matches = []
     for i in range(len(content_lines) - pattern_line_count + 1):
         block_lines = content_lines[i:i + pattern_line_count]
-        
-        # Calculate line-by-line similarity
-        high_similarity_count = 0
+
+        # Cheap anchor check first — skip non-candidate windows without
+        # scoring their interior.
+        if _sim(first_pat, block_lines[0].strip()) < ANCHOR_THRESHOLD:
+            continue
+        if _sim(last_pat, block_lines[-1].strip()) < ANCHOR_THRESHOLD:
+            continue
+
+        # Candidate: require EVERY non-blank pattern line to match its aligned
+        # content line closely. One garbage line disqualifies the block.
+        all_match = True
         for p_line, c_line in zip(pattern_lines, block_lines):
-            sim = SequenceMatcher(None, p_line.strip(), c_line.strip()).ratio()
-            if sim >= 0.80:
-                high_similarity_count += 1
-        
-        # Need at least 50% of lines to have high similarity
-        if high_similarity_count >= len(pattern_lines) * 0.5:
+            p_stripped = p_line.strip()
+            if not p_stripped:
+                continue  # blank pattern lines don't constrain the match
+            if _sim(p_stripped, c_line.strip()) < 0.80:
+                all_match = False
+                break
+
+        if all_match:
             start_pos, end_pos = _calculate_line_positions(
                 content_lines, i, i + pattern_line_count, len(content)
             )
             matches.append((start_pos, end_pos))
-    
+
     return matches
 
 
@@ -768,13 +981,32 @@ def _map_normalized_positions(original: str, normalized: str,
         else:
             orig_end = orig_start + (norm_end - norm_start)
         
-        # Expand to include trailing whitespace that was normalized
-        while orig_end < len(original) and original[orig_end] in ' \t':
-            orig_end += 1
+        # Expand to include trailing whitespace that was normalized,
+        # but only when the normalized match itself ended with whitespace.
+        # When the match ends with a non-space character, the first
+        # whitespace in the original is a word boundary and must not be
+        # consumed.  See https://github.com/NousResearch/hermes-agent/issues/52491
+        if norm_end < len(normalized) and normalized[norm_end - 1] == ' ':
+            while orig_end < len(original) and original[orig_end] in ' \t':
+                orig_end += 1
         
         original_matches.append((orig_start, min(orig_end, len(original))))
     
     return original_matches
+
+
+def _visualize_whitespace(line: str) -> str:
+    """Render leading whitespace visibly (→ = tab, · = space).
+
+    Only the leading run is visualized — interior spacing is rarely the
+    culprit and full visualization makes lines unreadable.
+    """
+    i = 0
+    prefix = []
+    while i < len(line) and line[i] in (" ", "\t"):
+        prefix.append("→" if line[i] == "\t" else "·")
+        i += 1
+    return "".join(prefix) + line[i:]
 
 
 def find_closest_lines(old_string: str, content: str, context_lines: int = 2, max_results: int = 3) -> str:
@@ -836,7 +1068,23 @@ def find_closest_lines(old_string: str, content: str, context_lines: int = 2, ma
     if not parts:
         return ""
 
-    return "\n---\n".join(parts)
+    result = "\n---\n".join(parts)
+
+    # Whitespace diagnosis (pattern from crush's diagnoseMismatch): when the
+    # best candidate line matches the anchor after stripping but differs in
+    # raw text, the failure is whitespace-shaped. Show BOTH lines with
+    # leading whitespace made visible so the model can copy the file's
+    # exact indentation instead of guessing again.
+    best_line = content_lines[top[0][1]]
+    if best_line.strip() == anchor and best_line != old_lines[0]:
+        result += (
+            "\n\nWhitespace difference detected (→ = tab, · = space):\n"
+            f"  file has: {_visualize_whitespace(best_line)}\n"
+            f"  you sent: {_visualize_whitespace(old_lines[0])}\n"
+            "Use the exact whitespace shown in 'file has'."
+        )
+
+    return result
 
 
 def format_no_match_hint(error: Optional[str], match_count: int,

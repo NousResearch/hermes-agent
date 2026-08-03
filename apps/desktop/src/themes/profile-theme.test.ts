@@ -10,7 +10,14 @@ interface Pref {
 }
 
 const cases = [
-  { name: 'skin', pref: skinPref as unknown as Pref, fallback: DEFAULT_SKIN_NAME, a: 'ember', b: 'midnight', junk: 'nope' },
+  {
+    name: 'skin',
+    pref: skinPref as unknown as Pref,
+    fallback: DEFAULT_SKIN_NAME,
+    a: 'ember',
+    b: 'midnight',
+    junk: 'nope'
+  },
   { name: 'mode', pref: modePref as unknown as Pref, fallback: 'light', a: 'dark', b: 'system', junk: 'dusk' }
 ]
 

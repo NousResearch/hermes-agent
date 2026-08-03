@@ -206,21 +206,11 @@ describe('writeClipboardText', () => {
 
     const start = vi.fn().mockReturnValue(child)
 
-    await expect(
-      writeClipboardText('x11 text', 'linux', start as any, { WAYLAND_DISPLAY: 'wayland-1' })
-    ).resolves.toBe(true)
-    expect(start).toHaveBeenNthCalledWith(
-      1,
-      'wl-copy',
-      ['--type', 'text/plain'],
-      expect.anything()
+    await expect(writeClipboardText('x11 text', 'linux', start as any, { WAYLAND_DISPLAY: 'wayland-1' })).resolves.toBe(
+      true
     )
-    expect(start).toHaveBeenNthCalledWith(
-      2,
-      'xclip',
-      ['-selection', 'clipboard', '-in'],
-      expect.anything()
-    )
+    expect(start).toHaveBeenNthCalledWith(1, 'wl-copy', ['--type', 'text/plain'], expect.anything())
+    expect(start).toHaveBeenNthCalledWith(2, 'xclip', ['-selection', 'clipboard', '-in'], expect.anything())
   })
 
   it('falls back to xsel when both wl-copy and xclip fail', async () => {
@@ -263,7 +253,9 @@ describe('writeClipboardText', () => {
 
     const start = vi.fn().mockReturnValue(child)
 
-    await expect(writeClipboardText('wsl text', 'linux', start as any, { WSL_DISTRO_NAME: 'Ubuntu' })).resolves.toBe(true)
+    await expect(writeClipboardText('wsl text', 'linux', start as any, { WSL_DISTRO_NAME: 'Ubuntu' })).resolves.toBe(
+      true
+    )
     expect(start).toHaveBeenCalledWith(
       'powershell.exe',
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),

@@ -1,17 +1,19 @@
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.run import GatewayRunner
+from gateway.session import SessionSource, build_session_key
 
 
 class _FatalAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="token"), Platform.TELEGRAM)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._set_fatal_error(
             "telegram_token_lock",
             "Another local Hermes gateway is already using this Telegram bot token.",
@@ -33,7 +35,7 @@ class _RuntimeRetryableAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="token"), Platform.WHATSAPP)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -46,23 +48,32 @@ class _RuntimeRetryableAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
-@pytest.mark.asyncio
-async def test_runner_requests_clean_exit_for_nonretryable_startup_conflict(monkeypatch, tmp_path):
-    config = GatewayConfig(
-        platforms={
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="token")
-        },
-        sessions_dir=tmp_path / "sessions",
-    )
-    runner = GatewayRunner(config)
+class _ReplacementDeliveryAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(
+            PlatformConfig(enabled=True, token="token", typing_indicator=False),
+            Platform.DISCORD,
+        )
+        self.sent: list[str] = []
+        self.connected = True
 
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _FatalAdapter())
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return True
 
-    ok = await runner.start()
+    async def disconnect(self) -> None:
+        self.connected = False
 
-    assert ok is True
-    assert runner.should_exit_cleanly is True
-    assert "already using this Telegram bot token" in runner.exit_reason
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        if not self.connected:
+            return SendResult(success=False, error="Not connected")
+        self.sent.append(content)
+        return SendResult(success=True, message_id=f"m-{len(self.sent)}")
+
+    async def send_typing(self, chat_id, metadata=None) -> None:
+        return None
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
 
 
 @pytest.mark.asyncio
@@ -98,3 +109,49 @@ async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatc
     assert runner._exit_with_failure is False
     assert Platform.WHATSAPP in runner._failed_platforms
     assert runner._failed_platforms[Platform.WHATSAPP]["attempts"] == 0
+
+
+@pytest.mark.asyncio
+async def test_retryable_fatal_queues_reconnect_after_cancellation_swallowing_disconnect(
+    monkeypatch, tmp_path
+):
+    """A wedged old adapter cannot block runner-owned reconnect recovery."""
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _RuntimeRetryableAdapter()
+    adapter._set_fatal_error("transport_stale", "transport stale", retryable=True)
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.delivery_router.adapters = runner.adapters
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def swallow_cancellation():
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+        finished.set()
+
+    monkeypatch.setattr(adapter, "disconnect", swallow_cancellation)
+    operation = asyncio.create_task(runner._handle_adapter_fatal_error(adapter))
+    await started.wait()
+    done, _pending = await asyncio.wait({operation}, timeout=0.2)
+    try:
+        assert operation in done
+        assert runner.adapters == {}
+        assert Platform.WHATSAPP in runner._failed_platforms
+        assert runner._failed_platforms[Platform.WHATSAPP]["attempts"] == 0
+    finally:
+        release.set()
+        await asyncio.wait({operation}, timeout=0.2)
+        await asyncio.wait_for(finished.wait(), timeout=0.2)
+
+

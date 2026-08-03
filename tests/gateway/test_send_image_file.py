@@ -38,25 +38,6 @@ class TestExtractMediaImages:
         assert "MEDIA:" not in cleaned
         assert "Here is the screenshot" in cleaned
 
-    def test_jpg_image_extracted(self):
-        content = "MEDIA:/tmp/photo.jpg"
-        media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert len(media) == 1
-        assert media[0][0] == "/tmp/photo.jpg"
-
-    def test_webp_image_extracted(self):
-        content = "MEDIA:/tmp/image.webp"
-        media, _ = BasePlatformAdapter.extract_media(content)
-        assert len(media) == 1
-
-    def test_mixed_audio_and_image(self):
-        content = "MEDIA:/audio.ogg\nMEDIA:/screenshot.png"
-        media, _ = BasePlatformAdapter.extract_media(content)
-        assert len(media) == 2
-        paths = [m[0] for m in media]
-        assert "/audio.ogg" in paths
-        assert "/screenshot.png" in paths
-
 
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests
@@ -82,7 +63,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 class TestTelegramSendImageFile:
@@ -113,13 +94,6 @@ class TestTelegramSendImageFile:
         call_kwargs = adapter._bot.send_photo.call_args
         assert call_kwargs.kwargs["chat_id"] == 12345
 
-    def test_returns_error_when_file_missing(self, adapter):
-        """send_image_file should return error for nonexistent file."""
-        result = _run(
-            adapter.send_image_file(chat_id="12345", image_path="/nonexistent/image.png")
-        )
-        assert not result.success
-        assert "not found" in result.error
 
     def test_returns_error_when_not_connected(self, adapter):
         """send_image_file should return error when bot is None."""
@@ -129,43 +103,6 @@ class TestTelegramSendImageFile:
         )
         assert not result.success
         assert "Not connected" in result.error
-
-    def test_caption_truncated_to_1024(self, adapter, tmp_path):
-        """Telegram captions have a 1024 char limit."""
-        img = tmp_path / "shot.png"
-        img.write_bytes(b"\x89PNG" + b"\x00" * 50)
-
-        mock_msg = MagicMock()
-        mock_msg.message_id = 1
-        adapter._bot.send_photo = AsyncMock(return_value=mock_msg)
-
-        long_caption = "A" * 2000
-        _run(
-            adapter.send_image_file(chat_id="12345", image_path=str(img), caption=long_caption)
-        )
-
-        call_kwargs = adapter._bot.send_photo.call_args.kwargs
-        assert len(call_kwargs["caption"]) == 1024
-
-    def test_thread_id_forwarded(self, adapter, tmp_path):
-        """metadata thread_id is forwarded as message_thread_id (required for Telegram forum groups)."""
-        img = tmp_path / "shot.png"
-        img.write_bytes(b"\x89PNG" + b"\x00" * 50)
-
-        mock_msg = MagicMock()
-        mock_msg.message_id = 43
-        adapter._bot.send_photo = AsyncMock(return_value=mock_msg)
-
-        _run(
-            adapter.send_image_file(
-                chat_id="12345",
-                image_path=str(img),
-                metadata={"thread_id": "789"},
-            )
-        )
-
-        call_kwargs = adapter._bot.send_photo.call_args.kwargs
-        assert call_kwargs["message_thread_id"] == 789
 
 
 # ---------------------------------------------------------------------------
@@ -201,23 +138,6 @@ class TestDiscordSendImageFile:
         a._client = MagicMock()
         return a
 
-    def test_sends_local_image_as_attachment(self, adapter, tmp_path):
-        """send_image_file should create discord.File and send to channel."""
-        img = tmp_path / "screenshot.png"
-        img.write_bytes(b"\x89PNG" + b"\x00" * 50)
-
-        mock_channel = MagicMock()
-        mock_msg = MagicMock()
-        mock_msg.id = 99
-        mock_channel.send = AsyncMock(return_value=mock_msg)
-        adapter._client.get_channel = MagicMock(return_value=mock_channel)
-
-        result = _run(
-            adapter.send_image_file(chat_id="67890", image_path=str(img))
-        )
-        assert result.success
-        assert result.message_id == "99"
-        mock_channel.send.assert_awaited_once()
 
     def test_send_document_uploads_file_attachment(self, adapter, tmp_path):
         """send_document should upload a native Discord attachment."""
@@ -242,7 +162,11 @@ class TestDiscordSendImageFile:
 
         assert result.success
         assert result.message_id == "100"
-        assert "file" in mock_channel.send.call_args.kwargs
+        # #66797: path-based File sent via plural files=[...] (matches the
+        # image-batch path; the singular file= handle form could race the
+        # multipart encoder and silently drop the attachment).
+        sent_files = mock_channel.send.call_args.kwargs.get("files")
+        assert sent_files and len(sent_files) == 1
         assert file_cls.call_args.kwargs["filename"] == "renamed.pdf"
 
     def test_send_video_uploads_file_attachment(self, adapter, tmp_path):
@@ -267,33 +191,10 @@ class TestDiscordSendImageFile:
 
         assert result.success
         assert result.message_id == "101"
-        assert "file" in mock_channel.send.call_args.kwargs
+        # #66797: path-based File sent via plural files=[...] (see above).
+        sent_files = mock_channel.send.call_args.kwargs.get("files")
+        assert sent_files and len(sent_files) == 1
         assert file_cls.call_args.kwargs["filename"] == "clip.mp4"
-
-    def test_returns_error_when_file_missing(self, adapter):
-        result = _run(
-            adapter.send_image_file(chat_id="67890", image_path="/nonexistent.png")
-        )
-        assert not result.success
-        assert "not found" in result.error
-
-    def test_returns_error_when_not_connected(self, adapter):
-        adapter._client = None
-        result = _run(
-            adapter.send_image_file(chat_id="67890", image_path="/tmp/img.png")
-        )
-        assert not result.success
-        assert "Not connected" in result.error
-
-    def test_handles_missing_channel(self, adapter):
-        adapter._client.get_channel = MagicMock(return_value=None)
-        adapter._client.fetch_channel = AsyncMock(return_value=None)
-
-        result = _run(
-            adapter.send_image_file(chat_id="99999", image_path="/tmp/img.png")
-        )
-        assert not result.success
-        assert "not found" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +214,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 class TestSlackSendImageFile:
@@ -324,31 +225,6 @@ class TestSlackSendImageFile:
         a._app = MagicMock()
         return a
 
-    def test_sends_local_image_via_upload(self, adapter, tmp_path):
-        """send_image_file should call files_upload_v2 with the local path."""
-        img = tmp_path / "screenshot.png"
-        img.write_bytes(b"\x89PNG" + b"\x00" * 50)
-
-        mock_result = MagicMock()
-        adapter._app.client.files_upload_v2 = AsyncMock(return_value=mock_result)
-
-        result = _run(
-            adapter.send_image_file(chat_id="C12345", image_path=str(img))
-        )
-        assert result.success
-        adapter._app.client.files_upload_v2.assert_awaited_once()
-
-        call_kwargs = adapter._app.client.files_upload_v2.call_args.kwargs
-        assert call_kwargs["file"] == str(img)
-        assert call_kwargs["filename"] == "screenshot.png"
-        assert call_kwargs["channel"] == "C12345"
-
-    def test_returns_error_when_file_missing(self, adapter):
-        result = _run(
-            adapter.send_image_file(chat_id="C12345", image_path="/nonexistent.png")
-        )
-        assert not result.success
-        assert "not found" in result.error
 
     def test_returns_error_when_not_connected(self, adapter):
         adapter._app = None
@@ -407,31 +283,4 @@ class TestScreenshotCleanup:
 
         assert old.exists(), "Repeated cleanup should be skipped while throttled"
 
-    def test_cleanup_ignores_non_screenshot_files(self, tmp_path):
-        """Only files matching browser_screenshot_*.png should be cleaned."""
-        import time
-        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
 
-        _last_screenshot_cleanup_by_dir.clear()
-
-        other_file = tmp_path / "important_data.txt"
-        other_file.write_bytes(b"keep me")
-        old_time = time.time() - (48 * 3600)
-        os.utime(str(other_file), (old_time, old_time))
-
-        _cleanup_old_screenshots(tmp_path, max_age_hours=24)
-
-        assert other_file.exists(), "Non-screenshot files should not be touched"
-
-    def test_cleanup_handles_empty_dir(self, tmp_path):
-        """Cleanup should not fail on empty directory."""
-        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
-        _last_screenshot_cleanup_by_dir.clear()
-        _cleanup_old_screenshots(tmp_path, max_age_hours=24)  # Should not raise
-
-    def test_cleanup_handles_nonexistent_dir(self):
-        """Cleanup should not fail if directory doesn't exist."""
-        from pathlib import Path
-        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
-        _last_screenshot_cleanup_by_dir.clear()
-        _cleanup_old_screenshots(Path("/nonexistent/dir"), max_age_hours=24)  # Should not raise

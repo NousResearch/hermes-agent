@@ -510,25 +510,26 @@ def _ensure_sdk_installed() -> bool:
         pass
 
     print("  honcho-ai is not installed.")
-    answer = _prompt("Install it now? (honcho-ai>=2.0.1)", default="y")
+    answer = _prompt("Install it now? (honcho-ai==2.2.0)", default="y")
     if answer.lower() not in {"y", "yes"}:
-        print("  Skipping install. Run: pip install 'honcho-ai>=2.0.1'\n")
+        print("  Skipping install. Run: pip install 'honcho-ai==2.2.0'\n")
         return False
 
-    import subprocess
     print("  Installing honcho-ai...", flush=True)
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "honcho-ai>=2.0.1"],
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-    )
-    if result.returncode == 0:
+    # Environment-aware install: sealed hosted venvs redirect to the durable
+    # data-volume target instead of writing to /opt/hermes (NS-605).
+    from tools.lazy_deps import install_specs
+
+    result = install_specs(["honcho-ai==2.2.0"])
+    if result.ok:
         print("  Installed.\n")
         return True
+    elif result.blocked:
+        print(f"  Cannot install: {result.reason}\n")
+        return False
     else:
-        print(f"  Install failed:\n{result.stderr.strip()}")
-        print("  Run manually: pip install 'honcho-ai>=2.0.1'\n")
+        print(f"  Install failed:\n{(result.stderr or '').strip()}")
+        print("  Run manually: uv pip install 'honcho-ai==2.2.0'\n")
         return False
 
 
@@ -622,21 +623,136 @@ def cmd_setup(args) -> None:
                 )
             else:
                 print("\n  No local JWT set. Local no-auth ready.")
-    else:
-        # --- Cloud: set default base URL, require API key ---
+    use_oauth = False
+    if not is_local:
+        # --- Cloud: OAuth (browser), device code, or API key ---
         cfg.pop("baseUrl", None)  # cloud uses SDK default
 
-        current_key = cfg.get("apiKey", "")
-        masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
-        print(f"\n  Current API key: {masked}")
-        new_key = _prompt("Honcho API key (leave blank to keep current)", secret=True)
-        if new_key:
-            cfg["apiKey"] = new_key
+        # Detect an existing OAuth grant so re-running setup reflects it instead
+        # of looking like a fresh connect.
+        from plugins.memory.honcho.oauth import OAuthCredential
+        existing_oauth = OAuthCredential.from_host_block(hermes_host)
 
-        if not cfg.get("apiKey"):
-            print("\n  No API key configured. Get yours at https://app.honcho.dev")
-            print("  Run 'hermes honcho setup' again once you have a key.\n")
-            return
+        device_available = _device_login_available()
+        is_remote, can_browse = _headless()
+
+        print("\n  Auth method:")
+        if existing_oauth is not None:
+            print(f"    (currently connected via OAuth — client {existing_oauth.client_id})")
+        print("    oauth  -- sign in via browser on this machine (recommended)")
+        if device_available:
+            print("    device -- device code: approve from a browser on another machine (SSH / headless)")
+        print("    apikey -- paste an API key from https://app.honcho.dev")
+
+        default_method = "oauth"
+        if is_remote or not can_browse:
+            if device_available:
+                print("  (no usable local browser detected — device code recommended)")
+                default_method = "device"
+            else:
+                print("  (no usable local browser detected — browser sign-in may need an SSH tunnel to 127.0.0.1:8765)")
+        prompt_label = "oauth, device, or apikey?" if device_available else "OAuth or API key?"
+        method = _prompt(prompt_label, default=default_method).strip().lower()
+        use_oauth = method in {"oauth", "o"}
+        use_device = device_available and method in {"device", "d"}
+
+        if use_device:
+            from plugins.memory.honcho.oauth_flow import (
+                AccessDenied,
+                AuthorizationTimeout,
+                DeviceCode,
+                DeviceCodeExpired,
+                DeviceFlowError,
+                authorize_via_device_code,
+            )
+
+            def _show(device: DeviceCode) -> None:
+                print("\n  To connect, on any device with a browser:")
+                print(f"\n    1. Open   {device.verification_uri}")
+                print(f"    2. Enter  {device.user_code}")
+                print(f"\n  Or open directly:\n\n    {device.verification_uri_complete}\n")
+                mins = max(1, device.expires_in // 60)
+                print(f"  Waiting for approval (expires in {mins} min, Ctrl-C to cancel) ", end="", flush=True)
+
+            def _open_local(url: str) -> None:
+                import webbrowser
+
+                webbrowser.open(url)
+
+            print("\n  Requesting device code…")
+            try:
+                cred = authorize_via_device_code(
+                    config_path=write_path,
+                    source="hermes-cli",
+                    apply_config=False,
+                    display=_show,
+                    open_url=_open_local if can_browse and not is_remote else None,
+                    on_poll=lambda: print(".", end="", flush=True),
+                )
+            except KeyboardInterrupt:
+                print("\n  Cancelled. Re-run 'hermes honcho setup' to try again.\n")
+                return
+            except (AuthorizationTimeout, DeviceCodeExpired):
+                print("\n  Device code expired before approval.")
+                print("  Re-run 'hermes honcho setup' to get a new code.\n")
+                return
+            except AccessDenied:
+                print("\n  Sign-in was denied on the approval page.")
+                print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            except DeviceFlowError as e:
+                if e.error == "http_429":
+                    print("\n  Too many device-code requests — wait a minute and re-run setup.\n")
+                else:
+                    print(f"\n  Device sign-in failed: {e}")
+                    print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            except Exception as e:
+                print(f"\n  Device sign-in failed: {e}")
+                print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            print(" approved")
+            _apply_grant_to_host(hermes_host, cred)
+            print("  Authorized — token saved. Let's finish configuring.\n")
+        elif use_oauth:
+            # Sign in now, up front — the browser link is the whole point, so
+            # don't bury it behind the identity prompts. The grant's tokens are
+            # merged into the in-memory cfg so the wizard's final save preserves
+            # them; settings stay wizard-owned (apply_config=False).
+            from plugins.memory.honcho.oauth_flow import authorize_via_loopback
+
+            def _open(url: str) -> None:
+                print(f"\n  Open this link to authorize (waiting up to 5 minutes):\n\n    {url}\n")
+                import webbrowser
+
+                webbrowser.open(url)
+
+            print("\n  Starting browser sign-in…")
+            try:
+                cred = authorize_via_loopback(
+                    config_path=write_path,
+                    source="hermes-cli",
+                    apply_config=False,
+                    open_url=_open,
+                )
+            except Exception as e:
+                print(f"  OAuth sign-in failed: {e}")
+                print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            _apply_grant_to_host(hermes_host, cred)
+            print("  Authorized — token saved. Let's finish configuring.\n")
+        else:
+            current_key = cfg.get("apiKey", "")
+            masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
+            print(f"\n  Current API key: {masked}")
+            new_key = _prompt("Honcho API key (leave blank to keep current)", secret=True)
+            if new_key:
+                cfg["apiKey"] = new_key
+
+            if not cfg.get("apiKey"):
+                print("\n  No API key configured. Get yours at https://app.honcho.dev")
+                print("  Run 'hermes honcho setup' again once you have a key.\n")
+                return
 
     # --- 3. Identity ---
     current_peer = hermes_host.get("peerName") or cfg.get("peerName", "")
@@ -786,7 +902,7 @@ def cmd_setup(args) -> None:
     current_obs = hermes_host.get("observationMode") or cfg.get("observationMode", "directional")
     print("\n  Observation mode:")
     print("    directional  -- all observations on, each AI peer builds its own view (default)")
-    print("    unified      -- shared pool, user observes self, AI observes others only")
+    print("    unified      -- user observes self, AI observes others only")
     new_obs = _prompt("Observation mode", default=current_obs)
     if new_obs in {"unified", "directional"}:
         hermes_host["observationMode"] = new_obs
@@ -932,6 +1048,35 @@ def cmd_setup(args) -> None:
     print("    hermes honcho map <name> -- map this directory to a session name\n")
 
 
+def _device_login_available() -> bool:
+    """Whether the resolved host offers the RFC 8628 device grant. Fails closed."""
+    try:
+        from plugins.memory.honcho.oauth_flow import resolve_endpoints, supports_device_login
+
+        return supports_device_login(resolve_endpoints())
+    except Exception:
+        return False
+
+
+def _headless() -> tuple[bool, bool]:
+    """(is_remote, can_open_browser) — degrades safely if hermes_cli internals move."""
+    try:
+        from hermes_cli.auth import _can_open_graphical_browser, _is_remote_session
+
+        return _is_remote_session(), _can_open_graphical_browser()
+    except Exception:
+        return False, True
+
+
+def _apply_grant_to_host(hermes_host: dict, cred) -> None:
+    """Store an OAuth grant on the host block; the wizard's final save persists it."""
+    hermes_host["apiKey"] = cred.access_token
+    hermes_host["oauth"] = cred.oauth_block()
+    # Default the peer prompt to the name entered at consent.
+    if cred.consent_peer_name:
+        hermes_host["peerName"] = cred.consent_peer_name
+
+
 def _active_profile_name() -> str:
     """Return the active Hermes profile name (respects --target-profile override)."""
     if _profile_override:
@@ -1017,6 +1162,12 @@ def cmd_status(args) -> None:
     api_key = hcfg.api_key or ""
     masked = f"...{api_key[-8:]}" if len(api_key) > 8 else ("set" if api_key else "not set")
 
+    # Auth line distinguishes an OAuth grant (refreshable) from a static API key
+    # — the OAuth access token is also stored under apiKey, so masking alone hides it.
+    from plugins.memory.honcho.oauth import OAuthCredential
+    host_block = (getattr(hcfg, "raw", None) or {}).get("hosts", {}).get(hcfg.host) or {}
+    cred = OAuthCredential.from_host_block(host_block)
+
     profile = _active_profile_name()
     profile_label = f" [{hcfg.host}]" if profile != "default" else ""
 
@@ -1025,7 +1176,13 @@ def cmd_status(args) -> None:
         print(f"  Profile:        {profile}")
     print(f"  Host:           {hcfg.host}")
     print(f"  Enabled:        {hcfg.enabled}")
-    print(f"  API key:        {masked}")
+    if cred is not None:
+        import time as _time
+        remaining = int(cred.expires_at - _time.time())
+        token_state = f"valid {remaining // 60}m" if remaining > 0 else "expired — refreshes on next use"
+        print(f"  Auth:           OAuth ({cred.client_id}, token {token_state})")
+    else:
+        print(f"  Auth:           API key ({masked})")
     print(f"  Workspace:      {hcfg.workspace_id}")
 
     # Config paths — show where config was read from and where writes go
@@ -1034,7 +1191,7 @@ def cmd_status(args) -> None:
     if write_path != active_path:
         print(f"  Write to:       {write_path}  (profile-local)")
     if active_path == global_path:
-        print(f"  Fallback:       (none — using global ~/.honcho/config.json)")
+        print("  Fallback:       (none — using global ~/.honcho/config.json)")
     elif global_path.exists():
         print(f"  Fallback:       {global_path}  (exists, cross-app interop)")
 
@@ -1045,7 +1202,7 @@ def cmd_status(args) -> None:
     print(f"  Recall mode:    {hcfg.recall_mode}")
     print(f"  Context budget: {hcfg.context_tokens or '(uncapped)'} tokens")
     raw = getattr(hcfg, "raw", None) or {}
-    dialectic_cadence = raw.get("dialecticCadence") or 1
+    dialectic_cadence = getattr(hcfg, "dialectic_cadence", None) or raw.get("dialecticCadence") or 1
     print(f"  Dialectic cad:  every {dialectic_cadence} turn{'s' if dialectic_cadence != 1 else ''}")
     reasoning_cap = raw.get("reasoningLevelCap") or hcfg.reasoning_level_cap
     heuristic_on = "on" if hcfg.reasoning_heuristic else "off"
@@ -1094,7 +1251,7 @@ def _show_peer_cards(hcfg, client) -> None:
         if ai_text:
             # Truncate to first 200 chars
             display = ai_text[:200] + ("..." if len(ai_text) > 200 else "")
-            print(f"\n  AI peer representation:")
+            print("\n  AI peer representation:")
             print(f"    {display}")
 
         if not card and not ai_text:
@@ -1128,7 +1285,7 @@ def _cmd_status_all() -> None:
         marker = " *" if name == active else ""
         print(f"  {name + marker:<14} {host:<22} {enabled_str:<9} {recall:<9} {write}")
 
-    print(f"\n  * active profile\n")
+    print("\n  * active profile\n")
 
 
 def cmd_peers(args) -> None:
@@ -1268,7 +1425,7 @@ def cmd_mode(args) -> None:
         for m, desc in MODES.items():
             marker = " <-" if m == current else ""
             print(f"  {m:<10}  {desc}{marker}")
-        print(f"\n  Set with: hermes honcho mode [hybrid|context|tools]\n")
+        print("\n  Set with: hermes honcho mode [hybrid|context|tools]\n")
         return
 
     if mode_arg not in MODES:
@@ -1303,7 +1460,7 @@ def cmd_strategy(args) -> None:
         for s, desc in STRATEGIES.items():
             marker = " <-" if s == current else ""
             print(f"  {s:<15}  {desc}{marker}")
-        print(f"\n  Set with: hermes honcho strategy [per-session|per-directory|per-repo|global]\n")
+        print("\n  Set with: hermes honcho strategy [per-session|per-directory|per-repo|global]\n")
         return
 
     if strat_arg not in STRATEGIES:

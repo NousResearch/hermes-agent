@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { ArrowUpRight } from '@/lib/icons'
 
+import { resolveBrandIcon } from './brand-icon'
 import { cn } from './utils'
 
 const titleCache = new Map<string, string>()
@@ -23,7 +24,7 @@ const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|hermes)
 const LOCAL_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/i
 
 const ERROR_TITLE_RE =
-  /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
+  /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|not found|request blocked|too many requests)\b/i
 
 export function normalizeExternalUrl(value: string): string {
   const trimmed = value.trim()
@@ -210,19 +211,35 @@ export function ExternalLinkIcon({ className }: { className?: string }) {
   return <ArrowUpRight aria-hidden className={cn('ml-1 inline size-[0.78em] align-[-0.08em] opacity-70', className)} />
 }
 
+// Brand mark for a known host, sized in `em` so it tracks the surrounding text
+// at any font size. It paints in `currentColor` rather than the brand hex —
+// several brand colors (GitHub's near-black, Unity's white) vanish against one
+// theme or the other.
+//
+// `title=""` is load-bearing: Simple Icons always renders a <title> defaulting
+// to the brand name, which lands in the anchor's textContent and accessible
+// name — a PR link would read "GitHub#123".
+export function LinkBrandIcon({ className, href }: { className?: string; href: string }) {
+  const Icon = resolveBrandIcon(shortHostLabel(href))
+
+  return Icon ? (
+    <Icon aria-hidden className={cn('mr-1 inline size-[0.85em] align-[-0.12em] opacity-80', className)} title="" />
+  ) : null
+}
+
 export function ExternalLink({
   children,
   className,
   href,
   onClick,
-  showExternalIcon = true,
+  showExternalIcon = false,
   ...rest
 }: ExternalLinkProps) {
   const target = normalizeExternalUrl(href)
 
   return (
     <a
-      className={cn('font-semibold text-foreground underline underline-offset-4 decoration-current/20', className)}
+      className={cn('ref', className)}
       href={target}
       onClick={event => {
         event.stopPropagation()
@@ -251,14 +268,18 @@ interface PrettyLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'> {
   fallbackLabel?: string
 }
 
+// Title resolution is a fallback, not an override. Both props carry authored
+// text — chat markdown passes `fallbackLabel` — so either one skips the fetch.
 export function PrettyLink({ className, fallbackLabel, href, label, ...rest }: PrettyLinkProps) {
   const target = useMemo(() => normalizeExternalUrl(href), [href])
-  const fetched = useLinkTitle(label ? null : target)
-  const display = fetched || label?.trim() || fallbackLabel?.trim() || urlSlugTitleLabel(target)
+  const authoredLabel = label?.trim() || fallbackLabel?.trim()
+  const fetched = useLinkTitle(authoredLabel ? null : target)
+  const display = authoredLabel || fetched || urlSlugTitleLabel(target)
 
   return (
     <ExternalLink className={cn('wrap-break-word', className)} href={target} title={target} {...rest}>
-      <span className="font-medium">{display}</span>
+      <LinkBrandIcon href={target} />
+      {display}
     </ExternalLink>
   )
 }

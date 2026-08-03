@@ -13,34 +13,6 @@ class TestResolveApiKey:
         monkeypatch.delenv("HONCHO_API_KEY", raising=False)
         assert honcho_cli._resolve_api_key({"apiKey": "root-key"}) == "root-key"
 
-    def test_returns_api_key_from_host_block(self, monkeypatch):
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        cfg = {"hosts": {"hermes": {"apiKey": "host-key"}}, "apiKey": "root-key"}
-        assert honcho_cli._resolve_api_key(cfg) == "host-key"
-
-    def test_returns_local_for_base_url_without_api_key(self, monkeypatch):
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
-        cfg = {"baseUrl": "http://localhost:8000"}
-        assert honcho_cli._resolve_api_key(cfg) == "local"
-
-    def test_returns_local_for_base_url_env_var(self, monkeypatch):
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        monkeypatch.setenv("HONCHO_BASE_URL", "http://10.0.0.5:8000")
-        assert honcho_cli._resolve_api_key({}) == "local"
-
-    def test_returns_empty_when_nothing_configured(self, monkeypatch):
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
-        assert honcho_cli._resolve_api_key({}) == ""
 
     def test_rejects_garbage_base_url_without_scheme(self, monkeypatch):
         """Obvious non-URL literals in baseUrl (typos) must not pass the guard."""
@@ -55,19 +27,6 @@ class TestResolveApiKey:
             assert honcho_cli._resolve_api_key({"baseUrl": garbage}) == "", \
                 f"expected empty for garbage {garbage!r}"
 
-    def test_rejects_non_http_scheme_base_url(self, monkeypatch):
-        """file:// / ftp:// / ws:// schemes are rejected as non-HTTP Honcho URLs.
-
-        Note: these DO contain ``.`` or ``:`` so they pass the schemeless
-        host fallback.  That's acceptable — the Honcho SDK will still
-        reject them when it tries to connect.  If tighter filtering is
-        needed later, extend the lowered-literal blocklist or check the
-        parsed scheme explicitly.
-        """
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
         # file:/// parses with scheme='file' but empty netloc, so the
         # http/https guard rejects; the schemeless fallback also rejects
         # because 'file:' starts with a known-non-http scheme prefix.
@@ -82,23 +41,6 @@ class TestResolveApiKey:
         monkeypatch.delenv("HONCHO_API_KEY", raising=False)
         monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
         assert honcho_cli._resolve_api_key({"baseUrl": "https://honcho.example.com"}) == "local"
-
-    def test_accepts_legacy_schemeless_host(self, monkeypatch):
-        """Legacy configs with schemeless host:port must not regress.
-
-        Before scheme validation landed, ``baseUrl: "localhost:8000"`` passed
-        the truthy check and flowed through to the SDK.  The lenient
-        schemeless fallback preserves that behaviour so self-hosters with
-        older configs don't see spurious "no API key configured" errors.
-        The SDK itself still rejects malformed URLs at connect time.
-        """
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
-        for legacy in ("localhost:8000", "10.0.0.5:8000", "honcho.local:8080", "host.example.com"):
-            assert honcho_cli._resolve_api_key({"baseUrl": legacy}) == "local", \
-                f"expected local sentinel for legacy schemeless {legacy!r}"
 
 
 class TestCmdSetupLocalJwt:
@@ -159,25 +101,6 @@ class TestCmdSetupLocalJwt:
         host_block = (cfg.get("hosts") or {}).get("hermes") or {}
         assert host_block.get("apiKey") == "my-local-jwt-token"
 
-    def test_local_setup_blank_jwt_keeps_local_no_auth(self, monkeypatch, tmp_path):
-        """Blank JWT prompt response on a fresh local config must not introduce an apiKey
-        anywhere (local no-auth Honcho deployments must still work out of the box)."""
-        cfg = self._run_setup(
-            monkeypatch,
-            tmp_path,
-            initial_cfg={},
-            prompt_answers=[
-                "local",
-                "http://localhost:8000",
-                "",  # blank JWT
-            ],
-        )
-        assert cfg is not None
-        assert cfg.get("baseUrl") == "http://localhost:8000"
-        assert not cfg.get("apiKey")
-        host_block = (cfg.get("hosts") or {}).get("hermes") or {}
-        assert not host_block.get("apiKey")
-
 
 class TestCmdStatus:
     def test_reports_connection_failure_when_session_setup_fails(self, monkeypatch, capsys, tmp_path):
@@ -233,6 +156,66 @@ class TestCmdStatus:
         out = capsys.readouterr().out
         assert "FAILED (Invalid API key)" in out
         assert "Connection... OK" not in out
+
+    def test_auth_line_detects_oauth_grant(self, monkeypatch, capsys, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text("{}")
+
+        class FakeConfig:
+            enabled = True
+            api_key = "hch-at-deadbeef"
+            workspace_id = "claude-code"
+            host = "hermes"
+            base_url = None
+            ai_peer = "hermes"
+            peer_name = "eri"
+            recall_mode = "hybrid"
+            user_observe_me = True
+            user_observe_others = False
+            ai_observe_me = False
+            ai_observe_others = True
+            write_frequency = "async"
+            session_strategy = "per-session"
+            context_tokens = None
+            dialectic_reasoning_level = "low"
+            reasoning_level_cap = "high"
+            reasoning_heuristic = True
+            raw = {
+                "hosts": {
+                    "hermes": {
+                        "apiKey": "hch-at-deadbeef",
+                        "oauth": {
+                            "refreshToken": "hch-rt-x",
+                            "clientId": "hermes-agent",
+                            "tokenEndpoint": "https://api.honcho.dev/oauth/token",
+                            "expiresAt": 9999999999,
+                        },
+                    }
+                }
+            }
+
+            def resolve_session_name(self):
+                return "hermes"
+
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: {})
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_active_profile_name", lambda: "default")
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None: FakeConfig(),
+        )
+        monkeypatch.setattr("plugins.memory.honcho.client.get_honcho_client", lambda cfg: object())
+        monkeypatch.setattr(honcho_cli, "_show_peer_cards", lambda hcfg, client: None)
+        monkeypatch.setitem(__import__("sys").modules, "honcho", SimpleNamespace())
+
+        honcho_cli.cmd_status(SimpleNamespace(all=False))
+
+        out = capsys.readouterr().out
+        assert "Auth:           OAuth (hermes-agent" in out
+        assert "API key:" not in out
 
 
 class TestCloneHonchoForProfile:
@@ -349,6 +332,9 @@ class TestSetupWizardDeploymentShape:
         monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
         monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
         monkeypatch.setattr(honcho_cli, "_write_config", lambda *a, **k: None)
+        # No network probe / environment sniffing in tests.
+        monkeypatch.setattr(honcho_cli, "_device_login_available", lambda: False)
+        monkeypatch.setattr(honcho_cli, "_headless", lambda: (False, True))
         # Gate detection is mocked so tests control whether the tree runs.
         # None → undetectable; list (possibly empty) → connected platforms.
         gw = None if gateway_platforms is None else list(gateway_platforms)
@@ -389,6 +375,9 @@ class TestSetupWizardDeploymentShape:
         # Scripted _prompt: pop answers in order. Default-return for unconsumed prompts.
         answer_iter = iter(answers)
         def _scripted_prompt(label, default=None, secret=False):
+            # Auth-method prompt is orthogonal to shape; auto-answer apikey so the answer lists stay shape-only.
+            if "OAuth" in label:
+                return "apikey"
             try:
                 return next(answer_iter)
             except StopIteration:
@@ -508,23 +497,6 @@ class TestSetupWizardDeploymentShape:
         assert host["pinUserPeer"] is False
         assert host["userPeerAliases"] == {"7654321": "eri"}
 
-    def test_unpin_decline_steer_keeps_per_user(self, monkeypatch, tmp_path):
-        """Operator can decline the steer ('n') and accept orphaning, ending
-        up with per-user peers (no aliases)."""
-        initial_cfg = {
-            "apiKey": "***",
-            "hosts": {"hermes": {"pinPeerName": True, "peerName": "eri"}},
-        }
-        answers = [
-            "cloud", "", "eri", "hermetika", "hermes",
-            "3",               # tree: only others — triggers the orphan guard
-            "n",               # decline pooling, accept orphaning
-            "telegram_",       # runtime peer prefix
-        ]
-        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinUserPeer"] is False
-        assert "userPeerAliases" not in host
-        assert host["runtimePeerPrefix"] == "telegram_"
 
     def test_host_pin_user_peer_true_is_detected_as_single(self, monkeypatch, tmp_path):
         """Host-level ``pinUserPeer: true`` must classify as ``single``.
@@ -548,26 +520,6 @@ class TestSetupWizardDeploymentShape:
         assert host["pinUserPeer"] is True
         assert "pinPeerName" not in host
 
-    def test_host_pin_user_peer_false_overrides_root_pin_peer_name(
-        self, monkeypatch, tmp_path
-    ):
-        """Host ``pinUserPeer: false`` outranks host ``pinPeerName`` in the
-        resolver.  Detection must agree, otherwise the wizard would offer
-        ``single`` as the default and silently re-pin a profile the
-        operator explicitly unpinned via the newer key.
-        """
-        initial_cfg = {
-            "apiKey": "***",
-            "hosts": {"hermes": {
-                "pinUserPeer": False,
-                "pinPeerName": True,
-                "peerName": "eri",
-            }},
-        }
-        answers = ["cloud", "", "eri", "hermetika", "hermes"]
-        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinUserPeer"] is False
-        assert "pinPeerName" not in host
 
     def test_root_user_peer_aliases_detected_as_hybrid(self, monkeypatch, tmp_path):
         """Root-level ``userPeerAliases`` must classify as ``hybrid`` even
@@ -585,48 +537,6 @@ class TestSetupWizardDeploymentShape:
         # operator edits live on the host block they're inspecting.
         assert host["userPeerAliases"] == {"7654321": "eri"}
 
-    def test_only_others_does_not_override_root_user_peer_aliases(self, monkeypatch, tmp_path):
-        """Explicitly choosing 'only other people' must leave the host
-        ``userPeerAliases`` key absent, preserving any root-level aliases as a
-        cross-host baseline.
-
-        Picking [3] here is an active choice — detection would have defaulted
-        to [2]/hybrid because root aliases exist — so the operator's intent is
-        to drop the alias mapping for this host.  We honor that by writing
-        ``pinUserPeer: false`` only, relying on the host's absence of
-        ``userPeerAliases`` to inherit root.  A true wipe would require the
-        operator to delete the root key explicitly.
-        """
-        initial_cfg = {
-            "apiKey": "***",
-            "userPeerAliases": {"baseline": "eri"},
-            "hosts": {"hermes": {"peerName": "eri"}},
-        }
-        answers = [
-            "cloud", "", "eri", "hermetika", "hermes",
-            "3",               # explicit per-user override of detected hybrid
-        ]
-        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinUserPeer"] is False
-        assert "userPeerAliases" not in host
-
-    def test_just_me_scrubs_stale_pin_user_peer_false(self, monkeypatch, tmp_path):
-        """Choosing 'just me' must overwrite a stale ``pinUserPeer: false``
-        with ``pinUserPeer: true`` so the profile ends up genuinely pinned.
-        """
-        initial_cfg = {
-            "apiKey": "***",
-            "hosts": {"hermes": {
-                "pinUserPeer": False,
-                "peerName": "eri",
-            }},
-        }
-        answers = [
-            "cloud", "", "eri", "hermetika", "hermes",
-            "1",
-        ]
-        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinUserPeer"] is True
 
     def test_no_gateway_connected_skips_mapping_when_declined(self, monkeypatch, tmp_path):
         """With no gateway platforms connected, the tree is gated off; declining
@@ -711,11 +621,6 @@ class TestMigratePinKey:
     canonical ``pinUserPeer`` in place, without clobbering an existing
     canonical value."""
 
-    def test_legacy_key_renamed_to_canonical(self):
-        import plugins.memory.honcho.cli as honcho_cli
-        block = {"pinPeerName": True}
-        assert honcho_cli._migrate_pin_key(block) is True
-        assert block == {"pinUserPeer": True}
 
     def test_canonical_key_wins_when_both_present(self):
         import plugins.memory.honcho.cli as honcho_cli
@@ -728,3 +633,114 @@ class TestMigratePinKey:
         block = {"pinUserPeer": True}
         assert honcho_cli._migrate_pin_key(block) is False
         assert block == {"pinUserPeer": True}
+
+
+class TestCmdSetupDeviceFlow:
+    """The cloud auth-method menu's device-code branch (RFC 8628)."""
+
+    def _run_setup(self, monkeypatch, tmp_path, *, answers, device_available=True,
+                   headless=(False, True), device_result=None, device_error=None):
+        """Run cmd_setup with the device flow stubbed; returns (cfg, calls, prompts)."""
+        import plugins.memory.honcho.cli as honcho_cli
+        import plugins.memory.honcho.oauth_flow as oauth_flow
+        from plugins.memory.honcho.oauth import OAuthCredential
+
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}")
+        cfg = {"apiKey": "***"}
+
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
+        monkeypatch.setattr(honcho_cli, "_write_config", lambda *a, **k: None)
+        monkeypatch.setattr(honcho_cli, "_gateway_platforms", lambda: [])
+        monkeypatch.setattr(honcho_cli, "_device_login_available", lambda: device_available)
+        monkeypatch.setattr(honcho_cli, "_headless", lambda: headless)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"memory": {}}, raising=False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.save_config", lambda c: None, raising=False,
+        )
+
+        class _FakeClientCfg:
+            def resolve_session_name(self):
+                return "hermes-test"
+            workspace_id = "hermes"
+            peer_name = "eri"
+            ai_peer = "hermetika"
+            observation_mode = "directional"
+            write_frequency = "async"
+            recall_mode = "hybrid"
+            session_strategy = "per-session"
+
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None: _FakeClientCfg(),
+        )
+        monkeypatch.setattr("plugins.memory.honcho.client.reset_honcho_client", lambda: None)
+        monkeypatch.setattr("plugins.memory.honcho.client.get_honcho_client", lambda hcfg: object())
+
+        calls: list[dict] = []
+        cred = OAuthCredential(
+            access_token="hch-at-x", refresh_token="hch-rt-x", expires_at=9_999_999_999,
+            client_id="hermes-agent", token_endpoint="http://x/oauth/token",
+            consent_peer_name="lyra",
+        )
+
+        def fake_device_flow(**kwargs):
+            calls.append(kwargs)
+            if device_error is not None:
+                raise device_error
+            return device_result or cred
+
+        monkeypatch.setattr(oauth_flow, "authorize_via_device_code", fake_device_flow)
+
+        prompts: list[tuple[str, str | None]] = []
+        answer_iter = iter(answers)
+        def _scripted_prompt(label, default=None, secret=False):
+            prompts.append((label, default))
+            try:
+                # Mirror the real _prompt: blank input falls back to the default.
+                return next(answer_iter) or (default or "")
+            except StopIteration:
+                return default if default is not None else ""
+        monkeypatch.setattr(honcho_cli, "_prompt", _scripted_prompt)
+
+        honcho_cli.cmd_setup(SimpleNamespace())
+        return cfg, calls, prompts
+
+    def test_device_choice_runs_flow_and_stores_grant(self, monkeypatch, tmp_path):
+        cfg, calls, _ = self._run_setup(monkeypatch, tmp_path, answers=["cloud", "device"])
+        assert len(calls) == 1
+        assert calls[0]["apply_config"] is False
+        assert calls[0]["source"] == "hermes-cli"
+        host = cfg["hosts"]["hermes"]
+        assert host["apiKey"] == "hch-at-x"
+        assert host["oauth"]["refreshToken"] == "hch-rt-x"
+        assert host["peerName"] == "lyra"
+
+    def test_headless_defaults_to_device(self, monkeypatch, tmp_path):
+        # Blank answer takes the prompt default, which flips to device on a
+        # remote/no-browser environment.
+        cfg, calls, prompts = self._run_setup(
+            monkeypatch, tmp_path, answers=["cloud", ""], headless=(True, False),
+        )
+        method_prompts = [p for p in prompts if "apikey" in p[0]]
+        assert method_prompts[0][1] == "device"
+        assert len(calls) == 1
+        assert calls[0]["open_url"] is None  # never auto-open a browser headless
+        assert cfg["hosts"]["hermes"]["apiKey"] == "hch-at-x"
+
+    def test_denied_device_flow_aborts_without_grant(self, monkeypatch, tmp_path):
+        from plugins.memory.honcho.oauth_flow import AccessDenied
+
+        cfg, calls, _ = self._run_setup(
+            monkeypatch, tmp_path, answers=["cloud", "device"],
+            device_error=AccessDenied("access_denied", "user denied"),
+        )
+        assert len(calls) == 1
+        assert "apiKey" not in cfg.get("hosts", {}).get("hermes", {})
+

@@ -15,19 +15,24 @@ browser tool needs agent-browser).
 """
 from __future__ import annotations
 
-import os
 import platform
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from hermes_constants import agent_browser_runnable, find_node_executable
+from tools.environments.local import hermes_subprocess_env
+
 _IS_WINDOWS = platform.system() == "Windows"
 
 _DEP_CHECKS = {
-    "node": lambda: shutil.which("node") is not None,
+    # find_node_executable() rather than a bare which(): $HERMES_HOME/node is
+    # not on PATH, so which() would report Node missing on an install that has
+    # a managed one and trigger a redundant re-install.
+    "node": lambda: find_node_executable("node") is not None,
     "browser": lambda: (
-        shutil.which("agent-browser") is not None
+        agent_browser_runnable(shutil.which("agent-browser"))
         or _has_system_browser()
         or _has_hermes_agent_browser()
     ),
@@ -146,7 +151,8 @@ def ensure_dependency(
     else:
         cmd = ["bash", str(script), "--ensure", dep]
 
-    run_env = {**os.environ, "IS_INTERACTIVE": "false"}
+    run_env = hermes_subprocess_env(inherit_credentials=False)
+    run_env["IS_INTERACTIVE"] = "false"
     result = subprocess.run(
         cmd,
         env=run_env,

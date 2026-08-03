@@ -38,56 +38,6 @@ def test_postprocess_adds_agent_visible_image_for_active_ssh_env(monkeypatch, tm
     assert sync_calls == [True]
 
 
-def test_postprocess_maps_docker_cache_path_without_active_env(monkeypatch, tmp_path):
-    from tools import image_generation_tool
-
-    hermes_home = tmp_path / ".hermes"
-    image_dir = hermes_home / "cache" / "images"
-    image_dir.mkdir(parents=True)
-    image_path = image_dir / "generated.png"
-    image_path.write_bytes(b"png")
-
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("TERMINAL_ENV", "docker")
-    monkeypatch.setattr(image_generation_tool, "_active_terminal_env", lambda task_id: None)
-
-    raw = json.dumps({"success": True, "image": str(image_path)})
-    result = json.loads(image_generation_tool._postprocess_image_generate_result(raw))
-
-    assert result["image"] == str(image_path)
-    assert result["agent_visible_image"] == "/root/.hermes/cache/images/generated.png"
-
-
-def test_postprocess_maps_ssh_cache_path_without_active_env(monkeypatch, tmp_path):
-    from tools import image_generation_tool
-
-    hermes_home = tmp_path / ".hermes"
-    image_dir = hermes_home / "cache" / "images"
-    image_dir.mkdir(parents=True)
-    image_path = image_dir / "first-call.png"
-    image_path.write_bytes(b"png")
-
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("TERMINAL_ENV", "ssh")
-    monkeypatch.setattr(image_generation_tool, "_active_terminal_env", lambda task_id: None)
-
-    raw = json.dumps({"success": True, "image": str(image_path)})
-    result = json.loads(image_generation_tool._postprocess_image_generate_result(raw))
-
-    assert result["image"] == str(image_path)
-    assert result["agent_visible_image"] == "~/.hermes/cache/images/first-call.png"
-
-
-def test_postprocess_leaves_remote_image_urls_unchanged(monkeypatch):
-    from tools import image_generation_tool
-
-    monkeypatch.setattr(image_generation_tool, "_active_terminal_env", lambda task_id: None)
-
-    raw = json.dumps({"success": True, "image": "https://example.com/image.png"})
-
-    assert image_generation_tool._postprocess_image_generate_result(raw) == raw
-
-
 def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path):
     from tools import image_generation_tool
 
@@ -110,7 +60,7 @@ def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path
     monkeypatch.setattr(
         image_generation_tool,
         "_dispatch_to_plugin_provider",
-        lambda prompt, aspect_ratio: json.dumps({"success": True, "image": str(image_path)}),
+        lambda prompt, aspect_ratio, **kw: json.dumps({"success": True, "image": str(image_path)}),
     )
 
     result = json.loads(

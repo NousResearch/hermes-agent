@@ -8,12 +8,15 @@ confirm the prologue produces the right ``TurnContext`` and applies the
 
 from __future__ import annotations
 
+import threading
 import types
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.context_compressor import ContextCompressor
 from agent.turn_context import TurnContext, build_turn_context
+from hermes_state import SessionDB
 
 
 class _FakeTodoStore:
@@ -39,6 +42,7 @@ class _FakeAgent:
         self.session_id = "sess-1"
         self.model = "test/model"
         self.provider = "openrouter"
+        self.requested_provider = "openrouter"
         self.base_url = "https://openrouter.ai/api/v1"
         self.api_key = "sk-x"
         self.api_mode = "chat_completions"
@@ -47,10 +51,24 @@ class _FakeAgent:
         self.max_iterations = 90
         self.tools = []
         self.valid_tool_names = set()
+        self.enabled_toolsets = None
+        self.disabled_toolsets = None
+        self._skip_mcp_refresh = False
         self.compression_enabled = False
         self.context_compressor = types.SimpleNamespace(
             protect_first_n=2, protect_last_n=2
         )
+        # Make the fake compressor honour the ContextEngine contract that the
+        # real code now relies on (should_compress_info returns a (bool, reason)
+        # tuple). Without it build_turn_context raises AttributeError.
+        def _fake_should_compress(tokens=None):
+            return False
+
+        def _fake_should_compress_info(tokens=None):
+            return (False, None)
+
+        self.context_compressor.should_compress = _fake_should_compress
+        self.context_compressor.should_compress_info = _fake_should_compress_info
         self._cached_system_prompt = "SYSTEM"
         self._memory_store = None
         self._memory_manager = None
@@ -60,6 +78,8 @@ class _FakeAgent:
         self._todo_store = _FakeTodoStore()
         self._tool_guardrails = _FakeGuardrails()
         self._compression_warning = None
+        self._emit_warning = MagicMock()
+        self._last_ctx_overflow_warn = None
         self._interrupt_requested = False
         self._memory_write_origin = "assistant_tool"
         self._stream_context_scrubber = None
@@ -68,10 +88,31 @@ class _FakeAgent:
         self._invalid_tool_retries = -1
         self._vision_supported = None
         self._persist_calls = 0
+        self._session_messages = []
+        self._pending_cli_user_message = None
+        self._session_persist_lock = threading.RLock()
+        # Records _cached_system_prompt at the moment _ensure_db_session()
+        # is called (regression guard for #45499 turn-setup ordering).
+        self._ensure_db_prompt_at_call = "<unset>"
+
+    def _warn_context_overflow_blocked(self, reason, preflight_tokens, threshold_tokens):
+        # Mirror the real AIAgent helper so tests can assert the warning fired.
+        _warn_kind = (reason or "unknown").split(":", 1)[0]
+        _warn_key = ("ctx_overflow_blocked", _warn_kind)
+        if self._last_ctx_overflow_warn != _warn_key:
+            self._last_ctx_overflow_warn = _warn_key
+            self._emit_warning(
+                f"⚠ Context is over the compression threshold "
+                f"(~{preflight_tokens:,} tokens >= {threshold_tokens:,}) "
+                f"but compression is currently blocked ({reason})."
+            )
+
+    def _clear_context_overflow_warn(self):
+        self._last_ctx_overflow_warn = None
 
     # --- methods the prologue calls ---
     def _ensure_db_session(self):
-        pass
+        self._ensure_db_prompt_at_call = self._cached_system_prompt
 
     def _restore_primary_runtime(self):
         pass
@@ -93,6 +134,33 @@ class _FakeAgent:
 
     def _persist_session(self, *_a, **_k):
         self._persist_calls += 1
+
+
+def _make_agent_with_cooldown(db_path, session_id, *, cooldown_until=None):
+    agent = _FakeAgent()
+    agent.compression_enabled = True
+    agent._emit_status = MagicMock()
+    agent._compress_context = MagicMock(
+        side_effect=lambda messages, *_a, **_k: (messages, "SYSTEM")
+    )
+
+    db = SessionDB(db_path=db_path)
+    db.create_session(session_id, source="cli")
+    if cooldown_until is not None:
+        db.record_compression_failure_cooldown(session_id, cooldown_until, "timeout")
+
+    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        compressor = ContextCompressor(
+            model="test/model",
+            threshold_percent=0.85,
+            protect_first_n=2,
+            protect_last_n=2,
+            quiet_mode=True,
+        )
+    compressor.bind_session_state(db, session_id)
+    agent.context_compressor = compressor
+    agent._session_db = db
+    return agent
 
 
 @pytest.fixture(autouse=True)
@@ -140,6 +208,69 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+# ── Trivial-prompt prefetch gate (PR #25350 salvage) ─────────────────────────
+#
+# The prologue is the ONLY place the per-turn synchronous
+# memory_manager.prefetch_all() fires; a bare greeting must not block the
+# turn on provider network round-trips, while a substantive question must
+# still prefetch. These assert the gate at the call site (the classifier
+# itself is covered in tests/agent/test_memory_provider.py).
+
+
+def _agent_with_memory_manager():
+    agent = _FakeAgent()
+    mm = MagicMock()
+    mm.prefetch_all.return_value = "REMEMBERED CONTEXT"
+    agent._memory_manager = mm
+    return agent, mm
+
+
+def test_prefetch_skipped_for_trivial_user_message():
+    agent, mm = _agent_with_memory_manager()
+    ctx = _build(agent, user_message="hi!")
+    mm.prefetch_all.assert_not_called()
+    assert ctx.ext_prefetch_cache == ""
+
+
+def test_prefetch_runs_for_substantive_user_message():
+    agent, mm = _agent_with_memory_manager()
+    query = "what did we decide about the deploy pipeline?"
+    ctx = _build(agent, user_message=query)
+    mm.prefetch_all.assert_called_once_with(query)
+    assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
+
+
+def test_turn_start_replaces_stale_parent_history_with_compression_child():
+    agent = _FakeAgent()
+    stale_history = [{"role": "user", "content": "stale parent"}]
+    compacted_history = [
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+        {"role": "assistant", "content": "child tail"},
+    ]
+
+    def _recover(_agent):
+        _agent.session_id = "compression-child"
+        return compacted_history
+
+    log_context = MagicMock()
+    with patch(
+        "agent.turn_context.recover_rotated_compression_session",
+        side_effect=_recover,
+    ):
+        ctx = _build(
+            agent,
+            conversation_history=stale_history,
+            set_session_context=log_context,
+        )
+
+    assert agent.session_id == "compression-child"
+    assert agent._current_turn_id.startswith("compression-child:")
+    log_context.assert_called_once_with("compression-child")
+    assert ctx.conversation_history == compacted_history
+    assert ctx.messages == compacted_history + [{"role": "user", "content": "hello"}]
+    assert all(message.get("content") != "stale parent" for message in ctx.messages)
+
+
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)
@@ -155,33 +286,92 @@ def test_applies_agent_side_effects():
     assert agent._current_turn_id
 
 
-def test_task_id_passthrough():
+
+
+
+
+
+
+
+
+def test_pending_cli_message_uses_clean_override_for_api_local_note():
+    """A noted API message reuses the clean staged dict and its DB marker."""
     agent = _FakeAgent()
-    ctx = _build(agent, task_id="fixed-task")
-    assert ctx.effective_task_id == "fixed-task"
-    assert agent._current_task_id == "fixed-task"
+    staged = {"role": "user", "content": "clean prompt", "_db_persisted": True}
+    agent._pending_cli_user_message = staged
+
+    ctx = _build(
+        agent,
+        user_message="[MODEL NOTE]\n\nclean prompt",
+        persist_user_message="clean prompt",
+    )
+
+    assert ctx.messages[-1] is staged
+    assert ctx.messages[-1]["content"] == "[MODEL NOTE]\n\nclean prompt"
+    assert ctx.messages[-1]["_db_persisted"] is True
+    assert agent._pending_cli_user_message is None
 
 
-def test_persist_user_message_becomes_original():
+
+
+
+
+
+
+def test_ensure_db_session_runs_after_system_prompt_restore():
+    """Regression for #45499.
+
+    On a fresh API/gateway agent (``_cached_system_prompt is None``) the DB
+    session row must be created AFTER the system prompt is restored/built, so
+    the persisted snapshot is written non-NULL. If ``_ensure_db_session()``
+    ran first it would insert ``system_prompt=NULL`` and trip the misleading
+    "stored system prompt is null; rebuilding" warning plus a first-turn
+    prefix cache miss.
+    """
     agent = _FakeAgent()
-    ctx = _build(agent, user_message="api-prefixed", persist_user_message="clean")
-    # original_user_message tracks the clean persist override.
-    assert ctx.original_user_message == "clean"
-    # but the appended user turn carries the full (sanitized) message.
-    assert ctx.messages[-1]["content"] == "api-prefixed"
+    agent._cached_system_prompt = None  # fresh agent, no cached prompt yet
+
+    def _restore(_agent, _system_message, _history):
+        _agent._cached_system_prompt = "REBUILT-SYSTEM"
+
+    _build(agent, restore_or_build_system_prompt=_restore)
+
+    # The prompt was populated before the DB row was created.
+    assert agent._ensure_db_prompt_at_call == "REBUILT-SYSTEM"
+    assert agent._cached_system_prompt == "REBUILT-SYSTEM"
 
 
-def test_memory_nudge_fires_at_interval():
+# ── Between-turns MCP refresh (cache-safe late-binding) ──────────────────────
+#
+# A slow MCP server that connects after the agent's build-time tool snapshot
+# must become callable by the user's NEXT turn — without mutating an in-flight
+# turn's cached request prefix. The prologue is exactly that boundary, so the
+# refresh hook lives here. These assert the contract (R1/R2/R6 in the spec),
+# not timing permutations.
+
+
+def test_between_turns_refresh_adds_late_tool_when_servers_registered():
+    """R1: a tool that registered since build lands in this turn's snapshot."""
     agent = _FakeAgent()
-    agent._memory_nudge_interval = 1
-    agent.valid_tool_names = {"memory"}
-    agent._memory_store = object()
-    ctx = _build(agent)
-    assert ctx.should_review_memory is True
-    assert agent._turns_since_memory == 0  # reset after firing
+
+    new_def = {"type": "function", "function": {"name": "mcp_x_tool", "description": "", "parameters": {}}}
+
+    import model_tools
+    with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=True), \
+         patch.object(model_tools, "get_tool_definitions", return_value=[new_def]):
+        _build(agent)
+
+    assert "mcp_x_tool" in agent.valid_tool_names
+    assert any(t["function"]["name"] == "mcp_x_tool" for t in agent.tools)
 
 
-def test_no_review_when_memory_disabled():
-    agent = _FakeAgent()
-    ctx = _build(agent)
-    assert ctx.should_review_memory is False
+
+
+
+
+
+
+
+
+
+

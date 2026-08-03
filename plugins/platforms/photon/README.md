@@ -23,7 +23,8 @@ talks to it over loopback.
 │  (iMessage line owner)  │   space.send()    │  (plugins/…/sidecar) │
 └─────────────────────────┘                   └──────────┬───────────┘
                                        GET /inbound (NDJSON) │  ▲ POST /send
-                                       inbound events        ▼  │ /typing
+                                       inbound events        ▼  │ /send-richlink
+                                                            │  │ /typing
                                               ┌──────────────────────┐
                                               │  PhotonAdapter        │
                                               │  (Python, in gateway) │
@@ -36,8 +37,9 @@ talks to it over loopback.
   a `MessageEvent` to the gateway. It reconnects automatically if the stream
   drops; the sidecar owns the gRPC reconnect to Photon.
 - **Outbound**: `send` / `send_typing` / reaction tapbacks are loopback POSTs
-  to the sidecar (`/send`, `/send-attachment`, `/typing`, `/react`,
-  `/unreact`), authenticated with a shared `X-Hermes-Sidecar-Token`.
+  to the sidecar (`/send`, `/send-richlink`, `/send-attachment`, `/typing`,
+  `/react`, `/unreact`), authenticated with a shared
+  `X-Hermes-Sidecar-Token`.
 
 ## First-time setup
 
@@ -137,42 +139,72 @@ All env vars are documented in `plugin.yaml`. The most important:
   Media larger than `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` (default 20 MB), or
   any byte read that fails, falls back to a text marker (`[Photon attachment
   received: …]` or `[Photon voice received: …]`) so the agent still knows
-  something arrived.
+  something arrived. If Spectrum emits a `richlink` content object, Hermes
+  preserves its URL plus any title/summary metadata Spectrum already exposed;
+  current Spectrum versions may still deliver ordinary inbound links as plain
+  `text`. iMessage may also emit rich-link preview artwork as
+  `.pluginPayloadAttachment` images immediately after the URL; Hermes coalesces
+  those artifacts so the agent receives one link message instead of a follow-up
+  `(attachment)` prompt.
 - **Outbound attachments are supported.** Images, voice notes, video, and
   documents are sent via `space.send(attachment(...))` /
   `space.send(voice(...))` through the sidecar's `/send-attachment`
   endpoint; a caption is delivered as a separate text bubble after the media.
 - **Markdown is rendered.** Replies go out via spectrum-ts' `markdown()`
   builder; iMessage renders bold/italics/lists/code natively and other
-  Spectrum platforms degrade to readable plain text. `PHOTON_MARKDOWN=false`
-  reverts to stripped plain text.
+  Spectrum platforms degrade to readable plain text. URL-only replies go out
+  via spectrum-ts' `richlink()` builder so iMessage can render a native link
+  preview card. `PHOTON_MARKDOWN=false` reverts to stripped plain text and
+  disables rich-link routing.
 - **Reactions (tapbacks) are supported** behind `PHOTON_REACTIONS` (default
   off): the adapter tapbacks 👀 while processing and swaps it for 👍/👎 on
   completion, and a user tapback on a bot-sent message is routed to the agent
   as a synthetic `reaction:added:<emoji>` event. Removal after a sidecar
   restart is best-effort — the live reaction handle is lost, so a stale
   tapback heals when the next reaction replaces it. Group spaces stay
-  reachable across restarts via spectrum-ts v3's `space.get(id)`.
-- **Message effects, polls** — supported by `spectrum-ts` but not yet
-  exposed; the sidecar is the natural place to add them.
+  reachable across restarts via spectrum-ts' `space.get(id)`.
+- **Native polls are supported.** Hermes posts poll content through
+  `spectrum-ts`' `poll(...)` builder via the sidecar's `/send-poll` endpoint.
+- **Message effects are supported.** Text can be sent with native iMessage
+  bubble/screen effects through `spectrum-ts`' iMessage `effect(...)` builder
+  via the sidecar's `/send-effect` endpoint.
+- **Cron/standalone sends require a running gateway.** Processes outside
+  the gateway (cron subprocesses, `hermes send`) cannot spawn the sidecar;
+  they authenticate to the gateway's live sidecar via the runtime record at
+  `<hermes-home>/runtime/photon-sidecar.json` (written after the sidecar's
+  `/healthz` readiness check, `0600`, removed on stop/failed start). Also
+  note that shared/free-tier Photon lines cannot INITIATE conversations
+  with numbers that never texted the line — that's Photon-side policy, not
+  a Hermes limitation.
 
 ## Upgrading spectrum-ts
 
 `spectrum-ts` is pinned to an **exact version** in `sidecar/package.json`
 (no `^` range) and installed with `npm ci`, because the SDK ships breaking
-majors (v2 removed `defineFusorPlatform`; v3 reworked space construction).
-A floating range or `npm install spectrum-ts@latest` would let a breaking
-release take down fresh setups silently. Upgrades are deliberate:
+majors (v2 removed `defineFusorPlatform`; v3 reworked space construction; v5
+split it into `@spectrum-ts/*` packages, with `spectrum-ts` as the umbrella
+that re-exports them; v8 made `richlink` primarily outbound, so many inbound
+links now arrive as plain `text`). A floating range or `npm install spectrum-ts@latest`
+would let a breaking release take down fresh setups silently. Upgrades are
+deliberate:
 
 1. Read the [SDK release notes](https://github.com/photon-hq/spectrum-ts/releases)
    for every version between the current pin and the target.
 2. Bump the exact pin in `sidecar/package.json`, then run `npm install`
    inside `sidecar/` to regenerate `package-lock.json`. Commit both.
-3. Migrate `sidecar/index.mjs` against the new typings
-   (`sidecar/node_modules/spectrum-ts/dist/*.d.ts` is the source of truth —
-   the hosted docs can lag).
-4. Run `pytest tests/plugins/platforms/photon/`.
-5. Verify end-to-end: `hermes photon status`, a DM and a group roundtrip,
+3. Migrate `sidecar/index.mjs` against the new typings. `spectrum-ts` re-exports
+   `@spectrum-ts/core` (the framework: `Spectrum`, content builders,
+   `Space`/`Message`) and `@spectrum-ts/imessage` (the provider), so the source
+   of truth is `sidecar/node_modules/@spectrum-ts/{core,imessage}/dist/*.d.ts`
+   (the hosted docs can lag).
+4. Re-validate `sidecar/patch-spectrum-mixed-attachments.mjs`. It rewrites the
+   compiled iMessage inbound mappers in `@spectrum-ts/imessage/dist/index.js`
+   so a bubble with both text and attachments keeps its typed text; the anchors
+   are tied to that build's output. `npm install` runs it via `postinstall` and
+   fails loudly if the anchors no longer match — update them to the new output
+   (`test_spectrum_patch.py` covers the patch).
+5. Run `pytest tests/plugins/platforms/photon/`.
+6. Verify end-to-end: `hermes photon status`, a DM and a group roundtrip,
    and an agent reply into a group right after a gateway restart (exercises
    `space.get` rehydration).
 

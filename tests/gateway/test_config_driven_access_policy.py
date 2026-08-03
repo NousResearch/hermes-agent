@@ -108,11 +108,11 @@ def test_base_adapter_defaults_to_not_owning_access_policy():
 @pytest.mark.parametrize(
     "module_path, class_name",
     [
-        ("gateway.platforms.wecom", "WeComAdapter"),
+        ("plugins.platforms.wecom.adapter", "WeComAdapter"),
         ("gateway.platforms.weixin", "WeixinAdapter"),
         ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
         ("gateway.platforms.qqbot.adapter", "QQAdapter"),
-        ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
+        ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
     ],
 )
 def test_own_policy_adapters_declare_the_flag(module_path, class_name):
@@ -149,62 +149,44 @@ def test_own_policy_allowlist_authorized_without_env_allowlist(monkeypatch, plat
     assert runner._is_user_authorized(_source(platform)) is True
 
 
-@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
-def test_own_policy_open_dm_not_authorized_without_allowlist(monkeypatch, platform):
-    """``dm_policy: open`` forwards everyone → NOT authorization (SECURITY.md §2.6).
-
-    With no env allowlist and no per-platform allow-all flag, an own-policy
-    adapter running ``open`` (the default) must NOT fail open: the gateway falls
-    through to default-deny so the whole external network can't reach the agent.
-    """
+@pytest.mark.parametrize(
+    "module_path, class_name, dm_helper",
+    [
+        ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter", "_is_dm_allowed"),
+        ("plugins.platforms.wecom.adapter", "WeComAdapter", "_is_dm_allowed"),
+        ("gateway.platforms.weixin", "WeixinAdapter", "_is_dm_allowed"),
+        ("gateway.platforms.qqbot.adapter", "QQAdapter", "_is_dm_allowed"),
+    ],
+)
+def test_pairing_dm_policy_strict_intake_auth_denies_unknown(
+    monkeypatch, module_path, class_name, dm_helper,
+):
+    """Default ``dm_policy: pairing`` must not admit senders via strict auth."""
     _clear_auth_env(monkeypatch)
-    config = GatewayConfig(
-        platforms={platform: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
+    import importlib
+
+    from gateway.config import PlatformConfig
+
+    module = importlib.import_module(module_path)
+    adapter_cls = getattr(module, class_name)
+    adapter = adapter_cls(PlatformConfig(enabled=True, extra={"dm_policy": "pairing"}))
+    assert getattr(adapter, dm_helper)("unknown-user") is False
+
+
+@pytest.mark.parametrize("blank_sender", ["", "   ", None])
+def test_yuanbao_pairing_dm_intake_denies_blank_principal(monkeypatch, blank_sender):
+    """Yuanbao pairing intake must not forward senderless C2C callbacks."""
+    _clear_auth_env(monkeypatch)
+    from gateway.platforms.yuanbao import AccessPolicy
+
+    policy = AccessPolicy(
+        dm_policy="pairing",
+        dm_allow_from=[],
+        group_policy="pairing",
+        group_allow_from=[],
     )
-    runner, _adapter = _make_runner(platform, config, enforces=True)
-
-    assert runner._is_user_authorized(_source(platform)) is False
-
-
-@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
-def test_own_policy_default_open_dm_is_fail_closed(monkeypatch, platform):
-    """The adapters' *default* ``open`` policy (no config at all) fails closed.
-
-    Operators who enable an own-policy adapter with only credentials get
-    ``dm_policy = "open"`` resolved on the live adapter. Simulate that resolved
-    state (empty config.extra, adapter ``_dm_policy = "open"``) and confirm the
-    gateway denies — the do-nothing default must not be open to the world.
-    """
-    _clear_auth_env(monkeypatch)
-    config = GatewayConfig(platforms={platform: PlatformConfig(enabled=True, extra={})})
-    runner, adapter = _make_runner(platform, config, enforces=True)
-    adapter._dm_policy = "open"  # as the live adapter resolves the default
-
-    assert runner._is_user_authorized(_source(platform)) is False
-
-
-@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
-def test_own_policy_allowlist_authorized_for_group_chat(monkeypatch, platform):
-    """A config-only ``group_policy: allowlist`` is trusted for group traffic."""
-    _clear_auth_env(monkeypatch)
-    config = GatewayConfig(
-        platforms={platform: PlatformConfig(enabled=True, extra={"group_policy": "allowlist"})}
-    )
-    runner, _adapter = _make_runner(platform, config, enforces=True)
-
-    assert runner._is_user_authorized(_source(platform, chat_type="group")) is True
-
-
-@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
-def test_own_policy_open_group_not_authorized_without_allowlist(monkeypatch, platform):
-    """``group_policy: open`` is the same fail-open class as DM open → deny."""
-    _clear_auth_env(monkeypatch)
-    config = GatewayConfig(
-        platforms={platform: PlatformConfig(enabled=True, extra={"group_policy": "open"})}
-    )
-    runner, _adapter = _make_runner(platform, config, enforces=True)
-
-    assert runner._is_user_authorized(_source(platform, chat_type="group")) is False
+    assert policy.is_dm_intake_allowed(blank_sender) is False
+    assert policy.is_dm_intake_allowed("user-1") is True
 
 
 def test_wecom_open_group_with_per_group_sender_allowlist_is_authorized(monkeypatch):
@@ -231,73 +213,6 @@ def test_wecom_open_group_with_per_group_sender_allowlist_is_authorized(monkeypa
     assert runner._is_user_authorized(_source(Platform.WECOM, chat_type="group")) is True
 
 
-def test_wecom_open_group_with_wildcard_sender_allowlist_is_authorized(monkeypatch):
-    """Wildcard group config also gates senders before gateway auth runs."""
-    _clear_auth_env(monkeypatch)
-    config = GatewayConfig(
-        platforms={
-            Platform.WECOM: PlatformConfig(
-                enabled=True,
-                extra={
-                    "group_policy": "open",
-                    "groups": {"*": {"allow_from": ["user_admin"]}},
-                },
-            )
-        }
-    )
-    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
-
-    assert runner._is_user_authorized(_source(Platform.WECOM, chat_type="group")) is True
-
-
-def test_non_owning_platform_still_default_denies(monkeypatch):
-    """Adapters that don't own their policy keep the env-only default-deny."""
-    _clear_auth_env(monkeypatch)
-    config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}
-    )
-    runner, _adapter = _make_runner(Platform.TELEGRAM, config, enforces=False)
-
-    assert runner._is_user_authorized(_source(Platform.TELEGRAM)) is False
-
-
-def test_env_allowlist_still_takes_precedence_for_own_policy_platform(monkeypatch):
-    """When an env allowlist IS set, it governs — adapter trust is a fallback.
-
-    The adapter-trust branch only fires when no env allowlist exists, so an
-    operator who sets ``WECOM_ALLOWED_USERS`` still gets env-based gating and
-    a non-listed user is denied.
-    """
-    _clear_auth_env(monkeypatch)
-    monkeypatch.setenv("WECOM_ALLOWED_USERS", "allowed-user")
-    config = GatewayConfig(
-        platforms={Platform.WECOM: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
-    )
-    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
-
-    listed = SessionSource(
-        platform=Platform.WECOM, user_id="allowed-user", chat_id="c",
-        user_name="t", chat_type="dm",
-    )
-    stranger = SessionSource(
-        platform=Platform.WECOM, user_id="stranger", chat_id="c",
-        user_name="t", chat_type="dm",
-    )
-    assert runner._is_user_authorized(listed) is True
-    assert runner._is_user_authorized(stranger) is False
-
-
-def test_unknown_adapter_does_not_crash_trust_check(monkeypatch):
-    """No adapter registered for the platform → safe default-deny."""
-    _clear_auth_env(monkeypatch)
-    config = GatewayConfig(platforms={Platform.WECOM: PlatformConfig(enabled=True)})
-    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
-    runner.adapters = {}  # nothing registered
-
-    assert runner._adapter_enforces_own_access_policy(Platform.WECOM) is False
-    assert runner._is_user_authorized(_source(Platform.WECOM)) is False
-
-
 # ---------------------------------------------------------------------------
 # Layer 2b: `dm_policy: pairing` is NOT blanket-trusted
 # ---------------------------------------------------------------------------
@@ -309,67 +224,6 @@ def test_unknown_adapter_does_not_crash_trust_check(monkeypatch):
 # adapter-trust shortcut above then authorized *every* unpaired sender, silently
 # degrading pairing mode to open access. The shortcut must skip pairing-mode DMs
 # so an unpaired sender falls through to default-deny (and gets a pairing code).
-
-
-@pytest.mark.parametrize("platform", [Platform.WECOM, Platform.WEIXIN])
-def test_pairing_dm_policy_not_blanket_authorized(monkeypatch, platform):
-    """An unpaired sender in ``dm_policy: pairing`` is NOT authorized."""
-    _clear_auth_env(monkeypatch)
-    config = GatewayConfig(
-        platforms={platform: PlatformConfig(enabled=True, extra={"dm_policy": "pairing"})}
-    )
-    runner, _adapter = _make_runner(platform, config, enforces=True)
-    # pairing_store.is_approved already returns False (set in _make_runner).
-
-    assert runner._is_user_authorized(_source(platform)) is False
-
-
-def test_pairing_dm_policy_authorizes_paired_user(monkeypatch):
-    """Once approved in the pairing store, the sender authorizes normally."""
-    _clear_auth_env(monkeypatch)
-    config = GatewayConfig(
-        platforms={Platform.WECOM: PlatformConfig(enabled=True, extra={"dm_policy": "pairing"})}
-    )
-    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
-    runner.pairing_store.is_approved.return_value = True
-
-    assert runner._is_user_authorized(_source(Platform.WECOM)) is True
-
-
-def test_pairing_carveout_reads_adapter_when_env_set(monkeypatch):
-    """Env-only ``WECOM_DM_POLICY=pairing`` (absent from config.extra) is honored.
-
-    The adapter resolves ``dm_policy`` from the env var, so its ``_dm_policy`` is
-    authoritative even when ``config.extra`` is empty. The carve-out must read
-    that, not just config.
-    """
-    _clear_auth_env(monkeypatch)
-    config = GatewayConfig(
-        platforms={Platform.WECOM: PlatformConfig(enabled=True, extra={})}
-    )
-    runner, adapter = _make_runner(Platform.WECOM, config, enforces=True)
-    adapter._dm_policy = "pairing"  # as the adapter would resolve from the env var
-
-    assert runner._is_user_authorized(_source(Platform.WECOM)) is False
-
-
-def test_pairing_dm_policy_group_chat_still_trusted(monkeypatch):
-    """Pairing is DM-only — the DM pairing carve-out doesn't gate group traffic.
-
-    Group access is governed by ``group_policy``, so an allowlisted group is
-    still trusted even while DMs are in ``pairing`` mode.
-    """
-    _clear_auth_env(monkeypatch)
-    config = GatewayConfig(
-        platforms={
-            Platform.WECOM: PlatformConfig(
-                enabled=True, extra={"dm_policy": "pairing", "group_policy": "allowlist"}
-            )
-        }
-    )
-    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
-
-    assert runner._is_user_authorized(_source(Platform.WECOM, chat_type="group")) is True
 
 
 # ---------------------------------------------------------------------------

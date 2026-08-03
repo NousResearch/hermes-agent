@@ -79,6 +79,7 @@ LEGACY_AUTHOR_MAP = {
     "75556242+webtecnica@users.noreply.github.com": "webtecnica",  # PR #63360 salvage (nous: restore inference-api base_url)
     "contato@webtecnica.com.br": "webtecnica",  # PR #70888 salvage
     "webtecnica@gmail.com": "webtecnica",  # PR #75838 salvage (aux: free-only fallback guard; #75803)
+    "ckaznocha@gmail.com": "ckaznocha",  # PR #71543 salvage (matrix: crypto store reset + pickle migration)
     "skosarevivan@yandex.ru": "Epoxidex",  # PR #29820 salvage (ollama: top-level reasoning_effort=none; #25758)
     "jdjiayou@163.com": "JiaDe-Wu",  # PR #34742 salvage (bedrock: bearer routing + streaming fallback + image decode; #28156)
     "changhyun.min@gmail.com": "minchang",  # PR #42231 salvage (providers: add Upstage Solar)
@@ -1346,6 +1347,7 @@ LEGACY_AUTHOR_MAP = {
     "iamagenius00@users.noreply.github.com": "iamagenius00",
     "9219265+cresslank@users.noreply.github.com": "cresslank",
     "trevmanthony@gmail.com": "trevthefoolish",
+    "at828@proton.me": "ATran28",  # PR #77270 whatsapp bridge reconnect wedge fix
     "ziliangpeng@users.noreply.github.com": "ziliangpeng",
     "ziliangdotme@gmail.com": "ziliangpeng",
     "centripetal-star@users.noreply.github.com": "centripetal-star",

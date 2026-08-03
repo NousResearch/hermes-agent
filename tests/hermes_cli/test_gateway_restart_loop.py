@@ -643,6 +643,68 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily", "restart.sh")
 
+    def test_python_script_with_pathlib_division_not_blocked(self, tmp_path):
+        """#77131: a .py cron script using pathlib division (Path.home() /
+        ".hermes") must NOT be blocked.
+
+        Before the fix, the shell-script reference walk tokenized Python
+        sources and treated pathlib's bare "/" operator as an executable
+        path resolving to the filesystem root, which fails the
+        regular-file check and hard-blocks every innocent .py script.
+        Python is executed by the interpreter, never through a POSIX shell,
+        so the walk is skipped for .py and only the direct command regex
+        runs.
+        """
+        from cron.lifecycle_guard import check_gateway_lifecycle
+        script = tmp_path / "digest.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            'ENV = Path.home() / ".hermes" / ".env"\n'
+            'print("digest ok")\n'
+        )
+        check_gateway_lifecycle("clean prompt", str(script))
+
+    def test_python_script_with_literal_lifecycle_command_still_blocked(
+        self, tmp_path
+    ):
+        """#77131: skipping the shell walk for .py must NOT weaken the guard —
+        a literal lifecycle command embedded in a .py script is still caught
+        by the direct regex scan."""
+        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        script = tmp_path / "evil.py"
+        script.write_text('import os\nos.system("hermes gateway restart")\n')
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("clean prompt", str(script))
+
+    def test_absolute_path_binary_does_not_crash_guard(self):
+        """#76762: a terminal command invoking a binary by absolute path
+        (e.g. /usr/bin/python3) must not crash the guard with
+        ValueError: embedded null byte.
+
+        Before the fix, the walk read the binary's bytes, decoded them as
+        text, and re-tokenized machine code containing NUL bytes; the
+        recursion then called Path.resolve() on a path with an embedded NUL
+        and only OSError was caught. Binaries are now skipped as
+        "nothing to scan" and ValueError is tolerated at resolve time.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            '/usr/bin/python3 -c "print(1)"'
+        )
+        assert result is False
+
+    def test_shell_script_reference_walk_still_works(self, tmp_path):
+        """The referenced-script walk still applies to real shell scripts:
+        a .sh script that itself invokes a lifecycle command is caught."""
+        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        script = tmp_path / "wrapper.sh"
+        script.write_text("#!/bin/bash\n./deploy.sh\n")
+        (tmp_path / "deploy.sh").write_text("#!/bin/bash\nhermes gateway stop\n")
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("daily ops", str(script))
+
 
 # ---------------------------------------------------------------------------
 # Defense 2 (chokepoint): cron.jobs.create_job blocks the AGENT model-tool path

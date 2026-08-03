@@ -50,6 +50,7 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Any, Iterator, Optional
@@ -3348,6 +3349,98 @@ def _strip_markdown_for_tts(text: str) -> str:
     return text.strip()
 
 
+class _SyncSentencePipeline:
+    """Overlap per-sentence synthesis with playback for non-streaming providers.
+
+    The universal sync fallback used to run strictly serially per sentence —
+    synthesize, play, and only then start synthesizing the next sentence — so
+    every sentence boundary added a full synthesis-time of dead air. For local
+    model providers that cost dominates the conversation: a provider at
+    real-time-factor ~1 spends as long silent between sentences as it does
+    speaking. Chunked streamers already avoid this; this closes the same gap
+    for everyone else (edge, piper, plugin providers, …) without touching the
+    provider contract.
+
+    Shape: one synthesis worker (single-threaded executor, so sentences are
+    synthesized FIFO and providers never see concurrent calls from this loop —
+    same effective concurrency as the serial path) feeding one playback worker
+    through a small bounded queue. While sentence *n* plays, sentence *n+1* is
+    already synthesizing. The bound keeps lookahead — and the temp files it
+    implies — small, and gives natural backpressure to the caller.
+
+    ``synthesize``/``play`` are resolved late (module global / import inside
+    the worker) so tests that monkeypatch ``text_to_speech_tool`` or
+    ``tools.voice_mode`` keep working unchanged.
+    """
+
+    def __init__(self, stop_event: threading.Event, *, lookahead: int = 2):
+        self._stop = stop_event
+        self._queue: "queue.Queue[Optional[tuple[str, Future]]]" = queue.Queue(
+            maxsize=max(1, lookahead)
+        )
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="tts-sync-synth"
+        )
+        self._player = threading.Thread(
+            target=self._drain, name="tts-sync-play", daemon=True
+        )
+        self._player.start()
+
+    def speak(self, cleaned: str) -> None:
+        """Queue one sentence. Blocks only when the lookahead bound is full."""
+        if self._stop.is_set():
+            return
+        future = self._executor.submit(self._synthesize_to_tmp, cleaned)
+        self._queue.put((cleaned, future))
+
+    def close(self) -> None:
+        """Flush queued sentences in order (skipped if stopped), then join."""
+        self._queue.put(None)
+        self._player.join()
+        self._executor.shutdown(wait=True)
+
+    def _synthesize_to_tmp(self, cleaned: str) -> Optional[str]:
+        if self._stop.is_set():
+            return None
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+            os.close(fd)
+            text_to_speech_tool(text=cleaned, output_path=tmp_path)
+            return tmp_path
+        except Exception as exc:
+            logger.warning("Sync per-sentence TTS synthesis failed: %s", exc)
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            return None
+
+    def _drain(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            _sentence, future = item
+            tmp_path = None
+            try:
+                tmp_path = future.result()
+                if (tmp_path and not self._stop.is_set()
+                        and os.path.isfile(tmp_path)
+                        and os.path.getsize(tmp_path) > 0):
+                    from tools.voice_mode import play_audio_file
+                    play_audio_file(tmp_path)
+            except Exception as exc:
+                logger.warning("Sync per-sentence TTS failed: %s", exc)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+
 def stream_tts_to_speaker(
     text_queue: queue.Queue,
     stop_event: threading.Event,
@@ -3372,6 +3465,7 @@ def stream_tts_to_speaker(
           waiting on it (continuous voice mode) know playback is finished.
     """
     tts_done_event.clear()
+    sync_pipeline: Optional[_SyncSentencePipeline] = None
 
     try:
         output_stream = None
@@ -3385,6 +3479,11 @@ def stream_tts_to_speaker(
         # per-sentence sync synthesis (universal — edge + every non-streamer).
         from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         streamer = resolve_streaming_provider(tts_config, preferred=provider)
+
+        # No chunked streamer: per-sentence sync synthesis, pipelined so the
+        # next sentence synthesizes while the current one plays (closed in the
+        # finally block, which flushes anything still queued).
+        sync_pipeline = _SyncSentencePipeline(stop_event) if streamer is None else None
 
         stream_max_len = 0
         if streamer is not None:
@@ -3640,9 +3739,11 @@ def stream_tts_to_speaker(
             # Display raw sentence on screen before TTS processing
             if display_callback is not None:
                 display_callback(sentence)
-            # No chunked streamer → per-sentence sync synthesis (universal).
-            if streamer is None:
-                _speak_via_sync(cleaned)
+            # No chunked streamer → per-sentence sync synthesis (universal),
+            # pipelined: this enqueues and returns, so sentence n+1 is already
+            # synthesizing while sentence n is still playing.
+            if sync_pipeline is not None:
+                sync_pipeline.speak(cleaned)
                 return
             # Truncate very long sentences to the provider's per-request cap.
             if stream_max_len and len(cleaned) > stream_max_len:
@@ -3651,29 +3752,6 @@ def stream_tts_to_speaker(
             # fires the moment the sentence boundary is detected, so audio for
             # sentence N+1 is already buffering while sentence N plays.
             _enqueue_audio(cleaned)
-
-        def _speak_via_sync(cleaned: str):
-            """Synthesize one sentence via the proven sync tool, then block on
-            playback. No chunked API, but per-*sentence* granularity keeps the
-            flow conversational for edge and every other non-streaming provider.
-            """
-            tmp_path = None
-            try:
-                fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
-                os.close(fd)
-                text_to_speech_tool(text=cleaned, output_path=tmp_path)
-                if (not stop_event.is_set() and os.path.isfile(tmp_path)
-                        and os.path.getsize(tmp_path) > 0):
-                    from tools.voice_mode import play_audio_file
-                    play_audio_file(tmp_path)
-            except Exception as exc:
-                logger.warning("Sync per-sentence TTS failed: %s", exc)
-            finally:
-                if tmp_path:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
 
         def _align_int16_chunks(chunks, stop_evt):
             """Yield int16-aligned byte chunks from an iterable."""
@@ -3758,6 +3836,14 @@ def stream_tts_to_speaker(
     except Exception as exc:
         logger.warning("Streaming TTS pipeline error: %s", exc)
     finally:
+        # Flush the sync pipeline first: queued sentences finish playing (or
+        # are skipped when stop_event is set) BEFORE tts_done_event fires, so
+        # continuous voice mode never reopens the mic over its own voice.
+        if sync_pipeline is not None:
+            try:
+                sync_pipeline.close()
+            except Exception:
+                pass
         # Signal the playback worker that no more audio is coming.  This lives
         # in finally: so an exception in the text pump still sends the sentinel.
         if streamer is not None and _worker_thread is not None:

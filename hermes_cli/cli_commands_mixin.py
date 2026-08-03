@@ -1055,6 +1055,12 @@ class CLICommandsMixin:
         # and a no-op when the session recorded no cwd. See #38562.
         self._restore_session_cwd(session_meta)
 
+        # Restore the target session's persisted YOLO bypass. Any bypass the
+        # PREVIOUS session had toggled on stops applying automatically because
+        # the approval session key just changed. Same contract as a startup
+        # --resume.
+        self._restore_session_yolo(session_meta)
+
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
 

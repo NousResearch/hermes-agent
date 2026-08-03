@@ -1397,3 +1397,109 @@ class TestApprovalPromptRedaction:
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+
+
+class TestCliApprovalTimeoutClassifiedSeparately:
+    """CLI-path parity for the timeout-vs-deny distinction.
+
+    The gateway wait already reported "timed out without user response";
+    the CLI/TUI callback path collapsed a prompt timeout into "deny", so
+    the agent was told the user *refused* when the user simply never
+    answered. The prompt now returns a distinct "timeout" choice and both
+    guard tails classify it with outcome="timeout" + a "Silence is not
+    consent." message.
+    """
+
+    def _interactive_env(self):
+        return mock_patch.dict(
+            "os.environ",
+            {"HERMES_INTERACTIVE": "1"},
+            clear=False,
+        )
+
+    def test_prompt_returns_timeout_when_input_never_arrives(self):
+        """The raw input() path returns 'timeout', not 'deny', on expiry."""
+        import builtins
+        from unittest.mock import patch as _patch
+
+        def _hang(_prompt=""):
+            time.sleep(10)
+            return ""
+
+        with _patch.object(builtins, "input", _hang):
+            result = prompt_dangerous_approval(
+                "rm -rf /var/data", "recursive delete",
+                timeout_seconds=0.05,
+            )
+        assert result == "timeout"
+
+    def test_guard_classifies_callback_timeout_as_timeout(self, monkeypatch):
+        """check_all_command_guards: a 'timeout' choice from the CLI callback
+        yields outcome='timeout' and a no-response message, not 'denied by
+        user'."""
+        from unittest.mock import patch as _patch
+        from tools import approval as mod
+
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+
+        cfg = {"approvals": {"mode": "manual"}}
+        with self._interactive_env():
+            with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+                result = mod.check_all_command_guards(
+                    "rm -rf /var/data", "local",
+                    approval_callback=lambda *a, **kw: "timeout",
+                )
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "timeout"
+        assert result.get("user_consent") is False
+        msg = result["message"]
+        assert "timed out without user response" in msg
+        assert "Silence is not consent" in msg
+        assert "denied" not in msg.lower()
+
+    def test_guard_still_classifies_explicit_deny_as_denied(self):
+        """Explicit CLI deny keeps outcome='denied' and the denial wording."""
+        from unittest.mock import patch as _patch
+        from tools import approval as mod
+
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+
+        cfg = {"approvals": {"mode": "manual"}}
+        with self._interactive_env():
+            with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+                result = mod.check_all_command_guards(
+                    "rm -rf /var/data", "local",
+                    approval_callback=lambda *a, **kw: "deny",
+                )
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "denied"
+        assert "denied" in result["message"].lower()
+        assert "Silence is not consent" not in result["message"]
+
+    def test_run_approval_gate_cli_timeout_is_not_a_denial(self):
+        """The shared plugin-escalation gate (_run_approval_gate) also
+        distinguishes a prompt timeout from an explicit deny on the CLI
+        path."""
+        from unittest.mock import patch as _patch
+        from tools import approval as mod
+
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+
+        cfg = {"approvals": {"mode": "manual"}}
+        with self._interactive_env():
+            with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+                result = mod.request_tool_approval(
+                    "write_file", "plugin flagged this write",
+                    approval_callback=lambda *a, **kw: "timeout",
+                )
+
+        assert result["approved"] is False
+        assert result.get("outcome") == "timeout"
+        assert result.get("user_consent") is False
+        assert "timed out without user response" in result["message"]
+        assert "Silence is not consent" in result["message"]

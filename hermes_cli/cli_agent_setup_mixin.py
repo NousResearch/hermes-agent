@@ -429,6 +429,7 @@ class CLIAgentSetupMixin:
                         f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
                     )
                 self._restore_session_cwd(session_meta, quiet=_quiet_mode)
+                self._restore_session_yolo(session_meta, quiet=_quiet_mode)
             else:
                 if _quiet_mode:
                     print(
@@ -640,6 +641,7 @@ class CLIAgentSetupMixin:
                 f"{len(restored)} total messages)[/]"
             )
             self._restore_session_cwd(session_meta)
+            self._restore_session_yolo(session_meta)
         else:
             accent_color = _accent_hex()
             self._console_print(

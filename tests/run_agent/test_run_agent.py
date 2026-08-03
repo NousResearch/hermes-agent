@@ -3259,8 +3259,21 @@ class TestRunConversation:
 
         monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 7.5)
 
+        # Fake clock: the retry loop gates on real time.time() < sleep_end, so
+        # a no-op sleep alone busy-spins 7.5 wall-clock seconds. Advance a fake
+        # clock by each sleep amount instead (established pattern:
+        # test_session_activity_persist.py patches run_agent.time.time).
+        clock = {"t": time.time()}
+        monkeypatch.setattr(_conv_loop.time, "time", lambda: clock["t"])
+
         sleep_calls = []
-        monkeypatch.setattr(time, "sleep", lambda secs: sleep_calls.append(secs))
+
+        def _fake_sleep(secs):
+            sleep_calls.append(secs)
+            clock["t"] += secs
+
+        monkeypatch.setattr(time, "sleep", _fake_sleep)
+        monkeypatch.setattr(_conv_loop.time, "sleep", _fake_sleep)
 
         status_messages = []
         monkeypatch.setattr(agent, "_buffer_status", lambda status: status_messages.append(status))

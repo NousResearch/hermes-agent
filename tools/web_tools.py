@@ -637,7 +637,10 @@ def web_search_tool(
 
             - firecrawl: ``web``, ``news``, ``images`` (sources); ``research``,
               ``github``, ``pdf`` (categories)
-            - searxng: Many categories depending on installed engines —\n              ``general``, ``news``, ``science``, ``it``, ``images``,\n              ``files``, ``social media``, ``map``, ``music``, ``videos``,\n              and others. Check ``GET /config`` on your instance.
+            - searxng: Many categories depending on installed engines —
+              ``general``, ``news``, ``science``, ``it``, ``images``,
+              ``files``, ``social media``, ``map``, ``music``, ``videos``,
+              and others. Check ``GET /config`` on your instance.
             - exa: ``company``, ``people``, ``news``, ``code``
             - brave-free: ``web``, ``news``, ``images``, ``video``
             - tavily: ``general``, ``news``, ``finance`` (via ``topic`` param)

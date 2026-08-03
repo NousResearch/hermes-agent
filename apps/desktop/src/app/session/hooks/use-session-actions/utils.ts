@@ -295,10 +295,12 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // the strict equality path — they reconcile a SETTLED row, and a growing
     // row is by definition not settled.
     //
-    // Live-tail identity: only treat structure as same-turn evidence when the
-    // cached row is still the in-flight stream (pending / stream id), not a
-    // historical completed assistant that merely shares a role ordinal after
-    // compression rewrote history (#76444 review).
+    // Live-tail identity: structure-only same-turn carry is allowed only when
+    // the *structure-bearing cached row* is still the in-flight stream
+    // (pending / stream id / interim). Marking only the text-only next row
+    // live is not enough — after compression a new live assistant can share a
+    // role ordinal with an unrelated historical structured row and must not
+    // inherit its reasoning/tool parts (#76444 review / salvage).
     const isLiveTailRow = (row: ChatMessage): boolean =>
       Boolean(row.pending) ||
       row.id.startsWith('assistant-stream-') ||
@@ -311,7 +313,7 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
         previous.role === 'assistant' &&
         hasStructuralParts(previous) &&
         !hasStructuralParts(message) &&
-        (isLiveTailRow(previous) || isLiveTailRow(message)))
+        isLiveTailRow(previous))
 
     if (sameTurn) {
       preserved = preserveStructuralParts(preserved, previous)

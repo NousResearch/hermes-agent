@@ -8536,16 +8536,20 @@ def _refresh_minimax_oauth_state(
                 "Accept": "application/json",
             },
         )
-    if response.status_code != 200:
-        body = _minimax_response_error_text(response)
-        body_lower = body.lower()
-        relogin = any(m in body_lower for m in
-                      ("invalid_grant", "refresh_token_reused", "invalid_refresh_token"))
-        raise AuthError(
-            f"MiniMax OAuth refresh failed: {body or response.reason_phrase}",
-            provider="minimax-oauth", code="refresh_failed",
-            relogin_required=relogin,
-        )
+        # The non-200 branch reads a STREAMED body, so it must run while
+        # the client is still open — iter_bytes() after the client context
+        # closes raises (StreamClosed).  The 200 path was already read by
+        # _minimax_post_form, so response.json() below is safe outside.
+        if response.status_code != 200:
+            body = _minimax_response_error_text(response)
+            body_lower = body.lower()
+            relogin = any(m in body_lower for m in
+                          ("invalid_grant", "refresh_token_reused", "invalid_refresh_token"))
+            raise AuthError(
+                f"MiniMax OAuth refresh failed: {body or response.reason_phrase}",
+                provider="minimax-oauth", code="refresh_failed",
+                relogin_required=relogin,
+            )
     payload = response.json()
     if payload.get("status") != "success":
         raise AuthError(

@@ -9,10 +9,10 @@ from run_agent import AIAgent
 
 class _RecordingSessionDB:
     def __init__(self):
-        self.writes: list[dict] = []
+        self.batches: list[list[dict]] = []
 
-    def append_message(self, **kwargs):
-        self.writes.append(kwargs)
+    def append_messages_batch(self, *, session_id, messages, compression_lock_holder=None):
+        self.batches.append(list(messages))
 
 
 def test_flush_stamps_live_message_with_the_durable_write_timestamp():
@@ -29,6 +29,7 @@ def test_flush_stamps_live_message_with_the_durable_write_timestamp():
         _last_flushed_db_idx=0,
         _flushed_db_message_ids=set(),
         _db_flush_scan_prefix=None,
+        _active_compression_lock_holder=None,
         session_id="session",
     )
     messages = [{"role": "user", "content": "keep this timestamp"}]
@@ -36,4 +37,5 @@ def test_flush_stamps_live_message_with_the_durable_write_timestamp():
     assert AIAgent._flush_messages_to_session_db_unlocked(agent, messages) is True
 
     assert isinstance(messages[0]["timestamp"], float)
-    assert db.writes[0]["timestamp"] == messages[0]["timestamp"]
+    assert len(db.batches) == 1
+    assert db.batches[0][0]["timestamp"] == messages[0]["timestamp"]

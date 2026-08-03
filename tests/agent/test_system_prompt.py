@@ -185,6 +185,60 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
 
 
+def test_profile_prompt_no_nested_profiles_path(monkeypatch):
+    """Non-default profile sessions must not fabricate a nested profiles path.
+
+    When HERMES_HOME is already profile-scoped (e.g. /root/.hermes/profiles/foo),
+    the active-profile hint used to append /profiles/foo/ again, producing a
+    non-existent nested directory. The session's own data lives at HERMES_HOME
+    itself; the default profile's data lives under the root.
+    """
+    import agent.system_prompt as system_prompt
+
+    agent = _make_agent(
+        valid_tool_names=["read_file"],
+        _parallel_tool_call_guidance=False,
+    )
+    monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
+    monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
+    monkeypatch.setattr(
+        system_prompt, "get_hermes_home", lambda: Path("/root/.hermes/profiles/setup-radar-lab")
+    )
+    monkeypatch.setattr(
+        "hermes_constants.get_default_hermes_root",
+        lambda: Path("/root/.hermes"),
+    )
+
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch(
+            "agent.coding_context.coding_system_prompt_parts",
+            return_value=(
+                ["CODING_STABLE"],
+                ["WORKSPACE"],
+                ["Operator instructions (from config):\nOPERATOR"],
+            ),
+        ),
+        patch(
+            "agent.file_safety._resolve_active_profile_name",
+            return_value="setup-radar-lab",
+        ),
+        patch("hermes_time.now", return_value=datetime(2026, 1, 2)),
+    ):
+        prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
+
+    # The session's own data path is HERMES_HOME itself — no nested /profiles/<name>/.
+    assert "reads and writes /root/.hermes/profiles/setup-radar-lab/." in prompt
+    # The default profile's data is anchored at the root, not the profile dir.
+    assert "default profile's data lives at /root/.hermes/skills/" in prompt
+    # Regression: the fabricated nested path must never appear.
+    assert "/profiles/setup-radar-lab/profiles" not in prompt
+
+
 class TestTelegramRichMessagesHint:
     """Verify that TELEGRAM_RICH_MESSAGES_HINT is conditionally included."""
 

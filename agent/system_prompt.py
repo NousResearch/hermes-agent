@@ -418,11 +418,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             "you to."
         )
     else:
+        # When a profile is active, HERMES_HOME is already profile-scoped, so
+        # the session's own data lives at get_hermes_home() itself — appending
+        # /profiles/<name>/ again fabricates a non-existent nested path. The
+        # default profile's data lives under the root, the parent of profiles/.
+        try:
+            from hermes_constants import get_default_hermes_root
+
+            default_home = get_default_hermes_root()
+        except Exception:
+            default_home = get_hermes_home()
         post_workspace_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes {get_hermes_home()}/profiles/{active_profile}/. The default "
-            f"profile's data lives at {get_hermes_home()}/skills/, {get_hermes_home()}/plugins/, "
-            f"{get_hermes_home()}/cron/, {get_hermes_home()}/memories/ — those belong to a "
+            f"and writes {get_hermes_home()}/. The default "
+            f"profile's data lives at {default_home}/skills/, {default_home}/plugins/, "
+            f"{default_home}/cron/, {default_home}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
             f"another profile's skills/plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "

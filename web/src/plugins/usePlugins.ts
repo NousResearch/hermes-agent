@@ -38,6 +38,25 @@ export function cacheManifests(manifests: PluginManifest[]): void {
   }
 }
 
+/**
+ * Whether it is safe to skip the initial plugin-loading gate for a set of
+ * cached manifests.
+ *
+ * App.tsx waits on `pluginsLoading` before mounting the persistent ChatPage
+ * host: if a plugin overrides /chat (`tab.override === "/chat"`), mounting
+ * the built-in chat first would spawn a PTY and then yank it out from under
+ * the user when the plugin resolves. That gate is load-bearing — so we may
+ * only seed `loading = false` from the cache when no cached manifest
+ * declares a /chat override. Manifests are still seeded either way; only
+ * the loading flag stays conservative.
+ */
+export function canSeedLoadedFromCache(
+  cached: PluginManifest[] | null,
+): boolean {
+  if (cached === null) return false;
+  return !cached.some((m) => m.tab?.override === "/chat");
+}
+
 export function usePlugins() {
   // Lazy initialisers run once at mount — safe to read sessionStorage here.
   // This avoids the "cannot access ref during render" lint error that would
@@ -51,8 +70,12 @@ export function usePlugins() {
   // registered synchronously on the first render after a refresh.
   // The catch-all in App.tsx is only a safety net for the very first visit
   // (no cache yet). On subsequent visits this flag starts false immediately.
+  //
+  // Exception: if any cached manifest overrides /chat we must keep
+  // loading=true — App.tsx's pluginsLoading gate around the persistent
+  // ChatPage host is load-bearing (see canSeedLoadedFromCache).
   const [loading, setLoading] = useState<boolean>(
-    () => getCachedManifests() === null,
+    () => !canSeedLoadedFromCache(getCachedManifests()),
   );
   const loadedScripts = useRef<Set<string>>(new Set());
 

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   getCachedManifests,
   cacheManifests,
+  canSeedLoadedFromCache,
   MANIFEST_CACHE_KEY,
 } from "./usePlugins";
 import type { PluginManifest } from "./types";
@@ -98,5 +99,46 @@ describe("plugin manifest cache helpers", () => {
     };
     vi.stubGlobal("sessionStorage", badStorage);
     expect(() => cacheManifests([exampleManifest])).not.toThrow();
+  });
+});
+
+describe("canSeedLoadedFromCache (loading seed gate)", () => {
+  it("returns false when there is no cache (first visit keeps loading=true)", () => {
+    expect(canSeedLoadedFromCache(null)).toBe(false);
+  });
+
+  it("returns true for an empty cached list", () => {
+    expect(canSeedLoadedFromCache([])).toBe(true);
+  });
+
+  it("returns true when no cached manifest overrides /chat", () => {
+    const list: PluginManifest[] = [
+      exampleManifest,
+      {
+        ...exampleManifest,
+        name: "other",
+        tab: { path: "/other", override: "/skills" },
+      },
+    ];
+    expect(canSeedLoadedFromCache(list)).toBe(true);
+  });
+
+  it("returns false when a cached manifest overrides /chat — loading must stay true so App.tsx's pluginsLoading gate keeps the persistent chat host unmounted", () => {
+    const list: PluginManifest[] = [
+      exampleManifest,
+      {
+        ...exampleManifest,
+        name: "chat-replacer",
+        tab: { path: "/chat-alt", override: "/chat" },
+      },
+    ];
+    expect(canSeedLoadedFromCache(list)).toBe(false);
+  });
+
+  it("tolerates malformed cached entries missing a tab object", () => {
+    const malformed = [
+      { ...exampleManifest, tab: undefined },
+    ] as unknown as PluginManifest[];
+    expect(canSeedLoadedFromCache(malformed)).toBe(true);
   });
 });

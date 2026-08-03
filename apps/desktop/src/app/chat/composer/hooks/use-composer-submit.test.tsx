@@ -106,10 +106,24 @@ describe('useComposerSubmit busy-turn routing', () => {
     })
 
     await waitFor(() =>
-      expect(onSteer).toHaveBeenCalledWith(
-        '```terminal\nselected terminal lines\n```\n\nlook at @terminal:`zsh:23-58`'
-      )
+      expect(onSteer).toHaveBeenCalledWith('```terminal\nselected terminal lines\n```\n\nlook at')
     )
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  it('refuses to steer when a restored @terminal chip has no selection payload', () => {
+    clearComposerTerminalSelections()
+
+    const { hook, onSteer, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      text: 'look at @terminal:`zsh:23-58`'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(onSteer).not.toHaveBeenCalled()
     expect(queueCurrentDraft).not.toHaveBeenCalled()
   })
 

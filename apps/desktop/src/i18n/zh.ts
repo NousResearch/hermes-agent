@@ -2242,6 +2242,8 @@ export const zh: Translations = {
     queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
     queueStuckTitle: '排队消息未发送',
     queueStuckBody: '排队的对话多次发送失败。它仍在队列中，请重试发送。',
+    terminalSelectionMissingTitle: '终端选区不可用',
+    terminalSelectionMissingBody: '请重新选择终端行（Ctrl/Cmd+L）后再发送 — 该引用已没有原始文本。',
     previewUnavailable: '预览不可用',
     previewLabel: label => `预览 ${label}`,
     couldNotPreview: label => `无法预览 ${label}`,

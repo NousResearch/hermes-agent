@@ -1827,6 +1827,8 @@ export const zhHant = defineLocale({
     queueResumeTip: '已被停止操作暫停 — 繼續傳送排隊的回合',
     queueStuckTitle: '佇列訊息未送出',
     queueStuckBody: '佇列中的對話多次傳送失敗。它仍在佇列中，請重試傳送。',
+    terminalSelectionMissingTitle: '終端選取內容不可用',
+    terminalSelectionMissingBody: '請重新選取終端列（Ctrl/Cmd+L）後再傳送 — 此標記已沒有原始文字。',
     previewUnavailable: '預覽不可用',
     previewLabel: label => `預覽 ${label}`,
     couldNotPreview: label => `無法預覽 ${label}`,

@@ -8,6 +8,7 @@ import {
   clearSessionDraft,
   type ComposerAttachment,
   expandComposerDraftWithTerminalContext,
+  freezeComposerDraftWithTerminalContext,
   missingComposerTerminalSelectionLabels,
   migrateSessionDraft,
   removeComposerAttachment,
@@ -39,18 +40,36 @@ describe('terminal selection expansion', () => {
     clearComposerTerminalSelections()
   })
 
-  it('expands @terminal chips into fenced blocks from the side-channel map', () => {
+  it('freezes @terminal chips into fenced transport without tokens', () => {
     setComposerTerminalSelection('zsh:23-58', 'line one\nline two')
 
-    const expanded = expandComposerDraftWithTerminalContext('see @terminal:`zsh:23-58` please')
+    const frozen = freezeComposerDraftWithTerminalContext('see @terminal:`zsh:23-58` please')
 
-    expect(expanded).toBe('```terminal\nline one\nline two\n```\n\nsee @terminal:`zsh:23-58` please')
+    expect(frozen.transportText).toBe('```terminal\nline one\nline two\n```\n\nsee please')
+    expect(frozen.displayText).toBe('see @terminal:`zsh:23-58` please')
+    expect(frozen.missingLabels).toEqual([])
+    expect(expandComposerDraftWithTerminalContext('see @terminal:`zsh:23-58` please')).toBe(frozen.transportText)
     expect(terminalContextBlocksFromDraft('see @terminal:`zsh:23-58` please')).toEqual([
       '```terminal\nline one\nline two\n```'
     ])
   })
 
-  it('leaves already-expanded drafts alone (idempotent for steer re-queue)', () => {
+  it('does not re-resolve a frozen queue entry after the label is overwritten', () => {
+    setComposerTerminalSelection('zsh:23-58', 'selection A')
+
+    const frozen = freezeComposerDraftWithTerminalContext('look at @terminal:`zsh:23-58`')
+
+    setComposerTerminalSelection('zsh:23-58', 'selection B from another tab')
+
+    // Drain / submit must not call terminalContextBlocksFromDraft on frozen
+    // transport — no tokens remain, so a mutated map cannot inject B.
+    expect(frozen.transportText).toContain('selection A')
+    expect(frozen.transportText).not.toContain('selection B')
+    expect(terminalContextBlocksFromDraft(frozen.transportText)).toEqual([])
+    expect(freezeComposerDraftWithTerminalContext(frozen.transportText).transportText).toBe(frozen.transportText)
+  })
+
+  it('leaves already-frozen transport alone (idempotent for steer re-queue)', () => {
     setComposerTerminalSelection('zsh:23-58', 'line one\nline two')
 
     const once = expandComposerDraftWithTerminalContext('see @terminal:`zsh:23-58` please')
@@ -67,12 +86,15 @@ describe('terminal selection expansion', () => {
       '```terminal\nfirst block\n```\n\nsee @terminal:`zsh:1-2` and @terminal:`zsh:3-4`'
 
     expect(expandComposerDraftWithTerminalContext(partial)).toBe(
-      '```terminal\nsecond block\n```\n\n```terminal\nfirst block\n```\n\nsee @terminal:`zsh:1-2` and @terminal:`zsh:3-4`'
+      '```terminal\nsecond block\n```\n\n```terminal\nfirst block\n```\n\nsee and'
     )
   })
 
-  it('drops chips whose selection text is missing from the map', () => {
-    expect(expandComposerDraftWithTerminalContext('@terminal:`zsh:1-2`')).toBe('@terminal:`zsh:1-2`')
+  it('reports chips whose selection text is missing from the map', () => {
+    const frozen = freezeComposerDraftWithTerminalContext('@terminal:`zsh:1-2`')
+
+    expect(frozen.transportText).toBe('@terminal:`zsh:1-2`')
+    expect(frozen.missingLabels).toEqual(['zsh:1-2'])
     expect(missingComposerTerminalSelectionLabels('@terminal:`zsh:1-2`')).toEqual(['zsh:1-2'])
     expect(terminalContextBlocksFromDraft('@terminal:`zsh:1-2`')).toEqual([])
   })

@@ -374,28 +374,66 @@ export function missingComposerTerminalSelectionLabels(draft: string) {
   return terminalLabelsFromDraft(draft).filter(label => !selections[label]?.trim())
 }
 
+/** Remove `@terminal:` chips from transport text after their fences are frozen. */
+function stripTerminalRefTokens(text: string) {
+  return text
+    .replace(TERMINAL_REF_RE, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+export interface FrozenTerminalDraft {
+  /** Composer / bubble text — keeps `@terminal:` chips when present. */
+  displayText: string
+  /**
+   * Agent-facing text: fenced selection blocks plus prose, with resolved
+   * `@terminal:` tokens stripped so a later submit cannot re-resolve them
+   * against a mutated `$composerTerminalSelections` map (#77078).
+   */
+  transportText: string
+  /** Chips whose selection payload is missing from the live map. */
+  missingLabels: string[]
+}
+
 /**
- * Expand `@terminal:` chips into fenced selection blocks, matching the idle
- * submit path in `submit.ts`. Busy-turn steer/redirect and queue enqueue must
- * use this so the agent receives the selected lines, not just the bare token
- * (#77078).
+ * Freeze `@terminal:` chips into immutable fenced blocks for transport.
  *
- * Per-block idempotent: only prepends fences not already present in the draft
- * (failed-steer re-queue, or a draft that already expanded one of several chips).
+ * Busy-turn steer, queue enqueue/edit, and idle submit all use this so the
+ * agent receives selected lines (not bare tokens). Tokens are stripped from
+ * `transportText` so a queued drain cannot pick up a later selection that
+ * reused the same shell:row label.
+ */
+export function freezeComposerDraftWithTerminalContext(draft: string): FrozenTerminalDraft {
+  const displayText = draft.trim()
+  const missingLabels = missingComposerTerminalSelectionLabels(displayText)
+
+  if (missingLabels.length > 0) {
+    return { displayText, transportText: displayText, missingLabels }
+  }
+
+  const labels = terminalLabelsFromDraft(displayText)
+
+  if (labels.length === 0) {
+    return { displayText, transportText: displayText, missingLabels: [] }
+  }
+
+  const blocks = terminalContextBlocksFromDraft(displayText)
+  const missingBlocks = blocks.filter(block => !displayText.includes(block))
+  const prose = stripTerminalRefTokens(displayText)
+  const transportText = [missingBlocks.join('\n\n'), prose].filter(Boolean).join('\n\n').trim()
+
+  return { displayText, transportText, missingLabels: [] }
+}
+
+/**
+ * Expand `@terminal:` chips into fenced selection blocks for agent transport.
+ * Prefer {@link freezeComposerDraftWithTerminalContext} when the caller also
+ * needs `displayText` / `missingLabels` (queue + submit guards).
  */
 export function expandComposerDraftWithTerminalContext(draft: string) {
-  const visible = draft.trim()
-  const missingBlocks = terminalContextBlocksFromDraft(draft).filter(block => !draft.includes(block))
-
-  if (missingBlocks.length === 0) {
-    return visible
-  }
-
-  if (!visible) {
-    return missingBlocks.join('\n\n')
-  }
-
-  return `${missingBlocks.join('\n\n')}\n\n${visible}`
+  return freezeComposerDraftWithTerminalContext(draft).transportText
 }
 
 export function clearComposerTerminalSelections() {

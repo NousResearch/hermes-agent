@@ -1715,6 +1715,8 @@ export interface Translations {
     queueResumeTip: string
     queueStuckTitle: string
     queueStuckBody: string
+    terminalSelectionMissingTitle: string
+    terminalSelectionMissingBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string

@@ -1721,6 +1721,9 @@ export const ar = defineLocale({
     queueDelete: 'حذف من الطابور',
     queueStuckTitle: 'لم تُرسل الرسالة في قائمة الانتظار',
     queueStuckBody: 'ظل دور في قائمة الانتظار يفشل في الإرسال. ما زال في قائمة الانتظار — حاول إرساله مرة أخرى.',
+    terminalSelectionMissingTitle: 'تحديد الطرفية غير متاح',
+    terminalSelectionMissingBody:
+      'أعد تحديد أسطر الطرفية (Ctrl/Cmd+L) قبل الإرسال — لم يعد للرمز النص الأصلي.',
     previewUnavailable: 'المعاينة غير متاحة',
     previewLabel: label => `معاينة ${label}`,
     couldNotPreview: label => `تعذرت معاينة ${label}`,

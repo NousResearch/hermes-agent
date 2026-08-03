@@ -2,6 +2,7 @@ import { type MutableRefObject, useCallback } from 'react'
 
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import type { Translations } from '@/i18n'
+import { translateNow } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
@@ -16,7 +17,7 @@ import {
   $composerAttachments,
   clearComposerAttachments,
   type ComposerAttachment,
-  terminalContextBlocksFromDraft
+  freezeComposerDraftWithTerminalContext
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -111,7 +112,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
   return useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
-      const visibleText = sanitizeComposerInput(rawText).trim()
       const usingComposerAttachments = !options?.attachments
 
       // Drop undefined/null holes a session switch or draft restore can leave in
@@ -123,11 +123,34 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         Boolean(a)
       )
 
-      const terminalContextBlocks = terminalContextBlocksFromDraft(rawText)
-        // Skip blocks already present (failed-steer re-queue of an expanded
-        // draft) so drain/submit cannot duplicate fences (#77078).
-        .filter(block => !rawText.includes(block))
-        .join('\n\n')
+      // Freeze `@terminal:` chips into transport text before send. Queue drains
+      // already carry frozen transport (tokens stripped at enqueue) — never
+      // re-resolve against the live selection map, or a later Cmd+L that reused
+      // the same shell:row label silently injects unrelated output (#77078).
+      let transportRaw = rawText
+      let bubbleOverride = options?.displayText
+
+      if (!options?.fromQueue) {
+        const frozen = freezeComposerDraftWithTerminalContext(rawText)
+
+        if (frozen.missingLabels.length > 0) {
+          notify({
+            kind: 'warning',
+            title: translateNow('composer.terminalSelectionMissingTitle'),
+            message: translateNow('composer.terminalSelectionMissingBody')
+          })
+
+          return false
+        }
+
+        transportRaw = frozen.transportText
+
+        if (!bubbleOverride && frozen.displayText !== frozen.transportText) {
+          bubbleOverride = frozen.displayText
+        }
+      }
+
+      const visibleText = sanitizeComposerInput(transportRaw).trim()
       const hasImage = attachments.some(a => a.kind === 'image')
 
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
@@ -147,8 +170,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           .filter(Boolean)
           .join('\n')
 
+        // Terminal fences live inside visibleText (frozen above / at enqueue).
         return (
-          [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
+          [contextRefs, visibleText].filter(Boolean).join('\n\n') ||
           (present.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
         )
       }
@@ -162,7 +186,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // not the foreground flag: an explicit target (tile, queue drain) is
       // frequently not the session on screen, so the foreground flag would gate
       // one session's send on another session's turn.
-      const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
+      const hasSendable = Boolean(visibleText || attachments.length || hasImage)
 
       const guardSessionId = options?.sessionId ?? activeSessionIdRef.current
 
@@ -316,9 +340,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       // What the bubble shows. A `/skill` send carries the whole expanded
       // skill body as its text — model-facing scaffolding — so the dispatcher
-      // hands us the invocation to render instead. Everything else shows what
-      // was typed.
-      const bubbleText = options?.displayText ?? visibleText
+      // hands us the invocation to render instead. Frozen `@terminal:` sends
+      // keep the chip form here while the agent receives fenced transport.
+      const bubbleText = bubbleOverride ?? visibleText
 
       const buildUserMessage = (): ChatMessage => ({
         id: optimisticId,

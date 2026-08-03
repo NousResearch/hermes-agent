@@ -163,6 +163,24 @@ def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     return normalized.endswith("/openai")
 
 
+def _is_openai_api_base_url(base_url: Any) -> bool:
+    """True only for api.openai.com itself (exact host).
+
+    OpenAI documents ``prompt_cache_key`` as a first-class body field and
+    GPT-5.6+ docs recommend it for reliable cache routing, so the flag is
+    implied for the real endpoint. Deliberately NOT a substring match:
+    Azure OpenAI and strict OpenAI-compat endpoints may reject unknown
+    fields and must stay opt-in via ``supports_prompt_cache_key``.
+    """
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(str(base_url or "").strip()).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "api.openai.com"
+
+
 def _model_consumes_thought_signature(model: Any) -> bool:
     """True when the outgoing model is a Gemini family model that requires
     ``extra_content`` (thought_signature) to be replayed on tool calls.
@@ -564,7 +582,8 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs,
             messages=sanitized,
             tools=api_kwargs.get("tools"),
-            supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key")),
+            supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key"))
+            or _is_openai_api_base_url(params.get("base_url")),
         )
 
         return api_kwargs

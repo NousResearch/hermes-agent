@@ -153,7 +153,13 @@ def test_include_unconfigured_appends_canonical_skeletons():
          "source": "built-in"},
     ]
     ctx = _empty_ctx(provider="openrouter")
-    with _list_auth_returning(rows):
+    with (
+        _list_auth_returning(rows),
+        patch(
+            "hermes_cli.auth.is_runtime_provider_routable",
+            return_value=True,
+        ),
+    ):
         payload = build_models_payload(ctx, include_unconfigured=True)
     # All canonical providers other than openrouter should appear as
     # skeleton rows.
@@ -167,6 +173,127 @@ def test_include_unconfigured_appends_canonical_skeletons():
                  if r.get("source") == "canonical"]
     assert all(r["models"] == [] for r in skeletons)
     assert all(r["total_models"] == 0 for r in skeletons)
+
+
+def test_unconfigured_rows_do_not_restore_disabled_custom_endpoint_override():
+    ctx = ConfigContext(
+        current_provider="deepseek",
+        current_model="proxy-model",
+        current_base_url="https://proxy.example/v1",
+        user_providers={
+            "deepseek": {
+                "base_url": "https://proxy.example/v1",
+                "models": {"proxy-model": {}},
+            }
+        },
+        custom_providers=[],
+    )
+
+    def _routable(provider_id):
+        return provider_id != "custom"
+
+    with (
+        _list_auth_returning([]),
+        patch(
+            "hermes_cli.auth.is_runtime_provider_routable",
+            side_effect=_routable,
+        ),
+    ):
+        full = build_models_payload(ctx, include_unconfigured=True)
+        explicit = build_models_payload(ctx, explicit_only=True)
+
+    assert all(row["slug"] != "deepseek" for row in full["providers"])
+    assert all(row["slug"] != "deepseek" for row in explicit["providers"])
+
+
+def test_unconfigured_rows_keep_metadata_only_builtin_provider():
+    ctx = ConfigContext(
+        current_provider="deepseek",
+        current_model="proxy-model",
+        current_base_url="",
+        user_providers={"deepseek": {"models": {"proxy-model": {}}}},
+        custom_providers=[],
+    )
+
+    def _routable(provider_id):
+        return provider_id != "custom"
+
+    with (
+        _list_auth_returning([]),
+        patch(
+            "hermes_cli.auth.is_runtime_provider_routable",
+            side_effect=_routable,
+        ),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    row = next(row for row in payload["providers"] if row["slug"] == "deepseek")
+    assert row["source"] == "configured-current"
+    assert row["models"] == ["proxy-model"]
+
+
+def test_unconfigured_rows_preserve_models_dev_alias_exclusion():
+    ctx = ConfigContext(
+        current_provider="copilot",
+        current_model="gpt-test",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        excluded_providers=["github-copilot"],
+    )
+
+    with (
+        _list_auth_returning([]),
+        patch(
+            "agent.models_dev.PROVIDER_TO_MODELS_DEV",
+            {"copilot": "github-copilot"},
+        ),
+        patch(
+            "hermes_cli.auth.is_runtime_provider_routable",
+            return_value=True,
+        ),
+    ):
+        full = build_models_payload(ctx, include_unconfigured=True)
+        explicit = build_models_payload(ctx, explicit_only=True)
+
+    assert all(row["slug"] != "copilot" for row in full["providers"])
+    assert all(row["slug"] != "copilot" for row in explicit["providers"])
+
+
+def test_hermes_exclusion_does_not_spread_across_shared_models_dev_id():
+    mapping = {
+        "kimi-coding": "kimi-for-coding",
+        "kimi-coding-cn": "kimi-for-coding",
+    }
+
+    def _payload(excluded):
+        ctx = ConfigContext(
+            current_provider="openrouter",
+            current_model="test-model",
+            current_base_url="",
+            user_providers={},
+            custom_providers=[],
+            excluded_providers=excluded,
+        )
+        with (
+            _list_auth_returning([]),
+            patch("agent.models_dev.PROVIDER_TO_MODELS_DEV", mapping),
+            patch(
+                "hermes_cli.auth.is_runtime_provider_routable",
+                return_value=True,
+            ),
+        ):
+            return build_models_payload(ctx, include_unconfigured=True)
+
+    one_region = _payload(["kimi-coding"])
+    shared_catalog = _payload(["kimi-for-coding"])
+    one_region_slugs = {row["slug"] for row in one_region["providers"]}
+    shared_catalog_slugs = {row["slug"] for row in shared_catalog["providers"]}
+
+    assert "kimi-coding" not in one_region_slugs
+    assert "kimi-coding-cn" in one_region_slugs
+    assert "kimi-coding" not in shared_catalog_slugs
+    assert "kimi-coding-cn" not in shared_catalog_slugs
 
 
 def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_rows():

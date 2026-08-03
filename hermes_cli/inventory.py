@@ -521,19 +521,54 @@ def _append_unconfigured_rows(
     at it but credentials are presently unavailable, keep a visible row carrying
     the saved model so GUI pickers don't silently snap to some other provider.
     """
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import PROVIDER_REGISTRY, is_runtime_provider_routable
+    from hermes_cli.config import is_provider_enabled
+    from hermes_cli.model_switch import _configured_custom_endpoint_slugs
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
     cur_model = str(ctx.current_model or "").strip()
+    suppressed = {
+        str(provider_id).strip().lower()
+        for provider_id in (ctx.excluded_providers or [])
+        if str(provider_id).strip()
+    }
+    # list_authenticated_providers accepts either side of the Hermes ↔
+    # models.dev mapping in excluded_providers. Preserve that equivalence when
+    # appending skeletons, or an excluded ``github-copilot`` row is restored as
+    # canonical ``copilot`` here.
+    try:
+        from agent.models_dev import PROVIDER_TO_MODELS_DEV
+
+        original_excluded = set(suppressed)
+        for hermes_id, models_dev_id in PROVIDER_TO_MODELS_DEV.items():
+            if str(models_dev_id).strip().lower() in original_excluded:
+                suppressed.add(str(hermes_id).strip().lower())
+    except Exception:
+        pass
+    if isinstance(ctx.user_providers, dict):
+        suppressed.update(
+            str(provider_id).strip().lower()
+            for provider_id, provider_cfg in ctx.user_providers.items()
+            if str(provider_id).strip()
+            and isinstance(provider_cfg, dict)
+            and not is_provider_enabled(provider_cfg)
+        )
+        if not is_runtime_provider_routable("custom"):
+            suppressed.update(
+                _configured_custom_endpoint_slugs(ctx.user_providers)
+            )
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
-        if entry.slug.lower() in seen:
+        slug = entry.slug.lower()
+        if slug in seen or slug in suppressed:
             continue
-        if current_only and entry.slug.lower() != cur:
+        if not is_runtime_provider_routable(slug):
             continue
-        if entry.slug.lower() == cur:
+        if current_only and slug != cur:
+            continue
+        if slug == cur:
             cfg = PROVIDER_REGISTRY.get(entry.slug)
             auth_type = cfg.auth_type if cfg else "api_key"
             key_env = (

@@ -22,9 +22,11 @@ def _clear_auxiliary_state():
 
 def _disable_provider_plugins(monkeypatch, *provider_ids: str) -> None:
     blocked = frozenset(provider_ids)
+    is_active = lambda provider_id: provider_id not in blocked
+    monkeypatch.setattr("providers.is_provider_plugin_active", is_active)
     monkeypatch.setattr(
-        "providers.is_provider_plugin_active",
-        lambda provider_id: provider_id not in blocked,
+        "providers.is_provider_canonical_identity_active",
+        is_active,
     )
 
 
@@ -159,11 +161,13 @@ def test_text_and_vision_auto_chains_skip_all_disabled_special_providers(
 
 def test_cached_direct_client_is_not_reused_after_provider_is_disabled(monkeypatch):
     disabled = {"value": False}
+    is_active = lambda provider_id: not (
+        provider_id == "openrouter" and disabled["value"]
+    )
+    monkeypatch.setattr("providers.is_provider_plugin_active", is_active)
     monkeypatch.setattr(
-        "providers.is_provider_plugin_active",
-        lambda provider_id: not (
-            provider_id == "openrouter" and disabled["value"]
-        ),
+        "providers.is_provider_canonical_identity_active",
+        is_active,
     )
     monkeypatch.setattr(aux, "_peek_pool_entry", lambda _provider: None)
     cached_client = MagicMock()
@@ -255,6 +259,10 @@ def test_named_custom_alias_uses_custom_activation_owner_before_cache_gate(
         return provider_id != "kimi-coding"
 
     monkeypatch.setattr("providers.is_provider_plugin_active", is_active)
+    monkeypatch.setattr(
+        "providers.is_provider_canonical_identity_active",
+        is_active,
+    )
     monkeypatch.setattr(aux, "_aux_activation_cache_fingerprint", lambda: "stable")
     monkeypatch.setattr(aux, "_pool_cache_hint", lambda *args, **kwargs: "")
     monkeypatch.setattr(aux, "_peek_pool_entry", lambda _provider: None)
@@ -289,6 +297,10 @@ def test_disabled_canonical_provider_cannot_be_shadowed_by_named_custom(
         "providers.is_provider_plugin_active",
         lambda provider_id: provider_id != "nous",
     )
+    monkeypatch.setattr(
+        "providers.is_provider_canonical_identity_active",
+        lambda provider_id: provider_id != "nous",
+    )
     resolver = MagicMock(side_effect=AssertionError("resolver must stay gated"))
     monkeypatch.setattr(aux, "resolve_provider_client", resolver)
 
@@ -315,8 +327,142 @@ def test_disabled_canonical_provider_cannot_be_shadowed_through_alias(
         "providers.is_provider_plugin_active",
         lambda provider_id: provider_id != "kimi-coding",
     )
+    monkeypatch.setattr(
+        "providers.is_provider_canonical_identity_active",
+        lambda provider_id: provider_id != "kimi-coding",
+    )
     resolver = MagicMock(side_effect=AssertionError("resolver must stay gated"))
     monkeypatch.setattr(aux, "resolve_provider_client", resolver)
 
     assert aux._get_cached_client("kimi", "test-model") == (None, None)
     resolver.assert_not_called()
+
+
+def test_canonical_aux_route_uses_exact_activation_under_alias_collision(
+    monkeypatch,
+):
+    """An active same-named alias must not revive a disabled canonical route."""
+    monkeypatch.setattr(
+        "providers.is_plugin_managed_provider_id",
+        lambda provider_id: provider_id == "nous",
+    )
+    monkeypatch.setattr(
+        "providers.get_provider_identity_provenance",
+        lambda provider_id: "canonical" if provider_id == "nous" else None,
+    )
+    monkeypatch.setattr("providers.is_provider_plugin_active", lambda _id: True)
+    monkeypatch.setattr(
+        "providers.is_provider_canonical_identity_active",
+        lambda provider_id: provider_id != "nous",
+    )
+    resolver = MagicMock(side_effect=AssertionError("resolver must stay gated"))
+    monkeypatch.setattr(aux, "resolve_provider_client", resolver)
+
+    assert aux._get_cached_client("nous", "test-model") == (None, None)
+    resolver.assert_not_called()
+
+
+def test_aux_alias_normalization_preserves_raw_canonical_denial(monkeypatch):
+    """Both direct and cached aux entry points gate the raw canonical ID."""
+    managed = {"claude", "anthropic"}
+    monkeypatch.setattr(
+        "providers.is_plugin_managed_provider_id",
+        lambda provider_id: provider_id in managed,
+    )
+    monkeypatch.setattr(
+        "providers.get_provider_identity_provenance",
+        lambda provider_id: (
+            "canonical" if provider_id in managed else None
+        ),
+    )
+    monkeypatch.setattr("providers.is_provider_plugin_active", lambda _id: True)
+    monkeypatch.setattr(
+        "providers.is_provider_canonical_identity_active",
+        lambda provider_id: provider_id != "claude",
+    )
+    anthropic = MagicMock(side_effect=AssertionError("Anthropic must stay gated"))
+    monkeypatch.setattr(aux, "_try_anthropic", anthropic)
+
+    assert aux.resolve_provider_client("claude", "test-model") == (None, None)
+    anthropic.assert_not_called()
+
+    resolver = MagicMock(side_effect=AssertionError("resolver must stay gated"))
+    monkeypatch.setattr(aux, "resolve_provider_client", resolver)
+    assert aux._get_cached_client("claude", "test-model") == (None, None)
+    resolver.assert_not_called()
+
+
+def test_aux_alias_normalization_preserves_inactive_alias_denial(monkeypatch):
+    """A stale hardcoded alias cannot bypass its generic activation state."""
+    managed = {"claude", "anthropic"}
+    monkeypatch.setattr(
+        "providers.is_plugin_managed_provider_id",
+        lambda provider_id: provider_id in managed,
+    )
+    monkeypatch.setattr(
+        "providers.get_provider_identity_provenance",
+        lambda provider_id: (
+            "alias"
+            if provider_id == "claude"
+            else "canonical"
+            if provider_id == "anthropic"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        "providers.is_provider_plugin_active",
+        lambda provider_id: provider_id != "claude",
+    )
+    monkeypatch.setattr(
+        "providers.is_provider_canonical_identity_active",
+        lambda _provider_id: True,
+    )
+    anthropic = MagicMock(side_effect=AssertionError("Anthropic must stay gated"))
+    monkeypatch.setattr(aux, "_try_anthropic", anthropic)
+
+    assert aux.resolve_provider_client("claude", "test-model") == (None, None)
+    anthropic.assert_not_called()
+
+    resolver = MagicMock(side_effect=AssertionError("resolver must stay gated"))
+    monkeypatch.setattr(aux, "resolve_provider_client", resolver)
+    assert aux._get_cached_client("claude", "test-model") == (None, None)
+    resolver.assert_not_called()
+
+
+def test_active_raw_canonical_identity_cannot_be_taken_over_by_named_custom(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "providers.get_provider_identity_provenance",
+        lambda provider_id: "canonical" if provider_id == "claude" else None,
+    )
+    named_custom = MagicMock(
+        side_effect=lambda provider_id: (
+            {
+                "name": "claude",
+                "base_url": "https://custom-claude.invalid/v1",
+                "api_key": "custom-key",
+            }
+            if provider_id == "claude"
+            else None
+        )
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider._get_named_custom_provider",
+        named_custom,
+    )
+
+    assert (
+        aux._aux_provider_activation_id(
+            "anthropic",
+            original_provider="claude",
+        )
+        == "anthropic"
+    )
+    assert (
+        aux._get_aux_named_custom_provider(
+            "anthropic",
+            original_provider="claude",
+        )
+        is None
+    )

@@ -1773,14 +1773,17 @@ def _provider_plugin_is_active(provider_id: str) -> bool:
     """Return the live activation state for a plugin-managed provider."""
     try:
         from providers import (
+            get_provider_identity_provenance,
             is_plugin_managed_provider_id,
+            is_provider_canonical_identity_active,
             is_provider_plugin_active,
         )
 
-        return (
-            not is_plugin_managed_provider_id(provider_id)
-            or is_provider_plugin_active(provider_id)
-        )
+        if not is_plugin_managed_provider_id(provider_id):
+            return True
+        if get_provider_identity_provenance(provider_id) == "canonical":
+            return is_provider_canonical_identity_active(provider_id)
+        return is_provider_plugin_active(provider_id)
     except Exception:
         return False
 
@@ -2274,6 +2277,15 @@ def resolve_provider(
     8. Error (no provider configured)
     """
     normalized = (requested or "auto").strip().lower()
+
+    # Preserve the activation owner of the identity the caller requested.
+    # Alias expansion can otherwise replace a disabled canonical name with an
+    # active same-named alias from another plugin and silently revive it.
+    if normalized != "auto" and not _provider_plugin_is_active(normalized):
+        raise AuthError(
+            f"Provider '{normalized}' is disabled by plugin configuration.",
+            code="invalid_provider",
+        )
 
     # Normalize provider aliases
     _PROVIDER_ALIASES = {

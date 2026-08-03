@@ -1189,7 +1189,7 @@ def _runtime_provider_activation_id(
     if default_provider in {"auto", "moa"}:
         return default_provider, False, False
     if requested_norm == "custom" or requested_norm.startswith("custom:"):
-        return "custom", True, False
+        return "custom", True, True
 
     try:
         from providers import get_provider_identity_provenance
@@ -1198,11 +1198,19 @@ def _runtime_provider_activation_id(
             return requested_norm, False, True
         has_named_custom = _get_named_custom_provider(requested_norm) is not None
     except Exception:
-        return default_provider, default_provider == "custom", False
+        return (
+            default_provider,
+            default_provider == "custom",
+            default_provider == "custom",
+        )
 
     if has_named_custom:
-        return "custom", True, False
-    return default_provider, default_provider == "custom", False
+        return "custom", True, True
+    return (
+        default_provider,
+        default_provider == "custom",
+        default_provider == "custom",
+    )
 
 
 def _resolve_openrouter_runtime(
@@ -1773,12 +1781,21 @@ def resolve_runtime_provider(
     _full_cfg = load_config()
     _provs_cfg = _full_cfg.get("providers") if isinstance(_full_cfg, dict) else None
     if isinstance(_provs_cfg, dict):
-        _block = _provs_cfg.get(requested_provider)
-        if isinstance(_block, dict) and not is_provider_enabled(_block):
-            raise ValueError(
-                f"provider {requested_provider!r} is disabled in config "
-                f"(providers.{requested_provider}.enabled: false)"
-            )
+        _config_provider_ids = [requested_provider]
+        if not use_custom_runtime and requested_provider not in {"auto", "moa"}:
+            try:
+                _canonical_provider = resolve_provider(requested_provider)
+                if _canonical_provider not in _config_provider_ids:
+                    _config_provider_ids.append(_canonical_provider)
+            except AuthError:
+                pass
+        for _config_provider_id in _config_provider_ids:
+            _block = _provs_cfg.get(_config_provider_id)
+            if isinstance(_block, dict) and not is_provider_enabled(_block):
+                raise ValueError(
+                    f"provider {requested_provider!r} is disabled in config "
+                    f"(providers.{_config_provider_id}.enabled: false)"
+                )
 
     if requested_provider == "moa":
         return {
@@ -1870,7 +1887,7 @@ def resolve_runtime_provider(
             explicit_base_url=explicit_base_url,
         )
     if custom_runtime:
-        require_plugin_provider("custom")
+        require_plugin_provider("custom", exact_canonical=True)
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
@@ -1903,7 +1920,7 @@ def resolve_runtime_provider(
                 base_url_host_matches(cfg_base_url, host)
                 for host in _known_cloud_hosts
             ):
-                require_plugin_provider("custom")
+                require_plugin_provider("custom", exact_canonical=True)
                 runtime = _resolve_openrouter_runtime(
                     requested_provider=requested_provider,
                     explicit_api_key=explicit_api_key,

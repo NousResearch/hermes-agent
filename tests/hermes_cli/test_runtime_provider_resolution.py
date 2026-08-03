@@ -872,6 +872,10 @@ def test_named_custom_alias_activation_owner_is_discovery_stable(
         return True
 
     monkeypatch.setattr("providers.is_provider_plugin_active", is_active)
+    monkeypatch.setattr(
+        "providers.is_provider_canonical_identity_active",
+        is_active,
+    )
 
     resolved = rp.resolve_runtime_provider(requested="kimi")
 
@@ -1855,3 +1859,45 @@ def test_shortcut_paths_cannot_bypass_disabled_provider_plugin(
 
     with pytest.raises(rp.AuthError, match="disabled by plugin configuration"):
         rp.resolve_runtime_provider(requested=requested)
+
+
+@pytest.mark.parametrize("requested", ["custom", "custom:corp"])
+def test_custom_routes_use_exact_activation_under_alias_collision(
+    monkeypatch,
+    requested,
+):
+    """An active alias named custom must not revive disabled canonical custom."""
+    monkeypatch.setattr(
+        "providers.is_provider_plugin_active",
+        lambda _provider_id: True,
+    )
+    monkeypatch.setattr(
+        "providers.is_provider_canonical_identity_active",
+        lambda provider_id: provider_id != "custom",
+    )
+
+    with pytest.raises(
+        rp.AuthError,
+        match=r"Provider 'custom'.*disabled",
+    ):
+        rp.resolve_runtime_provider(requested=requested)
+
+
+def test_runtime_alias_honors_canonical_provider_disabled_config(monkeypatch):
+    cfg = {"providers": {"anthropic": {"enabled": False}}}
+    monkeypatch.setattr(rp, "load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "providers.is_provider_plugin_active",
+        lambda _provider_id: True,
+    )
+    monkeypatch.setattr(
+        "providers.is_provider_canonical_identity_active",
+        lambda _provider_id: True,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"providers\.anthropic\.enabled: false",
+    ):
+        rp.resolve_runtime_provider(requested="claude")

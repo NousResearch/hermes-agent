@@ -563,9 +563,19 @@ def _aux_provider_plugin_is_active(provider_id: str) -> bool:
     if not normalized or normalized in {"auto", "moa"}:
         return True
     try:
-        from providers import is_provider_plugin_active
+        from providers import (
+            get_provider_identity_provenance,
+            is_plugin_managed_provider_id,
+            is_provider_canonical_identity_active,
+            is_provider_plugin_active,
+        )
 
-        active = is_provider_plugin_active(normalized)
+        if not is_plugin_managed_provider_id(normalized):
+            active = True
+        elif get_provider_identity_provenance(normalized) == "canonical":
+            active = is_provider_canonical_identity_active(normalized)
+        else:
+            active = is_provider_plugin_active(normalized)
     except Exception as exc:
         logger.debug(
             "Auxiliary provider activation check failed for %s: %s",
@@ -607,8 +617,15 @@ def _aux_provider_activation_id(
         alias_candidate = (_read_main_provider() or "").strip().lower()
     if alias_candidate and _normalize_aux_provider(alias_candidate) != alias_candidate:
         try:
+            from providers import get_provider_identity_provenance
             from hermes_cli.runtime_provider import _get_named_custom_provider
 
+            # A raw identity with canonical provenance keeps the built-in
+            # route even when the hardcoded alias table also rewrites it.
+            # _aux_provider_request_is_active gates that raw identity, while
+            # ``normalized`` below gates the route it executes through.
+            if get_provider_identity_provenance(alias_candidate) == "canonical":
+                return normalized
             # Probe only the raw alias here. Falling back to its normalized
             # canonical name would let a same-named custom entry take over
             # precisely when the canonical plugin's deny must win.
@@ -620,6 +637,51 @@ def _aux_provider_activation_id(
             # a new error path.
             pass
     return normalized
+
+
+def _aux_provider_request_is_active(
+    provider: str,
+    *,
+    original_provider: Optional[str] = None,
+) -> bool:
+    """Gate both the raw request identity and its auxiliary route owner.
+
+    Alias normalization is not allowed to erase a disabled canonical identity:
+    an active provider may expose an alias with the same name as a disabled
+    canonical plugin. Named-custom aliases remain owned by ``custom`` because
+    their raw identity has alias (not canonical) provenance.
+    """
+    original = (original_provider or provider or "").strip().lower()
+    if original == "main":
+        original = (_read_main_provider() or "").strip().lower()
+
+    activation_provider = _aux_provider_activation_id(
+        provider,
+        original_provider=original_provider,
+    )
+    if original in {"", "auto", "moa"}:
+        return _aux_provider_plugin_is_active(activation_provider)
+    try:
+        from providers import get_provider_identity_provenance
+
+        provenance = get_provider_identity_provenance(original) if original else None
+        if provenance == "canonical":
+            if not _aux_provider_plugin_is_active(original):
+                return False
+        elif (
+            activation_provider != "custom"
+            and original
+            and not _aux_provider_plugin_is_active(original)
+        ):
+            return False
+    except Exception as exc:
+        logger.debug(
+            "Auxiliary raw provider activation check failed for %s: %s",
+            original,
+            exc,
+        )
+        return False
+    return _aux_provider_plugin_is_active(activation_provider)
 
 
 def _get_aux_named_custom_provider(
@@ -637,7 +699,16 @@ def _get_aux_named_custom_provider(
     normalized = _normalize_aux_provider(provider)
     custom_entry = None
     if original and original != normalized:
-        custom_entry = _get_named_custom_provider(original)
+        try:
+            from providers import get_provider_identity_provenance
+
+            original_is_canonical = (
+                get_provider_identity_provenance(original) == "canonical"
+            )
+        except Exception:
+            original_is_canonical = True
+        if not original_is_canonical:
+            custom_entry = _get_named_custom_provider(original)
     if custom_entry is None:
         custom_entry = _get_named_custom_provider(normalized)
     return custom_entry
@@ -5873,11 +5944,10 @@ def resolve_provider_client(
                 explicit_base_url = None
                 explicit_api_key = None
 
-    activation_provider = _aux_provider_activation_id(
+    if not _aux_provider_request_is_active(
         provider,
         original_provider=original_provider,
-    )
-    if not _aux_provider_plugin_is_active(activation_provider):
+    ):
         return None, None
 
     # Universal model-resolution fallback for concrete providers. ``auto`` is
@@ -7349,8 +7419,7 @@ def _get_cached_client(
     preventing the fd-exhaustion that previously occurred in long-running
     gateways where recycled worker threads created unbounded entries (#10200).
     """
-    activation_provider = _aux_provider_activation_id(provider)
-    if not _aux_provider_plugin_is_active(activation_provider):
+    if not _aux_provider_request_is_active(provider):
         return None, None
 
     # Resolve the current event loop for async clients so we can validate

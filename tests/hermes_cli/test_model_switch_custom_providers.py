@@ -5,9 +5,15 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+from unittest.mock import MagicMock
+
 import hermes_cli.providers as providers_mod
 import pytest
-from hermes_cli.model_switch import list_authenticated_providers, switch_model
+from hermes_cli.model_switch import (
+    list_authenticated_providers,
+    list_picker_providers,
+    switch_model,
+)
 from hermes_cli.providers import resolve_provider_full
 
 
@@ -93,6 +99,388 @@ def test_disabled_custom_plugin_hides_configured_endpoints(monkeypatch):
         row.get("slug") in {"custom", "configured-relay", "custom:saved-relay"}
         for row in providers
     )
+
+
+def test_disabled_custom_plugin_hides_builtin_slug_with_endpoint_override(
+    monkeypatch,
+):
+    """The picker must not advertise a built-in row that switching rejects."""
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "deepseek": {
+                "env": ["DEEPSEEK_API_KEY"],
+                "name": "DeepSeek",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.PROVIDER_TO_MODELS_DEV",
+        {"deepseek": "deepseek"},
+    )
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda provider_id: provider_id != "custom",
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    user_providers = {
+        "deepseek": {
+            "base_url": "https://proxy.example/v1",
+            "models": {"proxy-model": {}},
+        }
+    }
+
+    rows = list_picker_providers(
+        current_provider="openrouter",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+    metadata_only_rows = list_picker_providers(
+        current_provider="openrouter",
+        user_providers={"deepseek": {"models": {"proxy-model": {}}}},
+        custom_providers=[],
+    )
+    switched = switch_model(
+        raw_input="proxy-model",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="deepseek",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    assert not any(row.get("slug") == "deepseek" for row in rows)
+    assert any(
+        row.get("slug") == "deepseek" and "proxy-model" in row.get("models", [])
+        for row in metadata_only_rows
+    )
+    assert switched.success is False
+    assert "model-providers/custom" in switched.error_message
+
+
+def test_disabled_canonical_plugin_denial_survives_user_endpoint_fallback(
+    monkeypatch,
+):
+    """A direct endpoint fallback must not swallow a runtime activation deny."""
+    from hermes_cli.auth import AuthError
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda _provider_id: True,
+    )
+
+    def _disabled_runtime(**_kwargs):
+        raise AuthError(
+            "Provider 'deepseek' is disabled by plugin configuration.",
+            code="invalid_provider",
+        )
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _disabled_runtime,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *_args, **_kwargs: _MOCK_VALIDATION,
+    )
+    user_providers = {
+        "deepseek": {
+            "base_url": "https://proxy.example/v1",
+            "api_key": "proxy-key",
+            "models": {"proxy-model": {}},
+        }
+    }
+
+    result = switch_model(
+        raw_input="proxy-model",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="deepseek",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    assert result.success is False
+    assert "disabled by plugin configuration" in result.error_message
+    assert result.base_url == ""
+
+
+def test_same_provider_plugin_denial_is_not_swallowed(monkeypatch):
+    """The same-provider credential refresh must preserve activation denial."""
+    from hermes_cli.auth import AuthError
+
+    def _disabled_runtime(**_kwargs):
+        raise AuthError(
+            "Provider 'deepseek' is disabled by plugin configuration.",
+            code="invalid_provider",
+        )
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _disabled_runtime,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = switch_model(
+        raw_input="new-model",
+        current_provider="deepseek",
+        current_model="old-model",
+        current_base_url="https://api.deepseek.com/v1",
+        current_api_key="old-key",
+    )
+
+    assert result.success is False
+    assert "disabled by plugin configuration" in result.error_message
+    assert result.base_url == ""
+
+
+def test_config_disabled_denial_survives_user_endpoint_fallback(monkeypatch):
+    """A runtime providers.<name>.enabled:false denial is terminal."""
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda _provider_id: True,
+    )
+    monkeypatch.setattr(
+        "providers.get_provider_identity_provenance",
+        lambda _provider_id: None,
+    )
+
+    def _disabled_runtime(**_kwargs):
+        raise ValueError(
+            "provider 'corp' is disabled in config "
+            "(providers.corp.enabled: false)"
+        )
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _disabled_runtime,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *_args, **_kwargs: _MOCK_VALIDATION,
+    )
+    user_providers = {
+        "corp": {
+            "base_url": "https://corp.example/v1",
+            "api_key": "must-not-be-used",
+            "models": {"corp-model": {}},
+        }
+    }
+
+    result = switch_model(
+        raw_input="corp-model",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="corp",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    assert result.success is False
+    assert "disabled in config" in result.error_message
+    assert result.base_url == ""
+
+
+def test_same_provider_config_disabled_denial_is_not_swallowed(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def _disabled_runtime(**_kwargs):
+        raise ValueError(
+            "provider 'deepseek' is disabled in config "
+            "(providers.deepseek.enabled: false)"
+        )
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _disabled_runtime,
+    )
+
+    result = switch_model(
+        raw_input="new-model",
+        current_provider="deepseek",
+        current_model="old-model",
+        current_base_url="https://api.deepseek.com/v1",
+        current_api_key="must-not-be-used",
+    )
+
+    assert result.success is False
+    assert "disabled in config" in result.error_message
+    assert result.base_url == ""
+
+
+def test_same_provider_alias_honors_canonical_disabled_config(monkeypatch):
+    runtime = MagicMock(side_effect=AssertionError("runtime must stay gated"))
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        runtime,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "providers.is_provider_plugin_active",
+        lambda _provider_id: True,
+    )
+    monkeypatch.setattr(
+        "providers.is_provider_canonical_identity_active",
+        lambda _provider_id: True,
+    )
+
+    result = switch_model(
+        raw_input="new-model",
+        current_provider="claude",
+        current_model="old-model",
+        user_providers={"anthropic": {"enabled": False}},
+        custom_providers=[],
+    )
+
+    assert result.success is False
+    assert "providers.anthropic.enabled: false" in result.error_message
+    runtime.assert_not_called()
+
+
+def test_explicit_disabled_config_rejects_before_endpoint_probe(monkeypatch):
+    endpoint_probe = MagicMock(
+        side_effect=AssertionError("disabled provider endpoint was probed")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider._auto_detect_local_model",
+        endpoint_probe,
+    )
+    user_providers = {
+        "corp": {
+            "enabled": False,
+            "base_url": "https://corp.example/v1",
+        }
+    }
+
+    result = switch_model(
+        raw_input="",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="corp",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    assert result.success is False
+    assert "disabled in config" in result.error_message
+    endpoint_probe.assert_not_called()
+
+
+def test_explicit_inactive_canonical_rejects_before_endpoint_probe(monkeypatch):
+    endpoint_probe = MagicMock(
+        side_effect=AssertionError("inactive provider endpoint was probed")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider._auto_detect_local_model",
+        endpoint_probe,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda provider_id: provider_id != "deepseek",
+    )
+    monkeypatch.setattr(
+        "providers.get_provider_identity_provenance",
+        lambda provider_id: (
+            "canonical" if provider_id == "deepseek" else None
+        ),
+    )
+
+    result = switch_model(
+        raw_input="",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="deepseek",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is False
+    assert "disabled by plugin configuration" in result.error_message
+    endpoint_probe.assert_not_called()
+
+
+def test_explicit_inactive_alias_is_not_erased_by_normalization(monkeypatch):
+    runtime = MagicMock(side_effect=AssertionError("runtime must stay gated"))
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        runtime,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda provider_id: provider_id != "claude",
+    )
+    monkeypatch.setattr(
+        "providers.get_provider_identity_provenance",
+        lambda provider_id: "alias" if provider_id == "claude" else None,
+    )
+
+    result = switch_model(
+        raw_input="claude-test-model",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="claude",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is False
+    assert "Provider 'claude' is disabled" in result.error_message
+    runtime.assert_not_called()
+
+
+def test_unknown_user_endpoint_keeps_legacy_direct_fallback(monkeypatch):
+    """Only plugin denials are terminal; unknown user slugs still route."""
+    from hermes_cli.auth import AuthError
+
+    def _unknown_runtime(**_kwargs):
+        raise AuthError(
+            "Unknown provider 'corp'.",
+            code="invalid_provider",
+        )
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda _provider_id: True,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _unknown_runtime,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *_args, **_kwargs: _MOCK_VALIDATION,
+    )
+    user_providers = {
+        "corp": {
+            "base_url": "https://corp.example/v1",
+            "api_key": "corp-key",
+            "models": {"corp-model": {}},
+        }
+    }
+
+    result = switch_model(
+        raw_input="corp-model",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="corp",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "corp"
+    assert result.base_url == "https://corp.example/v1"
+    assert result.api_key == "corp-key"
 
 
 def test_switch_model_rejects_custom_endpoint_when_plugin_disabled(monkeypatch):

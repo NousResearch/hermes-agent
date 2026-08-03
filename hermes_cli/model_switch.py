@@ -1326,6 +1326,141 @@ def switch_model(
             ),
         )
 
+    def _disabled_provider_config_result(
+        *provider_ids: str,
+        provider_label: str,
+    ) -> ModelSwitchResult | None:
+        """Reject an explicitly disabled providers.<name> block early."""
+        from hermes_cli.config import is_provider_enabled
+
+        if not isinstance(user_providers, dict) or not user_providers:
+            return None
+        candidates = {
+            str(provider_id or "").strip().lower()
+            for provider_id in provider_ids
+            if str(provider_id or "").strip()
+        }
+        # A current provider may be stored under a legacy alias (for example
+        # ``claude``) while its config block uses the runtime canonical ID
+        # (``anthropic``). Expand aliases only for built-in routes; a
+        # URL-backed user provider with an alias-like name remains owned by
+        # the custom provider plugin.
+        from hermes_cli.auth import resolve_provider
+
+        for candidate in tuple(candidates):
+            if (
+                candidate.startswith("custom:")
+                or candidate in _custom_shortcuts
+                or candidate in _configured_provider_slugs
+            ):
+                continue
+            try:
+                candidates.add(resolve_provider(candidate))
+            except Exception:
+                pass
+        for configured_id, provider_cfg in user_providers.items():
+            normalized = str(configured_id or "").strip().lower()
+            if (
+                normalized in candidates
+                and isinstance(provider_cfg, dict)
+                and not is_provider_enabled(provider_cfg)
+            ):
+                return ModelSwitchResult(
+                    success=False,
+                    target_provider=normalized,
+                    provider_label=provider_label,
+                    is_global=is_global,
+                    error_message=(
+                        f"Provider '{provider_label}' is disabled in config "
+                        f"(providers.{configured_id}.enabled: false)."
+                    ),
+                )
+        return None
+
+    def _disabled_explicit_provider_result(
+        *,
+        raw_provider: str,
+        target_provider: str,
+        provider_label: str,
+    ) -> ModelSwitchResult | None:
+        """Reject inactive explicit routes before endpoint auto-detection."""
+        custom_disabled = _disabled_custom_provider_result(target_provider)
+        if custom_disabled is not None:
+            return custom_disabled
+
+        target_norm = str(target_provider or "").strip().lower()
+        raw_norm = str(raw_provider or "").strip().lower()
+        uses_custom = (
+            target_norm.startswith("custom:")
+            or target_norm in _custom_shortcuts
+            or target_norm in _configured_provider_slugs
+        )
+        candidates = [] if uses_custom else [target_norm]
+        try:
+            from providers import get_provider_identity_provenance
+
+            raw_provenance = (
+                get_provider_identity_provenance(raw_norm) if raw_norm else None
+            )
+            if raw_norm and (
+                raw_provenance == "canonical"
+                or (raw_provenance == "alias" and not uses_custom)
+            ):
+                candidates.append(raw_norm)
+        except Exception:
+            # Discovery failure is fail-closed for explicit routes: do not
+            # probe an endpoint before the runtime can enforce activation.
+            if raw_norm:
+                candidates.append(raw_norm)
+
+        from hermes_cli.auth import is_runtime_provider_routable
+
+        for candidate in dict.fromkeys(candidates):
+            if candidate and not is_runtime_provider_routable(candidate):
+                return ModelSwitchResult(
+                    success=False,
+                    target_provider=target_provider,
+                    provider_label=provider_label,
+                    is_global=is_global,
+                    error_message=(
+                        f"Provider '{candidate}' is disabled by plugin "
+                        "configuration."
+                    ),
+                )
+        return None
+
+    def _terminal_provider_resolution_result(
+        error: Exception,
+        *,
+        provider_id: str,
+        provider_label: str,
+    ) -> ModelSwitchResult | None:
+        """Preserve activation/config denials across compatibility fallbacks."""
+        from hermes_cli.auth import AuthError
+
+        plugin_denial = (
+            isinstance(error, AuthError)
+            and error.code == "invalid_provider"
+            and "disabled by plugin configuration" in str(error)
+        )
+        config_denial = (
+            isinstance(error, ValueError)
+            and "disabled in config" in str(error)
+            and "providers." in str(error)
+        )
+        if not (plugin_denial or config_denial):
+            return None
+        return ModelSwitchResult(
+            success=False,
+            target_provider=provider_id,
+            provider_label=provider_label,
+            is_global=is_global,
+            error_message=(
+                f"Could not resolve credentials for provider "
+                f"'{provider_label}': {error}"
+            ),
+        )
+
     # =================================================================
     # PATH A: Explicit --provider given
     # =================================================================
@@ -1361,9 +1496,21 @@ def switch_model(
             )
 
         target_provider = pdef.id
-        disabled_custom = _disabled_custom_provider_result(target_provider)
-        if disabled_custom is not None:
-            return disabled_custom
+        provider_label = pdef.name
+        disabled_config = _disabled_provider_config_result(
+            explicit_provider,
+            target_provider,
+            provider_label=provider_label,
+        )
+        if disabled_config is not None:
+            return disabled_config
+        disabled_explicit = _disabled_explicit_provider_result(
+            raw_provider=explicit_provider,
+            target_provider=target_provider,
+            provider_label=provider_label,
+        )
+        if disabled_explicit is not None:
+            return disabled_explicit
         if target_provider == "moa" and not new_model:
             try:
                 from hermes_cli.config import load_config
@@ -1625,6 +1772,12 @@ def switch_model(
     # COMMON PATH: Resolve credentials, normalize, get metadata
     # =================================================================
 
+    disabled_config = _disabled_provider_config_result(
+        target_provider,
+        provider_label=get_label(target_provider),
+    )
+    if disabled_config is not None:
+        return disabled_config
     disabled_custom = _disabled_custom_provider_result(target_provider)
     if disabled_custom is not None:
         return disabled_custom
@@ -1680,7 +1833,14 @@ def switch_model(
                 api_key = runtime.get("api_key", "") or _ukey
                 base_url = runtime.get("base_url", "") or _user_pdef.base_url
                 api_mode = runtime.get("api_mode", "")
-            except Exception:
+            except Exception as error:
+                disabled_plugin = _terminal_provider_resolution_result(
+                    error,
+                    provider_id=target_provider,
+                    provider_label=provider_label,
+                )
+                if disabled_plugin is not None:
+                    return disabled_plugin
                 api_key = _ukey
                 base_url = _user_pdef.base_url
                 api_mode = ""
@@ -1721,8 +1881,14 @@ def switch_model(
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
-        except Exception:
-            pass
+        except Exception as error:
+            disabled_plugin = _terminal_provider_resolution_result(
+                error,
+                provider_id=current_provider,
+                provider_label=provider_label,
+            )
+            if disabled_plugin is not None:
+                return disabled_plugin
 
     # --- Direct alias override: use exact base_url from the alias if set ---
     if resolved_alias:
@@ -2527,6 +2693,8 @@ def list_authenticated_providers(
             continue
         if _cp.slug.lower() in _excluded:
             continue
+        if not is_runtime_provider_routable(_cp.slug):
+            continue
 
         # Check credentials via PROVIDER_REGISTRY (auth.py)
         _cp_config = _auth_registry.get(_cp.slug)
@@ -3128,11 +3296,13 @@ def list_authenticated_providers(
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
 
-    # Apply final ``providers.<name>.enabled: false`` post-filter — covers
-    # built-in PROVIDER_REGISTRY rows (sections 1-2) which would otherwise
-    # bypass the per-section gate. Indexed by lowercase slug AND by
-    # ``provider_id`` so PROVIDER_REGISTRY entries that match user-config
-    # blocks are filtered consistently.
+    # Apply the final provider-config post-filter. This covers built-in
+    # PROVIDER_REGISTRY rows (sections 1-2) which would otherwise bypass the
+    # per-section gates: explicit ``enabled: false`` always hides the row, and
+    # a URL-backed ``providers.<name>`` override is hidden while the custom
+    # provider plugin is inactive because selecting that row cannot route.
+    # Metadata-only built-in rows remain visible. Indexed by lowercase slug
+    # AND by ``provider_id`` so matching user-config blocks are consistent.
     try:
         from hermes_cli.config import is_provider_enabled
         if isinstance(user_providers, dict):
@@ -3141,6 +3311,10 @@ def list_authenticated_providers(
                 for name, cfg in user_providers.items()
                 if isinstance(cfg, dict) and not is_provider_enabled(cfg)
             }
+            if not custom_provider_active:
+                _disabled_slugs.update(
+                    _configured_custom_endpoint_slugs(user_providers)
+                )
             if _disabled_slugs:
                 results = [
                     r for r in results

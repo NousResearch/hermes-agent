@@ -643,6 +643,76 @@ class TestZaiEndpointAutoDetect:
         assert creds["api_key"] == ""
 
 
+class TestZaiParallelProbe:
+    """detect_zai_endpoint probes endpoints in parallel workers.
+
+    Contract under test: (1) each endpoint worker preserves the per-endpoint
+    candidate-model fallback loop, (2) when several endpoints succeed the
+    winner is chosen by ZAI_ENDPOINTS priority order (not completion order).
+    """
+
+    def _mock_post(self, ok):
+        """Return an httpx.post replacement; `ok` maps (base_url, model) -> bool."""
+        import httpx as _httpx
+
+        def _post(url, headers=None, json=None, timeout=None):
+            base = url.rsplit("/chat/completions", 1)[0]
+            code = 200 if ok.get((base, json["model"])) else 401
+            request = _httpx.Request("POST", url)
+            return _httpx.Response(code, request=request, json={})
+
+        return _post
+
+    def test_candidate_model_fallback_within_endpoint(self, monkeypatch):
+        """A worker must try its endpoint's later candidate models when the
+        first ones fail — the fallback the scalar-model version dropped."""
+        from hermes_cli.auth import ZAI_ENDPOINTS, detect_zai_endpoint
+
+        coding_global = next(ep for ep in ZAI_ENDPOINTS if ep[0] == "coding-global")
+        base = coding_global[1]
+        last_model = coding_global[2][-1]
+        # Only the LAST candidate model of coding-global succeeds.
+        monkeypatch.setattr(
+            "hermes_cli.auth.httpx.post",
+            self._mock_post({(base, last_model): True}),
+        )
+        result = detect_zai_endpoint("test-key", timeout=1.0)
+        assert result is not None
+        assert result["id"] == "coding-global"
+        assert result["model"] == last_model
+
+    def test_priority_order_wins_over_completion_order(self, monkeypatch):
+        """When multiple endpoints accept the key, the FIRST in
+        ZAI_ENDPOINTS order must win, even if another finishes earlier."""
+        import time as _time
+
+        from hermes_cli.auth import ZAI_ENDPOINTS, detect_zai_endpoint
+
+        first = ZAI_ENDPOINTS[0]
+        last = ZAI_ENDPOINTS[-1]
+        ok = {
+            (first[1], first[2][0]): True,
+            (last[1], last[2][0]): True,
+        }
+        inner = self._mock_post(ok)
+
+        def _slow_first(url, headers=None, json=None, timeout=None):
+            if url.startswith(first[1]):
+                _time.sleep(0.15)  # first-priority endpoint finishes LAST
+            return inner(url, headers=headers, json=json, timeout=timeout)
+
+        monkeypatch.setattr("hermes_cli.auth.httpx.post", _slow_first)
+        result = detect_zai_endpoint("test-key", timeout=1.0)
+        assert result is not None
+        assert result["id"] == first[0]
+
+    def test_all_fail_returns_none(self, monkeypatch):
+        from hermes_cli.auth import detect_zai_endpoint
+
+        monkeypatch.setattr("hermes_cli.auth.httpx.post", self._mock_post({}))
+        assert detect_zai_endpoint("bad-key", timeout=1.0) is None
+
+
 # =============================================================================
 # Kimi / Moonshot model list isolation tests
 # =============================================================================

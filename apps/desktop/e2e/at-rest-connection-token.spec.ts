@@ -18,13 +18,23 @@
  *   2. STILL FUNCTIONAL. After a restart, the app must still be able to USE
  *      that credential — it decrypts the stored blob and puts the exact
  *      original token on the wire.
+ *   3. UNREADABLE BY OTHER LOCAL ACCOUNTS. `connection.json` must not be
+ *      group/other-accessible, whether the app just wrote it or inherited it
+ *      from an older install.
  *
- * Both halves matter and neither is sufficient alone. (1) alone is trivially
+ * All three matter and none is sufficient alone. (1) alone is trivially
  * satisfied by a "fix" that drops the token on the floor; (2) alone is
  * satisfied by the bug itself. So (2) is verified through the app's own
  * connection test against a fake gateway that records the
  * `X-Hermes-Session-Token` header it receives — a dropped or mangled token
  * cannot produce that header.
+ *
+ * (3) is orthogonal to (1) and invisible to it: safeStorage keeps the token
+ * opaque no matter what the file's mode is, so a 0644 `connection.json` passes
+ * the raw-bytes scan every time while still exposing the ciphertext blob, the
+ * gateway URL and the SSH host/user/keyPath to any other local account. It is
+ * asserted explicitly (see `expectOwnerOnlyMode`) because no amount of
+ * encryption evidence implies it.
  *
  * We deliberately do NOT assert `encoding === 'safeStorage'` or any other
  * shape of the stored blob. That would be a change-detector: a fix that moved
@@ -32,16 +42,23 @@
  * separate credential file would break the test while being *more* correct.
  * The load-bearing assertion is the raw-bytes absence of the secret.
  *
- * Two at-rest paths, hence two tests — one enforced, one a documented gap:
+ * Four at-rest paths, hence four tests — three enforced, one a documented gap:
  *
  *   1. A NEWLY configured token (ACTIVE). The app's own write path routes
  *      through the strict `encryptDesktopSecret`; this test holds it there
- *      against regression.
- *   2. An EXISTING plaintext `connection.json` (`test.fixme`). Legacy payloads
+ *      against regression, and pins the mode of the file it actually wrote.
+ *   2. An EXISTING `connection.json` at the old 0644 (ACTIVE). Covers the
+ *      read-side tighten, and ONLY the mode — its token is already ciphertext,
+ *      which is what keeps it independent of the migration test 4 defers.
+ *   3. A CORRUPT `connection.json` at 0644 (ACTIVE). The tighten must not be
+ *      gated on the parse succeeding: a truncated file still holds the token
+ *      bytes, and the parse failure is swallowed, so nothing would ever come
+ *      back for it.
+ *   4. An EXISTING plaintext `connection.json` (`test.fixme`). Legacy payloads
  *      are deliberately NOT migrated yet. The test is kept, disabled, with a
  *      precise reason — see the block comment above it.
  *
- * ── Correcting the record on (2) ────────────────────────────────────────
+ * ── Correcting the record on test 4 ─────────────────────────────────────
  *
  * An earlier revision of this file asserted that migration and justified it by
  * claiming the first implementation (`d3d177283`) fell back to
@@ -304,6 +321,39 @@ function storedTokenEncoding(connectionFile: string): string {
   }
 }
 
+/**
+ * Assert a credential file is not readable or writable by group/other.
+ *
+ * This is the one contract the raw-bytes scan above structurally cannot see:
+ * safeStorage keeps the token opaque regardless of the file's mode, so a
+ * world-readable `connection.json` passes every absence assertion in this file
+ * while still handing the URL, the SSH host/user/keyPath, and the ciphertext
+ * blob to any other local account. Encryption and permissions are independent
+ * halves of "at rest", and only one of them was covered here.
+ *
+ * Asserted as `mode & 0o077 === 0` rather than `=== 0o600`: the requirement is
+ * that nobody else can reach the file, and pinning the exact bits would make
+ * this a change-detector against a future 0400 or a setgid-dir umask.
+ *
+ * POSIX only. `tightenSecretFileMode` no-ops on Windows deliberately (Node maps
+ * chmod to the read-only bit there, and userData is already ACL'd to the user
+ * profile — see the docstring in electron/hardening.ts, and PR #77527 for the
+ * one place ACLs are being handled). Mode bits are advisory on Windows, so
+ * asserting them would go red for behaviour the fix never claimed. The suite
+ * runs ubuntu-latest today (.github/workflows/e2e-desktop.yml); nothing else in
+ * this spec is platform-specific, and this assertion should not be what
+ * changes that.
+ */
+function expectOwnerOnlyMode(filePath: string, why: string): void {
+  if (process.platform === 'win32') {
+    return
+  }
+
+  const mode = fs.statSync(filePath).mode & 0o777
+
+  expect(mode & 0o077, `${why} (mode ${mode.toString(8)})`).toBe(0)
+}
+
 // ─── App helpers ────────────────────────────────────────────────────────
 
 /**
@@ -523,6 +573,17 @@ test.describe('remote gateway session token at rest', () => {
         rawConnection.includes(Buffer.from(fake.url, 'utf8')),
         'connection.json should record the configured gateway URL (proves this is the real artifact)',
       ).toBe(true)
+
+      // The write path's OTHER half of at-rest: opaque bytes AND owner-only
+      // permissions. Deliberately here, on the file this test just proved the
+      // app really wrote, rather than in a unit test — nothing in the repo
+      // imports electron/main.ts (it imports electron), so this is the only
+      // place that can witness the app's own write actually going out at 0600
+      // instead of the 0644 umask default.
+      expectOwnerOnlyMode(
+        connectionFile,
+        'connection.json is group/other-accessible, so the encrypted token blob, gateway URL and SSH fields are readable by other local accounts',
+      )
     }
 
     // ── The load-bearing assertion ─────────────────────────────────────
@@ -585,6 +646,158 @@ test.describe('remote gateway session token at rest', () => {
       fake.sessionTokens.slice(before),
       'the app must send the exact stored token to the gateway after a restart',
     ).toContain(SENTINEL_TOKEN)
+  })
+
+  /**
+   * The read side of the same contract: an install written BEFORE the file was
+   * owner-only keeps its 0644 bits until something chmods it, and the write
+   * path cannot fix it — `fs.writeFileSync(path, data, { mode })` applies
+   * `mode` only when it CREATES the file. Waiting for the user's next Settings
+   * save would leave the file group/other-readable indefinitely, which is why
+   * `readDesktopConnectionConfig` tightens on a cache miss.
+   *
+   * Scoped to the MODE, and deliberately independent of the deferred migration
+   * below. The fixture's token is already safeStorage ciphertext (the app wrote
+   * it), so nothing here re-encrypts anything, touches the #62319 opt-in
+   * plaintext marker, or needs rotation guidance — the three prerequisites that
+   * keep the next test fixme'd. Tightening a permission bit neither performs a
+   * migration nor claims to, so it can be covered now while migration stays
+   * deferred.
+   *
+   * The fixture is produced by the app itself rather than hand-written, so the
+   * only difference from a real pre-fix install is the one bit under test.
+   */
+  test('an install whose connection.json predates owner-only mode is tightened on read', async () => {
+    const fake = gateway!
+    sandbox = createSandbox('at-rest-tighten')
+
+    const first = await launchAgainst(sandbox)
+    app = first.app
+
+    const capability = await readSafeStorageCapability(app)
+
+    test.info().annotations.push({
+      description: `isEncryptionAvailable=${capability.available} backend=${capability.backend}`,
+      type: 'safeStorage',
+    })
+
+    if (!capability.available) {
+      // Without secure storage the save is refused by design, so there is no
+      // app-written artifact to loosen and re-read. The refusal itself is
+      // already asserted in the first test.
+      test.skip(true, 'secure storage unavailable on this host — no app-written connection.json to tighten')
+
+      return
+    }
+
+    const userDataDir = await resolveUserDataDir(app)
+    const connectionFile = path.join(userDataDir, 'connection.json')
+
+    const saved = await saveRemoteToken(first.page, fake.url, SENTINEL_TOKEN)
+    expect(saved.error, 'the fixture write must succeed, or there is nothing to tighten').toBeNull()
+
+    await app.close().catch(() => undefined)
+    app = null
+
+    // Regress the file to what a pre-fix install has on disk. Everything else
+    // about it — including the encrypted token — is exactly what the app wrote.
+    fs.chmodSync(connectionFile, 0o644)
+    expect(fs.statSync(connectionFile).mode & 0o077, 'the fixture must start group/other-accessible').not.toBe(0)
+
+    const seededMtimeMs = fs.statSync(connectionFile).mtimeMs
+
+    // A fresh process starts with an empty config cache, so the first read is a
+    // miss and the tighten runs. `getConnectionConfig()` forces that read
+    // through the app's own IPC surface.
+    const second = await launchAgainst(sandbox)
+    app = second.app
+
+    const reread = await second.page.evaluate(async () => {
+      const desktop = (window as unknown as { hermesDesktop: any }).hermesDesktop
+
+      return desktop.getConnectionConfig()
+    })
+
+    expectOwnerOnlyMode(
+      connectionFile,
+      'a pre-existing world-readable connection.json was not tightened when the app read it',
+    )
+
+    // The tighten must be a chmod, not a rewrite. It sits INSIDE the function
+    // whose cache keys on mtimeMs, so if it ever moved mtime it would
+    // invalidate that cache on every read and re-tighten forever. chmod moves
+    // ctime only, which is what makes the placement safe — this pins it.
+    expect(
+      Math.abs(fs.statSync(connectionFile).mtimeMs - seededMtimeMs),
+      'tightening must not rewrite the file: mtime is the config cache key, so moving it would invalidate the cache the tighten sits inside',
+    ).toBeLessThan(1)
+
+    // And tightening must not have cost the user their credential — the whole
+    // reason this happens on read instead of by deleting the file.
+    expect(reread.remoteTokenSet, 'the stored token must survive being tightened').toBe(true)
+    expect(reread.remoteUrl).toBe(fake.url)
+  })
+
+  /**
+   * The tighten must not be gated on the file being valid JSON.
+   *
+   * A truncated `connection.json` — an interrupted write on an older build, a
+   * half-finished hand edit, a partially restored backup — still contains the
+   * token bytes, and `JSON.parse` throws straight into the `catch` that falls
+   * back to local mode. That fallback is never written back, so nothing
+   * re-tightens the file later. With the chmod sequenced AFTER the parse,
+   * exactly the file that is both corrupt AND world-readable would be the one
+   * file never tightened, permanently.
+   *
+   * This is the only test that can tell the two orderings apart: every other
+   * test here uses a parseable file, where either ordering tightens. Asserting
+   * `mode === 'local'` is what makes it load-bearing — it proves the parse
+   * really threw, so a green mode assertion cannot be explained by anything
+   * downstream of the parse.
+   *
+   * Needs no secure storage: it is a chmod on a file that is never decrypted,
+   * so it holds on the keyring-less CI runner too.
+   */
+  test('a corrupt connection.json is tightened even though it never parses', async () => {
+    sandbox = createSandbox('at-rest-tighten-corrupt')
+
+    const connectionFile = path.join(sandbox.userDataDir, 'connection.json')
+
+    // Truncated mid-token: unparseable, yet the secret bytes are right there.
+    fs.writeFileSync(
+      connectionFile,
+      `{"mode":"remote","remote":{"authMode":"token","token":{"encoding":"plain","value":"${SENTINEL_TOKEN}`,
+      { encoding: 'utf8', mode: 0o644 },
+    )
+    fs.chmodSync(connectionFile, 0o644)
+    expect(fs.statSync(connectionFile).mode & 0o077, 'the fixture must start group/other-accessible').not.toBe(0)
+
+    const seededMtimeMs = fs.statSync(connectionFile).mtimeMs
+
+    const launched = await launchAgainst(sandbox)
+    app = launched.app
+
+    const reread = await launched.page.evaluate(async () => {
+      const desktop = (window as unknown as { hermesDesktop: any }).hermesDesktop
+
+      return desktop.getConnectionConfig()
+    })
+
+    expect(
+      reread.mode,
+      'the fixture must be unparseable, so the app falls back to local — otherwise this test proves nothing about ordering',
+    ).toBe('local')
+
+    expectOwnerOnlyMode(
+      connectionFile,
+      'a corrupt world-readable connection.json still holding token bytes was left group/other-accessible',
+    )
+
+    // Same cache invariant as above: chmod, not rewrite.
+    expect(
+      Math.abs(fs.statSync(connectionFile).mtimeMs - seededMtimeMs),
+      'tightening must not rewrite the file: mtime is the config cache key',
+    ).toBeLessThan(1)
   })
 
   /**

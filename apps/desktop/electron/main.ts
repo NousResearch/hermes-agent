@@ -6794,15 +6794,23 @@ function readDesktopConnectionConfig() {
 
   try {
     const raw = fs.readFileSync(DESKTOP_CONNECTION_CONFIG_PATH, 'utf8')
-    const parsed = JSON.parse(raw)
-
     // Tighten an install written before this file was owner-only. Every write
     // now goes out at 0600, but a file already on disk keeps its old 0644 bits
     // until something chmods it, and waiting for the user's next Settings save
     // would leave it group/other-readable indefinitely. Runs on a cache miss
     // only (once per launch, plus after an external edit); chmod moves ctime,
     // not mtime, so it cannot invalidate the cache it sits inside.
+    //
+    // Deliberately BEFORE JSON.parse, not after: a truncated or hand-mangled
+    // connection.json still contains the token bytes, and parse throws into the
+    // catch below, which swallows the error and falls back to local mode. With
+    // the tighten after the parse, exactly the file that is both corrupt AND
+    // world-readable would be the one file never tightened — and nothing would
+    // ever retry it, because the fallback config is not written back. The chmod
+    // needs only the path, so it has no reason to wait for valid JSON.
     tightenSecretFileMode(DESKTOP_CONNECTION_CONFIG_PATH)
+
+    const parsed = JSON.parse(raw)
 
     // NOT done here: migrating a legacy non-safeStorage token payload to
     // ciphertext at rest. Deferred deliberately — it has to honor the opt-in

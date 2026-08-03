@@ -49,7 +49,8 @@ def _load_retaindb_config() -> Dict[str, Any]:
 
     Non-secret fields (``base_url``, ``project``) are persisted here by the
     Dashboard; the runtime must read them back when the matching env var is
-    unset. The secret ``api_key`` continues to come from the environment.
+    unset. The secret ``api_key`` continues to come through profile-scoped
+    secret resolution rather than config.yaml.
     """
     try:
         from hermes_cli.config import load_config_readonly

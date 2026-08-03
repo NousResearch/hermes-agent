@@ -141,6 +141,41 @@ def test_initialize_env_overrides_config_yaml(tmp_path, monkeypatch):
     assert captured["base_url"] == "https://env.example.com"
 
 
+def test_initialize_combines_scoped_secret_with_dashboard_config(tmp_path, monkeypatch):
+    """Rebase regression: scoped secrets and non-secret config must coexist."""
+    from agent.secret_scope import (
+        is_multiplex_active,
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+
+    monkeypatch.setenv("RETAINDB_API_KEY", "env-other-profile")
+    monkeypatch.delenv("RETAINDB_BASE_URL", raising=False)
+    monkeypatch.delenv("RETAINDB_PROJECT", raising=False)
+    retaindb_module, captured = _capture_initialized_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        retaindb_module,
+        "_load_retaindb_config",
+        lambda: {"base_url": "https://dashboard.example.com/", "project": "dashboard-project"},
+    )
+
+    previous_multiplex_state = is_multiplex_active()
+    set_multiplex_active(True)
+    token = set_secret_scope({"RETAINDB_API_KEY": "scoped-key"})
+    try:
+        RetainDBMemoryProvider().initialize("sess-1")
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(previous_multiplex_state)
+
+    assert captured == {
+        "api_key": "scoped-key",
+        "base_url": "https://dashboard.example.com",
+        "project": "dashboard-project",
+    }
+
+
 def test_initialize_falls_back_to_default_base_url(tmp_path, monkeypatch):
     for var in ("RETAINDB_API_KEY", "RETAINDB_BASE_URL", "RETAINDB_PROJECT"):
         monkeypatch.delenv(var, raising=False)

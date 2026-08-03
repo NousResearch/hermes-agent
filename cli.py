@@ -436,14 +436,28 @@ def _startup_cwd_usable(path: str) -> bool:
     return bool(path) and os.path.isdir(path) and os.access(path, os.X_OK)
 
 
+def _try_enter_startup_cwd(path: str) -> bool:
+    """Enter *path*, tolerating a directory disappearing during recovery."""
+    if not _startup_cwd_usable(path):
+        return False
+    try:
+        os.chdir(path)
+    except OSError as exc:
+        logger.debug("Startup cwd candidate %s disappeared or is inaccessible: %s", path, exc)
+        return False
+    return True
+
+
 def _recover_startup_cwd() -> str:
     """Return a safe cwd for CLI startup, even if the launch cwd was deleted.
 
     The failure shape is a shell that remains attached to a deleted directory
     (common after removing a git worktree from another checkout). In that state
     ``os.getcwd()`` raises before the CLI can even load its config. Recover by
-    walking up the shell-reported path to the nearest usable ancestor, then fall
-    back to ``TERMINAL_CWD``, home, and finally the temp dir.
+    walking up the shell-reported path to the nearest usable ancestor, changing
+    the process cwd as soon as one is found, then falling back to ``TERMINAL_CWD``,
+    home, and finally the temp dir. The usability check and ``chdir`` are both
+    fallible because the candidate can disappear between them.
     """
     try:
         return os.getcwd()
@@ -461,15 +475,18 @@ def _recover_startup_cwd() -> str:
         candidate = _normalize_startup_cwd_candidate(str(raw or "").strip())
         if not candidate:
             continue
-        if _startup_cwd_usable(candidate):
-            return candidate
-        parent = os.path.dirname(candidate)
-        while parent and parent != candidate:
-            if _startup_cwd_usable(parent):
-                return parent
-            candidate, parent = parent, os.path.dirname(parent)
+        while candidate:
+            if _try_enter_startup_cwd(candidate):
+                return candidate
+            parent = os.path.dirname(candidate)
+            if parent == candidate:
+                break
+            candidate = parent
 
-    return tempfile.gettempdir()
+    fallback = tempfile.gettempdir()
+    if _try_enter_startup_cwd(fallback):
+        return fallback
+    return fallback
 
 def load_cli_config() -> Dict[str, Any]:
     """

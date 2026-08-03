@@ -137,6 +137,7 @@ class TestImageRejectionPhraseIsolation:
         "does not support multimodal",
         "does not support vision",
         "model does not support image",
+        "does not represent a valid image",
         "image_url'. expected",
         "no endpoints found that support image input",
     )
@@ -144,6 +145,10 @@ class TestImageRejectionPhraseIsolation:
     def _matches(self, body: str) -> bool:
         low = body.lower()
         return any(p in low for p in self._REJECTION_PHRASES)
+
+    def test_openai_malformed_image_trips_recovery(self):
+        body = "The image data you provided does not represent a valid image."
+        assert self._matches(body) is True
 
     def test_anthropic_image_too_large_does_not_trip(self):
         # From agent/error_classifier.py _IMAGE_TOO_LARGE_PATTERNS —

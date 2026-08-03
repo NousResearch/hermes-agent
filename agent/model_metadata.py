@@ -1184,7 +1184,11 @@ def fetch_endpoint_model_metadata(
             last_error = exc
 
     for candidate in candidates:
-        url = candidate.rstrip("/") + "/models"
+        # normalized/candidates stay unrewritten (cache key stability); only
+        # the outbound request target is IPv4-resolved to skip the multi-second
+        # dual-stack IPv6 connect timeout (see _localhost_to_ipv4).
+        request_candidate = _localhost_to_ipv4(candidate)
+        url = request_candidate.rstrip("/") + "/models"
         response = None
         try:
             response = requests.get(
@@ -1230,7 +1234,7 @@ def fetch_endpoint_model_metadata(
             if is_llamacpp:
                 try:
                     # Try /v1/props first (current llama.cpp); fall back to /props for older builds
-                    base = candidate.rstrip("/").replace("/v1", "")
+                    base = request_candidate.rstrip("/").replace("/v1", "")
                     _verify = _resolve_requests_verify()
                     props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
                     if not props_resp.ok:

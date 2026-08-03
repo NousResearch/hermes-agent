@@ -4867,6 +4867,7 @@ class TurnRunner:
                 route_scope=_clarify_mod.build_route_scope(
                     platform=ctx.source.platform,
                     chat_id=ctx.source.chat_id,
+                    chat_type=ctx.source.chat_type,
                     thread_id=ctx.source.thread_id,
                     message_id=ctx.event_message_id,
                 ),
@@ -8730,17 +8731,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key, exc_info=True,
             )
 
-        # A Buzz channel can share one conversational session across several
-        # threads. If this message belongs to a different route than the
-        # pending clarify, do not redirect its text into the blocked run. Wake
-        # that run with an internal cancellation response and let the base
-        # adapter queue this event as a separate routed follow-up turn.
+        # A pending Buzz channel clarify belongs to one thread. If this message
+        # belongs to a different route, do not redirect its text into the
+        # blocked run. Wake that run with an internal cancellation response and
+        # let the base adapter queue this event as a separate routed follow-up
+        # turn. Buzz DMs remain session-scoped and have no route filter.
         try:
             from tools import clarify_gateway as _clarify_mod
 
             _clarify_route_scope = _clarify_mod.build_route_scope(
                 platform=event.source.platform,
                 chat_id=event.source.chat_id,
+                chat_type=event.source.chat_type,
                 thread_id=event.source.thread_id,
                 message_id=event.message_id,
             )
@@ -14506,6 +14508,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _clarify_route_scope = _clarify_mod.build_route_scope(
                 platform=source.platform,
                 chat_id=source.chat_id,
+                chat_type=source.chat_type,
                 thread_id=source.thread_id,
                 message_id=event.message_id,
             )

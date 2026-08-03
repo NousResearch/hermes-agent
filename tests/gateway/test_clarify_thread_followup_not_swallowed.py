@@ -87,6 +87,20 @@ def _buzz_event(text, *, message_id, thread_id=None):
     )
 
 
+def _buzz_dm_event(text, *, message_id):
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform("buzz"),
+            chat_id="buzz-dm",
+            chat_type="dm",
+            user_id="buzz-user",
+        ),
+        message_id=message_id,
+    )
+
+
 def _clear_clarify_state():
     from tools import clarify_gateway as cm
 
@@ -237,6 +251,44 @@ async def test_buzz_same_thread_reply_resolves_pending_clarify():
     assert entry is not None
     assert entry.event.is_set()
     assert entry.response == "Continue with the audit"
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_untagged_buzz_dm_reply_resolves_session_scoped_clarify():
+    """A fresh DM answer must not be mistaken for an unrelated Buzz route."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register(
+        "cl-buzz-dm",
+        SESSION_KEY,
+        "What should I do next?",
+        None,
+        route_scope=None,
+    )
+
+    def route_scope_spy(
+        *, platform, chat_id, chat_type, thread_id=None, message_id=None
+    ):
+        assert str(getattr(platform, "value", platform)) == "buzz"
+        assert chat_id == "buzz-dm"
+        assert chat_type == "dm"
+        assert thread_id is None
+        assert message_id == "fresh-dm-message"
+        return None
+
+    with patch.object(cm, "build_route_scope", route_scope_spy):
+        result = await _dispatch(
+            runner,
+            _buzz_dm_event("Continue in this DM", message_id="fresh-dm-message"),
+        )
+
+    assert result == ""
+    assert entry.event.is_set()
+    assert entry.response == "Continue in this DM"
     _clear_clarify_state()
 
 

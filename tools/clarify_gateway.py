@@ -78,17 +78,22 @@ def build_route_scope(
     *,
     platform: Any,
     chat_id: Any,
+    chat_type: Any = None,
     thread_id: Any = None,
     message_id: Any = None,
 ) -> Optional[Dict[str, str]]:
     """Return the bounded interactive scope for thread-aware platforms.
 
-    Buzz intentionally shares conversational sessions across a channel, but
-    pending interactive prompts must remain bound to the thread that displayed
-    them. A top-level triggering event becomes that thread's root.
+    Buzz channel prompts are bound to the thread that displayed them. A
+    top-level channel event becomes that thread's root. Buzz DMs keep their
+    existing conversation-wide session semantics and therefore need no
+    additional route scope.
     """
     platform_value = getattr(platform, "value", platform)
     if str(platform_value or "").strip().lower() != "buzz":
+        return None
+    normalized_chat_type = str(chat_type or "").strip().lower()
+    if normalized_chat_type in {"dm", "private"}:
         return None
     normalized_chat_id = str(chat_id or "").strip()
     normalized_thread_id = str(thread_id or message_id or "").strip()

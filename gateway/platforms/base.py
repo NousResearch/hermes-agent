@@ -5671,6 +5671,7 @@ class BasePlatformAdapter(ABC):
                     _clarify_route_scope = _clarify_mod.build_route_scope(
                         platform=event.source.platform,
                         chat_id=event.source.chat_id,
+                        chat_type=event.source.chat_type,
                         thread_id=event.source.thread_id,
                         message_id=event.message_id,
                     )

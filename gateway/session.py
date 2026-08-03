@@ -1694,6 +1694,22 @@ class SessionStore:
         namespace = parts[1] or "main"
         return "default" if namespace == "main" else namespace
 
+    def _peer_fallback_key_prefix(self, session_key: Optional[str]) -> Optional[str]:
+        """Namespace the durable peer fallback must stay inside, or None.
+
+        Only multiplexed gateways constrain it — a single-profile gateway owns
+        every row the peer tuple can reach, and narrowing the query there would
+        drop rows written under an earlier profile name. Derived from the
+        requested key rather than the config so it matches the namespace the
+        key was actually built with.
+        """
+        if not getattr(self.config, "multiplex_profiles", False):
+            return None
+        parts = str(session_key or "").split(":")
+        if len(parts) < 2 or parts[0] != "agent" or not parts[1]:
+            return None
+        return f"{parts[0]}:{parts[1]}:"
+
     @staticmethod
     def _active_profile_name() -> str:
         try:
@@ -1708,17 +1724,40 @@ class SessionStore:
         requested_session_key: str,
         recovered: Dict[str, Any],
     ) -> bool:
-        """Prevent non-multiplexed gateways from reviving another profile's row."""
-        if getattr(self.config, "multiplex_profiles", False):
-            return True
+        """Prevent a gateway from reviving another profile's row.
+
+        The durable peer fallback in ``find_latest_gateway_session_for_peer``
+        drops ``session_key`` and matches only the peer tuple, which for a DM is
+        byte-identical across profiles (``chat_id == user_id``, no thread). Both
+        configurations therefore have to check the recovered row's namespace;
+        they differ in what counts as ours, and in whether a row that names no
+        profile at all may be adopted (#74285).
+        """
+        multiplexed = bool(getattr(self.config, "multiplex_profiles", False))
 
         recovered_key = str(recovered.get("session_key") or "")
-        if not recovered_key or recovered_key == requested_session_key:
+        if recovered_key and recovered_key == requested_session_key:
             return True
 
         recovered_profile = self._profile_from_session_key(recovered_key)
-        if recovered_profile is None:
-            return True
+        requested_profile = self._profile_from_session_key(requested_session_key)
+        if recovered_profile is None or (multiplexed and requested_profile is None):
+            # Nothing on the row establishes ownership. A single-profile gateway
+            # adopts it anyway: there is only one claimant, and rows written
+            # before key namespacing have to stay recoverable. A multiplexed one
+            # must not — the peer tuple carries no profile discriminator, so an
+            # unnamespaced row is just as likely to be a sibling's, and adopting
+            # it would run that sibling's transcript under this profile's
+            # credentials and filesystem scope. Fail closed and start fresh.
+            return not multiplexed
+
+        if multiplexed:
+            # The requested key carries the profile this message was routed to,
+            # and that is what owns the turn. The process-wide active profile is
+            # meaningless here — several profiles serve traffic concurrently, so
+            # comparing against it would let a DM addressed to one bot resume a
+            # sibling profile's transcript.
+            return recovered_profile == requested_profile
 
         return recovered_profile == self._active_profile_name()
 
@@ -1837,12 +1876,23 @@ class SessionStore:
         that tuple does not contain a workspace id and could therefore revive
         another team's session. The caller performs one explicit exact lookup
         of the old unscoped key instead.
+
+        When multiplexing, the peer fallback is additionally scoped to this
+        profile's key namespace. Without that, one query orders every profile's
+        rows together and returns the newest — so a sibling that spoke more
+        recently both loses us our own recoverable row and gets rejected by the
+        profile guard, ending in a needless fresh session (#74285).
         """
         if not self._db:
             return None
         finder = getattr(self._db, "find_latest_gateway_session_for_peer", None)
         if not callable(finder):
             return None
+        extra: Dict[str, Any] = {}
+        if allow_peer_fallback:
+            prefix = self._peer_fallback_key_prefix(session_key)
+            if prefix:
+                extra["session_key_prefix"] = prefix
         try:
             return finder(
                 source=source.platform.value,
@@ -1851,6 +1901,7 @@ class SessionStore:
                 chat_id=source.chat_id if allow_peer_fallback else None,
                 chat_type=source.chat_type if allow_peer_fallback else None,
                 thread_id=source.thread_id,
+                **extra,
             )
         except Exception as exc:
             logger.debug(
@@ -1900,9 +1951,8 @@ class SessionStore:
             recovered=recovered,
         ):
             logger.warning(
-                "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
+                "Gateway session DB recovery ignored %s for %s because the row "
+                "belongs to a different profile",
                 recovered.get("session_key"),
                 session_key,
             )
@@ -1960,9 +2010,8 @@ class SessionStore:
             recovered=recovered,
         ):
             logger.warning(
-                "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
+                "Gateway session DB recovery ignored %s for %s because the row "
+                "belongs to a different profile",
                 recovered.get("session_key"),
                 session_key,
             )

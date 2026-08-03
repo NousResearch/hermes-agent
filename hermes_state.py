@@ -3210,6 +3210,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         chat_id: Optional[str] = None,
         chat_type: Optional[str] = None,
         thread_id: Optional[str] = None,
+        session_key_prefix: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Find the latest recoverable gateway session for a routing peer.
 
@@ -3221,6 +3222,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         (dashboard viewer disconnect before #60609) are treated as recoverable;
         explicit conversation boundaries such as /new, /resume switches, and
         compression splits are not.
+
+        ``session_key_prefix`` constrains the peer-tuple fallback to one key
+        namespace. A multiplexed gateway needs it: several profiles serve the
+        same peer tuple, so ordering all their rows together and taking the
+        newest hands back whichever profile spoke last. Filtering before
+        ``LIMIT 1`` picks the caller's own most recent row instead of dropping
+        recovery the moment a sibling is newer (#74285).
         """
         if not session_key:
             return None
@@ -3247,22 +3255,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # tuple so we never cross chats/threads/users.
             if chat_id is None or chat_type is None:
                 return None
+            params: List[Any] = [source, user_id, chat_id, chat_type, thread_id]
+            prefix_clause = ""
+            if session_key_prefix:
+                # substr() rather than LIKE: LIKE folds ASCII case and would
+                # read ``_`` / ``%`` in a profile name as wildcards.
+                prefix_clause = (
+                    "                  AND substr(COALESCE(session_key, ''), 1, ?) = ?\n"
+                )
+                params.extend([len(session_key_prefix), session_key_prefix])
             row = self._conn.execute(
-                """
+                f"""
                 SELECT * FROM sessions
                 WHERE source = ?
                   AND COALESCE(user_id, '') = COALESCE(?, '')
                   AND COALESCE(chat_id, '') = COALESCE(?, '')
                   AND COALESCE(chat_type, '') = COALESCE(?, '')
                   AND COALESCE(thread_id, '') = COALESCE(?, '')
-                  AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
+{prefix_clause}                  AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
                   ))
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
-                (source, user_id, chat_id, chat_type, thread_id),
+                params,
             ).fetchone()
         return dict(row) if row else None
 

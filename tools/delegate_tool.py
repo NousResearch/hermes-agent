@@ -1456,11 +1456,24 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    # Inherit the parent's fallback provider chain by default so subagents can
+    # recover from transient primary failures. Operators that require delegated
+    # work to stay pinned to the inherited provider/endpoint can disable this
+    # explicitly. This is separate from credential-pool endpoint coherence: a
+    # coherent primary may still fail legitimately and activate an inherited
+    # cross-provider fallback unless this policy gate is off.
+    raw_inherit_fallback = delegation_cfg.get("inherit_fallback_providers", True)
+    if isinstance(raw_inherit_fallback, str):
+        inherit_fallback = raw_inherit_fallback.strip().lower() not in {
+            "false", "0", "no", "off",
+        }
+    else:
+        inherit_fallback = bool(raw_inherit_fallback)
+    parent_fallback = (
+        getattr(parent_agent, "_fallback_chain", None) or None
+        if inherit_fallback
+        else None
+    )
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing

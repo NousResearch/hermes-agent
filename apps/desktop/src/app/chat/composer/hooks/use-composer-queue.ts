@@ -4,7 +4,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
-import { type ComposerAttachment } from '@/store/composer'
+import { type ComposerAttachment, expandComposerDraftWithTerminalContext } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
@@ -182,7 +182,12 @@ export function useComposerQueue({
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
+    // Expand `@terminal:` chips before enqueue so the queued entry is
+    // self-contained. Drain goes through submit (which also expands), but the
+    // side-channel map can be empty by then after remount/reload (#77078).
+    const expanded = text.trim() ? expandComposerDraftWithTerminalContext(text) : text
+
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: expanded, attachments })) {
       return false
     }
 

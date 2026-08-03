@@ -4,15 +4,20 @@ import {
   $composerAttachments,
   $voiceConversationStartRequest,
   addComposerAttachment,
+  clearComposerTerminalSelections,
   clearSessionDraft,
   type ComposerAttachment,
+  expandComposerDraftWithTerminalContext,
+  missingComposerTerminalSelectionLabels,
   migrateSessionDraft,
   removeComposerAttachment,
   requestVoiceConversationStart,
   SESSION_DRAFTS_STORAGE_KEY,
+  setComposerTerminalSelection,
   stashSessionDraft,
   takeSessionDraft,
   takeVoiceConversationStart,
+  terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from './composer'
 
@@ -26,6 +31,36 @@ describe('voice conversation start requests', () => {
 
     requestVoiceConversationStart()
     expect(takeVoiceConversationStart($voiceConversationStartRequest.get())).toBe(true)
+  })
+})
+
+describe('terminal selection expansion', () => {
+  afterEach(() => {
+    clearComposerTerminalSelections()
+  })
+
+  it('expands @terminal chips into fenced blocks from the side-channel map', () => {
+    setComposerTerminalSelection('zsh:23-58', 'line one\nline two')
+
+    const expanded = expandComposerDraftWithTerminalContext('see @terminal:`zsh:23-58` please')
+
+    expect(expanded).toBe('```terminal\nline one\nline two\n```\n\nsee @terminal:`zsh:23-58` please')
+    expect(terminalContextBlocksFromDraft('see @terminal:`zsh:23-58` please')).toEqual([
+      '```terminal\nline one\nline two\n```'
+    ])
+  })
+
+  it('drops chips whose selection text is missing from the map', () => {
+    expect(expandComposerDraftWithTerminalContext('@terminal:`zsh:1-2`')).toBe('@terminal:`zsh:1-2`')
+    expect(missingComposerTerminalSelectionLabels('@terminal:`zsh:1-2`')).toEqual(['zsh:1-2'])
+    expect(terminalContextBlocksFromDraft('@terminal:`zsh:1-2`')).toEqual([])
+  })
+
+  it('leaves drafts without terminal chips unchanged', () => {
+    setComposerTerminalSelection('zsh:1-2', 'unused')
+
+    expect(expandComposerDraftWithTerminalContext('just a question')).toBe('just a question')
+    expect(missingComposerTerminalSelectionLabels('just a question')).toEqual([])
   })
 })
 

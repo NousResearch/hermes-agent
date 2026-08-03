@@ -364,6 +364,37 @@ export function terminalContextBlocksFromDraft(draft: string) {
   })
 }
 
+/**
+ * Labels present as `@terminal:` chips in the draft whose selection text is
+ * missing from the side-channel map (so expansion would silently drop them).
+ */
+export function missingComposerTerminalSelectionLabels(draft: string) {
+  const selections = $composerTerminalSelections.get()
+
+  return terminalLabelsFromDraft(draft).filter(label => !selections[label]?.trim())
+}
+
+/**
+ * Expand `@terminal:` chips into fenced selection blocks, matching the idle
+ * submit path in `submit.ts`. Busy-turn steer/redirect and queue enqueue must
+ * use this so the agent receives the selected lines, not just the bare token
+ * (#77078).
+ */
+export function expandComposerDraftWithTerminalContext(draft: string) {
+  const visible = draft.trim()
+  const blocks = terminalContextBlocksFromDraft(draft).join('\n\n')
+
+  if (!blocks) {
+    return visible
+  }
+
+  if (!visible) {
+    return blocks
+  }
+
+  return `${blocks}\n\n${visible}`
+}
+
 export function clearComposerTerminalSelections() {
   if (Object.keys($composerTerminalSelections.get()).length === 0) {
     return

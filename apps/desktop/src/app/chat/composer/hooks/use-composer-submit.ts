@@ -3,7 +3,11 @@ import { type RefObject, useEffect, useRef } from 'react'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
-import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
+import {
+  clearSessionDraft,
+  type ComposerAttachment,
+  expandComposerDraftWithTerminalContext
+} from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 
@@ -216,12 +220,17 @@ export function useComposerSubmit({
       return
     }
 
+    // Expand `@terminal:` chips the same way idle submit does. Steer used to
+    // forward the bare token only (#77078), so a busy-turn Add-to-Chat send
+    // arrived without the selected lines.
+    const expanded = expandComposerDraftWithTerminalContext(text)
+
     triggerHaptic('submit')
     clearDraft()
 
-    void Promise.resolve(onSteer(text)).then(accepted => {
+    void Promise.resolve(onSteer(expanded)).then(accepted => {
       if (!accepted && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+        enqueueQueuedPrompt(activeQueueSessionKey, { text: expanded, attachments: [] })
       }
     })
   }

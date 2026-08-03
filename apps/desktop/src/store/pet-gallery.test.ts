@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $petInfo, setPetInfo } from './pet'
-import { $petGallery, adoptPet, loadPetGallery, resetPetGallery, type GatewayRequest } from './pet-gallery'
+import { $petGallery, adoptPet, loadPetGallery, type GatewayRequest, resetPetGallery } from './pet-gallery'
 
 function localGallery() {
   return {

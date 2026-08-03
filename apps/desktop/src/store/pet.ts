@@ -60,7 +60,20 @@ export function hasPetSpriteForMeta(info: PetInfo, meta: PetInfoMeta): boolean {
 
 export function mergePetInfoMeta(info: PetInfo, meta: PetInfoMeta): PetInfo {
   if (!meta.enabled) {
-    return { enabled: false }
+    return info.enabled ? { enabled: false } : info
+  }
+
+  // Fast-path: nothing changed — return the same reference so callers can
+  // skip the store update (nanostores fires on .set() regardless of deep
+  // equality; returning `info` avoids a redundant re-render on every poll).
+  if (
+    info.enabled &&
+    info.slug === meta.slug &&
+    info.displayName === meta.displayName &&
+    info.scale === meta.scale &&
+    info.spritesheetRevision === meta.spritesheetRevision
+  ) {
+    return info
   }
 
   return {

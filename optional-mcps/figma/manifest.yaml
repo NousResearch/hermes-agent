@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: figma
+description: >-
+  Official Figma remote MCP — design context, Code Connect, and
+  write-to-canvas via https://mcp.figma.com/mcp (OAuth).
+source: https://developers.figma.com/docs/figma-mcp-server/remote-server-installation/
+
+# Figma's hosted endpoint requires OAuth 2.1 + DCR. Their registration
+# endpoint allowlists *exact* client_name strings (not arbitrary clients):
+# "Claude Code" and "Codex" succeed; "Hermes Agent" 403s. Hermes's MCP
+# OAuth layer auto-sets client_name to "Claude Code" for this host (see
+# tools/mcp_oauth.apply_oauth_provider_defaults) so the browser flow can
+# start. Users can override via oauth.client_name if they want Codex
+# instead. Scope defaults to mcp:connect.
+transport:
+  type: http
+  url: https://mcp.figma.com/mcp
+
+auth:
+  type: oauth
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Figma
+  (or run `hermes mcp login figma`). Approve access, then restart the
+  session so tools load.
+
+  Figma walks OAuth DCR by exact client_name. Hermes registers as
+  "Claude Code" automatically so registration is not 403'd — you do not
+  need to paste a client_id.
+
+  Prompt with a frame/file link:
+    implement this design: https://www.figma.com/design/<fileKey>/...
+
+  Desktop alternative (no OAuth, local only): enable Dev Mode MCP in the
+  Figma desktop app (Shift+D → Inspect → Enable desktop MCP server) and
+  point url at http://127.0.0.1:3845/mcp instead.

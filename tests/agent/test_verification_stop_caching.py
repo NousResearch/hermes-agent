@@ -1,15 +1,15 @@
 """Verification-loop synthetic scaffolding must never reach durable session state.
 
-verify_on_stop / pre_verify append a synthetic assistant "done" plus a synthetic
-user nudge to keep the agent going one more turn before it can claim completion.
-These messages exist only to drive the loop; persisting them poisons the resumed
-transcript and breaks prompt-prefix cache reuse on later turns (#55733).
+verify_on_stop / pre_verify inject a synthetic user nudge to keep the agent
+going one more turn before it can claim completion. The assistant response is
+real content that persists and is emitted to the UI as an interim message.
+Only the nudge (the synthetic user message) is flagged, so only the nudge
+gets stripped from the durable transcript. This test file verifies:
 
-Both persistence sinks (SQLite flush + JSON snapshot) route through the single
-``_is_ephemeral_scaffolding`` chokepoint, which is driven by
-``_EPHEMERAL_SCAFFOLDING_FLAGS``. These tests assert that the verification-loop
-flags are registered there and that both sinks drop the flagged messages while
-keeping the real conversation.
+  - The verification-loop flags remain registered in
+    ``_EPHEMERAL_SCAFFOLDING_FLAGS`` (so nudges are stripped).
+  - The DB flush drops only the nudge, keeping the assistant candidate.
+  - The JSON log drops only the nudge, keeping the assistant candidate.
 """
 
 import json
@@ -34,15 +34,16 @@ def test_verification_flags_registered_as_ephemeral(tmp_path, monkeypatch):
     assert "_verification_stop_synthetic" in ra._EPHEMERAL_SCAFFOLDING_FLAGS
     assert "_pre_verify_synthetic" in ra._EPHEMERAL_SCAFFOLDING_FLAGS
 
-    # The central classifier drives both persistence sinks.
-    assert ra._is_ephemeral_scaffolding(
-        {"role": "assistant", "content": "done", "_verification_stop_synthetic": True}
-    )
+    # The nudge messages ARE scaffolding (they carry the synthetic flag).
     assert ra._is_ephemeral_scaffolding(
         {"role": "user", "content": "[System: run tests]", "_pre_verify_synthetic": True}
     )
-    # Real messages are not scaffolding.
+    assert ra._is_ephemeral_scaffolding(
+        {"role": "user", "content": "[System: run tests]", "_verification_stop_synthetic": True}
+    )
+    # Real messages (including the assistant candidate) are not.
     assert not ra._is_ephemeral_scaffolding({"role": "user", "content": "hi"})
+    assert not ra._is_ephemeral_scaffolding({"role": "assistant", "content": "premature done"})
 
 
 def _make_agent(ra, session_id, tmp_path):
@@ -64,14 +65,18 @@ def _make_agent(ra, session_id, tmp_path):
     return agent
 
 
-def test_db_flush_drops_verification_scaffolding(tmp_path, monkeypatch):
+def test_db_flush_drops_only_nudge_keeps_candidate(tmp_path, monkeypatch):
+    """The assistant candidate is NOT flagged synthetic, so it persists.
+    Only the nudge (flagged synthetic) is dropped from the DB flush."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     ra = _fresh_run_agent(tmp_path)
     agent = _make_agent(ra, "sess_db", tmp_path)
 
     messages = [
         {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "premature done", "_verification_stop_synthetic": True},
+        # Assistant candidate — NOT flagged synthetic, persists.
+        {"role": "assistant", "content": "premature done"},
+        # Nudge — flagged synthetic, gets dropped.
         {"role": "user", "content": "[System: run tests]", "_verification_stop_synthetic": True},
         {"role": "assistant", "content": "verified and clean"},
     ]
@@ -84,18 +89,24 @@ def test_db_flush_drops_verification_scaffolding(tmp_path, monkeypatch):
     ]
     assert "hi" in persisted
     assert "verified and clean" in persisted
-    assert "premature done" not in persisted
+    # The assistant candidate persists — it is real content.
+    assert "premature done" in persisted
+    # Only the nudge is dropped.
     assert "[System: run tests]" not in persisted
 
 
-def test_json_log_drops_verification_scaffolding(tmp_path, monkeypatch):
+def test_json_log_drops_only_nudge_keeps_candidate(tmp_path, monkeypatch):
+    """The assistant candidate is NOT flagged synthetic, so it persists in the
+    JSON log. Only the nudge (flagged synthetic) is dropped."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     ra = _fresh_run_agent(tmp_path)
     agent = _make_agent(ra, "sess_json", tmp_path)
 
     messages = [
         {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "premature done", "_pre_verify_synthetic": True},
+        # Assistant candidate — NOT flagged synthetic, persists.
+        {"role": "assistant", "content": "premature done"},
+        # Nudge — flagged synthetic, gets dropped.
         {"role": "user", "content": "[System: run tests]", "_pre_verify_synthetic": True},
         {"role": "assistant", "content": "verified and clean"},
     ]
@@ -106,5 +117,10 @@ def test_json_log_drops_verification_scaffolding(tmp_path, monkeypatch):
     assert log_file.exists()
     data = json.loads(log_file.read_text(encoding="utf-8"))
     contents = [m.get("content") for m in data["messages"]]
-    assert contents == ["hi", "verified and clean"]
+    # The assistant candidate persists — it is real content.
+    assert "premature done" in contents
+    assert "verified and clean" in contents
+    assert "hi" in contents
+    # Only the nudge is dropped.
+    assert "[System: run tests]" not in contents
     assert all(not m.get("_pre_verify_synthetic") for m in data["messages"])

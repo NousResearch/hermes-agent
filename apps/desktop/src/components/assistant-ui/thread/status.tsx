@@ -1,18 +1,25 @@
 import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FC, type ReactNode, useEffect, useState } from 'react'
+import { type FC, type ReactNode, useEffect, useMemo, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
+import { toolPresentVerb } from '@/components/assistant-ui/tool/run-summary'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
+import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $backgroundResume } from '@/store/background-delegation'
-import { $compactionActive } from '@/store/compaction'
-import { $activeSessionAwaitingInput } from '@/store/prompts'
-import { $activeSessionId, $turnStartedAt } from '@/store/session'
+import { sessionCompacting } from '@/store/compaction'
+import { sessionAwaitingInput } from '@/store/prompts'
+import { $turnStartedAt } from '@/store/session'
+import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
 
+// A status line is scaffolding like any other — "Editing" while the model
+// drafts a call is the same kind of line as "Explored 3 files" once it has run,
+// and reads as one continuous column only if it shares their type and colour.
 const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentPropsWithoutRef<'div'>> = ({
   children,
   label,
@@ -22,7 +29,12 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
   <div
     aria-label={label}
     aria-live="polite"
-    className={cn('flex max-w-full items-center gap-2 self-start text-sm text-muted-foreground/70', className)}
+    className={cn(
+      'flex max-w-full items-center gap-1.5 self-start leading-(--conversation-line-height)',
+      'text-(--conversation-scaffold-text)',
+      className
+    )}
+    data-conversation-scaffold=""
     role="status"
     {...rest}
   >
@@ -33,15 +45,60 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
 // Fixed label while auto-compaction runs — decoupled from backend status text.
 const COMPACTION_LABEL = 'Summarizing thread'
 
-const CompactionHint: FC = () => (
-  <span className="shimmer min-w-0 truncate text-muted-foreground/55">{COMPACTION_LABEL}</span>
+const HintText: FC<{ children: ReactNode }> = ({ children }) => (
+  <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 truncate')}>{children}</span>
 )
 
-function useActiveTurnTimerKey(): string | undefined {
-  const activeSessionId = useStore($activeSessionId)
+/** These indicators render inside whichever transcript mounted them, so every
+ *  session-scoped signal comes from that surface's view — a tile must never
+ *  show the primary chat's compaction, prompt-wait, or turn timer. */
+function useThreadSessionStatus() {
+  const sessionId = useStore(useSessionView().$runtimeId)
   const turnStartedAt = useStore($turnStartedAt)
+  const compacting = useStore(useMemo(() => sessionCompacting(sessionId), [sessionId]))
+  const drafting = useStore(useMemo(() => sessionDraftingTool(sessionId), [sessionId]))
+  // A pending clarify / approval / sudo / secret means the turn is paused on the
+  // user, not working — so don't resurrect the "thinking" timer while they
+  // decide (matches the pet's awaitingInput pose taking priority over busy).
+  const awaitingInput = useStore(useMemo(() => sessionAwaitingInput(sessionId), [sessionId]))
 
-  return activeSessionId && turnStartedAt ? `turn:${activeSessionId}:${turnStartedAt}` : undefined
+  return {
+    awaitingInput,
+    compacting,
+    drafting,
+    turnTimerKey: sessionId && turnStartedAt ? `turn:${sessionId}:${turnStartedAt}` : undefined
+  }
+}
+
+// Long enough that a tool whose arguments arrive in a few frames never gets to
+// strobe a label, short enough that a real wait is named almost immediately.
+const DRAFTING_REVEAL_MS = 200
+
+/**
+ * What to call the wait, if it deserves a name. Compaction outranks a draft —
+ * it's rarer, slower, and explains a transcript that looks like it reset.
+ */
+function useStatusHint(compacting: boolean, drafting: DraftingTool | null): string {
+  const [revealed, setRevealed] = useState(false)
+  const name = drafting?.name ?? ''
+
+  useEffect(() => {
+    setRevealed(false)
+
+    if (!name) {
+      return
+    }
+
+    const id = window.setTimeout(() => setRevealed(true), DRAFTING_REVEAL_MS)
+
+    return () => window.clearTimeout(id)
+  }, [name])
+
+  if (compacting) {
+    return COMPACTION_LABEL
+  }
+
+  return revealed && name ? toolPresentVerb(name) : ''
 }
 
 export const CenteredThreadSpinner: FC = () => {
@@ -67,17 +124,14 @@ export const CenteredThreadSpinner: FC = () => {
 
 export const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
-  const timerKey = useActiveTurnTimerKey()
-  const elapsed = useElapsedSeconds(true, timerKey)
-  const compacting = useStore($compactionActive)
+  const { compacting, drafting, turnTimerKey } = useThreadSessionStatus()
+  const elapsed = useElapsedSeconds(true, turnTimerKey)
+  const hint = useStatusHint(compacting, drafting)
 
   return (
-    <StatusRow
-      data-slot="aui_response-loading"
-      label={compacting ? COMPACTION_LABEL : t.assistant.thread.loadingResponse}
-    >
+    <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
-      {compacting && <CompactionHint />}
+      {hint && <HintText>{hint}</HintText>}
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
   )
@@ -141,36 +195,49 @@ export const StreamStallIndicator: FC = () => {
     return `${s.message.content.length}:${textLength}`
   })
 
-  const [stalled, setStalled] = useState(false)
-  const compacting = useStore($compactionActive)
-  const turnTimerKey = useActiveTurnTimerKey()
-  // A pending clarify / approval / sudo / secret means the turn is paused on the
-  // user, not working — so don't resurrect the "thinking" timer while they
-  // decide (matches the pet's awaitingInput pose taking priority over busy).
-  const awaitingInput = useStore($activeSessionAwaitingInput)
+  // Timestamp of the activity that preceded the current quiet spell, set once
+  // the spell qualifies as a stall. Holding the timestamp (not a boolean) is
+  // what lets the timer read "quiet for 12s" rather than the age of this
+  // component, which is the whole turn so far.
+  const [quietSince, setQuietSince] = useState<number | undefined>(undefined)
+  const { awaitingInput, compacting, drafting, turnTimerKey } = useThreadSessionStatus()
+  const hint = useStatusHint(compacting, drafting)
+
+  // A tool run at the tail already narrates the wait — its summary counts the
+  // calls, its ticker names the current one, and it carries its own timer. A
+  // second spinner under that adds a line and says nothing new.
+  const toolNarrating = useAuiState(s => s.message.content.at(-1)?.type === 'tool-call')
 
   useEffect(() => {
-    setStalled(false)
-    const id = window.setTimeout(() => setStalled(true), STREAM_STALL_S * 1000)
+    setQuietSince(undefined)
+    const seenAt = Date.now()
+    const id = window.setTimeout(() => setQuietSince(seenAt), STREAM_STALL_S * 1000)
 
     return () => window.clearTimeout(id)
   }, [activity])
 
-  const active = (stalled || compacting) && !awaitingInput
-  const elapsed = useElapsedSeconds(active, compacting ? turnTimerKey : undefined)
+  // A named wait doesn't have to earn the stall threshold first — we already
+  // know what the turn is doing, so say it as soon as the label is ready rather
+  // than leaving the transcript silent for STREAM_STALL_S.
+  const active = (quietSince !== undefined || Boolean(hint)) && !awaitingInput && !toolNarrating
+
+  // Compaction owns the whole turn, so it keeps counting from the turn's start;
+  // anything else counts from the moment the stream went quiet — the stall's own
+  // mark, or the draft's, whichever named the wait first.
+  const elapsed = useElapsedSeconds(
+    active,
+    compacting ? turnTimerKey : undefined,
+    compacting ? undefined : (quietSince ?? drafting?.since)
+  )
 
   if (!active) {
     return null
   }
 
   return (
-    <StatusRow
-      className="mt-1.5"
-      data-slot="aui_stream-stall"
-      label={compacting ? COMPACTION_LABEL : 'Hermes is thinking'}
-    >
+    <StatusRow data-slot="aui_stream-stall" label={hint || 'Hermes is thinking'}>
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
-      {compacting && <CompactionHint />}
+      {hint && <HintText>{hint}</HintText>}
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
   )

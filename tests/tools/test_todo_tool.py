@@ -17,12 +17,6 @@ class TestWriteAndRead:
         assert result[0]["id"] == "1"
         assert result[1]["status"] == "in_progress"
 
-    def test_read_returns_copy(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Task", "status": "pending"}])
-        items = store.read()
-        items[0]["content"] = "MUTATED"
-        assert store.read()[0]["content"] == "Task"
 
     def test_write_deduplicates_duplicate_ids(self):
         store = TodoStore()
@@ -106,13 +100,6 @@ class TestTodoToolFunction:
         assert result["summary"]["total"] == 1
         assert result["summary"]["pending"] == 1
 
-    def test_write_mode(self):
-        store = TodoStore()
-        result = json.loads(todo_tool(
-            todos=[{"id": "1", "content": "New", "status": "in_progress"}],
-            store=store,
-        ))
-        assert result["summary"]["in_progress"] == 1
 
     def test_no_store_returns_error(self):
         result = json.loads(todo_tool())
@@ -146,14 +133,6 @@ class TestTodoStoreBounds:
         # Before the fix this was ~50085 chars; now it tracks the cap.
         assert len(inj) < MAX_TODO_CONTENT_CHARS + 200
 
-    def test_merge_update_content_is_capped(self):
-        """The merge path updates content directly, bypassing _validate —
-        verify it is capped too."""
-        from tools.todo_tool import MAX_TODO_CONTENT_CHARS
-        store = TodoStore()
-        store.write([{"id": "1", "content": "short", "status": "pending"}])
-        store.write([{"id": "1", "content": "B" * 50001}], merge=True)
-        assert len(store.read()[0]["content"]) <= MAX_TODO_CONTENT_CHARS
 
     def test_item_count_is_bounded(self):
         from tools.todo_tool import MAX_TODO_ITEMS

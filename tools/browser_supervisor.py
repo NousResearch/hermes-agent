@@ -26,10 +26,14 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
-import websockets
-from websockets.asyncio.client import ClientConnection
+# ``websockets`` costs ~22 ms at import and is only needed when a supervisor
+# actually connects to a CDP endpoint (``_connect_ws``). With
+# ``from __future__ import annotations`` in force the ``ClientConnection``
+# annotation is string-only, so the type import stays under TYPE_CHECKING.
+if TYPE_CHECKING:
+    from websockets.asyncio.client import ClientConnection
 
 logger = logging.getLogger(__name__)
 
@@ -649,6 +653,7 @@ class CDPSupervisor:
         attempt = 0
         last_success_at = 0.0
         backoff = 0.5
+        import websockets  # deferred: only supervisors that connect pay the import
         while not self._stop_requested:
             try:
                 self._ws = await asyncio.wait_for(

@@ -978,8 +978,20 @@ export default function CronPage() {
 
         {jobs.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              {t.cron.noJobs}
+            <CardContent className="flex flex-col items-center gap-3 py-8 text-center text-sm text-muted-foreground">
+              <span>{t.cron.noJobs}</span>
+              <Button
+                className="uppercase"
+                size="sm"
+                onClick={() => {
+                  setCreateProfile(
+                    selectedProfile === "all" ? "default" : selectedProfile,
+                  );
+                  setCreateModalOpen(true);
+                }}
+              >
+                {t.common.create}
+              </Button>
             </CardContent>
           </Card>
         )}

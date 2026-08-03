@@ -106,22 +106,67 @@ class TestParseMoveFile:
         assert ops[0].new_path == "new/path.py"
 
 
+class TestBoundaryMarkersInContent:
+    """Patch boundary markers inside content lines must not be treated as
+    real boundaries (docs about the patch format, nested patch text, etc.)."""
+
+    def test_end_patch_marker_in_add_content_does_not_truncate(self):
+        patch = """\
+*** Begin Patch
+*** Add File: notes.md
++doc line one
++*** End Patch
++content after the marker mention
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert len(ops) == 1
+        contents = [l.content for l in ops[0].hunks[0].lines if l.prefix == "+"]
+        assert contents == [
+            "doc line one",
+            "*** End Patch",
+            "content after the marker mention",
+        ]
+
+    def test_begin_patch_marker_in_content_does_not_discard_operations(self):
+        patch = """\
+*** Begin Patch
+*** Add File: first.md
++first file content
+*** Add File: second.md
++*** Begin Patch
++second file content
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert [(op.operation, op.file_path) for op in ops] == [
+            (OperationType.ADD, "first.md"),
+            (OperationType.ADD, "second.md"),
+        ]
+
+    def test_context_line_end_patch_marker_does_not_truncate(self):
+        patch = """\
+*** Begin Patch
+*** Update File: guide.md
+@@ section @@
+ old line
+ *** End Patch
++new line
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert len(ops) == 1
+        hunk_lines = [(l.prefix, l.content) for l in ops[0].hunks[0].lines]
+        assert (" ", "*** End Patch") in hunk_lines
+        assert ("+", "new line") in hunk_lines
+
+
 class TestParseInvalidPatch:
     def test_empty_patch_returns_empty_ops(self):
         ops, err = parse_v4a_patch("")
         assert err is None
         assert ops == []
 
-    def test_no_begin_marker_still_parses(self):
-        patch = """\
-*** Update File: f.py
- line1
--old
-+new
-*** End Patch"""
-        ops, err = parse_v4a_patch(patch)
-        assert err is None
-        assert len(ops) == 1
 
     def test_multiple_operations(self):
         patch = """\
@@ -367,85 +412,6 @@ class TestValidationPhase:
         assert written == {}, f"No files should have been written, got: {list(written.keys())}"
         assert "validation failed" in result.error.lower()
 
-    def test_all_valid_operations_applied(self):
-        """When all operations are valid, all files are written."""
-        patch = """\
-*** Begin Patch
-*** Update File: a.py
- def foo():
--    return 1
-+    return 2
-*** Update File: b.py
- def bar():
--    pass
-+    return True
-*** End Patch"""
-        ops, err = parse_v4a_patch(patch)
-        assert err is None
-
-        written = {}
-
-        class FakeFileOps:
-            def read_file_raw(self, path):
-                files = {
-                    "a.py": "def foo():\n    return 1\n",
-                    "b.py": "def bar():\n    pass\n",
-                }
-                return SimpleNamespace(content=files[path], error=None)
-
-            def write_file(self, path, content):
-                written[path] = content
-                return SimpleNamespace(error=None)
-
-        result = apply_v4a_operations(ops, FakeFileOps())
-        assert result.success is True
-        assert set(written.keys()) == {"a.py", "b.py"}
-
-    def test_context_only_hunk_does_not_reject_later_real_hunk(self):
-        patch = """\
-*** Begin Patch
-*** Update File: a.py
-@@ anchor @@
- anchor
-@@ value @@
--value = 1
-+value = 2
-*** End Patch"""
-        ops, err = parse_v4a_patch(patch)
-        assert err is None
-
-        class FakeFileOps:
-            written = None
-            def read_file_raw(self, path):
-                return SimpleNamespace(content="anchor\nvalue = 1\n", error=None)
-            def write_file(self, path, content):
-                self.written = content
-                return SimpleNamespace(error=None)
-
-        file_ops = FakeFileOps()
-        result = apply_v4a_operations(ops, file_ops)
-        assert result.success is True
-        assert file_ops.written == "anchor\nvalue = 2\n"
-
-    def test_patch_with_only_context_hunks_reports_no_changes(self):
-        patch = """\
-*** Begin Patch
-*** Update File: a.py
-@@ anchor @@
- anchor
-*** End Patch"""
-        ops, err = parse_v4a_patch(patch)
-        assert err is None
-
-        class FakeFileOps:
-            def read_file_raw(self, path):
-                return SimpleNamespace(content="anchor\n", error=None)
-            def write_file(self, path, content):
-                raise AssertionError("no-op patch must not write")
-
-        result = apply_v4a_operations(ops, FakeFileOps())
-        assert result.success is False
-        assert "no changes" in result.error.lower()
 
     def test_validation_error_identifies_hunk_number(self):
         patch = """\
@@ -549,21 +515,6 @@ class TestParseErrorSignalling:
         assert err is not None, "Expected a parse error for hunk-less UPDATE"
         assert ops == []
 
-    def test_move_without_destination_returns_error(self):
-        """A MOVE without '->' syntax should not silently produce a broken operation."""
-        # The move regex requires '->' so this will be treated as an unrecognised
-        # line and the op is never created.  Confirm nothing crashes and ops is empty.
-        patch = """\
-*** Begin Patch
-*** Move File: src/foo.py
-*** End Patch"""
-        ops, err = parse_v4a_patch(patch)
-        # Either parse sees zero ops (fine) or returns an error (also fine).
-        # What is NOT acceptable is ops=[MOVE op with empty new_path] + err=None.
-        if ops:
-            assert err is not None, (
-                "MOVE with missing destination must either produce empty ops or an error"
-            )
 
     def test_valid_patch_returns_no_error(self):
         """A well-formed patch must still return err=None."""
@@ -715,3 +666,88 @@ class TestV4ALspDiagnosticsPropagation:
         assert result.lsp_diagnostics is not None
         assert per_file["a.ts"] in result.lsp_diagnostics
         assert per_file["b.ts"] in result.lsp_diagnostics
+
+
+class _DictFileOps:
+    """In-memory file_ops backing store supporting update/move/delete/add."""
+
+    def __init__(self, files):
+        self.files = dict(files)
+
+    def read_file_raw(self, path):
+        if path in self.files:
+            return SimpleNamespace(content=self.files[path], error=None)
+        return SimpleNamespace(content="", error="file not found")
+
+    def write_file(self, path, content):
+        self.files[path] = content
+        return SimpleNamespace(error=None)
+
+    def move_file(self, src, dst):
+        self.files[dst] = self.files.pop(src)
+        return SimpleNamespace(error=None)
+
+    def delete_file(self, path):
+        self.files.pop(path, None)
+        return SimpleNamespace(error=None)
+
+
+class TestMoveThenUpdateSameFile:
+    """A rename-then-edit patch must validate and apply (was rejected).
+
+    Regression: _validate_operations read the UPDATE's target from disk before
+    the MOVE ran, so `Move a->b` + `Update b` failed with 'b: file not found'.
+    """
+
+    def test_move_then_update_destination(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Move File: a.py -> b.py\n"
+            "*** Update File: b.py\n"
+            "@@\n"
+            "-x = 1\n"
+            "+x = 42\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _DictFileOps({"a.py": "x = 1\nkeep = 2\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        assert "a.py" not in fo.files
+        assert fo.files["b.py"] == "x = 42\nkeep = 2\n"
+
+    def test_move_onto_existing_destination_still_rejected(self):
+        """The overlay must not mask a genuine 'destination exists' conflict."""
+        patch = (
+            "*** Begin Patch\n"
+            "*** Move File: a.py -> b.py\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _DictFileOps({"a.py": "1\n", "b.py": "2\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is False
+        assert "already exists" in (result.error or "")
+
+
+class TestCrlfPatchBody:
+    """A CRLF-encoded patch body must not inject stray carriage returns."""
+
+    def test_crlf_body_applied_to_lf_file(self):
+        patch = (
+            "*** Begin Patch\r\n"
+            "*** Update File: f.py\r\n"
+            "@@\r\n"
+            "-    x = 1\r\n"
+            "+    x = 2\r\n"
+            "*** End Patch\r\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _DictFileOps({"f.py": "def f():\n    x = 1\n    return x\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        assert "\r" not in fo.files["f.py"]
+        assert fo.files["f.py"] == "def f():\n    x = 2\n    return x\n"

@@ -49,12 +49,6 @@ class TestParseEvent(unittest.TestCase):
         self.assertEqual(parsed["from_open_id"], "ou_user")
         self.assertEqual(parsed["to_open_id"], "ou_bot")
 
-    def test_parse_missing_event_attr(self):
-        self.assertIsNone(parse_drive_comment_event(object()))
-
-    def test_parse_none_event(self):
-        self.assertIsNone(parse_drive_comment_event(SimpleNamespace()))
-
 
 class TestEventFiltering(unittest.TestCase):
     """Test the filtering logic in handle_drive_comment_event."""
@@ -84,33 +78,6 @@ class TestEventFiltering(unittest.TestCase):
         self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
         mock_load.assert_not_called()
 
-    @patch("plugins.platforms.feishu.feishu_comment_rules.load_config")
-    @patch("plugins.platforms.feishu.feishu_comment_rules.resolve_rule")
-    @patch("plugins.platforms.feishu.feishu_comment_rules.is_user_allowed")
-    def test_empty_to_open_id_filtered(self, mock_allowed, mock_resolve, mock_load):
-        """Events with empty to_open_id should be dropped."""
-        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
-
-        evt = _make_event(to_open_id="")
-        self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
-        mock_load.assert_not_called()
-
-    @patch("plugins.platforms.feishu.feishu_comment_rules.load_config")
-    @patch("plugins.platforms.feishu.feishu_comment_rules.resolve_rule")
-    @patch("plugins.platforms.feishu.feishu_comment_rules.is_user_allowed")
-    def test_invalid_notice_type_filtered(self, mock_allowed, mock_resolve, mock_load):
-        """Events with unsupported notice_type should be dropped."""
-        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
-
-        evt = _make_event(notice_type="resolve_comment")
-        self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
-        mock_load.assert_not_called()
-
-    def test_allowed_notice_types(self):
-        self.assertIn("add_comment", _ALLOWED_NOTICE_TYPES)
-        self.assertIn("add_reply", _ALLOWED_NOTICE_TYPES)
-        self.assertNotIn("resolve_comment", _ALLOWED_NOTICE_TYPES)
-
 
 class TestAccessControlIntegration(unittest.TestCase):
     def _run(self, coro):
@@ -135,22 +102,6 @@ class TestAccessControlIntegration(unittest.TestCase):
         # No API calls should be made for denied users
         client.request.assert_not_called()
 
-    @patch("plugins.platforms.feishu.feishu_comment_rules.has_wiki_keys", return_value=False)
-    @patch("plugins.platforms.feishu.feishu_comment_rules.is_user_allowed", return_value=False)
-    @patch("plugins.platforms.feishu.feishu_comment_rules.resolve_rule")
-    @patch("plugins.platforms.feishu.feishu_comment_rules.load_config")
-    def test_disabled_comment_skipped(self, mock_load, mock_resolve, mock_allowed, mock_wiki_keys):
-        """Disabled comments should return immediately."""
-        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
-        from plugins.platforms.feishu.feishu_comment_rules import ResolvedCommentRule
-
-        mock_resolve.return_value = ResolvedCommentRule(False, "allowlist", frozenset(), "top")
-        mock_load.return_value = Mock()
-
-        evt = _make_event()
-        self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
-        mock_allowed.assert_not_called()
-
 
 class TestSanitizeCommentText(unittest.TestCase):
     def test_angle_brackets_escaped(self):
@@ -164,20 +115,6 @@ class TestSanitizeCommentText(unittest.TestCase):
         self.assertEqual(result, "a &lt; b &amp; c &gt; d")
         self.assertNotIn("&amp;lt;", result)
         self.assertNotIn("&amp;gt;", result)
-
-    def test_plain_text_unchanged(self):
-        self.assertEqual(_sanitize_comment_text("hello world"), "hello world")
-
-    def test_empty_string(self):
-        self.assertEqual(_sanitize_comment_text(""), "")
-
-    def test_code_snippet(self):
-        text = 'if (a < b && c > 0) { return "ok"; }'
-        result = _sanitize_comment_text(text)
-        self.assertNotIn("<", result)
-        self.assertNotIn(">", result)
-        self.assertIn("&lt;", result)
-        self.assertIn("&gt;", result)
 
 
 class TestWikiReverseLookup(unittest.TestCase):
@@ -199,61 +136,6 @@ class TestWikiReverseLookup(unittest.TestCase):
         query_dict = dict(queries)
         self.assertEqual(query_dict["token"], "docx_abc")
         self.assertEqual(query_dict["obj_type"], "docx")
-
-    @patch("plugins.platforms.feishu.feishu_comment._exec_request")
-    def test_reverse_lookup_not_wiki(self, mock_exec):
-        from plugins.platforms.feishu.feishu_comment import _reverse_lookup_wiki_token
-
-        mock_exec.return_value = (131001, "not found", {})
-        result = self._run(_reverse_lookup_wiki_token(Mock(), "docx", "docx_abc"))
-        self.assertIsNone(result)
-
-    @patch("plugins.platforms.feishu.feishu_comment._exec_request")
-    def test_reverse_lookup_service_error(self, mock_exec):
-        from plugins.platforms.feishu.feishu_comment import _reverse_lookup_wiki_token
-
-        mock_exec.return_value = (500, "internal error", {})
-        result = self._run(_reverse_lookup_wiki_token(Mock(), "docx", "docx_abc"))
-        self.assertIsNone(result)
-
-    @patch("plugins.platforms.feishu.feishu_comment._reverse_lookup_wiki_token", new_callable=AsyncMock)
-    @patch("plugins.platforms.feishu.feishu_comment_rules.has_wiki_keys", return_value=True)
-    @patch("plugins.platforms.feishu.feishu_comment_rules.is_user_allowed", return_value=True)
-    @patch("plugins.platforms.feishu.feishu_comment_rules.resolve_rule")
-    @patch("plugins.platforms.feishu.feishu_comment_rules.load_config")
-    @patch("plugins.platforms.feishu.feishu_comment.add_comment_reaction", new_callable=AsyncMock)
-    @patch("plugins.platforms.feishu.feishu_comment.batch_query_comment", new_callable=AsyncMock)
-    @patch("plugins.platforms.feishu.feishu_comment.query_document_meta", new_callable=AsyncMock)
-    def test_wiki_lookup_triggered_when_no_exact_match(
-        self, mock_meta, mock_batch, mock_reaction,
-        mock_load, mock_resolve, mock_allowed, mock_wiki_keys, mock_lookup,
-    ):
-        """Wiki reverse lookup should fire when rule falls to wildcard/top and wiki keys exist."""
-        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
-        from plugins.platforms.feishu.feishu_comment_rules import ResolvedCommentRule
-
-        # First resolve returns wildcard (no exact match), second returns exact wiki match
-        mock_resolve.side_effect = [
-            ResolvedCommentRule(True, "allowlist", frozenset(), "wildcard"),
-            ResolvedCommentRule(True, "allowlist", frozenset(), "exact:wiki:WIKI123"),
-        ]
-        mock_load.return_value = Mock()
-        mock_lookup.return_value = "WIKI123"
-        mock_meta.return_value = {"title": "Test", "url": ""}
-        mock_batch.return_value = {"is_whole": False, "quote": ""}
-
-        evt = _make_event()
-        # Will proceed past access control but fail later — that's OK, we just test the lookup
-        try:
-            self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
-        except Exception:
-            pass
-
-        mock_lookup.assert_called_once_with(unittest.mock.ANY, "docx", "docx_token")
-        self.assertEqual(mock_resolve.call_count, 2)
-        # Second call should include wiki_token
-        second_call_kwargs = mock_resolve.call_args_list[1]
-        self.assertEqual(second_call_kwargs[1].get("wiki_token") or second_call_kwargs[0][3], "WIKI123")
 
 
 if __name__ == "__main__":

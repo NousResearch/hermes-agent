@@ -256,19 +256,8 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
     _HERMES_CHILD_ALLOWED = frozenset({
         "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
     })
-    # Provider credentials now have a security precedence above passthrough.
-    # This is the intentional behavior change for plugin-discovery TOCTOU;
-    # the rest of this oracle still guards the POSIX rules bit-for-bit.
-    from tools.environments.local import (
-        _current_provider_env_blocklist,
-        _is_hermes_internal_secret,
-    )
-
-    provider_blocklist = _current_provider_env_blocklist()
     out = {}
     for k, v in source_env.items():
-        if k in provider_blocklist or _is_hermes_internal_secret(k):
-            continue
         if is_passthrough(k):
             out[k] = v
             continue

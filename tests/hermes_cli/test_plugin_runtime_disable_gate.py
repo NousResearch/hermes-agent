@@ -32,6 +32,26 @@ def _activation(*, enabled=(), disabled=(), safe_mode=False):
     )
 
 
+def _plugin_api_request(name):
+    from starlette.requests import Request
+
+    return Request({
+        "type": "http",
+        "method": "GET",
+        "path": f"/api/plugins/{name}/probe",
+        "query_string": b"",
+        "headers": [],
+        "state": {"token_authenticated": True},
+    })
+
+
+def _ok_call_next():
+    from starlette.responses import JSONResponse
+
+    response = JSONResponse({"ok": True})
+    return response, AsyncMock(return_value=response)
+
+
 @pytest.fixture(autouse=True)
 def _reset_plugin_cache():
     """Bust the plugin cache before and after each test."""
@@ -255,9 +275,6 @@ class TestPluginApiRuntimeGate:
         tmp_path,
     ):
         """An active route-name claimant cannot borrow another key's mount."""
-        from starlette.requests import Request
-        from starlette.responses import JSONResponse
-
         dashboard_dir = tmp_path / "plugins" / "key-swap" / "dashboard"
         dashboard_dir.mkdir(parents=True)
         plugin = {
@@ -270,15 +287,8 @@ class TestPluginApiRuntimeGate:
             "_runtime_kind": "standalone",
             "_runtime_managed": False,
         }
-        request = Request({
-            "type": "http",
-            "method": "GET",
-            "path": "/api/plugins/key-swap/probe",
-            "query_string": b"",
-            "headers": [],
-            "state": {"token_authenticated": True},
-        })
-        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+        request = _plugin_api_request("key-swap")
+        _expected, call_next = _ok_call_next()
 
         with patch.object(
             web_server,
@@ -310,20 +320,10 @@ class TestPluginApiRuntimeGate:
         tmp_path,
     ):
         """A stale router must not run when its current winner is unknown."""
-        from starlette.requests import Request
-        from starlette.responses import JSONResponse
-
         dashboard_dir = tmp_path / "plugins" / "unknown-winner" / "dashboard"
         dashboard_dir.mkdir(parents=True)
-        request = Request({
-            "type": "http",
-            "method": "GET",
-            "path": "/api/plugins/unknown-winner/probe",
-            "query_string": b"",
-            "headers": [],
-            "state": {"token_authenticated": True},
-        })
-        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+        request = _plugin_api_request("unknown-winner")
+        _expected, call_next = _ok_call_next()
         identity = ("unknown-winner", dashboard_dir.resolve().parent)
 
         with patch.object(
@@ -349,9 +349,6 @@ class TestPluginApiRuntimeGate:
         monkeypatch,
     ):
         """Cached dashboard metadata cannot keep an old API identity alive."""
-        from starlette.requests import Request
-        from starlette.responses import JSONResponse
-
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
@@ -366,16 +363,8 @@ class TestPluginApiRuntimeGate:
         manifest_file.write_text(json.dumps(manifest))
 
         activation = _activation(enabled={"manifest-swap"})
-        request = Request({
-            "type": "http",
-            "method": "GET",
-            "path": "/api/plugins/manifest-swap/probe",
-            "query_string": b"",
-            "headers": [],
-            "state": {"token_authenticated": True},
-        })
-        expected = JSONResponse({"ok": True})
-        call_next = AsyncMock(return_value=expected)
+        request = _plugin_api_request("manifest-swap")
+        expected, call_next = _ok_call_next()
 
         with patch(
             "hermes_cli.config.load_plugin_activation_state",
@@ -497,7 +486,8 @@ class TestPluginApiRuntimeGate:
 
 
 class TestDashboardRouteNameCollision:
-    def test_distinct_canonical_plugins_sharing_route_fail_closed(
+    @pytest.mark.asyncio
+    async def test_distinct_canonical_plugins_sharing_route_fail_closed(
         self,
         tmp_path,
         monkeypatch,
@@ -532,36 +522,8 @@ class TestDashboardRouteNameCollision:
                 web_server._dashboard_plugin_status(p) == "not enabled"
                 for p in claimants
             )
-
-    @pytest.mark.asyncio
-    async def test_collision_cannot_borrow_another_plugins_runtime_gate(self):
-        from starlette.requests import Request
-        from starlette.responses import JSONResponse
-
-        claimants = [
-            {
-                "name": "shared-route",
-                "source": "bundled",
-                "_runtime_key": "runtime-one",
-                "_route_name_collision": True,
-            },
-            {
-                "name": "shared-route",
-                "source": "bundled",
-                "_runtime_key": "runtime-two",
-                "_route_name_collision": True,
-            },
-        ]
-        request = Request({
-            "type": "http",
-            "method": "GET",
-            "path": "/api/plugins/shared-route/probe",
-            "query_string": b"",
-            "headers": [],
-            "state": {"token_authenticated": True},
-        })
-        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
-
+        request = _plugin_api_request("shared-route")
+        _expected, call_next = _ok_call_next()
         with patch.object(
             web_server,
             "_get_dashboard_plugins",
@@ -636,68 +598,37 @@ class TestBundledPluginAssetGate:
                 assert resp.status_code == 200
 
 
-def test_dashboard_display_name_cannot_replace_canonical_runtime_key(tmp_path):
+@pytest.mark.parametrize(
+    ("grant", "expected"),
+    (("dashboard-label", "not enabled"), ("web/runtime-key", "enabled")),
+)
+def test_dashboard_display_name_cannot_replace_canonical_runtime_key(
+    tmp_path, grant, expected
+):
     plugin_root = tmp_path / "plugins" / "web" / "runtime-key"
     dashboard_dir = plugin_root / "dashboard"
     dashboard_dir.mkdir(parents=True)
-    plugin = {
-        "name": "dashboard-label",
-        "source": "user",
-        "_dir": str(dashboard_dir),
-    }
-    runtime_entries = [
-        (
-            "runtime-name",
-            "1.0.0",
-            "",
-            "user",
-            plugin_root,
-            "web/runtime-key",
-            "standalone",
-        )
-    ]
-
-    display_only = _activation(enabled={"dashboard-label"})
-    canonical = _activation(enabled={"web/runtime-key"})
-
-    assert (
-        web_server._dashboard_plugin_status(
-            plugin,
-            runtime_entries,
-            display_only,
-        )
-        == "not enabled"
-    )
-    assert (
-        web_server._dashboard_plugin_status(
-            plugin,
-            runtime_entries,
-            canonical,
-        )
-        == "enabled"
-    )
+    plugin = {"name": "dashboard-label", "source": "user", "_dir": str(dashboard_dir)}
+    runtime_entries = [(
+        "runtime-name", "1.0.0", "", "user", plugin_root,
+        "web/runtime-key", "standalone",
+    )]
+    assert web_server._dashboard_plugin_status(
+        plugin, runtime_entries, _activation(enabled={grant})
+    ) == expected
 
 
 def test_dashboard_only_fallback_honors_safe_mode():
-    plugin = {
-        "name": "project-extension",
-        "source": "project",
-    }
-    state = _activation(
-        enabled={"project-extension"},
-        safe_mode=True,
-    )
-
-    assert (
-        web_server._dashboard_plugin_status(plugin, [], state)
-        == "not enabled"
-    )
+    plugin = {"name": "project-extension", "source": "project"}
+    state = _activation(enabled={"project-extension"}, safe_mode=True)
+    assert web_server._dashboard_plugin_status(plugin, [], state) == "not enabled"
 
 
 class TestProjectDashboardScopeInvalidation:
     """Cached project JavaScript must not outlive its cwd/env opt-in scope."""
 
-    def test_gate_disable_blocks_asset_and_list_from_populated_cache(
+    @pytest.mark.asyncio
+    async def test_gate_disable_blocks_cached_asset_list_and_api(
         self,
         test_client,
         tmp_path,
@@ -739,50 +670,12 @@ class TestProjectDashboardScopeInvalidation:
                 item["name"] for item in listed.json()
             }
             assert stale_plugin["source"] == "project"
-
-    @pytest.mark.asyncio
-    async def test_runtime_api_gate_rejects_stale_project_entry_when_gate_turns_off(
-        self,
-        tmp_path,
-        monkeypatch,
-    ):
-        from starlette.requests import Request
-        from starlette.responses import JSONResponse
-
-        project_root = tmp_path / "project"
-        project_root.mkdir()
-        monkeypatch.chdir(project_root)
-        monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
-        _make_project_plugin(project_root)
-        stale_plugin = next(
-            p
-            for p in web_server._get_dashboard_plugins(force_rescan=True)
-            if p["name"] == "project-extension"
-        )
-        monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "0")
-
-        request = Request({
-            "type": "http",
-            "method": "GET",
-            "path": "/api/plugins/project-extension/probe",
-            "query_string": b"",
-            "headers": [],
-            "state": {"token_authenticated": True},
-        })
-        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
-        with patch.object(
-            web_server,
-            "_get_dashboard_plugins",
-            return_value=[stale_plugin],
-        ), patch(
-            "hermes_cli.config.load_plugin_activation_state",
-            return_value=_activation(enabled={"project-extension"}),
-        ):
-            response = await web_server._plugin_api_runtime_gate(
-                request,
-                call_next,
-            )
-
-        assert response.status_code == 404
-        call_next.assert_not_called()
+            request = _plugin_api_request("project-extension")
+            _expected, call_next = _ok_call_next()
+            with patch.object(
+                web_server, "_get_dashboard_plugins", return_value=[stale_plugin]
+            ):
+                response = await web_server._plugin_api_runtime_gate(request, call_next)
+            assert response.status_code == 404
+            call_next.assert_not_called()
 

@@ -17,11 +17,51 @@ def _args(**kwargs):
     return argparse.Namespace(**defaults)
 
 
+def _entry(
+    name, key=None, *, version="1.0.0", description="", source="bundled", path=None,
+    kind="backend",
+):
+    return name, version, description, source, path, key or name, kind
+
+
+def _patch_list_state(monkeypatch, entries, *, enabled=(), disabled=()) -> None:
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set(enabled))
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set(disabled))
+
+
+def _patch_dashboard_state(
+    monkeypatch, *, enabled=(), disabled=(), candidates=None, visible=None, resolved=None
+):
+    saved = {}
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set(enabled))
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set(disabled))
+    monkeypatch.setattr(
+        plugins_cmd, "_save_enabled_set",
+        lambda value: saved.__setitem__("enabled", set(value)),
+    )
+    monkeypatch.setattr(
+        plugins_cmd, "_save_disabled_set",
+        lambda value: saved.__setitem__("disabled", set(value)),
+    )
+    monkeypatch.setattr(plugins_cmd, "_toggle_plugin_toolset", lambda *args, **kwargs: None)
+    if candidates is not None:
+        monkeypatch.setattr(plugins_cmd, "_discover_plugin_candidates", lambda **_kwargs: candidates)
+    if visible is not None:
+        monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: visible)
+    if resolved is not None:
+        monkeypatch.setattr(
+            plugins_cmd, "_resolve_plugin_key_and_source",
+            lambda _name, *, for_enable=False: resolved,
+        )
+    return saved
+
+
 def test_filter_plugin_entries_enabled_only():
     entries = [
-        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup", "backend"),
-        ("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus", "standalone"),
-        ("old-plugin", "1.0.0", "Old", "user", None, "old-plugin", "standalone"),
+        _entry("disk-cleanup", version="2.0.0", description="Bundled"),
+        _entry("web-search-plus", version="2.2.0", description="Search", source="git", kind="standalone"),
+        _entry("old-plugin", description="Old", source="user", kind="standalone"),
     ]
 
     filtered = plugins_cmd._filter_plugin_entries(
@@ -36,12 +76,10 @@ def test_filter_plugin_entries_enabled_only():
 
 def test_cmd_list_plain_compact_output(monkeypatch, capsys):
     entries = [
-        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup", "backend"),
-        ("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus", "standalone"),
+        _entry("disk-cleanup", version="2.0.0", description="Bundled"),
+        _entry("web-search-plus", version="2.2.0", description="Search", source="git", kind="standalone"),
     ]
-    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
-    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"web-search-plus"})
-    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
+    _patch_list_state(monkeypatch, entries, enabled=("web-search-plus",))
 
     plugins_cmd.cmd_list(_args(plain=True, no_bundled=True))
 
@@ -53,12 +91,8 @@ def test_cmd_list_plain_compact_output(monkeypatch, capsys):
 
 
 def test_cmd_list_json_preserves_name_and_adds_canonical_key(monkeypatch, capsys):
-    entries = [
-        ("xai", "1.0.0", "Images", "bundled", None, "image_gen/xai", "backend"),
-    ]
-    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
-    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
-    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
+    entries = [_entry("xai", "image_gen/xai", description="Images")]
+    _patch_list_state(monkeypatch, entries)
 
     plugins_cmd.cmd_list(_args(json=True))
 
@@ -69,12 +103,10 @@ def test_cmd_list_json_preserves_name_and_adds_canonical_key(monkeypatch, capsys
 
 def test_cmd_list_plain_disambiguates_duplicate_manifest_names(monkeypatch, capsys):
     entries = [
-        ("xai", "1.0.0", "Images", "bundled", None, "image_gen/xai", "backend"),
-        ("xai", "1.0.0", "Video", "bundled", None, "video_gen/xai", "backend"),
+        _entry("xai", "image_gen/xai", description="Images"),
+        _entry("xai", "video_gen/xai", description="Video"),
     ]
-    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
-    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
-    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
+    _patch_list_state(monkeypatch, entries)
 
     plugins_cmd.cmd_list(_args(plain=True))
 
@@ -84,21 +116,9 @@ def test_cmd_list_plain_disambiguates_duplicate_manifest_names(monkeypatch, caps
 
 
 def test_dashboard_toggle_response_keeps_input_name_and_adds_key(monkeypatch):
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_resolve_plugin_key_and_source",
-        lambda _name, *, for_enable=False: (
-            "image_gen/xai",
-            "user",
-            "xai",
-            "standalone",
-        ),
+    _patch_dashboard_state(
+        monkeypatch, resolved=("image_gen/xai", "user", "xai", "standalone")
     )
-    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
-    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
-    monkeypatch.setattr(plugins_cmd, "_save_enabled_set", lambda _value: None)
-    monkeypatch.setattr(plugins_cmd, "_save_disabled_set", lambda _value: None)
-    monkeypatch.setattr(plugins_cmd, "_toggle_plugin_toolset", lambda *args, **kwargs: None)
 
     result = plugins_cmd.dashboard_set_agent_plugin_enabled("xai", enabled=True)
 
@@ -108,32 +128,10 @@ def test_dashboard_toggle_response_keeps_input_name_and_adds_key(monkeypatch):
 
 def test_dashboard_enable_targets_inactive_higher_precedence_override(monkeypatch):
     key = "shared"
-    bundled = ("shared-bundled", "1.0.0", "", "bundled", None, key, "backend")
-    user = ("shared-user", "2.0.0", "", "user", None, key, "backend")
-    saved = {}
-
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_discover_plugin_candidates",
-        lambda **_kwargs: [bundled, user],
-    )
-    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: [bundled])
-    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
-    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_save_enabled_set",
-        lambda value: saved.__setitem__("enabled", set(value)),
-    )
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_save_disabled_set",
-        lambda value: saved.__setitem__("disabled", set(value)),
-    )
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_toggle_plugin_toolset",
-        lambda *args, **kwargs: None,
+    bundled = _entry("shared-bundled", key)
+    user = _entry("shared-user", key, version="2.0.0", source="user")
+    saved = _patch_dashboard_state(
+        monkeypatch, candidates=[bundled, user], visible=[bundled]
     )
 
     result = plugins_cmd.dashboard_set_agent_plugin_enabled(key, enabled=True)
@@ -147,59 +145,16 @@ def test_dashboard_enable_clears_manifest_deny_without_reviving_colliding_key(
 ):
     key = "web/firecrawl"
     candidates = [
-        ("legacy-firecrawl", "1.0.0", "", "bundled", None, key, "backend"),
-        ("web-firecrawl", "2.0.0", "", "user", None, key, "backend"),
-        (
-            "video-firecrawl",
-            "1.0.0",
-            "",
-            "bundled",
-            None,
-            "legacy-firecrawl",
-            "backend",
-        ),
+        _entry("legacy-firecrawl", key),
+        _entry("web-firecrawl", key, version="2.0.0", source="user"),
+        _entry("video-firecrawl", "legacy-firecrawl"),
     ]
-    saved = {}
-
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_resolve_plugin_key_and_source",
-        lambda _name, *, for_enable=False: (
-            key,
-            "user",
-            "web-firecrawl",
-            "backend",
-        ),
-    )
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_discover_plugin_candidates",
-        lambda **_kwargs: candidates,
-    )
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_get_enabled_set",
-        lambda: {key, "legacy-firecrawl"},
-    )
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_get_disabled_set",
-        lambda: {"legacy-firecrawl", "unrelated-plugin"},
-    )
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_save_enabled_set",
-        lambda value: saved.__setitem__("enabled", set(value)),
-    )
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_save_disabled_set",
-        lambda value: saved.__setitem__("disabled", set(value)),
-    )
-    monkeypatch.setattr(
-        plugins_cmd,
-        "_toggle_plugin_toolset",
-        lambda *args, **kwargs: None,
+    saved = _patch_dashboard_state(
+        monkeypatch,
+        enabled=(key, "legacy-firecrawl"),
+        disabled=("legacy-firecrawl", "unrelated-plugin"),
+        candidates=candidates,
+        resolved=(key, "user", "web-firecrawl", "backend"),
     )
 
     result = plugins_cmd.dashboard_set_agent_plugin_enabled(key, enabled=True)

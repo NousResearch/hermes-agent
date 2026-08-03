@@ -204,43 +204,18 @@ _WINDOWS_ESSENTIAL_ENV_VARS = frozenset({
     "COMPUTERNAME",
 })
 
-# If provider security metadata cannot be loaded/refreshed, broad prefix rules
-# (notably LC_ and XDG_) are no longer safe: a provider may have declared a
-# credential under one of those otherwise-benign names. Keep only the exact
-# variables required for a useful child process until the authoritative index
-# recovers. Passthrough is deliberately unavailable in this degraded mode.
-_PROVIDER_SECURITY_DEGRADED_ALLOWED = frozenset({
-    "PATH",
-    "HOME",
-    "USER",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TERM",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "SHELL",
-    "LOGNAME",
-    "PYTHONPATH",
-    "VIRTUAL_ENV",
-    "CONDA_PREFIX",
-    *_HERMES_CHILD_ALLOWED,
-})
-
 
 def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     """Produce the scrubbed child-process env for execute_code.
 
     Rules (order matters):
-      1. Hermes provider credentials are blocked unconditionally.
-      2. Passthrough vars (skill- or config-declared) pass through the active
+      1. Passthrough vars (skill- or config-declared) pass through the active
          profile secret scope; an absent scoped value is omitted and an
          unscoped multiplex read fails closed.
-      3. Secret-substring names (KEY/TOKEN/DSN/WEBHOOK/etc.) are blocked.
-      4. Names matching a safe prefix pass.
-      5. Operational HERMES_* vars (_HERMES_CHILD_ALLOWED) pass by exact name.
-      6. On Windows, a small OS-essential allowlist passes by exact name
+      2. Secret-substring names (KEY/TOKEN/DSN/WEBHOOK/etc.) are blocked.
+      3. Names matching a safe prefix pass.
+      4. Operational HERMES_* vars (_HERMES_CHILD_ALLOWED) pass by exact name.
+      5. On Windows, a small OS-essential allowlist passes by exact name
          — without these the child can't even create a socket or spawn a
          subprocess.
 
@@ -266,71 +241,6 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     if is_windows is None:
         is_windows = _IS_WINDOWS
 
-    # Resolve a fresh snapshot at execution time. Provider discovery records
-    # observed credential names before its best-effort refresh hooks run, so a
-    # newly enabled provider cannot use that callback interval to escape into
-    # execute_code. This check intentionally precedes passthrough: an earlier
-    # skill registration must not retain access after the same name becomes a
-    # provider credential.
-    provider_security_degraded = False
-    try:
-        from tools.environments.local import (
-            _current_provider_env_blocklist,
-            _is_hermes_internal_secret,
-            _provider_env_lookup_name,
-        )
-
-        provider_blocklist = _current_provider_env_blocklist()
-    except Exception:
-        provider_security_degraded = True
-        # Preserve the last-known monotonic blocklist when the local module was
-        # already initialized, but do not trust it as complete: the restricted
-        # exact-name policy below remains active for unknown/new credentials.
-        local_module = sys.modules.get("tools.environments.local")
-        try:
-            provider_blocklist = frozenset(
-                getattr(local_module, "_HERMES_PROVIDER_ENV_BLOCKLIST", ())
-            )
-        except Exception:
-            provider_blocklist = frozenset()
-        internal_predicate = getattr(
-            local_module,
-            "_is_hermes_internal_secret",
-            None,
-        )
-        _is_hermes_internal_secret = (
-            internal_predicate
-            if callable(internal_predicate)
-            else (lambda _name: False)
-        )
-        lookup_name = getattr(
-            local_module,
-            "_provider_env_lookup_name",
-            None,
-        )
-        _provider_env_lookup_name = (
-            lookup_name
-            if callable(lookup_name)
-            else (
-                lambda name, *, is_windows=False: (
-                    name.upper() if is_windows else name
-                )
-            )
-        )
-        logger.warning(
-            "execute_code: provider env security metadata unavailable; "
-            "using a restricted child environment",
-            exc_info=True,
-        )
-
-    provider_case_insensitive = bool(is_windows or _IS_WINDOWS)
-    provider_blocklist = frozenset(
-        _provider_env_lookup_name(
-            name,
-            is_windows=provider_case_insensitive,
-        )
-        for name in provider_blocklist
-    )
     scrubbed = {}
     # Non-secret HERMES_* vars dropped by the tightened allowlist (#27303). The
     # broad "HERMES_" prefix used to pass these through; now only the
@@ -341,28 +251,6 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     # diagnosable and points at the env_passthrough opt-in escape hatch.
     _dropped_hermes = []
     for k, v in source_env.items():
-        if (
-            _provider_env_lookup_name(
-                k,
-                is_windows=provider_case_insensitive,
-            )
-            in provider_blocklist
-            or _is_hermes_internal_secret(k)
-        ):
-            continue
-        if provider_security_degraded:
-            upper = k.upper()
-            if any(secret in upper for secret in _SECRET_SUBSTRINGS):
-                continue
-            if k in _PROVIDER_SECURITY_DEGRADED_ALLOWED or (
-                is_windows
-                and (
-                    upper == "PATH"
-                    or upper in _WINDOWS_ESSENTIAL_ENV_VARS
-                )
-            ):
-                scrubbed[k] = v
-            continue
         if is_passthrough(k):
             resolved = resolve_passthrough_value(k, v)
             if resolved is not None:

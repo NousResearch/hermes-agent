@@ -8,11 +8,11 @@ Provider profiles can live in three places:
 
 Each plugin directory contains:
   - ``__init__.py`` — calls ``register_provider(profile)`` at import
-  - ``plugin.yaml`` — identity plus non-executable ``requires_env`` metadata
+  - ``plugin.yaml`` — non-executable identity and activation metadata
 
-Discovery is lazy. Manifest identity, credential names, and activation are
-evaluated before any plugin code is imported. Bundled profiles are on by
-default; user and project profiles must be listed in ``plugins.enabled``.
+Discovery is lazy. Manifest identity and activation are evaluated before any
+plugin code is imported. Bundled profiles are on by default; user and project
+profiles must be listed in ``plugins.enabled``.
 Explicit disable always wins, and safe mode imports bundled profiles only.
 Active user/project plugins override bundled plugins on canonical-key collision.
 
@@ -34,7 +34,6 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import hashlib
-import json
 import logging
 import sys
 import threading
@@ -49,7 +48,7 @@ from providers._core_identities import (
     PROFILELESS_CORE_PROVIDER_ALIASES,
     PROFILELESS_CORE_PROVIDER_IDS,
 )
-from utils import atomic_json_write, env_var_enabled, fast_safe_load
+from utils import env_var_enabled, fast_safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +110,6 @@ _NOTIFIED_SNAPSHOT_FINGERPRINTS: set[tuple[object, ...]] = set()
 _MODULE_REGISTRATIONS: dict[str, tuple[ProviderProfile, ...]] = {}
 _MODULE_PATHS: dict[str, str] = {}
 _OBSERVED_PROFILES: dict[tuple[str, str, str], ProviderProfile] = {}
-_OBSERVED_PROVIDER_ENV_VARS: set[str] = set()
 _OBSERVED_PROVIDER_IDS_BY_SCOPE: dict[tuple[str, str], set[str]] = {}
 _OBSERVED_PROVIDER_CANONICAL_IDS_BY_SCOPE: dict[
     tuple[str, str], set[str]
@@ -139,212 +137,13 @@ _BUNDLED_PLUGINS_DIR = (
     Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
 )
 
-# Exact operational names that a provider must never claim as credentials.
-# Provider metadata is allowed to use unconventional secret names (for example
-# ``LC_VENDOR_ACCESS``), so this must remain an exact-name policy rather than a
-# prefix allowlist.  Compare through ``upper()`` because Windows environment
-# names are case-insensitive even when a plugin manifest preserves mixed case.
-_RESERVED_PROVIDER_ENV_VARS = frozenset({
-    # POSIX process/runtime essentials.
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "PWD",
-    "OLDPWD",
-    "LANG",
-    "LANGUAGE",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TERM",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "PYTHONPATH",
-    "VIRTUAL_ENV",
-    "CONDA_PREFIX",
-    "LD_LIBRARY_PATH",
-    "DYLD_LIBRARY_PATH",
-    # Windows process/runtime essentials. Keep this aligned with the exact
-    # operational allowlist in tools.code_execution_tool.
-    "SYSTEMROOT",
-    "SYSTEMDRIVE",
-    "WINDIR",
-    "COMSPEC",
-    "PATHEXT",
-    "OS",
-    "PROCESSOR_ARCHITECTURE",
-    "NUMBER_OF_PROCESSORS",
-    "PUBLIC",
-    "ALLUSERSPROFILE",
-    "PROGRAMDATA",
-    "PROGRAMFILES",
-    "PROGRAMFILES(X86)",
-    "PROGRAMW6432",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "USERPROFILE",
-    "USERDOMAIN",
-    "USERNAME",
-    "HOMEDRIVE",
-    "HOMEPATH",
-    "COMPUTERNAME",
-    # Hermes child-process routing/location invariants.
-    "HERMES_HOME",
-    "HERMES_PROFILE",
-    "HERMES_CONFIG",
-    "HERMES_ENV",
-    "HERMES_DELEGATED_CHILD_CONTEXT",
-    # Host networking, trust-store, and SSH/Git transport configuration. These
-    # are operator controls, not provider credentials; stripping them can make
-    # every unrelated terminal child lose connectivity or authentication.
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "ALL_PROXY",
-    "NO_PROXY",
-    "FTP_PROXY",
-    "SOCKS_PROXY",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "REQUESTS_CA_BUNDLE",
-    "CURL_CA_BUNDLE",
-    "NODE_EXTRA_CA_CERTS",
-    "PIP_CERT",
-    "NPM_CONFIG_CAFILE",
-    "GIT_SSL_CAINFO",
-    "SSH_AUTH_SOCK",
-    "SSH_AGENT_PID",
-    "SSH_ASKPASS",
-    "GIT_SSH",
-    "GIT_SSH_COMMAND",
-    "GIT_ASKPASS",
-    # The general AWS operator credential chain deliberately remains available
-    # to local aws/terraform/cdk/boto3 commands. Bedrock's provider-owned bearer
-    # token is intentionally absent from this set and remains scrubbed.
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AWS_PROFILE",
-    "AWS_DEFAULT_PROFILE",
-    "AWS_REGION",
-    "AWS_DEFAULT_REGION",
-    "AWS_SHARED_CREDENTIALS_FILE",
-    "AWS_CONFIG_FILE",
-    "AWS_ROLE_ARN",
-    "AWS_ROLE_SESSION_NAME",
-    "AWS_WEB_IDENTITY_TOKEN_FILE",
-    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
-    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
-    "AWS_SDK_LOAD_CONFIG",
-})
-
-# An inactive user/project manifest is untrusted declarative input. It may
-# contribute first-run secret protection only for names that look like provider
-# credentials. Once the plugin is explicitly activated, its imported
-# ``ProviderProfile.env_vars`` is authoritative and may use unconventional
-# names; those names are also retained in the profile-local historical cache.
-_DECLARATIVE_PROVIDER_CREDENTIAL_TAILS = (
-    "API_KEY",
-    "APIKEY",
-    "KEY",
-    "TOKEN",
-    "SECRET",
-    "PASSWORD",
-    "PASSWD",
-    "CREDENTIAL",
-    "CREDENTIALS",
-    "CREDS",
-    "AUTH",
-    "BEARER",
-    "DSN",
-    "WEBHOOK",
-    "ACCESS",
-    "BASE_URL",
-    "KEY_PATH",
-    "TOKEN_PATH",
-    "SECRET_PATH",
-    "CREDENTIALS_PATH",
-    "KEY_FILE",
-    "TOKEN_FILE",
-    "SECRET_FILE",
-    "CREDENTIALS_FILE",
-)
-
-
-def is_reserved_provider_env_var(name: object) -> bool:
-    """Return whether *name* is operational and cannot be a credential."""
-    return (
-        isinstance(name, str)
-        and bool(name.strip())
-        and name.strip().upper() in _RESERVED_PROVIDER_ENV_VARS
-    )
-
-
-def _provider_credential_env_names(values: object) -> tuple[str, ...]:
-    """Validate credential names while preserving their declared order."""
-    if isinstance(values, str):
-        entries = (values,)
-    elif isinstance(values, (list, tuple, set, frozenset)):
-        entries = values
-    else:
-        return ()
-
-    names: list[str] = []
-    seen: set[str] = set()
-    for value in entries:
-        if not isinstance(value, str):
-            continue
-        name = value.strip()
-        # NUL and '=' cannot name environment variables on supported hosts.
-        # Reserved operational names are rejected fail-closed so declarative
-        # metadata cannot turn child-process credential scrubbing into a DoS.
-        if (
-            not name
-            or "\x00" in name
-            or "=" in name
-            or is_reserved_provider_env_var(name)
-        ):
-            continue
-        # Windows environment names are case-insensitive. Canonicalizing the
-        # security metadata prevents a mixed-case manifest name from missing
-        # the differently-cased key spelling preserved by ``os.environ``.
-        if sys.platform == "win32":
-            name = name.upper()
-        if name in seen:
-            continue
-        names.append(name)
-        seen.add(name)
-    return tuple(names)
-
-
-def _declarative_provider_credential_env_names(
-    values: object,
-) -> tuple[str, ...]:
-    """Return the safe pre-activation subset of external manifest names."""
-    names = _provider_credential_env_names(values)
-    return tuple(
-        name
-        for name in names
-        if any(
-            name.upper() == tail or name.upper().endswith(f"_{tail}")
-            for tail in _DECLARATIVE_PROVIDER_CREDENTIAL_TAILS
-        )
-    )
-
-
 def _record_observed_profile_locked(
     source: str,
     path: str,
     profile: ProviderProfile,
 ) -> None:
-    """Record monotonic non-executable security metadata under discovery lock."""
+    """Retain imported profile metadata for cleanup after deactivation."""
     _OBSERVED_PROFILES[(source, path, profile.name)] = profile
-    _OBSERVED_PROVIDER_ENV_VARS.update(
-        _provider_credential_env_names(profile.env_vars)
-    )
 
 
 def register_provider(profile: ProviderProfile) -> None:
@@ -355,9 +154,8 @@ def register_provider(profile: ProviderProfile) -> None:
     bundled profiles without editing repo code.
     """
     global _PROVIDER_LIST_CACHE, _RUNTIME_REGISTRATION_GENERATION
-    # ProviderProfile is mutable by design. Normalize at the registration
-    # boundary so active plugin metadata cannot reach auth/config indexes under
-    # an OS-essential name through a path other than the observation set.
+    # ProviderProfile is mutable by design. Normalize routing identities at the
+    # registration boundary so every downstream registry sees the same keys.
     normalized_name = _normalize_provider_identity(profile.name)
     if not normalized_name:
         raise ValueError("provider profile name must be non-empty")
@@ -370,7 +168,6 @@ def register_provider(profile: ProviderProfile) -> None:
             and alias != normalized_name
         )
     )
-    profile.env_vars = _provider_credential_env_names(profile.env_vars)
     build_state = getattr(_BUILD_LOCAL, "state", None)
     if isinstance(build_state, _ProviderBuildState):
         build_state.registry[profile.name] = profile
@@ -695,36 +492,9 @@ def get_known_provider_ids() -> frozenset[str]:
 
 
 def get_observed_provider_profiles() -> tuple[ProviderProfile, ...]:
-    """Return a process-lifetime union used only for secret-name hardening."""
+    """Return profiles retained for deactivation-safe credential cleanup."""
     with _DISCOVERY_LOCK:
         return tuple(_OBSERVED_PROFILES.values())
-
-
-def get_observed_provider_env_vars() -> frozenset[str]:
-    """Return provider env names observed before catalog publication.
-
-    Provider refresh hooks run after a newly built catalog is placed in the
-    snapshot cache.  A concurrent subprocess launch must not depend on those
-    callbacks having completed: otherwise a newly discovered provider key can
-    briefly escape the child-env scrubber.  Executable profiles and static
-    ``plugin.yaml`` metadata both update this monotonic view synchronously
-    while discovery still holds ``_DISCOVERY_LOCK``, so it is the security
-    publication barrier for spawn-time checks.
-    """
-    with _DISCOVERY_LOCK:
-        # Re-filter on read as defense in depth for a long-lived process whose
-        # monotonic set was populated before this policy became active.
-        return frozenset(
-            _provider_credential_env_names(_OBSERVED_PROVIDER_ENV_VARS)
-        )
-
-
-def is_observed_provider_env_var(name: str) -> bool:
-    """Check the provider-owned spawn-security index without hook latency."""
-    if is_reserved_provider_env_var(name):
-        return False
-    with _DISCOVERY_LOCK:
-        return name in _OBSERVED_PROVIDER_ENV_VARS
 
 
 def _current_activation_state() -> PluginActivationState:
@@ -776,11 +546,10 @@ def _ensure_providers_discovered() -> ProviderCatalogSnapshot | None:
             _publish_compatibility_mirror(snapshot)
             _LAST_SNAPSHOT_FINGERPRINT = fingerprint
 
-        # Derived registries are context-scoped/lazy, while the remaining
-        # hooks only warm or monotonically harden metadata. Notify once per
-        # immutable snapshot rather than every A/B profile switch; otherwise
-        # concurrent multiplex traffic turns a compatibility-mirror change
-        # into a refresh storm.
+        # Derived registries are context-scoped/lazy. Notify once per immutable
+        # snapshot rather than every A/B profile switch; otherwise concurrent
+        # multiplex traffic turns a compatibility-mirror change into a refresh
+        # storm.
         if fingerprint not in _NOTIFIED_SNAPSHOT_FINGERPRINTS:
             _NOTIFIED_SNAPSHOT_FINGERPRINTS.add(fingerprint)
             callbacks = tuple(_PROVIDER_REFRESH_HOOKS)
@@ -797,7 +566,7 @@ def _ensure_providers_discovered() -> ProviderCatalogSnapshot | None:
             )
     if callback_failed:
         # Best-effort hooks may be retried by the next reader. Runtime routing
-        # and subprocess security do not depend on hook completion.
+        # does not depend on hook completion.
         with _DISCOVERY_LOCK:
             _NOTIFIED_SNAPSHOT_FINGERPRINTS.discard(fingerprint)
     return snapshot
@@ -857,94 +626,6 @@ class _ProviderPlugin:
     key: str
     name: str
     provider_ids: frozenset[str]
-    credential_env_vars: frozenset[str]
-
-
-_PROVIDER_ENV_CACHE_VERSION = 1
-_PROVIDER_ENV_CACHE_SOURCES = frozenset({"user", "project"})
-
-
-def _manifest_env_names(value: object) -> frozenset[str]:
-    """Extract simple/rich ``requires_env`` entries without executing code."""
-    if isinstance(value, (str, dict)):
-        entries = (value,)
-    elif isinstance(value, list):
-        entries = value
-    else:
-        return frozenset()
-
-    names: list[str] = []
-    for entry in entries:
-        raw_name = entry.get("name") if isinstance(entry, dict) else entry
-        if isinstance(raw_name, str):
-            names.append(raw_name)
-    # Provider credentials do not have to follow API_KEY/TOKEN naming
-    # conventions (for example LC_VENDOR_ACCESS); only invalid and exact
-    # operational names are excluded.
-    return frozenset(_provider_credential_env_names(names))
-
-
-def _provider_env_cache_path(
-    scope_identity: tuple[str, str],
-    plugin: _ProviderPlugin,
-) -> Path | None:
-    """Return a profile-local security cache path without exposing plugin paths."""
-    home = scope_identity[0]
-    if not home or plugin.source not in _PROVIDER_ENV_CACHE_SOURCES:
-        return None
-    identity = f"{plugin.source}\x00{_path_identity(plugin.path)}"
-    digest = hashlib.sha256(
-        identity.encode("utf-8", errors="surrogatepass")
-    ).hexdigest()
-    return Path(home) / "cache" / "provider-env-names" / f"{digest}.json"
-
-
-def _load_cached_provider_env_names(path: Path | None) -> frozenset[str]:
-    """Read previously observed names; malformed cache data grants nothing."""
-    if path is None:
-        return frozenset()
-    try:
-        if not path.is_file():
-            return frozenset()
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or data.get("version") != _PROVIDER_ENV_CACHE_VERSION:
-            return frozenset()
-        return _manifest_env_names(data.get("env_vars"))
-    except (OSError, ValueError, TypeError):
-        logger.debug("Could not read provider credential-name cache: %s", path)
-        return frozenset()
-
-
-def _persist_provider_env_names(
-    path: Path | None,
-    names: set[str],
-) -> None:
-    """Persist a monotonic name-only blocklist, never credentials or activation."""
-    if path is None:
-        return
-    merged = set(_load_cached_provider_env_names(path))
-    merged.update(_provider_credential_env_names(names))
-    # Avoid creating empty cache files, but rewrite an existing cache even when
-    # only rejected names remain so an older poisoned file is self-healing.
-    if not merged and not path.is_file():
-        return
-    try:
-        atomic_json_write(
-            path,
-            {
-                "version": _PROVIDER_ENV_CACHE_VERSION,
-                "env_vars": sorted(merged),
-            },
-            mode=0o600,
-        )
-    except OSError:
-        # The current process is already protected by the in-memory monotonic
-        # set. A read-only profile should not make provider discovery unusable.
-        logger.warning(
-            "Could not persist provider credential-name security cache: %s",
-            path,
-            exc_info=True,
-        )
 
 
 def _provider_plugin(plugin_dir: Path, source: str) -> _ProviderPlugin:
@@ -952,7 +633,6 @@ def _provider_plugin(plugin_dir: Path, source: str) -> _ProviderPlugin:
     key = f"model-providers/{plugin_dir.name}"
     name = key
     provider_ids = _normalized_provider_identities((plugin_dir.name,))
-    credential_env_vars: frozenset[str] = frozenset()
     manifest_file = plugin_dir / "plugin.yaml"
     if not manifest_file.exists():
         manifest_file = plugin_dir / "plugin.yml"
@@ -970,9 +650,6 @@ def _provider_plugin(plugin_dir: Path, source: str) -> _ProviderPlugin:
                     )
                     if normalized_ids:
                         provider_ids = normalized_ids
-                credential_env_vars = _manifest_env_names(
-                    data.get("requires_env")
-                )
         except Exception:
             logger.debug(
                 "Could not parse provider plugin manifest identity: %s",
@@ -985,7 +662,6 @@ def _provider_plugin(plugin_dir: Path, source: str) -> _ProviderPlugin:
         key=key,
         name=name,
         provider_ids=frozenset(provider_ids),
-        credential_env_vars=credential_env_vars,
     )
 
 
@@ -1184,34 +860,6 @@ def _discover_providers(
         active_provider_ids: set[str] = set()
         active_canonical_provider_ids: set[str] = set()
         for plugin in candidates:
-            # Credential names are declarative security metadata, not an
-            # activation grant. Read them for inactive/disabled plugins too so
-            # a fresh process can scrub their secrets without importing
-            # untrusted ``__init__.py`` code. This union is process-local and
-            # never changes routing or plugin activation.
-            cache_path = _provider_env_cache_path(scope_identity, plugin)
-            cached_env_vars = _load_cached_provider_env_names(cache_path)
-            _OBSERVED_PROVIDER_ENV_VARS.update(
-                _provider_credential_env_names(cached_env_vars)
-            )
-            manifest_env_vars = plugin.credential_env_vars
-            if plugin.source != "bundled":
-                # Presence on disk is not consent to let an inactive external
-                # manifest remove arbitrary operator variables from every
-                # child process. Credential-shaped declarations still get
-                # pre-import protection; active profiles publish the full,
-                # validated ``env_vars`` set from executable code below.
-                manifest_env_vars = frozenset(
-                    _declarative_provider_credential_env_names(
-                        manifest_env_vars
-                    )
-                )
-            _OBSERVED_PROVIDER_ENV_VARS.update(manifest_env_vars)
-            # Rewrite legacy cache files through the current validator even
-            # when the plugin is inactive or disabled. Otherwise a reserved
-            # name removed from the in-memory index would remain poisoned on
-            # disk indefinitely (and could affect an older binary later).
-            _persist_provider_env_names(cache_path, set(cached_env_vars))
             grouped.setdefault(plugin.key, []).append(plugin)
             known_provider_ids.update(plugin.provider_ids)
             known_provider_ids.update((plugin.path.name, plugin.name))
@@ -1260,11 +908,7 @@ def _discover_providers(
             # IDs without deleting sibling profiles from a multi-ID bundle.
             for plugin in active_plugins:
                 profiles = _import_plugin_dir(plugin.path, plugin.source)
-                observed_plugin_env_vars: set[str] = set()
                 for profile in profiles:
-                    observed_plugin_env_vars.update(
-                        _provider_credential_env_names(profile.env_vars)
-                    )
                     active_provider_ids.update(
                         _normalized_provider_identities(
                             (profile.name, *profile.aliases)
@@ -1288,10 +932,6 @@ def _discover_providers(
                     if plugin.source == "bundled":
                         bundled_provider_ids.add(profile.name)
                         bundled_provider_ids.update(profile.aliases)
-                _persist_provider_env_names(
-                    _provider_env_cache_path(scope_identity, plugin),
-                    observed_plugin_env_vars,
-                )
 
         # Legacy single-file profiles are a compatibility extension path. Safe
         # mode must not execute them because their provenance is unknowable.

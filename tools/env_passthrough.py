@@ -69,7 +69,8 @@ def _is_hermes_provider_credential(name: str) -> bool:
     """
     try:
         from tools.environments.local import (
-            _is_provider_env_blocked,
+            _HERMES_PROVIDER_ENV_BLOCKLIST,
+            _is_hermes_internal_secret,
         )
     except Exception as e:
         logger.warning(
@@ -84,7 +85,9 @@ def _is_hermes_provider_credential(name: str) -> bool:
     # credentials the static blocklist can't enumerate — they're injected per
     # task/relay at gateway startup. A skill must not be able to register them
     # as passthrough and tunnel them into an execute_code / terminal child.
-    return _is_provider_env_blocked(name)
+    if _is_hermes_internal_secret(name):
+        return True
+    return name in _HERMES_PROVIDER_ENV_BLOCKLIST
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
@@ -166,12 +169,6 @@ def is_env_passthrough(var_name: str) -> bool:
     Returns ``True`` if the variable was registered by a skill or listed in
     the user's ``tools.env_passthrough`` config.
     """
-    # A name can become a provider credential after a skill/config allowlisted
-    # it (for example when a provider plugin is enabled concurrently).  Recheck
-    # on every read so an earlier registration cannot become a persistent
-    # bypass of the child-process scrubber.
-    if _is_hermes_provider_credential(var_name):
-        return False
     if var_name in _get_allowed():
         return True
     return var_name in _load_config_passthrough()
@@ -179,10 +176,7 @@ def is_env_passthrough(var_name: str) -> bool:
 
 def get_all_passthrough() -> frozenset[str]:
     """Return the union of skill-registered and config-based passthrough vars."""
-    candidates = frozenset(_get_allowed()) | _load_config_passthrough()
-    return frozenset(
-        name for name in candidates if not _is_hermes_provider_credential(name)
-    )
+    return frozenset(_get_allowed()) | _load_config_passthrough()
 
 
 def resolve_passthrough_value(

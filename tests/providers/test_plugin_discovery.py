@@ -1,10 +1,4 @@
-"""Tests for the model-providers plugin discovery system.
-
-Verifies that:
- 1. All bundled providers at plugins/model-providers/<name>/ are discovered
- 2. User plugins at $HERMES_HOME/plugins/model-providers/<name>/ override bundled
- 3. plugin.yaml manifests with kind=model-provider are correctly categorized
-"""
+"""Tests for model-provider plugin discovery."""
 
 from __future__ import annotations
 
@@ -14,47 +8,17 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
-_RESERVED_OPERATIONAL_TEST_ENV = (
-    "PATH",
-    "HOME",
-    "SHELL",
-    "SystemRoot",
-    "ComSpec",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "REQUESTS_CA_BUNDLE",
-    "CURL_CA_BUNDLE",
-    "SSH_AUTH_SOCK",
-    "SSH_AGENT_PID",
-    "GIT_SSH",
-    "GIT_SSH_COMMAND",
-    "GIT_ASKPASS",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AWS_PROFILE",
-    "AWS_SHARED_CREDENTIALS_FILE",
-    "AWS_WEB_IDENTITY_TOKEN_FILE",
-)
-_UNSHAPED_EXTERNAL_ENV = "PROVIDER_RUNTIME_MODE"
-_SIMPLE_RESERVED_REQUIRES_ENV = "".join(
-    f"  - {name}\n" for name in _RESERVED_OPERATIONAL_TEST_ENV
-)
-_RICH_RESERVED_REQUIRES_ENV = "".join(
-    f"  - name: {name}\n" for name in _RESERVED_OPERATIONAL_TEST_ENV
-)
 
 
 def _clear_provider_caches():
-    """Force providers/__init__.py to re-discover on next list_providers()."""
     import providers as _pkg
+
     _pkg._REGISTRY.clear()
     _pkg._ALIASES.clear()
     _pkg._PROVIDER_LIST_CACHE = None
@@ -62,14 +26,51 @@ def _clear_provider_caches():
     _pkg._ACTIVATION_STATE = None
     _pkg._DISCOVERY_FINGERPRINT = None
     _pkg._IMPORTED_PROVIDER_MODULES.clear()
-    # Evict any cached plugin modules so the next import re-executes.
     for mod in list(sys.modules.keys()):
-        if (
-            mod.startswith("plugins.model_providers")
-            or mod.startswith("_hermes_user_provider")
-            or mod.startswith("_hermes_project_provider")
-        ):
+        if mod.startswith((
+            "plugins.model_providers", "_hermes_user_provider", "_hermes_project_provider"
+        )):
             del sys.modules[mod]
+
+
+def _new_home(tmp_path: Path, name: str = "home") -> Path:
+    home = tmp_path / name
+    home.mkdir()
+    return home
+
+
+@pytest.fixture
+def provider_home(tmp_path, monkeypatch):
+    home = _new_home(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+@contextmanager
+def _provider_scope(home: Path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(home)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _run_python_json(home: Path, lines: tuple[str, ...], **extra_env):
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    env.update(extra_env)
+    completed = subprocess.run(
+        [sys.executable, "-c", "\n".join(lines)],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return json.loads(completed.stdout.strip().splitlines()[-1])
 
 
 def test_bundled_plugins_discovered():
@@ -114,59 +115,22 @@ def test_all_profiles_register():
         assert required in names, f"Missing profile: {required}"
 
 
-def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
-    """A user plugin with the same name must override the bundled profile."""
-    # Point HERMES_HOME at a fresh temp dir
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    # get_hermes_home() may be module-cached depending on codebase; ensure the
-    # env var is the source of truth. Most code paths re-read it each call.
-
-    # Drop a user plugin that replaces 'gmi'
-    user_gmi = hermes_home / "plugins" / "model-providers" / "gmi"
-    user_gmi.mkdir(parents=True)
-    (user_gmi / "__init__.py").write_text(
-        "from providers import register_provider\n"
-        "from providers.base import ProviderProfile\n"
-        "\n"
-        "custom_gmi = ProviderProfile(\n"
-        '    name="gmi",\n'
-        '    aliases=("gmi-user-override-test",),\n'
-        '    env_vars=("GMI_API_KEY",),\n'
-        '    base_url="https://user-override.example.com/v1",\n'
-        '    auth_type="api_key",\n'
-        ")\n"
-        "register_provider(custom_gmi)\n"
+def test_user_plugin_overrides_bundled(provider_home):
+    _install_provider(
+        provider_home,
+        "gmi",
+        base_url="https://user-override.example.com/v1",
+        env_var="GMI_API_KEY",
+        aliases=("gmi-user-override-test",),
     )
-    (user_gmi / "plugin.yaml").write_text(
-        "name: gmi-user-override\n"
-        "kind: model-provider\n"
-        "version: 0.0.1\n"
-        "description: Test user override\n"
-    )
-    (hermes_home / "config.yaml").write_text(
-        "plugins:\n  enabled:\n    - model-providers/gmi\n",
-        encoding="utf-8",
-    )
-
     _clear_provider_caches()
     from providers import get_provider_profile
 
     gmi = get_provider_profile("gmi")
     assert gmi is not None
-    assert gmi.base_url == "https://user-override.example.com/v1", (
-        f"User override not applied; got base_url={gmi.base_url!r}"
-    )
+    assert gmi.base_url == "https://user-override.example.com/v1"
     assert "gmi-user-override-test" in gmi.aliases
-
-    # Clean up: reset discovery state so other tests see the bundled version
     _clear_provider_caches()
-
-
-    # No import means the module must NOT be in the plugins list as a loaded one.
-    # We check that the general loader didn't crash and didn't raise from the
-    # broken __init__.py.
 
 
 def _write_user_provider(
@@ -182,30 +146,25 @@ def _write_user_provider(
     provider_ids: tuple[str, ...] | None = None,
     profile_name: str | None = None,
 ) -> None:
-    plugin_dir = home / "plugins" / "model-providers" / name
+    plugin_dir = _provider_dir(home, name)
     plugin_dir.mkdir(parents=True)
-    marker_write = ""
-    if marker is not None:
-        marker_write = (
-            "from pathlib import Path\n"
-            f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
-        )
     registered_env_vars = env_vars or (env_var,)
     registered_name = profile_name or name
-    failure = "raise RuntimeError('provider import failed')\n" if fail_after_register else ""
+    marker_write = (
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
+        if marker else ""
+    )
     (plugin_dir / "__init__.py").write_text(
         marker_write
         + "from providers import register_provider\n"
         + "from providers.base import ProviderProfile\n"
         + "register_provider(ProviderProfile(\n"
-        + f"    name={registered_name!r},\n"
-        + f"    display_name={registered_name!r},\n"
-        + f"    aliases={aliases!r},\n"
-        + f"    env_vars={registered_env_vars!r},\n"
-        + f"    base_url={base_url!r},\n"
-        + "    auth_type='api_key',\n"
+        + f"    name={registered_name!r}, display_name={registered_name!r},\n"
+        + f"    aliases={aliases!r}, env_vars={registered_env_vars!r},\n"
+        + f"    base_url={base_url!r}, auth_type='api_key',\n"
         + "))\n"
-        + failure,
+        + ("raise RuntimeError('provider import failed')\n" if fail_after_register else ""),
         encoding="utf-8",
     )
     (plugin_dir / "plugin.yaml").write_text(
@@ -217,62 +176,68 @@ def _write_user_provider(
 
 
 def _write_activation(home: Path, *, enabled=(), disabled=()) -> None:
-    enabled_lines = "".join(f"    - {value}\n" for value in enabled)
-    disabled_lines = "".join(f"    - {value}\n" for value in disabled)
     (home / "config.yaml").write_text(
-        "plugins:\n"
-        "  enabled:\n"
-        f"{enabled_lines}"
-        "  disabled:\n"
-        f"{disabled_lines}",
+        "plugins:\n  enabled:\n"
+        + "".join(f"    - {value}\n" for value in enabled)
+        + "  disabled:\n"
+        + "".join(f"    - {value}\n" for value in disabled),
         encoding="utf-8",
     )
 
 
-def test_user_provider_is_not_imported_until_explicitly_enabled(
-    tmp_path,
-    monkeypatch,
-):
-    home = tmp_path / "home"
-    home.mkdir()
+def _provider_dir(home: Path, name: str) -> Path:
+    return home / "plugins" / "model-providers" / name
+
+
+def _install_provider(home: Path, name: str, *, state="enabled", **kwargs) -> str:
+    _write_user_provider(home, name, **kwargs)
+    key = f"model-providers/{name}"
+    _write_activation(home, **({state: (key,)} if state else {}))
+    return key
+
+
+def _append_config(home: Path, text: str) -> None:
+    path = home / "config.yaml"
+    path.write_text(path.read_text(encoding="utf-8") + text, encoding="utf-8")
+
+
+def _assert_provenance(providers, snapshot, provider_ids, *, current: bool) -> None:
+    for provider_id in provider_ids:
+        assert (provider_id in snapshot.current_canonical_provider_ids) is current
+        assert provider_id in snapshot.observed_provider_canonical_ids
+        assert provider_id in snapshot.observed_provider_aliases
+        assert providers.get_provider_identity_provenance(provider_id) == "canonical"
+
+
+def test_user_provider_is_not_imported_until_explicitly_enabled(tmp_path, provider_home):
     marker = tmp_path / "provider-imported.txt"
-    _write_user_provider(
-        home,
+    _install_provider(
+        provider_home,
         "opt-in-provider",
+        state=None,
         base_url="https://opt-in.example/v1",
         marker=marker,
     )
-    _write_activation(home)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
     import providers
 
     _clear_provider_caches()
     assert providers.get_provider_profile("opt-in-provider") is None
     assert not marker.exists()
 
-    _write_activation(
-        home,
-        enabled=("model-providers/opt-in-provider",),
-    )
+    _write_activation(provider_home, enabled=("model-providers/opt-in-provider",))
     providers.invalidate_provider_discovery()
 
     assert providers.get_provider_profile("opt-in-provider") is not None
     assert marker.read_text(encoding="utf-8") == "imported"
 
 
-def test_provider_plugin_can_query_in_progress_registry_during_import(
-    tmp_path,
-    monkeypatch,
-):
-    home = tmp_path / "home"
-    home.mkdir()
-    _write_user_provider(
-        home,
+def test_provider_plugin_can_query_in_progress_registry_during_import(provider_home):
+    _install_provider(
+        provider_home,
         "openrouter",
         base_url="https://registry-reader.example/v1",
     )
-    plugin_dir = home / "plugins" / "model-providers" / "openrouter"
+    plugin_dir = provider_home / "plugins" / "model-providers" / "openrouter"
     (plugin_dir / "__init__.py").write_text(
         "from providers import (\n"
         "    get_provider_profile, list_providers, register_provider,\n"
@@ -290,9 +255,6 @@ def test_provider_plugin_can_query_in_progress_registry_during_import(
         "assert profile in list_providers()\n",
         encoding="utf-8",
     )
-    _write_activation(home, enabled=("model-providers/openrouter",))
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
     import providers
 
     providers.invalidate_provider_discovery()
@@ -303,29 +265,11 @@ def test_provider_plugin_can_query_in_progress_registry_during_import(
     )
 
 
-def test_provider_discovery_refreshes_when_profile_home_changes(
-    tmp_path,
-    monkeypatch,
-):
-    first_home = tmp_path / "first"
-    second_home = tmp_path / "second"
-    first_home.mkdir()
-    second_home.mkdir()
-    _write_user_provider(
-        first_home,
-        "profile-provider",
-        base_url="https://first.example/v1",
-    )
-    _write_user_provider(
-        second_home,
-        "profile-provider",
-        base_url="https://second.example/v1",
-    )
-    for home in (first_home, second_home):
-        _write_activation(
-            home,
-            enabled=("model-providers/profile-provider",),
-        )
+def test_provider_discovery_refreshes_when_profile_home_changes(tmp_path, monkeypatch):
+    first_home = _new_home(tmp_path, "first")
+    second_home = _new_home(tmp_path, "second")
+    _install_provider(first_home, "profile-provider", base_url="https://first.example/v1")
+    _install_provider(second_home, "profile-provider", base_url="https://second.example/v1")
 
     import providers
 
@@ -336,8 +280,6 @@ def test_provider_discovery_refreshes_when_profile_home_changes(
         == "https://first.example/v1"
     )
 
-    # Activation lists are identical; the discovery-root fingerprint must
-    # still force a rebuild for the new profile.
     monkeypatch.setenv("HERMES_HOME", str(second_home))
     assert (
         providers.get_provider_profile("profile-provider").base_url
@@ -345,41 +287,18 @@ def test_provider_discovery_refreshes_when_profile_home_changes(
     )
 
 
-def test_concurrent_profile_catalogs_do_not_mix_key_and_endpoint(
-    tmp_path,
-    monkeypatch,
-):
-    """A profile key must never be paired with another profile's endpoint."""
-    home_a = tmp_path / "profile-a"
-    home_b = tmp_path / "profile-b"
-    home_a.mkdir()
-    home_b.mkdir()
+def test_concurrent_profile_catalogs_do_not_mix_key_and_endpoint(tmp_path, monkeypatch):
+    home_a = _new_home(tmp_path, "profile-a")
+    home_b = _new_home(tmp_path, "profile-b")
     for home, endpoint, override, secret in (
-        (
-            home_a,
-            "https://a.example/v1",
-            "https://a-override.example/v1",
-            "secret-a",
-        ),
-        (
-            home_b,
-            "https://b.example/v1",
-            "https://b-override.example/v1",
-            "secret-b",
-        ),
+        (home_a, "https://a.example/v1", "https://a-override.example/v1", "secret-a"),
+        (home_b, "https://b.example/v1", "https://b-override.example/v1", "secret-b"),
     ):
-        _write_user_provider(
+        _install_provider(
             home,
             "profile-provider",
             base_url=endpoint,
-            env_vars=(
-                "PROFILE_PROVIDER_API_KEY",
-                "PROFILE_PROVIDER_BASE_URL",
-            ),
-        )
-        _write_activation(
-            home,
-            enabled=("model-providers/profile-provider",),
+            env_vars=("PROFILE_PROVIDER_API_KEY", "PROFILE_PROVIDER_BASE_URL"),
         )
         (home / ".env").write_text(
             f"PROFILE_PROVIDER_API_KEY={secret}\n"
@@ -390,43 +309,27 @@ def test_concurrent_profile_catalogs_do_not_mix_key_and_endpoint(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "process-home"))
     import providers
     from hermes_cli import auth
-    from hermes_constants import (
-        reset_hermes_home_override,
-        set_hermes_home_override,
-    )
-
     a_discovered = threading.Event()
     b_published = threading.Event()
 
     def run_a():
-        token = set_hermes_home_override(home_a)
-        try:
-            assert (
-                providers.get_provider_profile("profile-provider").base_url
-                == "https://a.example/v1"
-            )
+        with _provider_scope(home_a):
+            assert providers.get_provider_profile("profile-provider").base_url == "https://a.example/v1"
             a_discovered.set()
             assert b_published.wait(timeout=10)
             config = auth.PROVIDER_REGISTRY["profile-provider"]
-            credentials = auth.resolve_api_key_provider_credentials(
-                "profile-provider"
-            )
+            credentials = auth.resolve_api_key_provider_credentials("profile-provider")
             return config.inference_base_url, credentials
-        finally:
-            reset_hermes_home_override(token)
 
     def run_b():
         assert a_discovered.wait(timeout=10)
-        token = set_hermes_home_override(home_b)
-        try:
-            config = auth.PROVIDER_REGISTRY["profile-provider"]
-            credentials = auth.resolve_api_key_provider_credentials(
-                "profile-provider"
-            )
-            return config.inference_base_url, credentials
-        finally:
-            b_published.set()
-            reset_hermes_home_override(token)
+        with _provider_scope(home_b):
+            try:
+                config = auth.PROVIDER_REGISTRY["profile-provider"]
+                credentials = auth.resolve_api_key_provider_credentials("profile-provider")
+                return config.inference_base_url, credentials
+            finally:
+                b_published.set()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         future_a = executor.submit(run_a)
@@ -434,23 +337,18 @@ def test_concurrent_profile_catalogs_do_not_mix_key_and_endpoint(
         endpoint_a, credentials_a = future_a.result(timeout=15)
         endpoint_b, credentials_b = future_b.result(timeout=15)
 
-    assert endpoint_a == "https://a.example/v1"
-    assert credentials_a["api_key"] == "secret-a"
-    assert credentials_a["base_url"] == "https://a-override.example/v1"
-    assert endpoint_b == "https://b.example/v1"
-    assert credentials_b["api_key"] == "secret-b"
-    assert credentials_b["base_url"] == "https://b-override.example/v1"
+    assert (endpoint_a, credentials_a["api_key"], credentials_a["base_url"]) == (
+        "https://a.example/v1", "secret-a", "https://a-override.example/v1"
+    )
+    assert (endpoint_b, credentials_b["api_key"], credentials_b["base_url"]) == (
+        "https://b.example/v1", "secret-b", "https://b-override.example/v1"
+    )
 
 
-def test_cached_profile_switch_does_not_repeat_refresh_hooks(
-    tmp_path,
-    monkeypatch,
-):
-    """A/B multiplex reads notify once per immutable catalog, not per switch."""
-    home_a = tmp_path / "profile-a"
-    home_b = tmp_path / "profile-b"
+def test_cached_profile_switch_does_not_repeat_refresh_hooks(tmp_path, monkeypatch):
+    home_a = _new_home(tmp_path, "profile-a")
+    home_b = _new_home(tmp_path, "profile-b")
     for home in (home_a, home_b):
-        home.mkdir()
         _write_activation(home)
 
     import providers
@@ -473,23 +371,17 @@ def test_cached_profile_switch_does_not_repeat_refresh_hooks(
     ]
 
 
-def test_inactive_external_manifest_cannot_suppress_static_provider(
-    tmp_path,
-    monkeypatch,
-):
-    home = tmp_path / "home"
-    home.mkdir()
+def test_inactive_external_manifest_cannot_suppress_static_provider(tmp_path, provider_home):
     marker = tmp_path / "openai-override-imported.txt"
     plugin_key = "model-providers/openai-api"
-    _write_user_provider(
-        home,
+    _install_provider(
+        provider_home,
         "openai-api",
+        state=None,
         base_url="https://override-openai.example/v1",
         env_var="OVERRIDE_OPENAI_API_KEY",
         marker=marker,
     )
-    _write_activation(home)
-    monkeypatch.setenv("HERMES_HOME", str(home))
 
     import providers
     from hermes_cli import auth
@@ -503,7 +395,7 @@ def test_inactive_external_manifest_cannot_suppress_static_provider(
         == "https://api.openai.com/v1"
     )
 
-    _write_activation(home, enabled=(plugin_key,))
+    _write_activation(provider_home, enabled=(plugin_key,))
     providers.invalidate_provider_discovery()
     assert (
         providers.get_provider_profile("openai-api").base_url
@@ -512,7 +404,7 @@ def test_inactive_external_manifest_cannot_suppress_static_provider(
     assert marker.read_text(encoding="utf-8") == "imported"
     assert not providers.is_plugin_managed_provider_id("openai-api")
 
-    _write_activation(home, disabled=(plugin_key,))
+    _write_activation(provider_home, disabled=(plugin_key,))
     providers.invalidate_provider_discovery()
 
     assert providers.get_provider_profile("openai-api") is None
@@ -557,79 +449,53 @@ def test_profileless_core_identity_table_matches_runtime_catalogs():
     assert "_core_identities" not in snapshot.known_provider_ids
 
 
-def test_core_ownership_is_stable_across_models_then_auth_imports(
-    tmp_path,
-):
-    home = tmp_path / "home"
-    home.mkdir()
+def test_core_ownership_is_stable_across_models_then_auth_imports(provider_home):
     claimed_ids = ("openai-api", "lm-studio", "tokenhub", "x-ai-oauth", "moa")
     plugin_name = "early-core-collision"
-    _write_user_provider(
-        home,
+    _install_provider(
+        provider_home,
         plugin_name,
+        state=None,
         base_url="https://inactive.invalid/v1",
         provider_ids=claimed_ids,
     )
-    plugin_dir = home / "plugins" / "model-providers" / plugin_name
+    plugin_dir = _provider_dir(provider_home, plugin_name)
     (plugin_dir / "__init__.py").write_text(
         "raise AssertionError('inactive collision must not import')\n",
         encoding="utf-8",
     )
-    _write_activation(home)
-
-    probe = "\n".join(
+    result = _run_python_json(
+        provider_home,
         (
             "import json",
             "from hermes_cli import models",
             "import providers",
             f"claimed = {claimed_ids!r}",
-            "before = [value for value in claimed if providers.is_plugin_managed_provider_id(value)]",
-            "before_moa = 'moa' in {entry.slug for entry in models.CANONICAL_PROVIDERS}",
+            "before = [v for v in claimed if providers.is_plugin_managed_provider_id(v)]",
+            "before_moa = 'moa' in {e.slug for e in models.CANONICAL_PROVIDERS}",
             "from hermes_cli import auth",
-            "after = [value for value in claimed if providers.is_plugin_managed_provider_id(value)]",
-            "after_moa = 'moa' in {entry.slug for entry in models.CANONICAL_PROVIDERS}",
-            "print(json.dumps([before, before_moa, after, after_moa, "
-            "auth.resolve_provider('openai-api')]))",
-        )
+            "after = [v for v in claimed if providers.is_plugin_managed_provider_id(v)]",
+            "after_moa = 'moa' in {e.slug for e in models.CANONICAL_PROVIDERS}",
+            "print(json.dumps([before, before_moa, after, after_moa, auth.resolve_provider('openai-api')]))",
+        ),
     )
-    child_env = os.environ.copy()
-    child_env["HERMES_HOME"] = str(home)
-    completed = subprocess.run(
-        [sys.executable, "-c", probe],
-        cwd=REPO_ROOT,
-        env=child_env,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    result = json.loads(completed.stdout.strip().splitlines()[-1])
-
     assert result == [[], True, [], True, "openai-api"]
 
 
 def test_disabled_external_manifest_provider_id_stays_activation_managed(
-    tmp_path,
-    monkeypatch,
+    tmp_path, provider_home, monkeypatch
 ):
-    home = tmp_path / "home"
-    home.mkdir()
     marker = tmp_path / "external-imported.txt"
     plugin_name = "fresh-external-gate"
     provider_id = "fresh-external-route"
-    _write_user_provider(
-        home,
+    _install_provider(
+        provider_home,
         plugin_name,
+        state="disabled",
         base_url="https://external.invalid/v1",
         marker=marker,
         provider_ids=(provider_id,),
     )
-    _write_activation(
-        home,
-        disabled=(f"model-providers/{plugin_name}",),
-    )
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
     import providers
     from hermes_cli import runtime_provider
 
@@ -654,60 +520,36 @@ def test_disabled_external_manifest_provider_id_stays_activation_managed(
         runtime_provider.resolve_runtime_provider(requested=provider_id)
 
 
-def test_named_custom_alias_provenance_does_not_cross_profile_scopes(
-    tmp_path,
-    monkeypatch,
-):
-    home_a = tmp_path / "profile-a"
-    home_b = tmp_path / "profile-b"
-    home_a.mkdir()
-    home_b.mkdir()
-    _write_user_provider(
+def test_named_custom_alias_provenance_does_not_cross_profile_scopes(tmp_path, monkeypatch):
+    home_a = _new_home(tmp_path, "profile-a")
+    home_b = _new_home(tmp_path, "profile-b")
+    _install_provider(
         home_a,
         "a-alias-owner",
         base_url="https://a.example/v1",
         aliases=("acme",),
-    )
-    _write_activation(
-        home_a,
-        enabled=("model-providers/a-alias-owner",),
     )
     _write_activation(home_b)
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "process-home"))
     import providers
     from hermes_cli import runtime_provider
-    from hermes_constants import (
-        reset_hermes_home_override,
-        set_hermes_home_override,
-    )
-
-    token_a = set_hermes_home_override(home_a)
-    try:
+    with _provider_scope(home_a):
         providers.invalidate_provider_discovery()
         assert providers.get_provider_profile("acme") is not None
         assert providers.get_provider_identity_provenance("acme") == "alias"
-    finally:
-        reset_hermes_home_override(token_a)
 
-    token_b = set_hermes_home_override(home_b)
-    try:
+    with _provider_scope(home_b):
         providers.invalidate_provider_discovery()
         assert "acme" not in (
             providers.get_provider_catalog_snapshot().observed_provider_aliases
         )
 
-        # Build B's own alias history, then replace its active route with a
-        # disabled manifest that declares the same raw ID as canonical.
-        _write_user_provider(
+        _install_provider(
             home_b,
             "b-alias-owner",
             base_url="https://b-alias.example/v1",
             aliases=("acme",),
-        )
-        _write_activation(
-            home_b,
-            enabled=("model-providers/b-alias-owner",),
         )
         providers.invalidate_provider_discovery()
         assert providers.get_provider_identity_provenance("acme") == "alias"
@@ -723,14 +565,10 @@ def test_named_custom_alias_provenance_does_not_cross_profile_scopes(
             enabled=("model-providers/b-alias-owner",),
             disabled=("model-providers/b-manifest-owner",),
         )
-        config_b = home_b / "config.yaml"
-        config_b.write_text(
-            config_b.read_text(encoding="utf-8")
-            + "custom_providers:\n"
-            + "  - name: acme\n"
-            + "    base_url: https://custom-b.example/v1\n"
-            + "    api_key: custom-key\n",
-            encoding="utf-8",
+        _append_config(
+            home_b,
+            "custom_providers:\n  - name: acme\n"
+            "    base_url: https://custom-b.example/v1\n    api_key: custom-key\n",
         )
         providers.invalidate_provider_discovery()
         snapshot_b = providers.get_provider_catalog_snapshot()
@@ -741,24 +579,19 @@ def test_named_custom_alias_provenance_does_not_cross_profile_scopes(
         assert not providers.is_provider_canonical_identity_active("acme")
         with pytest.raises(runtime_provider.AuthError, match="disabled by plugin"):
             runtime_provider.resolve_runtime_provider(requested="acme")
-    finally:
-        reset_hermes_home_override(token_b)
 
 
 def test_scoped_canonical_history_outranks_alias_after_disable(
-    tmp_path,
-    monkeypatch,
+    provider_home,
 ):
-    home = tmp_path / "home"
-    home.mkdir()
     _write_user_provider(
-        home,
+        provider_home,
         "alias-owner",
         base_url="https://alias.example/v1",
         aliases=(" ACME ", " MANIFEST-ACME "),
     )
     _write_user_provider(
-        home,
+        provider_home,
         "manifest-profile-mismatch",
         base_url="https://canonical.example/v1",
         provider_ids=(" MANIFEST-ACME ",),
@@ -768,8 +601,7 @@ def test_scoped_canonical_history_outranks_alias_after_disable(
         "model-providers/alias-owner",
         "model-providers/manifest-profile-mismatch",
     )
-    _write_activation(home, enabled=plugin_keys)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    _write_activation(provider_home, enabled=plugin_keys)
 
     import providers
     from hermes_cli import runtime_provider
@@ -777,27 +609,11 @@ def test_scoped_canonical_history_outranks_alias_after_disable(
     providers.invalidate_provider_discovery()
     active = providers.get_provider_catalog_snapshot()
     colliding_ids = ("acme", "manifest-acme")
+    _assert_provenance(providers, active, colliding_ids, current=True)
     for provider_id in colliding_ids:
-        assert provider_id in active.current_canonical_provider_ids
-        assert provider_id in active.observed_provider_canonical_ids
-        assert provider_id in active.observed_provider_aliases
-        assert (
-            providers.get_provider_identity_provenance(
-                f"  {provider_id.upper()}  "
-            )
-            == "canonical"
-        )
+        assert providers.get_provider_identity_provenance(f"  {provider_id.upper()}  ") == "canonical"
 
-    # Change the manifest before disabling it.  ``manifest-acme`` now exists
-    # only in this scope's canonical history, while ``acme`` comes from the
-    # successfully imported (manifest/profile-mismatched) profile name.
-    manifest_path = (
-        home
-        / "plugins"
-        / "model-providers"
-        / "manifest-profile-mismatch"
-        / "plugin.yaml"
-    )
+    manifest_path = _provider_dir(provider_home, "manifest-profile-mismatch") / "plugin.yaml"
     manifest_path.write_text(
         "name: manifest-profile-mismatch\n"
         "kind: model-provider\n"
@@ -805,30 +621,19 @@ def test_scoped_canonical_history_outranks_alias_after_disable(
         encoding="utf-8",
     )
 
-    _write_activation(home, disabled=plugin_keys)
-    config_path = home / "config.yaml"
-    config_path.write_text(
-        config_path.read_text(encoding="utf-8")
-        + "custom_providers:\n"
-        + "  - name: acme\n"
-        + "    base_url: https://custom.example/v1\n"
-        + "    api_key: custom-key\n"
-        + "  - name: manifest-acme\n"
-        + "    base_url: https://custom-manifest.example/v1\n"
-        + "    api_key: custom-key\n",
-        encoding="utf-8",
+    _write_activation(provider_home, disabled=plugin_keys)
+    _append_config(
+        provider_home,
+        "custom_providers:\n"
+        "  - name: acme\n    base_url: https://custom.example/v1\n    api_key: custom-key\n"
+        "  - name: manifest-acme\n"
+        "    base_url: https://custom-manifest.example/v1\n    api_key: custom-key\n",
     )
     providers.invalidate_provider_discovery()
 
     disabled = providers.get_provider_catalog_snapshot()
+    _assert_provenance(providers, disabled, colliding_ids, current=False)
     for provider_id in colliding_ids:
-        assert provider_id not in disabled.current_canonical_provider_ids
-        assert provider_id in disabled.observed_provider_canonical_ids
-        assert provider_id in disabled.observed_provider_aliases
-        assert (
-            providers.get_provider_identity_provenance(provider_id)
-            == "canonical"
-        )
         assert providers.is_plugin_managed_provider_id(provider_id)
         assert not providers.is_provider_plugin_active(provider_id)
         with pytest.raises(
@@ -838,22 +643,15 @@ def test_scoped_canonical_history_outranks_alias_after_disable(
             runtime_provider.resolve_runtime_provider(requested=provider_id)
 
 
-def test_provenance_growth_evicts_same_scope_activation_snapshots(
-    tmp_path,
-    monkeypatch,
-):
-    home = tmp_path / "home"
-    home.mkdir()
-    plugin_key = "model-providers/history-owner"
-    _write_user_provider(
-        home,
+def test_provenance_growth_evicts_same_scope_activation_snapshots(provider_home, monkeypatch):
+    plugin_key = _install_provider(
+        provider_home,
         "history-owner",
+        state="disabled",
         base_url="https://history.example/v1",
         provider_ids=("manifest-route",),
         profile_name="history-only-canonical",
     )
-    _write_activation(home, disabled=(plugin_key,))
-    monkeypatch.setenv("HERMES_HOME", str(home))
 
     import providers
     from hermes_cli.plugin_activation import PluginActivationState
@@ -895,26 +693,22 @@ def test_provenance_growth_evicts_same_scope_activation_snapshots(
 
 
 def test_inactive_external_manifest_cannot_gate_runtime_registered_provider(
-    tmp_path,
-    monkeypatch,
+    provider_home, monkeypatch
 ):
-    home = tmp_path / "home"
-    home.mkdir()
     provider_id = "runtime-owned-provider"
     plugin_name = "runtime-collision"
-    _write_user_provider(
-        home,
+    _install_provider(
+        provider_home,
         plugin_name,
+        state=None,
         base_url="https://inactive.invalid/v1",
         provider_ids=(provider_id,),
     )
-    plugin_dir = home / "plugins" / "model-providers" / plugin_name
+    plugin_dir = _provider_dir(provider_home, plugin_name)
     (plugin_dir / "__init__.py").write_text(
         "raise AssertionError('inactive collision must not import')\n",
         encoding="utf-8",
     )
-    _write_activation(home)
-    monkeypatch.setenv("HERMES_HOME", str(home))
 
     import providers
     from providers.base import ProviderProfile
@@ -945,478 +739,21 @@ def test_inactive_external_manifest_cannot_gate_runtime_registered_provider(
     assert not providers.is_plugin_managed_provider_id("runtime-owned-alias")
 
 
-def test_observed_provider_secret_names_remain_blocked_after_disable(
-    tmp_path,
-    monkeypatch,
+def test_disabling_provider_refreshes_active_provider_indexes(
+    provider_home,
 ):
-    home = tmp_path / "home"
-    home.mkdir()
     _write_user_provider(
-        home,
-        "secret-provider",
-        base_url="https://secret.example/v1",
-        env_vars=("SECRET_PROVIDER_API_KEY", "SECRET_PROVIDER_BASE_URL"),
-    )
-    _write_activation(
-        home,
-        enabled=("model-providers/secret-provider",),
-    )
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    import providers
-    from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
-
-    providers.invalidate_provider_discovery()
-    assert "SECRET_PROVIDER_API_KEY" in _HERMES_PROVIDER_ENV_BLOCKLIST
-    assert "SECRET_PROVIDER_BASE_URL" in _HERMES_PROVIDER_ENV_BLOCKLIST
-
-    _write_activation(
-        home,
-        disabled=("model-providers/secret-provider",),
-    )
-    providers.invalidate_provider_discovery()
-    assert "SECRET_PROVIDER_API_KEY" in _HERMES_PROVIDER_ENV_BLOCKLIST
-    assert "SECRET_PROVIDER_BASE_URL" in _HERMES_PROVIDER_ENV_BLOCKLIST
-
-
-@pytest.mark.parametrize(
-    ("activation", "requires_env"),
-    (
-        (
-            "inactive",
-            _SIMPLE_RESERVED_REQUIRES_ENV
-            + f"  - {_UNSHAPED_EXTERNAL_ENV}\n"
-            + "  - LC_VENDOR_ACCESS\n",
-        ),
-        (
-            "disabled",
-            _RICH_RESERVED_REQUIRES_ENV
-            + f"  - name: {_UNSHAPED_EXTERNAL_ENV}\n"
-            + "  - name: LC_VENDOR_ACCESS\n"
-            + "    description: Vendor API credential\n"
-            + "    secret: true\n",
-        ),
-    ),
-)
-def test_inactive_manifest_credentials_are_blocked_after_process_restart(
-    activation,
-    requires_env,
-    tmp_path,
-):
-    """A fresh process must scrub inactive credentials without importing code."""
-    home = tmp_path / "home"
-    home.mkdir()
-    marker = tmp_path / "inactive-provider-imported.txt"
-    provider_name = "inactive-secret-provider"
-    _write_user_provider(
-        home,
-        provider_name,
-        base_url="https://inactive.example/v1",
-        env_var="LC_VENDOR_ACCESS",
-        marker=marker,
-    )
-    manifest = home / "plugins" / "model-providers" / provider_name / "plugin.yaml"
-    manifest.write_text(
-        f"name: {provider_name}\n"
-        "kind: model-provider\n"
-        f"provider_ids: [{provider_name}]\n"
-        "requires_env:\n"
-        f"{requires_env}",
-        encoding="utf-8",
-    )
-    _write_activation(
-        home,
-        disabled=(f"model-providers/{provider_name}",)
-        if activation == "disabled"
-        else (),
-    )
-
-    result = _probe_provider_security_in_fresh_process(home, provider_name)
-
-    assert result == {
-        "active": False,
-        "observed": True,
-        "observed_reserved": False,
-        "profile_secret": False,
-        "profile_reserved": False,
-        "unshaped_observed": False,
-        "in_child": False,
-        "in_code_child": False,
-        "unshaped_in_child": True,
-        "unshaped_in_code_child": True,
-        "reserved_in_child": True,
-        "reserved_in_code_child": True,
-    }
-    assert not marker.exists()
-
-
-def _probe_provider_security_in_fresh_process(
-    home: Path,
-    provider_name: str,
-) -> dict[str, bool]:
-    reserved_env = {
-        name: f"test-{name.lower()}"
-        for name in _RESERVED_OPERATIONAL_TEST_ENV
-    }
-    probe = "\n".join(
-        (
-            "import json",
-            "import providers",
-            "from tools.code_execution_tool import _scrub_child_env",
-            "from tools.environments.local import _sanitize_subprocess_env",
-            f"reserved_env = {reserved_env!r}",
-            f"profile = providers.get_provider_profile({provider_name!r})",
-            "source_env = {**reserved_env, 'LC_VENDOR_ACCESS': 'test-secret', "
-            f"{_UNSHAPED_EXTERNAL_ENV!r}: 'runtime-setting'}}",
-            "sanitized = _sanitize_subprocess_env(source_env)",
-            "scrubbed = _scrub_child_env(",
-            "    source_env,",
-            "    is_passthrough=lambda _name: True,",
-            "    is_windows=True,",
-            ")",
-            "observed = providers.get_observed_provider_env_vars()",
-            "print(json.dumps({",
-            "    'active': profile is not None,",
-            "    'observed': 'LC_VENDOR_ACCESS' in observed,",
-            "    'observed_reserved': any(name in observed for name in reserved_env),",
-            "    'profile_secret': bool(profile and 'LC_VENDOR_ACCESS' in profile.env_vars),",
-            "    'profile_reserved': bool(profile and any(name in profile.env_vars for name in reserved_env)),",
-            f"    'unshaped_observed': {_UNSHAPED_EXTERNAL_ENV!r} in observed,",
-            "    'in_child': 'LC_VENDOR_ACCESS' in sanitized,",
-            "    'in_code_child': 'LC_VENDOR_ACCESS' in scrubbed,",
-            f"    'unshaped_in_child': {_UNSHAPED_EXTERNAL_ENV!r} in sanitized,",
-            f"    'unshaped_in_code_child': {_UNSHAPED_EXTERNAL_ENV!r} in scrubbed,",
-            "    'reserved_in_child': all(name in sanitized for name in reserved_env),",
-            "    'reserved_in_code_child': all(name in scrubbed for name in reserved_env),",
-            "}))",
-        )
-    )
-    child_env = os.environ.copy()
-    child_env["HERMES_HOME"] = str(home)
-    child_env["LC_VENDOR_ACCESS"] = "test-secret"
-    completed = subprocess.run(
-        [sys.executable, "-c", probe],
-        cwd=REPO_ROOT,
-        env=child_env,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    return json.loads(completed.stdout.strip().splitlines()[-1])
-
-
-def test_legacy_provider_observed_names_persist_across_disabled_restart(
-    tmp_path,
-):
-    """Old manifests gain exact name-only protection after one active load."""
-    home = tmp_path / "home"
-    home.mkdir()
-    marker = tmp_path / "legacy-provider-imported.txt"
-    provider_name = "legacy-secret-provider"
-    _write_user_provider(
-        home,
-        provider_name,
-        base_url="https://legacy-secret.example/v1",
-        env_vars=(
-            "LC_VENDOR_ACCESS",
-            _UNSHAPED_EXTERNAL_ENV,
-            *_RESERVED_OPERATIONAL_TEST_ENV,
-        ),
-        marker=marker,
-    )
-    _write_activation(home, enabled=(f"model-providers/{provider_name}",))
-
-    first = _probe_provider_security_in_fresh_process(home, provider_name)
-    assert first == {
-        "active": True,
-        "observed": True,
-        "observed_reserved": False,
-        "profile_secret": True,
-        "profile_reserved": False,
-        "unshaped_observed": True,
-        "in_child": False,
-        "in_code_child": False,
-        "unshaped_in_child": False,
-        "unshaped_in_code_child": False,
-        "reserved_in_child": True,
-        "reserved_in_code_child": True,
-    }
-    assert marker.exists()
-
-    cache_files = list((home / "cache" / "provider-env-names").glob("*.json"))
-    assert len(cache_files) == 1
-    cache_text = cache_files[0].read_text(encoding="utf-8")
-    assert "LC_VENDOR_ACCESS" in cache_text
-    assert _UNSHAPED_EXTERNAL_ENV in cache_text
-    assert "test-secret" not in cache_text
-    assert all(name not in cache_text for name in _RESERVED_OPERATIONAL_TEST_ENV)
-
-    # A cache written by an older process may already contain poisoned names.
-    # Cache parsing must re-apply the policy before publishing observations.
-    cache_data = json.loads(cache_text)
-    cache_data["env_vars"].extend(_RESERVED_OPERATIONAL_TEST_ENV)
-    cache_files[0].write_text(json.dumps(cache_data), encoding="utf-8")
-
-    marker.unlink()
-    _write_activation(home, disabled=(f"model-providers/{provider_name}",))
-    second = _probe_provider_security_in_fresh_process(home, provider_name)
-    assert second == {
-        "active": False,
-        "observed": True,
-        "observed_reserved": False,
-        "profile_secret": False,
-        "profile_reserved": False,
-        "unshaped_observed": True,
-        "in_child": False,
-        "in_code_child": False,
-        "unshaped_in_child": False,
-        "unshaped_in_code_child": False,
-        "reserved_in_child": True,
-        "reserved_in_code_child": True,
-    }
-    assert not marker.exists()
-    healed_cache_text = cache_files[0].read_text(encoding="utf-8")
-    assert "LC_VENDOR_ACCESS" in healed_cache_text
-    assert _UNSHAPED_EXTERNAL_ENV in healed_cache_text
-    assert all(
-        name not in healed_cache_text
-        for name in _RESERVED_OPERATIONAL_TEST_ENV
-    )
-
-    plugin_dir = home / "plugins" / "model-providers" / provider_name
-    plugin_dir.rename(plugin_dir.with_name(f".{provider_name}-removed"))
-    removed = _probe_provider_security_in_fresh_process(home, provider_name)
-    assert removed == {
-        "active": False,
-        "observed": False,
-        "observed_reserved": False,
-        "profile_secret": False,
-        "profile_reserved": False,
-        "unshaped_observed": False,
-        "in_child": True,
-        "in_code_child": True,
-        "unshaped_in_child": True,
-        "unshaped_in_code_child": True,
-        "reserved_in_child": True,
-        "reserved_in_code_child": True,
-    }
-
-
-def test_reserved_provider_names_are_exempt_after_in_memory_pollution():
-    """Long-lived monotonic indexes must self-filter old poisoned names."""
-    import providers
-    from tools.code_execution_tool import (
-        _WINDOWS_ESSENTIAL_ENV_VARS,
-        _scrub_child_env,
-    )
-    from tools.environments import local
-
-    secret_name = "LC_VENDOR_ACCESS"
-    assert all(
-        providers.is_reserved_provider_env_var(name)
-        for name in (
-            *_RESERVED_OPERATIONAL_TEST_ENV,
-            *_WINDOWS_ESSENTIAL_ENV_VARS,
-        )
-    )
-    assert not providers.is_reserved_provider_env_var(secret_name)
-
-    injected_names = (*_RESERVED_OPERATIONAL_TEST_ENV, secret_name)
-    with providers._DISCOVERY_LOCK:
-        previously_observed = {
-            name: name in providers._OBSERVED_PROVIDER_ENV_VARS
-            for name in injected_names
-        }
-        providers._OBSERVED_PROVIDER_ENV_VARS.update(injected_names)
-    with local._HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
-        previously_blocked = {
-            name: name in local._HERMES_PROVIDER_ENV_BLOCKLIST
-            for name in injected_names
-        }
-        local._HERMES_PROVIDER_ENV_BLOCKLIST.update(injected_names)
-
-    source_env = {
-        **{
-            name: f"test-{name.lower()}"
-            for name in _RESERVED_OPERATIONAL_TEST_ENV
-        },
-        secret_name: "test-secret",
-    }
-    try:
-        observed = providers.get_observed_provider_env_vars()
-        assert secret_name in observed
-        for name in _RESERVED_OPERATIONAL_TEST_ENV:
-            assert name not in observed
-            assert not providers.is_observed_provider_env_var(name)
-            assert not local._is_provider_env_blocked(name)
-        assert local._is_provider_env_blocked(secret_name)
-
-        sanitized = local._sanitize_subprocess_env(source_env)
-        scrubbed = _scrub_child_env(
-            source_env,
-            is_passthrough=lambda _name: True,
-            is_windows=True,
-        )
-        assert secret_name not in sanitized
-        assert secret_name not in scrubbed
-        assert all(name in sanitized for name in _RESERVED_OPERATIONAL_TEST_ENV)
-        assert all(name in scrubbed for name in _RESERVED_OPERATIONAL_TEST_ENV)
-    finally:
-        with providers._DISCOVERY_LOCK:
-            for name, was_present in previously_observed.items():
-                if not was_present:
-                    providers._OBSERVED_PROVIDER_ENV_VARS.discard(name)
-        with local._HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
-            for name, was_present in previously_blocked.items():
-                if was_present:
-                    local._HERMES_PROVIDER_ENV_BLOCKLIST.add(name)
-                else:
-                    local._HERMES_PROVIDER_ENV_BLOCKLIST.discard(name)
-
-
-def test_provider_secret_names_are_case_insensitive_on_windows(monkeypatch):
-    """Mixed-case provider metadata must scrub any Windows key spelling."""
-    import providers
-    from tools.code_execution_tool import _scrub_child_env
-    from tools.environments import local
-
-    declared_name = "Lc_Vendor_Access"
-    actual_name = "LC_VENDOR_ACCESS"
-    monkeypatch.setattr(local, "_IS_WINDOWS", True)
-
-    with providers._DISCOVERY_LOCK:
-        previously_observed = declared_name in providers._OBSERVED_PROVIDER_ENV_VARS
-        providers._OBSERVED_PROVIDER_ENV_VARS.add(declared_name)
-    with local._HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
-        previous_blocklist = set(local._HERMES_PROVIDER_ENV_BLOCKLIST)
-        local._HERMES_PROVIDER_ENV_BLOCKLIST.add(declared_name)
-
-    try:
-        source_env = {actual_name: "test-secret"}
-        assert local._is_provider_env_blocked(actual_name)
-        assert actual_name not in local._sanitize_subprocess_env(source_env)
-        assert actual_name not in _scrub_child_env(
-            source_env,
-            is_passthrough=lambda _name: True,
-            is_windows=True,
-        )
-    finally:
-        with providers._DISCOVERY_LOCK:
-            if not previously_observed:
-                providers._OBSERVED_PROVIDER_ENV_VARS.discard(declared_name)
-        with local._HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
-            local._HERMES_PROVIDER_ENV_BLOCKLIST.clear()
-            local._HERMES_PROVIDER_ENV_BLOCKLIST.update(previous_blocklist)
-
-
-def test_new_provider_secret_is_blocked_before_refresh_hooks_finish(
-    tmp_path,
-    monkeypatch,
-):
-    """Spawn-time checks must not depend on the later refresh-hook callback."""
-    home = tmp_path / "home"
-    home.mkdir()
-    secret_name = "TOCTOU_PROVIDER_API_KEY"
-    _write_user_provider(
-        home,
-        "toctou-provider",
-        base_url="https://toctou.example/v1",
-        env_var=secret_name,
-    )
-    _write_activation(
-        home,
-        enabled=("model-providers/toctou-provider",),
-    )
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    import providers
-    from tools.code_execution_tool import _scrub_child_env
-    from tools.env_passthrough import (
-        clear_env_passthrough,
-        is_env_passthrough,
-        register_env_passthrough,
-    )
-    from tools.environments.local import (
-        _HERMES_PROVIDER_ENV_BLOCKLIST,
-        _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK,
-        _sanitize_subprocess_env,
-    )
-
-    # The skill arrives first, while the provider has not been discovered.
-    clear_env_passthrough()
-    with _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
-        _HERMES_PROVIDER_ENV_BLOCKLIST.discard(secret_name)
-    register_env_passthrough([secret_name])
-    assert is_env_passthrough(secret_name)
-
-    callback_started = threading.Event()
-    release_callback = threading.Event()
-    errors: list[BaseException] = []
-
-    def block_first_refresh_hook():
-        callback_started.set()
-        assert release_callback.wait(timeout=10)
-
-    monkeypatch.setattr(
-        providers,
-        "_PROVIDER_REFRESH_HOOKS",
-        [block_first_refresh_hook, *providers._PROVIDER_REFRESH_HOOKS],
-    )
-
-    def discover_provider():
-        try:
-            assert providers.get_provider_profile("toctou-provider") is not None
-        except BaseException as exc:
-            errors.append(exc)
-
-    worker = threading.Thread(target=discover_provider, daemon=True)
-    worker.start()
-    try:
-        assert callback_started.wait(timeout=10)
-        # The ordinary blocklist callback is deliberately still queued.
-        with _HERMES_PROVIDER_ENV_BLOCKLIST_LOCK:
-            assert secret_name not in _HERMES_PROVIDER_ENV_BLOCKLIST
-
-        # Provider-owned observed metadata plus execution-time refresh closes
-        # the window and revokes the earlier passthrough entry immediately.
-        assert not is_env_passthrough(secret_name)
-        assert secret_name not in _sanitize_subprocess_env(
-            {secret_name: "secret", "PATH": "/usr/bin"}
-        )
-        assert secret_name not in _scrub_child_env(
-            {secret_name: "secret", "PATH": "/usr/bin"},
-            is_passthrough=lambda _name: True,
-            is_windows=False,
-        )
-    finally:
-        release_callback.set()
-        worker.join(timeout=10)
-        clear_env_passthrough()
-
-    assert not worker.is_alive()
-    assert errors == []
-
-def test_disabling_provider_refreshes_all_derived_surfaces(
-    tmp_path,
-    monkeypatch,
-):
-    home = tmp_path / "home"
-    home.mkdir()
-    _write_user_provider(
-        home,
+        provider_home,
         "refresh-provider",
         base_url="https://refresh.example/v1",
         env_var="REFRESH_PROVIDER_API_KEY",
     )
     _write_activation(
-        home,
+        provider_home,
         enabled=("model-providers/refresh-provider",),
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
     import providers
-    from hermes_cli import auth, config, models
+    from hermes_cli import auth, models
 
     providers.invalidate_provider_discovery()
     assert "refresh-provider" in auth.PROVIDER_REGISTRY
@@ -1425,10 +762,9 @@ def test_disabling_provider_refreshes_all_derived_surfaces(
         for entry in models.CANONICAL_PROVIDERS
     )
     assert "refresh-provider" in models._KNOWN_PROVIDER_NAMES
-    assert "REFRESH_PROVIDER_API_KEY" in config.OPTIONAL_ENV_VARS
 
     _write_activation(
-        home,
+        provider_home,
         disabled=("model-providers/refresh-provider",),
     )
     providers.invalidate_provider_discovery()
@@ -1440,29 +776,21 @@ def test_disabling_provider_refreshes_all_derived_surfaces(
         for entry in models.CANONICAL_PROVIDERS
     )
     assert "refresh-provider" not in models._KNOWN_PROVIDER_NAMES
-    # Observed secret names remain in the process-wide metadata/blocklist even
-    # after this profile disables the plugin.  Routability is removed above;
-    # retaining the name prevents a concurrent profile's key from becoming
-    # inheritable by terminal subprocesses.
-    assert "REFRESH_PROVIDER_API_KEY" in config.OPTIONAL_ENV_VARS
 
 
 def test_failed_provider_import_rolls_back_registry_aliases_and_modules(
-    tmp_path,
-    monkeypatch,
+    provider_home,
 ):
-    home = tmp_path / "home"
-    home.mkdir()
     plugin_name = "broken-provider"
     plugin_alias = "broken-provider-alias"
     _write_user_provider(
-        home,
+        provider_home,
         plugin_name,
         base_url="https://broken.example/v1",
         aliases=(plugin_alias,),
         fail_after_register=True,
     )
-    plugin_dir = home / "plugins" / "model-providers" / plugin_name
+    plugin_dir = provider_home / "plugins" / "model-providers" / plugin_name
     (plugin_dir / "helper.py").write_text("LOADED = True\n", encoding="utf-8")
     init_path = plugin_dir / "__init__.py"
     init_path.write_text(
@@ -1470,11 +798,9 @@ def test_failed_provider_import_rolls_back_registry_aliases_and_modules(
         encoding="utf-8",
     )
     _write_activation(
-        home,
+        provider_home,
         enabled=(f"model-providers/{plugin_name}",),
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
     import providers
 
     _clear_provider_caches()

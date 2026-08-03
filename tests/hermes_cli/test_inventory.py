@@ -19,6 +19,7 @@ depend on:
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from unittest.mock import patch
 
 
@@ -47,13 +48,14 @@ def _cfg(model=None, providers=None, custom_providers=None) -> dict:
 # ─── with_overrides ────────────────────────────────────────────────────
 
 
-def _empty_ctx(provider="orig", model="orig-model", base_url="orig-url"):
+def _empty_ctx(provider="orig", model="orig-model", base_url="orig-url", **overrides):
     return ConfigContext(
         current_provider=provider,
         current_model=model,
         current_base_url=base_url,
-        user_providers={},
-        custom_providers=[],
+        user_providers=overrides.pop("user_providers", {}),
+        custom_providers=overrides.pop("custom_providers", []),
+        **overrides,
     )
 
 
@@ -70,6 +72,22 @@ def _list_auth_returning(rows: list[dict]):
         "hermes_cli.model_switch.list_authenticated_providers",
         return_value=rows,
     )
+
+
+def _build_with_provider_state(
+    ctx, *, routable=True, models_dev_mapping=None, **payload_options
+):
+    routability = (
+        patch("hermes_cli.auth.is_runtime_provider_routable", side_effect=routable)
+        if callable(routable)
+        else patch("hermes_cli.auth.is_runtime_provider_routable", return_value=routable)
+    )
+    models_dev = (
+        nullcontext() if models_dev_mapping is None
+        else patch("agent.models_dev.PROVIDER_TO_MODELS_DEV", models_dev_mapping)
+    )
+    with _list_auth_returning([]), routability, models_dev:
+        return build_models_payload(ctx, **payload_options)
 
 
 def _nous_row(model: str = "openai/gpt-5.5") -> dict:
@@ -176,56 +194,31 @@ def test_include_unconfigured_appends_canonical_skeletons():
 
 
 def test_unconfigured_rows_do_not_restore_disabled_custom_endpoint_override():
-    ctx = ConfigContext(
-        current_provider="deepseek",
-        current_model="proxy-model",
-        current_base_url="https://proxy.example/v1",
+    ctx = _empty_ctx(
+        provider="deepseek", model="proxy-model", base_url="https://proxy.example/v1",
         user_providers={
             "deepseek": {
                 "base_url": "https://proxy.example/v1",
                 "models": {"proxy-model": {}},
             }
         },
-        custom_providers=[],
     )
-
-    def _routable(provider_id):
-        return provider_id != "custom"
-
-    with (
-        _list_auth_returning([]),
-        patch(
-            "hermes_cli.auth.is_runtime_provider_routable",
-            side_effect=_routable,
-        ),
-    ):
-        full = build_models_payload(ctx, include_unconfigured=True)
-        explicit = build_models_payload(ctx, explicit_only=True)
+    routable = lambda provider_id: provider_id != "custom"
+    full = _build_with_provider_state(ctx, routable=routable, include_unconfigured=True)
+    explicit = _build_with_provider_state(ctx, routable=routable, explicit_only=True)
 
     assert all(row["slug"] != "deepseek" for row in full["providers"])
     assert all(row["slug"] != "deepseek" for row in explicit["providers"])
 
 
 def test_unconfigured_rows_keep_metadata_only_builtin_provider():
-    ctx = ConfigContext(
-        current_provider="deepseek",
-        current_model="proxy-model",
-        current_base_url="",
+    ctx = _empty_ctx(
+        provider="deepseek", model="proxy-model", base_url="",
         user_providers={"deepseek": {"models": {"proxy-model": {}}}},
-        custom_providers=[],
     )
-
-    def _routable(provider_id):
-        return provider_id != "custom"
-
-    with (
-        _list_auth_returning([]),
-        patch(
-            "hermes_cli.auth.is_runtime_provider_routable",
-            side_effect=_routable,
-        ),
-    ):
-        payload = build_models_payload(ctx, explicit_only=True)
+    payload = _build_with_provider_state(
+        ctx, routable=lambda provider_id: provider_id != "custom", explicit_only=True
+    )
 
     row = next(row for row in payload["providers"] if row["slug"] == "deepseek")
     assert row["source"] == "configured-current"
@@ -233,28 +226,13 @@ def test_unconfigured_rows_keep_metadata_only_builtin_provider():
 
 
 def test_unconfigured_rows_preserve_models_dev_alias_exclusion():
-    ctx = ConfigContext(
-        current_provider="copilot",
-        current_model="gpt-test",
-        current_base_url="",
-        user_providers={},
-        custom_providers=[],
+    ctx = _empty_ctx(
+        provider="copilot", model="gpt-test", base_url="",
         excluded_providers=["github-copilot"],
     )
-
-    with (
-        _list_auth_returning([]),
-        patch(
-            "agent.models_dev.PROVIDER_TO_MODELS_DEV",
-            {"copilot": "github-copilot"},
-        ),
-        patch(
-            "hermes_cli.auth.is_runtime_provider_routable",
-            return_value=True,
-        ),
-    ):
-        full = build_models_payload(ctx, include_unconfigured=True)
-        explicit = build_models_payload(ctx, explicit_only=True)
+    options = {"models_dev_mapping": {"copilot": "github-copilot"}}
+    full = _build_with_provider_state(ctx, **options, include_unconfigured=True)
+    explicit = _build_with_provider_state(ctx, **options, explicit_only=True)
 
     assert all(row["slug"] != "copilot" for row in full["providers"])
     assert all(row["slug"] != "copilot" for row in explicit["providers"])
@@ -267,23 +245,13 @@ def test_hermes_exclusion_does_not_spread_across_shared_models_dev_id():
     }
 
     def _payload(excluded):
-        ctx = ConfigContext(
-            current_provider="openrouter",
-            current_model="test-model",
-            current_base_url="",
-            user_providers={},
-            custom_providers=[],
+        ctx = _empty_ctx(
+            provider="openrouter", model="test-model", base_url="",
             excluded_providers=excluded,
         )
-        with (
-            _list_auth_returning([]),
-            patch("agent.models_dev.PROVIDER_TO_MODELS_DEV", mapping),
-            patch(
-                "hermes_cli.auth.is_runtime_provider_routable",
-                return_value=True,
-            ),
-        ):
-            return build_models_payload(ctx, include_unconfigured=True)
+        return _build_with_provider_state(
+            ctx, models_dev_mapping=mapping, include_unconfigured=True
+        )
 
     one_region = _payload(["kimi-coding"])
     shared_catalog = _payload(["kimi-for-coding"])

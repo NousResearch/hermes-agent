@@ -17,16 +17,60 @@ def _set_model_provider_active(provider: str, *, active: bool) -> None:
     assert result["ok"] is True
 
 
-def test_auto_explicit_custom_url_requires_custom_plugin() -> None:
-    _set_model_provider_active("custom", active=False)
-    _set_model_provider_active("openrouter", active=True)
+def _patch_provider_activation(
+    monkeypatch,
+    *blocked: str,
+    canonical_blocked: tuple[str, ...] | None = None,
+) -> None:
+    plugin_denied = frozenset(blocked)
+    canonical_denied = plugin_denied if canonical_blocked is None else frozenset(canonical_blocked)
+    monkeypatch.setattr(
+        "providers.is_provider_plugin_active", lambda provider: provider not in plugin_denied
+    )
+    monkeypatch.setattr(
+        "providers.is_provider_canonical_identity_active",
+        lambda provider: provider not in canonical_denied,
+    )
 
-    with pytest.raises(rp.AuthError, match="Provider 'custom'.*disabled"):
-        rp.resolve_runtime_provider(
-            requested="auto",
-            explicit_api_key="test-key",
-            explicit_base_url="https://proxy.example.com/v1",
-        )
+
+def _patch_provenance(monkeypatch, provider: str, provenance: str | None) -> None:
+    monkeypatch.setattr(
+        "providers.get_provider_identity_provenance",
+        lambda candidate: provenance if candidate == provider else None,
+    )
+
+
+def _patch_named_custom(
+    monkeypatch,
+    name: str | None,
+    *,
+    base_url: str = "https://custom-canonical.example.com/v1",
+    api_key: str = "custom-key",
+) -> None:
+    config = {} if name is None else {
+        "custom_providers": [{"name": name, "base_url": base_url, "api_key": api_key}]
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+
+def _assert_plugin_disabled(requested: str, blocked_provider: str, **kwargs) -> None:
+    with pytest.raises(rp.AuthError, match=rf"Provider '{blocked_provider}'.*disabled"):
+        rp.resolve_runtime_provider(requested=requested, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("blocked", "enabled", "base_url"),
+    (
+        ("custom", "openrouter", "https://proxy.example.com/v1"),
+        ("openrouter", "custom", "https://openrouter.ai/api/v1"),
+    ),
+)
+def test_auto_explicit_url_requires_provider_plugin(blocked, enabled, base_url) -> None:
+    _set_model_provider_active(blocked, active=False)
+    _set_model_provider_active(enabled, active=True)
+    _assert_plugin_disabled(
+        "auto", blocked, explicit_api_key="test-key", explicit_base_url=base_url
+    )
 
 
 def test_auto_explicit_custom_url_uses_custom_plugin() -> None:
@@ -78,18 +122,6 @@ def test_auto_explicit_custom_url_skips_unscoped_custom_pool(monkeypatch) -> Non
     assert resolved["api_key"] == "explicit-key"
     assert resolved["source"] == "explicit"
     assert resolved["requested_provider"] == "auto"
-
-
-def test_auto_explicit_openrouter_url_requires_openrouter_plugin() -> None:
-    _set_model_provider_active("openrouter", active=False)
-    _set_model_provider_active("custom", active=True)
-
-    with pytest.raises(rp.AuthError, match="Provider 'openrouter'.*disabled"):
-        rp.resolve_runtime_provider(
-            requested="auto",
-            explicit_api_key="test-key",
-            explicit_base_url="https://openrouter.ai/api/v1",
-        )
 
 
 def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
@@ -830,35 +862,13 @@ def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):
 
 @pytest.mark.parametrize("alias_observed", [False, True])
 def test_named_custom_alias_activation_owner_is_discovery_stable(
-    monkeypatch,
-    alias_observed,
+    monkeypatch, alias_observed
 ):
-    """A built-in alias used by a named custom provider belongs to custom.
-
-    Provider discovery remembers aliases it has seen.  The remembered ``kimi``
-    identity may be inactive after ``kimi-coding`` is disabled, but that must
-    not change resolution compared with a fresh process that has not observed
-    the alias yet.
-    """
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "custom_providers": [
-                {
-                    "name": "kimi",
-                    "base_url": "https://my-custom-kimi.example.com/v1",
-                    "api_key": "my-kimi-key",
-                }
-            ]
-        },
+    _patch_named_custom(
+        monkeypatch, "kimi",
+        base_url="https://my-custom-kimi.example.com/v1", api_key="my-kimi-key",
     )
-    monkeypatch.setattr(
-        "providers.get_provider_identity_provenance",
-        lambda provider_id: (
-            "alias" if alias_observed and provider_id == "kimi" else None
-        ),
-    )
+    _patch_provenance(monkeypatch, "kimi", "alias" if alias_observed else None)
     activation_checks = []
 
     def is_active(provider_id):
@@ -871,11 +881,8 @@ def test_named_custom_alias_activation_owner_is_discovery_stable(
             return False
         return True
 
-    monkeypatch.setattr("providers.is_provider_plugin_active", is_active)
-    monkeypatch.setattr(
-        "providers.is_provider_canonical_identity_active",
-        is_active,
-    )
+    for gate in ("is_provider_plugin_active", "is_provider_canonical_identity_active"):
+        monkeypatch.setattr(f"providers.{gate}", is_active)
 
     resolved = rp.resolve_runtime_provider(requested="kimi")
 
@@ -888,64 +895,22 @@ def test_named_custom_alias_activation_owner_is_discovery_stable(
 
 @pytest.mark.parametrize("canonical_provider", ["nous", "vertex"])
 def test_disabled_canonical_provider_cannot_be_shadowed_by_named_custom(
-    monkeypatch,
-    canonical_provider,
+    monkeypatch, canonical_provider
 ):
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "custom_providers": [
-                {
-                    "name": canonical_provider,
-                    "base_url": f"https://custom-{canonical_provider}.example.com/v1",
-                    "api_key": "custom-key",
-                }
-            ]
-        },
+    _patch_named_custom(
+        monkeypatch, canonical_provider,
+        base_url=f"https://custom-{canonical_provider}.example.com/v1",
     )
-    monkeypatch.setattr(
-        "providers.get_provider_identity_provenance",
-        lambda provider_id: (
-            "canonical" if provider_id == canonical_provider else None
-        ),
-    )
-    monkeypatch.setattr(
-        "providers.is_provider_plugin_active",
-        lambda provider_id: provider_id != canonical_provider,
-    )
-    monkeypatch.setattr(
-        "providers.is_provider_canonical_identity_active",
-        lambda provider_id: provider_id != canonical_provider,
-    )
-
-    with pytest.raises(
-        rp.AuthError,
-        match=rf"Provider '{canonical_provider}'.*disabled",
-    ):
-        rp.resolve_runtime_provider(requested=canonical_provider)
+    _patch_provenance(monkeypatch, canonical_provider, "canonical")
+    _patch_provider_activation(monkeypatch, canonical_provider)
+    _assert_plugin_disabled(canonical_provider, canonical_provider)
 
 
-def test_named_custom_vertex_alias_wins_when_canonical_vertex_is_disabled(
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "custom_providers": [
-                {
-                    "name": "google-vertex",
-                    "base_url": "https://custom-vertex.example.com/v1",
-                    "api_key": "custom-key",
-                }
-            ]
-        },
+def test_named_custom_vertex_alias_wins_when_canonical_vertex_is_disabled(monkeypatch):
+    _patch_named_custom(
+        monkeypatch, "google-vertex", base_url="https://custom-vertex.example.com/v1"
     )
-    monkeypatch.setattr(
-        "providers.get_provider_identity_provenance",
-        lambda provider_id: "alias" if provider_id == "google-vertex" else None,
-    )
+    _patch_provenance(monkeypatch, "google-vertex", "alias")
     monkeypatch.setattr(
         "providers.is_provider_plugin_active",
         lambda provider_id: provider_id == "custom",
@@ -962,55 +927,20 @@ def test_named_custom_vertex_alias_wins_when_canonical_vertex_is_disabled(
 @pytest.mark.parametrize("canonical_provider", ["google-vertex", "ollama"])
 @pytest.mark.parametrize("has_named_custom", [False, True])
 def test_manifest_canonical_shortcut_uses_raw_activation_owner(
-    monkeypatch,
-    canonical_provider,
-    has_named_custom,
+    monkeypatch, canonical_provider, has_named_custom
 ):
-    config = {}
-    if has_named_custom:
-        config = {
-            "custom_providers": [
-                {
-                    "name": canonical_provider,
-                    "base_url": "https://custom-canonical.example.com/v1",
-                    "api_key": "custom-key",
-                }
-            ]
-        }
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: config,
+    _patch_named_custom(
+        monkeypatch, canonical_provider if has_named_custom else None
     )
-    monkeypatch.setattr(
-        "providers.get_provider_identity_provenance",
-        lambda provider_id: (
-            "canonical" if provider_id == canonical_provider else None
-        ),
-    )
-    monkeypatch.setattr(
-        "providers.is_provider_plugin_active",
-        lambda _provider_id: True,
-    )
-    monkeypatch.setattr(
-        "providers.is_provider_canonical_identity_active",
-        lambda provider_id: provider_id != canonical_provider,
-    )
-
-    with pytest.raises(
-        rp.AuthError,
-        match=rf"Provider '{canonical_provider}'.*disabled",
-    ):
-        rp.resolve_runtime_provider(requested=canonical_provider)
+    _patch_provenance(monkeypatch, canonical_provider, "canonical")
+    _patch_provider_activation(monkeypatch, canonical_blocked=(canonical_provider,))
+    _assert_plugin_disabled(canonical_provider, canonical_provider)
 
 
 def test_custom_shortcut_without_named_entry_keeps_direct_runtime(monkeypatch):
     monkeypatch.setattr(rp, "load_config", lambda: {})
     monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        "providers.is_provider_plugin_active",
-        lambda _provider_id: True,
-    )
+    _patch_provider_activation(monkeypatch)
 
     resolved = rp.resolve_runtime_provider(
         requested="ollama",
@@ -1844,57 +1774,23 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     ],
 )
 def test_shortcut_paths_cannot_bypass_disabled_provider_plugin(
-    monkeypatch,
-    requested,
-    blocked_provider,
+    monkeypatch, requested, blocked_provider
 ):
-    monkeypatch.setattr(
-        "providers.is_provider_plugin_active",
-        lambda provider_id: provider_id != blocked_provider,
-    )
-    monkeypatch.setattr(
-        "providers.is_provider_canonical_identity_active",
-        lambda provider_id: provider_id != blocked_provider,
-    )
-
-    with pytest.raises(rp.AuthError, match="disabled by plugin configuration"):
-        rp.resolve_runtime_provider(requested=requested)
+    _patch_provider_activation(monkeypatch, blocked_provider)
+    _assert_plugin_disabled(requested, blocked_provider)
 
 
 @pytest.mark.parametrize("requested", ["custom", "custom:corp"])
-def test_custom_routes_use_exact_activation_under_alias_collision(
-    monkeypatch,
-    requested,
-):
-    """An active alias named custom must not revive disabled canonical custom."""
-    monkeypatch.setattr(
-        "providers.is_provider_plugin_active",
-        lambda _provider_id: True,
-    )
-    monkeypatch.setattr(
-        "providers.is_provider_canonical_identity_active",
-        lambda provider_id: provider_id != "custom",
-    )
-
-    with pytest.raises(
-        rp.AuthError,
-        match=r"Provider 'custom'.*disabled",
-    ):
-        rp.resolve_runtime_provider(requested=requested)
+def test_custom_routes_use_exact_activation_under_alias_collision(monkeypatch, requested):
+    _patch_provider_activation(monkeypatch, canonical_blocked=("custom",))
+    _assert_plugin_disabled(requested, "custom")
 
 
 def test_runtime_alias_honors_canonical_provider_disabled_config(monkeypatch):
     cfg = {"providers": {"anthropic": {"enabled": False}}}
     monkeypatch.setattr(rp, "load_config", lambda: cfg)
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
-    monkeypatch.setattr(
-        "providers.is_provider_plugin_active",
-        lambda _provider_id: True,
-    )
-    monkeypatch.setattr(
-        "providers.is_provider_canonical_identity_active",
-        lambda _provider_id: True,
-    )
+    _patch_provider_activation(monkeypatch)
 
     with pytest.raises(
         ValueError,

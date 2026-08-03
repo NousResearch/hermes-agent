@@ -6,90 +6,34 @@ from hermes_cli.plugin_activation import PluginActivationState
 
 
 @pytest.mark.parametrize(
-    ("state", "plugin", "expected"),
-    [
+    ("name", "key", "source", "kind", "enabled", "disabled", "safe_mode", "expected"),
+    (
+        ("web", None, "bundled", "backend", (), (), False, "enabled"),
+        ("buzz", None, "bundled", "platform", (), (), False, "enabled"),
+        ("openrouter", "model-providers/openrouter", "bundled", "model-provider", (), (), False, "enabled"),
+        ("cleanup", None, "bundled", "standalone", (), (), False, "not enabled"),
+        ("third-party", None, "user", "backend", (), (), False, "not enabled"),
+        ("third-party", None, "user", "backend", ("third-party",), (), False, "enabled"),
         (
-            PluginActivationState(),
-            {"name": "web", "key": "web", "source": "bundled", "kind": "backend"},
-            "enabled",
+            "third-party", None, "user", "backend",
+            ("third-party",), ("third-party",), False, "disabled",
         ),
-        (
-            PluginActivationState(),
-            {"name": "buzz", "key": "buzz", "source": "bundled", "kind": "platform"},
-            "enabled",
-        ),
-        (
-            PluginActivationState(),
-            {
-                "name": "openrouter",
-                "key": "model-providers/openrouter",
-                "source": "bundled",
-                "kind": "model-provider",
-            },
-            "enabled",
-        ),
-        (
-            PluginActivationState(),
-            {
-                "name": "cleanup",
-                "key": "cleanup",
-                "source": "bundled",
-                "kind": "standalone",
-            },
-            "not enabled",
-        ),
-        (
-            PluginActivationState(),
-            {
-                "name": "third-party",
-                "key": "third-party",
-                "source": "user",
-                "kind": "backend",
-            },
-            "not enabled",
-        ),
-        (
-            PluginActivationState(enabled=frozenset({"third-party"})),
-            {
-                "name": "third-party",
-                "key": "third-party",
-                "source": "user",
-                "kind": "backend",
-            },
-            "enabled",
-        ),
-        (
-            PluginActivationState(
-                enabled=frozenset({"third-party"}),
-                disabled=frozenset({"third-party"}),
-            ),
-            {
-                "name": "third-party",
-                "key": "third-party",
-                "source": "user",
-                "kind": "backend",
-            },
-            "disabled",
-        ),
-        (
-            PluginActivationState(safe_mode=True),
-            {"name": "web", "key": "web", "source": "bundled", "kind": "backend"},
-            "not enabled",
-        ),
-        (
-            PluginActivationState(safe_mode=True),
-            {
-                "name": "openrouter",
-                "key": "model-providers/openrouter",
-                "source": "bundled",
-                "kind": "model-provider",
-            },
-            "enabled",
-        ),
-    ],
+        ("web", None, "bundled", "backend", (), (), True, "not enabled"),
+        ("openrouter", "model-providers/openrouter", "bundled", "model-provider", (), (), True, "enabled"),
+    ),
+    ids=(
+        "bundled-backend-default", "bundled-platform-default", "model-provider-default",
+        "standalone-default-deny", "user-default-deny", "explicit-enable",
+        "explicit-deny-wins", "safe-mode-backend-deny", "safe-mode-model-provider",
+    ),
 )
-def test_activation_policy_matrix(state, plugin, expected):
-    assert state.status(**plugin) == expected
+def test_activation_policy_matrix(
+    name, key, source, kind, enabled, disabled, safe_mode, expected
+):
+    state = PluginActivationState(
+        enabled=frozenset(enabled), disabled=frozenset(disabled), safe_mode=safe_mode
+    )
+    assert state.status(name=name, key=key or name, source=source, kind=kind) == expected
 
 
 def _reset_config_state(config_module) -> None:

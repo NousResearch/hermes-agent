@@ -72,94 +72,107 @@ def _patch_activation_io(monkeypatch, plugins_cmd, *, enabled=(), disabled=()):
     return writes
 
 
+def _patch_enable_target(
+    monkeypatch,
+    plugins_cmd,
+    target,
+    *,
+    candidates=None,
+    enabled=(),
+    disabled=(),
+):
+    name, _version, _description, source, _path, key, kind = target
+    inventory = list(candidates or [target])
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_resolve_plugin_key_and_source",
+        lambda *_args, **_kwargs: (key, source, name, kind),
+    )
+    _patch_candidate_inventory(monkeypatch, plugins_cmd, inventory)
+    return _patch_activation_io(
+        monkeypatch,
+        plugins_cmd,
+        enabled=enabled,
+        disabled=disabled,
+    )
+
+
+def _enable_on_surface(plugins_cmd, surface, name, *, allow_tool_override=None):
+    if surface == "cli":
+        plugins_cmd.cmd_enable(name, allow_tool_override=allow_tool_override)
+        return None
+    return plugins_cmd.dashboard_set_agent_plugin_enabled(name, enabled=True)
+
+
+def _disable_on_surface(plugins_cmd, surface, name):
+    if surface == "cli":
+        plugins_cmd.cmd_disable(name)
+        return None
+    return plugins_cmd.dashboard_set_agent_plugin_enabled(name, enabled=False)
+
+
+def _run_fallback(
+    monkeypatch,
+    plugins_cmd,
+    *,
+    keys,
+    sources,
+    kinds,
+    selected,
+    disabled=(),
+    identities=None,
+):
+    from rich.console import Console
+
+    writes = _patch_activation_io(monkeypatch, plugins_cmd, disabled=disabled)
+    with patch("builtins.input", return_value=""):
+        plugins_cmd._run_composite_fallback(
+            keys, list(keys), sources, kinds, set(selected), set(disabled), [], Console(),
+            plugin_identities=identities,
+            enabled=set(),
+        )
+    return writes
+
+
 class TestBasicAuthActivationMutation:
     def test_unblock_preserves_shared_legacy_provider_deny(self, monkeypatch):
         from hermes_cli import plugins_cmd
 
-        candidates = [
-            _candidate("basic", "dashboard_auth/basic"),
-            _candidate("basic", "legacy/basic", source="legacy"),
-        ]
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_activation_candidates",
-            lambda **_kwargs: candidates,
-        )
+        candidates = [_candidate("basic", "dashboard_auth/basic"),
+                      _candidate("basic", "legacy/basic", source="legacy")]
+        monkeypatch.setattr(plugins_cmd, "_discover_plugin_activation_candidates",
+                            lambda **_kwargs: candidates)
         cfg = {"plugins": {"disabled": ["basic"]}}
 
         assert plugins_cmd.ensure_basic_auth_plugin_enabled_in_config(cfg) is True
         assert cfg["plugins"]["disabled"] == ["legacy/basic"]
 
-    def test_same_key_project_override_conflicts_atomically(self, monkeypatch):
-        from hermes_cli import plugins_cmd
-
-        candidates = [
-            _candidate("basic", "dashboard_auth/basic"),
-            _candidate(
-                "project-basic",
-                "dashboard_auth/basic",
-                source="project",
-            ),
-        ]
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_activation_candidates",
-            lambda **_kwargs: candidates,
-        )
-        cfg = {"plugins": {"disabled": ["dashboard_auth/basic"]}}
-
-        with pytest.raises(plugins_cmd.PluginActivationConflictError):
-            plugins_cmd.ensure_basic_auth_plugin_enabled_in_config(cfg)
-        assert cfg == {
-            "plugins": {"disabled": ["dashboard_auth/basic"]}
-        }
-
-    def test_same_key_override_alias_deny_is_detected(self, monkeypatch):
-        from hermes_cli import plugins_cmd
-
-        candidates = [
-            _candidate("basic", "dashboard_auth/basic"),
-            _candidate(
-                "project-basic",
-                "dashboard_auth/basic",
-                source="project",
-            ),
-        ]
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_activation_candidates",
-            lambda **_kwargs: candidates,
-        )
-        cfg = {"plugins": {"disabled": ["project-basic", "other"]}}
-
-        with pytest.raises(plugins_cmd.PluginActivationConflictError):
-            plugins_cmd.ensure_basic_auth_plugin_enabled_in_config(cfg)
-        assert cfg == {
-            "plugins": {"disabled": ["project-basic", "other"]}
-        }
-
-    def test_indistinguishable_same_key_override_conflicts_atomically(
-        self,
-        monkeypatch,
+    @pytest.mark.parametrize(
+        ("override", "disabled"),
+        (
+            (_candidate("project-basic", "dashboard_auth/basic", source="project"),
+             ["dashboard_auth/basic"]),
+            (_candidate("project-basic", "dashboard_auth/basic", source="project"),
+             ["project-basic", "other"]),
+            (_candidate("basic", "dashboard_auth/basic", source="user"),
+             ["dashboard_auth/basic", "other"]),
+        ),
+        ids=("project-key-deny", "project-alias-deny", "indistinguishable-user"),
+    )
+    def test_same_key_override_conflicts_atomically(
+        self, monkeypatch, override, disabled
     ):
         from hermes_cli import plugins_cmd
 
-        candidates = [
-            _candidate("basic", "dashboard_auth/basic"),
-            _candidate("basic", "dashboard_auth/basic", source="user"),
-        ]
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_activation_candidates",
-            lambda **_kwargs: candidates,
-        )
-        cfg = {"plugins": {"disabled": ["dashboard_auth/basic", "other"]}}
+        candidates = [_candidate("basic", "dashboard_auth/basic"), override]
+        monkeypatch.setattr(plugins_cmd, "_discover_plugin_activation_candidates",
+                            lambda **_kwargs: candidates)
+        cfg = {"plugins": {"disabled": list(disabled)}}
+        original = {"plugins": {"disabled": list(disabled)}}
 
         with pytest.raises(plugins_cmd.PluginActivationConflictError):
             plugins_cmd.ensure_basic_auth_plugin_enabled_in_config(cfg)
-        assert cfg == {
-            "plugins": {"disabled": ["dashboard_auth/basic", "other"]}
-        }
+        assert cfg == original
 
     def test_inventory_failure_leaves_config_unchanged(self, monkeypatch):
         from hermes_cli import plugins_cmd
@@ -167,11 +180,8 @@ class TestBasicAuthActivationMutation:
         def fail_inventory(**_kwargs):
             raise OSError("unreadable plugin directory")
 
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_activation_candidates",
-            fail_inventory,
-        )
+        monkeypatch.setattr(plugins_cmd, "_discover_plugin_activation_candidates",
+                            fail_inventory)
         cfg = {"plugins": {"disabled": ["basic", "other"]}}
 
         with pytest.raises(plugins_cmd.PluginActivationConflictError):
@@ -270,28 +280,17 @@ class TestEnableDisableNested:
         key = f"category/default-{kind}"
         manifest_name = f"default-{kind}-manifest"
         stale_grant = key if grant_identity == "key" else manifest_name
-        candidates = [_candidate(manifest_name, key, kind=kind)]
-
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_resolve_plugin_key_and_source",
-            lambda *_args, **_kwargs: (key, "bundled", manifest_name, kind),
-        )
-        _patch_candidate_inventory(monkeypatch, plugins_cmd, candidates)
-        writes = _patch_activation_io(
+        target = _candidate(manifest_name, key, kind=kind)
+        writes = _patch_enable_target(
             monkeypatch,
             plugins_cmd,
+            target,
             enabled={stale_grant},
             disabled={key} if explicitly_disabled else set(),
         )
 
-        if surface == "cli":
-            plugins_cmd.cmd_enable(manifest_name)
-        else:
-            result = plugins_cmd.dashboard_set_agent_plugin_enabled(
-                manifest_name,
-                enabled=True,
-            )
+        result = _enable_on_surface(plugins_cmd, surface, manifest_name)
+        if result is not None:
             assert result["ok"] is True
             assert result["unchanged"] is False
 
@@ -301,18 +300,9 @@ class TestEnableDisableNested:
         assert writes == expected
 
         repaired = PluginActivationState(enabled=frozenset())
-        assert repaired.is_active(
-            name=manifest_name,
-            key=key,
-            source="bundled",
-            kind=kind,
-        )
-        assert not repaired.is_active(
-            name=manifest_name,
-            key=key,
-            source="user",
-            kind=kind,
-        )
+        activation = dict(name=manifest_name, key=key, kind=kind)
+        assert repaired.is_active(source="bundled", **activation)
+        assert not repaired.is_active(source="user", **activation)
 
     @pytest.mark.parametrize("surface", ("cli", "dashboard"))
     @pytest.mark.parametrize(
@@ -349,13 +339,10 @@ class TestEnableDisableNested:
             for_enable=True,
         ) == (key, "user", external_name, "backend")
 
-        if surface == "cli":
-            plugins_cmd.cmd_enable(bundled_name, allow_tool_override=False)
-        else:
-            result = plugins_cmd.dashboard_set_agent_plugin_enabled(
-                bundled_name,
-                enabled=True,
-            )
+        result = _enable_on_surface(
+            plugins_cmd, surface, bundled_name, allow_tool_override=False
+        )
+        if result is not None:
             assert result["ok"] is True
             assert result["unchanged"] is expected_unchanged
 
@@ -368,6 +355,7 @@ class TestEnableDisableNested:
                 ("disabled", set()),
             ]
             effective_enabled = {grant, key}
+
         winner, status = plugins_cmd._resolve_plugin_entry_winners(
             candidates,
             PluginActivationState(enabled=frozenset(effective_enabled)),
@@ -379,75 +367,40 @@ class TestEnableDisableNested:
     @pytest.mark.parametrize("surface", ("cli", "dashboard"))
     @pytest.mark.parametrize("disabled", (set(), {"target/key"}))
     @pytest.mark.parametrize(
-        ("candidates", "expected_disabled"),
+        ("target_name", "other_name", "other_key", "expected_disabled"),
         (
-            (
-                (
-                    _candidate("shared-name", "target/key"),
-                    _candidate(
-                        "shared-name",
-                        "other/key",
-                        source="user",
-                        kind="standalone",
-                    ),
-                ),
-                set(),
-            ),
-            (
-                (
-                    _candidate("target-name", "target/key"),
-                    _candidate(
-                        "target/key",
-                        "other/key",
-                        source="user",
-                        kind="standalone",
-                    ),
-                ),
-                {"other/key"},
-            ),
+            ("shared-name", "shared-name", "other/key", set()),
+            ("target-name", "target/key", "other/key", {"other/key"}),
         ),
     )
     def test_default_grant_repair_preserves_cross_key_consent(
         self,
         surface,
         disabled,
-        candidates,
+        target_name,
+        other_name,
+        other_key,
         expected_disabled,
         monkeypatch,
     ):
         from hermes_cli import plugins_cmd
 
-        manifest_name, _version, _description, source, _path, key, kind = (
-            candidates[0]
-        )
-        stale_grant = next(
-            identity
-            for identity in (manifest_name, key)
-            if any(
-                identity in {other[0], other[5]}
-                for other in candidates[1:]
-            )
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_resolve_plugin_key_and_source",
-            lambda *_args, **_kwargs: (key, source, manifest_name, kind),
-        )
-        _patch_candidate_inventory(monkeypatch, plugins_cmd, candidates)
-        writes = _patch_activation_io(
+        target = _candidate(target_name, "target/key")
+        candidates = [target, _candidate(other_name, other_key, source="user",
+                                         kind="standalone")]
+        manifest_name, _version, _description, _source, _path, key, _kind = target
+        stale_grant = target_name if target_name == other_name else key
+        writes = _patch_enable_target(
             monkeypatch,
             plugins_cmd,
+            target,
+            candidates=candidates,
             enabled={stale_grant},
             disabled=disabled,
         )
 
-        if surface == "cli":
-            plugins_cmd.cmd_enable(manifest_name)
-        else:
-            result = plugins_cmd.dashboard_set_agent_plugin_enabled(
-                manifest_name,
-                enabled=True,
-            )
+        result = _enable_on_surface(plugins_cmd, surface, manifest_name)
+        if result is not None:
             assert result["ok"] is True
 
         if not disabled:
@@ -481,36 +434,18 @@ class TestEnableDisableNested:
 
         enabled = {"target/key", "shared-name"}
         disabled = {"unrelated"}
-        groups = {
-            "target/key": {"target/key", "shared-name"},
-            "other/key": {"other/key", "shared-name"},
-        }
-
+        groups = {"target/key": {"target/key", "shared-name"},
+                  "other/key": {"other/key", "shared-name"}}
         plugins_cmd._disable_plugin_activation(
-            enabled,
-            disabled,
-            key="target/key",
-            identity_groups=groups,
+            enabled, disabled, key="target/key", identity_groups=groups
         )
-
         assert enabled == {"shared-name"}
         assert disabled == {"unrelated", "target/key"}
-        state = PluginActivationState(
-            enabled=frozenset(enabled),
-            disabled=frozenset(disabled),
-        )
-        assert not state.is_active(
-            name="shared-name",
-            key="target/key",
-            source="user",
-            kind="standalone",
-        )
-        assert state.is_active(
-            name="shared-name",
-            key="other/key",
-            source="user",
-            kind="standalone",
-        )
+        state = PluginActivationState(enabled=frozenset(enabled),
+                                      disabled=frozenset(disabled))
+        plugin = dict(name="shared-name", source="user", kind="standalone")
+        assert not state.is_active(key="target/key", **plugin)
+        assert state.is_active(key="other/key", **plugin)
 
     def test_disable_rejects_fully_overlapping_groups_without_mutation(self):
         from hermes_cli import plugins_cmd
@@ -519,9 +454,7 @@ class TestEnableDisableNested:
         disabled = {"unrelated"}
         with pytest.raises(plugins_cmd.PluginActivationConflictError):
             plugins_cmd._disable_plugin_activation(
-                enabled,
-                disabled,
-                key="a",
+                enabled, disabled, key="a",
                 identity_groups={"a": {"a", "b"}, "b": {"a", "b"}},
             )
         assert enabled == {"a"}
@@ -537,54 +470,32 @@ class TestEnableDisableNested:
         groups = plugins_cmd._plugin_mutation_identity_groups([manifest, legacy])
 
         disabled = {"bundled-name", "foo"}
-        plugins_cmd._clear_plugin_activation_denies(
-            disabled,
-            key=key,
-            identity_groups=groups,
-        )
+        plugins_cmd._clear_plugin_activation_denies(disabled, key=key,
+                                                    identity_groups=groups)
         assert disabled == {"foo"}
+        activation = dict(key=key, kind="model-provider")
         assert PluginActivationState(disabled=frozenset(disabled)).is_active(
-            name="bundled-name",
-            key=key,
-            source="bundled",
-            kind="model-provider",
-        )
+            name="bundled-name", source="bundled", **activation)
 
         enabled = {"bundled-name", "foo"}
         disabled = set()
-        plugins_cmd._disable_plugin_activation(
-            enabled,
-            disabled,
-            key=key,
-            identity_groups=groups,
-        )
+        plugins_cmd._disable_plugin_activation(enabled, disabled, key=key,
+                                               identity_groups=groups)
         assert enabled == {"foo"}
         assert disabled == {"bundled-name"}
-        assert PluginActivationState(
-            enabled=frozenset(enabled),
-            disabled=frozenset(disabled),
-        ).is_active(
-            name="foo",
-            key=key,
-            source="legacy",
-            kind="model-provider",
-        )
+        assert PluginActivationState(enabled=frozenset(enabled),
+                                     disabled=frozenset(disabled)).is_active(
+            name="foo", source="legacy", **activation)
 
     def test_legacy_group_id_cannot_collide_with_manifest_key(self):
         from hermes_cli import plugins_cmd
 
         manifest_key = "@legacy:foo:0"
-        groups = plugins_cmd._plugin_mutation_identity_groups(
-            [
-                _candidate(manifest_key, manifest_key, source="user"),
-                _candidate(
-                    "foo",
-                    "model-providers/foo",
-                    source="legacy",
-                    kind="model-provider",
-                ),
-            ]
-        )
+        groups = plugins_cmd._plugin_mutation_identity_groups([
+            _candidate(manifest_key, manifest_key, source="user"),
+            _candidate("foo", "model-providers/foo", source="legacy",
+                       kind="model-provider"),
+        ])
 
         assert len(groups) == 2
         assert groups[manifest_key] == {manifest_key}
@@ -625,42 +536,40 @@ class TestEnableDisableNested:
         assert new_enabled == enabled
         assert new_disabled == disabled
 
-    def test_enable_rejects_replacement_deny_that_would_block_third_group(self):
+    @pytest.mark.parametrize(
+        ("key", "disabled", "groups", "expected", "conflict"),
+        (
+            (
+                "target", {"shared-name"},
+                {"target": {"target", "shared-name"},
+                 "other": {"other", "shared-name"},
+                 "@legacy:active:0": {"other", "legacy-active"}},
+                {"shared-name"}, True,
+            ),
+            (
+                "model-providers/foo", {"bundled-name"},
+                {"model-providers/foo": {"model-providers/foo", "bundled-name"},
+                 "@legacy:foo:0": {"model-providers/foo", "foo"}},
+                set(), False,
+            ),
+        ),
+        ids=("reject-collateral", "preserve-active-legacy"),
+    )
+    def test_clear_denies_preserves_other_activation_groups(
+        self, key, disabled, groups, expected, conflict
+    ):
         from hermes_cli import plugins_cmd
 
-        disabled = {"shared-name"}
-        groups = {
-            "target": {"target", "shared-name"},
-            "other": {"other", "shared-name"},
-            "@legacy:active:0": {"other", "legacy-active"},
-        }
-
-        with pytest.raises(plugins_cmd.PluginActivationConflictError):
+        if conflict:
+            with pytest.raises(plugins_cmd.PluginActivationConflictError):
+                plugins_cmd._clear_plugin_activation_denies(
+                    disabled, key=key, identity_groups=groups
+                )
+        else:
             plugins_cmd._clear_plugin_activation_denies(
-                disabled,
-                key="target",
-                identity_groups=groups,
+                disabled, key=key, identity_groups=groups
             )
-
-        assert disabled == {"shared-name"}
-
-    def test_default_enable_does_not_require_denying_active_legacy_group(self):
-        from hermes_cli import plugins_cmd
-
-        key = "model-providers/foo"
-        disabled = {"bundled-name"}
-        groups = {
-            key: {key, "bundled-name"},
-            "@legacy:foo:0": {key, "foo"},
-        }
-
-        plugins_cmd._clear_plugin_activation_denies(
-            disabled,
-            key=key,
-            identity_groups=groups,
-        )
-
-        assert disabled == set()
+        assert disabled == expected
 
     @pytest.mark.parametrize("surface", ("cli", "dashboard"))
     def test_disable_ignores_inactive_project_alias_for_runtime_status(
@@ -674,33 +583,20 @@ class TestEnableDisableNested:
         bundled = _candidate("bundled-name", key)
         project = _candidate("project-name", key, source="project")
 
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_resolve_plugin_key_and_source",
-            lambda *_args, **_kwargs: (key, "bundled", bundled[0], "backend"),
-        )
+        monkeypatch.setattr(plugins_cmd, "_resolve_plugin_key_and_source",
+                            lambda *_args, **_kwargs: (key, "bundled", bundled[0], "backend"))
+
         def _inventory(*, include_inactive_project=False, **_kwargs):
             return [bundled, project] if include_inactive_project else [bundled]
 
         monkeypatch.setattr(plugins_cmd, "_discover_plugin_candidates", _inventory)
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_activation_candidates",
-            _inventory,
-        )
+        monkeypatch.setattr(plugins_cmd, "_discover_plugin_activation_candidates", _inventory)
         writes = _patch_activation_io(
-            monkeypatch,
-            plugins_cmd,
-            disabled={project[0]},
+            monkeypatch, plugins_cmd, disabled={project[0]}
         )
 
-        if surface == "cli":
-            plugins_cmd.cmd_disable(key)
-        else:
-            result = plugins_cmd.dashboard_set_agent_plugin_enabled(
-                key,
-                enabled=False,
-            )
+        result = _disable_on_surface(plugins_cmd, surface, key)
+        if result is not None:
             assert result == {"ok": True, "name": key, "key": key, "unchanged": False}
 
         assert writes[:2] == [
@@ -758,34 +654,24 @@ class TestEnableDisableNested:
         key = "default/key"
         candidate = _candidate("default-name", key)
 
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_resolve_plugin_key_and_source",
-            lambda *_args, **_kwargs: (key, "bundled", candidate[0], "backend"),
-        )
+        monkeypatch.setattr(plugins_cmd, "_resolve_plugin_key_and_source",
+                            lambda *_args, **_kwargs: (key, "bundled", candidate[0], "backend"))
 
         def _candidates(*, strict=False, **_kwargs):
             if strict:
                 raise RuntimeError("broken entry point")
             return [candidate]
 
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_activation_candidates",
-            _candidates,
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_candidates",
-            lambda **_kwargs: [candidate],
-        )
+        monkeypatch.setattr(plugins_cmd, "_discover_plugin_activation_candidates", _candidates)
+        monkeypatch.setattr(plugins_cmd, "_discover_plugin_candidates",
+                            lambda **_kwargs: [candidate])
         writes = _patch_activation_io(monkeypatch, plugins_cmd, enabled={key})
 
         if surface == "cli":
-            plugins_cmd.cmd_enable(key)
+            _enable_on_surface(plugins_cmd, surface, key)
             assert "Skipped legacy activation-grant cleanup" in capsys.readouterr().out
         else:
-            result = plugins_cmd.dashboard_set_agent_plugin_enabled(key, enabled=True)
+            result = _enable_on_surface(plugins_cmd, surface, key)
             assert result["ok"] is True
             assert result["unchanged"] is True
             assert "cleanup" in result["warning"]
@@ -803,21 +689,12 @@ class TestEnableDisableNested:
 
         key = "external/key"
         candidate = _candidate("external-name", key, source="user")
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_resolve_plugin_key_and_source",
-            lambda *_args, **_kwargs: (key, "user", candidate[0], "backend"),
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_candidates",
-            lambda **_kwargs: [candidate],
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_activation_candidates",
-            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("incomplete")),
-        )
+        monkeypatch.setattr(plugins_cmd, "_resolve_plugin_key_and_source",
+                            lambda *_args, **_kwargs: (key, "user", candidate[0], "backend"))
+        monkeypatch.setattr(plugins_cmd, "_discover_plugin_candidates",
+                            lambda **_kwargs: [candidate])
+        monkeypatch.setattr(plugins_cmd, "_discover_plugin_activation_candidates",
+                            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("incomplete")))
         writes = _patch_activation_io(monkeypatch, plugins_cmd)
 
         if surface == "cli":
@@ -825,7 +702,7 @@ class TestEnableDisableNested:
                 plugins_cmd.cmd_enable(key, allow_tool_override=False)
             assert "complete plugin inventory" in capsys.readouterr().out
         else:
-            result = plugins_cmd.dashboard_set_agent_plugin_enabled(key, enabled=True)
+            result = _enable_on_surface(plugins_cmd, surface, key)
             assert result["ok"] is False
             assert "complete plugin inventory" in result["error"]
 
@@ -921,13 +798,23 @@ class TestEnableDisableNested:
     def test_enabled_filter_honors_canonical_group_alias_deny(self):
         from hermes_cli import plugins_cmd
 
-        winner = ("bundled-name", "1", "", "bundled", None, "shared/key", "backend")
+        winner = (
+            "bundled-name",
+            "1",
+            "",
+            "bundled",
+            None,
+            "shared/key",
+            "backend",
+        )
         result = plugins_cmd._filter_plugin_entries(
             [winner],
             SimpleNamespace(enabled=True, no_bundled=False, user=False),
             set(),
             {"lower-alias"},
-            identity_groups={"shared/key": {"shared/key", "bundled-name", "lower-alias"}},
+            identity_groups={
+                "shared/key": {"shared/key", "bundled-name", "lower-alias"}
+            },
         )
         assert result == []
 
@@ -958,91 +845,23 @@ class TestEnableDisableNested:
         assert plugins_cmd._discover_entrypoint_plugins(strict=True) == expected
 
     @pytest.mark.parametrize("surface", ("cli", "dashboard"))
-    @pytest.mark.parametrize(
-        ("candidates", "disabled", "error"),
-        (
-            (
-                [
-                    (
-                        "shared-b",
-                        "1.0.0",
-                        "",
-                        "bundled",
-                        None,
-                        "shared-a",
-                        "backend",
-                    ),
-                    (
-                        "shared-a",
-                        "1.0.0",
-                        "",
-                        "bundled",
-                        None,
-                        "shared-b",
-                        "backend",
-                    ),
-                ],
-                {"shared-a"},
-                "all runtime activation identities overlap",
-            ),
-        ),
-    )
     def test_enable_surfaces_reject_fully_overlapping_identities_without_writes(
         self,
-        candidates,
-        disabled,
-        error,
         surface,
         monkeypatch,
         capsys,
     ):
         from hermes_cli import plugins_cmd
 
-        manifest_name, _version, _description, source, _path, key, kind = (
-            candidates[0]
-        )
-        writes = []
-
-        monkeypatch.setattr(
+        candidates = [_candidate("shared-b", "shared-a"),
+                      _candidate("shared-a", "shared-b")]
+        key = "shared-a"
+        writes = _patch_enable_target(
+            monkeypatch,
             plugins_cmd,
-            "_resolve_plugin_key_and_source",
-            lambda *_args, **_kwargs: (
-                key,
-                source,
-                manifest_name,
-                kind,
-            ),
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_activation_candidates",
-            lambda **_kwargs: candidates,
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_candidates",
-            lambda **_kwargs: candidates,
-        )
-        monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_get_disabled_set",
-            lambda: set(disabled),
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_save_enabled_set",
-            lambda value: writes.append(("enabled", set(value))),
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_save_disabled_set",
-            lambda value: writes.append(("disabled", set(value))),
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_toggle_plugin_toolset",
-            lambda *args, **kwargs: writes.append(("toolset", args)),
+            candidates[0],
+            candidates=candidates,
+            disabled={key},
         )
 
         if surface == "cli":
@@ -1051,16 +870,13 @@ class TestEnableDisableNested:
             assert exc_info.value.code == 1
             actual_error = " ".join(capsys.readouterr().out.split())
         else:
-            result = plugins_cmd.dashboard_set_agent_plugin_enabled(
-                key,
-                enabled=True,
-            )
+            result = _enable_on_surface(plugins_cmd, surface, key)
             assert result["ok"] is False
             assert result["key"] == key
             actual_error = result["error"]
 
         assert writes == []
-        assert error in actual_error
+        assert "all runtime activation identities overlap" in actual_error
 
     @pytest.mark.parametrize("surface", ("cli", "dashboard"))
     def test_enable_surfaces_use_candidate_alias_when_key_belongs_to_legacy(
@@ -1073,88 +889,20 @@ class TestEnableDisableNested:
         key = "model-providers/foo"
         target = _candidate("foo-plugin", key, source="user", kind="model-provider")
         legacy = _candidate("foo", key, source="legacy", kind="model-provider")
-        _patch_candidate_inventory(monkeypatch, plugins_cmd, [target, legacy])
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_resolve_plugin_key_and_source",
-            lambda *_args, **_kwargs: (key, "user", "foo-plugin", "model-provider"),
+        writes = _patch_enable_target(
+            monkeypatch, plugins_cmd, target, candidates=[target, legacy]
         )
-        writes = _patch_activation_io(monkeypatch, plugins_cmd)
 
-        if surface == "cli":
-            plugins_cmd.cmd_enable(key, allow_tool_override=False)
-        else:
-            result = plugins_cmd.dashboard_set_agent_plugin_enabled(key, enabled=True)
+        result = _enable_on_surface(
+            plugins_cmd, surface, key, allow_tool_override=False
+        )
+        if result is not None:
             assert result["ok"] is True
 
         assert writes[:2] == [
             ("enabled", {"foo-plugin"}),
             ("disabled", set()),
         ]
-
-    def test_enable_clears_lower_candidate_manifest_deny_when_key_is_allowed(
-        self,
-        monkeypatch,
-    ):
-        from hermes_cli import plugins_cmd
-
-        key = "web/firecrawl"
-        candidates = [
-            ("legacy-firecrawl", "1.0.0", "", "bundled", None, key, "backend"),
-            ("web-firecrawl", "2.0.0", "", "user", None, key, "backend"),
-            (
-                "other-firecrawl",
-                "1.0.0",
-                "",
-                "bundled",
-                None,
-                "firecrawl",
-                "backend",
-            ),
-        ]
-        saved = {}
-
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_resolve_plugin_key_and_source",
-            lambda _name, *, for_enable=False: (
-                key,
-                "user",
-                "web-firecrawl",
-                "backend",
-            ),
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_activation_candidates",
-            lambda **_kwargs: candidates,
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_discover_plugin_candidates",
-            lambda **_kwargs: candidates,
-        )
-        monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {key})
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_get_disabled_set",
-            lambda: {"legacy-firecrawl", "firecrawl"},
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_save_enabled_set",
-            lambda value: saved.__setitem__("enabled", set(value)),
-        )
-        monkeypatch.setattr(
-            plugins_cmd,
-            "_save_disabled_set",
-            lambda value: saved.__setitem__("disabled", set(value)),
-        )
-        monkeypatch.setattr(plugins_cmd, "_set_plugin_entry_flag", lambda *args: None)
-
-        plugins_cmd.cmd_enable(key, allow_tool_override=False)
-
-        assert saved == {"enabled": {key}, "disabled": {"firecrawl"}}
 
     def test_enable_canonical_key_activates_inactive_external_override(
         self,
@@ -1408,62 +1156,58 @@ class TestCompositeMenuWritesCanonicalKey:
         assert "web/firecrawl" in saved_dis      # canonical key persisted
         assert "web-firecrawl" not in saved_dis   # never the bare name
 
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_fallback_bundled_default_does_not_persist_external_consent(
-        self, mock_en, mock_save_en, mock_save_dis,
-    ):
-        from hermes_cli.plugins_cmd import _run_composite_fallback
-        from rich.console import Console
-
-        # Bundled plugins are selected by default without operator consent.
-        # Confirming that default must not create an allow-list entry that a
-        # future user/project plugin with the same key could inherit.
-        with patch("builtins.input", return_value=""):
-            _run_composite_fallback(
-                ["web/firecrawl"],
-                ["web-firecrawl — firecrawl [bundled]"],
+    @pytest.mark.parametrize(
+        ("keys", "sources", "kinds", "selected", "expected"),
+        (
+            (["web/firecrawl"], ["bundled"], ["backend"], {0}, []),
+            (
+                ["web/firecrawl", "custom-tools"],
+                ["bundled", "user"],
+                ["backend", "standalone"],
+                {0, 1},
+                [("enabled", {"custom-tools"}), ("disabled", set())],
+            ),
+            (
+                ["observability/langfuse"],
                 ["bundled"],
-                ["backend"],
+                ["standalone"],
                 {0},
-                set(),
-                [],
-                Console(),
-            )
+                [("enabled", {"observability/langfuse"}), ("disabled", set())],
+            ),
+        ),
+        ids=("bundled-default", "selected-external", "bundled-standalone"),
+    )
+    def test_fallback_persists_only_explicit_consent(
+        self, monkeypatch, keys, sources, kinds, selected, expected
+    ):
+        from hermes_cli import plugins_cmd
 
-        mock_save_en.assert_not_called()
-        mock_save_dis.assert_not_called()
+        assert _run_fallback(
+            monkeypatch,
+            plugins_cmd,
+            keys=keys,
+            sources=sources,
+            kinds=kinds,
+            selected=selected,
+        ) == expected
 
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
     def test_fallback_reenable_clears_candidate_manifest_name_denies(
-        self, mock_en, mock_save_en, mock_save_dis,
+        self, monkeypatch
     ):
-        from hermes_cli.plugins_cmd import _run_composite_fallback
-        from rich.console import Console
+        from hermes_cli import plugins_cmd
 
-        with patch("builtins.input", return_value=""):
-            _run_composite_fallback(
-                ["web/firecrawl"],
-                ["web-firecrawl [bundled]"],
-                ["bundled"],
-                ["backend"],
-                {0},
-                {
-                    "web/firecrawl",
-                    "firecrawl",
-                    "legacy-firecrawl",
-                    "unrelated-plugin",
-                },
-                [],
-                Console(),
-                plugin_identities=[{"web-firecrawl", "legacy-firecrawl"}],
-            )
-
-        mock_save_en.assert_called_once_with(set())
-        mock_save_dis.assert_called_once_with({"firecrawl", "unrelated-plugin"})
+        writes = _run_fallback(
+            monkeypatch,
+            plugins_cmd,
+            keys=["web/firecrawl"],
+            sources=["bundled"],
+            kinds=["backend"],
+            selected={0},
+            disabled={"web/firecrawl", "firecrawl", "legacy-firecrawl", "unrelated-plugin"},
+            identities=[{"web-firecrawl", "legacy-firecrawl"}],
+        )
+        assert writes == [("enabled", set()),
+                          ("disabled", {"firecrawl", "unrelated-plugin"})]
 
     @pytest.mark.parametrize(
         (
@@ -1519,165 +1263,82 @@ class TestCompositeMenuWritesCanonicalKey:
         assert enabled == set()
         assert disabled == {unselected_key}
 
-    def test_activation_sets_fail_closed_when_identities_fully_overlap(
-        self,
-        caplog,
+    @pytest.mark.parametrize(
+        ("kwargs", "expected_enabled", "expected_disabled", "disabled_overlap", "warns"),
+        (
+            (
+                dict(
+                    plugin_keys=["shared-a", "shared-b"],
+                    plugin_sources=["bundled"] * 2,
+                    plugin_kinds=["backend"] * 2,
+                    chosen={0}, disabled={"shared-a"},
+                    plugin_identities=[{"shared-a", "shared-b"}] * 2,
+                ), set(), {"shared-a"}, None, True,
+            ),
+            (
+                dict(
+                    plugin_keys=["model-providers/foo"], plugin_sources=["user"],
+                    plugin_kinds=["model-provider"], chosen={0}, disabled={"foo-plugin"},
+                    enabled={"foo"},
+                    plugin_identities=[{"model-providers/foo", "foo-plugin"}],
+                    plugin_grant_identities=[{"model-providers/foo", "foo-plugin"}],
+                    identity_groups={
+                        "model-providers/foo": {"model-providers/foo", "foo-plugin"},
+                        "@legacy:foo:0": {"model-providers/foo", "foo"},
+                    },
+                ), {"foo", "foo-plugin"}, set(), None, False,
+            ),
+            (
+                dict(
+                    plugin_keys=["a", "b"], plugin_sources=["user"] * 2,
+                    plugin_kinds=["standalone"] * 2, chosen=set(), disabled=set(),
+                    enabled={"shared"}, plugin_identities=[{"a", "b", "shared"}] * 2,
+                    identity_groups={"a": {"a", "b", "shared"},
+                                     "b": {"a", "b", "shared"}},
+                ), set(), None, {"a", "b", "shared"}, False,
+            ),
+            (
+                dict(
+                    plugin_keys=["a", "b"], plugin_sources=["user"] * 2,
+                    plugin_kinds=["standalone"] * 2, chosen={0, 1},
+                    disabled={"shared"}, plugin_identities=[{"a", "b", "shared"}] * 2,
+                    plugin_grant_identities=[{"shared"}] * 2,
+                    identity_groups={"a": {"a", "b", "shared"},
+                                     "b": {"a", "b", "shared"}},
+                ), {"a", "b"}, set(), None, False,
+            ),
+        ),
+        ids=("fully-overlap", "hidden-legacy", "unchecked-shared", "all-selected"),
+    )
+    def test_activation_set_identity_cases(
+        self, kwargs, expected_enabled, expected_disabled, disabled_overlap, warns, caplog
     ):
         from hermes_cli.plugins_cmd import _composite_activation_sets
 
-        enabled, disabled = _composite_activation_sets(
-            ["shared-a", "shared-b"],
-            ["bundled", "bundled"],
-            ["backend", "backend"],
-            {0},
-            {"shared-a"},
-            plugin_identities=[
-                {"shared-a", "shared-b"},
-                {"shared-a", "shared-b"},
-            ],
-        )
+        enabled, disabled = _composite_activation_sets(**kwargs)
+        assert enabled == expected_enabled
+        if expected_disabled is not None:
+            assert disabled == expected_disabled
+        else:
+            assert disabled & disabled_overlap
+        assert ("keeping the existing activation policy fail-closed" in caplog.text) is warns
 
-        assert enabled == set()
-        assert disabled == {"shared-a"}
-        assert "keeping the existing activation policy fail-closed" in caplog.text
-
-    def test_activation_sets_preserve_hidden_legacy_grant(self):
-        from hermes_cli.plugins_cmd import _composite_activation_sets
-
-        key = "model-providers/foo"
-        enabled, disabled = _composite_activation_sets(
-            [key],
-            ["user"],
-            ["model-provider"],
-            {0},
-            {"foo-plugin"},
-            enabled={"foo"},
-            plugin_identities=[{key, "foo-plugin"}],
-            plugin_grant_identities=[{key, "foo-plugin"}],
-            identity_groups={
-                key: {key, "foo-plugin"},
-                "@legacy:foo:0": {key, "foo"},
-            },
-        )
-
-        assert enabled == {"foo", "foo-plugin"}
-        assert disabled == set()
-
-    def test_activation_sets_revoke_grant_shared_only_by_unchecked_rows(self):
-        from hermes_cli.plugins_cmd import _composite_activation_sets
-
-        enabled, disabled = _composite_activation_sets(
-            ["a", "b"],
-            ["user", "user"],
-            ["standalone", "standalone"],
-            set(),
-            set(),
-            enabled={"shared"},
-            plugin_identities=[{"a", "b", "shared"}] * 2,
-            identity_groups={
-                "a": {"a", "b", "shared"},
-                "b": {"a", "b", "shared"},
-            },
-        )
-
-        assert enabled == set()
-        assert disabled & {"a", "b", "shared"}
-
-    def test_activation_sets_allow_shared_grant_for_all_selected_rows(self):
-        from hermes_cli.plugins_cmd import _composite_activation_sets
-
-        enabled, disabled = _composite_activation_sets(
-            ["a", "b"],
-            ["user", "user"],
-            ["standalone", "standalone"],
-            {0, 1},
-            {"shared"},
-            plugin_identities=[{"a", "b", "shared"}] * 2,
-            plugin_grant_identities=[{"shared"}] * 2,
-            identity_groups={
-                "a": {"a", "b", "shared"},
-                "b": {"a", "b", "shared"},
-            },
-        )
-
-        assert enabled == {"a", "b"}
-        assert disabled == set()
-
-    def test_activation_sets_prefer_unique_grant_and_revoke_masked_consent(self):
+    @pytest.mark.parametrize(
+        ("chosen", "enabled", "expected_enabled", "expected_disabled"),
+        (({0, 1}, set(), {"opt-in"}, set()), ({0}, {"shared"}, set(), {"opt-in"})),
+        ids=("prefer-unique", "revoke-masked"),
+    )
+    def test_activation_sets_prefer_unique_and_revoke_masked(
+        self, chosen, enabled, expected_enabled, expected_disabled
+    ):
         from hermes_cli.plugins_cmd import _composite_activation_sets
 
         groups = {"default": {"default", "shared"}, "shared": {"shared", "opt-in"}}
-        common = dict(
-            plugin_keys=["default", "shared"],
-            plugin_sources=["bundled", "user"],
-            plugin_kinds=["backend", "standalone"],
-            plugin_identities=list(groups.values()),
+        actual_enabled, actual_disabled = _composite_activation_sets(
+            ["default", "shared"], ["bundled", "user"], ["backend", "standalone"],
+            chosen, set(), enabled=enabled, plugin_identities=list(groups.values()),
             plugin_grant_identities=[{"default"}, {"shared", "opt-in"}],
             identity_groups=groups,
         )
-
-        enabled, disabled = _composite_activation_sets(
-            chosen={0, 1},
-            disabled=set(),
-            **common,
-        )
-        assert enabled == {"opt-in"}
-        assert disabled == set()
-
-        enabled, disabled = _composite_activation_sets(
-            chosen={0},
-            disabled=set(),
-            enabled={"shared"},
-            **common,
-        )
-        assert enabled == set()
-        assert disabled == {"opt-in"}
-
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_fallback_persists_only_selected_external_plugins(
-        self, mock_en, mock_save_en, mock_save_dis,
-    ):
-        from hermes_cli.plugins_cmd import _run_composite_fallback
-        from rich.console import Console
-
-        with patch("builtins.input", return_value=""):
-            _run_composite_fallback(
-                ["web/firecrawl", "custom-tools"],
-                ["web-firecrawl [bundled]", "custom-tools"],
-                ["bundled", "user"],
-                ["backend", "standalone"],
-                {0, 1},
-                set(),
-                [],
-                Console(),
-            )
-
-        mock_save_en.assert_called_once_with({"custom-tools"})
-        mock_save_dis.assert_called_once_with(set())
-
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_fallback_bundled_standalone_remains_explicit_opt_in(
-        self, mock_en, mock_save_en, mock_save_dis,
-    ):
-        from hermes_cli.plugins_cmd import _run_composite_fallback
-        from rich.console import Console
-
-        with patch("builtins.input", return_value=""):
-            _run_composite_fallback(
-                ["observability/langfuse"],
-                ["langfuse [bundled]"],
-                ["bundled"],
-                ["standalone"],
-                {0},
-                set(),
-                [],
-                Console(),
-            )
-
-        mock_save_en.assert_called_once_with({"observability/langfuse"})
-        mock_save_dis.assert_called_once_with(set())
-
+        assert actual_enabled == expected_enabled
+        assert actual_disabled == expected_disabled

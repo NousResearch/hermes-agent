@@ -15,6 +15,9 @@ outputs:
   python:
     description: Run Python tests / ruff / ty / windows-footguns.
     value: ${{ steps.classify.outputs.python }}
+  python_prod:
+    description: Python changes outside tests/ — gates product jobs (Desktop E2E, Docker).
+    value: ${{ steps.classify.outputs.python_prod }}
   frontend:
     description: Run the TypeScript testing matrix + desktop build.
     value: ${{ steps.classify.outputs.frontend }}

@@ -168,8 +168,10 @@ _ensure_teams_mock()
 # (plugin_adapter_teams) so it cannot collide with sibling plugin adapters.
 _teams_mod = load_plugin_adapter("teams")
 
-_teams_mod.TEAMS_SDK_AVAILABLE = True
 _teams_mod.AIOHTTP_AVAILABLE = True
+# SDK import is deferred (#62935); bind mocked symbols the same way connect() does.
+assert _teams_mod.check_teams_requirements() is True
+_teams_mod.TEAMS_SDK_AVAILABLE = True
 
 # Ensure SDK symbols that were None (import failed on Python <3.12) are
 # replaced with the mocked versions so runtime calls don't silently no-op.
@@ -207,9 +209,9 @@ class TestTeamsRequirements:
         assert check_requirements() is True
 
     def test_check_teams_requirements_shortcircuits_when_present(self, monkeypatch):
-        # When the SDK + aiohttp are already importable, the active lazy-
-        # installer returns True immediately without attempting an install.
-        monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", True)
+        # When SDK symbols are already bound and aiohttp is available, the
+        # active lazy-installer returns True immediately without re-importing.
+        monkeypatch.setattr(_teams_mod, "App", object())
         monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
         called = {"ensure_and_bind": 0}
 
@@ -223,6 +225,29 @@ class TestTeamsRequirements:
         assert check_teams_requirements() is True
         assert called["ensure_and_bind"] == 0
 
+    def test_check_teams_requirements_lazy_installs_when_missing(self, monkeypatch):
+        # When deps are missing, the active installer delegates to
+        # ensure_and_bind("platform.teams", ...) — parity with Slack/Discord.
+        monkeypatch.setattr(_teams_mod, "App", None)
+        monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
+        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", False)
+        seen = {}
+
+        def _fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
+            seen["feature"] = feature
+            return True
+
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure_and_bind", _fake_ensure_and_bind
+        )
+        assert check_teams_requirements() is True
+        assert seen["feature"] == "platform.teams"
+
+    def test_validate_config_with_env(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "test-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "test-secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "test-tenant")
+        assert validate_config(_make_config()) is True
 
     def test_validate_config_from_extra(self, monkeypatch):
         monkeypatch.delenv("TEAMS_CLIENT_ID", raising=False)

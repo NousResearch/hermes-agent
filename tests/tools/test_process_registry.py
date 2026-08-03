@@ -55,6 +55,70 @@ def _spawn_python_sleep(seconds: float) -> subprocess.Popen:
     )
 
 
+def test_kill_started_since_preserves_preexisting_and_foreign_processes(registry):
+    old = _make_session(sid="proc_old", task_id="session-a")
+    finished = _make_session(
+        sid="proc_finished", task_id="session-a", exited=True, exit_code=0
+    )
+    registry._running[old.id] = old
+    registry._finished[finished.id] = finished
+    baseline = registry.snapshot_running_ids("session-a")
+
+    new = _make_session(sid="proc_new", task_id="session-a")
+    foreign = _make_session(sid="proc_foreign", task_id="session-b")
+    registry._running[new.id] = new
+    registry._running[foreign.id] = foreign
+
+    calls = []
+
+    def fake_kill(session_id, **kwargs):
+        calls.append((session_id, kwargs))
+        return {"status": "killed"}
+
+    registry.kill_process = fake_kill
+
+    assert baseline == frozenset({"proc_old"})
+    assert registry.kill_started_since(
+        "session-a", baseline, source="gateway_turn_timeout"
+    ) == 1
+    assert calls == [
+        (
+            "proc_new",
+            {
+                "source": "gateway_turn_timeout",
+                "consume_output": True,
+            },
+        )
+    ]
+
+
+def test_kill_all_backward_compat_and_exclude_ids(registry):
+    """kill_all keeps its historical default behavior (kill everything for
+    the task, consume_output=False, source='kill_all') and honors the new
+    exclude_ids kwarg that kill_started_since delegates through (#76188)."""
+    a = _make_session(sid="proc_a", task_id="session-a")
+    b = _make_session(sid="proc_b", task_id="session-a")
+    registry._running[a.id] = a
+    registry._running[b.id] = b
+
+    calls = []
+
+    def fake_kill(session_id, **kwargs):
+        calls.append((session_id, kwargs))
+        return {"status": "killed"}
+
+    registry.kill_process = fake_kill
+
+    assert registry.kill_all("session-a", exclude_ids=frozenset({"proc_a"})) == 1
+    assert calls == [
+        ("proc_b", {"source": "kill_all", "consume_output": False})
+    ]
+
+    calls.clear()
+    assert registry.kill_all("session-a") == 2
+    assert sorted(c[0] for c in calls) == ["proc_a", "proc_b"]
+
+
 def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool:
     """Poll a predicate until it returns truthy or the timeout elapses."""
     deadline = time.monotonic() + timeout
@@ -168,6 +232,107 @@ def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch
     assert session.exited is True
     assert session.exit_code == 0
     assert moved == ["proc_reader_live"]
+
+
+# =========================================================================
+# Incremental UTF-8 decoding across chunk boundaries
+# (ported from openclaw/openclaw#112325)
+# =========================================================================
+
+
+class _FakeChunkBuffer:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    def read1(self, _n):
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""
+
+
+class _FakeChunkStdout:
+    def __init__(self, chunks):
+        self.buffer = _FakeChunkBuffer(chunks)
+
+
+class _FakeChunkProcess:
+    def __init__(self, chunks):
+        self.stdout = _FakeChunkStdout(chunks)
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _run_reader(registry, monkeypatch, chunks, sid="proc_utf8"):
+    session = _make_session(sid=sid)
+    session.process = _FakeChunkProcess(chunks)
+    monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_emit_output", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
+    registry._reader_loop(session)
+    return session
+
+
+def test_reader_loop_reassembles_multibyte_char_split_across_chunks(registry, monkeypatch):
+    """A UTF-8 char split across two read1() chunks must not become U+FFFD.
+
+    Before the incremental decoder, each chunk was decoded statelessly with
+    ``errors="replace"``, so ``é`` (0xC3 0xA9) straddling a 4096-byte read
+    boundary decoded as two replacement characters.
+    """
+    session = _run_reader(registry, monkeypatch, [b"caf\xc3", b"\xa9 ok\n"])
+    assert session.output_buffer == "café ok\n"
+    assert "\ufffd" not in session.output_buffer
+
+
+def test_reader_loop_reassembles_four_byte_char_split_three_ways(registry, monkeypatch):
+    """A 4-byte emoji fragmented across three reads reassembles cleanly."""
+    session = _run_reader(registry, monkeypatch, [b"\xf0", b"\x9f\x92", b"\xa9\n"])
+    assert session.output_buffer == "\U0001f4a9\n"
+
+
+def test_reader_loop_flushes_truncated_multibyte_tail_at_eof(registry, monkeypatch):
+    """A sequence truncated by process exit flushes as a single U+FFFD."""
+    session = _run_reader(registry, monkeypatch, [b"ok \xe2\x82"])
+    assert session.output_buffer == "ok \ufffd"
+
+
+def test_reader_loop_still_replaces_genuinely_invalid_bytes(registry, monkeypatch):
+    """Truly invalid bytes keep the errors="replace" behavior."""
+    session = _run_reader(registry, monkeypatch, [b"ok\xffdone\n"])
+    assert session.output_buffer == "ok\ufffddone\n"
+
+
+def test_pty_reader_loop_reassembles_multibyte_char_split_across_chunks(registry, monkeypatch):
+    """The PTY reader gets the same incremental-decode treatment."""
+
+    class _FakePty:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+            self.exitstatus = 0
+
+        def isalive(self):
+            return bool(self._chunks)
+
+        def read(self, _n):
+            if self._chunks:
+                return self._chunks.pop(0)
+            raise EOFError
+
+        def wait(self):
+            return 0
+
+    session = _make_session(sid="proc_pty_utf8")
+    session._pty = _FakePty([b"caf\xc3", b"\xa9\n"])
+    monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_emit_output", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
+
+    registry._pty_reader_loop(session)
+
+    assert session.output_buffer == "café\n"
+    assert "\ufffd" not in session.output_buffer
 
 
 # =========================================================================

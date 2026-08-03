@@ -107,6 +107,28 @@ class TestNonLocalBackendConfinement:
         assert res.origin == "file"
 
     @pytest.mark.asyncio
+    async def test_desktop_upload_images_dir_host_read(self, tmp_path, monkeypatch):
+        """Desktop/clipboard uploads under ``HERMES_HOME/images`` are host-read.
+
+        Regression for #69575: uploads land in the flat top-level ``images/``
+        dir (not ``cache/images``). Under a sandbox backend the vision resolver
+        must permit reading them host-side — otherwise it falls through to the
+        task-id-less sandbox reader and fails with "not reachable inside the
+        sandbox".
+        """
+        home = tmp_path / "hermes"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        upload = home / "images" / "upload_20260722_181019_1.png"
+        upload.parent.mkdir(parents=True)
+        upload.write_bytes(PNG)
+        # No sandbox env: an uploads path must be host-read directly, not routed
+        # to the in-sandbox exec-read.
+        res = await isrc.resolve_image_source(str(upload), isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
     async def test_host_secret_outside_cache_routes_to_sandbox_not_host(self, tmp_path, monkeypatch):
         """A non-cache host path (e.g. /etc/passwd) must NOT be host-read — it
         routes to the in-sandbox exec-read, which reads the CONTAINER's file."""

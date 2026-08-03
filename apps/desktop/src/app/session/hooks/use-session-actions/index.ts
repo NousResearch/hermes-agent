@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
-import type { NavigateFunction } from 'react-router-dom'
+import type { NavigateFunction } from 'react-router'
 
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
@@ -482,7 +482,7 @@ export function useSessionActions({
       try {
         // Fresh tile → the caller's workspace when one was named (the sidebar
         // "+" on a project/worktree lane), else the resolved new-session cwd
-        // (project/default) — never the primary composer's live cwd.
+        // (focused session's project → project scope → default).
         const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim())
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id

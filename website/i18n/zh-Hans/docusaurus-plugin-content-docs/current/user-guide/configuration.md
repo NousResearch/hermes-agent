@@ -600,6 +600,8 @@ compression:
   target_ratio: 0.20                                # 保留为最近尾部的阈值分数
   protect_last_n: 20                                # 保持未压缩的最少最近消息数
   hygiene_hard_message_limit: 5000                  # Gateway 安全阀 —— 见下文
+  context_timeout_seconds: 120                      # Agent 侧 compress_context 无进展超时（秒）—— 见下文
+  context_total_ceiling_seconds: 600                # Agent 侧 compress_context 预提交等待上限（秒；已开始的 SessionDB 提交不会被放弃，超限会记录日志并告警）
 
 # 摘要模型/provider 在 auxiliary: 下配置：
 auxiliary:
@@ -614,6 +616,10 @@ auxiliary:
 :::
 
 `hygiene_hard_message_limit` 是仅限 gateway 的**预压缩安全阀**。它的存在是为了打破一个死循环：当超大会话的 API 调用持续断开时，gateway 永远收不到 token 使用数据，基于 token 的阈值因此无法触发，于是 transcript 持续增长、断开愈发严重。这个基于消息数的下限仅凭消息数量触发（无论 API 是否失败，消息数始终已知），强制压缩以恢复会话。默认 `5000` —— 远高于任何正常会话，包括做数千次短轮次的大上下文（1M+）模型，它们早就在 token 阈值处压缩了。对于异常平台可调得更高；要强制更积极的压缩则调低。在运行中的 gateway 上编辑此值将在下一条消息时生效（见下文）。
+
+`context_timeout_seconds`（默认 `120`）是 agent 侧 `compress_context`（对话循环、预检压缩、手动 `/compress`）的**无进展超时**，语义与 gateway 会话预压缩（session hygiene）的 inactivity 预算相同：摘要模型仍在流式出 token 时会延长等待；仅当完全无输出时才跳过压缩并保留原消息。设为 `0` 可关闭。Gateway 会话预压缩仍使用自己的 `hygiene_timeout_seconds`，不会被双重包装。
+
+`context_total_ceiling_seconds`（默认 `600`）限制即使仍有 token 推进时的 agent 侧**预提交**等待时间（摘要 / 流式阶段），并会被钳制为至少等于 `context_timeout_seconds`。确切保证：**摘要阶段受该上限约束；提交阶段若超出上限则记录日志并向用户告警。**一旦 worker 已进入 compression commit fence 且 SessionDB 变更正在进行，提交绝不会被中途放弃（那会导致 transcript 分叉），但等待不再是静默的：若提交超过上限，Hermes 会记录超时（WARNING，重复时升级为 ERROR），通过用户可见的警告通道发送一次性提醒，并以有界增量继续等待直到提交完成。
 
 :::tip Gateway 热重载压缩和上下文长度
 从最近的版本开始，在运行中的 gateway 上编辑 `config.yaml` 中的 `model.context_length` 或任何 `compression.*` 键将在下一条消息时生效 —— 无需 gateway 重启、`/reset` 或会话轮换。缓存的 agent 签名包含这些键，因此 gateway 在检测到更改时会透明地重建 agent。API 密钥和工具/技能配置仍需要通常的重载路径。
@@ -658,6 +664,25 @@ auxiliary:
 :::warning 摘要模型上下文长度要求
 摘要模型**必须**具有至少与您的主 agent 模型一样大的上下文窗口。压缩器将对话的完整中间部分发送给摘要模型 —— 如果该模型的上下文窗口小于主模型的，摘要调用将因上下文长度错误而失败。发生这种情况时，中间轮次将**在没有摘要的情况下被丢弃**，静默丢失对话上下文。如果您覆盖模型，请验证其上下文长度满足或超过您的主模型。
 :::
+
+## 会话卡死监视器（Session Stall Watchdog）
+
+Gateway 运行一个仅通知的卡死监视器（`agent.session_stall_timeout`，默认 `300` 秒，`0` = 禁用）。当一个忙碌的会话存在**待处理的入站后续消息**，且 agent 的共享活动时钟空闲达到该时长时，gateway 会记录一条 WARNING 日志并向用户发送一次性通知：
+
+```
+⚠️ Agent session appears stalled (last activity N min ago). Try /new to reset.
+```
+
+语义：
+
+- **仅通知。** 监视器绝不会终止当前轮次 —— 对比 `agent.gateway_timeout`（长时间无活动后取消运行）。卡死通知只是告诉您 agent 看起来卡住了，由您决定（`/new`、`/stop` 或继续等待）。
+- **每个卡死周期只通知一次。** 待处理入站消息被消化或活动恢复时闩锁清除，因此恢复后再次卡死的会话会再次通知。
+- 进度仅来自共享活动快照（工具调用、API 流式进度、压缩心跳）。待处理入站消息是通知门槛，不是进度时钟。
+
+```yaml
+agent:
+  session_stall_timeout: 300   # 秒；0 禁用监视器
+```
 
 ## 上下文引擎
 

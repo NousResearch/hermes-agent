@@ -126,6 +126,103 @@ class TestManagedPersistenceMode:
 class TestConfiguredCamofoxIdentity:
     """Externally managed Camofox sessions can provide their own identity."""
 
+    def test_multiplex_scope_identity_wins_over_process_env_and_config(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "https://default.example")
+        monkeypatch.setenv("CAMOFOX_USER_ID", "default-profile-user")
+        monkeypatch.setenv("CAMOFOX_SESSION_KEY", "default-profile-session")
+        config = {
+            "browser": {
+                "camofox": {
+                    "user_id": "secondary-config-user",
+                    "session_key": "secondary-config-session",
+                }
+            }
+        }
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope(
+            {
+                "CAMOFOX_URL": "https://secondary.example",
+                "CAMOFOX_USER_ID": "secondary-scope-user",
+                "CAMOFOX_SESSION_KEY": "secondary-scope-session",
+            }
+        )
+        try:
+            with (
+                patch("tools.browser_camofox.load_config", return_value=config),
+                patch(
+                    "tools.browser_camofox.requests.post",
+                    return_value=_mock_response(json_data={"tabId": "scoped-tab"}),
+                ) as mock_post,
+            ):
+                result = json.loads(
+                    camofox_navigate("https://example.com", task_id="scoped-precedence")
+                )
+                request_url = mock_post.call_args.args[0]
+                request_body = mock_post.call_args.kwargs["json"]
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+        assert result["success"] is True
+        assert request_url == "https://secondary.example/tabs"
+        assert request_body["userId"] == "secondary-scope-user"
+        assert request_body["listItemId"] == "secondary-scope-session"
+
+    def test_multiplex_scope_miss_uses_profile_config_not_process_env(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_USER_ID", "default-profile-user")
+        monkeypatch.setenv("CAMOFOX_SESSION_KEY", "default-profile-session")
+        config = {
+            "browser": {
+                "camofox": {
+                    "user_id": "secondary-config-user",
+                    "session_key": "secondary-config-session",
+                }
+            }
+        }
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            with patch("tools.browser_camofox.load_config", return_value=config):
+                session = _get_session("config-fallback")
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+        assert session["user_id"] == "secondary-config-user"
+        assert session["session_key"] == "secondary-config-session"
+
+    def test_multiplex_scope_miss_without_config_ignores_process_identity(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_USER_ID", "default-profile-user")
+        monkeypatch.setenv("CAMOFOX_SESSION_KEY", "default-profile-session")
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            with patch("tools.browser_camofox.load_config", return_value={}):
+                session = _get_session("fail-closed")
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+        assert session["user_id"].startswith("hermes_")
+        assert session["user_id"] != "default-profile-user"
+        assert session["session_key"] == "task_fail-closed"
+        assert session["managed"] is False
+
     def test_env_identity_overrides_default_identity(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")

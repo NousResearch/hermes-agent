@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 
 import { sessionTitle } from '@/lib/chat-runtime'
 import { cn } from '@/lib/utils'

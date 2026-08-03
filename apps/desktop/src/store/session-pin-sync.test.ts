@@ -138,6 +138,49 @@ describe('watchSessionPins remote pull', () => {
     expect($pinnedSessionIds.get()).toContain('legacy')
   })
 
+  it('does not revert a fresh local pin while the loaded row is still stale (#74570)', async () => {
+    // The row is already loaded and says pinned=false when the user pins.
+    // The pin listener fires reconcile synchronously — before any PATCH — and
+    // the stale row must not win over the local intent.
+    $sessions.set([row('fresh', { pinned: false })])
+    await flush()
+    patch.mockClear()
+
+    $pinnedSessionIds.set(['fresh'])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('fresh')
+    expect(patch).toHaveBeenCalledWith('fresh', true, undefined)
+  })
+
+  it('does not revert a fresh local unpin while the loaded row still says pinned (#74570)', async () => {
+    // Adopt a server-side pin first, so it's held locally and mirrored.
+    $sessions.set([row('sticky', { pinned: true })])
+    await flush()
+    expect($pinnedSessionIds.get()).toContain('sticky')
+    patch.mockClear()
+
+    // User unpins while the loaded row still says pinned=true.
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('sticky')
+    expect(patch).toHaveBeenCalledWith('sticky', false, undefined)
+  })
+
+  it('keeps a deferred pin (row not yet loaded) when a stale page finally arrives', async () => {
+    $pinnedSessionIds.set(['deferred'])
+    await flush()
+    expect(patch).not.toHaveBeenCalled()
+
+    // The page that loads the row still predates our intent.
+    $sessions.set([row('deferred', { pinned: false })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('deferred')
+    expect(patch).toHaveBeenCalledWith('deferred', true, undefined)
+  })
+
   it('ignores a stale page that contradicts a write still in flight', async () => {
     let settle: (v: { ok: boolean }) => void = () => {}
 

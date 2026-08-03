@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from agent.interrupt_compat import request_hard_interrupt
+
 
 def now_ns() -> int:
     return time.perf_counter_ns()
@@ -37,7 +39,7 @@ class SpikeAgent:
     def clear_interrupt(self) -> None:
         self._interrupt.clear()
 
-    def interrupt(self) -> None:
+    def interrupt(self, *, hard_cancel: bool = False) -> None:
         self._interrupt.set()
 
     def run_conversation(
@@ -257,7 +259,7 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         spike = self._sessions.get(sid)
         if spike is not None:
-            spike.agent.interrupt()
+            request_hard_interrupt(spike.agent)
             self.emit(
                 {
                     "type": "interrupt.ack",
@@ -276,11 +278,13 @@ class ComputeHost:
                 self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": False})
                 return
             agent = session.get("agent")
-            if agent is not None and hasattr(agent, "interrupt"):
-                agent.interrupt()
+            if agent is not None:
+                request_hard_interrupt(agent)
             with session.get("history_lock", threading.Lock()):
                 session["_turn_cancel_requested"] = True
                 session["queued_prompt"] = None
+                session.pop("queued_prompts", None)
+                session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": True, "applied_ns": now_ns()})
         except Exception as exc:
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": False, "message": str(exc)})
@@ -355,6 +359,22 @@ class ComputeHost:
 
             session = self._ensure_server_session(server, frame)
             with session["history_lock"]:
+                queued_prompt_generation = frame.get("queued_prompt_generation")
+                if (
+                    queued_prompt_generation is not None
+                    and int(session.get("_queued_prompt_generation", 0))
+                    != int(queued_prompt_generation)
+                ):
+                    self.emit(
+                        {
+                            "type": "turn.end",
+                            "sid": sid,
+                            "request_id": request_id,
+                            "interrupted": True,
+                            "ended_ns": now_ns(),
+                        }
+                    )
+                    return
                 if session.get("running"):
                     self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "message": "session busy"})
                     return

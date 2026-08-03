@@ -409,7 +409,7 @@ export function findPlainTextUrlAt(screen: Screen, col: number, row: number): st
   let urlStart = -1
   let urlEnd = token.length
 
-  for (let m; (m = schemeRe.exec(token)); ) {
+  for (let m; (m = schemeRe.exec(token));) {
     if (m.index > clickIdx) {
       urlEnd = m.index
 

@@ -49,17 +49,25 @@ export function LogsPane() {
   // Stick-to-bottom: auto-scroll when the user is already near the bottom.
   useEffect(() => {
     const el = preRef.current
-    if (!el || !shouldStickRef.current) return
+
+    if (!el || !shouldStickRef.current) {
+      return
+    }
 
     const raf = requestAnimationFrame(() => {
       el.scrollTo({ top: el.scrollHeight })
     })
+
     return () => cancelAnimationFrame(raf)
   }, [data])
 
   function handleScroll() {
     const el = preRef.current
-    if (!el) return
+
+    if (!el) {
+      return
+    }
+
     shouldStickRef.current =
       el.scrollHeight - el.scrollTop - el.clientHeight <= LOGS_BOTTOM_THRESHOLD
   }
@@ -80,10 +88,10 @@ export function LogsPane() {
   // pane's only label. Just the tail.
   return (
     <pre
-      ref={preRef}
+      className="h-full min-h-0 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[0.66rem] leading-relaxed text-(--ui-text-secondary)"
       data-selectable-text="true"
       onScroll={handleScroll}
-      className="h-full min-h-0 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[0.66rem] leading-relaxed text-(--ui-text-secondary)"
+      ref={preRef}
     >
       {data.lines.join('\n')}
     </pre>

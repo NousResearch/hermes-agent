@@ -129,3 +129,156 @@ def test_anchored_view_and_around_use_read_path(db):
         assert done["view"]["window"]
     finally:
         db._lock.release()
+
+
+# ── #75269: finished-thread read connections must be reaped at runtime ──
+#
+# These tests force ``_wal_active = True`` so the per-thread read path runs
+# regardless of whether the linked SQLite build actually enables WAL (some
+# runtimes fall back to journal_mode=DELETE). The reaping contract is
+# platform-independent: it only depends on the connection lifecycle, not on
+# WAL semantics, so forcing the flag exercises the real production path.
+
+
+def _force_read_path(d):
+    """Activate the per-thread read-only split on runtimes where WAL is off."""
+    d._wal_active = True
+
+
+def test_finished_read_threads_do_not_accumulate_conns(tmp_path):
+    """A long-lived SessionDB must not retain a read conn per historical worker.
+
+    Reproduces #75269: sequential worker threads each open one read connection
+    and exit. Without runtime reaping the strong ``_read_conns`` set grows
+    without bound; with reaping it stays bounded by live reader concurrency.
+    """
+    import gc
+
+    d = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        d.create_session(session_id="s1", source="cli", model="m")
+        _force_read_path(d)
+
+        def read_once():
+            assert d._get_read_conn() is not None
+
+        for _ in range(40):
+            w = threading.Thread(target=read_once)
+            w.start()
+            w.join(timeout=10)
+            assert not w.is_alive()
+
+        gc.collect()
+        retained = len(d._read_conns)
+        assert retained < 12, (
+            f"finished worker threads retained {retained} read connections; "
+            "descriptor usage must be bounded by live reader concurrency (#75269)"
+        )
+    finally:
+        d.close()
+
+
+def test_reaped_connection_is_actually_closed(tmp_path):
+    """A connection whose owning thread exited must be closed on reap."""
+    import sqlite3 as _sqlite3
+
+    d = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        d.create_session(session_id="s1", source="cli", model="m")
+        _force_read_path(d)
+
+        holder = {}
+
+        def worker_open():
+            holder["conn"] = d._get_read_conn()
+
+        w = threading.Thread(target=worker_open)
+        w.start(); w.join(timeout=10)
+        assert not w.is_alive()
+        victim = holder["conn"]
+        assert victim is not None
+
+        # Trigger a reap by registering another connection from a fresh thread.
+        def worker_reap():
+            assert d._get_read_conn() is not None
+
+        r = threading.Thread(target=worker_reap)
+        r.start(); r.join(timeout=10)
+        assert not r.is_alive()
+
+        assert victim not in d._read_conns, "dead-thread connection was not reaped"
+        with pytest.raises(_sqlite3.ProgrammingError):
+            victim.execute("SELECT 1")
+    finally:
+        d.close()
+
+
+def test_live_thread_connection_not_reaped(tmp_path):
+    """A connection whose owner thread is still alive must survive a reap."""
+    import threading as _t
+
+    d = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        d.create_session(session_id="s1", source="cli", model="m")
+        _force_read_path(d)
+
+        ready = _t.Event()
+        release = _t.Event()
+        live_conn = {}
+
+        def hold():
+            live_conn["c"] = d._get_read_conn()
+            ready.set()
+            release.wait(timeout=10)
+
+        keeper = _t.Thread(target=hold)
+        keeper.start()
+        assert ready.wait(timeout=10)
+        conn = live_conn["c"]
+        assert conn is not None
+
+        # Register from other threads, which triggers reaping sweeps.
+        for _ in range(5):
+            w = _t.Thread(target=lambda: d._get_read_conn())
+            w.start(); w.join(timeout=10)
+
+        assert keeper.is_alive(), "live reader thread died unexpectedly"
+        assert conn in d._read_conns, "live-thread connection was wrongly reaped"
+
+        release.set()
+        keeper.join(timeout=10)
+    finally:
+        d.close()
+
+
+def test_reaping_is_thread_safe_under_concurrency(tmp_path):
+    """Concurrent readers + reaping must not raise."""
+    import time
+
+    d = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        d.create_session(session_id="s1", source="cli", model="m")
+        _force_read_path(d)
+        d.append_message("s1", role="user", content="concurrency smoke")
+
+        errors = []
+
+        def reader():
+            try:
+                for _ in range(20):
+                    d.get_session("s1")
+                    d._get_read_conn()  # may register + reap
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=reader) for _ in range(8)]
+        for i, t in enumerate(threads):
+            t.start()
+            if i % 2:  # stagger so threads exit at different times
+                time.sleep(0.001)
+        for t in threads:
+            t.join(timeout=20)
+        assert not errors, f"concurrent read/reap raised: {errors!r}"
+        assert not any(t.is_alive() for t in threads)
+    finally:
+        d.close()

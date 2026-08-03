@@ -204,6 +204,20 @@ class ComputeHost:
         live work: exactly the race the drain exists to close, just moved later.
         Leaving them unfinalized keeps them recoverable instead. Sessions with
         no live turn finalize here as they always have.
+
+        NOTE: ``server._shutdown_sessions`` is registered via ``atexit``
+        (``server.py``) and runs on ``SystemExit`` after ``shutdown()``
+        returns. It calls ``_finalize_session`` on any session still in
+        ``server._sessions`` — including ones skipped here whose turn is
+        still running, since ``_executor.shutdown(wait=False)`` only cancels
+        pending futures, not running ones. The orphan path (``os._exit(0)``)
+        bypasses atexit, so the skip is fully effective there. For the
+        SIGTERM and stdin_closed paths the atexit handler may re-finalize
+        skipped sessions; this is a pre-existing issue (the old finalize-
+        first order had the same atexit interaction) and does not make the
+        drain-before-finalize reordering worse. A follow-up could gate
+        ``_shutdown_sessions`` on ``not session.get("_finalized") and not
+        session.get("running")`` to close the gap.
         """
         self._closed.set()
         budget = max(0.0, wait)

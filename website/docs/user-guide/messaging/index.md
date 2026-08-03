@@ -192,7 +192,7 @@ platform network disconnect as an event-loop failure.
 |---------|-------------|
 | `/new` or `/reset` | Start a fresh conversation |
 | `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
-| `/personality [name]` | Set a personality |
+| `/personality [name]` | Set a personality (`none` to reset) |
 | `/retry` | Retry the last message |
 | `/undo` | Remove the last exchange |
 | `/status` | Show session info |

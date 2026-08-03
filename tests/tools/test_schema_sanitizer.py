@@ -91,6 +91,41 @@ def test_multitype_array_becomes_anyof_no_branch_dropped():
     assert prop["description"] == "status filter"
 
 
+def test_multitype_array_branch_gets_items_and_properties():
+    # A multi-type ``type`` that includes "array"/"object" synthesizes an
+    # anyOf whose branches must ALSO be repaired: a bare {"type": "array"}
+    # branch would otherwise skip the array-items injection and Gemini would
+    # still 400 the whole declaration with ``...items: missing field`` (#71804).
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "flex": {"type": ["array", "object", "string"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["flex"]
+    assert "type" not in prop
+    assert prop["anyOf"] == [
+        {"type": "array", "items": {}},
+        {"type": "object", "properties": {}},
+        {"type": "string"},
+    ]
+
+
+def test_nullable_multitype_array_branch_gets_items():
+    # Same repair with a "null" member lifted to ``nullable: true``.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "flex": {"type": ["array", "string", "null"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["flex"]
+    assert prop["anyOf"] == [{"type": "array", "items": {}}, {"type": "string"}]
+    assert prop["nullable"] is True
+
+
 def test_all_null_type_array_becomes_null_type():
     tools = [_tool("t", {
         "type": "object",

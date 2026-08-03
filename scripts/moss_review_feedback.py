@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 SELF_AUTHORS = {"sahil-ss9", "sahil", "mossy"}
-MAINTAINER_AUTHORS = {"teknium"}
+MAINTAINER_AUTHORS = {"teknium", "teknium1"}
 PROMOTABLE = {"routine_patch", "sahil_escalation"}
 
 

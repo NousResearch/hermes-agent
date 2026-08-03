@@ -72,3 +72,7 @@ optional_env:
     description: "Maximum missed messages replayed per stream on reconnect"
     prompt: "Catch-up max messages"
     password: false
+  - name: ZULIP_CONVERT_MATH
+    description: "Rewrite $...$ / \\(...\\) / \\[...\\] / multi-line $$ to Zulip KaTeX before send (default true)"
+    prompt: "Convert LaTeX delimiters to Zulip KaTeX? (true/false)"
+    password: false

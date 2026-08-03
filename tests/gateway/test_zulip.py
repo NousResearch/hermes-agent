@@ -550,8 +550,8 @@ class TestZulipFormatMessage:
         assert formatted.count("$$") == 0
         assert "done" in formatted
 
-    def test_inline_dollar_math_preserved(self):
-        """Single-line $$...$$ is Zulip inline math and must stay as-is."""
+    def test_inline_double_dollar_math_preserved(self):
+        """Mid-sentence $$...$$ is already Zulip inline math and must stay."""
         content = "Complexity is $$O(n^2)$$ in the worst case."
         assert self.adapter.format_message(content) == content
 
@@ -561,6 +561,40 @@ class TestZulipFormatMessage:
 
     def test_dollar_math_inside_code_fence_preserved(self):
         content = "Example syntax:\n```\n$$\nx = 1\n$$\n```\n"
+        assert self.adapter.format_message(content) == content
+
+    def test_single_dollar_inline_math_becomes_double_dollar(self):
+        """Traditional $...$ (small-model default) becomes Zulip $$...$$."""
+        content = "Complexity is $O(n^2)$ in the worst case."
+        assert (
+            self.adapter.format_message(content)
+            == "Complexity is $$O(n^2)$$ in the worst case."
+        )
+
+    def test_paren_and_bracket_math_converted(self):
+        r"""\(...\) → inline $$; whole-line \[...\] → ```math fence."""
+        content = (
+            "Inline is \\(a + b\\).\n"
+            "\\[\n"
+            "E = mc^2\n"
+            "\\]\n"
+            "done"
+        )
+        formatted = self.adapter.format_message(content)
+        assert "Inline is $$a + b$$." in formatted
+        assert "```math\nE = mc^2\n```" in formatted
+        assert r"\(" not in formatted
+        assert r"\[" not in formatted
+
+    def test_currency_amounts_not_converted(self):
+        """Bare $5 / $5.00 must not become KaTeX."""
+        content = "Price is $5 or $5.00 today."
+        assert self.adapter.format_message(content) == content
+
+    def test_convert_math_can_be_disabled(self):
+        """ZULIP_CONVERT_MATH=false / convert_math=False leaves source alone."""
+        self.adapter._convert_math = False
+        content = "Keep $O(n)$ and \\(x\\) and $$\ny\n$$ raw."
         assert self.adapter.format_message(content) == content
 
 

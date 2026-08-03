@@ -21,6 +21,8 @@ Environment variables:
     ZULIP_REQUIRE_MENTION    Require @mention in streams (default: "true")
     ZULIP_FREE_RESPONSE_STREAMS  Comma-separated stream names or IDs that
                              don't require @mention
+    ZULIP_CONVERT_MATH       Rewrite common LaTeX delimiters to Zulip KaTeX
+                             form before send (default: "true")
 """
 
 from __future__ import annotations
@@ -58,37 +60,103 @@ MAX_MESSAGE_LENGTH = 10_000
 #   * Inline math:  $$O(n^2)$$
 #   * Display math: fenced ```math ... ``` blocks
 #
-# Models often emit GitHub-style multi-line $$...$$ display math.  That is
-# NOT display math in Zulip ($$ is only the inline delimiter), so we rewrite
-# those blocks to Zulip math fences before send.
+# Models (especially smaller ones) often emit traditional TeX delimiters
+# that Zulip does NOT render:
+#   * multi-line / whole-line $$...$$  (Zulip uses $$ only for inline)
+#   * \[...\] display and \(...\) inline
+#   * $...$ inline
+# Rewrite those to Zulip's KaTeX forms before send.  Already-fenced code
+# (including ```math) is left untouched.  Toggle with ZULIP_CONVERT_MATH
+# or config.extra["convert_math"].
+_CODEBLOCK_SPLIT_RE = re.compile(r"(```[\s\S]*?```)")
 _DISPLAY_DOLLAR_MATH_RE = re.compile(
-    r"(?ms)^[ \t]*\$\$[ \t]*\r?\n(.*?)\r?\n[ \t]*\$\$[ \t]*$",
+    r"(?ms)^[ \t]*\$\$\s*(?P<math>.*?)[ \t]*\$\$[ \t\r]*$"
+)
+_DISPLAY_BRACKET_MATH_RE = re.compile(
+    r"(?ms)^[ \t]*\\\[(?P<math>.*?)\\\][ \t\r]*$"
+)
+_INLINE_PAREN_MATH_RE = re.compile(r"\\\((?P<math>.*?)\\\)")
+# Single-dollar inline: require a space/BOL boundary and either a compact
+# non-space body or a body with LaTeX-ish operators.  Pure currency-like
+# amounts ($5, $5.00) are excluded to avoid false positives in prose.
+_INLINE_DOLLAR_MATH_RE = re.compile(
+    r"""
+    (?:^|(?<=\s))                 # preceded by BOL or whitespace
+    (?P<prefix>[^\w$\s]*)         # optional punctuation before the opener
+    \$
+    (?P<math>
+        (?!\d+(?:\.\d+)?(?:\s|$)) # not a bare currency amount
+        (?:
+            [^\s$]+               # compact: $x$, $O(n)$, $n=1$
+          | [^$\n]*[_^{}=\\<>+][^$\n]*  # or contains LaTeX-ish chars
+        )
+    )
+    \$
+    (?P<suffix>[^\w$\s]*)         # optional punctuation after the closer
+    (?=\s|$)                      # followed by whitespace or EOL
+    """,
+    re.VERBOSE | re.MULTILINE,
 )
 
 
-def _normalize_zulip_math(content: str) -> str:
-    """Rewrite multi-line ``$$...$$`` display blocks as Zulip ``math`` fences.
+def _process_noncode_parts(content: str, fn) -> str:
+    """Apply *fn* to text outside fenced code blocks only."""
+    if not content:
+        return content
+    out: List[str] = []
+    for index, part in enumerate(_CODEBLOCK_SPLIT_RE.split(content)):
+        if index % 2 == 1:
+            out.append(part)
+        else:
+            out.append(fn(part))
+    return "".join(out)
 
-    Leaves single-line inline ``$$...$$`` alone, and does not touch content
-    already inside fenced code blocks (including existing ``math`` fences).
+
+def _to_display_math(match: re.Match) -> str:
+    body = match["math"].strip("\n")
+    return f"```math\n{body}\n```"
+
+
+def _to_inline_math(match: re.Match) -> str:
+    body = match["math"].strip()
+    prefix = match.groupdict().get("prefix") or ""
+    suffix = match.groupdict().get("suffix") or ""
+    return f"{prefix}$${body}$${suffix}"
+
+
+def _normalize_zulip_math(content: str) -> str:
+    r"""Rewrite non-Zulip math delimiters to Zulip KaTeX forms.
+
+    Conversions (outside fenced code only):
+
+    * whole-line ``$$...$$`` → fenced ``math`` block (display)
+    * whole-line ``\[...\]`` → fenced ``math`` block (display)
+    * ``\(...\)`` → ``$$...$$`` (inline)
+    * ``$...$`` → ``$$...$$`` when the body looks like math (not currency)
+
+    Mid-sentence single-line ``$$...$$`` (already valid Zulip inline math)
+    is left unchanged because the display-dollar pattern only matches a
+    full line.
     """
-    if not content or "$$" not in content:
+    if not content:
+        return content
+    # Cheap bail-out: nothing we rewrite can appear without one of these.
+    if "$" not in content and r"\(" not in content and r"\[" not in content:
         return content
 
-    parts = re.split(r"(```[\s\S]*?```)", content)
-    out: List[str] = []
-    for index, part in enumerate(parts):
-        if index % 2 == 1:
-            # Already a fenced code/math block — leave untouched.
-            out.append(part)
-            continue
-
-        def _to_math_fence(match: re.Match) -> str:
-            body = match.group(1).rstrip("\n")
-            return f"```math\n{body}\n```"
-
-        out.append(_DISPLAY_DOLLAR_MATH_RE.sub(_to_math_fence, part))
-    return "".join(out)
+    content = _process_noncode_parts(
+        content, lambda p: _DISPLAY_DOLLAR_MATH_RE.sub(_to_display_math, p)
+    )
+    content = _process_noncode_parts(
+        content, lambda p: _DISPLAY_BRACKET_MATH_RE.sub(_to_display_math, p)
+    )
+    content = _process_noncode_parts(
+        content, lambda p: _INLINE_PAREN_MATH_RE.sub(_to_inline_math, p)
+    )
+    content = _process_noncode_parts(
+        content, lambda p: _INLINE_DOLLAR_MATH_RE.sub(_to_inline_math, p)
+    )
+    return content
 
 
 
@@ -538,6 +606,15 @@ class ZulipAdapter(BasePlatformAdapter):
             "ZULIP_ALLOW_INSECURE", "false"
         ).lower() in ("true", "1", "yes")
         self._streaming_edits_warning_logged = False
+        # Rewrite common LaTeX delimiters to Zulip KaTeX before send.
+        # config.extra["convert_math"] wins when present; else env
+        # ZULIP_CONVERT_MATH (default on).
+        if "convert_math" in config.extra:
+            self._convert_math = bool(config.extra.get("convert_math"))
+        else:
+            self._convert_math = os.getenv(
+                "ZULIP_CONVERT_MATH", "true"
+            ).lower() in ("true", "1", "yes")
 
         # Mention gating configuration (follows Discord's pattern).
         self._require_mention: bool = os.getenv(
@@ -984,10 +1061,14 @@ class ZulipAdapter(BasePlatformAdapter):
         """Zulip supports standard Markdown including code blocks, tables,
         LaTeX math, and image links.
 
-        Multi-line ``$$...$$`` blocks (common model output for display math)
-        are rewritten to Zulip's ``math`` fenced-code form so KaTeX renders
-        them.  Inline ``$$...$$`` is left unchanged.
+        When ``_convert_math`` is enabled (default), common non-Zulip math
+        delimiters are rewritten to Zulip KaTeX forms so smaller models that
+        emit ``$...$`` / ``\\(...\\)`` / ``\\[...\\]`` / multi-line ``$$``
+        still render.  Disable with ``ZULIP_CONVERT_MATH=false`` or
+        ``config.extra["convert_math"]=False``.
         """
+        if not self._convert_math:
+            return content
         return _normalize_zulip_math(content)
 
     def _metadata_adjusted_chat_id(
@@ -2505,10 +2586,11 @@ def register(ctx) -> None:
             "tables, LaTeX math (KaTeX), image links, streams, topics, direct "
             "messages, and group DMs. To send images or files, include "
             "MEDIA:<path> in your response (for example "
-            "MEDIA:/absolute/path/to/image.png). For LaTeX: use $$y = x$$ on "
-            "one line for inline math; for display equations prefer a fenced "
-            "math block:\n```math\nE = mc^2\n```\n"
-            "(multi-line $$...$$ is also accepted and converted automatically). "
+            "MEDIA:/absolute/path/to/image.png). For LaTeX: prefer $$y = x$$ on "
+            "one line for inline math and a fenced math block for display:\n"
+            "```math\nE = mc^2\n```\n"
+            "(traditional $...$, \\(...\\), \\[...\\], and multi-line $$...$$ "
+            "are also accepted and converted automatically). "
             "In streams, stay on the current topic unless the user explicitly "
             "asks to move elsewhere."
         ),

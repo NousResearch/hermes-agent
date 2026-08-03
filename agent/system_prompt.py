@@ -616,8 +616,8 @@ def reconstruct_static_prefix(
     Safety: the rebuilt stable tier is used ONLY when the stored prompt
     literally starts with it (checked here AND re-checked by
     ``_apply_system_cache_markers``'s ``startswith`` gate). If any
-    stable-tier input changed since the prompt was persisted (skills
-    edited, identity changed), the prefix mismatches, the static stays
+    stable-tier input changed since the prompt was persisted (identity
+    changed, SOUL.md edited), the prefix mismatches, the static stays
     None, and requests fall back to the legacy layout with the stored
     prompt bytes untouched — never a rewritten prompt.
 

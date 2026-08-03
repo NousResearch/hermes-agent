@@ -311,6 +311,71 @@ class TestSessionHealthWatcher:
         assert resume_args["event"].internal is True
 
     @pytest.mark.asyncio
+    async def test_probe_recovers_through_real_adapter_pipeline_and_clears_pending(
+        self, tmp_path, monkeypatch
+    ):
+        """Health recovery must reach the real adapter/handler boundary.
+
+        The detection tests above intentionally replace the startup dispatcher
+        to isolate scheduling. This regression keeps the production
+        ``_run_startup_resume_event`` and ``BasePlatformAdapter`` background
+        pipeline intact, stubs only the model leaf, and verifies that a
+        successful agent result clears ``resume_pending``.
+        """
+        from gateway.run import GatewayRunner
+        from hermes_state import AsyncSessionDB
+
+        runner, adapter, store, db, source, entry = self._setup_runner(tmp_path)
+        self._add_wedged_messages(db, entry.session_id)
+        session_key = runner._session_key_for_source(source)
+
+        runner._session_db = AsyncSessionDB(db)
+        runner._handle_message = GatewayRunner._handle_message.__get__(
+            runner, GatewayRunner
+        )
+        runner._check_slash_access = lambda *args, **kwargs: None
+        runner._active_session_leases = {}
+        runner._busy_ack_ts = {}
+        runner._post_turn_goal_continuation = AsyncMock()
+        runner._run_agent = AsyncMock(
+            return_value={
+                "final_response": "Recovered successfully.",
+                "messages": [
+                    {"role": "user", "content": "Recovered context"},
+                    {"role": "assistant", "content": "Recovered successfully."},
+                ],
+                "tools": [],
+                "history_offset": 0,
+                "api_calls": 1,
+                "completed": True,
+                "interrupted": False,
+                "partial": False,
+                "failed": False,
+                "error": None,
+                "agent_persisted": True,
+                "session_id": entry.session_id,
+            }
+        )
+
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        adapter.set_message_handler(runner._handle_message)
+        adapter._keep_typing = AsyncMock()
+        adapter._stop_typing_refresh = AsyncMock()
+        adapter._run_processing_hook = AsyncMock()
+
+        assert await runner._session_health_probe() == 1
+        for _ in range(30):
+            await asyncio.sleep(0.02)
+            if session_key not in runner._running_agents:
+                break
+
+        assert runner._run_agent.await_count == 1
+        assert store._entries[session_key].resume_pending is False
+        assert session_key not in runner._running_agents
+        assert session_key not in adapter._pending_messages
+
+    @pytest.mark.asyncio
     async def test_probe_uses_async_store_before_claiming_runner_slot(self, tmp_path):
         runner, adapter, store, db, source, entry = self._setup_runner(tmp_path)
         self._add_wedged_messages(db, entry.session_id)

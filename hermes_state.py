@@ -11276,6 +11276,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         where_clauses = []
         params: list = []
 
+        if exclude_children:
+            # Keep aggregate counts identical to list_sessions_rich: roots and
+            # branch sessions are visible, while sub-agent and compression
+            # continuation rows are hidden.
+            where_clauses.append(_LISTABLE_CHILD_SQL)
+            where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
+
         if archived_only:
             where_clauses.append("s.archived = 1")
         elif not include_archived:

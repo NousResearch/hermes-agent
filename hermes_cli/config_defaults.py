@@ -35,21 +35,23 @@ DEFAULT_CONFIG = {
         # tools or receiving API responses.  Only fires when the agent has
         # been completely idle for this duration.  0 = unlimited.
         "gateway_timeout": 1800,
-        # Graceful drain timeout for gateway stop/restart (seconds).
-        # The gateway stops accepting new work, waits for running agents
-        # to finish, then interrupts any remaining runs after the timeout.
-        # 0 = no drain, interrupt immediately (the default).
+        # Force-interrupt budget once gateway stop()/drain has begun
+        # (seconds). Applies to SIGTERM/external stop and to the final
+        # phase of in-band restart after any after-turn wait. 0 = interrupt
+        # immediately (the default).
         #
-        # Contract: if you restart the gateway, in-flight work stops. We do
-        # not hold the restart open for a grace window — a drain timeout
-        # large enough to "save" a long agent turn would have to outlast an
-        # unbounded task (some runs take days), which is impossible, and a
-        # drain timeout shorter than systemd's TimeoutStopSec invites a
-        # SIGKILL-mid-cleanup race that leaves a stale lock and crash-loops
-        # the service. 0 sidesteps both: interrupt now, clean up, exit fast.
-        # Set a positive value in config.yaml only if you explicitly want a
-        # grace window on /restart (and keep it well under TimeoutStopSec).
+        # Keep this short and under systemd TimeoutStopSec — a long value
+        # here invites SIGKILL-mid-cleanup. For in-band restart
+        # (/restart, SIGUSR1), prefer restart_after_turn_timeout below so
+        # active turns finish *before* stop() begins (#77184).
         "restart_drain_timeout": 0,
+        # In-band restart wait for active turns to finish before stop()
+        # (seconds). /restart and SIGUSR1 refuse new work, then wait up to
+        # this cap for in-flight agents/cron/api runs to complete naturally
+        # so the requesting turn is not amputated by restart_drain_timeout.
+        # 0 = legacy behaviour (enter stop()/drain immediately). Default
+        # 6h is a safety valve for wedged agents, not a target latency.
+        "restart_after_turn_timeout": 21600,
         # Upper bound (seconds) a submitted prompt waits for the deferred
         # agent build (MCP discovery, model metadata, skills scan) before
         # failing with a visible error (#63078). The gateway's wait is
@@ -178,6 +180,17 @@ DEFAULT_CONFIG = {
         # (60+ tool iterations with tiny output) before users assume the
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
+        # Session stall watchdog (seconds). Scope (#76354): this is a
+        # RECOVERY notifier for an in-process AIAgent that has an
+        # adapter-queued follow-up (pending inbound / queued event) while its
+        # activity clock is stale — NOT a general gateway/session stall
+        # detector. It does not observe startup restoration, build sentinels,
+        # turn leases, debounce state, or work owned by another process; the
+        # scan cadence is per AIAgent instance, not globally coordinated per
+        # durable session. Notify-only: warns the user to try /new. Distinct
+        # from gateway_timeout (which kills the turn) and
+        # gateway_notify_interval ("still working" heartbeats). 0 = disable.
+        "session_stall_timeout": 300,
         # Freshness window for the gateway auto-continue note (seconds).
         # After a gateway crash/restart/SIGTERM mid-run, the next user
         # message gets a "[System note: your previous turn was
@@ -239,6 +252,14 @@ DEFAULT_CONFIG = {
         "backend": "local",
         "modal_mode": "auto",
         "cwd": ".",  # Use current directory
+        # Terminal font family for the desktop app's embedded xterm.js terminal.
+        # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),
+        # the desktop terminal uses this as the CSS font-family value, with the
+        # built-in default ("'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo,
+        # Consolas, monospace") as fallback when the field is empty or unset.
+        # This lets users install a Nerd Font (or any custom font) and configure
+        # it here without patching the built desktop app.
+        "font_family": "",
         "timeout": 180,
         # Bounded grace period (seconds) between SIGTERM and an escalated
         # SIGKILL when terminating a host process tree (browser daemons, etc.).
@@ -626,6 +647,27 @@ DEFAULT_CONFIG = {
                                       # while tokens are still moving — bounds a degenerate
                                       # trickle stream. Clamped to >= hygiene_timeout_seconds.
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
+        "context_timeout_seconds": 120,  # inactivity budget for in-agent compress_context
+                                      # (conversation loop, /compress, preflight, etc.).
+                                      # Same progress-aware semantics as hygiene_timeout_seconds:
+                                      # streamed summary tokens extend the wait; only a silent
+                                      # worker is cut off. 0 = disable the owned wrapper
+                                      # (callers that already pass commit_fence, e.g. gateway
+                                      # hygiene, never use this path).
+        "context_total_ceiling_seconds": 600,  # absolute cap on the *pre-commit*
+                                      # in-agent compress_context wait (summary /
+                                      # stream phase) even while tokens are still
+                                      # moving. Clamped to >= context_timeout_seconds
+                                      # when the idle budget is > 0. Guarantee:
+                                      # the summary phase is bounded by this
+                                      # ceiling; an already-started SessionDB
+                                      # commit is never abandoned mid-flight —
+                                      # if the commit itself runs past the
+                                      # ceiling it is logged (WARNING, then
+                                      # ERROR) and surfaced to the user via the
+                                      # warning channel while the host keeps
+                                      # waiting in bounded increments for the
+                                      # commit to finish.
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to
@@ -794,6 +836,20 @@ DEFAULT_CONFIG = {
         # not a meaningful recovery, so an unretried blip silently loses the
         # call.
         "transient_retries": 2,
+        # Restrict the auxiliary auto-chain's OpenRouter fallback to free
+        # (:free) SKUs. When true, the OpenRouter step is skipped entirely
+        # unless the resolved fallback model ends in ":free" — a PAID lane
+        # is never engaged for background auxiliary traffic (compression,
+        # title generation, session search, vision, web extract) even when
+        # OPENROUTER_API_KEY is present. Default false keeps the historical
+        # paid fallback for users who want it.
+        "free_only": False,
+        # Override the auxiliary auto-chain's OpenRouter fallback model
+        # (default: google/gemini-3.6-flash, a PAID model). Set e.g.
+        # "nvidia/nemotron-3-ultra-550b-a55b:free" together with
+        # free_only: true to keep auxiliary traffic free-only. A one-time
+        # WARNING is logged whenever a non-":free" model is engaged.
+        "openrouter_model": "",
         # Endpoints that reject NON-streaming chat requests outright (e.g.
         # Tencent Copilot returns HTTP 400 "Non-stream chat request is
         # currently not supported"). Auxiliary calls to a matching endpoint
@@ -1565,6 +1621,18 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        # Return freed glibc allocator pages after long-running agent/TUI
+        # cleanup boundaries. Unsupported platforms are safe no-ops.
+        "memory_trim": {
+            "enabled": True,
+            "cooldown_seconds": 60.0,
+            # Successful trim calls are INFO logged every Nth periodic call;
+            # force paths always log so process-close behavior is visible.
+            "log_every_n": 1,
+            # Suppress INFO logs only when a readable RSS change is smaller.
+            # 0 reports every successful configured trim.
+            "info_log_min_delta_mb": 0.0,
+        },
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt
@@ -2302,7 +2370,7 @@ DEFAULT_CONFIG = {
             "listing": "auto",
             # Absolute cap on the embedded listing in tokens (chars/4
             # estimate), regardless of context size. Range 200..60000.
-            "listing_max_tokens": 20000,
+            "listing_max_tokens": 4000,
         },
     },
 
@@ -2603,6 +2671,9 @@ DEFAULT_CONFIG = {
         # 100MB, so it only runs at startup, and only when prune deleted
         # ≥1 session.
         "vacuum_after_prune": True,
+        # Minimum days between successful VACUUM rewrites. Pruning can still
+        # run on its normal cadence while SQLite reuses the freed pages.
+        "min_vacuum_interval_days": 30,
         # Minimum hours between auto-maintenance runs (avoids repeating
         # the sweep on every CLI invocation).  Tracked via state_meta in
         # state.db itself, so it's shared across all processes.

@@ -38,6 +38,23 @@ def _redact_telegram_error_text(error: object) -> str:
         return "<telegram error redacted>"
 
 
+def _scoped_gate_env(name: str, default: str = "") -> str:
+    """Read a TELEGRAM_*/GATEWAY_* authorization gate env var per-profile.
+
+    Under gateway.multiplex_profiles the process env is first-writer-wins
+    (the YAML→env bridge in ``_apply_yaml_config``), so a raw ``os.getenv``
+    can return ANOTHER profile's allowlist (issue #72348, Telegram mirror).
+    Reads the active profile's secret scope when installed; falls back to
+    ``os.getenv`` outside multiplex — identical single-profile behavior.
+    """
+    try:
+        from gateway.authz_mixin import _platform_gate_env
+
+        return _platform_gate_env(name, default)
+    except Exception:
+        return (os.getenv(name) or default).strip()
+
+
 def _consume_abandoned_task(task: asyncio.Task) -> None:
     """Observe a detached task's terminal exception to avoid noisy loop logs."""
     try:
@@ -947,13 +964,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
-        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+        allowed_csv = _scoped_gate_env("TELEGRAM_ALLOWED_USERS").strip()
         if not allowed_csv:
             # Fail-closed: no allowlist means deny by default.
             # The runner auth path in _is_user_authorized() handles
             # GATEWAY_ALLOW_ALL_USERS; this fallback must not silently
             # allow everyone (fixes #24457).
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+            return _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or normalized_user_id in allowed_ids
 
@@ -1027,7 +1044,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "GATEWAY_ALLOWED_USERS",
             "GATEWAY_ALLOW_ALL_USERS",
         )
-        return any(os.getenv(key, "").strip() for key in keys)
+        return any(_scoped_gate_env(key).strip() for key in keys)
 
     def _should_pass_unauthorized_dm_for_pairing(self, source) -> bool:
         """Return True when an unauthorized DM must still reach gateway pairing.
@@ -1137,7 +1154,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
 
         if authorized is None:
-            allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+            allowed_csv = _scoped_gate_env("TELEGRAM_ALLOWED_USERS").strip()
             if not allowed_csv:
                 return True
             allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
@@ -4021,7 +4038,20 @@ class TelegramAdapter(BasePlatformAdapter):
                     os.getenv("TELEGRAM_WEBHOOK_HOST", "").strip()
                     or str((self.config.extra or {}).get("webhook_host") or "").strip()
                 )
-                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+                # Profile-scoped read (adapter startup, Slack pattern
+                # #59739): a scoped read honors the profile's own secret;
+                # only an UNSCOPED read under multiplex (default-profile
+                # startup loop) falls back to the process env, which is that
+                # profile's own value.
+                from agent.secret_scope import (
+                    UnscopedSecretError,
+                    get_secret,
+                )
+
+                try:
+                    webhook_secret = (get_secret("TELEGRAM_WEBHOOK_SECRET") or "").strip()
+                except UnscopedSecretError:
+                    webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
                 if not webhook_secret:
                     raise RuntimeError(
                         "TELEGRAM_WEBHOOK_SECRET is required when "
@@ -7771,7 +7801,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _telegram_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
-            raw = os.getenv("TELEGRAM_FREE_RESPONSE_CHATS", "")
+            raw = _scoped_gate_env("TELEGRAM_FREE_RESPONSE_CHATS")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -7785,7 +7815,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         raw = self.config.extra.get("free_response_topics")
         if raw is None:
-            raw = os.getenv("TELEGRAM_FREE_RESPONSE_TOPICS", "")
+            raw = _scoped_gate_env("TELEGRAM_FREE_RESPONSE_TOPICS")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -7812,7 +7842,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         raw = self.config.extra.get("allowed_chats")
         if raw is None:
-            raw = os.getenv("TELEGRAM_ALLOWED_CHATS", "")
+            raw = _scoped_gate_env("TELEGRAM_ALLOWED_CHATS")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -7821,7 +7851,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Return Telegram chats authorized at group scope."""
         raw = self.config.extra.get("group_allowed_chats")
         if raw is None:
-            raw = os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS", "")
+            raw = _scoped_gate_env("TELEGRAM_GROUP_ALLOWED_CHATS")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -7851,7 +7881,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         raw = self.config.extra.get("allowed_topics")
         if raw is None:
-            raw = os.getenv("TELEGRAM_ALLOWED_TOPICS", "")
+            raw = _scoped_gate_env("TELEGRAM_ALLOWED_TOPICS")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -7859,7 +7889,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _telegram_ignored_threads(self) -> set[int]:
         raw = self.config.extra.get("ignored_threads")
         if raw is None:
-            raw = os.getenv("TELEGRAM_IGNORED_THREADS", "")
+            raw = _scoped_gate_env("TELEGRAM_IGNORED_THREADS")
 
         if isinstance(raw, list):
             values = raw
@@ -9915,7 +9945,13 @@ async def _standalone_send(
     parse-mode fallback). Implements the standalone_sender_fn contract so
     deliver=telegram cron jobs succeed when cron runs separately from the
     gateway."""
-    token = getattr(pconfig, "token", None) or os.getenv("TELEGRAM_BOT_TOKEN", "")
+    token = getattr(pconfig, "token", None)
+    if not token:
+        # Profile-scoped read: honor the secret scope's verdict rather than
+        # borrowing another profile's env-bridged token under multiplex.
+        from agent.secret_scope import get_secret
+
+        token = get_secret("TELEGRAM_BOT_TOKEN", "") or ""
     disable_link_previews = bool(
         getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")
     )
@@ -9955,6 +9991,18 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     import json as _json
     extras: dict = {}
 
+    # Under multiplex, a secondary profile's config loads inside its runtime
+    # scope; its authorization gate values must NOT be written to the
+    # process-global env, where first-writer-wins would pin them for every
+    # other profile (issue #72348 Telegram mirror). They are seeded into
+    # PlatformConfig.extra / read via the profile secret scope instead.
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        _skip_env_bridge = bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        _skip_env_bridge = False
+
     if "disable_topic_auto_rename" in telegram_cfg:
         extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])
 
@@ -9972,30 +10020,41 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     if "observe_unmentioned_group_messages" in telegram_cfg and not os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
         os.environ["TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(telegram_cfg["observe_unmentioned_group_messages"]).lower()
     frc = telegram_cfg.get("free_response_chats")
-    if frc is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_CHATS"):
+    if frc is not None:
+        extras.setdefault("free_response_chats", frc)
         if isinstance(frc, list):
             frc = ",".join(str(v) for v in frc)
-        os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+        if not _skip_env_bridge and not os.getenv("TELEGRAM_FREE_RESPONSE_CHATS"):
+            os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
     frt = telegram_cfg.get("free_response_topics")
-    if frt is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_TOPICS"):
+    if frt is not None:
         if isinstance(frt, list):
             frt = ",".join(str(v) for v in frt)
-        os.environ["TELEGRAM_FREE_RESPONSE_TOPICS"] = str(frt)
+        if not _skip_env_bridge and not os.getenv("TELEGRAM_FREE_RESPONSE_TOPICS"):
+            os.environ["TELEGRAM_FREE_RESPONSE_TOPICS"] = str(frt)
     ac = telegram_cfg.get("allowed_chats")
-    if ac is not None and not os.getenv("TELEGRAM_ALLOWED_CHATS"):
+    if ac is not None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
-        os.environ["TELEGRAM_ALLOWED_CHATS"] = str(ac)
+        # NOTE: no extras seed here — gateway/config.py's shared-key loop
+        # already bridges ``allowed_chats`` into PlatformConfig.extra with its
+        # original type, and the apply_yaml_config merge would clobber it.
+        if not _skip_env_bridge and not os.getenv("TELEGRAM_ALLOWED_CHATS"):
+            os.environ["TELEGRAM_ALLOWED_CHATS"] = str(ac)
     allowed_topics = telegram_cfg.get("allowed_topics")
-    if allowed_topics is not None and not os.getenv("TELEGRAM_ALLOWED_TOPICS"):
+    if allowed_topics is not None:
         if isinstance(allowed_topics, list):
             allowed_topics = ",".join(str(v) for v in allowed_topics)
-        os.environ["TELEGRAM_ALLOWED_TOPICS"] = str(allowed_topics)
+        # extras seed intentionally omitted (shared-key loop bridges allowed_topics).
+        if not _skip_env_bridge and not os.getenv("TELEGRAM_ALLOWED_TOPICS"):
+            os.environ["TELEGRAM_ALLOWED_TOPICS"] = str(allowed_topics)
     ignored_threads = telegram_cfg.get("ignored_threads")
-    if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
+    if ignored_threads is not None:
+        extras.setdefault("ignored_threads", ignored_threads)
         if isinstance(ignored_threads, list):
             ignored_threads = ",".join(str(v) for v in ignored_threads)
-        os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
+        if not _skip_env_bridge and not os.getenv("TELEGRAM_IGNORED_THREADS"):
+            os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
     if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
         os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
     if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
@@ -10009,20 +10068,24 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         _rtm_str = "off" if _telegram_rtm is False else str(_telegram_rtm).lower()
         os.environ["TELEGRAM_REPLY_TO_MODE"] = _rtm_str
     allowed_users = telegram_cfg.get("allow_from")
-    if allowed_users is not None and not os.getenv("TELEGRAM_ALLOWED_USERS"):
+    if allowed_users is not None:
         if isinstance(allowed_users, list):
             allowed_users = ",".join(str(v) for v in allowed_users)
-        os.environ["TELEGRAM_ALLOWED_USERS"] = str(allowed_users)
+        if not _skip_env_bridge and not os.getenv("TELEGRAM_ALLOWED_USERS"):
+            os.environ["TELEGRAM_ALLOWED_USERS"] = str(allowed_users)
     group_allowed_users = telegram_cfg.get("group_allow_from") or _telegram_extra.get("group_allow_from")
-    if group_allowed_users is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_USERS"):
+    if group_allowed_users is not None:
         if isinstance(group_allowed_users, list):
             group_allowed_users = ",".join(str(v) for v in group_allowed_users)
-        os.environ["TELEGRAM_GROUP_ALLOWED_USERS"] = str(group_allowed_users)
+        if not _skip_env_bridge and not os.getenv("TELEGRAM_GROUP_ALLOWED_USERS"):
+            os.environ["TELEGRAM_GROUP_ALLOWED_USERS"] = str(group_allowed_users)
     group_allowed_chats = telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats")
-    if group_allowed_chats is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"):
+    if group_allowed_chats is not None:
         if isinstance(group_allowed_chats, list):
             group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
-        os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
+        # extras seed intentionally omitted (shared-key loop bridges group_allowed_chats).
+        if not _skip_env_bridge and not os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"):
+            os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
     for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])

@@ -1128,6 +1128,80 @@ class TestMatrixDeviceId:
         adapter = MatrixAdapter(config)
         assert adapter._device_id == "FROM_CONFIG"
 
+    @pytest.mark.asyncio
+    async def test_connect_keeps_configured_device_id_on_adapter(self):
+        """MATRIX_DEVICE_ID stays on the adapter regardless of whoami.
+
+        Note: this test previously asserted that the configured device_id
+        overrides the whoami device_id outright. That is no longer true for
+        the *client* identity — a token can only upload keys for its own
+        device, so a conflicting whoami device now wins (see
+        TestCryptoStoreResetOnDeviceChange). The configured value is still
+        preferred when whoami reports no device, and is still recorded on the
+        adapter, which is what this test pins.
+        """
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+                "device_id": "MY_STABLE_DEVICE",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="WHOAMI_DEV"))
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"MY_STABLE_DEVICE": {
+                "keys": {"ed25519:MY_STABLE_DEVICE": "fake_ed25519_key"},
+            }}},
+        })
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        assert await adapter.connect() is True
+
+        # The configured device_id is retained on the adapter.
+        assert adapter._device_id == "MY_STABLE_DEVICE"
+        # But the token's own device is what the client claims, because the
+        # homeserver will not accept key uploads for any other device.
+        assert mock_client.device_id == "WHOAMI_DEV"
+
+        await adapter.disconnect()
+
 
 class TestMatrixPasswordLoginDeviceId:
     """MATRIX_DEVICE_ID should be passed to mautrix Client even with password login."""
@@ -2862,3 +2936,409 @@ class TestMatrixDispatchSyncIsolation:
 
         assert ran["ok"] is True  # the sibling handler still ran
         assert "event handler failed" in caplog.text  # failure surfaced, not swallowed
+
+
+# ---------------------------------------------------------------------------
+# E2EE crypto store reset on device change
+# ---------------------------------------------------------------------------
+
+class TestCryptoStoreResetOnDeviceChange:
+    @pytest.mark.asyncio
+    async def test_reset_when_device_id_changed(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value="OLDDEVICE")
+        store.delete = AsyncMock()
+
+        with caplog.at_level(logging.WARNING):
+            reset = await adapter._reset_crypto_store_if_device_changed(store, "NEWDEVICE")
+
+        assert reset is True
+        store.delete.assert_awaited_once()
+        assert "OLDDEVICE" in caplog.text and "NEWDEVICE" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_no_reset_when_device_id_same(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value="SAMEDEVICE")
+        store.delete = AsyncMock()
+
+        assert await adapter._reset_crypto_store_if_device_changed(store, "SAMEDEVICE") is False
+        store.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_reset_on_fresh_store(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value=None)
+        store.delete = AsyncMock()
+
+        assert await adapter._reset_crypto_store_if_device_changed(store, "NEWDEVICE") is False
+        store.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_reset_without_device_id(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value="OLDDEVICE")
+        store.delete = AsyncMock()
+
+        assert await adapter._reset_crypto_store_if_device_changed(store, "") is False
+        store.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_connect_resets_store_when_token_device_differs_from_config(
+        self, caplog
+    ):
+        """Rotated token, stale MATRIX_DEVICE_ID.
+
+        Persisted store device is A, MATRIX_DEVICE_ID is still A, but the
+        access token now belongs to device B. The helper alone cannot catch
+        this: connect() used to resolve client.device_id to the configured A,
+        so persisted A == live A and no reset happened. The token's device
+        must win, and the store must be reset.
+        """
+        import logging
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_rotated_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+                "device_id": "DEVICE_A",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        deleted = {"count": 0}
+
+        class _ResettableCryptoStore:
+            upgrade_table = MagicMock()
+
+            def __init__(self, account_id="", pickle_key="", db=None):
+                self.account_id = account_id
+                self.pickle_key = pickle_key
+                self.db = db
+                self._device_id = "DEVICE_A"  # persisted from the old token
+
+            async def open(self):
+                pass
+
+            async def get_device_id(self):
+                return self._device_id
+
+            async def delete(self):
+                deleted["count"] += 1
+                self._device_id = ""
+
+            async def put_device_id(self, device_id):
+                self._device_id = device_id
+
+        fake_mautrix_mods[
+            "mautrix.crypto.store.asyncpg"
+        ].PgCryptoStore = _ResettableCryptoStore
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        # Token was rotated: the homeserver reports device B.
+        mock_client.whoami = AsyncMock(
+            return_value=MagicMock(user_id="@bot:example.org", device_id="DEVICE_B")
+        )
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={"device_keys": {}})
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_rotated_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(
+            return_value=mock_client
+        )
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(
+            return_value=mock_olm
+        )
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        with caplog.at_level(logging.WARNING), patch.object(
+            matrix_mod, "_check_e2ee_deps", return_value=True
+        ), patch.dict("sys.modules", fake_mautrix_mods), patch.object(
+            adapter, "_refresh_dm_cache", AsyncMock()
+        ), patch.object(
+            adapter, "_sync_loop", AsyncMock(return_value=None)
+        ), patch.object(
+            adapter, "_verify_device_keys_on_server", AsyncMock(return_value=True)
+        ):
+            assert await adapter.connect() is True
+
+        # The token's device wins over the stale configured one.
+        assert mock_client.device_id == "DEVICE_B"
+        # ...which is what lets the mismatch be seen and the store reset.
+        assert deleted["count"] == 1
+        assert "MATRIX_DEVICE_ID=DEVICE_A" in caplog.text
+
+        await adapter.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Crypto store pickle-key migration
+# ---------------------------------------------------------------------------
+
+class TestCryptoPickleKeyMigration:
+    @pytest.mark.asyncio
+    async def test_account_loads_fine_no_migration(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_account = AsyncMock(return_value=MagicMock())
+        assert await adapter._migrate_legacy_crypto_pickle(
+            store, MagicMock(), "@bot:example.org", "@bot:example.org:DEV"
+        ) is True
+        store.put_account.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_migrates_from_default_pickle_key(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_account = AsyncMock(side_effect=RuntimeError("BAD_ACCOUNT_KEY"))
+        store.put_account = AsyncMock()
+
+        legacy_account = MagicMock()
+        created = []
+
+        class FakePgCryptoStore:
+            def __init__(self, account_id, pickle_key, db):
+                self.pickle_key = pickle_key
+                created.append(pickle_key)
+
+            async def get_account(self):
+                if self.pickle_key == "@bot:example.org:default":
+                    return legacy_account
+                raise RuntimeError("BAD_ACCOUNT_KEY")
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(return_value=[])
+        crypto_db.execute = AsyncMock()
+
+        fake_mod = types.ModuleType("mautrix.crypto.store.asyncpg")
+        fake_mod.PgCryptoStore = FakePgCryptoStore
+        with patch.dict(
+            sys.modules,
+            {
+                "mautrix.crypto.store.asyncpg": fake_mod,
+                # _repickle_crypto_sessions imports the olm C-extension;
+                # fake it so this test does not require libolm.
+                "olm": self._fake_olm_module(),
+            },
+        ), caplog.at_level(logging.INFO):
+            result = await adapter._migrate_legacy_crypto_pickle(
+                store, crypto_db, "@bot:example.org", "@bot:example.org:NEWDEV"
+            )
+
+        assert result is True
+        store.put_account.assert_awaited_once_with(legacy_account)
+        assert "re-pickled crypto store account" in caplog.text
+        assert "@bot:example.org:default" in created
+        # session re-pickle pass must sweep all three session tables
+        queried = " ".join(str(c.args[0]) for c in crypto_db.fetch.await_args_list)
+        for table in (
+            "crypto_olm_session",
+            "crypto_megolm_inbound_session",
+            "crypto_megolm_outbound_session",
+        ):
+            assert table in queried
+
+    @pytest.mark.asyncio
+    async def test_unrecoverable_pickle_logs_error(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_account = AsyncMock(side_effect=RuntimeError("BAD_ACCOUNT_KEY"))
+        store.put_account = AsyncMock()
+
+        class FakePgCryptoStore:
+            def __init__(self, account_id, pickle_key, db):
+                pass
+
+            async def get_account(self):
+                raise RuntimeError("BAD_ACCOUNT_KEY")
+
+        fake_mod = types.ModuleType("mautrix.crypto.store.asyncpg")
+        fake_mod.PgCryptoStore = FakePgCryptoStore
+        with patch.dict(sys.modules, {"mautrix.crypto.store.asyncpg": fake_mod}), \
+                caplog.at_level(logging.ERROR):
+            result = await adapter._migrate_legacy_crypto_pickle(
+                store, MagicMock(), "@bot:example.org", "@bot:example.org:NEWDEV"
+            )
+
+        assert result is False
+        store.put_account.assert_not_awaited()
+        assert "cannot be unpickled" in caplog.text
+
+    def _fake_olm_module(self):
+        """Fake the `olm` C-extension module.
+
+        _repickle_crypto_sessions does `import olm`, which needs libolm.
+        Sessions unpickle only with the key they were pickled under.
+        """
+        olm_mod = types.ModuleType("olm")
+
+        class _Session:
+            def __init__(self, key):
+                self._key = key
+
+            @classmethod
+            def from_pickle(cls, blob, key):
+                pickled_under = blob.decode().split("|")[1]
+                if pickled_under != key:
+                    raise RuntimeError("BAD_ACCOUNT_KEY")
+                return cls(key)
+
+            def pickle(self, key):
+                return f"sess|{key}".encode()
+
+        for name in ("Session", "InboundGroupSession", "OutboundGroupSession"):
+            setattr(olm_mod, name, type(name, (_Session,), {}))
+        return olm_mod
+
+    @pytest.mark.asyncio
+    async def test_session_rows_are_repickled_under_current_key(self):
+        """The session sweep must actually rewrite legacy-key rows."""
+        adapter = _make_adapter()
+        legacy = "@bot:example.org:default"
+        current = "@bot:example.org:NEWDEV"
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(
+            return_value=[{"session_id": "s1", "session": f"sess|{legacy}".encode()}]
+        )
+        crypto_db.execute = AsyncMock()
+
+        with patch.dict(sys.modules, {"olm": self._fake_olm_module()}):
+            await adapter._repickle_crypto_sessions(
+                crypto_db, "@bot:example.org", legacy, current
+            )
+
+        # One UPDATE per session table, each writing the current-key blob.
+        assert crypto_db.execute.await_count == 3
+        for call in crypto_db.execute.await_args_list:
+            assert call.args[1] == f"sess|{current}".encode()
+            assert call.args[3] == "s1"
+
+    @pytest.mark.asyncio
+    async def test_rows_already_on_current_key_are_left_alone(self):
+        adapter = _make_adapter()
+        current = "@bot:example.org:NEWDEV"
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(
+            return_value=[{"session_id": "s1", "session": f"sess|{current}".encode()}]
+        )
+        crypto_db.execute = AsyncMock()
+
+        with patch.dict(sys.modules, {"olm": self._fake_olm_module()}):
+            await adapter._repickle_crypto_sessions(
+                crypto_db, "@bot:example.org", "@bot:example.org:default", current
+            )
+
+        crypto_db.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_rows_are_left_in_place_not_dropped(self, caplog):
+        """A row readable under neither key is skipped and left untouched.
+
+        The log must not claim the row was dropped when no DELETE is issued.
+        """
+        import logging
+        adapter = _make_adapter()
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(
+            return_value=[{"session_id": "s1", "session": b"sess|@bot:other:KEY"}]
+        )
+        crypto_db.execute = AsyncMock()
+
+        with patch.dict(sys.modules, {"olm": self._fake_olm_module()}), \
+                caplog.at_level(logging.WARNING):
+            await adapter._repickle_crypto_sessions(
+                crypto_db,
+                "@bot:example.org",
+                "@bot:example.org:default",
+                "@bot:example.org:NEWDEV",
+            )
+
+        crypto_db.execute.assert_not_awaited()
+        assert "leaving it in place" in caplog.text
+        assert "dropping" not in caplog.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_failed_sweep_leaves_account_on_legacy_key_and_retries(
+        self, caplog
+    ):
+        """A sweep failure must not commit the account.
+
+        The account is the migration's commit marker: if it is written first
+        and the sweep then fails, the next startup takes the current-key fast
+        path and the remaining legacy-key sessions are stranded permanently.
+        """
+        import logging
+        adapter = _make_adapter()
+        legacy_account = MagicMock()
+
+        store = MagicMock()
+        store.get_account = AsyncMock(side_effect=RuntimeError("BAD_ACCOUNT_KEY"))
+        store.put_account = AsyncMock()
+
+        class FakePgCryptoStore:
+            def __init__(self, account_id, pickle_key, db):
+                self.pickle_key = pickle_key
+
+            async def get_account(self):
+                if self.pickle_key == "@bot:example.org:default":
+                    return legacy_account
+                raise RuntimeError("BAD_ACCOUNT_KEY")
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(side_effect=RuntimeError("db went away"))
+        crypto_db.execute = AsyncMock()
+
+        fake_mod = types.ModuleType("mautrix.crypto.store.asyncpg")
+        fake_mod.PgCryptoStore = FakePgCryptoStore
+
+        with patch.dict(
+            sys.modules,
+            {
+                "mautrix.crypto.store.asyncpg": fake_mod,
+                "olm": self._fake_olm_module(),
+            },
+        ), caplog.at_level(logging.ERROR):
+            result = await adapter._migrate_legacy_crypto_pickle(
+                store, crypto_db, "@bot:example.org", "@bot:example.org:NEWDEV"
+            )
+
+        assert result is False
+        # The critical assertion: the account was NOT committed, so the next
+        # start still sees a legacy-key account and retries the migration.
+        store.put_account.assert_not_awaited()
+        assert "retried on the next start" in caplog.text

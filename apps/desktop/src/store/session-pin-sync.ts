@@ -56,9 +56,11 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
 /**
  * Adopt the server's pin state for every row in the current page.
  *
- * Runs before the push pass so a remote pin is already in the local set by the
- * time we reconcile — it gets marked as mirrored rather than echoed straight
- * back as a redundant PATCH.
+ * Runs after the push pass so local intent is already fenced (`pending` /
+ * `unconfirmed`) by the time the page is read — a fresh local toggle whose
+ * PATCH hasn't landed yet must win over the stale row, not be reverted by it
+ * (#74570). Remote pins adopted here are marked mirrored before the local set
+ * changes, so the re-entrant reconcile doesn't echo them back as a PATCH.
  */
 function pullRemotePins(): void {
   const local = new Set($pinnedSessionIds.get())
@@ -81,14 +83,23 @@ function pullRemotePins(): void {
       continue
     }
 
+    // Local intent still waiting on its PATCH (row unresolved when the push
+    // pass ran) is also newer than the page — never revert it.
+    if (pending.has(pinId) || pending.has(row.id)) {
+      continue
+    }
+
     if (row.pinned && !heldLocally) {
-      pinSession(pinId)
-      // Already true server-side; record it so the push pass doesn't re-PATCH.
+      // Mark mirrored first: pinSession fires the pin listener synchronously,
+      // and the nested reconcile must not see this as a new pin to PATCH.
       mirrored.add(pinId)
+      pinSession(pinId)
     } else if (!row.pinned && heldLocally) {
-      unpinSession(local.has(pinId) ? pinId : row.id)
+      // Same discipline on the way down: forget the mirror before the nested
+      // reconcile runs, or it re-PATCHes pinned=false the server already has.
       mirrored.delete(pinId)
       mirrored.delete(row.id)
+      unpinSession(local.has(pinId) ? pinId : row.id)
     }
   }
 }
@@ -99,8 +110,11 @@ function reconcile(): void {
     return
   }
 
-  pullRemotePins()
-
+  // Push before pull. The pin listener fires synchronously on a local toggle,
+  // so this reconcile runs before the PATCH for that toggle exists anywhere.
+  // The push pass below records the intent (`pending`, then `unconfirmed` via
+  // writePin) — only then may the pull read the page, where those fences stop
+  // the still-stale row from silently reverting the user's action (#74570).
   const current = new Set($pinnedSessionIds.get())
 
   // Unpinned: anything we were tracking that's no longer in the set.
@@ -136,6 +150,8 @@ function reconcile(): void {
       pending.add(id)
     })
   }
+
+  pullRemotePins()
 }
 
 // Sync once, then re-sync on pin-set and session-list changes. Call once per app.

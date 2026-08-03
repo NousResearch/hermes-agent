@@ -112,8 +112,8 @@ def test_flush_persist_override_replaces_api_local_multimodal_note(agent):
 
     agent._flush_messages_to_session_db([{"role": "user", "content": api_content}], [])
 
-    db_write = agent._session_db.append_message.call_args.kwargs
-    assert db_write["content"] == "Describe this screenshot\n[screenshot]"
+    batch = agent._session_db.append_messages_batch.call_args.kwargs["messages"]
+    assert batch[0]["content"] == "Describe this screenshot\n[screenshot]"
     assert api_content[0]["text"] == "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"
 
 
@@ -135,6 +135,17 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
                 self.entered.set()
                 assert self.release.wait(timeout=5)
             self.rows.append(kwargs["content"])
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            with self._lock:
+                self.calls += 1
+                first = self.calls == 1
+            if first:
+                self.entered.set()
+                assert self.release.wait(timeout=5)
+            for m in messages:
+                self.rows.append(m["content"])
+            return list(range(1, len(messages) + 1))
 
     db = _BarrierDB()
     agent._session_db = db
@@ -416,6 +427,25 @@ class TestStripThinkBlocks:
 
 
 
+
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            (
+                "before <tool_call>{x}</function_call> after",
+                "before <tool_call>{x}after",
+            ),
+            (
+                "before <function_calls>{x}</tool_calls> after",
+                "before <function_calls>{x}after",
+            ),
+        ],
+    )
+    def test_mismatched_generic_tool_tags_preserve_opener_and_payload(
+        self, agent, text, expected
+    ):
+        assert agent._strip_think_blocks(text) == expected
 
 
 class TestExtractReasoning:
@@ -3188,6 +3218,93 @@ class TestRunConversation:
         assert "No reply:" in result["final_response"]
 
 
+    def test_empty_response_retry_backoff_interrupted(self, agent, monkeypatch):
+        """If an interrupt is requested during the empty response retry wait, we abort."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp]
+
+        from agent import conversation_loop as _conv_loop
+
+        # Make backoff return 10.0 seconds
+        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 10.0)
+
+        # Trigger the interrupt on the first sleep call inside the wait loop
+        original_sleep = time.sleep
+        sleep_called = []
+
+        def _mock_sleep(seconds):
+            sleep_called.append(seconds)
+            if seconds == 0.2:
+                agent._interrupt_requested = True
+            else:
+                original_sleep(seconds)
+
+        monkeypatch.setattr(time, "sleep", _mock_sleep)
+
+        with (
+            patch.object(agent, "_persist_session") as mock_persist,
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["interrupted"] is True
+        assert "Operation interrupted: retrying empty response from model" in result["final_response"]
+        assert agent._empty_content_retries == 1
+        assert 0.2 in sleep_called
+        assert mock_persist.call_count == 2
+
+    def test_empty_response_retry_backoff_status(self, agent, monkeypatch):
+        """Empty response retry wait updates the agent's status with wait time and sleeps."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+
+        # Two responses: first empty, second succeeds so it doesn't run forever
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        ok_resp = _mock_response(content="Final ok response.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [empty_resp, ok_resp]
+
+        from agent import conversation_loop as _conv_loop
+
+        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 7.5)
+
+        # Fake clock: the retry loop gates on real time.time() < sleep_end, so
+        # a no-op sleep alone busy-spins 7.5 wall-clock seconds. Advance a fake
+        # clock by each sleep amount instead (established pattern:
+        # test_session_activity_persist.py patches run_agent.time.time).
+        clock = {"t": time.time()}
+        monkeypatch.setattr(_conv_loop.time, "time", lambda: clock["t"])
+
+        sleep_calls = []
+
+        def _fake_sleep(secs):
+            sleep_calls.append(secs)
+            clock["t"] += secs
+
+        monkeypatch.setattr(time, "sleep", _fake_sleep)
+        monkeypatch.setattr(_conv_loop.time, "sleep", _fake_sleep)
+
+        status_messages = []
+        monkeypatch.setattr(agent, "_buffer_status", lambda status: status_messages.append(status))
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Final ok response."
+
+        # 7.5s wait, slept in 0.2s increments -> 37.5 -> at least 37 calls
+        assert len([c for c in sleep_calls if c == 0.2]) >= 37
+
+        retry_status = [m for m in status_messages if "Empty response from model — retrying (1/3) in 8s" in m]
+        assert len(retry_status) == 1
+
     def test_partial_stream_recovery_uses_streamed_content(self, agent):
         """When streaming fails after partial delivery, recovered partial content becomes final response."""
         self._setup_agent(agent)
@@ -5485,8 +5602,10 @@ class TestPersistUserMessageOverride:
             "2-3 sentences max. No code blocks or markdown.] Hello there"
         )
         # But the DB write must get the override.
-        first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
-        assert first_db_write["content"] == "Hello there"
+        batch = agent._session_db.append_messages_batch.call_args_list[0].kwargs[
+            "messages"
+        ]
+        assert batch[0]["content"] == "Hello there"
 
 
 class TestReasoningReplayForStrictProviders:
@@ -5804,5 +5923,4 @@ class TestMemoryContextSanitization:
         assert "memory-context" not in result.lower()
         assert "stale observation" not in result
         assert "how is the honcho working" in result
-
 

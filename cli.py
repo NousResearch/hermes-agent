@@ -54,6 +54,7 @@ from hermes_cli.fallback_config import get_fallback_chain
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 from hermes_cli.cli_billing_mixin import CLIBillingMixin
+from agent.interrupt_compat import request_hard_interrupt
 
 # prompt_toolkit for fixed input area TUI
 from prompt_toolkit.history import FileHistory
@@ -1046,7 +1047,14 @@ def _prepare_deferred_agent_startup() -> None:
         from agent.shell_hooks import register_from_config
         from hermes_cli.config import load_config
 
-        register_from_config(load_config(), accept_hooks=_accept_hooks)
+        _hooks_cfg = load_config()
+        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
+
+        from agent.outbound_webhooks import (
+            register_from_config as register_outbound_webhooks,
+        )
+
+        register_outbound_webhooks(_hooks_cfg)
     except Exception:
         logger.debug(
             "shell-hook registration failed at deferred CLI startup",
@@ -2114,8 +2122,9 @@ def _run_state_db_auto_maintenance(session_db) -> None:
     :func:`hermes_cli.config.load_config` (the authoritative loader that
     deep-merges DEFAULT_CONFIG, so unmigrated configs still get default
     values). Honours ``auto_prune`` / ``retention_days`` /
-    ``vacuum_after_prune`` / ``min_interval_hours``, and delegates to the
-    DB. Never raises — maintenance must never block interactive startup.
+    ``vacuum_after_prune`` / ``min_vacuum_interval_days`` /
+    ``min_interval_hours``, and delegates to the DB. Never raises —
+    maintenance must never block interactive startup.
     """
     if session_db is None:
         return
@@ -2164,6 +2173,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
         session_db.maybe_auto_prune_and_vacuum(
             retention_days=int(cfg.get("retention_days", 90)),
             min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+            min_vacuum_interval_days=int(cfg.get("min_vacuum_interval_days", 30)),
             vacuum=bool(cfg.get("vacuum_after_prune", True)),
             sessions_dir=_hermes_home_maint / "sessions",
         )
@@ -4205,6 +4215,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         model: str = None,
         toolsets: List[str] = None,
         provider: str = None,
+        reasoning: str = None,
         api_key: str = None,
         base_url: str = None,
         max_turns: int = None,
@@ -4222,6 +4233,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
             provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
+            reasoning: Reasoning effort override for this run (none|minimal|low|medium|high|xhigh|max|ultra). Wins over config.
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
             max_turns: Maximum tool-calling iterations shared with subagents (default: 500)
@@ -4487,6 +4499,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # shared chokepoint in hermes_constants (Closes #21256).
         from hermes_constants import resolve_reasoning_config
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
+        # An explicit --reasoning wins over config for this run only (never
+        # persisted). Kanban's dispatcher uses it to pin a task's thinking
+        # depth without touching the worker profile's config.yaml. An
+        # unparseable level is ignored with a warning rather than silently
+        # swapping in the default — same contract as the config path.
+        if reasoning is not None and str(reasoning).strip():
+            _cli_reasoning = _parse_reasoning_config(reasoning)
+            if _cli_reasoning is None:
+                logger.warning(
+                    "Unknown --reasoning '%s', keeping the configured level",
+                    reasoning,
+                )
+            else:
+                self.reasoning_config = _cli_reasoning
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
@@ -7303,6 +7329,44 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         os.environ["TERMINAL_CWD"] = recorded
 
         msg = f"↻ Working directory: {recorded}"
+        if quiet:
+            print(msg, file=sys.stderr)
+        else:
+            self._console_print(f"[dim]{_escape(msg)}[/dim]")
+
+    def _restore_session_yolo(self, session_meta: dict, *, quiet: bool = False) -> None:
+        """Re-enable YOLO bypass on resume when the session had it on.
+
+        Companion to ``_restore_session_cwd`` — called from every resume path
+        (startup ``--resume``/``-c`` and mid-chat ``/resume``). The persisted
+        flag lives in the session row's ``model_config.yolo_mode`` (written by
+        ``/yolo`` toggles and ``--yolo`` launches); without this restore the
+        in-memory ``tools.approval._session_yolo`` set starts empty in a fresh
+        process and the user's bypass silently reverts.
+
+        No-op when the flag is absent/false, when YOLO is already active for
+        this session (idempotent across repeated resume paths), or when the
+        process was itself launched with ``--yolo`` (frozen bypass already
+        covers everything).
+        """
+        try:
+            from hermes_state import SessionDB
+            from tools.approval import (
+                _YOLO_MODE_FROZEN,
+                enable_session_yolo,
+                is_session_yolo_enabled,
+            )
+        except Exception:
+            return
+        if _YOLO_MODE_FROZEN:
+            return
+        if not SessionDB.session_yolo_enabled(session_meta):
+            return
+        session_key = self.session_id or "default"
+        if is_session_yolo_enabled(session_key):
+            return
+        enable_session_yolo(session_key)
+        msg = "⚡ YOLO mode restored from session — all commands auto-approved. /yolo to turn off."
         if quiet:
             print(msg, file=sys.stderr)
         else:
@@ -10794,6 +10858,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if is_session_yolo_enabled(old_session_id):
             enable_session_yolo(new_session_id)
             disable_session_yolo(old_session_id)
+            # Carry the persisted flag onto the continuation row so a later
+            # `hermes --resume <new_id>` restores the bypass too. getattr
+            # guard: tests call this unbound against a minimal stand-in.
+            _persist = getattr(self, "_persist_session_yolo", None)
+            if _persist:
+                _persist(new_session_id, True)
 
     def _is_session_yolo_active(self) -> bool:
         """Whether YOLO bypass is currently enabled for this CLI session.
@@ -10845,18 +10915,44 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         )
 
         session_key = self.session_id or "default"
+        # ``getattr`` guard: tests exercise this method unbound against a
+        # minimal stand-in object (see tests/cli/test_cli_yolo_toggle.py);
+        # persistence is best-effort either way.
+        _persist = getattr(self, "_persist_session_yolo", None)
         if is_session_yolo_enabled(session_key):
             disable_session_yolo(session_key)
+            if _persist:
+                _persist(session_key, False)
             _cprint(
                 f"  ⚠ YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
                 " — dangerous commands will require approval."
             )
         else:
             enable_session_yolo(session_key)
+            if _persist:
+                _persist(session_key, True)
             _cprint(
                 f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
                 " — all commands auto-approved. Use with caution."
             )
+
+    def _persist_session_yolo(self, session_key: str, enabled: bool) -> None:
+        """Persist the YOLO flag to the session row so --resume restores it.
+
+        Best-effort: the in-memory toggle is authoritative for this process;
+        persistence only affects a future ``hermes --resume``. Skipped when the
+        session store is unavailable or the row doesn't exist yet (the row is
+        created lazily on the first turn — ``_toggle_yolo`` before any chat
+        writes nothing, and the launch-time ``--yolo`` flag is carried into the
+        creation-time model_config instead).
+        """
+        db = getattr(self, "_session_db", None)
+        if db is None or not session_key or session_key == "default":
+            return
+        try:
+            db.set_session_yolo(session_key, enabled)
+        except Exception:
+            pass
 
 
 
@@ -13203,7 +13299,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._approval_deadline = 0
             self._paint_now()
             _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
-            return "deny"
+            self._persist_prompt_summary(
+                "⚠", "Approval", command, "timed out (no response)",
+            )
+            return "timeout"
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True,
                           smart_denied: bool = False) -> list[str]:
@@ -13235,6 +13334,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "session": "approve_session",
             "always": "always_approve",
             "deny": "deny",
+            "timeout": "timeout",
         }.get(verdict, "deny")
 
     def _handle_approval_selection(self) -> None:
@@ -14830,6 +14930,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Surface any active supply-chain security advisories right after the
         # welcome banner. Quiet/single-query paths call this themselves.
         self._show_security_advisories()
+
+        # First-run: a completely unconfigured install must route into
+        # provider onboarding, not a chat that cannot work. Previously a
+        # keyless `hermes` accepted a message, spun for ~30s, then failed
+        # with a provider-specific error the user never chose. Only fires
+        # on a real TTY; quiet/single-query paths keep their own handling.
+        try:
+            if sys.stdin.isatty() and not self._runtime_credentials_ready():
+                self._offer_first_run_setup()
+        except Exception:
+            logger.debug("first-run setup offer failed", exc_info=True)
+
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.
         if self._resumed:
@@ -15804,7 +15916,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 
                 self._last_ctrl_c_time = now
                 print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
-                self.agent.interrupt()
+                request_hard_interrupt(self.agent)
             # If there's text or images, clear them (like bash).
             # If everything is already empty, exit.
             elif event.app.current_buffer.text or self._attached_images:
@@ -15882,7 +15994,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             if self._agent_running and self.agent:
                 print("\n⚡ Interrupting agent...")
-                self.agent.interrupt()
+                request_hard_interrupt(self.agent)
             elif event.app.current_buffer.text or self._attached_images:
                 event.app.current_buffer.reset()
                 self._attached_images.clear()
@@ -17462,8 +17574,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # minutes (#65998 class).  Never raises.
             _arm_exit_watchdog_on_shutdown_signal()
             try:
-                if getattr(self, "agent", None) and getattr(self, "_agent_running", False):
-                    self.agent.interrupt(f"received signal {signum}")
+                _signal_agent = getattr(self, "agent", None)
+                if _signal_agent is not None and getattr(self, "_agent_running", False):
+                    request_hard_interrupt(
+                        _signal_agent, f"received signal {signum}"
+                    )
                     try:
                         _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
                     except (TypeError, ValueError):
@@ -17654,7 +17769,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # avoids wasted API calls and lets run_conversation clean up).
             if self.agent and getattr(self, '_agent_running', False):
                 try:
-                    self.agent.interrupt()
+                    request_hard_interrupt(self.agent)
                 except Exception:
                     pass
             # Shut down voice recorder (release persistent audio stream)
@@ -17842,6 +17957,7 @@ def main(
     skills: str | list[str] | tuple[str, ...] = None,
     model: str = None,
     provider: str = None,
+    reasoning: str = None,
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,
@@ -17870,6 +17986,7 @@ def main(
         skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
         provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
+        reasoning: Reasoning effort for this run (none|minimal|low|medium|high|xhigh|max|ultra). Overrides agent.reasoning_effort.
         api_key: API key for authentication
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)
@@ -17984,6 +18101,7 @@ def main(
         model=model,
         toolsets=toolsets_list,
         provider=provider,
+        reasoning=reasoning,
         api_key=api_key,
         base_url=base_url,
         max_turns=max_turns,
@@ -18072,7 +18190,7 @@ def main(
         try:
             _agent = getattr(cli, "agent", None)
             if _agent is not None:
-                _agent.interrupt(f"received signal {signum}")
+                request_hard_interrupt(_agent, f"received signal {signum}")
                 try:
                     _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
                 except (TypeError, ValueError):

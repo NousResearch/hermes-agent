@@ -230,6 +230,8 @@ model:
 terminal:
   backend: "local"
   cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
+  # Desktop xterm font. Install the font locally; Nerd Fonts render Powerlevel10k glyphs.
+  # font_family: "MesloLGS NF"  # Also accepts a CSS stack; blank uses bundled JetBrains Mono.
   timeout: 180
   # HOME policy for tool subprocesses:
   #   auto    - default: host uses your real HOME; containers use HERMES_HOME/home
@@ -650,6 +652,25 @@ prompt_caching:
 #                           # extra_body:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
+#
+#   # Auto-generated short session titles after the first exchange.
+#   # Each active Discord/Telegram channel can spawn a background title
+#   # call.  Cap concurrency to keep retries during provider incidents
+#   # from amplifying the request burst.  Leave unset for legacy behavior
+#   # (unlimited).
+#   title_generation:
+#     provider: "auto"
+#     model: ""
+#     # max_concurrency: 2    # Optional: cap simultaneous title calls
+#
+#   # Context compression — summarizes long sessions to shrink the prompt.
+#   # Heavy and often hits the slowest provider chain.  Setting a small
+#   # cap prevents many sessions from compressing simultaneously during
+#   # provider degradation.  Leave unset for legacy behavior (unlimited).
+#   compression:
+#     provider: "auto"
+#     model: ""
+#     # max_concurrency: 2    # Optional: cap simultaneous compression calls
 
 # =============================================================================
 # Persistent Memory
@@ -809,6 +830,21 @@ agent:
   # Fires once per run when inactivity reaches this threshold (seconds).
   # Set to 0 to disable the warning.
   # gateway_timeout_warning: 900
+
+  # Session stall watchdog (seconds). When a busy session has a pending
+  # inbound follow-up and the agent activity clock is idle this long, the
+  # gateway logs a WARNING and notifies the user to try /new. Does not kill
+  # the turn (see gateway_timeout). 0 = disable. Default 300.
+  # session_stall_timeout: 300
+
+  # Related in-agent compression timeouts (they live under the top-level
+  # compression: block, shown here for discoverability next to the stall
+  # watchdog they complement — a hung compression is a common stall cause):
+  # compression:
+  #   context_timeout_seconds: 120          # inactivity budget for in-agent
+  #                                         # compress_context (0 = disable)
+  #   context_total_ceiling_seconds: 600    # absolute cap on the pre-commit
+  #                                         # wait even while tokens stream
 
   # Graceful drain timeout for gateway stop/restart (seconds).
   # Default 0 = no drain: a restart interrupts in-flight agents immediately,

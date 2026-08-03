@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 from agent.context_compressor import ContextCompressor
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
+from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     fetch_model_metadata,
@@ -765,6 +766,9 @@ def init_agent(
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
     agent._interrupt_message = None  # Optional message that triggered interrupt
+    # Explicit hard cancellation is separate from redirect/message state. A
+    # thread-safe Event makes the cause atomic for auxiliary stream pollers.
+    agent._hard_interrupt_requested = threading.Event()
     agent._execution_thread_id: int | None = None  # Set at run_conversation() start
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()
@@ -851,15 +855,13 @@ def init_agent(
     try:
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
 
+        from agent.agent_runtime_helpers import cache_ttl_means_disabled
+
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
-        elif (
-            _ttl is False
-            or _ttl is None
-            or str(_ttl).lower() in ("off", "false", "disabled", "no", "none")
-        ):
+        elif cache_ttl_means_disabled(_ttl):
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
             agent._cache_ttl = None
@@ -882,6 +884,11 @@ def init_agent(
     # notifications to show progress.
     agent._last_activity_ts: float = time.time()
     agent._last_activity_desc: str = "initializing"
+    # Default / unmigrated paths and _touch_activity stamp unknown; named
+    # provenances are stamped by compression writers (heartbeat / timeout / cooldown).
+    agent._last_activity_provenance = ActivityProvenance.UNKNOWN
+    # Rate-limit durable SessionDB activity stamps from _touch_activity (#72016).
+    agent._session_activity_last_persist_mono: float = 0.0
     agent._current_tool: str | None = None
     agent._api_call_count: int = 0
     # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
@@ -1573,6 +1580,17 @@ def init_agent(
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
     }
+    # Persist a process-scoped --yolo launch into the session row so a later
+    # `hermes --resume <id>` can restore the bypass (CLI resume paths read
+    # model_config.yolo_mode back via SessionDB.session_yolo_enabled).
+    # Session-scoped /yolo toggles persist separately through
+    # SessionDB.set_session_yolo at toggle time.
+    try:
+        from tools.approval import _YOLO_MODE_FROZEN
+        if _YOLO_MODE_FROZEN:
+            agent._session_init_model_config["yolo_mode"] = True
+    except Exception:
+        pass
     
     # In-memory todo list for task planning (one per agent/session)
     from tools.todo_tool import TodoStore

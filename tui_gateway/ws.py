@@ -303,6 +303,14 @@ async def handle_ws(ws: Any) -> None:
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
 
+        # resolve_skin() reads config + initializes the skin engine —
+        # synchronous I/O + CPU work that should not block the event loop
+        # during the cold-start window. Run it in the thread pool so the
+        # WS read loop stays free to drain the frontend's initial RPC
+        # burst (setup.status, session.list, ...) without a stall
+        # (#60800). The skin payload is small (a dict of strings/arrays),
+        # so the to_thread overhead is negligible.
+        skin_payload = await asyncio.to_thread(server.resolve_skin)
         ready_ok = await transport.write_async(
             {
                 "jsonrpc": "2.0",
@@ -312,7 +320,7 @@ async def handle_ws(ws: Any) -> None:
                     # change_events: this backend broadcasts pet.changed /
                     # cron.changed / sessions.changed, so clients can demote
                     # their legacy polls to slow backstops.
-                    "payload": {"skin": server.resolve_skin(), "change_events": True},
+                    "payload": {"skin": skin_payload, "change_events": True},
                 },
             }
         )

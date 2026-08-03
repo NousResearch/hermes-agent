@@ -316,6 +316,14 @@ _EXTRA_ENV_KEYS = frozenset({
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
     "LANGFUSE_BASE_URL",
+    # ACP (Agent Client Protocol) keys — profile-isolable so different
+    # profiles can use different ACP backends without cross-leak.
+    "HERMES_ACP_AUTH_METHOD",
+    "HERMES_ACP_AUTO_APPROVE",
+    "HERMES_COPILOT_ACP_COMMAND",
+    "HERMES_COPILOT_ACP_ARGS",
+    "COPILOT_CLI_PATH",
+    "COPILOT_ACP_BASE_URL",
 })
 import yaml
 
@@ -4099,10 +4107,36 @@ def reload_env() -> int:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
-    # Check environment first
-    if key in os.environ:
-        return os.environ[key]
+    """Get a value from ``os.environ`` or ``~/.hermes/.env``, scope-aware.
+
+    The ``os.environ`` read routes through ``agent.secret_scope.get_secret``
+    so that, under an active profile scope (multiplexed gateway turn), this
+    is scope-checked rather than leaking another profile's raw ``os.environ``
+    value. ``get_secret`` encodes the whole policy: global vars pass through;
+    scope is authoritative under multiplexing (miss -> None, no environ
+    fallthrough); when multiplexing is off it behaves exactly like the
+    legacy ``os.environ`` read. Its siblings ``get_env_value_prefer_dotenv``
+    and ``gateway.config._getenv`` already work this way — this was the last
+    scope-blind reader of the trio (#67027).
+    """
+    try:
+        from agent.secret_scope import (
+            UnscopedSecretError,
+            get_secret as _get_secret,
+        )
+    except Exception:
+        if key in os.environ:
+            return os.environ[key]
+        return load_env().get(key)
+
+    try:
+        val = _get_secret(key)
+    except UnscopedSecretError:
+        raise
+    except Exception:
+        val = os.environ.get(key)
+    if val is not None:
+        return val
 
     # Then check .env file
     env_vars = load_env()

@@ -7,12 +7,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
 import { writeClipboardText } from '@/components/ui/copy-button'
+import { markRightPanePerf } from '@/debug/right-pane-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
 import { $terminalInjection } from '../store'
 
+import { observeActiveTerminalResize } from './active-resize'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
@@ -24,7 +26,9 @@ import {
   terminalSelectionLabel,
   terminalTheme
 } from './selection'
+import { prepareTerminalFontFamily } from './terminal-font'
 import { closeTerminal, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
+import { useTerminalFontController } from './use-terminal-font'
 
 // How many scrollback lines to serialize for relaunch restore. Mirrors VS Code's
 // terminal.integrated.persistentSessionScrollback default; the store caps the
@@ -411,6 +415,7 @@ export function useTerminalSession({
   // drag-and-drop paths, or an injected command). Gates idle-buffer handling in
   // persistSnapshot so an untouched tab never re-saves an accumulating snapshot.
   const hasSessionActivityRef = useRef(false)
+  const initialActiveRef = useRef(active)
   const shellNameRef = useRef('shell')
   const selectionLabelRef = useRef('')
   const selectionRef = useRef('')
@@ -418,7 +423,9 @@ export function useTerminalSession({
   const onShellRef = useRef(onShell)
   // Re-fit on activation: a tab hidden via display:none has a 0×0 host, so its
   // last fit is stale by the time it's shown again.
-  const fitRef = useRef<(() => void) | null>(null)
+  const fitRef = useRef<((visible: boolean) => void) | null>(null)
+  const initialActiveFitRef = useRef(false)
+  const { latestFontFamilyRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
   const [status, setStatus] = useState<TerminalStatus>('starting')
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
@@ -511,7 +518,7 @@ export function useTerminalSession({
       allowTransparency: false,
       convertEol: true,
       cursorBlink: true,
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
+      fontFamily: latestFontFamilyRef.current,
       fontSize: 11,
       // VS Code's terminal renders 'normal'/'bold' (400/700); we were using Medium
       // (500) as the base, which reads a touch heavy at this size.
@@ -739,55 +746,27 @@ export function useTerminalSession({
       term.write(next)
     }
 
-    const fitAndResize = () => {
+    const fitAndResize = (visible: boolean) => {
       if (disposed || !host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
         return
       }
 
       try {
         fit.fit()
+        markRightPanePerf(visible ? 'terminal-fit-active' : 'terminal-fit-hidden', id)
       } catch {
         return
       }
 
-      const id = sessionIdRef.current
+      const sessionId = sessionIdRef.current
 
-      if (id && (lastSentSize?.cols !== term.cols || lastSentSize?.rows !== term.rows)) {
+      if (sessionId && (lastSentSize?.cols !== term.cols || lastSentSize?.rows !== term.rows)) {
         lastSentSize = { cols: term.cols, rows: term.rows }
-        void terminalApi.resize(id, { cols: term.cols, rows: term.rows })
+        void terminalApi.resize(sessionId, { cols: term.cols, rows: term.rows })
       }
     }
 
     fitRef.current = fitAndResize
-
-    // Coalesce ResizeObserver bursts through rAF — running fit.fit()
-    // synchronously while sibling panes are mid-transition (e.g. file browser
-    // collapsing to 0px) crashes the WebGL renderer mid texture-atlas rebuild.
-    let pendingFrame = 0
-
-    const scheduleResize = () => {
-      if (pendingFrame) {
-        return
-      }
-
-      pendingFrame = window.requestAnimationFrame(() => {
-        pendingFrame = 0
-
-        if (!disposed) {
-          fitAndResize()
-        }
-      })
-    }
-
-    const resizeObserver = new ResizeObserver(scheduleResize)
-    resizeObserver.observe(host)
-    cleanup.push(() => {
-      resizeObserver.disconnect()
-
-      if (pendingFrame) {
-        window.cancelAnimationFrame(pendingFrame)
-      }
-    })
 
     const dataDisposable = term.onData(data => {
       hasSessionActivityRef.current = true
@@ -898,9 +877,7 @@ export function useTerminalSession({
           )
 
           window.requestAnimationFrame(() => {
-            fitAndResize()
             term.clearSelection() // drop any selection painted over transient boot rows
-            term.focus()
           })
         })
         .catch(error => {
@@ -918,6 +895,7 @@ export function useTerminalSession({
       }
 
       term.open(host)
+      mountedRef.current = true
       term.focus()
 
       // WebGL renderer matches the dashboard ChatPage path; xterm's default DOM
@@ -934,22 +912,26 @@ export function useTerminalSession({
         console.warn('[hermes-terminal] WebGL unavailable; falling back to DOM', err)
       }
 
-      fitAndResize()
+      fitAndResize(initialActiveRef.current)
+      initialActiveFitRef.current = initialActiveRef.current
       startSession()
     }
 
-    // fonts.ready settles only already-requested faces; the regular (400),
-    // bold (700) and italic aren't asked for until styled output paints (past
-    // atlas init), so warm them up front — otherwise the WebGL atlas bakes a
-    // fallback face and the terminal renders thin until a repaint.
-    const warm = document.fonts?.load
-      ? Promise.allSettled(['400', '700', 'italic 400'].map(v => document.fonts.load(`${v} 11px 'JetBrains Mono'`)))
-      : Promise.resolve()
+    void prepareTerminalFontFamily(
+      () => latestFontFamilyRef.current,
+      () => !disposed && host.isConnected
+    ).then(fontFamily => {
+      if (!fontFamily) {
+        return
+      }
 
-    void warm.then(mount, mount)
+      term.options.fontFamily = fontFamily
+      mount()
+    })
 
     return () => {
       disposed = true
+      mountedRef.current = false
       cleanup.forEach(run => run())
       fitRef.current = null
 
@@ -970,7 +952,7 @@ export function useTerminalSession({
     // `id` is stable for the instance's life (keyed by tab id), so listing it
     // doesn't re-create the shell — it just satisfies the deps check for the
     // closeTerminal(id) call in onExit.
-  }, [addSelectionToChat, cwd, id])
+  }, [addSelectionToChat, cwd, id, latestFontFamilyRef, mountedRef])
 
   useEffect(() => {
     const term = termRef.current
@@ -1006,24 +988,39 @@ export function useTerminalSession({
     return term ? registerTerminalReader(id, makeTerminalReader(term)) : undefined
   }, [id, status])
 
-  // On (re)activation: a WebGL terminal doesn't paint while visibility:hidden, so
-  // it reveals a stale/garbled frame. Refit, rebuild the glyph atlas, and force a
-  // full redraw against the live buffer, then focus.
+  // Only the active terminal observes its host. Every terminal stays mounted
+  // (PTY + scrollback preserved), but hidden tabs do no FitAddon/layout work.
+  // Re-activation owns one fit + atlas rebuild + redraw.
+  // eslint-disable-next-line no-restricted-syntax -- lifecycle flag prevents a duplicate first-mount fit
   useEffect(() => {
     if (!active || status !== 'open') {
+      if (!active) {
+        initialActiveFitRef.current = false
+      }
+
       return
     }
 
-    const frame = requestAnimationFrame(() => {
-      const term = termRef.current
+    const host = hostRef.current
 
-      fitRef.current?.()
-      webglRef.current?.clearTextureAtlas()
-      term?.refresh(0, term.rows - 1)
-      term?.focus()
+    if (!host) {
+      return
+    }
+
+    const fitOnActivate = !initialActiveFitRef.current
+    initialActiveFitRef.current = false
+
+    return observeActiveTerminalResize(host, {
+      fitOnActivate,
+      onFit: () => fitRef.current?.(true),
+      onActivate: () => {
+        const term = termRef.current
+
+        webglRef.current?.clearTextureAtlas()
+        term?.refresh(0, term.rows - 1)
+        term?.focus()
+      }
     })
-
-    return () => cancelAnimationFrame(frame)
   }, [active, status])
 
   // Flush a queued command (e.g. a provider-disconnect) into the live session.

@@ -238,6 +238,35 @@ class TestDiscoveryShape:
         assert [r["session_id"] for r in result["results"]] == ["same_user_old"]
         assert result["results"][0]["same_origin"] is True
 
+    def test_group_context_search_defaults_to_current_session_key_for_trigram_cjk(self, db):
+        if not db._trigram_available:
+            pytest.skip("trigram tokenizer unavailable in this build")
+        db._fts_cjk_available = False
+        db.create_session("current", source="signal")
+        db._conn.execute(
+            "UPDATE sessions SET chat_id=?, chat_type=?, display_name=?, session_key=? WHERE id=?",
+            ("chat-a", "group", "Group A", "signal:group:chat-a:user-a", "current"),
+        )
+        db.create_session("same_user_old", source="signal")
+        db._conn.execute(
+            "UPDATE sessions SET chat_id=?, chat_type=?, display_name=?, title=?, session_key=? WHERE id=?",
+            ("chat-a", "group", "Group A", "Group A CJK", "signal:group:chat-a:user-a", "same_user_old"),
+        )
+        db.append_message("same_user_old", role="user", content="关于大别山项目的本地记录")
+        db.create_session("foreign", source="signal")
+        db._conn.execute(
+            "UPDATE sessions SET chat_id=?, chat_type=?, display_name=?, title=?, session_key=? WHERE id=?",
+            ("chat-b", "group", "Group B", "Group B CJK", "signal:group:chat-b:user-a", "foreign"),
+        )
+        db.append_message("foreign", role="user", content="关于大别山项目的外部记录")
+        db._conn.commit()
+
+        result = json.loads(session_search(query="大别山项目", db=db, current_session_id="current"))
+
+        assert result["scope"] == "chat"
+        assert [r["session_id"] for r in result["results"]] == ["same_user_old"]
+        assert result["results"][0]["same_origin"] is True
+
     def test_group_context_search_defaults_to_current_chat_when_no_session_key(self, db):
         db.create_session("current", source="signal")
         db._conn.execute(

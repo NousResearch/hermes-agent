@@ -1694,6 +1694,12 @@ class SessionSearchMixin:
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
+                if session_key:
+                    tri_where.append("s.session_key = ?")
+                    tri_params.append(session_key)
+                elif chat_id:
+                    tri_where.append("s.chat_id = ?")
+                    tri_params.append(chat_id)
                 tri_sql = f"""
                     SELECT
                         m.id,

@@ -4,7 +4,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
-import { type ComposerAttachment } from '@/store/composer'
+import { type ComposerAttachment, expandComposerDraftWithTerminalContext } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
@@ -182,11 +182,13 @@ export function useComposerQueue({
       return false
     }
 
-    // Keep the raw draft (including `@terminal:` chips). Drain goes through
-    // submit, which expands from `$composerTerminalSelections`. Pre-expanding
-    // here would duplicate fences on the no-remount path because clearDraft
-    // does not clear that map (#77078).
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
+    // Expand `@terminal:` chips before enqueue so the queued entry stays
+    // self-contained across remount/reload (the selection map is memory-only
+    // while the queue is persisted). Drain submit skips fences already present
+    // so this does not double-expand on the live path (#77078).
+    const expanded = text.trim() ? expandComposerDraftWithTerminalContext(text) : text
+
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: expanded, attachments })) {
       return false
     }
 

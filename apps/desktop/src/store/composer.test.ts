@@ -59,6 +59,18 @@ describe('terminal selection expansion', () => {
     expect(twice).toBe(once)
   })
 
+  it('only prepends missing fences when one chip is already expanded', () => {
+    setComposerTerminalSelection('zsh:1-2', 'first block')
+    setComposerTerminalSelection('zsh:3-4', 'second block')
+
+    const partial =
+      '```terminal\nfirst block\n```\n\nsee @terminal:`zsh:1-2` and @terminal:`zsh:3-4`'
+
+    expect(expandComposerDraftWithTerminalContext(partial)).toBe(
+      '```terminal\nsecond block\n```\n\n```terminal\nfirst block\n```\n\nsee @terminal:`zsh:1-2` and @terminal:`zsh:3-4`'
+    )
+  })
+
   it('drops chips whose selection text is missing from the map', () => {
     expect(expandComposerDraftWithTerminalContext('@terminal:`zsh:1-2`')).toBe('@terminal:`zsh:1-2`')
     expect(missingComposerTerminalSelectionLabels('@terminal:`zsh:1-2`')).toEqual(['zsh:1-2'])

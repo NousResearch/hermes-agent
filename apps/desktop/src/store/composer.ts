@@ -376,26 +376,26 @@ export function missingComposerTerminalSelectionLabels(draft: string) {
 
 /**
  * Expand `@terminal:` chips into fenced selection blocks, matching the idle
- * submit path in `submit.ts`. Busy-turn steer/redirect must use this so the
- * agent receives the selected lines, not just the bare token (#77078).
+ * submit path in `submit.ts`. Busy-turn steer/redirect and queue enqueue must
+ * use this so the agent receives the selected lines, not just the bare token
+ * (#77078).
  *
- * Idempotent: if the draft already contains the fenced blocks (e.g. a failed
- * steer that was re-queued), returns the draft unchanged so a later submit
- * expand cannot duplicate them.
+ * Per-block idempotent: only prepends fences not already present in the draft
+ * (failed-steer re-queue, or a draft that already expanded one of several chips).
  */
 export function expandComposerDraftWithTerminalContext(draft: string) {
   const visible = draft.trim()
-  const blocks = terminalContextBlocksFromDraft(draft)
+  const missingBlocks = terminalContextBlocksFromDraft(draft).filter(block => !draft.includes(block))
 
-  if (blocks.length === 0) {
+  if (missingBlocks.length === 0) {
     return visible
   }
 
-  if (blocks.every(block => draft.includes(block))) {
-    return visible
+  if (!visible) {
+    return missingBlocks.join('\n\n')
   }
 
-  return `${blocks.join('\n\n')}\n\n${visible}`
+  return `${missingBlocks.join('\n\n')}\n\n${visible}`
 }
 
 export function clearComposerTerminalSelections() {

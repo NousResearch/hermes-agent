@@ -1176,6 +1176,34 @@ def test_system_usage_meter_caches_dual_provider_reading(monkeypatch):
     assert sorted(calls) == ["anthropic", "openai-codex"]
 
 
+def test_system_usage_meter_observes_only_a_fresh_successful_reading(monkeypatch):
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+    observed: list[tuple[dict, dict]] = []
+
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_account_usage",
+        lambda provider: AccountUsageSnapshot(
+            provider=provider,
+            source="test",
+            fetched_at=datetime.now().astimezone(),
+            windows=(AccountUsageWindow(label="Session", used_percent=10),),
+        ),
+    )
+    monkeypatch.setattr(server, "_usage_meter_cache", None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"gateway": {"usage_meter_notifications": {"enabled": True}}})
+    monkeypatch.setattr(
+        "gateway.usage_meter_notifications.observe_usage_meter_reading",
+        lambda reading, config: observed.append((reading, config)),
+    )
+
+    server._methods["system.usage_meter"]("u-notify-1", {})
+    server._methods["system.usage_meter"]("u-notify-2", {})
+
+    assert len(observed) == 1
+    assert observed[0][0]["claude"]["windows"] == [{"label": "Session", "used_percent": 10}]
+
+
 def test_system_usage_meter_discards_malformed_windows(monkeypatch):
     malformed = types.SimpleNamespace(
         available=True,

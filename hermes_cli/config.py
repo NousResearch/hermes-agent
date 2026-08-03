@@ -3128,6 +3128,15 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Opt-in only: when the TUI refreshes a successfully fetched Claude or
+        # Codex account-usage value that differs from the prior reading, send a
+        # combined Kanban status report through the server-side Discord path.
+        # ``target`` must be an explicit numeric Discord channel (optionally a
+        # thread), e.g. ``discord:123456789012345678``.
+        "usage_meter_notifications": {
+            "enabled": False,
+            "target": "",
+        },
         # Durable delivery-obligation ledger: final agent responses are
         # recorded in state.db around the platform send, and a gateway that
         # died between finalize and platform ACK redelivers the stored

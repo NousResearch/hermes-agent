@@ -14823,6 +14823,7 @@ def _(rid, params: dict) -> dict:
             )
         return {"available": bool(windows), "windows": windows}
 
+    fresh_result = None
     with _usage_meter_cache_lock:
         now = time.monotonic()
         if _usage_meter_cache and now - _usage_meter_cache[0] < _USAGE_METER_CACHE_SECONDS:
@@ -14837,6 +14838,16 @@ def _(rid, params: dict) -> dict:
                 except Exception:
                     result[name] = {"available": False, "windows": []}
         _usage_meter_cache = (now, result)
+        fresh_result = result
+    # The TUI is only the polling client. Changed readings are observed and
+    # delivered from this server-side path, where the gateway's existing
+    # outbound adapter/standalone sender can use its configured credential.
+    try:
+        from gateway.usage_meter_notifications import observe_usage_meter_reading
+
+        observe_usage_meter_reading(fresh_result, _load_cfg())
+    except Exception:
+        logger.debug("usage-meter notification observation failed", exc_info=True)
     return _ok(rid, result)
 
 

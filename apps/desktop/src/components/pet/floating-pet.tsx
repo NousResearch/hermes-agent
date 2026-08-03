@@ -145,7 +145,7 @@ export function FloatingPet() {
     // pet.changed already carries the meta payload — an enabled=false
     // broadcast clears the mascot with zero round-trips, and an unchanged
     // revision (scale-only move still changes the sig) short-circuits below
-    // via samePetRevision.
+    // via hasPetSpriteForMeta + mergePetInfoMeta.
     if (changeEventsAvailable && petChange.tick > 0 && petChange.meta?.enabled === false) {
       setPetInfo({ enabled: false })
 

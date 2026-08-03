@@ -631,18 +631,21 @@ class CredentialPool:
 
         Like :meth:`has_available`, expired cooldowns are left uncleared
         (``clear_expired=False``); the only writes are the same
-        re-auth/token sync paths ``has_available`` already performs.
+        re-auth/token sync paths ``has_available`` already performs — which
+        is exactly why this must run under ``self._lock`` like every other
+        ``_available_entries`` caller (see the comment on ``has_available``).
         """
-        if self._available_entries():
-            return None
-        candidates: List[float] = []
-        for entry in self._entries:
-            if entry.last_status != STATUS_EXHAUSTED:
-                continue
-            until = _exhausted_until(entry)
-            if until is not None:
-                candidates.append(until)
-        return min(candidates) if candidates else None
+        with self._lock:
+            if self._available_entries():
+                return None
+            candidates: List[float] = []
+            for entry in self._entries:
+                if entry.last_status != STATUS_EXHAUSTED:
+                    continue
+                until = _exhausted_until(entry)
+                if until is not None:
+                    candidates.append(until)
+            return min(candidates) if candidates else None
 
     def entries(self) -> List[PooledCredential]:
         with self._lock:

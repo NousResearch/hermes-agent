@@ -647,6 +647,37 @@ class TestPromptCacheKeyCapability:
 
         assert body["prompt_cache_key"] == kwargs["prompt_cache_key"]
 
+    def test_openai_api_base_url_implies_capability(self, transport):
+        """api.openai.com gets the key WITHOUT an explicit flag (exact host)."""
+        kwargs = transport.build_kwargs(
+            model="gpt-cache-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            session_id="cron_job_2026-07-15T10:07:00Z",
+            base_url="https://api.openai.com/v1",
+        )
+
+        assert kwargs["prompt_cache_key"].startswith("pck_")
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://myproxy.example.com/api.openai.com/v1",  # host embedded in path
+            "https://api.openai.com.evil.example/v1",  # prefix-spoofed host
+            "https://eastus.api.cognitive.microsoft.com/openai/v1",  # Azure
+        ],
+    )
+    def test_non_openai_hosts_do_not_imply_capability(self, transport, base_url):
+        kwargs = transport.build_kwargs(
+            model="strict-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            session_id="cron_job_2026-07-15T10:08:00Z",
+            base_url=base_url,
+        )
+
+        assert "prompt_cache_key" not in kwargs
+
     @pytest.mark.parametrize("provider", [None, "anthropic", "custom"])
     def test_default_off_never_leaks_unknown_body_field(self, transport, provider):
         from providers import get_provider_profile

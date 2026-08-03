@@ -45,6 +45,10 @@ from typing import Callable
 
 from hermes_cli.plugin_activation import PluginActivationState
 from providers.base import OMIT_TEMPERATURE, ProviderProfile  # noqa: F401
+from providers._core_identities import (
+    PROFILELESS_CORE_PROVIDER_ALIASES,
+    PROFILELESS_CORE_PROVIDER_IDS,
+)
 from utils import atomic_json_write, env_var_enabled, fast_safe_load
 
 logger = logging.getLogger(__name__)
@@ -268,6 +272,11 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 
     Returns None if the provider has no profile (falls back to generic).
     """
+    build_state = getattr(_BUILD_LOCAL, "state", None)
+    if isinstance(build_state, _ProviderBuildState):
+        canonical = build_state.aliases.get(name, name)
+        return build_state.registry.get(canonical)
+
     snapshot = _ensure_providers_discovered()
     if snapshot is None:
         with _DISCOVERY_LOCK:
@@ -280,6 +289,10 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name)."""
     global _PROVIDER_LIST_CACHE
+    build_state = getattr(_BUILD_LOCAL, "state", None)
+    if isinstance(build_state, _ProviderBuildState):
+        return _dedupe_profiles(build_state.registry.values())
+
     snapshot = _ensure_providers_discovered()
     if snapshot is not None:
         return list(snapshot.profiles)
@@ -890,11 +903,35 @@ def _discover_providers(
                 candidates.append(_provider_plugin(child, source))
 
         grouped: dict[str, list[_ProviderPlugin]] = {}
+        # Static core implementations and profiles registered outside plugin
+        # discovery are trusted owners.  An inactive external manifest may
+        # declare their IDs for an override, but cannot turn the declaration
+        # itself into an activation deny for the underlying implementation.
+        # Bundled manifests remain activation-managed even when auth also has
+        # static implementation metadata for the same ID.
+        bundled_declared_provider_ids = {
+            provider_id
+            for plugin in candidates
+            if plugin.source == "bundled"
+            for provider_id in plugin.provider_ids
+        }
+        trusted_implementation_ids = set(PROFILELESS_CORE_PROVIDER_IDS)
+        trusted_implementation_ids.update(build_state.registry)
+        activation_exempt_ids = (
+            trusted_implementation_ids - bundled_declared_provider_ids
+        )
+        trusted_aliases = dict(PROFILELESS_CORE_PROVIDER_ALIASES)
+        trusted_aliases.update(build_state.aliases)
+        activation_exempt_ids.update(
+            alias
+            for alias, canonical in trusted_aliases.items()
+            if canonical in activation_exempt_ids
+        )
         managed_provider_ids: set[str] = set(
             _OBSERVED_PROVIDER_IDS_BY_SCOPE.get(scope_identity, ())
-        )
+        ) - activation_exempt_ids
         known_provider_ids: set[str] = set(managed_provider_ids)
-        bundled_provider_ids: set[str] = set()
+        bundled_provider_ids: set[str] = set(bundled_declared_provider_ids)
         active_provider_ids: set[str] = set()
         for plugin in candidates:
             # Credential names are declarative security metadata, not an
@@ -920,7 +957,10 @@ def _discover_providers(
             known_provider_ids.update((plugin.path.name, plugin.name))
             if plugin.source == "bundled":
                 managed_provider_ids.update(plugin.provider_ids)
-                bundled_provider_ids.update(plugin.provider_ids)
+            else:
+                managed_provider_ids.update(
+                    plugin.provider_ids - activation_exempt_ids
+                )
 
         for key, plugins in grouped.items():
             statuses = [
@@ -967,8 +1007,10 @@ def _discover_providers(
                     )
                     active_provider_ids.add(profile.name)
                     active_provider_ids.update(profile.aliases)
-                    managed_provider_ids.add(profile.name)
-                    managed_provider_ids.update(profile.aliases)
+                    registered_ids = {profile.name, *profile.aliases}
+                    if plugin.source != "bundled":
+                        registered_ids.difference_update(activation_exempt_ids)
+                    managed_provider_ids.update(registered_ids)
                     known_provider_ids.add(profile.name)
                     known_provider_ids.update(profile.aliases)
                     if plugin.source == "bundled":
@@ -1031,8 +1073,10 @@ def _discover_providers(
                             )
                             active_provider_ids.add(profile.name)
                             active_provider_ids.update(profile.aliases)
-                            managed_provider_ids.add(profile.name)
-                            managed_provider_ids.update(profile.aliases)
+                            managed_provider_ids.update(
+                                {profile.name, *profile.aliases}
+                                - activation_exempt_ids
+                            )
                             known_provider_ids.add(profile.name)
                             known_provider_ids.update(profile.aliases)
                         _IMPORTED_PROVIDER_MODULES.add(module_name)
@@ -1061,8 +1105,8 @@ def _discover_providers(
         observed_ids = _OBSERVED_PROVIDER_IDS_BY_SCOPE.setdefault(
             scope_identity, set()
         )
+        observed_ids.difference_update(activation_exempt_ids)
         observed_ids.update(managed_provider_ids)
-        observed_ids.update(active_provider_ids)
         managed_provider_ids.update(observed_ids)
         known_provider_ids.update(observed_ids)
 

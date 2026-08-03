@@ -101,6 +101,82 @@ def test_dashboard_toggle_response_keeps_input_name_and_adds_key(monkeypatch):
     assert result["key"] == "image_gen/xai"
 
 
+def test_dashboard_enable_clears_manifest_deny_without_reviving_colliding_key(
+    monkeypatch,
+):
+    key = "web/firecrawl"
+    candidates = [
+        ("legacy-firecrawl", "1.0.0", "", "bundled", None, key, "backend"),
+        ("web-firecrawl", "2.0.0", "", "user", None, key, "backend"),
+        (
+            "video-firecrawl",
+            "1.0.0",
+            "",
+            "bundled",
+            None,
+            "legacy-firecrawl",
+            "backend",
+        ),
+    ]
+    saved = {}
+
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_resolve_plugin_key_and_source",
+        lambda _name: (key, "user", "web-firecrawl", "backend"),
+    )
+    monkeypatch.setattr(plugins_cmd, "_discover_plugin_candidates", lambda: candidates)
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_get_enabled_set",
+        lambda: {key, "legacy-firecrawl"},
+    )
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_get_disabled_set",
+        lambda: {"legacy-firecrawl", "unrelated-plugin"},
+    )
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_save_enabled_set",
+        lambda value: saved.__setitem__("enabled", set(value)),
+    )
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_save_disabled_set",
+        lambda value: saved.__setitem__("disabled", set(value)),
+    )
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_toggle_plugin_toolset",
+        lambda *args, **kwargs: None,
+    )
+
+    result = plugins_cmd.dashboard_set_agent_plugin_enabled(key, enabled=True)
+
+    assert result["unchanged"] is False
+    assert saved == {
+        "enabled": {key, "legacy-firecrawl"},
+        "disabled": {"unrelated-plugin", "video-firecrawl"},
+    }
+
+
+def test_toggle_group_status_honors_lower_candidate_manifest_deny():
+    key = "web/firecrawl"
+
+    status = plugins_cmd._plugin_status(
+        "web-firecrawl",
+        {key},
+        {"legacy-firecrawl"},
+        key=key,
+        source="user",
+        kind="backend",
+        aliases={key, "web-firecrawl", "legacy-firecrawl"},
+    )
+
+    assert status == "disabled"
+
+
 def test_discover_all_plugins_includes_entrypoint_plugins(monkeypatch, tmp_path):
     bundled_dir = tmp_path / "bundled"
     user_dir = tmp_path / "user"

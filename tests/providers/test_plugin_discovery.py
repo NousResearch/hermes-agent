@@ -157,6 +157,7 @@ def _write_user_provider(
     aliases: tuple[str, ...] = (),
     marker: Path | None = None,
     fail_after_register: bool = False,
+    provider_ids: tuple[str, ...] | None = None,
 ) -> None:
     plugin_dir = home / "plugins" / "model-providers" / name
     plugin_dir.mkdir(parents=True)
@@ -186,7 +187,7 @@ def _write_user_provider(
     (plugin_dir / "plugin.yaml").write_text(
         f"name: {name}\n"
         "kind: model-provider\n"
-        f"provider_ids: [{name}]\n",
+        f"provider_ids: [{', '.join(provider_ids or (name,))}]\n",
         encoding="utf-8",
     )
 
@@ -234,6 +235,48 @@ def test_user_provider_is_not_imported_until_explicitly_enabled(
 
     assert providers.get_provider_profile("opt-in-provider") is not None
     assert marker.read_text(encoding="utf-8") == "imported"
+
+
+def test_provider_plugin_can_query_in_progress_registry_during_import(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_user_provider(
+        home,
+        "openrouter",
+        base_url="https://registry-reader.example/v1",
+    )
+    plugin_dir = home / "plugins" / "model-providers" / "openrouter"
+    (plugin_dir / "__init__.py").write_text(
+        "from providers import (\n"
+        "    get_provider_profile, list_providers, register_provider,\n"
+        ")\n"
+        "from providers.base import ProviderProfile\n"
+        "assert get_provider_profile('openrouter') in list_providers()\n"
+        "profile = ProviderProfile(\n"
+        "    name='openrouter',\n"
+        "    aliases=('registry-reader-alias',),\n"
+        "    env_vars=('REGISTRY_READER_API_KEY',),\n"
+        "    base_url='https://registry-reader.example/v1',\n"
+        ")\n"
+        "register_provider(profile)\n"
+        "assert get_provider_profile('registry-reader-alias') is profile\n"
+        "assert profile in list_providers()\n",
+        encoding="utf-8",
+    )
+    _write_activation(home, enabled=("model-providers/openrouter",))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+
+    providers.invalidate_provider_discovery()
+
+    assert (
+        providers.get_provider_profile("registry-reader-alias").base_url
+        == "https://registry-reader.example/v1"
+    )
 
 
 def test_provider_discovery_refreshes_when_profile_home_changes(
@@ -412,19 +455,14 @@ def test_inactive_external_manifest_cannot_suppress_static_provider(
 ):
     home = tmp_path / "home"
     home.mkdir()
-    marker = tmp_path / "takeover-imported.txt"
+    marker = tmp_path / "openai-override-imported.txt"
+    plugin_key = "model-providers/openai-api"
     _write_user_provider(
         home,
-        "takeover-openai",
-        base_url="https://takeover.invalid/v1",
+        "openai-api",
+        base_url="https://override-openai.example/v1",
+        env_var="OVERRIDE_OPENAI_API_KEY",
         marker=marker,
-    )
-    manifest = home / "plugins" / "model-providers" / "takeover-openai" / "plugin.yaml"
-    manifest.write_text(
-        "name: takeover-openai\n"
-        "kind: model-provider\n"
-        "provider_ids: [openai-api]\n",
-        encoding="utf-8",
     )
     _write_activation(home)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -434,11 +472,213 @@ def test_inactive_external_manifest_cannot_suppress_static_provider(
 
     providers.invalidate_provider_discovery()
     assert not marker.exists()
-    assert "openai-api" in auth.PROVIDER_REGISTRY
+    assert not providers.is_plugin_managed_provider_id("openai-api")
+    assert auth.resolve_provider("openai-api") == "openai-api"
     assert (
         auth.PROVIDER_REGISTRY["openai-api"].inference_base_url
         == "https://api.openai.com/v1"
     )
+
+    _write_activation(home, enabled=(plugin_key,))
+    providers.invalidate_provider_discovery()
+    assert (
+        providers.get_provider_profile("openai-api").base_url
+        == "https://override-openai.example/v1"
+    )
+    assert marker.read_text(encoding="utf-8") == "imported"
+    assert not providers.is_plugin_managed_provider_id("openai-api")
+
+    _write_activation(home, disabled=(plugin_key,))
+    providers.invalidate_provider_discovery()
+
+    assert providers.get_provider_profile("openai-api") is None
+    assert not providers.is_plugin_managed_provider_id("openai-api")
+    assert auth.resolve_provider("openai-api") == "openai-api"
+    assert (
+        auth.PROVIDER_REGISTRY["openai-api"].inference_base_url
+        == "https://api.openai.com/v1"
+    )
+
+
+def test_profileless_core_identity_table_matches_runtime_catalogs():
+    import providers
+    from hermes_cli import auth, models
+    from hermes_cli.providers import HERMES_OVERLAYS
+    from providers._core_identities import (
+        PROFILELESS_CORE_PROVIDER_ALIASES,
+        PROFILELESS_CORE_PROVIDER_IDS,
+    )
+
+    snapshot = providers.get_provider_catalog_snapshot()
+    virtual_ids = {
+        provider_id
+        for provider_id, overlay in HERMES_OVERLAYS.items()
+        if overlay.auth_type == "virtual"
+    }
+    expected_ids = (
+        set(auth._STATIC_PROVIDER_REGISTRY) | virtual_ids
+    ) - set(snapshot.bundled_provider_ids)
+    expected_aliases = {
+        alias: canonical
+        for alias, canonical in models._STATIC_PROVIDER_ALIASES.items()
+        if canonical in expected_ids and alias != canonical
+    }
+
+    assert set(PROFILELESS_CORE_PROVIDER_IDS) == expected_ids
+    assert PROFILELESS_CORE_PROVIDER_ALIASES == expected_aliases
+    assert (
+        snapshot.bundled_provider_ids
+        <= snapshot.plugin_managed_provider_ids
+    )
+    assert "_core_identities" not in snapshot.known_provider_ids
+
+
+def test_core_ownership_is_stable_across_models_then_auth_imports(
+    tmp_path,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    claimed_ids = ("openai-api", "lm-studio", "tokenhub", "x-ai-oauth", "moa")
+    plugin_name = "early-core-collision"
+    _write_user_provider(
+        home,
+        plugin_name,
+        base_url="https://inactive.invalid/v1",
+        provider_ids=claimed_ids,
+    )
+    plugin_dir = home / "plugins" / "model-providers" / plugin_name
+    (plugin_dir / "__init__.py").write_text(
+        "raise AssertionError('inactive collision must not import')\n",
+        encoding="utf-8",
+    )
+    _write_activation(home)
+
+    probe = "\n".join(
+        (
+            "import json",
+            "from hermes_cli import models",
+            "import providers",
+            f"claimed = {claimed_ids!r}",
+            "before = [value for value in claimed if providers.is_plugin_managed_provider_id(value)]",
+            "before_moa = 'moa' in {entry.slug for entry in models.CANONICAL_PROVIDERS}",
+            "from hermes_cli import auth",
+            "after = [value for value in claimed if providers.is_plugin_managed_provider_id(value)]",
+            "after_moa = 'moa' in {entry.slug for entry in models.CANONICAL_PROVIDERS}",
+            "print(json.dumps([before, before_moa, after, after_moa, "
+            "auth.resolve_provider('openai-api')]))",
+        )
+    )
+    child_env = os.environ.copy()
+    child_env["HERMES_HOME"] = str(home)
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=REPO_ROOT,
+        env=child_env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    assert result == [[], True, [], True, "openai-api"]
+
+
+def test_disabled_external_manifest_provider_id_stays_activation_managed(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    marker = tmp_path / "external-imported.txt"
+    plugin_name = "fresh-external-gate"
+    provider_id = "fresh-external-route"
+    _write_user_provider(
+        home,
+        plugin_name,
+        base_url="https://external.invalid/v1",
+        marker=marker,
+        provider_ids=(provider_id,),
+    )
+    _write_activation(
+        home,
+        disabled=(f"model-providers/{plugin_name}",),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+    from hermes_cli import runtime_provider
+
+    providers.invalidate_provider_discovery()
+
+    assert not marker.exists()
+    assert providers.is_plugin_managed_provider_id(provider_id)
+    monkeypatch.setattr(
+        runtime_provider,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": provider_id,
+                    "base_url": "https://custom.invalid/v1",
+                    "api_key": "custom-key",
+                }
+            ]
+        },
+    )
+    with pytest.raises(runtime_provider.AuthError, match="disabled by plugin"):
+        runtime_provider.resolve_runtime_provider(requested=provider_id)
+
+
+def test_inactive_external_manifest_cannot_gate_runtime_registered_provider(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    provider_id = "runtime-owned-provider"
+    plugin_name = "runtime-collision"
+    _write_user_provider(
+        home,
+        plugin_name,
+        base_url="https://inactive.invalid/v1",
+        provider_ids=(provider_id,),
+    )
+    plugin_dir = home / "plugins" / "model-providers" / plugin_name
+    (plugin_dir / "__init__.py").write_text(
+        "raise AssertionError('inactive collision must not import')\n",
+        encoding="utf-8",
+    )
+    _write_activation(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+    from providers.base import ProviderProfile
+
+    runtime_profile = ProviderProfile(
+        name=provider_id,
+        aliases=("runtime-owned-alias",),
+        env_vars=("RUNTIME_OWNED_API_KEY",),
+        base_url="https://runtime-owned.example/v1",
+    )
+    monkeypatch.setattr(providers, "_RUNTIME_REGISTRY", {provider_id: runtime_profile})
+    monkeypatch.setattr(
+        providers,
+        "_RUNTIME_ALIASES",
+        {"runtime-owned-alias": provider_id},
+    )
+    monkeypatch.setattr(
+        providers,
+        "_RUNTIME_REGISTRATION_GENERATION",
+        providers._RUNTIME_REGISTRATION_GENERATION + 1,
+    )
+
+    providers.invalidate_provider_discovery()
+
+    assert providers.get_provider_profile(provider_id) is runtime_profile
+    assert providers.get_provider_profile("runtime-owned-alias") is runtime_profile
+    assert not providers.is_plugin_managed_provider_id(provider_id)
+    assert not providers.is_plugin_managed_provider_id("runtime-owned-alias")
 
 
 def test_observed_provider_secret_names_remain_blocked_after_disable(

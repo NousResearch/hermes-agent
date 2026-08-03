@@ -101,6 +101,173 @@ class TestResolvePluginKey:
 
 
 class TestEnableDisableNested:
+    @pytest.mark.parametrize("surface", ("cli", "dashboard"))
+    @pytest.mark.parametrize(
+        ("candidates", "disabled", "error"),
+        (
+            (
+                [
+                    (
+                        "shared-b",
+                        "1.0.0",
+                        "",
+                        "bundled",
+                        None,
+                        "shared-a",
+                        "backend",
+                    ),
+                    (
+                        "shared-a",
+                        "1.0.0",
+                        "",
+                        "bundled",
+                        None,
+                        "shared-b",
+                        "backend",
+                    ),
+                ],
+                {"shared-a"},
+                "all runtime activation identities overlap",
+            ),
+            (
+                [
+                    ("a-name", "1.0.0", "", "user", None, "a", "backend"),
+                    ("a", "1.0.0", "", "user", None, "b", "backend"),
+                ],
+                set(),
+                "activation grant also enables 'b'",
+            ),
+        ),
+    )
+    def test_enable_surfaces_reject_fully_overlapping_identities_without_writes(
+        self,
+        candidates,
+        disabled,
+        error,
+        surface,
+        monkeypatch,
+        capsys,
+    ):
+        from hermes_cli import plugins_cmd
+
+        manifest_name, _version, _description, source, _path, key, kind = (
+            candidates[0]
+        )
+        writes = []
+
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_resolve_plugin_key_and_source",
+            lambda *_args, **_kwargs: (
+                key,
+                source,
+                manifest_name,
+                kind,
+            ),
+        )
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_discover_plugin_candidates",
+            lambda: candidates,
+        )
+        monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_get_disabled_set",
+            lambda: set(disabled),
+        )
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_save_enabled_set",
+            lambda value: writes.append(("enabled", set(value))),
+        )
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_save_disabled_set",
+            lambda value: writes.append(("disabled", set(value))),
+        )
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_toggle_plugin_toolset",
+            lambda *args, **kwargs: writes.append(("toolset", args)),
+        )
+
+        if surface == "cli":
+            with pytest.raises(SystemExit) as exc_info:
+                plugins_cmd.cmd_enable(key)
+            assert exc_info.value.code == 1
+            actual_error = " ".join(capsys.readouterr().out.split())
+        else:
+            result = plugins_cmd.dashboard_set_agent_plugin_enabled(
+                key,
+                enabled=True,
+            )
+            assert result["ok"] is False
+            assert result["key"] == key
+            actual_error = result["error"]
+
+        assert writes == []
+        assert error in actual_error
+
+    def test_enable_clears_lower_candidate_manifest_deny_when_key_is_allowed(
+        self,
+        monkeypatch,
+    ):
+        from hermes_cli import plugins_cmd
+
+        key = "web/firecrawl"
+        candidates = [
+            ("legacy-firecrawl", "1.0.0", "", "bundled", None, key, "backend"),
+            ("web-firecrawl", "2.0.0", "", "user", None, key, "backend"),
+            (
+                "other-firecrawl",
+                "1.0.0",
+                "",
+                "bundled",
+                None,
+                "firecrawl",
+                "backend",
+            ),
+        ]
+        saved = {}
+
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_resolve_plugin_key_and_source",
+            lambda _name, *, for_enable=False: (
+                key,
+                "user",
+                "web-firecrawl",
+                "backend",
+            ),
+        )
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_discover_plugin_candidates",
+            lambda: candidates,
+        )
+        monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {key})
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_get_disabled_set",
+            lambda: {"legacy-firecrawl", "firecrawl"},
+        )
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_save_enabled_set",
+            lambda value: saved.__setitem__("enabled", set(value)),
+        )
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_save_disabled_set",
+            lambda value: saved.__setitem__("disabled", set(value)),
+        )
+        monkeypatch.setattr(plugins_cmd, "_set_plugin_entry_flag", lambda *args: None)
+
+        plugins_cmd.cmd_enable(key, allow_tool_override=False)
+
+        assert saved == {"enabled": {key}, "disabled": {"firecrawl"}}
+
     def test_enable_canonical_key_activates_inactive_external_override(
         self,
         tmp_path,
@@ -349,6 +516,112 @@ class TestCompositeMenuWritesCanonicalKey:
 
         mock_save_en.assert_not_called()
         mock_save_dis.assert_not_called()
+
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_fallback_reenable_clears_candidate_manifest_name_denies(
+        self, mock_en, mock_save_en, mock_save_dis,
+    ):
+        from hermes_cli.plugins_cmd import _run_composite_fallback
+        from rich.console import Console
+
+        with patch("builtins.input", return_value=""):
+            _run_composite_fallback(
+                ["web/firecrawl"],
+                ["web-firecrawl [bundled]"],
+                ["bundled"],
+                ["backend"],
+                {0},
+                {
+                    "web/firecrawl",
+                    "firecrawl",
+                    "legacy-firecrawl",
+                    "unrelated-plugin",
+                },
+                [],
+                Console(),
+                plugin_identities=[{"web-firecrawl", "legacy-firecrawl"}],
+            )
+
+        mock_save_en.assert_called_once_with(set())
+        mock_save_dis.assert_called_once_with({"unrelated-plugin"})
+
+    @pytest.mark.parametrize(
+        (
+            "unselected_key",
+            "selected_identities",
+            "unselected_identities",
+            "initial_disabled",
+        ),
+        (
+            (
+                "firecrawl",
+                frozenset({"web/firecrawl", "web-firecrawl"}),
+                frozenset({"firecrawl", "other-firecrawl"}),
+                frozenset({"firecrawl"}),
+            ),
+            (
+                "video/firecrawl",
+                frozenset({"web/firecrawl", "shared-firecrawl"}),
+                frozenset({"video/firecrawl", "shared-firecrawl"}),
+                frozenset({"shared-firecrawl"}),
+            ),
+        ),
+        ids=("key-leaf", "shared-manifest"),
+    )
+    @pytest.mark.parametrize("reverse", (False, True))
+    def test_activation_sets_are_order_independent_for_collisions(
+        self,
+        unselected_key,
+        selected_identities,
+        unselected_identities,
+        initial_disabled,
+        reverse,
+    ):
+        from hermes_cli.plugins_cmd import _composite_activation_sets
+
+        rows = [
+            ("web/firecrawl", selected_identities, True),
+            (unselected_key, unselected_identities, False),
+        ]
+        if reverse:
+            rows.reverse()
+
+        chosen = {i for i, row in enumerate(rows) if row[2]}
+        enabled, disabled = _composite_activation_sets(
+            [row[0] for row in rows],
+            ["bundled"] * len(rows),
+            ["backend"] * len(rows),
+            chosen,
+            set(initial_disabled),
+            plugin_identities=[row[1] for row in rows],
+        )
+
+        assert enabled == set()
+        assert disabled == {unselected_key}
+
+    def test_activation_sets_fail_closed_when_identities_fully_overlap(
+        self,
+        caplog,
+    ):
+        from hermes_cli.plugins_cmd import _composite_activation_sets
+
+        enabled, disabled = _composite_activation_sets(
+            ["shared-a", "shared-b"],
+            ["bundled", "bundled"],
+            ["backend", "backend"],
+            {0},
+            {"shared-a"},
+            plugin_identities=[
+                {"shared-a", "shared-b"},
+                {"shared-a", "shared-b"},
+            ],
+        )
+
+        assert enabled == set()
+        assert disabled == {"shared-b"}
+        assert "keeping canonical deny fail-closed" in caplog.text
 
     @patch("hermes_cli.plugins_cmd._save_disabled_set")
     @patch("hermes_cli.plugins_cmd._save_enabled_set")

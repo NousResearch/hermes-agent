@@ -8,6 +8,9 @@ per-thread read-only connection under WAL, never touch self._lock, and fall
 back to the legacy locked path when WAL or the read connection is missing.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
+import sqlite3
 import threading
 
 import pytest
@@ -129,3 +132,22 @@ def test_anchored_view_and_around_use_read_path(db):
         assert done["view"]["window"]
     finally:
         db._lock.release()
+
+
+@pytest.mark.requires_wal
+def test_close_drains_read_conn_created_by_finished_worker(tmp_path):
+    """close() must reclaim a read connection created by another thread."""
+    d = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            conn = pool.submit(d._get_read_conn).result(timeout=5.0)
+        assert conn is not None
+
+        d.close()
+
+        assert not d._read_conns
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            conn.execute("SELECT 1")
+    finally:
+        with suppress(Exception):
+            d.close()

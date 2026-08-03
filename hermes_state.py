@@ -2120,10 +2120,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if getattr(self._read_local, "failed", False):
             return None
         try:
+            # close() drains worker-created connections from its caller, so
+            # readers must permit cross-thread close after the worker exits.
             conn = _connect_tracked_db(
                 f"file:{self.db_path}?mode=ro",
                 tracking_path=self.db_path,
                 uri=True,
+                check_same_thread=False,
                 timeout=5.0,
                 isolation_level=None,
             )
@@ -2689,6 +2692,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         for conn in read_conns:
             try:
                 conn.close()
+            except sqlite3.ProgrammingError as exc:
+                logger.warning(
+                    "SessionDB.close() could not close a read connection: %s",
+                    exc,
+                )
             except Exception:
                 pass
         self._read_local.conn = None

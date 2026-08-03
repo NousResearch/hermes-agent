@@ -79,6 +79,19 @@ def _assert_mount(argv: list[str], source: Path, target: str, *, readonly: bool)
     assert argv[index - 1:index + 1] == ["--mount", spec]
 
 
+def _mount_source_for_target(argv: list[str], target: str) -> Path:
+    prefix = f"type=bind,source="
+    target_marker = f",target={target}"
+    spec = next(
+        value
+        for value in argv
+        if value.startswith(prefix)
+        and (value.endswith(target_marker) or f"{target_marker}," in value)
+    )
+    source = spec.split(",source=", 1)[1].split(",target=", 1)[0]
+    return Path(source)
+
+
 def test_automatic_mounts_are_readonly_and_persistent_workspace_is_writable(
     recorder, monkeypatch, tmp_path
 ):
@@ -107,13 +120,21 @@ def test_automatic_mounts_are_readonly_and_persistent_workspace_is_writable(
     env = apple.AppleContainerEnvironment(persistent_filesystem=True, task_id="task one")
     argv = _run_args(recorder)
 
-    _assert_mount(argv, credential, "/root/.hermes/token.json", readonly=True)
+    credential_target = "/root/.hermes"
+    credential_stage = _mount_source_for_target(argv, credential_target)
+    _assert_mount(argv, credential_stage, credential_target, readonly=True)
+    assert credential_stage != credential.parent
+    assert (credential_stage / "token.json").read_text() == "secret"
+    assert (credential_stage / "skills one").is_dir()
+    assert (credential_stage / "cache one").is_dir()
+    assert not any(call[1:3] == ["exec", env._container_name] for call in recorder.calls)
     _assert_mount(argv, skill, "/root/.hermes/skills one", readonly=True)
     _assert_mount(argv, cache, "/root/.hermes/cache one", readonly=True)
     sandbox = tmp_path / "sandboxes" / "apple_container" / "task one"
     _assert_mount(argv, sandbox / "workspace", "/workspace", readonly=False)
     _assert_mount(argv, sandbox / "root", "/root", readonly=False)
     env.cleanup()
+    assert not credential_stage.exists()
 
 
 def test_user_mounts_preserve_readonly_writable_and_spaces(recorder, tmp_path):
@@ -190,6 +211,28 @@ def test_automatic_mount_rejects_unsafe_resolved_source_or_target_before_run(
     assert not any(call[1] == "run" for call in recorder.calls)
 
 
+def test_automatic_mount_rejects_traversal_target_before_run(
+    recorder, monkeypatch, tmp_path
+):
+    credential = tmp_path / "token"
+    credential.write_text("secret")
+    monkeypatch.setattr(
+        credential_files,
+        "get_credential_file_mounts",
+        lambda: [
+            {
+                "host_path": str(credential),
+                "container_path": "/root/.hermes/../token",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="mount target"):
+        apple.AppleContainerEnvironment()
+
+    assert not any(call[1] == "run" for call in recorder.calls)
+
+
 def test_resource_flags_image_and_keepalive_contract(recorder):
     env = apple.AppleContainerEnvironment(
         image="python:3.11-slim-bookworm", cpu=4.0, memory=6144
@@ -198,6 +241,13 @@ def test_resource_flags_image_and_keepalive_contract(recorder):
     pairs = [argv[index:index + 2] for index in range(len(argv) - 1)]
     assert ["--cpus", "4"] in pairs
     assert ["--memory", "6144M"] in pairs
+    assert ["--tmpfs", "/tmp"] in pairs
+    assert ["--tmpfs", "/var/tmp"] in pairs
+    assert ["--tmpfs", "/run"] in pairs
+    assert ["--tmpfs", "/workspace"] in pairs
+    assert ["--tmpfs", "/root"] in pairs
+    assert ["--tmpfs", "/home"] in pairs
+    assert not any(value.startswith(("/tmp:", "/workspace:", "/root:", "/home:")) for value in argv)
     assert argv[-3:] == ["python:3.11-slim-bookworm", "sleep", "infinity"]
     env.cleanup()
 

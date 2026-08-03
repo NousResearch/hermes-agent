@@ -978,13 +978,19 @@ class _CryptoStateStore:
     ``get_encryption_info``, and ``find_shared_rooms``.  The basic
     ``MemoryStateStore`` from ``mautrix.client`` doesn't implement these,
     so we provide simple implementations that consult the client's room
-    state.
+    state, falling back to a direct homeserver state event query when
+    the in-memory store has no encryption info for a room.
     """
 
     def __init__(self, client_state_store: Any, joined_rooms: set, client=None):
         self._ss = client_state_store
         self._joined_rooms = joined_rooms
         self._client = client
+        # Cache encryption info queried from the homeserver so we don't
+        # make a network round-trip on every is_encrypted() call.
+        # MemoryStateStore doesn't implement set_encryption_info, so the
+        # cache-back in get_encryption_info is a no-op without this.
+        self._enc_info_cache: dict = {}
 
     async def is_encrypted(self, room_id: str) -> bool:
         return (await self.get_encryption_info(room_id)) is not None
@@ -995,6 +1001,9 @@ class _CryptoStateStore:
             info = await self._ss.get_encryption_info(room_id)
         if info is not None:
             return info
+        # Check local cache before hitting the homeserver.
+        if room_id in self._enc_info_cache:
+            return self._enc_info_cache[room_id]
         client = self._client
         if client is None:
             return None
@@ -1005,7 +1014,12 @@ class _CryptoStateStore:
                 RoomID as _RID,
             )
             raw = await client.get_state_event(_RID(room_id), _ET.ROOM_ENCRYPTION)
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Matrix: homeserver encryption-info query failed for %s: %s",
+                room_id,
+                exc,
+            )
             return None
         if not raw:
             return None
@@ -1017,6 +1031,7 @@ class _CryptoStateStore:
                 await self._ss.set_encryption_info(_RID(room_id), content)
             except Exception:
                 pass
+        self._enc_info_cache[room_id] = content
         return content
 
     async def find_shared_rooms(self, user_id: str) -> list:
@@ -1776,7 +1791,13 @@ class MatrixAdapter(BasePlatformAdapter):
                     self._crypto_db = crypto_db
 
                     _acct_id = self._user_id or "hermes"
-                    _pickle_key = f"{_acct_id}:{self._device_id or 'default'}"
+                    # Use the resolved client.device_id (from whoami or password
+                    # login), not self._device_id (the configured value), because
+                    # #71543 makes the token's real device win over a stale
+                    # MATRIX_DEVICE_ID.  The pickle key must match the device the
+                    # token actually belongs to, or the Olm account is stored
+                    # under a key that can never be looked up again.
+                    _pickle_key = f"{_acct_id}:{client.device_id or self._device_id or 'default'}"
                     crypto_store = PgCryptoStore(
                         account_id=_acct_id,
                         pickle_key=_pickle_key,
@@ -1785,14 +1806,23 @@ class MatrixAdapter(BasePlatformAdapter):
                     await crypto_store.open()
 
                     if client.device_id:
-                        await self._reset_crypto_store_if_device_changed(
+                        _store_was_reset = await self._reset_crypto_store_if_device_changed(
                             crypto_store, client.device_id
                         )
                         await crypto_store.put_device_id(client.device_id)
+                    else:
+                        _store_was_reset = False
 
-                    await self._migrate_legacy_crypto_pickle(
-                        crypto_store, crypto_db, _acct_id, _pickle_key
-                    )
+                    # Skip the pickle-key migration when the store was just
+                    # deleted — there is no account to migrate.
+                    if not _store_was_reset:
+                        if not await self._migrate_legacy_crypto_pickle(
+                            crypto_store, crypto_db, _acct_id, _pickle_key
+                        ):
+                            logger.warning(
+                                "Matrix: crypto pickle migration failed — "
+                                "E2EE may not work correctly"
+                            )
 
                     crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
                     olm = OlmMachine(client, crypto_store, crypto_state)

@@ -7195,7 +7195,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         session_ids = [session_id]
         if include_ancestors:
-            session_ids = self._session_lineage_root_to_tip(session_id)
+            session_ids = self._session_replay_lineage_root_to_tip(session_id)
 
         active_clause = "" if include_inactive else " AND active = 1"
         with self._read_ctx() as conn:
@@ -7385,7 +7385,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         halves the resume's DB work versus two separate calls, with byte-identical
         output (see test_get_resume_conversations_matches_separate_reads).
         """
-        session_ids = self._session_lineage_root_to_tip(session_id)
+        session_ids = self._session_replay_lineage_root_to_tip(session_id)
         with self._read_ctx() as conn:
             placeholders = ",".join("?" for _ in session_ids)
             rows = conn.execute(
@@ -7437,7 +7437,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         returns ONLY the genuine ancestor messages, identified by
         ``session_id != tip_session_id``. (#65919)
         """
-        session_ids = self._session_lineage_root_to_tip(session_id)
+        session_ids = self._session_replay_lineage_root_to_tip(session_id)
         if len(session_ids) <= 1:
             return []
         with self._read_ctx() as conn:
@@ -7492,6 +7492,44 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if row is None:
                     break
                 current = row["parent_session_id"] if hasattr(row, "keys") else row[0]
+        return list(reversed(chain)) or [session_id]
+
+    def _session_replay_lineage_root_to_tip(self, session_id: str) -> List[str]:
+        """Return ancestors that belong to the tip's persisted transcript.
+
+        Compression continuations store only their new segment, so replay must
+        walk through their parents. Explicit branches are different: the child
+        already persists the fork-time transcript snapshot and carries
+        ``model_config._branched_from`` only to preserve presentation lineage.
+        Stop before crossing that edge so later parent turns cannot enter the
+        branch on a cold resume.
+        """
+        if not session_id:
+            return [session_id]
+
+        chain = []
+        current = session_id
+        seen = set()
+        with self._read_ctx() as conn:
+            for _ in range(100):
+                if not current or current in seen:
+                    break
+                seen.add(current)
+                chain.append(current)
+                row = conn.execute(
+                    "SELECT parent_session_id, model_config FROM sessions WHERE id = ?",
+                    (current,),
+                ).fetchone()
+                if row is None:
+                    break
+                session = (
+                    dict(row)
+                    if hasattr(row, "keys")
+                    else {"parent_session_id": row[0], "model_config": row[1]}
+                )
+                if self._is_branch_child_row(session):
+                    break
+                current = session["parent_session_id"]
         return list(reversed(chain)) or [session_id]
 
     @staticmethod

@@ -498,9 +498,15 @@ def _format_exec_approval_fallback(
     allow_permanent: bool = True,
     allow_session: bool = True,
     smart_denied: bool = False,
+    full_command: bool = False,
 ) -> str:
     """Render the text fallback from approval capabilities, not platform names."""
-    cmd_preview = command[:200] + "..." if len(command) > 200 else command
+    # Single-event transports (Matrix) must keep the full force-redacted command
+    # for audit completeness; multi-event chat can use a short preview.
+    if full_command or len(command) <= 200:
+        cmd_preview = command
+    else:
+        cmd_preview = command[:200] + "..."
     heading = "⚠️ **Dangerous command requires approval:**"
     if smart_denied:
         heading = "⚠️ **Smart DENY — owner override for one operation:**"
@@ -5701,6 +5707,7 @@ def _make_gateway_approval_notifier(
             allow_permanent=approval_data.get("allow_permanent", True),
             allow_session=approval_data.get("allow_session", True),
             smart_denied=approval_data.get("smart_denied", False),
+            full_command=bool(getattr(adapter, "approval_fallback_single_event", False)),
         )
         fallback_metadata = dict(base_metadata)
         if getattr(adapter, "approval_fallback_single_event", False):

@@ -1245,13 +1245,20 @@ class BuzzAdapter(BasePlatformAdapter):
         if not self._message_handler:
             return
 
+        # Buzz channel replies are flat under the initiating event. Treat a
+        # top-level channel event as its own root so the initiating command and
+        # later replies resolve to one thread-scoped gateway session. DMs keep
+        # their existing conversation-wide session semantics.
+        effective_thread_id = thread_id or (
+            message_id if chat_type == "group" else None
+        )
         source = self.build_source(
             chat_id=chat_id,
             chat_name=self._channel_names.get(chat_id, chat_id),
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
-            thread_id=thread_id,
+            thread_id=effective_thread_id,
         )
 
         event = MessageEvent(

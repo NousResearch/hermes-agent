@@ -104,11 +104,12 @@ gateway:
 ### Threads and interactive prompts
 
 Pending interactive questions are scoped to the Buzz thread where Hermes sent
-them. A reply in that thread can answer the pending prompt, while an unrelated
-top-level channel post cancels the old pending interaction and is queued as its
-own routed turn instead of being consumed as the clarification answer. Hermes
-can still share conversation history across Buzz threads; only the pending
-interaction and its delivery route are thread-scoped.
+them. A top-level channel event is treated as its own thread root, so the
+initiating command and replies such as `/approve`, `/always`, and `/cancel`
+resolve to the same gateway session. An unrelated top-level channel post
+cancels the old pending interaction and is queued as its own routed turn
+instead of being consumed as the clarification answer. Each Buzz thread keeps
+its own conversation history and delivery route.
 
 ## Access control
 

@@ -130,6 +130,48 @@ class TestQueryLocalContextLengthVllm:
 
         assert result == 32768
 
+    def test_vllm_max_input_tokens_wins_over_max_tokens(self):
+        """OpenAI-compatible passthrough: max_input_tokens (window) beats
+        max_tokens (output cap) when both are present in the detail response."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(200, {
+            "id": "some-model",
+            "max_input_tokens": 1_000_000,
+            "max_tokens": 128_000,
+        })
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.return_value = detail_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("some-model", "http://localhost:8000/v1")
+
+        assert result == 1_000_000
+
+    def test_vllm_max_tokens_only_is_not_read_as_context(self):
+        """A response with only max_tokens (output cap) must NOT be read as the
+        input context window — resolves to None."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(200, {"id": "some-model", "max_tokens": 128_000})
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.return_value = detail_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("some-model", "http://localhost:8000/v1")
+
+        assert result is None
+
 
 class TestQueryLocalContextLengthModelsList:
     """_query_local_context_length: falls back to /v1/models list."""
@@ -186,6 +228,67 @@ class TestQueryLocalContextLengthModelsList:
             if call_count[0] == 1:
                 return detail_resp
             return list_resp
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.side_effect = side_effect
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("omnicoder-9b", "http://localhost:1234")
+
+        assert result is None
+
+    def test_models_list_max_input_tokens_wins_over_max_tokens(self):
+        """OpenAI-compatible passthrough: max_input_tokens (window) beats
+        max_tokens (output cap) when both are present in the list response."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [
+                {"id": "other-model", "max_model_len": 4096},
+                {"id": "omnicoder-9b", "max_input_tokens": 1_000_000, "max_tokens": 128_000},
+            ]
+        })
+
+        call_count = [0]
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return detail_resp  # /v1/models/omnicoder-9b
+            return list_resp  # /v1/models
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.side_effect = side_effect
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("omnicoder-9b", "http://localhost:1234")
+
+        assert result == 1_000_000
+
+    def test_models_list_max_tokens_only_is_not_read_as_context(self):
+        """A list entry with only max_tokens (output cap) must NOT be read as the
+        input context window — resolves to None."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [{"id": "omnicoder-9b", "max_tokens": 128_000}]
+        })
+
+        call_count = [0]
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return detail_resp  # /v1/models/omnicoder-9b
+            return list_resp  # /v1/models
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock

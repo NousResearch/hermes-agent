@@ -1992,10 +1992,13 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             resp = client.get(f"{server_url}/v1/models/{model}")
             if resp.status_code == 200:
                 data = resp.json()
-                # vLLM returns max_model_len
-                ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
-                if ctx and isinstance(ctx, (int, float)):
-                    return int(ctx)
+                # vLLM returns max_model_len; OpenAI-compatible passthroughs
+                # (LiteLLM etc.) may publish max_input_tokens. Use the shared
+                # helper so output-oriented keys like max_tokens are never read
+                # as the input context window.
+                ctx = _extract_context_length(data)
+                if ctx is not None:
+                    return ctx
 
             # Try /v1/models and find the model in the list.
             # Use _model_id_matches to handle "publisher/slug" vs bare "slug".
@@ -2005,9 +2008,9 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                 models_list = data.get("data", [])
                 for m in models_list:
                     if _model_id_matches(m.get("id", ""), model):
-                        ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
-                        if ctx and isinstance(ctx, (int, float)):
-                            return int(ctx)
+                        ctx = _extract_context_length(m)
+                        if ctx is not None:
+                            return ctx
     except Exception:
         pass
 

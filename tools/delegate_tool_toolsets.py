@@ -18,6 +18,8 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
         "cronjob_manage",  # no scheduling more work in the parent's name
+        "model_override",  # no session-model flips from children (parent drives); the one-tool
+        # model_override deny entry keeps orchestrators denied even though they re-add delegation
     ]
 )
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]

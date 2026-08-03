@@ -143,7 +143,8 @@ TOOLSETS = {
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
-    "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
+    "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task", "model_override"]),
+    "model_override": _ts("Switch the current session to a stronger model and back (parent session only)", ["model_override"]),
     "homeassistant": _ts("Home Assistant smart home control and monitoring", _HA_TOOLS),
     "kanban": _ts(
         "Kanban multi-agent coordination — only active when the agent is spawned by "

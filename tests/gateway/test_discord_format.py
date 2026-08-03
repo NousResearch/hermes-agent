@@ -56,6 +56,21 @@ class TestDiscordToolPreviewFormatting:
 
         assert out == f"[{visible}]({url})"
 
+    def test_link_escapes_discord_markdown_delimiters(self):
+        from agent.display import ToolPreview
+
+        adapter = _make_discord_adapter()
+        preview = ToolPreview(
+            r"https://example.com/docs/[beta]...",
+            truncated=True,
+            url="https://example.com/docs/_(beta)",
+        )
+
+        assert adapter.format_tool_preview(preview) == (
+            r"[https://example.com/docs/\[beta\]...]"
+            r"(https://example.com/docs/_%28beta%29)"
+        )
+
     def test_structured_tool_event_uses_clickable_truncated_url(self):
         from gateway.stream_events import ToolCallChunk
 

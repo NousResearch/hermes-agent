@@ -26,7 +26,7 @@ import time
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
@@ -34,6 +34,15 @@ from agent.async_utils import (
 from agent.display import ToolPreview
 
 logger = logging.getLogger(__name__)
+
+_DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
+
+
+def _format_discord_markdown_link(label: str, url: str) -> str:
+    """Return a Discord Markdown link with escaped delimiters."""
+    escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
+    escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
+    return f"[{escaped_label}]({escaped_url})"
 
 
 class _Snowflake:
@@ -125,7 +134,6 @@ from gateway.platforms.helpers import (
     MessageDeduplicator,
     ThreadParticipationTracker,
     convert_table_to_bullets,
-    format_markdown_link,
 )
 from utils import atomic_json_write, env_float, env_int
 from gateway.platforms.base import (
@@ -987,7 +995,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not preview.url:
             return preview.text
 
-        return format_markdown_link(preview.text, preview.url)
+        return _format_discord_markdown_link(preview.text, preview.url)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)

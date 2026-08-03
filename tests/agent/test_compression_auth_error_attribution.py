@@ -33,6 +33,8 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_state import SessionDB
 
 # The MAIN model the agent is running against. Healthy, NOT the source of
@@ -407,15 +409,105 @@ def test_missing_compressor_identity_does_not_crash_abort(tmp_path: Path) -> Non
     )
 
 
-# ── Real ContextCompressor: verify route_callback writes the wire identity ──
+# ── Real call_llm routing: observe every physical wire attempt ─────────
+
+
+def test_real_call_llm_reports_concrete_auto_route_and_strips_query() -> None:
+    """The real call_llm orchestration must resolve ``auto`` to the client
+    backend and sanitize its endpoint before publishing the wire attempt."""
+    from agent.auxiliary_client import call_llm
+
+    secret = "sk-route-secret"
+    client = MagicMock()
+    client.base_url = f"https://api.minimax.chat/v1?key={secret}"
+    client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="ok"))]
+    )
+    routes: list[tuple[str, str | None, str]] = []
+
+    with (
+        patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "minimax/minimax-m2.7", None, None, None),
+        ),
+        patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "minimax/minimax-m2.7"),
+        ),
+    ):
+        call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summarize"}],
+            route_callback=lambda *route: routes.append(route),
+        )
+
+    assert routes == [(
+        "minimax",
+        "minimax/minimax-m2.7",
+        "https://api.minimax.chat/v1",
+    )]
+    assert secret not in repr(routes)
+
+
+def test_real_call_llm_updates_route_when_fallback_fails() -> None:
+    """If a fallback becomes the terminal failing request, the last observed
+    identity must describe that fallback rather than the stale primary."""
+    from agent.auxiliary_client import call_llm
+
+    auth_error = type("Auth401", (Exception,), {"status_code": 401})("expired key")
+    primary = MagicMock()
+    primary.base_url = "https://api.minimax.chat/v1"
+    primary.chat.completions.create.side_effect = auth_error
+
+    fallback = MagicMock()
+    fallback.base_url = "https://openrouter.ai/api/v1"
+    fallback.chat.completions.create.side_effect = ValueError(
+        "fallback malformed response"
+    )
+    routes: list[tuple[str, str | None, str]] = []
+
+    with (
+        patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "minimax/minimax-m2.7", None, None, None),
+        ),
+        patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary, "minimax/minimax-m2.7"),
+        ),
+        patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ),
+        patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+            return_value=(None, None, ""),
+        ),
+        patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            return_value=(fallback, "fallback-model", "openrouter"),
+        ),
+    ):
+        with pytest.raises(ValueError, match="fallback malformed response"):
+            call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+                route_callback=lambda *route: routes.append(route),
+            )
+
+    assert routes == [
+        ("minimax", "minimax/minimax-m2.7", "https://api.minimax.chat/v1"),
+        ("openrouter", "fallback-model", "https://openrouter.ai/api/v1"),
+    ]
+
+
+# ── Real ContextCompressor: verify callback state reaches the abort ───
 #
 # These tests do NOT mock compressor.compress. They use a real
-# ContextCompressor and patch agent.context_compressor.call_llm so the
-# route_callback inside call_llm is exercised against the real code path.
-# This pins that the identity written by route_callback (the authoritative
-# "route actually used on the wire", after auto-detection / fallback) flows
-# through to the abort diagnostic — not the config-layer pre-resolution from
-# _resolve_task_provider_model, which call_llm may override.
+# ContextCompressor and patch its imported call_llm reference so the callback
+# state can be checked independently of routing. The tests above exercise the
+# real auxiliary_client.call_llm auto/fallback orchestration; these tests pin
+# that the resulting state flows through to the abort diagnostic.
 
 
 def _build_real_compressor_agent(
@@ -480,10 +572,9 @@ def test_real_compressor_route_callback_identity_reaches_diagnostic(
     """End-to-end with a REAL ContextCompressor: call_llm's route_callback
     writes the wire identity, the 401 abort surfaces it in the diagnostic.
 
-    This is the test the previous MagicMock-based suite was missing: it proves
-    the identity saved by route_callback (after auto-detection / fallback
-    inside call_llm) flows through to _emit_compression_auth_hint, not the
-    pre-resolution guess from _resolve_task_provider_model.
+    This proves the identity supplied by call_llm flows through to
+    _emit_compression_auth_hint, not the pre-resolution guess from
+    _resolve_task_provider_model. Real call_llm routing is covered separately.
     """
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "PARENT_72636_REAL"

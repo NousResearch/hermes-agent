@@ -126,3 +126,50 @@ def test_compute_host_interrupt_uses_explicit_stop_compatibility(kind):
 
     assert calls == ["hard" if kind == "hard-only" else "legacy"]
     assert emitted[-1]["applied"] is True
+
+
+def test_compute_host_spawn_env_excludes_tier1_secrets(monkeypatch, tmp_path):
+    """#77463: the compute-host child env must come from the sanitized
+    hermes_subprocess_env, NOT a post-scrub env.update(os.environ) which
+    re-added every Tier-1 secret (gateway tokens, remote-compute auth).
+
+    E2E with a REAL child: seed Tier-1 secrets in the parent, build the env
+    exactly as the fixed _spawn_locked does (hermes_subprocess_env +
+    heartbeat/PYTHONPATH additions), spawn a real Python child that reports
+    which keys it can see in ITS OWN environment, and assert the secrets are
+    absent while the legitimate additions survive.
+    """
+    import json as _json
+    import subprocess as _sp
+
+    from tools.environments.local import hermes_subprocess_env
+
+    monkeypatch.setenv("GATEWAY_RELAY_SECRET", "«redacted:tier1-secret»")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "«redacted:session»")
+
+    # Build the env exactly as the fixed _spawn_locked does.
+    env = hermes_subprocess_env(inherit_credentials=True)
+    env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = "5"
+    env.setdefault("PYTHONPATH", str(tmp_path))
+
+    probe = (
+        "import json, os; print(json.dumps({"
+        "'relay': 'GATEWAY_RELAY_SECRET' in os.environ, "
+        "'session': 'HERMES_DASHBOARD_SESSION_TOKEN' in os.environ, "
+        "'heartbeat': os.environ.get('HERMES_COMPUTE_HOST_HEARTBEAT_SECS', ''), "
+        "'pythonpath_present': bool(os.environ.get('PYTHONPATH', ''))}))"
+    )
+
+    out = _sp.run(
+        [sys.executable, "-c", probe],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    result = _json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["relay"] is False, "Tier-1 relay secret leaked to compute host"
+    assert result["session"] is False, "session token leaked to compute host"
+    assert result["heartbeat"] == "5", "heartbeat must survive"
+    assert result["pythonpath_present"] is True, "PYTHONPATH must survive"

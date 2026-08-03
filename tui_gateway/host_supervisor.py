@@ -315,8 +315,13 @@ class HostSupervisor:
             raise RuntimeError("compute host respawn disabled after crash loop")
         self._hello_event.clear()
         self._hello = {}
+        # Use the sanitized non-terminal env — never re-add the full
+        # os.environ after the scrub.  The compute host legitimately needs
+        # the heartbeat + PYTHONPATH additions below, but inheriting every
+        # Tier-1 secret (gateway tokens, remote-compute auth) via a
+        # post-scrub env.update(os.environ) re-opened the leak the scrub
+        # exists to close (#77463).
         env = hermes_subprocess_env(inherit_credentials=True)
-        env.update(os.environ)
         if self.env:
             env.update(self.env)
         env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)

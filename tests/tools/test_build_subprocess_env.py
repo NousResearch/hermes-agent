@@ -214,13 +214,21 @@ def test_make_run_env_strips_password_by_default(monkeypatch):
 
     monkeypatch.setenv("DB_PASSWORD", "db-pass-9f2c1a")
     monkeypatch.setenv("REDIS_PASSWORD", "redis-pass-77aa")
+    monkeypatch.setenv("PGPASSWORD", "pg-pass-e11")
+    monkeypatch.setenv("MYSQL_PWD", "mysql-pwd-4d2")
+    monkeypatch.setenv("PASSWORD", "bare-pass-8c1")
     monkeypatch.setenv("MY_HARMLESS_VAR", "keep-me")
+    monkeypatch.setenv("PWD", "C:\\some\\cwd")  # shell cwd var must survive
 
     env = _make_run_env({})
 
     assert "DB_PASSWORD" not in env
     assert "REDIS_PASSWORD" not in env
+    assert "PGPASSWORD" not in env
+    assert "MYSQL_PWD" not in env
+    assert "PASSWORD" not in env
     assert env.get("MY_HARMLESS_VAR") == "keep-me"
+    assert env.get("PWD") == "C:\\some\\cwd"
 
 
 def test_make_run_env_keeps_passthrough_db_password(monkeypatch):

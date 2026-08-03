@@ -227,3 +227,157 @@ def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
 
     assert result.status == "unavailable"
     assert "hermes auth" in result.message
+
+
+@pytest.fixture
+def kimi_usage_payload():
+    # Mirrors the live GET https://api.kimi.com/coding/v1/usages response
+    # captured 2026-07-29.
+    return {
+        "user": {
+            "userId": "d9h7qm6mcu0rlmtg0v9g",
+            "region": "REGION_OVERSEA",
+            "membership": {"level": "LEVEL_ADVANCED"},
+            "businessId": "",
+        },
+        "usage": {
+            "limit": "100",
+            "used": "1",
+            "remaining": "99",
+            "resetTime": "2026-08-05T21:53:56.360821Z",
+        },
+        "limits": [
+            {
+                "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                "detail": {
+                    "limit": "100",
+                    "used": "3",
+                    "remaining": "97",
+                    "resetTime": "2026-07-30T02:53:56.360821Z",
+                },
+            }
+        ],
+        "parallel": {"limit": "30"},
+        "authentication": {"method": "METHOD_API_KEY", "scope": "FEATURE_CODING"},
+    }
+
+
+def _patch_kimi_runtime(monkeypatch, base_url="https://api.kimi.com/coding"):
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_runtime_provider",
+        lambda **kwargs: {"api_key": "kimi-test-key", "base_url": base_url},
+    )
+
+
+def test_kimi_usage_maps_weekly_and_rolling_windows(monkeypatch, kimi_usage_payload):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, kimi_usage_payload),
+    )
+    _patch_kimi_runtime(monkeypatch)
+
+    snapshot = account_usage.fetch_account_usage("kimi-coding")
+
+    assert snapshot is not None
+    assert snapshot.provider == "kimi-coding"
+    assert snapshot.plan == "Level Advanced"
+    assert [w.label for w in snapshot.windows] == ["Weekly", "5-hour"]
+    assert snapshot.windows[0].used_percent == pytest.approx(1.0)
+    assert snapshot.windows[1].used_percent == pytest.approx(3.0)
+    assert snapshot.windows[0].reset_at is not None
+    assert snapshot.details == ("Parallel requests: 30 max",)
+    assert calls[0]["url"] == "https://api.kimi.com/coding/v1/usages"
+    assert calls[0]["headers"]["Authorization"] == "Bearer kimi-test-key"
+
+
+def test_kimi_usages_url_strips_trailing_v1():
+    assert (
+        account_usage._kimi_usages_url("https://api.kimi.com/coding/v1")
+        == "https://api.kimi.com/coding/v1/usages"
+    )
+    assert (
+        account_usage._kimi_usages_url("https://api.kimi.com/coding/")
+        == "https://api.kimi.com/coding/v1/usages"
+    )
+    assert (
+        account_usage._kimi_usages_url(None)
+        == "https://api.kimi.com/coding/v1/usages"
+    )
+
+
+def test_kimi_usage_returns_none_without_credentials(monkeypatch):
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_runtime_provider",
+        lambda **kwargs: {"api_key": "", "base_url": ""},
+    )
+
+    assert account_usage.fetch_account_usage("kimi-coding") is None
+
+
+def test_kimi_aliases_route_to_confirmed_coding_plan(monkeypatch, kimi_usage_payload):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, kimi_usage_payload),
+    )
+    _patch_kimi_runtime(monkeypatch)
+
+    for alias in ("kimi", "moonshot", "kimi-coding-cn", "kimi-cn", "moonshot-cn"):
+        snapshot = account_usage.fetch_account_usage(alias)
+        assert snapshot is not None, alias
+        expected_provider = (
+            "kimi-coding-cn"
+            if alias in {"kimi-coding-cn", "kimi-cn", "moonshot-cn"}
+            else "kimi-coding"
+        )
+        assert snapshot.provider == expected_provider
+        assert [w.label for w in snapshot.windows] == ["Weekly", "5-hour"]
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    ["https://api.moonshot.ai/v1", "https://proxy.example.com/coding"],
+)
+def test_kimi_usage_skips_legacy_and_custom_runtimes(monkeypatch, base_url):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, {}),
+    )
+    _patch_kimi_runtime(monkeypatch, base_url=base_url)
+
+    assert account_usage.fetch_account_usage("moonshot") is None
+    assert calls == []
+
+
+def test_kimi_window_labels():
+    assert account_usage._kimi_window_label({"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"}) == "5-hour"
+    assert account_usage._kimi_window_label({"duration": 60, "timeUnit": "TIME_UNIT_MINUTE"}) == "Hourly"
+    assert account_usage._kimi_window_label({"duration": 30, "timeUnit": "TIME_UNIT_MINUTE"}) == "30-minute"
+    assert account_usage._kimi_window_label({"duration": 1, "timeUnit": "TIME_UNIT_DAY"}) == "1-day"
+    assert account_usage._kimi_window_label({}) == "Rolling window"
+    assert account_usage._kimi_window_label(None) == "Rolling window"
+
+
+def test_kimi_usage_tolerates_missing_sections(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, {"usage": {"limit": "100", "used": "40"}}),
+    )
+    _patch_kimi_runtime(monkeypatch)
+
+    snapshot = account_usage.fetch_account_usage("kimi-coding")
+
+    assert snapshot is not None
+    assert [w.label for w in snapshot.windows] == ["Weekly"]
+    assert snapshot.windows[0].used_percent == pytest.approx(40.0)
+    assert snapshot.windows[0].reset_at is None
+    assert snapshot.details == ()

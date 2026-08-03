@@ -1,7 +1,9 @@
-"""Tests for MiniMax auxiliary client URL normalization.
+"""Tests for Anthropic-to-OpenAI auxiliary URL normalization.
 
 MiniMax and MiniMax-CN set inference_base_url to the /anthropic path.
-The auxiliary client uses the OpenAI SDK, which needs /v1 instead.
+The auxiliary client uses the OpenAI SDK, which needs /v1 instead. ZAI's
+Anthropic endpoint belongs to Coding Plan, whose OpenAI-compatible peer is the
+separately billed /api/coding/paas/v4 endpoint.
 """
 
 import sys
@@ -36,6 +38,18 @@ class TestToOpenaiBaseUrl:
         """evil-minimax.io.example.com must not match the minimax.io suffix."""
         url = "https://minimax.io.evil.example.com/anthropic"
         assert _to_openai_base_url(url) == url
+
+    def test_zai_anthropic_routes_to_coding_plan_openai_endpoint(self):
+        assert (
+            _to_openai_base_url("https://api.z.ai/api/anthropic")
+            == "https://api.z.ai/api/coding/paas/v4"
+        )
+
+    def test_bigmodel_anthropic_routes_to_coding_plan_openai_endpoint(self):
+        assert (
+            _to_openai_base_url("https://open.bigmodel.cn/api/anthropic")
+            == "https://open.bigmodel.cn/api/coding/paas/v4"
+        )
 
     def test_none(self):
         assert _to_openai_base_url(None) == ""

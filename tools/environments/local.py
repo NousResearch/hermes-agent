@@ -401,11 +401,14 @@ def _is_hermes_internal_secret(key: str) -> bool:
         upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
     ):
         return True
-    if upper == _get_configured_bws_token_env().upper():
+    if upper == "BWS_ACCESS_TOKEN" or upper == _get_configured_bws_token_env().upper():
         # Bitwarden Secrets Manager bootstrap token — the exact configured
         # access_token_env name (default BWS_ACCESS_TOKEN; may be remapped to
-        # a non-suffix name like MY_BWS_TOKEN). Hermes's own vault credential
-        # must never reach a child by inheritance.
+        # a non-suffix name like MY_BWS_TOKEN), plus the default name itself.
+        # A remapped profile sharing one process with a default profile must
+        # not let the default profile's BWS_ACCESS_TOKEN (which the shared
+        # os.environ carries across profile turns) cross its child boundary
+        # either — the Bitwarden rule holds in both directions.
         return True
     return False
 

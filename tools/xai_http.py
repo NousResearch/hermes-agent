@@ -28,25 +28,50 @@ def has_xai_credentials() -> bool:
     1. ``XAI_API_KEY`` env var (cheapest; covers explicit-key users).
     2. ``~/.hermes/auth.json`` has a non-empty ``providers.xai-oauth.tokens.access_token``
        (single file read, no expiry check, no refresh).
+    3. ``credential_pool.xai-oauth`` has any entry with a non-empty
+       ``access_token`` (covers multi-account ``hermes auth add xai-oauth``
+       grants that are pool-only / ``manual:device_code``).
 
     Returns False on any exception so a corrupted auth store can't block
     other availability scans. Truthful refresh + expiry handling happens
     in ``search()`` (or whichever caller actually makes the request).
     """
-    if os.environ.get("XAI_API_KEY", "").strip():
-        return True
+    try:
+        from agent.secret_scope import get_secret
+    except ImportError:  # pragma: no cover — secret_scope is in-repo
+        if os.environ.get("XAI_API_KEY", "").strip():
+            return True
+    else:
+        if (get_secret("XAI_API_KEY", "") or "").strip():
+            return True
     try:
         from hermes_constants import get_hermes_home
 
         auth_path = get_hermes_home() / "auth.json"
         if not auth_path.exists():
             return False
-        store = json.loads(auth_path.read_text())
+        store = json.loads(auth_path.read_text(encoding="utf-8"))
         providers = store.get("providers") if isinstance(store, dict) else None
         xai_state = providers.get("xai-oauth") if isinstance(providers, dict) else None
         tokens = xai_state.get("tokens") if isinstance(xai_state, dict) else None
         access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
-        return bool(str(access_token or "").strip())
+        if str(access_token or "").strip():
+            return True
+        # Pool-only grants (multi-account ``auth add``) never write the
+        # providers singleton; still count as present credentials.
+        credential_pool = store.get("credential_pool") if isinstance(store, dict) else None
+        entries = (
+            credential_pool.get("xai-oauth")
+            if isinstance(credential_pool, dict)
+            else None
+        )
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("access_token", "") or "").strip():
+                    return True
+        return False
     except Exception:
         return False
 
@@ -60,13 +85,11 @@ def get_env_value(name: str, default=None):
     """
     try:
         from hermes_cli.config import get_env_value as _hermes_get_env_value
+    except ImportError:
+        return os.environ.get(name, default)
 
-        value = _hermes_get_env_value(name)
-        if value is not None:
-            return value
-    except Exception:
-        pass
-    return os.environ.get(name, default)
+    value = _hermes_get_env_value(name)
+    return value if value is not None else default
 
 
 def hermes_xai_user_agent() -> str:
@@ -76,6 +99,16 @@ def hermes_xai_user_agent() -> str:
     except Exception:
         __version__ = "unknown"
     return f"Hermes-Agent/{__version__}"
+
+
+def hermes_xai_default_headers() -> Dict[str, str]:
+    """Default headers for OpenAI-SDK and raw HTTP clients talking to xAI.
+
+    Replaces the OpenAI Python SDK's identifying ``User-Agent: OpenAI/Python …``
+    so chat/completions and Responses traffic is attributed as Hermes Agent,
+    matching the direct HTTP integrations (search, TTS, STT, image, video).
+    """
+    return {"User-Agent": hermes_xai_user_agent()}
 
 
 def _load_config_section(section_name: str) -> Dict[str, Any]:
@@ -215,13 +248,17 @@ def maybe_mark_xai_storage_notice_seen(section_name: str) -> Optional[str]:
         marker = marker_dir / f"{section_name}_xai_storage_notice_seen"
         if marker.exists():
             return None
-        marker.write_text(datetime.datetime.now(datetime.UTC).isoformat() + "\n")
+        marker.write_text(datetime.datetime.now(datetime.UTC).isoformat() + "\n", encoding="utf-8")
         return notice
     except Exception:
         return notice
 
 
-def resolve_xai_http_credentials(*, force_refresh: bool = False) -> Dict[str, str]:
+def resolve_xai_http_credentials(
+    *,
+    force_refresh: bool = False,
+    api_key_hint: Optional[str] = None,
+) -> Dict[str, str]:
     """Resolve bearer credentials for direct xAI HTTP endpoints.
 
     Prefers Hermes-managed xAI OAuth credentials when available, then falls back
@@ -231,44 +268,59 @@ def resolve_xai_http_credentials(*, force_refresh: bool = False) -> Dict[str, st
     endpoints (images, TTS, STT, etc.) aligned with the main runtime auth model
     and preserves the regression contract from PR #17140 / #17163.
 
-    Set ``force_refresh=True`` to bypass the resolver's JWT-exp shortcut and
-    perform an unconditional OAuth refresh. Callers should use this only as a
-    reactive remediation after a server 401 (mid-window revocation, opaque
-    tokens where the proactive JWT check is a no-op, etc.), not as a default —
-    the auth-store lock is held for the duration of the refresh.
+    Set ``force_refresh=True`` to perform an unconditional OAuth refresh.
+    Reactive callers should also pass the rejected bearer as ``api_key_hint``
+    so a freshly loaded multi-account pool refreshes the exact issuing entry,
+    not whichever entry its strategy would otherwise select first.
     """
     try:
-        from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+        from agent.credential_pool import load_pool
+        import hermes_cli.auth as auth_mod
 
-        creds = resolve_xai_oauth_runtime_credentials(force_refresh=force_refresh)
-        access_token = str(creds.get("api_key") or "").strip()
-        base_url = str(creds.get("base_url") or "").strip().rstrip("/")
+        pool = load_pool("xai-oauth")
+        entry = (
+            pool.try_refresh_matching(api_key_hint)
+            if force_refresh
+            else pool.select()
+        )
+        if force_refresh and entry is None:
+            # A rejected refresh may quarantine the issuing entry. Continue
+            # with the next healthy account instead of falling back to the raw
+            # singleton resolver and resurrecting the stale pool row.
+            entry = pool.select()
+        access_token = str(
+            getattr(entry, "runtime_api_key", None)
+            or getattr(entry, "access_token", "")
+        ).strip()
+        fallback_base_url = str(
+            getattr(entry, "runtime_base_url", None)
+            or getattr(entry, "base_url", "")
+            or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL
+        ).strip().rstrip("/")
+        override_base_url = str(
+            get_env_value("HERMES_XAI_BASE_URL")
+            or get_env_value("XAI_BASE_URL")
+            or ""
+        ).strip().rstrip("/")
+        base_url = auth_mod._xai_validate_inference_base_url(
+            override_base_url,
+            fallback=fallback_base_url,
+        )
         if access_token:
             return {
                 "provider": "xai-oauth",
                 "api_key": access_token,
-                "base_url": base_url or "https://api.x.ai/v1",
+                "base_url": base_url,
             }
     except Exception:
         pass
 
-    if not force_refresh:
-        try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
+    try:
+        from tools.tool_backend_helpers import resolve_provider_secret
 
-            runtime = resolve_runtime_provider(requested="xai-oauth")
-            access_token = str(runtime.get("api_key") or "").strip()
-            base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
-            if access_token:
-                return {
-                    "provider": "xai-oauth",
-                    "api_key": access_token,
-                    "base_url": base_url or "https://api.x.ai/v1",
-                }
-        except Exception:
-            pass
-
-    api_key = str(get_env_value("XAI_API_KEY") or "").strip()
+        api_key = resolve_provider_secret("XAI_API_KEY", "xai", env_getter=get_env_value)
+    except ImportError:  # pragma: no cover — helpers are in-repo
+        api_key = str(get_env_value("XAI_API_KEY") or "").strip()
     base_url = str(get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1").strip().rstrip("/")
     return {
         "provider": "xai",

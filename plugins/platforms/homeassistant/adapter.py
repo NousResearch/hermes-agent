@@ -36,16 +36,42 @@ from gateway.platforms.base import (
     SendResult,
 )
 
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware credential read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and sends
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
 logger = logging.getLogger(__name__)
 
 
 def check_ha_requirements() -> bool:
-    """Check if Home Assistant dependencies are available and configured."""
-    if not AIOHTTP_AVAILABLE:
-        return False
-    if not os.getenv("HASS_TOKEN"):
-        return False
-    return True
+    """Check if Home Assistant runtime dependencies are available."""
+    return AIOHTTP_AVAILABLE
+
+
+def validate_ha_config(config: PlatformConfig) -> bool:
+    """Return True when Home Assistant has enough credential config to connect."""
+    token = (getattr(config, "token", None) or _get_scoped_secret("HASS_TOKEN", "")).strip()
+    return bool(token)
 
 
 class HomeAssistantAdapter(BasePlatformAdapter):
@@ -74,7 +100,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
         # Configuration from extra
         extra = config.extra or {}
-        token = config.token or os.getenv("HASS_TOKEN", "")
+        token = config.token or _get_scoped_secret("HASS_TOKEN", "")
         url = extra.get("url") or os.getenv("HASS_URL", "http://homeassistant.local:8123")
         self._hass_url: str = url.rstrip("/")
         self._hass_token: str = token
@@ -486,7 +512,7 @@ async def _standalone_send(
 
     extra = getattr(pconfig, "extra", {}) or {}
     hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
-    token = (getattr(pconfig, "token", None) or os.getenv("HASS_TOKEN", "")).strip()
+    token = (getattr(pconfig, "token", None) or _get_scoped_secret("HASS_TOKEN", "")).strip()
     if not hass_url or not token:
         return {
             "error": (
@@ -560,6 +586,7 @@ def register(ctx) -> None:
         label="Home Assistant",
         adapter_factory=_build_adapter,
         check_fn=check_ha_requirements,
+        validate_config=validate_ha_config,
         is_connected=_is_connected,
         required_env=["HASS_TOKEN"],
         install_hint="pip install aiohttp",

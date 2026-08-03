@@ -534,9 +534,15 @@ class SessionManager:
 
         model = row.get("model") or None
 
-        # Load conversation history.
+        # Load conversation history. repair_alternation: this restore feeds
+        # LIVE REPLAY — the loaded list becomes the resumed agent's working
+        # conversation. A durable ``user;user`` violation left in state.db would
+        # otherwise re-fire the pre-request defensive repair on every request
+        # for the rest of the session (see hermes_state.get_messages_as_conversation).
         try:
-            history = db.get_messages_as_conversation(session_id)
+            history = db.get_messages_as_conversation(
+                session_id, repair_alternation=True
+            )
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []
@@ -642,6 +648,30 @@ class SessionManager:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
 
         _register_task_cwd(session_id, cwd)
+
+        # Bounded wait for background MCP discovery so already-spawning fast
+        # servers land in the agent's tool snapshot.  ACP entry.py fires
+        # discovery in a background daemon thread (start_background_mcp_discovery);
+        # the agent snapshots tools once at build (run_agent/agent_init) and
+        # never re-reads the registry, so without this join a reachable-but-
+        # slow configured server would be invisible for the whole session.
+        # ``ensure_mcp_discovery_before_agent_build`` also (re)starts discovery
+        # when the entry.py spawn never ran or exited with zero connected
+        # servers (the retry-after-zero-connected allowance), making this
+        # construction site self-sufficient.  Bounded by
+        # ``mcp_discovery_timeout`` (config.yaml, default ~1.5s) so a dead
+        # server can't block — servers that miss the bound are picked up by
+        # the automatic late-refresh (see HermesACPAgent._schedule_mcp_late_refresh).
+        try:
+            from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
+
+            ensure_mcp_discovery_before_agent_build(
+                logger=logger,
+                thread_name="acp-mcp-discovery",
+            )
+        except Exception:
+            logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
+
         agent = AIAgent(**kwargs)
         # Codex app-server sessions are spawned lazily on the first turn. Stamp
         # the ACP workspace onto the agent so the Codex runtime starts from the

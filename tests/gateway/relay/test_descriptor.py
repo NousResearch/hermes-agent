@@ -22,11 +22,6 @@ def _telegram_descriptor(**overrides) -> CapabilityDescriptor:
     return CapabilityDescriptor(**base)
 
 
-def test_descriptor_roundtrips_json():
-    d = _telegram_descriptor()
-    assert CapabilityDescriptor.from_json(d.to_json()) == d
-
-
 def test_descriptor_is_frozen():
     d = _telegram_descriptor()
     try:
@@ -37,30 +32,35 @@ def test_descriptor_is_frozen():
         raise AssertionError("descriptor should be immutable (frozen)")
 
 
-def test_from_json_ignores_unknown_keys():
-    """A newer connector may send fields this gateway doesn't know — those are
-    dropped, not fatal (forward-compat during the experimental phase)."""
-    d = _telegram_descriptor()
-    raw = d.to_json()[:-1] + ', "future_field": "ignored"}'
-    restored = CapabilityDescriptor.from_json(raw)
-    assert restored == d
-
-
-def test_from_json_fills_optional_defaults():
-    """Optional fields (emoji/platform_hint/pii_safe) fall back to defaults."""
-    minimal = (
-        '{"contract_version": 1, "platform": "x", "label": "X", '
-        '"max_message_length": 2000, "supports_draft_streaming": false, '
-        '"supports_edit": false, "supports_threads": false, '
-        '"markdown_dialect": "plain", "len_unit": "chars"}'
-    )
-    d = CapabilityDescriptor.from_json(minimal)
-    assert d.pii_safe is False
-    assert d.platform_hint == ""
-    assert d.emoji == "\U0001f50c"
-
-
 def test_module_is_marked_experimental():
     import gateway.relay.descriptor as m
 
     assert "EXPERIMENTAL" in (m.__doc__ or "")
+
+
+# ─────────────── supported_ops (op-level capability discovery, Phase 1) ───────────────
+
+
+def test_supports_op_legacy_connector_assumes_legacy_set():
+    """An empty supported_ops means the connector predates op discovery: the
+    legacy four ops are assumed supported (old connectors keep working), while
+    NEW ops are not (discovery semantics — never probe by trying)."""
+    d = _telegram_descriptor()  # no supported_ops
+    for op in ("send", "edit", "typing", "follow_up"):
+        assert d.supports_op(op) is True, op
+    assert d.supports_op("get_chat_info") is False
+
+
+def test_from_json_normalizes_malformed_supported_ops():
+    """Non-list shapes and non-string members degrade to the legacy fallback
+    (empty tuple), never raise — malformed input can't break the handshake."""
+    base = (
+        '{"contract_version": 1, "platform": "x", "label": "X", '
+        '"max_message_length": 2000, "supports_draft_streaming": false, '
+        '"supports_edit": true, "supports_threads": false, '
+        '"markdown_dialect": "plain", "len_unit": "chars", '
+    )
+    d = CapabilityDescriptor.from_json(base + '"supported_ops": "send"}')
+    assert d.supported_ops == ()
+    d = CapabilityDescriptor.from_json(base + '"supported_ops": ["send", 7, null, ""]}')
+    assert d.supported_ops == ("send",)

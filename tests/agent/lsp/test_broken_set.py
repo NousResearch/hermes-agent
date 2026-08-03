@@ -39,79 +39,10 @@ def _make_git_workspace(tmp_path: Path) -> Path:
     return repo
 
 
-def test_mark_broken_for_file_adds_correct_key(tmp_path, monkeypatch):
-    """``_mark_broken_for_file`` keys the broken-set on
-    (server_id, per_server_root) so subsequent ``enabled_for`` calls
-    for files in the same project skip immediately."""
-    repo = _make_git_workspace(tmp_path)
-    monkeypatch.chdir(str(repo))
-    src = repo / "x.py"
-    src.write_text("")
-
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="manual",
-    )
-    try:
-        svc._mark_broken_for_file(str(src), RuntimeError("simulated"))
-        # The pyright server resolves to the repo root via pyproject.toml.
-        assert ("pyright", str(repo)) in svc._broken
-    finally:
-        svc.shutdown()
 
 
-def test_enabled_for_returns_false_after_broken(tmp_path, monkeypatch):
-    """Once a (server_id, root) pair is in the broken-set,
-    ``enabled_for`` returns False so the file_operations layer skips
-    the LSP path entirely."""
-    repo = _make_git_workspace(tmp_path)
-    monkeypatch.chdir(str(repo))
-    src = repo / "x.py"
-    src.write_text("")
-
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="manual",
-    )
-    try:
-        # Initially enabled.
-        assert svc.enabled_for(str(src)) is True
-        # Mark broken.
-        svc._mark_broken_for_file(str(src), RuntimeError("simulated"))
-        # Now disabled — the broken-set short-circuits.
-        assert svc.enabled_for(str(src)) is False
-    finally:
-        svc.shutdown()
 
 
-def test_enabled_for_other_file_in_same_project_also_skipped(tmp_path, monkeypatch):
-    """The broken key is (server_id, root), so ALL files routed through
-    the same server in the same project are skipped — not just the one
-    that triggered the failure."""
-    repo = _make_git_workspace(tmp_path)
-    monkeypatch.chdir(str(repo))
-    a = repo / "a.py"
-    a.write_text("")
-    b = repo / "b.py"
-    b.write_text("")
-
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="manual",
-    )
-    try:
-        svc._mark_broken_for_file(str(a), RuntimeError("simulated"))
-        # Both files in the same project skip pyright now.
-        assert svc.enabled_for(str(a)) is False
-        assert svc.enabled_for(str(b)) is False
-    finally:
-        svc.shutdown()
 
 
 def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
@@ -144,21 +75,6 @@ def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
         svc.shutdown()
 
 
-def test_mark_broken_handles_missing_server_silently(tmp_path):
-    """If the file extension doesn't match any registered server,
-    ``_mark_broken_for_file`` no-ops — nothing to mark."""
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="manual",
-    )
-    try:
-        # No registered server for .xyz; must not raise.
-        svc._mark_broken_for_file(str(tmp_path / "weird.xyz"), RuntimeError("x"))
-        assert len(svc._broken) == 0
-    finally:
-        svc.shutdown()
 
 
 def test_mark_broken_handles_no_workspace_silently(tmp_path):

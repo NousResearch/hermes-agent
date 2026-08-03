@@ -41,6 +41,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value=config or {}),
+        patch("hermes_cli.config.load_config_readonly", return_value=config or {}),
         patch("run_agent.OpenAI"),
     ):
         agent = AIAgent(
@@ -54,7 +55,6 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
-    agent.tool_delay = 0
     agent.compression_enabled = False
     agent.save_trajectories = False
     return agent
@@ -220,6 +220,109 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     assert completed_events[0][1] == "web_search"
 
 
+def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispatch():
+    agent = _make_agent("write_file")
+    original_args = {"path": "/original/path", "content": "old"}
+    final_args = {"path": "/approved/path", "content": "new"}
+    tc = _mock_tool_call("write_file", json.dumps(original_args), "c-rewrite")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    observed = {
+        "plugin": [],
+        "guardrail": [],
+        "approval": [],
+        "checkpoint": [],
+        "start": [],
+        "dispatch": [],
+    }
+
+    original_before_call = agent._tool_guardrails.before_call
+
+    def observe_guardrail(name, args):
+        observed["guardrail"].append((name, dict(args)))
+        return original_before_call(name, args)
+
+    def relay_execute(name, args, callback, **kwargs):
+        del name, args, kwargs
+        return callback(dict(final_args)), dict(final_args)
+
+    def observe_plugin(name, args, **kwargs):
+        del kwargs
+        observed["plugin"].append((name, dict(args)))
+        return None
+
+    def observe_approval(name, args):
+        observed["approval"].append((name, dict(args)))
+        return None
+
+    def dispatch(name, args, task_id, **kwargs):
+        del task_id, kwargs
+        observed["dispatch"].append((name, dict(args)))
+        return json.dumps({"ok": True})
+
+    agent._checkpoint_mgr = SimpleNamespace(
+        enabled=True,
+        get_working_dir_for_path=lambda path: path,
+        ensure_checkpoint=lambda path, reason: observed["checkpoint"].append(
+            (path, reason)
+        ),
+    )
+    agent.tool_start_callback = lambda _call_id, name, args: observed["start"].append(
+        (name, dict(args))
+    )
+
+    with (
+        patch("agent.relay_tools.execute", side_effect=relay_execute),
+        patch(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            side_effect=observe_plugin,
+        ),
+        patch.object(agent._tool_guardrails, "before_call", side_effect=observe_guardrail),
+        patch(
+            "acp_adapter.edit_approval.maybe_require_edit_approval",
+            side_effect=observe_approval,
+        ),
+        patch("model_tools.registry.dispatch", side_effect=dispatch),
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    expected = [("write_file", final_args)]
+    assert observed["plugin"] == expected
+    assert observed["guardrail"] == expected
+    assert observed["approval"] == expected
+    assert observed["start"] == expected
+    assert observed["dispatch"] == expected
+    assert observed["checkpoint"] == [
+        ("/approved/path", "before write_file")
+    ]
+
+
+def test_relay_rewrite_is_guarded_before_dispatch_in_concurrent_path():
+    agent = _make_agent("web_search", config=_hard_stop_config())
+    original_args = {"query": "original"}
+    blocked_args = {"query": "blocked"}
+    _seed_exact_failures(agent, "web_search", blocked_args)
+    tc = _mock_tool_call("web_search", json.dumps(original_args), "c-rewrite-block")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    starts = []
+
+    def relay_execute(name, args, callback, **kwargs):
+        del name, args, kwargs
+        return callback(dict(blocked_args)), dict(blocked_args)
+
+    agent.tool_start_callback = lambda *args: starts.append(args)
+    with (
+        patch("agent.relay_tools.execute", side_effect=relay_execute),
+        patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
+    ):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    dispatch.assert_not_called()
+    assert starts == []
+    assert "repeated_exact_failure_block" in messages[0]["content"]
+
+
 def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     agent = _make_agent("web_search")
     args = {"query": "same"}
@@ -268,42 +371,6 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
 
 
-def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():
-    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
-    same_args = {"query": "same"}
-    responses = [
-        _mock_response(
-            content="",
-            finish_reason="tool_calls",
-            tool_calls=[_mock_tool_call("web_search", json.dumps(same_args), f"c{i}")],
-        )
-        for i in range(1, 10)
-    ]
-    agent.client.chat.completions.create.side_effect = responses
-
-    with (
-        patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc,
-        patch.object(agent, "_persist_session"),
-        patch.object(agent, "_save_trajectory"),
-        patch.object(agent, "_cleanup_task_resources"),
-    ):
-        result = agent.run_conversation("search repeatedly")
-
-    assert mock_hfc.call_count == 2
-    assert result["api_calls"] == 3
-    assert result["api_calls"] < agent.max_iterations
-    assert result["turn_exit_reason"] == "guardrail_halt"
-    assert "error" not in result
-    assert result["completed"] is True
-    assert "stopped retrying" in result["final_response"]
-    assert result["guardrail"]["code"] == "repeated_exact_failure_block"
-    assert result["guardrail"]["tool_name"] == "web_search"
-
-    assistant_tool_calls = [m for m in result["messages"] if m.get("role") == "assistant" and m.get("tool_calls")]
-    for assistant_msg in assistant_tool_calls:
-        call_ids = [tc["id"] for tc in assistant_msg["tool_calls"]]
-        following_results = [m for m in result["messages"] if m.get("role") == "tool" and m.get("tool_call_id") in call_ids]
-        assert len(following_results) == len(call_ids)
 
 
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():

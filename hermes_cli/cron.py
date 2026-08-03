@@ -174,6 +174,13 @@ def cron_list(show_all: bool = False):
                 status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
             print(f"    Last run:  {last_run}  {status_display}")
 
+        latest_execution = job.get("latest_execution")
+        if latest_execution:
+            print(
+                f"    Execution: {latest_execution.get('status', '?')}  "
+                f"{latest_execution.get('id', '?')}"
+            )
+
         delivery_err = job.get("last_delivery_error")
         if delivery_err:
             print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
@@ -187,6 +194,24 @@ def cron_tick():
     """Run due jobs once and exit."""
     from cron.scheduler import tick
     tick(verbose=True)
+
+
+def cron_runs(job_id: Optional[str] = None, limit: int = 20):
+    """Show indexed durable cron execution history."""
+    from cron.executions import list_executions
+
+    records = list_executions(job_id=job_id, limit=limit)
+    if not records:
+        print("No cron execution attempts recorded.")
+        return
+    for record in records:
+        print(
+            f"{record.get('id', '?')}  {record.get('status', '?'):<9}  "
+            f"job={record.get('job_id', '?')}  source={record.get('source', '?')}  "
+            f"{record.get('claimed_at', '?')}"
+        )
+        if record.get("error"):
+            print(f"    {record['error']}")
 
 
 def cron_status():
@@ -229,6 +254,7 @@ def cron_status():
         # (#32612, #32895).
         from cron.jobs import (
             get_ticker_heartbeat_age,
+            get_ticker_last_error,
             get_ticker_success_age,
             TICKER_INTERVAL_SECONDS,
         )
@@ -258,6 +284,20 @@ def cron_status():
                 Colors.YELLOW,
             ))
             print(f"  PID: {', '.join(map(str, pids))}")
+            last_error = get_ticker_last_error()
+            if last_error:
+                # Show WHY ticks fail — e.g. a root-rewritten jobs.json
+                # (PermissionError) that silently locked out the ticker's
+                # uid for ~14h in the field (#68483).
+                print(color(f"  Last tick error: {last_error}", Colors.RED))
+                if "Permission denied" in last_error:
+                    print(color(
+                        "  Hint: jobs.json may be owned by another user "
+                        "(e.g. rewritten by a root `docker exec hermes "
+                        "hermes cron ...`). Fix ownership to match the "
+                        "gateway user, and prefer `docker exec -u <uid>:<gid>`.",
+                        Colors.YELLOW,
+                    ))
             print("  Check the gateway log for 'Cron tick error'.")
         else:
             print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
@@ -309,6 +349,8 @@ def cron_create(args):
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
+        model=getattr(args, "model", None),
+        provider=getattr(args, "model_provider", None),
         no_agent=getattr(args, "no_agent", False) or None,
     )
     if not result.get("success"):
@@ -372,6 +414,8 @@ def cron_edit(args):
         skills=final_skills,
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
+        model=getattr(args, "model", None),
+        provider=getattr(args, "model_provider", None),
         no_agent=getattr(args, "no_agent", None),
     )
     if not result.get("success"):
@@ -433,6 +477,10 @@ def cron_command(args):
         cron_tick()
         return 0
 
+    if subcmd in {"runs", "history"}:
+        cron_runs(getattr(args, "job_id", None), getattr(args, "limit", 20))
+        return 0
+
     if subcmd in {"create", "add"}:
         return cron_create(args)
 
@@ -452,5 +500,5 @@ def cron_command(args):
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|tick]")
     sys.exit(1)

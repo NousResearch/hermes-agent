@@ -311,22 +311,12 @@
   margin-left: auto;
 }
 
-/* ---- Inline create --------------------------------------------------- */
+/* ---- Create-task dialog ----------------------------------------------- */
 
-.hermes-kanban-inline-create {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 0.5rem;
-  margin-bottom: 0.5rem;
-  background: color-mix(in srgb, var(--color-card) 70%, transparent);
-  border: 1px dashed var(--color-border);
-  border-radius: var(--radius-sm, 0.25rem);
-}
-
-.hermes-kanban-inline-create > .flex.gap-2:last-child > button:first-of-type {
-  flex: 1;
-  min-width: 0;
+/* Wider than the base dialog so the workspace/parent selectors and the
+   labeled two-column rows breathe; still clamped to the viewport. */
+.hermes-kanban-create-dialog {
+  width: 36rem;
 }
 
 /* ---- Drawer (task detail side panel) --------------------------------- */
@@ -576,6 +566,18 @@
   max-width: 280px;
 }
 
+/* Comment footer = workflow hint + input row. The border-top lives on the
+   wrapper so the hint sits inside the same visual block as the input. */
+.hermes-kanban-drawer-comment-foot {
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 90%, transparent);
+}
+
+.hermes-kanban-comment-hint {
+  padding: 0.45rem 0.75rem 0;
+  cursor: help;
+}
+
 .hermes-kanban-drawer-comment-row {
   display: flex;
   gap: 0.4rem;
@@ -583,8 +585,6 @@
   /* Keep the comment input clear of the mobile browser nav bar / home
      indicator by extending the bottom padding with the safe-area inset. */
   padding-bottom: max(0.55rem, calc(0.55rem + env(safe-area-inset-bottom)));
-  border-top: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-card) 90%, transparent);
 }
 
 .hermes-kanban-count {

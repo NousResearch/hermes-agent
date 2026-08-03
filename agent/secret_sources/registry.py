@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, MutableMapping, Optional
 
 from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION,
@@ -39,6 +40,8 @@ from agent.secret_sources.base import (
     FetchResult,
     SecretSource,
     is_valid_env_name,
+    reset_source_environment,
+    set_source_environment,
 )
 
 logger = logging.getLogger(__name__)
@@ -174,6 +177,13 @@ def _ensure_builtin_sources() -> None:
     except Exception:  # noqa: BLE001 — never block startup
         logger.warning("Failed to register bundled 1Password secret source",
                        exc_info=True)
+    try:
+        from agent.secret_sources.command import CommandSource
+
+        register_source(CommandSource())
+    except Exception:  # noqa: BLE001 — never block startup
+        logger.warning("Failed to register bundled command secret source",
+                       exc_info=True)
 
 
 def _reset_registry_for_tests() -> None:
@@ -188,7 +198,8 @@ def _reset_registry_for_tests() -> None:
 
 
 def _fetch_with_timeout(
-    source: SecretSource, cfg: dict, home_path: Path
+    source: SecretSource, cfg: dict, home_path: Path,
+    environ: MutableMapping[str, str],
 ) -> FetchResult:
     """Run source.fetch() under a wall-clock budget; never raises.
 
@@ -203,7 +214,14 @@ def _fetch_with_timeout(
         max_workers=1, thread_name_prefix=f"secret-src-{source.name}"
     )
     try:
-        future = executor.submit(source.fetch, cfg, home_path)
+        def _fetch() -> FetchResult:
+            token = set_source_environment(environ)
+            try:
+                return source.fetch(cfg, home_path)
+            finally:
+                reset_source_environment(token)
+
+        future = executor.submit(_fetch)
         try:
             result = future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
@@ -275,22 +293,69 @@ def _ordered_enabled_sources(secrets_cfg: dict) -> List[SecretSource]:
     return enabled
 
 
+def _active_profile_name(home_path: Optional[Path]) -> str:
+    """Best-effort active profile name for profile-scoped secret aliases.
+
+    A named profile's HERMES_HOME is ``~/.hermes/profiles/<name>``; the
+    default profile (``~/.hermes``) returns "".
+    """
+    if home_path is not None:
+        resolved = Path(home_path)
+        if resolved.parent.name == "profiles" and resolved.name:
+            return resolved.name
+    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+        value = os.environ.get(env_name, "").strip()
+        if value and value != "default":
+            return value
+    return ""
+
+
+# Only credential-shaped names get auto-aliased — a random profile-suffixed
+# var should not silently hydrate an unsuffixed name.
+_ALIAS_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY", "_PASSWORD")
+
+
+def _profile_alias_target(var: str, profile: str) -> Optional[str]:
+    """Map ``FOO_<PROFILE>`` to ``FOO`` for the active profile when safe."""
+    if not profile:
+        return None
+    suffix = "_" + profile.replace("-", "_").upper()
+    if not var.endswith(suffix):
+        return None
+    alias = var[: -len(suffix)]
+    if not alias or not is_valid_env_name(alias):
+        return None
+    if not any(alias.endswith(s) for s in _ALIAS_SUFFIXES):
+        return None
+    return alias
+
+
 def apply_all(secrets_cfg: dict, home_path: Path,
-              environ: Optional[Dict[str, str]] = None) -> ApplyReport:
+              environ: Optional[MutableMapping[str, str]] = None) -> ApplyReport:
     """Fetch from every enabled source and apply the merged result to env.
 
     ``environ`` defaults to ``os.environ``; injectable for tests.
 
     Precedence per env var (most-specific intent wins):
 
-    1. Pre-existing env (.env / shell) — unless the winning source has
+    1. ``secrets.preserve_existing`` names — a pre-existing env value always
+       wins for these, even against a source with ``override_existing: true``
+       (escape hatch for profile-local platform secrets, #58073).
+    2. Pre-existing env (.env / shell) — unless the winning source has
        ``override_existing: true``.
-    2. Mapped sources, in configured order.
-    3. Bulk sources, in configured order.
+    3. Mapped sources, in configured order.
+    4. Bulk sources, in configured order.
 
     First claim wins.  A later source that also carries the var gets a
     ``skipped_claimed`` entry and a conflict warning — never a silent
     clobber, and ``override_existing`` never applies across sources.
+
+    Profile aliasing (#51447): when running under a named profile, an applied
+    var ``FOO_<PROFILE>`` (credential-shaped suffixes only) also hydrates the
+    canonical ``FOO`` so platform adapters and plugins that read fixed env
+    names see the profile's value.  The alias obeys the same protected /
+    preserve / claimed / override guards and is disabled with
+    ``secrets.profile_alias: false``.
     """
     import os as _os
 
@@ -301,6 +366,14 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     enabled = _ordered_enabled_sources(secrets_cfg)
     if not enabled:
         return report
+
+    preserve_raw = secrets_cfg.get("preserve_existing")
+    preserve: frozenset = frozenset(
+        n.strip() for n in preserve_raw if isinstance(n, str) and n.strip()
+    ) if isinstance(preserve_raw, list) else frozenset()
+
+    alias_enabled = bool(secrets_cfg.get("profile_alias", True))
+    profile = _active_profile_name(home_path) if alias_enabled else ""
 
     # Mapped sources outrank bulk sources regardless of list order:
     # an explicit VAR→ref binding is stronger intent than a project dump.
@@ -313,13 +386,22 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     for source in ordered:
         cfg = secrets_cfg.get(source.name)
         cfg = cfg if isinstance(cfg, dict) else {}
-        result = _fetch_with_timeout(source, cfg, home_path)
+        result = _fetch_with_timeout(source, cfg, home_path, env)
         fetches.append((source, cfg, result))
         try:
             for var in source.protected_env_vars(cfg):
                 protected.setdefault(var, source.name)
         except Exception:  # noqa: BLE001
             pass
+
+    # Every var any source supplies directly — an alias never shadows a
+    # var that some source will (or tried to) claim by its real name.
+    supplied_directly: set = set()
+    for _, _, result in fetches:
+        if result.ok:
+            supplied_directly.update(
+                v for v in result.secrets if isinstance(v, str)
+            )
 
     # Apply phase — sequential, first-wins, fully attributed.
     claimed: Dict[str, str] = {}  # var → source name that won it
@@ -336,15 +418,14 @@ def apply_all(secrets_cfg: dict, home_path: Path,
         except Exception:  # noqa: BLE001
             override = False
 
-        for var, value in result.secrets.items():
-            if not isinstance(var, str) or not isinstance(value, str):
-                continue
+        def _try_apply(var: str, value: str, *, is_alias: bool = False) -> bool:
+            """Apply one var through the shared guard chain. True = applied."""
             if not is_valid_env_name(var):
                 sr.skipped_invalid.append(var)
-                continue
+                return False
             if var in protected:
                 sr.skipped_protected.append(var)
-                continue
+                return False
             if var in claimed:
                 sr.skipped_claimed.append(var)
                 report.conflicts.append(
@@ -352,11 +433,14 @@ def apply_all(secrets_cfg: dict, home_path: Path,
                     f"{source.name} also supplies it (first source wins — "
                     "remove one binding or reorder secrets.sources)"
                 )
-                continue
+                return False
             existed = bool(env.get(var))
+            if existed and var in preserve:
+                sr.skipped_existing.append(var)
+                return False
             if existed and not override:
                 sr.skipped_existing.append(var)
-                continue
+                return False
             env[var] = value
             claimed[var] = source.name
             sr.applied.append(var)
@@ -366,5 +450,21 @@ def apply_all(secrets_cfg: dict, home_path: Path,
                 shape=source.shape,
                 overrode_env=existed,
             )
+            return True
+
+        for var, value in result.secrets.items():
+            if not isinstance(var, str) or not isinstance(value, str):
+                continue
+            applied = _try_apply(var, value)
+
+            if not applied or not profile:
+                continue
+            alias = _profile_alias_target(var, profile)
+            if alias and alias not in supplied_directly and alias not in claimed:
+                if _try_apply(alias, value, is_alias=True):
+                    result.warnings.append(
+                        f"applied profile-scoped {var} as {alias} "
+                        f"(active profile {profile!r})"
+                    )
 
     return report

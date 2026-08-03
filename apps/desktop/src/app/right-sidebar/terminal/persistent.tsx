@@ -2,6 +2,11 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
+import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { markRightPanePerf } from '@/debug/right-pane-events'
+import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
+import { $paneStates } from '@/store/panes'
+
 import { $terminalTakeover } from '../store'
 
 import { ensureTerminal } from './terminals'
@@ -37,7 +42,7 @@ export function TerminalSlot({ className = SLOT_CLASS }: { className?: string })
     }
   }, [])
 
-  return <div className={className} ref={ref} />
+  return <div className={className} data-terminal-slot="" ref={ref} />
 }
 
 interface PersistentTerminalProps {
@@ -83,8 +88,25 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
 
     let prev: Rect | null = null
     let frame = 0
+    let stopped = false
+    let pendingReason = 'initial'
+    let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
 
-    const tick = () => {
+    const rendererPaused = () => pauseController?.isPaused() ?? document.visibilityState === 'hidden'
+
+    const cancelFrame = () => {
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame)
+        frame = 0
+      }
+    }
+
+    const measure = (reason: string): boolean => {
+      if (rendererPaused()) {
+        return false
+      }
+
+      markRightPanePerf('terminal-measure', reason)
       const r = slot.getBoundingClientRect()
       // floor top/left + ceil right/bottom: overlay always covers the slot's
       // full pixel footprint, so half-pixel rects can't leak page bg through.
@@ -99,14 +121,101 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
         if (next.width > 0 && next.height > 0) {
           setReady(true)
         }
+
+        return true
       }
 
-      frame = requestAnimationFrame(tick)
+      return false
     }
 
-    tick()
+    const scheduleMeasure = (reason = 'unknown') => {
+      if (stopped || rendererPaused() || frame !== 0) {
+        return
+      }
 
-    return () => cancelAnimationFrame(frame)
+      pendingReason = reason
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
+        const reason = pendingReason
+
+        if (measure(reason)) {
+          scheduleMeasure('settle')
+        }
+      })
+    }
+
+    const handleVisibilityChange = () => {
+      if (rendererPaused()) {
+        cancelFrame()
+
+        return
+      }
+
+      scheduleMeasure('visibility')
+    }
+
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => {
+            scheduleMeasure('resize-observer')
+          })
+
+    const positionObserver =
+      typeof MutationObserver === 'undefined'
+        ? null
+        : new MutationObserver(() => {
+            scheduleMeasure('ancestor-mutation')
+          })
+
+    pauseController = createRendererLoopPauseController(handleVisibilityChange)
+
+    if (measure('initial')) {
+      scheduleMeasure('settle')
+    }
+
+    observer?.observe(slot)
+
+    const handleScroll = () => scheduleMeasure('scroll')
+    const scrollTargets: Array<HTMLElement | Window> = [window]
+    window.addEventListener('scroll', handleScroll)
+
+    for (let node: HTMLElement | null = slot; node; node = node.parentElement) {
+      positionObserver?.observe(node, {
+        attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'data-state'],
+        attributes: true,
+        childList: true,
+        subtree: false
+      })
+      // Scroll does not bubble. Listen only on the slot's own ancestor chain,
+      // so a transcript/file-tree/xterm viewport scroll elsewhere cannot wake
+      // terminal positioning.
+      node.addEventListener('scroll', handleScroll)
+      scrollTargets.push(node)
+    }
+
+    // Nested layout-tree and pane-state commits can move the slot without
+    // changing its own size. Subscribe to the actual layout authorities instead
+    // of observing every descendant mutation under every ancestor (chat stream
+    // and file-tree updates are unrelated and used to wake this tracker).
+    const unsubscribeLayout = $layoutTree.listen(() => scheduleMeasure('layout-tree'))
+    const unsubscribePanes = $paneStates.listen(() => scheduleMeasure('pane-state'))
+
+    const handleResize = () => scheduleMeasure('window-resize')
+
+    window.addEventListener('resize', handleResize)
+
+    return () => {
+      stopped = true
+      cancelFrame()
+      observer?.disconnect()
+      positionObserver?.disconnect()
+      unsubscribeLayout()
+      unsubscribePanes()
+      window.removeEventListener('resize', handleResize)
+      scrollTargets.forEach(target => target.removeEventListener('scroll', handleScroll))
+      pauseController?.dispose()
+    }
   }, [slot])
 
   const visible = Boolean(rect && rect.width > 0 && rect.height > 0)
@@ -124,7 +233,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     zIndex: 4,
     // Match the live skin surface so the header strip (transparent) and body
     // read as one cohesive pane instead of revealing a near-black slab behind.
-    backgroundColor: 'var(--ui-editor-surface-background)',
+    backgroundColor: 'var(--ui-terminal-surface-background)',
     contain: 'layout size paint'
   }
 
@@ -132,7 +241,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
   // booting xterm/node-pty at 0×0 starts the shell at 80×24 and spawns a visible
   // conhost on Windows. After that `mounted` latches: shells persist while hidden.
   return (
-    <div aria-hidden={!visible} style={style}>
+    <div aria-hidden={!visible} data-persistent-terminal="" style={style}>
       {mounted && <TerminalWorkspace onAddSelectionToChat={onAddSelectionToChat} />}
     </div>
   )

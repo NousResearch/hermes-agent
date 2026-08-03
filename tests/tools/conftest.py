@@ -1,4 +1,4 @@
-"""Shared fixtures for tools tests, including safe local I/O roots.
+"""Shared fixtures for tests/tools/ web-provider tests.
 
 Per-file subprocess isolation means each test file gets a fresh interpreter,
 so module-level state (like the web-search-provider registry) is empty when
@@ -8,20 +8,9 @@ depend on the registry being populated should use it explicitly or via
 ``@pytest.mark.usefixtures("web_registry_populated")``.
 """
 
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
-
-
-@pytest.fixture
-def safe_tmp_path():
-    """Writable temp path outside macOS' protected ``/private/var`` tree."""
-    base = Path(__file__).resolve().parents[2] / "tmp"
-    base.mkdir(exist_ok=True)
-    with TemporaryDirectory(prefix="pytest-tools-", dir=base) as path:
-        yield Path(path)
 
 
 def register_all_web_providers():

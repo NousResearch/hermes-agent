@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -60,6 +61,7 @@ from agent.delegation_context import (
     enter_non_dispatcher_owned_context,
     exit_non_dispatcher_owned_context,
 )
+from tools.terminal_tool import FOREGROUND_MAX_TIMEOUT, terminal_tool
 
 logger = logging.getLogger(__name__)
 
@@ -4117,6 +4119,60 @@ def _run_job_script(
         return False, f"Script execution failed: {exc}"
 
 
+def _run_job_script_in_backend(
+    script_path: str,
+    workdir: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Run a cron script through the active profile terminal backend.
+
+    Cron never directly creates a host subprocess. The terminal backend is local
+    for a trusted local profile and sandboxed/remote for configured profiles, so
+    scheduled scripts have the same execution boundary as terminal tool calls.
+    """
+    raw = str(script_path or "").strip()
+    if not raw or "\x00" in raw:
+        return False, "Blocked: cron script path is empty or contains a NUL byte"
+
+    path = Path(raw)
+    if not path.is_absolute():
+        return False, f"Backend script path must be absolute: {raw!r}."
+    backend_path = str(path)
+    backend_cwd = workdir or str(path.parent)
+    interpreter = "bash" if path.suffix.lower() in {".sh", ".bash"} else "python3"
+    command = f"{interpreter} {shlex.quote(backend_path)}"
+
+    try:
+        raw_result = terminal_tool(
+            command=command,
+            timeout=min(_get_script_timeout(), FOREGROUND_MAX_TIMEOUT),
+            workdir=backend_cwd,
+        )
+        result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        output = str((result or {}).get("output") or "").strip()
+        error = str((result or {}).get("error") or "").strip()
+        exit_code = (result or {}).get("exit_code", 1)
+        if exit_code != 0:
+            details = error or output or f"exit code {exit_code}"
+            if "No such file or directory" in details:
+                return False, f"Script not found in terminal backend: {backend_path}"
+            return False, f"Script exited with code {exit_code}: {details}"
+        return True, output
+    except Exception as exc:
+        return False, f"Script execution through terminal backend failed: {exc}"
+
+
+def _run_job_script_for_target(
+    job: dict, script_path: str, workdir: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Run a script in its declared target; missing target preserves host behavior."""
+    target = str(job.get("target") or "scheduler").strip().lower()
+    if target == "scheduler":
+        return _run_job_script(script_path, workdir=workdir)
+    if target == "backend":
+        return _run_job_script_in_backend(script_path, workdir=workdir)
+    return False, f"Unsupported cron script target: {target!r}"
+
+
 def _run_job_script_with_claim_heartbeat(
     job: dict,
     script_path: str,
@@ -4143,7 +4199,11 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        if str(job.get("target") or "scheduler").strip().lower() == "scheduler":
+            return _run_job_script(
+                script_path, workdir=workdir, cancel_event=cancel_event
+            )
+        return _run_job_script_for_target(job, script_path, workdir=workdir)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -4174,10 +4234,18 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        if str(job.get("target") or "scheduler").strip().lower() == "scheduler":
+            return _run_job_script(
+                script_path, workdir=workdir, cancel_event=cancel_event
+            )
+        return _run_job_script_for_target(job, script_path, workdir=workdir)
 
     try:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        if str(job.get("target") or "scheduler").strip().lower() == "scheduler":
+            return _run_job_script(
+                script_path, workdir=workdir, cancel_event=cancel_event
+            )
+        return _run_job_script_for_target(job, script_path, workdir=workdir)
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -4248,7 +4316,7 @@ def _build_job_prompt(
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            success, script_output = _run_job_script_for_target(job, script_path)
         if success:
             if script_output:
                 prompt = (
@@ -5104,17 +5172,9 @@ def run_job(
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
 
-        # Apply workdir if configured — lets scripts use predictable relative
-        # paths. For no_agent jobs this is passed as the subprocess cwd so the
-        # Python process cwd is NEVER mutated — avoiding the global-side-effect
-        # bug where os.chdir() leaks into concurrent gateway sessions (#69396).
+        # Workdirs are backend-visible paths. Do not probe them from the
+        # scheduler host: /workspace may only exist inside a container.
         _job_workdir = (job.get("workdir") or "").strip() or None
-        if _job_workdir and not Path(_job_workdir).is_dir():
-            logger.warning(
-                "Job '%s': configured workdir %r no longer exists — running without it",
-                job_id, _job_workdir,
-            )
-            _job_workdir = None
 
         try:
             ok, output = _run_job_script_with_claim_heartbeat(

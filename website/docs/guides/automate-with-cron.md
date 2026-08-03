@@ -67,7 +67,7 @@ else:
 Set up the cron job:
 
 ```bash
-/cron add "every 1h" "If the script output says CHANGE DETECTED, summarize what changed on the page and why it might matter. If it says NO_CHANGE, respond with just [SILENT]." --script ~/.hermes/scripts/watch-site.py --name "Pricing monitor" --deliver telegram
+/cron add "every 1h" "If the script output says CHANGE DETECTED, summarize what changed on the page and why it might matter. If it says NO_CHANGE, respond with just [SILENT]." --script ~/.hermes/scripts/watch-site.py --target scheduler --name "Pricing monitor" --deliver telegram
 ```
 
 :::tip The [SILENT] Trick
@@ -170,6 +170,7 @@ for r in recent[-6:]:
 If prices are flat and nothing notable, respond with [SILENT].
 If there's a significant move, explain what happened." \
   --script ~/.hermes/scripts/collect-prices.py \
+  --target scheduler \
   --name "Price tracker" \
   --deliver telegram
 ```

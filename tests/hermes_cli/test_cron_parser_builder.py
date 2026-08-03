@@ -41,6 +41,19 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
 
 
+def test_cron_target_option_is_available_for_create_and_edit():
+    """CLI users can select the documented scheduler/backend script target."""
+    parser = _build()
+
+    create = parser.parse_args([
+        "cron", "create", "every 1h", "--script", "/workspace/check.py", "--target", "backend",
+    ])
+    edit = parser.parse_args(["cron", "edit", "j", "--target", "scheduler"])
+
+    assert create.target == "backend"
+    assert edit.target == "scheduler"
+
+
 def test_cron_accept_hooks_flag_on_run_and_tick():
     parser = _build()
     # --accept-hooks is suppressed-default; present only when passed.

@@ -75,6 +75,7 @@ cronjob(
     action="create",
     schedule="every 5m",
     script="memory-watchdog.sh",
+    target="scheduler",
     no_agent=True,
     deliver="telegram",
     name="memory-watchdog",
@@ -126,6 +127,7 @@ chmod +x ~/.hermes/scripts/memory-watchdog.sh
 hermes cron create "every 5m" \
   --no-agent \
   --script memory-watchdog.sh \
+  --target scheduler \
   --deliver telegram \
   --name "memory-watchdog"
 
@@ -151,7 +153,7 @@ The "silent when empty" behavior is the key to the classic watchdog pattern: the
 
 ## Script Rules
 
-Scripts must live in `~/.hermes/scripts/`. This is enforced at both job-creation time and run time — absolute paths, `~/` expansion, and path-traversal patterns (`../`) are rejected. The same directory is shared with the pre-check script gate used by LLM jobs.
+New script jobs created through `cronjob` or `hermes cron create` run on the profile terminal backend by default. Backend script paths **must be absolute** and backend-visible, such as `/workspace/scripts/disk-alert.sh`; Hermes checks that it is a regular file in that backend before saving the job. Use `target="scheduler"` explicitly for scheduler-host maintenance jobs; those scripts must be regular files under `~/.hermes/scripts/`, with absolute paths, `~/` expansion, and traversal patterns rejected. Existing jobs without a stored target retain scheduler-host execution.
 
 Interpreter choice is by file extension:
 
@@ -223,6 +225,7 @@ chmod +x ~/.hermes/scripts/disk-alert.sh
 hermes cron create "*/15 * * * *" \
   --no-agent \
   --script disk-alert.sh \
+  --target scheduler \
   --deliver telegram \
   --name "disk-alert"
 ```

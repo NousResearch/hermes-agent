@@ -98,7 +98,12 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     script_path.write_text("#!/bin/bash\necho 'RAM 92% on host'\n")
 
     job = create_job(
-        prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
+        prompt=None,
+        schedule="every 5m",
+        script="alert.sh",
+        target="scheduler",
+        no_agent=True,
+        deliver="local",
     )
     success, doc, final_response, error = run_job(job)
     assert success is True
@@ -238,6 +243,135 @@ def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, mon
     # Chain wording is now honest (#85508): exhausted when configured,
     # "no fallback chain configured" guidance otherwise.
     assert "fallback chain" in delivered[0].lower()
+
+
+def test_no_agent_script_runs_through_terminal_backend(hermes_env, monkeypatch):
+    """A script-only cron job uses the same backend as the profile terminal."""
+    from cron.jobs import create_job
+    from cron import scheduler
+
+    calls = []
+
+    def fake_terminal(*, command, timeout, workdir, **_kwargs):
+        calls.append((command, timeout, workdir))
+        return '{"output": "coop scraped\\n", "exit_code": 0, "error": null}'
+
+    monkeypatch.setattr(scheduler, "terminal_tool", fake_terminal)
+    job = create_job(
+        prompt=None,
+        schedule="every 1h",
+        script="/workspace/scrape_coop.py",
+        target="backend",
+        no_agent=True,
+        deliver="local",
+    )
+
+    success, _doc, final_response, error = scheduler.run_job(job)
+
+    assert success is True
+    assert final_response == "coop scraped"
+    assert error is None
+    assert calls == [
+        (
+            "python3 /workspace/scrape_coop.py",
+            min(scheduler._get_script_timeout(), scheduler.FOREGROUND_MAX_TIMEOUT),
+            "/workspace",
+        )
+    ]
+
+
+def test_no_agent_backend_script_keeps_backend_workdir(hermes_env, monkeypatch):
+    """A backend workdir is not tested against the scheduler host filesystem."""
+    from cron.jobs import create_job
+    from cron import scheduler
+
+    calls = []
+
+    def fake_terminal(*, command, timeout, workdir, **_kwargs):
+        calls.append((command, timeout, workdir))
+        return '{"output": "ok", "exit_code": 0, "error": null}'
+
+    monkeypatch.setattr(scheduler, "terminal_tool", fake_terminal)
+    job = create_job(
+        prompt=None,
+        schedule="every 1h",
+        script="/workspace/tasks/scrape_coop.py",
+        workdir="/workspace",
+        target="backend",
+        no_agent=True,
+        deliver="local",
+    )
+
+    success, _doc, _final_response, error = scheduler.run_job(job)
+
+    assert success is True
+    assert error is None
+    assert calls[0][2] == "/workspace"
+
+
+def test_new_script_job_defaults_to_backend_target(hermes_env):
+    """New script jobs follow the agent's terminal backend by default."""
+    from cron.jobs import create_job
+
+    job = create_job(
+        prompt=None,
+        schedule="every 1h",
+        script="/workspace/worker.py",
+        no_agent=True,
+        deliver="local",
+    )
+
+
+    assert job["target"] == "backend"
+
+
+def test_backend_script_runner_rejects_relative_path(hermes_env, monkeypatch):
+    """Stored jobs cannot bypass the backend absolute-path API contract."""
+    from cron import scheduler
+
+    monkeypatch.setattr(
+        scheduler,
+        "terminal_tool",
+        lambda **kwargs: pytest.fail("terminal backend must not run for a relative path"),
+    )
+
+    success, output = scheduler._run_job_script_in_backend("worker.py")
+
+    assert success is False
+    assert output == "Backend script path must be absolute: 'worker.py'."
+
+
+def test_legacy_script_job_without_target_uses_scheduler_compat_path(hermes_env, monkeypatch):
+    """Persisted jobs from before targets retain scheduler-host execution."""
+    from cron.jobs import create_job
+    from cron import scheduler
+
+    calls = []
+
+    def fake_scheduler_script(script_path, workdir=None, cancel_event=None):
+        calls.append((script_path, workdir))
+        return True, "scheduler output"
+
+    monkeypatch.setattr(scheduler, "_run_job_script", fake_scheduler_script)
+    monkeypatch.setattr(
+        scheduler,
+        "terminal_tool",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("backend must not run")),
+    )
+    job = create_job(
+        prompt=None,
+        schedule="every 1h",
+        script="/workspace/legacy.py",
+        no_agent=True,
+        deliver="local",
+    )
+    job.pop("target")
+
+    success, doc, _final_response, error = scheduler.run_job(job)
+    assert success is True
+    assert "scheduler output" in doc
+    assert error is None
+    assert calls == [("/workspace/legacy.py", None)]
 
 
 # ---------------------------------------------------------------------------

@@ -252,6 +252,7 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
         skills=None,
         script=None,
         workdir=None,
+        target=None,
         no_agent=False,
     )
 
@@ -383,3 +384,32 @@ class TestCronRunBackgroundDispatch:
         assert rc == 0
         assert "Running in background (delegation del-xyz)." in out
         assert "failed" not in out.lower()
+
+
+def test_cron_create_forwards_script_target(monkeypatch):
+    """The CLI exposes the target required by target-aware script validation."""
+    captured = {}
+
+    def fake_cron_api(**kwargs):
+        captured.update(kwargs)
+        return {"success": False, "error": "expected test failure"}
+
+    monkeypatch.setattr(cron_cli, "_cron_api", fake_cron_api)
+    args = SimpleNamespace(
+        schedule="every 1h",
+        prompt=None,
+        name=None,
+        deliver=None,
+        repeat=None,
+        skill=None,
+        skills=None,
+        script="/workspace/check.py",
+        workdir=None,
+        target="backend",
+        model=None,
+        model_provider=None,
+        no_agent=True,
+    )
+
+    assert cron_cli.cron_create(args) == 1
+    assert captured["target"] == "backend"

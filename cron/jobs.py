@@ -1607,18 +1607,12 @@ def save_jobs(
 
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
-    """Normalize and validate a cron job workdir.
+    """Normalize a cron job workdir without probing the scheduler host.
 
-    Rules:
-      - Empty / None → None (feature off, preserves old behaviour).
-      - ``~`` is expanded.  Relative paths are rejected — cron jobs run detached
-        from any shell cwd, so relative paths have no stable meaning.
-      - The path must exist and be a directory at create/update time.  We do
-        NOT re-check at run time (a user might briefly unmount the dir; the
-        scheduler will just fall back to old behaviour with a logged warning).
-
-    Returns the absolute path string, or None when disabled.
-    Raises ValueError on invalid input.
+    Cron workdirs are consumed by the profile terminal backend. An absolute
+    container or remote path such as ``/workspace`` need not exist on the host
+    process that stores the job, so existence and directory checks belong to
+    the backend at execution time.
     """
     if workdir is None:
         return None
@@ -1631,12 +1625,15 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
             f"Cron workdir must be an absolute path (got {raw!r}). "
             f"Cron jobs run detached from any shell cwd, so relative paths are ambiguous."
         )
-    resolved = expanded.resolve()
-    if not resolved.exists():
-        raise ValueError(f"Cron workdir does not exist: {resolved}")
-    if not resolved.is_dir():
-        raise ValueError(f"Cron workdir is not a directory: {resolved}")
-    return str(resolved)
+    # Preserve useful local validation when the path is visible to the scheduler,
+    # but accept paths absent on the host because they may exist only in a
+    # container or remote terminal backend.
+    if expanded.exists():
+        resolved = expanded.resolve()
+        if not resolved.is_dir():
+            raise ValueError(f"Cron workdir is not a directory: {resolved}")
+        return str(resolved)
+    return str(expanded)
 
 
 def _resolve_default_model_snapshot() -> Optional[str]:
@@ -1829,6 +1826,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    target: Optional[str] = None,
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
@@ -1888,8 +1886,12 @@ def create_job(
                 should emit stable output (no timestamps). Mutually exclusive
                 with ``monitor_url``; incompatible with ``no_agent=True``.
         monitor_url: Optional http(s) URL used as the monitor source instead
-                of a script — fetched with a bounded GET each tick. Same
-                hash-suppression semantics as ``monitor_script``.
+                of a script — fetched with a bounded GET (30s timeout, 256KB cap)
+                each tick. Same hash-suppression semantics as monitor_script.
+        target: Execution target for scripts. New script jobs default to the
+                profile terminal backend; use ``scheduler`` explicitly for
+                scheduler-host automation. Existing persisted jobs without this
+                field retain scheduler-host behavior at execution time.
         reasoning_effort: Optional per-job reasoning effort pin. One of the
                 canonical Hermes levels (none|minimal|low|medium|high|xhigh|
                 max|ultra, case-insensitive). When set, it wins over BOTH the
@@ -1931,6 +1933,9 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_target = str(target or ("backend" if normalized_script else "scheduler")).strip().lower()
+    if normalized_target not in {"scheduler", "backend"}:
+        raise ValueError("Cron target must be either 'scheduler' or 'backend'.")
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
     normalized_monitor_script = str(monitor_script).strip() if isinstance(monitor_script, str) else None
@@ -2000,6 +2005,7 @@ def create_job(
         "skill": normalized_skills[0] if normalized_skills else None,
         "model": normalized_model,
         "provider": normalized_provider,
+        "target": normalized_target,
         # Provider/model resolution captured at creation for unpinned jobs
         # (#44585). None for pinned axes, no_agent jobs, resolution failures, and
         # any pre-existing job written before these fields existed (back-compat).

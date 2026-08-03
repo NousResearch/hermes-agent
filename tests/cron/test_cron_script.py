@@ -448,11 +448,14 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "some_script.py").write_text("print('ok')\n")
+
         create_result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
             script="some_script.py",
+            target="scheduler",
         ))
         job_id = create_result["job_id"]
 
@@ -468,11 +471,14 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "data_collector.py").write_text("print('ok')\n")
+
         cronjob(
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
             script="data_collector.py",
+            target="scheduler",
         )
 
         list_result = json.loads(cronjob(action="list"))
@@ -587,7 +593,11 @@ class TestCronjobToolScriptValidation:
             script="../../etc/passwd",
         ))
         assert result["success"] is False
-        assert "escapes" in result["error"].lower() or "traversal" in result["error"].lower()
+        assert (
+            "escapes" in result["error"].lower()
+            or "traversal" in result["error"].lower()
+            or "absolute" in result["error"].lower()
+        )
 
 
 class TestRunJobEnvVarCleanup:

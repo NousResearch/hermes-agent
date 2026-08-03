@@ -785,6 +785,138 @@ class TestConfigSupportFloor:
         assert (tmp_path / ".env").read_text(encoding="utf-8") == expected_env
 
 
+class TestPluginActivationGrandfatherMigration:
+    """Activation migrations preserve only plugins installed at upgrade time."""
+
+    @staticmethod
+    def _write_provider(
+        tmp_path,
+        name: str,
+        *,
+        manifest_name: str | None = None,
+        with_init: bool = True,
+    ):
+        plugin_dir = tmp_path / "plugins" / "model-providers" / name
+        plugin_dir.mkdir(parents=True)
+        if with_init:
+            (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+        if manifest_name is not None:
+            (plugin_dir / "plugin.yaml").write_text(
+                f"name: {manifest_name}\nkind: model-provider\n",
+                encoding="utf-8",
+            )
+
+    def test_grandfathers_nested_and_manifestless_model_providers(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 20\n",
+            encoding="utf-8",
+        )
+        self._write_provider(tmp_path, "gmi", manifest_name="GMI override")
+        self._write_provider(tmp_path, "legacy-local")
+        self._write_provider(
+            tmp_path,
+            "manifest-only",
+            manifest_name="not-installed",
+            with_init=False,
+        )
+        self._write_provider(tmp_path, ".hidden")
+
+        flat_plugin = tmp_path / "plugins" / "flat-user"
+        flat_plugin.mkdir(parents=True)
+        (flat_plugin / "plugin.yaml").write_text(
+            "name: flat-user\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["plugins"]["enabled"] == [
+            "flat-user",
+            "model-providers/gmi",
+            "model-providers/legacy-local",
+        ]
+
+    def test_disabled_identity_is_not_grandfathered_and_rerun_is_idempotent(
+        self,
+        tmp_path,
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 20\n"
+            "plugins:\n"
+            '  disabled: [" GMI override ", model-providers/legacy-local]\n',
+            encoding="utf-8",
+        )
+        self._write_provider(tmp_path, "gmi", manifest_name="GMI override")
+        self._write_provider(tmp_path, "legacy-local")
+        self._write_provider(tmp_path, "already-installed")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            self._write_provider(tmp_path, "installed-later")
+
+            # The version marker makes the grandfather pass one-shot; newly
+            # appearing files are never auto-authorized on later startups.
+            migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["plugins"]["enabled"] == [
+            "model-providers/already-installed"
+        ]
+
+    def test_v33_upgrade_grandfathers_existing_provider_once(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 33\n"
+            "plugins:\n"
+            "  enabled: [existing-plugin, gmi, legacy-local]\n",
+            encoding="utf-8",
+        )
+        self._write_provider(tmp_path, "gmi", manifest_name="gmi-provider")
+        self._write_provider(tmp_path, "legacy-local")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            self._write_provider(tmp_path, "installed-later")
+            migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["plugins"]["enabled"] == [
+            "existing-plugin",
+            "gmi",
+            "legacy-local",
+            "model-providers/gmi",
+            "model-providers/legacy-local",
+        ]
+
+    def test_safe_mode_still_blocks_grandfathered_user_provider(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 20\n",
+            encoding="utf-8",
+        )
+        self._write_provider(tmp_path, "legacy-local")
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "HERMES_SAFE_MODE": "1"},
+        ):
+            migrate_config(interactive=False, quiet=True)
+            from hermes_cli.config import load_plugin_activation_state
+
+            state = load_plugin_activation_state()
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["plugins"]["enabled"] == ["model-providers/legacy-local"]
+        assert state.safe_mode is True
+        assert not state.is_active(
+            name="model-providers/legacy-local",
+            key="model-providers/legacy-local",
+            source="user",
+            kind="model-provider",
+        )
+
+
 class TestCustomProviderCompatibility:
     """Custom provider compatibility across legacy and v12+ config schemas.
 

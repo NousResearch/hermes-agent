@@ -240,11 +240,87 @@ class TestCompositeMenuWritesCanonicalKey:
         # second (category prompt) is skipped with blank Enter.
         with patch("builtins.input", return_value=""):
             _run_composite_fallback(
-                plugin_keys, plugin_labels, plugin_selected,
+                plugin_keys, plugin_labels, ["bundled"], ["backend"],
+                plugin_selected,
                 set(), [], Console(),
             )
 
         saved_dis = mock_save_dis.call_args[0][0]
         assert "web/firecrawl" in saved_dis      # canonical key persisted
         assert "web-firecrawl" not in saved_dis   # never the bare name
+
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_fallback_bundled_default_does_not_persist_external_consent(
+        self, mock_en, mock_save_en, mock_save_dis,
+    ):
+        from hermes_cli.plugins_cmd import _run_composite_fallback
+        from rich.console import Console
+
+        # Bundled plugins are selected by default without operator consent.
+        # Confirming that default must not create an allow-list entry that a
+        # future user/project plugin with the same key could inherit.
+        with patch("builtins.input", return_value=""):
+            _run_composite_fallback(
+                ["web/firecrawl"],
+                ["web-firecrawl — firecrawl [bundled]"],
+                ["bundled"],
+                ["backend"],
+                {0},
+                set(),
+                [],
+                Console(),
+            )
+
+        mock_save_en.assert_not_called()
+        mock_save_dis.assert_not_called()
+
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_fallback_persists_only_selected_external_plugins(
+        self, mock_en, mock_save_en, mock_save_dis,
+    ):
+        from hermes_cli.plugins_cmd import _run_composite_fallback
+        from rich.console import Console
+
+        with patch("builtins.input", return_value=""):
+            _run_composite_fallback(
+                ["web/firecrawl", "custom-tools"],
+                ["web-firecrawl [bundled]", "custom-tools"],
+                ["bundled", "user"],
+                ["backend", "standalone"],
+                {0, 1},
+                set(),
+                [],
+                Console(),
+            )
+
+        mock_save_en.assert_called_once_with({"custom-tools"})
+        mock_save_dis.assert_called_once_with(set())
+
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_fallback_bundled_standalone_remains_explicit_opt_in(
+        self, mock_en, mock_save_en, mock_save_dis,
+    ):
+        from hermes_cli.plugins_cmd import _run_composite_fallback
+        from rich.console import Console
+
+        with patch("builtins.input", return_value=""):
+            _run_composite_fallback(
+                ["observability/langfuse"],
+                ["langfuse [bundled]"],
+                ["bundled"],
+                ["standalone"],
+                {0},
+                set(),
+                [],
+                Console(),
+            )
+
+        mock_save_en.assert_called_once_with({"observability/langfuse"})
+        mock_save_dis.assert_called_once_with(set())
 

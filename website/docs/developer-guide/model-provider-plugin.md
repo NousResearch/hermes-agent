@@ -67,7 +67,25 @@ kind: model-provider
 version: 1.0.0
 description: Acme Inference — OpenAI-compatible direct API
 author: Your Name
+requires_env:
+  - name: ACME_API_KEY
+    description: Acme Inference API key
+    url: https://acme.example.com/keys
+    secret: true
 ```
+
+Declare every provider-owned credential name in `requires_env`. Hermes reads
+this manifest field without importing the plugin, including while the plugin is
+inactive or disabled, so those credentials are still removed from terminal and
+code-execution child processes after a restart. Both bare names
+(`- ACME_API_KEY`) and the rich mapping form above are supported. Older
+manifests without `requires_env` still load when enabled, but cannot provide
+first-run pre-import protection and should be updated. For compatibility,
+Hermes stores the environment-variable names observed after a user or project
+provider successfully loads under
+`$HERMES_HOME/cache/provider-env-names/`. That cache contains names only—never
+credential values—and is consulted solely by child-process secret filtering;
+it does not enable a plugin or make a provider routable.
 
 That's it. After dropping these two files, the following **auto-wire** with no other edits:
 

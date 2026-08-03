@@ -523,6 +523,33 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
 
 
+def test_vision_picker_hides_custom_endpoint_when_plugin_disabled(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_cli.tools_config as tc
+
+    captured = []
+
+    def _choose_skip(_title, choices, _default):
+        captured.extend(choices)
+        return len(choices) - 1
+
+    with (
+        patch.object(tc, "_prompt_choice", side_effect=_choose_skip),
+        patch(
+            "hermes_cli.auth.is_runtime_provider_routable",
+            side_effect=lambda provider_id: provider_id != "custom",
+        ),
+        patch.object(tc, "save_config") as save_config,
+    ):
+        tc._configure_vision_backend()
+
+    assert not any("Custom OpenAI-compatible endpoint" in row for row in captured)
+    save_config.assert_not_called()
+
+
 
 
 # ─── provider_readiness_status ────────────────────────────────────────────────

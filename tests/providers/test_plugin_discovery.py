@@ -8,6 +8,9 @@ Verifies that:
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -463,6 +466,158 @@ def test_observed_provider_secret_names_remain_blocked_after_disable(
     providers.invalidate_provider_discovery()
     assert "SECRET_PROVIDER_API_KEY" in _HERMES_PROVIDER_ENV_BLOCKLIST
     assert "SECRET_PROVIDER_BASE_URL" in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+
+@pytest.mark.parametrize(
+    ("activation", "requires_env"),
+    (
+        ("inactive", "  - LC_VENDOR_ACCESS\n"),
+        (
+            "disabled",
+            "  - name: LC_VENDOR_ACCESS\n"
+            "    description: Vendor API credential\n"
+            "    secret: true\n",
+        ),
+    ),
+)
+def test_inactive_manifest_credentials_are_blocked_after_process_restart(
+    activation,
+    requires_env,
+    tmp_path,
+):
+    """A fresh process must scrub inactive credentials without importing code."""
+    home = tmp_path / "home"
+    home.mkdir()
+    marker = tmp_path / "inactive-provider-imported.txt"
+    provider_name = "inactive-secret-provider"
+    _write_user_provider(
+        home,
+        provider_name,
+        base_url="https://inactive.example/v1",
+        env_var="LC_VENDOR_ACCESS",
+        marker=marker,
+    )
+    manifest = home / "plugins" / "model-providers" / provider_name / "plugin.yaml"
+    manifest.write_text(
+        f"name: {provider_name}\n"
+        "kind: model-provider\n"
+        f"provider_ids: [{provider_name}]\n"
+        "requires_env:\n"
+        f"{requires_env}",
+        encoding="utf-8",
+    )
+    _write_activation(
+        home,
+        disabled=(f"model-providers/{provider_name}",)
+        if activation == "disabled"
+        else (),
+    )
+
+    result = _probe_provider_security_in_fresh_process(home, provider_name)
+
+    assert result == {
+        "active": False,
+        "observed": True,
+        "in_child": False,
+        "in_code_child": False,
+    }
+    assert not marker.exists()
+
+
+def _probe_provider_security_in_fresh_process(
+    home: Path,
+    provider_name: str,
+) -> dict[str, bool]:
+    probe = "\n".join(
+        (
+            "import json",
+            "import providers",
+            "from tools.code_execution_tool import _scrub_child_env",
+            "from tools.environments.local import _sanitize_subprocess_env",
+            f"profile = providers.get_provider_profile({provider_name!r})",
+            "sanitized = _sanitize_subprocess_env(",
+            "    {'LC_VENDOR_ACCESS': 'test-secret', 'PATH': 'test-path'}",
+            ")",
+            "scrubbed = _scrub_child_env(",
+            "    {'LC_VENDOR_ACCESS': 'test-secret'},",
+            "    is_passthrough=lambda _name: True,",
+            "    is_windows=False,",
+            ")",
+            "print(json.dumps({",
+            "    'active': profile is not None,",
+            "    'observed': 'LC_VENDOR_ACCESS' in providers.get_observed_provider_env_vars(),",
+            "    'in_child': 'LC_VENDOR_ACCESS' in sanitized,",
+            "    'in_code_child': 'LC_VENDOR_ACCESS' in scrubbed,",
+            "}))",
+        )
+    )
+    child_env = os.environ.copy()
+    child_env["HERMES_HOME"] = str(home)
+    child_env["LC_VENDOR_ACCESS"] = "test-secret"
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=REPO_ROOT,
+        env=child_env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
+def test_legacy_provider_observed_names_persist_across_disabled_restart(
+    tmp_path,
+):
+    """Old manifests gain exact name-only protection after one active load."""
+    home = tmp_path / "home"
+    home.mkdir()
+    marker = tmp_path / "legacy-provider-imported.txt"
+    provider_name = "legacy-secret-provider"
+    _write_user_provider(
+        home,
+        provider_name,
+        base_url="https://legacy-secret.example/v1",
+        env_var="LC_VENDOR_ACCESS",
+        marker=marker,
+    )
+    _write_activation(home, enabled=(f"model-providers/{provider_name}",))
+
+    first = _probe_provider_security_in_fresh_process(home, provider_name)
+    assert first == {
+        "active": True,
+        "observed": True,
+        "in_child": False,
+        "in_code_child": False,
+    }
+    assert marker.exists()
+
+    cache_files = list((home / "cache" / "provider-env-names").glob("*.json"))
+    assert len(cache_files) == 1
+    cache_text = cache_files[0].read_text(encoding="utf-8")
+    assert "LC_VENDOR_ACCESS" in cache_text
+    assert "test-secret" not in cache_text
+
+    marker.unlink()
+    _write_activation(home, disabled=(f"model-providers/{provider_name}",))
+    second = _probe_provider_security_in_fresh_process(home, provider_name)
+    assert second == {
+        "active": False,
+        "observed": True,
+        "in_child": False,
+        "in_code_child": False,
+    }
+    assert not marker.exists()
+
+    plugin_dir = home / "plugins" / "model-providers" / provider_name
+    plugin_dir.rename(plugin_dir.with_name(f".{provider_name}-removed"))
+    removed = _probe_provider_security_in_fresh_process(home, provider_name)
+    assert removed == {
+        "active": False,
+        "observed": False,
+        "in_child": True,
+        "in_code_child": True,
+    }
 
 
 def test_new_provider_secret_is_blocked_before_refresh_hooks_finish(

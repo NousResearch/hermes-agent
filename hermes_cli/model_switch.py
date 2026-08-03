@@ -1265,6 +1265,45 @@ def switch_model(
     target_provider = current_provider
     resolved_moa_preset = False
 
+    _configured_provider_slugs = {
+        str(slug).strip().lower()
+        for slug in (user_providers or {})
+        if str(slug).strip()
+    }
+    _custom_shortcuts = {
+        "custom",
+        "local",
+        "ollama",
+        "vllm",
+        "llamacpp",
+        "llama.cpp",
+        "llama-cpp",
+    }
+
+    def _disabled_custom_provider_result(provider_id: str) -> ModelSwitchResult | None:
+        normalized = str(provider_id or "").strip().lower()
+        uses_custom_plugin = (
+            normalized.startswith("custom:")
+            or normalized in _custom_shortcuts
+            or normalized in _configured_provider_slugs
+        )
+        if not uses_custom_plugin:
+            return None
+
+        from hermes_cli.auth import is_runtime_provider_routable
+
+        if is_runtime_provider_routable("custom"):
+            return None
+        return ModelSwitchResult(
+            success=False,
+            target_provider=provider_id,
+            is_global=is_global,
+            error_message=(
+                "Custom endpoints are disabled by plugin configuration. "
+                "Re-enable 'model-providers/custom' before selecting one."
+            ),
+        )
+
     # =================================================================
     # PATH A: Explicit --provider given
     # =================================================================
@@ -1300,6 +1339,9 @@ def switch_model(
             )
 
         target_provider = pdef.id
+        disabled_custom = _disabled_custom_provider_result(target_provider)
+        if disabled_custom is not None:
+            return disabled_custom
         if target_provider == "moa" and not new_model:
             try:
                 from hermes_cli.config import load_config
@@ -1560,6 +1602,10 @@ def switch_model(
     # =================================================================
     # COMMON PATH: Resolve credentials, normalize, get metadata
     # =================================================================
+
+    disabled_custom = _disabled_custom_provider_result(target_provider)
+    if disabled_custom is not None:
+        return disabled_custom
 
     provider_changed = target_provider != current_provider
     provider_label = get_label(target_provider)
@@ -1973,12 +2019,14 @@ def list_authenticated_providers(
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
     )
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import PROVIDER_REGISTRY, is_runtime_provider_routable
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
         clear_provider_models_cache, get_curated_nous_model_ids,
     )
+
+    custom_provider_active = is_runtime_provider_routable("custom")
 
     # Explicit refresh: drop every provider's cached model-id list so the
     # cached_provider_model_ids() calls below all re-fetch live. Without this
@@ -2525,7 +2573,11 @@ def list_authenticated_providers(
     # produces two picker rows: one bare-slug ("openrouter") from section 3
     # and one "custom:openrouter" from section 4, both labelled identically.
     _section3_emitted_pairs: set = set()
-    if user_providers and isinstance(user_providers, dict):
+    if (
+        custom_provider_active
+        and user_providers
+        and isinstance(user_providers, dict)
+    ):
         # Group ``providers:`` entries by (api_url, key_env, api_mode) so that
         # multiple keyed providers pointing at the same endpoint with the
         # same credential and wire-protocol collapse into one picker row.
@@ -2756,7 +2808,8 @@ def list_authenticated_providers(
     # list_authenticated_providers(). Surface the active endpoint explicitly so
     # /model does not look like it ignored config.yaml.
     if (
-        _current_provider_norm == "custom"
+        custom_provider_active
+        and _current_provider_norm == "custom"
         and current_base_url
         and "custom" not in seen_slugs
         and not any(
@@ -2805,7 +2858,11 @@ def list_authenticated_providers(
     # "Ollama" row with four models inside instead of four near-duplicates
     # that differ only by suffix. Same-host entries with different ``key_env``
     # or ``api_mode`` remain distinct providers.
-    if custom_providers and isinstance(custom_providers, list):
+    if (
+        custom_provider_active
+        and custom_providers
+        and isinstance(custom_providers, list)
+    ):
         from collections import OrderedDict
 
         # Key by endpoint + credential identity + wire protocol + display

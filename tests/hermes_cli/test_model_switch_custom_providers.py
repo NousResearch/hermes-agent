@@ -59,6 +59,99 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     )
 
 
+def test_disabled_custom_plugin_hides_configured_endpoints(monkeypatch):
+    """Picker rows must not offer endpoints the runtime will reject."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda provider_id: provider_id != "custom",
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://current.example/v1",
+        current_model="current-model",
+        user_providers={
+            "configured-relay": {
+                "name": "Configured Relay",
+                "base_url": "https://configured.example/v1",
+                "models": {"configured-model": {}},
+            }
+        },
+        custom_providers=[
+            {
+                "name": "Saved Relay",
+                "base_url": "https://saved.example/v1",
+                "model": "saved-model",
+            }
+        ],
+        probe_custom_providers=False,
+    )
+
+    assert not any(
+        row.get("slug") in {"custom", "configured-relay", "custom:saved-relay"}
+        for row in providers
+    )
+
+
+def test_switch_model_rejects_custom_endpoint_when_plugin_disabled(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda provider_id: provider_id != "custom",
+    )
+
+    result = switch_model(
+        raw_input="saved-model",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="custom:saved-relay",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Saved Relay",
+                "base_url": "https://saved.example/v1",
+                "model": "saved-model",
+            }
+        ],
+    )
+
+    assert result.success is False
+    assert "model-providers/custom" in result.error_message
+
+
+def test_disabled_custom_plugin_rejects_before_endpoint_probe(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda provider_id: provider_id != "custom",
+    )
+
+    def _unexpected_probe(_base_url):
+        raise AssertionError("disabled custom provider must not probe its endpoint")
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider._auto_detect_local_model",
+        _unexpected_probe,
+    )
+
+    result = switch_model(
+        raw_input="",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="custom:saved-relay",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Saved Relay",
+                "base_url": "https://saved.example/v1",
+            }
+        ],
+    )
+
+    assert result.success is False
+    assert "model-providers/custom" in result.error_message
+
+
 
 
 

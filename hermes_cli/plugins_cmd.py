@@ -1553,6 +1553,8 @@ def cmd_toggle() -> None:
     # forever (pi314's #40190 symptom). Keys keep every surface aligned.
     plugin_keys = []
     plugin_labels = []
+    plugin_sources = []
+    plugin_kinds = []
     plugin_selected = set()
 
     for i, (name, _version, description, source, _d, key, kind) in enumerate(entries):
@@ -1561,6 +1563,8 @@ def cmd_toggle() -> None:
             label = f"{label} [bundled]"
         plugin_keys.append(key)
         plugin_labels.append(label)
+        plugin_sources.append(source)
+        plugin_kinds.append(kind)
         # Use the same source/kind policy as runtime discovery. Bundled
         # backends, platforms, and model profiles are on by default; every
         # non-bundled plugin remains opt-in and explicit disable always wins.
@@ -1599,15 +1603,41 @@ def cmd_toggle() -> None:
     # Launch the composite curses UI
     try:
         import curses
-        _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
-                          disabled_set, categories, console)
+        _run_composite_ui(
+            curses,
+            plugin_keys,
+            plugin_labels,
+            plugin_sources,
+            plugin_kinds,
+            plugin_selected,
+            disabled_set,
+            categories,
+            console,
+        )
     except ImportError:
-        _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected,
-                                disabled_set, categories, console)
+        _run_composite_fallback(
+            plugin_keys,
+            plugin_labels,
+            plugin_sources,
+            plugin_kinds,
+            plugin_selected,
+            disabled_set,
+            categories,
+            console,
+        )
 
 
-def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
-                      disabled, categories, console):
+def _run_composite_ui(
+    curses,
+    plugin_keys,
+    plugin_labels,
+    plugin_sources,
+    plugin_kinds,
+    plugin_selected,
+    disabled,
+    categories,
+    console,
+):
     """Custom curses screen with checkboxes + category action rows."""
     from hermes_cli.curses_ui import flush_stdin
 
@@ -1832,19 +1862,13 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
     # itself — but we ONLY ever write the canonical key (never the bare
     # manifest name), so the disabled-list can't drift out of sync with
     # what ``cmd_enable`` clears or what PluginManager gates on (#40190).
-    new_enabled: set = set()
-    new_disabled: set = set(disabled)  # preserve existing disabled state for unseen plugins
-    for i, key in enumerate(plugin_keys):
-        bare = key.split("/")[-1]
-        if i in chosen:
-            new_enabled.add(key)
-            new_disabled.discard(key)
-            # Drop any stale legacy bare-leaf disable so re-enabling here
-            # fully clears the plugin from the disabled-list.
-            if bare != key:
-                new_disabled.discard(bare)
-        else:
-            new_disabled.add(key)
+    new_enabled, new_disabled = _composite_activation_sets(
+        plugin_keys,
+        plugin_sources,
+        plugin_kinds,
+        chosen,
+        disabled,
+    )
 
     prev_enabled = _get_enabled_set()
     enabled_changed = new_enabled != prev_enabled
@@ -1854,8 +1878,8 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
         _save_enabled_set(new_enabled)
         _save_disabled_set(new_disabled)
         console.print(
-            f"\n[green]\u2713[/green] General plugins: {len(new_enabled)} enabled, "
-            f"{len(plugin_keys) - len(new_enabled)} disabled."
+            f"\n[green]\u2713[/green] General plugins: {len(chosen)} enabled, "
+            f"{len(plugin_keys) - len(chosen)} disabled."
         )
     elif n_plugins > 0:
         console.print("\n[dim]General plugins unchanged.[/dim]")
@@ -1873,8 +1897,16 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
     console.print()
 
 
-def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected,
-                            disabled, categories, console):
+def _run_composite_fallback(
+    plugin_keys,
+    plugin_labels,
+    plugin_sources,
+    plugin_kinds,
+    plugin_selected,
+    disabled,
+    categories,
+    console,
+):
     """Text-based fallback for the composite plugins UI."""
     from hermes_cli.colors import Colors, color
 
@@ -1905,17 +1937,13 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected,
         # Persist by canonical key only — never the bare manifest name — so
         # the disabled-list stays aligned with cmd_enable / PluginManager
         # (#40190).
-        new_enabled: set = set()
-        new_disabled: set = set(disabled)
-        for i, key in enumerate(plugin_keys):
-            bare = key.split("/")[-1]
-            if i in chosen:
-                new_enabled.add(key)
-                new_disabled.discard(key)
-                if bare != key:
-                    new_disabled.discard(bare)
-            else:
-                new_disabled.add(key)
+        new_enabled, new_disabled = _composite_activation_sets(
+            plugin_keys,
+            plugin_sources,
+            plugin_kinds,
+            chosen,
+            disabled,
+        )
         prev_enabled = _get_enabled_set()
         if new_enabled != prev_enabled or new_disabled != disabled:
             _save_enabled_set(new_enabled)
@@ -1937,6 +1965,50 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected,
             pass
 
     print()
+
+
+def _composite_activation_sets(
+    plugin_keys,
+    plugin_sources,
+    plugin_kinds,
+    chosen,
+    disabled,
+):
+    """Build persisted activation policy from a composite-menu selection.
+
+    Bundled backends, platforms, and model providers are active by default, so
+    checking one is not an operator grant and must not enter
+    ``plugins.enabled``. Bundled standalone plugins and every external plugin
+    remain opt-in. All kinds share the same checkbox behavior: checking clears
+    an explicit deny and unchecking writes one.
+    """
+    if not (len(plugin_keys) == len(plugin_sources) == len(plugin_kinds)):
+        raise ValueError("plugin keys, sources, and kinds must have matching lengths")
+
+    new_enabled: set = set()
+    new_disabled: set = set(disabled)
+    default_state = PluginActivationState()
+    for i, (key, source, kind) in enumerate(
+        zip(plugin_keys, plugin_sources, plugin_kinds)
+    ):
+        bare = key.split("/")[-1]
+        if i in chosen:
+            enabled_by_default = default_state.status(
+                name=key,
+                key=key,
+                source=source,
+                kind=kind,
+            ) == "enabled"
+            if not enabled_by_default:
+                new_enabled.add(key)
+            new_disabled.discard(key)
+            # Drop any stale legacy bare-leaf disable so re-enabling here
+            # fully clears the plugin from the disabled-list.
+            if bare != key:
+                new_disabled.discard(bare)
+        else:
+            new_disabled.add(key)
+    return new_enabled, new_disabled
 
 
 def dashboard_install_plugin(

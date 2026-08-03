@@ -3084,6 +3084,7 @@ def select_provider_and_model(args=None):
         resolve_provider,
         AuthError,
         format_auth_error,
+        is_runtime_provider_routable,
     )
     from hermes_cli.config import (
         get_compatible_custom_providers,
@@ -3112,7 +3113,10 @@ def select_provider_and_model(args=None):
     effective_provider = (
         config_provider or os.getenv("HERMES_INFERENCE_PROVIDER") or "auto"
     )
-    compatible_custom_providers = get_compatible_custom_providers(config)
+    custom_provider_active = is_runtime_provider_routable("custom")
+    compatible_custom_providers = (
+        get_compatible_custom_providers(config) if custom_provider_active else []
+    )
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
         from hermes_cli.config import read_raw_config
 
@@ -3239,8 +3243,8 @@ def select_provider_and_model(args=None):
         return str(url or "").strip().rstrip("/").lower()
 
     # Add user-defined custom providers from config.yaml
-    _custom_provider_map = _named_custom_provider_map(
-        config
+    _custom_provider_map = (
+        _named_custom_provider_map(config) if custom_provider_active else {}
     )  # key → {name, base_url, api_key}
 
     def _canonical_named_custom_key(provider_id: str) -> str:
@@ -3254,7 +3258,11 @@ def select_provider_and_model(args=None):
         return provider_id
 
     def _active_custom_key_from_base_url() -> str:
-        if effective_provider != "custom" or not isinstance(model_cfg, dict):
+        if (
+            not custom_provider_active
+            or effective_provider != "custom"
+            or not isinstance(model_cfg, dict)
+        ):
             return ""
         current_base = _norm_base_url(model_cfg.get("base_url", ""))
         if not current_base:
@@ -3273,7 +3281,9 @@ def select_provider_and_model(args=None):
             config.get("providers"),
             compatible_custom_providers,
         )
-        if active_def is not None:
+        if active_def is not None and (
+            active_def.source != "user-config" or custom_provider_active
+        ):
             active = active_def.id
             if active_def.source == "user-config":
                 active = _canonical_named_custom_key(active)
@@ -3294,7 +3304,11 @@ def select_provider_and_model(args=None):
             active = None  # no provider yet; default to first in list
 
     # Detect custom endpoint
-    if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
+    if (
+        custom_provider_active
+        and active == "openrouter"
+        and get_env_value("OPENAI_BASE_URL")
+    ):
         active = "custom"
 
     from hermes_cli.models import (
@@ -3343,10 +3357,14 @@ def select_provider_and_model(args=None):
             _names_for.setdefault(_canon, {_canon.lower()}).add(_alias.lower())
         _visible_slugs = [
             p.slug for p in CANONICAL_PROVIDERS
-            if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded
+            if p.slug != "custom"
+            and not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded
         ]
     else:
-        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
+        # ``custom`` has a dedicated row below because it starts a distinct
+        # endpoint-setup flow. Keeping the catalog row too creates duplicate
+        # choices and can leave one visible after the plugin is disabled.
+        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS if p.slug != "custom"]
     grouped_rows = group_providers(_visible_slugs)
 
     # The group/slug that should be pre-selected: the active provider's group
@@ -3391,7 +3409,8 @@ def select_provider_and_model(args=None):
         else:
             ordered.append((key, label, []))
 
-    ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
+    if custom_provider_active:
+        ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
     _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(
         config.get("custom_providers")
     )
@@ -3761,6 +3780,7 @@ def _aux_select_for_task(task: str) -> None:
     """
     from hermes_cli.config import load_config
     from hermes_cli.inventory import build_aux_picker_rows, format_aux_picker_entries
+    from hermes_cli.auth import is_runtime_provider_routable
 
     cfg = load_config()
     aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
@@ -3797,9 +3817,11 @@ def _aux_select_for_task(task: str) -> None:
         )
     )
 
-    # Custom endpoint (raw base_url)
-    custom_marker = "  ← current" if current_base_url else ""
-    entries.append(("__custom__", f"Custom endpoint (direct URL){custom_marker}", []))
+    # Custom endpoint (raw base_url). Do not offer a choice the runtime will
+    # reject when the backing model-provider plugin is explicitly disabled.
+    if is_runtime_provider_routable("custom"):
+        custom_marker = "  ← current" if current_base_url else ""
+        entries.append(("__custom__", f"Custom endpoint (direct URL){custom_marker}", []))
     entries.append(("__back__", "Back", []))
 
     print()

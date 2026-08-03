@@ -8,13 +8,13 @@ Provider profiles can live in three places:
 
 Each plugin directory contains:
   - ``__init__.py`` — calls ``register_provider(profile)`` at import
-  - ``plugin.yaml`` — manifest (name, kind: model-provider, version, description)
+  - ``plugin.yaml`` — identity plus non-executable ``requires_env`` metadata
 
-Discovery is lazy. Manifest identity and activation are evaluated before any
-plugin code is imported. Bundled profiles are on by default; user and project
-profiles must be listed in ``plugins.enabled``. Explicit disable always wins,
-and safe mode imports bundled profiles only. Active user/project plugins
-override bundled plugins on canonical-key collision.
+Discovery is lazy. Manifest identity, credential names, and activation are
+evaluated before any plugin code is imported. Bundled profiles are on by
+default; user and project profiles must be listed in ``plugins.enabled``.
+Explicit disable always wins, and safe mode imports bundled profiles only.
+Active user/project plugins override bundled plugins on canonical-key collision.
 
 For backward compatibility, explicitly enabled ``providers/*.py`` files
 (other than ``base.py`` and ``__init__.py``) are still discovered via
@@ -34,6 +34,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import hashlib
+import json
 import logging
 import sys
 import threading
@@ -44,7 +45,7 @@ from typing import Callable
 
 from hermes_cli.plugin_activation import PluginActivationState
 from providers.base import OMIT_TEMPERATURE, ProviderProfile  # noqa: F401
-from utils import env_var_enabled, fast_safe_load
+from utils import atomic_json_write, env_var_enabled, fast_safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -349,9 +350,10 @@ def get_observed_provider_env_vars() -> frozenset[str]:
     Provider refresh hooks run after a newly built catalog is placed in the
     snapshot cache.  A concurrent subprocess launch must not depend on those
     callbacks having completed: otherwise a newly discovered provider key can
-    briefly escape the child-env scrubber.  ``_OBSERVED_PROFILES`` is updated
-    synchronously while discovery still holds ``_DISCOVERY_LOCK``, so this
-    monotonic view is the security publication barrier for spawn-time checks.
+    briefly escape the child-env scrubber.  Executable profiles and static
+    ``plugin.yaml`` metadata both update this monotonic view synchronously
+    while discovery still holds ``_DISCOVERY_LOCK``, so it is the security
+    publication barrier for spawn-time checks.
     """
     with _DISCOVERY_LOCK:
         return frozenset(_OBSERVED_PROVIDER_ENV_VARS)
@@ -493,6 +495,93 @@ class _ProviderPlugin:
     key: str
     name: str
     provider_ids: frozenset[str]
+    credential_env_vars: frozenset[str]
+
+
+_PROVIDER_ENV_CACHE_VERSION = 1
+_PROVIDER_ENV_CACHE_SOURCES = frozenset({"user", "project"})
+
+
+def _manifest_env_names(value: object) -> frozenset[str]:
+    """Extract simple/rich ``requires_env`` entries without executing code."""
+    if isinstance(value, (str, dict)):
+        entries = (value,)
+    elif isinstance(value, list):
+        entries = value
+    else:
+        return frozenset()
+
+    names: set[str] = set()
+    for entry in entries:
+        raw_name = entry.get("name") if isinstance(entry, dict) else entry
+        if not isinstance(raw_name, str):
+            continue
+        name = raw_name.strip()
+        # NUL and '=' cannot name environment variables on supported hosts.
+        # Keep every other non-empty name: provider credentials do not have to
+        # follow API_KEY/TOKEN naming conventions (for example LC_VENDOR_ACCESS).
+        if name and "\x00" not in name and "=" not in name:
+            names.add(name)
+    return frozenset(names)
+
+
+def _provider_env_cache_path(
+    scope_identity: tuple[str, str],
+    plugin: _ProviderPlugin,
+) -> Path | None:
+    """Return a profile-local security cache path without exposing plugin paths."""
+    home = scope_identity[0]
+    if not home or plugin.source not in _PROVIDER_ENV_CACHE_SOURCES:
+        return None
+    identity = f"{plugin.source}\x00{_path_identity(plugin.path)}"
+    digest = hashlib.sha256(
+        identity.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()
+    return Path(home) / "cache" / "provider-env-names" / f"{digest}.json"
+
+
+def _load_cached_provider_env_names(path: Path | None) -> frozenset[str]:
+    """Read previously observed names; malformed cache data grants nothing."""
+    if path is None:
+        return frozenset()
+    try:
+        if not path.is_file():
+            return frozenset()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("version") != _PROVIDER_ENV_CACHE_VERSION:
+            return frozenset()
+        return _manifest_env_names(data.get("env_vars"))
+    except (OSError, ValueError, TypeError):
+        logger.debug("Could not read provider credential-name cache: %s", path)
+        return frozenset()
+
+
+def _persist_provider_env_names(
+    path: Path | None,
+    names: set[str],
+) -> None:
+    """Persist a monotonic name-only blocklist, never credentials or activation."""
+    if path is None or not names:
+        return
+    merged = set(_load_cached_provider_env_names(path))
+    merged.update(names)
+    try:
+        atomic_json_write(
+            path,
+            {
+                "version": _PROVIDER_ENV_CACHE_VERSION,
+                "env_vars": sorted(merged),
+            },
+            mode=0o600,
+        )
+    except OSError:
+        # The current process is already protected by the in-memory monotonic
+        # set. A read-only profile should not make provider discovery unusable.
+        logger.warning(
+            "Could not persist provider credential-name security cache: %s",
+            path,
+            exc_info=True,
+        )
 
 
 def _provider_plugin(plugin_dir: Path, source: str) -> _ProviderPlugin:
@@ -500,6 +589,7 @@ def _provider_plugin(plugin_dir: Path, source: str) -> _ProviderPlugin:
     key = f"model-providers/{plugin_dir.name}"
     name = key
     provider_ids = {plugin_dir.name}
+    credential_env_vars: frozenset[str] = frozenset()
     manifest_file = plugin_dir / "plugin.yaml"
     if not manifest_file.exists():
         manifest_file = plugin_dir / "plugin.yml"
@@ -519,6 +609,9 @@ def _provider_plugin(plugin_dir: Path, source: str) -> _ProviderPlugin:
                     }
                     if normalized_ids:
                         provider_ids = normalized_ids
+                credential_env_vars = _manifest_env_names(
+                    data.get("requires_env")
+                )
         except Exception:
             logger.debug(
                 "Could not parse provider plugin manifest identity: %s",
@@ -531,6 +624,7 @@ def _provider_plugin(plugin_dir: Path, source: str) -> _ProviderPlugin:
         key=key,
         name=name,
         provider_ids=frozenset(provider_ids),
+        credential_env_vars=credential_env_vars,
     )
 
 
@@ -670,8 +764,6 @@ def _discover_providers(
             (user_dir, "user"),
             (project_dir, "project"),
         ):
-            if state.safe_mode and source != "bundled":
-                continue
             if directory is None or not directory.is_dir():
                 continue
             for child in sorted(directory.iterdir()):
@@ -687,6 +779,16 @@ def _discover_providers(
         bundled_provider_ids: set[str] = set()
         active_provider_ids: set[str] = set()
         for plugin in candidates:
+            # Credential names are declarative security metadata, not an
+            # activation grant. Read them for inactive/disabled plugins too so
+            # a fresh process can scrub their secrets without importing
+            # untrusted ``__init__.py`` code. This union is process-local and
+            # never changes routing or plugin activation.
+            cache_path = _provider_env_cache_path(scope_identity, plugin)
+            _OBSERVED_PROVIDER_ENV_VARS.update(
+                _load_cached_provider_env_names(cache_path)
+            )
+            _OBSERVED_PROVIDER_ENV_VARS.update(plugin.credential_env_vars)
             grouped.setdefault(plugin.key, []).append(plugin)
             known_provider_ids.update(plugin.provider_ids)
             known_provider_ids.update((plugin.path.name, plugin.name))
@@ -732,7 +834,9 @@ def _discover_providers(
             # IDs without deleting sibling profiles from a multi-ID bundle.
             for plugin in active_plugins:
                 profiles = _import_plugin_dir(plugin.path, plugin.source)
+                observed_plugin_env_vars: set[str] = set()
                 for profile in profiles:
+                    observed_plugin_env_vars.update(profile.env_vars)
                     active_provider_ids.add(profile.name)
                     active_provider_ids.update(profile.aliases)
                     managed_provider_ids.add(profile.name)
@@ -742,6 +846,10 @@ def _discover_providers(
                     if plugin.source == "bundled":
                         bundled_provider_ids.add(profile.name)
                         bundled_provider_ids.update(profile.aliases)
+                _persist_provider_env_names(
+                    _provider_env_cache_path(scope_identity, plugin),
+                    observed_plugin_env_vars,
+                )
 
         # Legacy single-file profiles are a compatibility extension path. Safe
         # mode must not execute them because their provenance is unknowable.

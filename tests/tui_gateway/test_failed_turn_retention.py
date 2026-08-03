@@ -135,6 +135,48 @@ def test_healthy_snapshot_carries_no_error_keys():
     assert snapshot == {"assistant": "hello", "streaming": True, "user": "hi"}
 
 
+def test_interrupted_api_result_cannot_restore_stale_history_snapshot(emits, turn_env):
+    """An interrupted turn must preserve newer live history before retry/rewind.
+
+    A stale result formerly replaced ``session["history"]`` directly. The
+    desktop's subsequent regenerate then persisted that shortened snapshot with
+    ``replace_messages()``, making the missing rows permanent.
+    """
+    live_history = [
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"message {index}",
+            "timestamp": float(index),
+        }
+        for index in range(144)
+    ]
+
+    def _interrupted(_prompt, conversation_history=None, **_kwargs):
+        # Simulate a result assembled from a stale turn-start snapshot. The
+        # shared objects model run_conversation's shallow history copy.
+        return {
+            "final_response": "",
+            "interrupted": True,
+            "turn_exit_reason": "interrupted_during_api_call",
+            "messages": [*(conversation_history or [])[:113], {"role": "user", "content": "retry me"}],
+        }
+
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=_interrupted,
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True, history=live_history)
+    server._start_inflight_turn(session, "retry me")
+
+    server._run_prompt_submit("rid", "sid", session, "retry me")
+
+    assert session["history"][:144] == live_history
+    assert session["history"][-1]["content"] == "retry me"
+    assert len(session["history"]) == 145
+    assert _events(emits, "message.complete")[0]["status"] == "interrupted"
+
+
 # ── Returned-error path (run_conversation returns an error result) ────
 
 

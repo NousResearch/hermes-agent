@@ -7123,6 +7123,35 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
+def _merge_interrupted_api_history(
+    live_history: list[dict], returned_history: list[dict]
+) -> list[dict]:
+    """Keep a live transcript from being rolled back by an interrupted turn.
+
+    ``run_conversation`` normally returns the turn-start history plus its new
+    tail, sharing the original message dicts by identity.  An API-call
+    interruption can instead return an older snapshot.  Replacing the gateway's
+    live history with that prefix silently drops the newer rows.  Preserve the
+    live prefix and append only the returned turn tail in that case.
+
+    An identity mismatch at the first row indicates a legitimate rewrite such
+    as compaction, not a stale prefix, so leave that canonical result intact.
+    """
+    if not returned_history:
+        return live_history
+    if not live_history:
+        return returned_history
+
+    shared = 0
+    limit = min(len(live_history), len(returned_history))
+    while shared < limit and live_history[shared] is returned_history[shared]:
+        shared += 1
+
+    if shared == 0 or shared == len(live_history):
+        return returned_history
+    return [*live_history, *returned_history[shared:]]
+
+
 def _fail_inflight_turn(session: dict, error: Any) -> None:
     """Mark the in-flight turn terminal-error but keep it replayable.
 
@@ -9716,7 +9745,17 @@ def _run_prompt_submit(
                     with session["history_lock"]:
                         current_version = int(session.get("history_version", 0))
                         if current_version == history_version:
-                            session["history"] = result["messages"]
+                            if result.get("turn_exit_reason") == "interrupted_during_api_call":
+                                # The agent did not receive a response, so its
+                                # returned history must not roll back durable
+                                # gateway state if it was built from an older
+                                # turn snapshot. Preserve the live prefix and
+                                # only accept this interrupted turn's new tail.
+                                session["history"] = _merge_interrupted_api_history(
+                                    history, result["messages"]
+                                )
+                            else:
+                                session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
                         else:
                             # History mutated externally during the turn.

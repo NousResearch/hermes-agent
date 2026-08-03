@@ -16063,7 +16063,7 @@ def test_native_vision_turn_persists_a_renderable_image_ref(tmp_path):
 
     agent._flush_messages_to_session_db([{"role": "user", "content": native_parts}], [])
 
-    written = agent._session_db.append_message.call_args.kwargs["content"]
+    written = agent._session_db.append_messages_batch.call_args.kwargs["messages"][0]["content"]
     assert f"@image:`{img}`" in written
     assert "what is in this photo?" in written
     # The model keeps the pixels for the rest of the session.

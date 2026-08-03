@@ -548,12 +548,24 @@ box.
 
 For the strongest guarantee — a certificate-anchored identity, the same
 mechanism yabai/skhd users rely on — create a self-signed code-signing
-certificate once and tell Hermes to use it:
+certificate once and tell Hermes to use it. The one-shot command does
+everything (creates the certificate in your login keychain, grants `codesign`
+access, writes the config, and re-signs the packaged app):
+
+```bash
+hermes desktop --setup-tcc-identity
+```
+
+Or do it manually:
 
 1. Keychain Access → Certificate Assistant → **Create a Certificate…**
 2. Name: `Hermes Local Signing`, Identity Type: *Self-Signed Root*,
    Certificate Type: **Code Signing**.
 3. `hermes config set desktop.macos_signing_identity "Hermes Local Signing"`
+
+Use `--identity <name>` with the command to create/use a differently named
+certificate (default: `Hermes Local Signing`). The command is idempotent —
+re-run it after updates to re-point the config and re-sign the rebuilt app.
 
 The next update re-signs the rebuilt app with that certificate; every TCC grant
 survives. No Apple Developer account is required. Notarized release builds are

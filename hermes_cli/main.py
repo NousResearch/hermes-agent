@@ -433,6 +433,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -7792,6 +7793,127 @@ def _desktop_macos_relaunchable_fixup(
     return False
 
 
+def _desktop_macos_setup_tcc_identity(identity: str = "Hermes Local Signing") -> bool:
+    """Create/import a self-signed code-signing cert and configure Hermes to use it.
+
+    One-shot setup for ``hermes desktop --setup-tcc-identity``. Creates a
+    self-signed "Code Signing" certificate in the login keychain (the same
+    artifact the docs describe creating manually via Keychain Access), grants
+    ``codesign`` access to it, writes ``desktop.macos_signing_identity`` to
+    config.yaml, and re-signs the already-packaged app so the next launch uses
+    the certificate-anchored identity.
+
+    Why this matters: macOS TCC grants (Full Disk Access, Accessibility,
+    Automation, Files and Folders, microphone) persist against the app's
+    code-signing identity, not its path. A plain ad-hoc signature gets a
+    cdhash-only Designated Requirement, so every rebuild looks like a new app
+    and the user must re-grant everything. A certificate-anchored identity is
+    stable across rebuilds — the same mechanism yabai/skhd users rely on.
+
+    Idempotent: re-running after an update finds the existing certificate and
+    only re-points the config + re-signs. Returns True on success (or when
+    already configured), False on failure. Never raises.
+    """
+    if sys.platform != "darwin":
+        print("  (--setup-tcc-identity is macOS-only; skipping)")
+        return False
+
+    openssl = shutil.which("openssl")
+    security = shutil.which("security")
+    codesign = shutil.which("codesign")
+    if not (openssl and security and codesign):
+        print(
+            "  (--setup-tcc-identity requires openssl, security, and codesign; "
+            f"found openssl={bool(openssl)} security={bool(security)} codesign={bool(codesign)})"
+        )
+        return False
+
+    keychain = str(Path.home() / "Library" / "Keychains" / "login.keychain-db")
+    existing = subprocess.run(
+        [security, "find-identity", "-p", "codesigning"],
+        capture_output=True, text=True, check=False,
+    )
+    already_imported = identity in f"{existing.stdout}\n{existing.stderr}"
+
+    if not already_imported:
+        # Create a self-signed code-signing cert (valid 10 years) and import it
+        # into the login keychain with codesign access so signing works without
+        # an interactive unlock prompt.
+        tmp_dir = Path(tempfile.mkdtemp(prefix="hermes-tcc-"))
+        try:
+            key = tmp_dir / "sign.key"
+            crt = tmp_dir / "sign.crt"
+            p12 = tmp_dir / "sign.p12"
+            subprocess.run(
+                [
+                    openssl, "req", "-x509", "-newkey", "rsa:2048",
+                    "-keyout", str(key), "-out", str(crt),
+                    "-days", "3650", "-nodes",
+                    "-subj", f"/CN={identity}",
+                    "-addext", "basicConstraints=critical,CA:TRUE",
+                    "-addext", "keyUsage=critical,digitalSignature,keyCertSign",
+                    "-addext", "extendedKeyUsage=codeSigning",
+                ],
+                capture_output=True, check=True,
+            )
+            subprocess.run(
+                [
+                    openssl, "pkcs12", "-export",
+                    "-inkey", str(key), "-in", str(crt),
+                    "-out", str(p12), "-passout", "pass:hermeslocal",
+                ],
+                capture_output=True, check=True,
+            )
+            imported = subprocess.run(
+                [
+                    security, "import", str(p12), "-k", keychain,
+                    "-P", "hermeslocal",
+                    "-T", codesign, "-T", "/usr/bin/codesign_allocate",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            if imported.returncode != 0:
+                print(f"  (could not import signing identity into keychain: {imported.stderr.strip()})")
+                return False
+            print(f"  → created and imported self-signed identity: {identity!r}")
+        except Exception as exc:
+            print(f"  (certificate creation failed: {exc})")
+            return False
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    else:
+        print(f"  → identity {identity!r} already in keychain")
+
+    # Point Hermes at the identity (config.yaml, not .env — it's not a secret).
+    try:
+        from hermes_cli.config import set_config_value
+
+        set_config_value("desktop.macos_signing_identity", identity)
+        print(f"  → set desktop.macos_signing_identity = {identity!r}")
+    except Exception as exc:
+        print(f"  (could not write desktop.macos_signing_identity: {exc})")
+        return False
+
+    # Re-sign the packaged app so the current build already uses the identity.
+    desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+    if _desktop_packaged_executable(desktop_dir) is not None:
+        try:
+            if _desktop_macos_relaunchable_fixup(desktop_dir):
+                print(
+                    "  → packaged app re-signed with certificate-anchored identity; "
+                    "TCC grants persist across rebuilds"
+                )
+        except Exception as exc:
+            print(f"  (could not re-sign packaged app: {exc})")
+
+    print(
+        "\n  Note: macOS will re-prompt for permissions ONE final time (the identity "
+        "changed). Grant them and they persist from then on. If a permission gets "
+        "stuck, reset it with:  tccutil reset All com.nousresearch.hermes"
+    )
+    return True
+
+
 def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
     """Stop electron-builder grabbing a random keychain identity on self-update.
 
@@ -8079,6 +8201,13 @@ def cmd_gui(args: argparse.Namespace):
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
     force_build = getattr(args, "force_build", False)
+
+    # macOS-only one-shot: create a self-signed code-signing identity so TCC
+    # grants survive rebuilds, then exit without building/launching.
+    if getattr(args, "setup_tcc_identity", False):
+        identity = getattr(args, "identity", None) or "Hermes Local Signing"
+        ok = _desktop_macos_setup_tcc_identity(identity)
+        sys.exit(0 if ok else 1)
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 

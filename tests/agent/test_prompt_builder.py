@@ -932,18 +932,20 @@ class TestEnvironmentHints:
         assert _pb._probe_remote_backend("singularity") is not None
         assert calls == ["bare"]
 
-    def test_probe_remote_backend_does_not_tear_down_ssh(self, monkeypatch):
-        """SSH has no task-scoped sandbox: its cleanup() closes a ControlMaster
-        socket shared with the agent's real environment, so the probe must
-        leave it alone (nothing leaks — ControlPersist expires the master)."""
+    def test_probe_remote_backend_ssh_is_probe_only_and_torn_down(self, monkeypatch):
+        """SSH probe: a normal SSHEnvironment would create remote dirs, force-upload
+        ~/.hermes and snapshot a session just to run `uname`, and its __del__ would
+        later sync_back() and close the ControlMaster shared with the agent's real
+        environment. The probe must request a probe-only instance (own socket, no
+        setup/sync) and tear it down itself."""
         import agent.prompt_builder as _pb
 
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         _pb._clear_backend_probe_cache()
 
-        calls = []
+        created, calls = {}, []
 
-        class _SharedSshEnv:
+        class _ProbeSshEnv:
             def execute(self, cmd, timeout=None):
                 return {
                     "returncode": 0,
@@ -957,10 +959,36 @@ class TestEnvironmentHints:
                 calls.append("cleanup")
 
         import tools.terminal_tool_backends as _tt
-        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _SharedSshEnv())
+
+        def _fake_create(**kw):
+            created.update(kw)
+            return _ProbeSshEnv()
+
+        monkeypatch.setattr(_tt, "_create_environment", _fake_create)
 
         assert _pb._probe_remote_backend("ssh") is not None
-        assert calls == []
+        assert created["probe_only"] is True
+        assert calls == ["cleanup"]
+
+    def test_probe_remote_backend_ssh_cleanup_error_keeps_result(self, monkeypatch):
+        """A failing teardown of the throwaway probe connection must not discard the
+        metadata the probe already collected."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        _pb._clear_backend_probe_cache()
+
+        class _Env:
+            def execute(self, cmd, timeout=None):
+                return {"returncode": 0, "output": "os=Linux\nkernel=6.8.0\nhome=/h\ncwd=/h\nuser=u\n"}
+
+            def cleanup(self):
+                raise RuntimeError("cleanup failed")
+
+        import tools.terminal_tool_backends as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _Env())
+
+        assert "Linux 6.8.0" in _pb._probe_remote_backend("ssh")
 
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):

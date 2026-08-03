@@ -438,3 +438,24 @@ This adds a skill that teaches the agent how to:
 - Filter by category (`general`, `news`, `science`, etc.)
 - Handle pagination and error cases
 - Fall back gracefully when SearXNG is unreachable
+
+
+## Prefer `web_extract` over the browser for simple fetches
+
+When both `browser_navigate` and `web_extract` are available, the model chooses
+which to use. For plain content retrieval it often spins up the browser even
+though `web_extract` is faster and cheaper.
+
+Opt in with:
+
+```yaml
+web:
+  prefer_fetch_over_browser: true   # default: false
+```
+
+Or for a single run: `HERMES_PREFER_FETCH_OVER_BROWSER=1`.
+
+When enabled, Hermes rewrites the `browser_navigate` tool description into a
+directive: use `web_extract` for non-interactive URL fetches, and reserve the
+browser for login, clicks, forms, and JS-rendered/scroll-dependent content.
+Browser tools stay registered — only the routing guidance changes.

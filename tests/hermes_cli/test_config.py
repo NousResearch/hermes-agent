@@ -806,6 +806,22 @@ class TestPluginActivationGrandfatherMigration:
                 encoding="utf-8",
             )
 
+    @staticmethod
+    def _write_plugin(
+        root: Path,
+        *parts: str,
+        manifest_name: str,
+        kind: str,
+    ) -> Path:
+        plugin_dir = root.joinpath(*parts)
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: {manifest_name}\nkind: {kind}\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+        return plugin_dir
+
     def test_grandfathers_nested_and_manifestless_model_providers(self, tmp_path):
         (tmp_path / "config.yaml").write_text(
             "_config_version: 20\n",
@@ -889,6 +905,327 @@ class TestPluginActivationGrandfatherMigration:
             "model-providers/gmi",
             "model-providers/legacy-local",
         ]
+
+    def test_v35_removes_default_grants_before_future_project_override(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from hermes_cli.plugin_activation import PluginActivationState
+        from hermes_cli import plugins_cmd
+
+        bundled = tmp_path / "bundled"
+        self._write_plugin(
+            bundled,
+            "web",
+            "firecrawl",
+            manifest_name="web-firecrawl",
+            kind="backend",
+        )
+        self._write_plugin(
+            bundled,
+            "browser",
+            "firecrawl",
+            manifest_name="web-firecrawl",
+            kind="backend",
+        )
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 34\n"
+            "plugins:\n"
+            "  enabled: [web/firecrawl, web-firecrawl, keep-me]\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        env = {
+            "HERMES_HOME": str(tmp_path),
+            "HERMES_BUNDLED_PLUGINS": str(bundled),
+            "HERMES_ENABLE_PROJECT_PLUGINS": "1",
+        }
+        with (
+            patch.dict(os.environ, env),
+            patch(
+                "hermes_cli.plugins_cmd._discover_entrypoint_plugins",
+                return_value=[],
+            ),
+        ):
+            results = migrate_config(interactive=False, quiet=True)
+
+            raw = yaml.safe_load(
+                (tmp_path / "config.yaml").read_text(encoding="utf-8")
+            )
+            assert raw["plugins"]["enabled"] == ["keep-me"]
+            assert any(
+                "legacy bundled-default grant(s) removed" in item
+                for item in results["config_added"]
+            )
+
+            self._write_plugin(
+                tmp_path / ".hermes" / "plugins",
+                "web",
+                "firecrawl",
+                manifest_name="project-firecrawl",
+                kind="backend",
+            )
+            candidates = plugins_cmd._discover_plugin_candidates()
+
+        winner, status = next(
+            selection
+            for selection in plugins_cmd._resolve_plugin_entry_winners(
+                candidates,
+                PluginActivationState.from_config(raw),
+            )
+            if selection[0][5] == "web/firecrawl"
+        )
+        assert status == "enabled"
+        assert winner[0] == "web-firecrawl"
+        assert winner[3] == "bundled"
+
+    def test_v35_preserves_current_external_and_bundled_opt_in_grants(
+        self,
+        tmp_path,
+    ):
+        bundled = tmp_path / "bundled"
+        self._write_plugin(
+            bundled,
+            "web",
+            "firecrawl",
+            manifest_name="bundled-firecrawl",
+            kind="backend",
+        )
+        self._write_plugin(
+            bundled,
+            "manual",
+            manifest_name="manual-plugin",
+            kind="standalone",
+        )
+        self._write_plugin(
+            tmp_path / "plugins",
+            "web",
+            "firecrawl",
+            manifest_name="user-firecrawl",
+            kind="backend",
+        )
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 34\n"
+            "plugins:\n"
+            "  enabled: [web/firecrawl, bundled-firecrawl, manual-plugin]\n",
+            encoding="utf-8",
+        )
+        env = {
+            "HERMES_HOME": str(tmp_path),
+            "HERMES_BUNDLED_PLUGINS": str(bundled),
+        }
+        with (
+            patch.dict(os.environ, env),
+            patch(
+                "hermes_cli.plugins_cmd._discover_entrypoint_plugins",
+                return_value=[],
+            ),
+        ):
+            results = migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        # The canonical key is consumed by the installed user candidate, while
+        # the bundled-only alias is redundant and can be removed independently.
+        assert raw["plugins"]["enabled"] == [
+            "web/firecrawl",
+            "manual-plugin",
+        ]
+        assert any(
+            "legacy bundled-default grant(s) removed" in item
+            for item in results["config_added"]
+        )
+
+    def test_v35_keeps_v34_manifestless_provider_grandfather_grant(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        self._write_plugin(
+            bundled,
+            "model-providers",
+            "gmi",
+            manifest_name="gmi-provider",
+            kind="model-provider",
+        )
+        self._write_provider(tmp_path, "gmi")
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 33\n",
+            encoding="utf-8",
+        )
+        env = {
+            "HERMES_HOME": str(tmp_path),
+            "HERMES_BUNDLED_PLUGINS": str(bundled),
+        }
+        with (
+            patch.dict(os.environ, env),
+            patch(
+                "hermes_cli.plugins_cmd._discover_entrypoint_plugins",
+                return_value=[],
+            ),
+        ):
+            migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["plugins"]["enabled"] == ["model-providers/gmi"]
+
+    def test_v35_inventory_keeps_disabled_user_and_inactive_project_providers(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        bundled = tmp_path / "bundled"
+        for provider in ("gmi", "project-local"):
+            self._write_plugin(
+                bundled,
+                "model-providers",
+                provider,
+                manifest_name=f"{provider}-provider",
+                kind="model-provider",
+            )
+        self._write_provider(tmp_path, "gmi")
+        project_provider = (
+            tmp_path
+            / ".hermes"
+            / "plugins"
+            / "model-providers"
+            / "project-local"
+        )
+        project_provider.mkdir(parents=True)
+        (project_provider / "__init__.py").write_text("", encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 34\n"
+            "plugins:\n"
+            "  enabled: [model-providers/gmi, model-providers/project-local]\n"
+            "  disabled: [model-providers/gmi]\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        env = {
+            "HERMES_HOME": str(tmp_path),
+            "HERMES_BUNDLED_PLUGINS": str(bundled),
+            "HERMES_ENABLE_PROJECT_PLUGINS": "0",
+        }
+        with (
+            patch.dict(os.environ, env),
+            patch(
+                "hermes_cli.plugins_cmd._discover_entrypoint_plugins",
+                return_value=[],
+            ),
+        ):
+            migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["plugins"] == {
+            "enabled": [
+                "model-providers/gmi",
+                "model-providers/project-local",
+            ],
+            "disabled": ["model-providers/gmi"],
+        }
+
+    def test_v35_strict_entrypoint_failure_leaves_v34_unchanged(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        self._write_plugin(
+            bundled,
+            "web",
+            "firecrawl",
+            manifest_name="web-firecrawl",
+            kind="backend",
+        )
+        config_path = tmp_path / "config.yaml"
+        original = (
+            "_config_version: 34\n"
+            "plugins:\n"
+            "  enabled: [web/firecrawl]\n"
+        )
+        config_path.write_text(original, encoding="utf-8")
+        env = {
+            "HERMES_HOME": str(tmp_path),
+            "HERMES_BUNDLED_PLUGINS": str(bundled),
+        }
+        with (
+            patch.dict(os.environ, env),
+            patch(
+                "hermes_cli.plugins_cmd._discover_entrypoint_plugins",
+                side_effect=RuntimeError("metadata unavailable"),
+            ),
+            pytest.raises(RuntimeError, match="version was not advanced"),
+        ):
+            migrate_config(interactive=False, quiet=True)
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    @pytest.mark.parametrize("create_bundled_dir", (False, True))
+    def test_v35_missing_default_inventory_leaves_version_unchanged(
+        self,
+        tmp_path,
+        create_bundled_dir,
+    ):
+        bundled = tmp_path / "bundled"
+        if create_bundled_dir:
+            bundled.mkdir()
+        config_path = tmp_path / "config.yaml"
+        original = (
+            "_config_version: 34\n"
+            "plugins:\n"
+            "  enabled: [legacy-grant]\n"
+        )
+        config_path.write_text(original, encoding="utf-8")
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HERMES_HOME": str(tmp_path),
+                    "HERMES_BUNDLED_PLUGINS": str(bundled),
+                },
+            ),
+            patch(
+                "hermes_cli.plugins_cmd._discover_entrypoint_plugins",
+                return_value=[],
+            ),
+            pytest.raises(RuntimeError, match="version was not advanced"),
+        ):
+            migrate_config(interactive=False, quiet=True)
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_v35_preserves_shared_external_identity_with_warning(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        self._write_plugin(
+            bundled,
+            "web",
+            "firecrawl",
+            manifest_name="shared-name",
+            kind="backend",
+        )
+        self._write_plugin(
+            tmp_path / "plugins",
+            "tools",
+            "other",
+            manifest_name="shared-name",
+            kind="standalone",
+        )
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 34\n"
+            "plugins:\n"
+            "  enabled: [shared-name]\n",
+            encoding="utf-8",
+        )
+        env = {
+            "HERMES_HOME": str(tmp_path),
+            "HERMES_BUNDLED_PLUGINS": str(bundled),
+        }
+        with (
+            patch.dict(os.environ, env),
+            patch(
+                "hermes_cli.plugins_cmd._discover_entrypoint_plugins",
+                return_value=[],
+            ),
+        ):
+            results = migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["plugins"]["enabled"] == ["shared-name"]
+        assert any("shared-name" in warning for warning in results["warnings"])
 
     def test_safe_mode_still_blocks_grandfathered_user_provider(self, tmp_path):
         (tmp_path / "config.yaml").write_text(

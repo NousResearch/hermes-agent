@@ -194,7 +194,7 @@ def test_plugins_hub_reports_active_bundled_fallback(monkeypatch, tmp_path):
     monkeypatch.setattr(
         plugins_cmd,
         "_discover_plugin_candidates",
-        lambda: [bundled, user],
+        lambda **_kwargs: [bundled, user],
     )
     monkeypatch.setattr(
         "hermes_cli.config.load_plugin_activation_state",

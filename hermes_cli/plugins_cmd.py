@@ -25,7 +25,7 @@ from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_activation import PluginActivationState
 from hermes_cli.secret_prompt import masked_secret_prompt
-from utils import env_var_enabled
+from utils import env_var_enabled, fast_safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,11 @@ class PluginOperationError(Exception):
 
 class PluginActivationConflictError(PluginOperationError):
     """Requested activation cannot be represented without enabling another key."""
+
+
+_LEGACY_MUTATION_GROUP = object()
+_HIDDEN_MUTATION_GROUP = object()
+_BASIC_AUTH_MUTATION_GROUP = object()
 
 
 # Minimum manifest version this installer understands.
@@ -622,15 +627,21 @@ def cmd_install(
             should_enable = False
 
     if should_enable:
-        enabled = _get_enabled_set()
-        disabled = _get_disabled_set()
-        enabled.add(installed_name)
-        disabled.discard(installed_name)
-        _save_enabled_set(enabled)
-        _save_disabled_set(disabled)
+        try:
+            _key, _source, _already, _repaired, activation_warning = (
+                _enable_plugin_in_config(installed_name)
+            )
+        except PluginOperationError as exc:
+            _invalidate_provider_discovery()
+            console.print(
+                f"[red]Plugin installed but could not be enabled safely:[/red] {exc}"
+            )
+            sys.exit(1)
         console.print(
             f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
         )
+        if activation_warning:
+            console.print(f"[yellow]Warning:[/yellow] {activation_warning}")
     else:
         console.print(
             f"[dim]Plugin installed but not enabled. "
@@ -740,7 +751,11 @@ def _save_disabled_set(disabled: set) -> None:
     _invalidate_provider_discovery()
 
 
-_BASIC_AUTH_PLUGIN_KEYS = frozenset({"basic", "dashboard_auth/basic"})
+_BASIC_AUTH_PLUGIN_NAME = "basic"
+_BASIC_AUTH_PLUGIN_KEY = "dashboard_auth/basic"
+_BASIC_AUTH_PLUGIN_KEYS = frozenset(
+    {_BASIC_AUTH_PLUGIN_NAME, _BASIC_AUTH_PLUGIN_KEY}
+)
 
 
 def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
@@ -759,11 +774,71 @@ def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
     disabled = plugins_cfg.get("disabled")
     if not isinstance(disabled, list):
         return False
-    if not (set(disabled) & _BASIC_AUTH_PLUGIN_KEYS):
+    if not disabled:
         return False
-    plugins_cfg["disabled"] = sorted(
-        set(disabled) - _BASIC_AUTH_PLUGIN_KEYS
+    # Password setup is another activation mutation surface.  Inventory every
+    # identity consumer before clearing the bundled provider's deny so a
+    # hidden project or legacy provider that shares ``basic`` remains blocked.
+    candidates = _strict_plugin_activation_candidates()
+    target_indexes = [
+        index
+        for index, entry in enumerate(candidates)
+        if entry[0] == _BASIC_AUTH_PLUGIN_NAME
+        and entry[3] == "bundled"
+        and entry[5] == _BASIC_AUTH_PLUGIN_KEY
+    ]
+    if len(target_indexes) != 1:
+        raise PluginActivationConflictError(
+            "Cannot safely enable the bundled basic auth plugin because its "
+            "activation identity could not be verified."
+        )
+
+    # This is an implicit enable performed by password setup, not an explicit
+    # request to enable every candidate under the canonical key.  Isolate the
+    # bundled provider from user/project overrides too: preserve their block
+    # with a unique alias, or fail if the identities are indistinguishable.
+    target_index = target_indexes[0]
+    same_key_indexes = [
+        index
+        for index, entry in enumerate(candidates)
+        if entry[5] == _BASIC_AUTH_PLUGIN_KEY
+    ]
+    same_key_identities = {
+        identity
+        for index in same_key_indexes
+        for identity in PluginActivationState.identities(
+            name=candidates[index][0],
+            key=candidates[index][5],
+        )
+    }
+    if not (set(disabled) & same_key_identities):
+        return False
+    if len(same_key_indexes) != 1:
+        # Runtime applies every candidate-level deny as a canonical-key-wide
+        # veto.  No replacement deny can keep an override blocked while also
+        # loading bundled Basic, so reject instead of activating the override
+        # or reporting success while the whole key remains disabled.
+        raise PluginActivationConflictError(
+            "Cannot safely enable the bundled basic auth plugin because "
+            "another plugin candidate uses the same activation key."
+        )
+
+    identity_groups: dict[object, set[str]] = {
+        _BASIC_AUTH_PLUGIN_KEY: set(_BASIC_AUTH_PLUGIN_KEYS)
+    }
+    for index, entry in enumerate(candidates):
+        if index == target_index:
+            continue
+        identity_groups[(_BASIC_AUTH_MUTATION_GROUP, index)] = set(
+            PluginActivationState.identities(name=entry[0], key=entry[5])
+        )
+    updated_disabled = set(disabled)
+    _clear_plugin_activation_denies(
+        updated_disabled,
+        key=_BASIC_AUTH_PLUGIN_KEY,
+        identity_groups=identity_groups,
     )
+    plugins_cfg["disabled"] = sorted(updated_disabled)
     return True
 
 
@@ -825,7 +900,7 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
     ``disable`` write the same key that ``PluginManager`` matches against —
     nested category plugins (e.g. ``observability/nemo_relay``) included.
     """
-    entry = _resolve_plugin_entry(name, _discover_plugin_candidates())
+    entry = _resolve_plugin_entry(name, _discover_plugin_runtime_candidates())
     return entry[5] if entry is not None else None
 
 
@@ -844,10 +919,26 @@ def _resolve_plugin_key_and_source(
     config mutation can then activate an installed external override even when
     an active bundled fallback currently owns the management row.
     """
-    entries = _discover_plugin_candidates() if for_enable else _discover_all_plugins()
+    entries = (
+        _discover_plugin_runtime_candidates(
+            include_inactive_project=True,
+        )
+        if for_enable
+        else _discover_all_plugins()
+    )
     entry = _resolve_plugin_entry(name, entries)
     if entry is None:
         return None
+    if for_enable:
+        # A manifest alias can identify a lower-priority bundled fallback even
+        # when an external candidate owns the same canonical key.  Enabling is
+        # a group-level grant, so always return that key's prospective runtime
+        # winner rather than silently mutating consent for the fallback copy.
+        entry = next(
+            candidate
+            for candidate in reversed(entries)
+            if candidate[5] == entry[5]
+        )
     return entry[5], entry[3], entry[0], entry[6]
 
 
@@ -855,7 +946,11 @@ def _plugin_runtime_identity_groups(
     candidates: Optional[list] = None,
 ) -> dict[str, set[str]]:
     """Map each canonical key to every name/key identity runtime checks."""
-    entries = _discover_plugin_candidates() if candidates is None else candidates
+    entries = (
+        _discover_plugin_runtime_candidates()
+        if candidates is None
+        else candidates
+    )
     groups: dict[str, set[str]] = {}
     for entry in entries:
         key = entry[5]
@@ -863,17 +958,70 @@ def _plugin_runtime_identity_groups(
     return groups
 
 
+def _plugin_mutation_identity_groups(candidates: list) -> dict[object, set[str]]:
+    """Keep independent legacy providers separate during config mutations."""
+    groups: dict[object, set[str]] = {}
+    legacy_index = 0
+    for entry in candidates:
+        key = entry[5]
+        if entry[3] == "legacy":
+            group_key: object = (_LEGACY_MUTATION_GROUP, legacy_index)
+            legacy_index += 1
+        else:
+            group_key = key
+        groups.setdefault(group_key, {key}).add(entry[0])
+    return groups
+
+
+def _plugin_candidate_fingerprint(entry: tuple) -> tuple[str, str, str, str]:
+    """Return stable source/path/key/name identity across inventory scans."""
+    return entry[3], str(entry[4] or ""), entry[5], entry[0]
+
+
+def _plugin_composite_identity_groups(
+    runtime_candidates: list,
+    activation_candidates: list,
+) -> dict[object, set[str]]:
+    """Keep candidates outside the current runtime scope as hidden groups."""
+    groups: dict[object, set[str]] = dict(
+        _plugin_runtime_identity_groups(runtime_candidates)
+    )
+    current = {_plugin_candidate_fingerprint(entry) for entry in runtime_candidates}
+    hidden_index = 0
+    for entry in activation_candidates:
+        if entry[3] != "legacy" and _plugin_candidate_fingerprint(entry) in current:
+            continue
+        groups[(_HIDDEN_MUTATION_GROUP, hidden_index)] = {entry[5], entry[0]}
+        hidden_index += 1
+    return groups
+
+
+def _strict_plugin_activation_candidates() -> list:
+    """Return a complete mutation inventory or reject the config write."""
+    try:
+        return _discover_plugin_activation_candidates(
+            include_inactive_project=True,
+            strict=True,
+        )
+    except Exception as exc:
+        raise PluginActivationConflictError(
+            "Cannot safely update plugin activation because the complete "
+            "plugin inventory could not be verified."
+        ) from exc
+
+
 def _nonconflicting_plugin_identity(
-    key: str,
+    key: object,
     runtime_identities: Iterable[str],
     forbidden: set[str],
 ) -> Optional[str]:
     """Prefer *key*, then a stable alias that does not affect another group."""
     identities = set(runtime_identities)
+    preferred = (key,) if key in identities else ()
     return next(
         (
             identity
-            for identity in (key, *sorted(identities - {key}))
+            for identity in (*preferred, *sorted(identities - {key}))
             if identity not in forbidden
         ),
         None,
@@ -884,25 +1032,26 @@ def _clear_plugin_activation_denies(
     disabled: set,
     *,
     key: str,
-    identity_groups: dict[str, set[str]],
-    aliases: Iterable[str] = (),
+    identity_groups: dict[object, set[str]],
 ) -> None:
-    """Clear one key's denies without reviving colliding plugin groups.
+    """Clear one group's denies without changing any other group's block state.
 
-    A legacy manifest-name deny can match candidates under more than one
-    canonical key.  Single-plugin enable actions remove that shared legacy
-    name, then replace its effect for other groups with canonical-key denies
-    so enabling one row does not silently enable another.
+    A deny identity can be shared by multiple candidates.  When clearing it
+    for the target, replace its effect for every other previously blocked
+    group.  Replacement identities may only touch groups that were already
+    blocked, so preserving one group cannot accidentally disable a third.
     """
     target_runtime_identities = set(identity_groups.get(key, {key}))
-    cleanup_identities = set(
-        PluginActivationState.identities(
-            key=key,
-            aliases=(*aliases, *target_runtime_identities),
-        )
-    )
-    cleanup_identities.add(key.split("/")[-1])
-    blocked_identities = set(disabled) & cleanup_identities
+    blocked_identities = set(disabled) & target_runtime_identities
+    if not blocked_identities:
+        return
+
+    previously_unblocked_identities = {
+        identity
+        for other_key, identities in identity_groups.items()
+        if other_key != key and not (set(disabled) & identities)
+        for identity in identities
+    }
 
     preserve_identities: set[str] = set()
     for other_key, other_runtime_identities in identity_groups.items():
@@ -910,10 +1059,12 @@ def _clear_plugin_activation_denies(
             continue
         if not (blocked_identities & other_runtime_identities):
             continue
+        if (set(disabled) - target_runtime_identities) & other_runtime_identities:
+            continue
         replacement = _nonconflicting_plugin_identity(
             other_key,
             other_runtime_identities,
-            target_runtime_identities,
+            target_runtime_identities | previously_unblocked_identities,
         )
         if replacement is None:
             # Do not mutate ``disabled`` before this validation completes:
@@ -925,20 +1076,55 @@ def _clear_plugin_activation_denies(
         preserve_identities.add(replacement)
 
     post_cleanup_disabled = (
-        set(disabled) - cleanup_identities
+        set(disabled) - target_runtime_identities
     ) | preserve_identities
     for other_key, other_runtime_identities in identity_groups.items():
-        if other_key == key or key not in other_runtime_identities:
+        if other_key == key:
             continue
-        if post_cleanup_disabled & other_runtime_identities:
+        was_blocked = bool(set(disabled) & other_runtime_identities)
+        remains_blocked = bool(post_cleanup_disabled & other_runtime_identities)
+        if was_blocked == remains_blocked:
             continue
         raise PluginActivationConflictError(
-            f"Cannot enable plugin '{key}': its activation grant also "
-            f"enables '{other_key}'."
+            f"Cannot enable plugin '{key}' without changing activation for "
+            f"'{other_key}'."
         )
 
-    disabled.difference_update(cleanup_identities)
+    disabled.difference_update(target_runtime_identities)
     disabled.update(preserve_identities)
+
+
+def _disable_plugin_activation(
+    enabled: set[str],
+    disabled: set[str],
+    *,
+    key: str,
+    identity_groups: dict[object, set[str]],
+) -> None:
+    """Disable one canonical group without mutating colliding groups."""
+    target_identities = set(identity_groups.get(key, {key}))
+    other_identities = {
+        identity
+        for other_key, identities in identity_groups.items()
+        if other_key != key
+        for identity in identities
+    }
+    deny_identity = _nonconflicting_plugin_identity(
+        key,
+        target_identities,
+        other_identities,
+    )
+    if deny_identity is None:
+        raise PluginActivationConflictError(
+            f"Cannot disable plugin '{key}' independently: all runtime "
+            "activation identities overlap."
+        )
+
+    # Shared grants belong to the other group too, so retain them.  The unique
+    # deny above still blocks this group, while only target-exclusive grants
+    # can be removed without changing another plugin's activation state.
+    enabled.difference_update(target_identities - other_identities)
+    disabled.add(deny_identity)
 
 
 def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
@@ -961,6 +1147,208 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
     save_config(config)
 
 
+def _plugin_is_enabled_by_default(*, source: str, kind: str) -> bool:
+    """Return whether activation policy trusts this source/kind by default."""
+    return PluginActivationState().status(
+        source=source,
+        kind=kind,
+    ) == "enabled"
+
+
+def _clear_default_plugin_activation_grants(
+    enabled: set[str],
+    *,
+    key: str,
+    candidates: list[tuple],
+) -> bool:
+    """Remove stale grants for one default-on bundled plugin.
+
+    Older management paths could persist either a canonical key or a
+    manifest name in the source-agnostic allow-list.  A bundled default does
+    not need that grant, and retaining it would also authorize a future
+    external candidate with the same runtime identity.
+
+    Shared identities are retained whenever any consent-requiring candidate
+    consumes them, including candidates under the same canonical key.
+    """
+    default_state = PluginActivationState()
+    target_default_identities: set[str] = set()
+    consent_identities: set[str] = set()
+    for entry in candidates:
+        identities = set(
+            PluginActivationState.identities(name=entry[0], key=entry[5])
+        )
+        enabled_by_default = default_state.status(
+            source=entry[3],
+            kind=entry[6],
+        ) == "enabled"
+        if entry[5] == key and enabled_by_default:
+            target_default_identities.update(identities)
+        if not enabled_by_default:
+            consent_identities.update(identities)
+
+    stale_grants = enabled & (target_default_identities - consent_identities)
+    if not stale_grants:
+        return False
+
+    enabled.difference_update(stale_grants)
+    return True
+
+
+def _apply_plugin_enable(
+    *,
+    key: str,
+    source: str,
+    manifest_name: str,
+    kind: str,
+    enabled: set[str],
+    disabled: set[str],
+) -> tuple[bool, bool, Optional[str]]:
+    """Apply one enable transaction and return (already, repaired, warning)."""
+    runtime_candidates = _discover_plugin_runtime_candidates(
+        include_inactive_project=True,
+    )
+    runtime_groups = _plugin_runtime_identity_groups(runtime_candidates)
+    runtime_groups.setdefault(key, {key}).add(manifest_name)
+
+    enabled_by_default = _plugin_is_enabled_by_default(
+        source=source,
+        kind=kind,
+    )
+    already_enabled = _resolved_plugin_status(
+        manifest_name,
+        enabled,
+        disabled,
+        runtime_identities=runtime_groups.setdefault(key, {key}),
+        key=key,
+        source=source,
+        kind=kind,
+    ) == "enabled"
+    if already_enabled:
+        if not enabled_by_default or not (enabled & runtime_groups[key]):
+            return True, False, None
+        try:
+            candidates = _strict_plugin_activation_candidates()
+        except PluginActivationConflictError as exc:
+            logger.warning("Skipped legacy activation-grant repair for '%s': %s", key, exc)
+            return (
+                True,
+                False,
+                "Skipped legacy activation-grant cleanup because the complete "
+                "plugin inventory could not be verified.",
+            )
+        repaired = _clear_default_plugin_activation_grants(
+            enabled,
+            key=key,
+            candidates=candidates,
+        )
+        return True, repaired, None
+
+    candidates = _strict_plugin_activation_candidates()
+    identity_groups = _plugin_mutation_identity_groups(candidates)
+    identity_groups.setdefault(key, {key}).add(manifest_name)
+    repaired = (
+        _clear_default_plugin_activation_grants(
+            enabled,
+            key=key,
+            candidates=candidates,
+        )
+        if enabled_by_default
+        else False
+    )
+
+    if not enabled_by_default:
+        candidate_identities = set(
+            PluginActivationState.identities(name=manifest_name, key=key)
+        )
+        if not (enabled & candidate_identities):
+            other_identities = {
+                identity
+                for other_key, identities in identity_groups.items()
+                if other_key != key
+                for identity in identities
+            }
+            grant_identity = _nonconflicting_plugin_identity(
+                key,
+                candidate_identities,
+                other_identities,
+            )
+            if grant_identity is None:
+                raise PluginActivationConflictError(
+                    f"Cannot enable plugin '{key}' independently: all runtime "
+                    "activation identities overlap."
+                )
+            enabled.add(grant_identity)
+    _clear_plugin_activation_denies(
+        disabled,
+        key=key,
+        identity_groups=identity_groups,
+    )
+    return False, repaired, None
+
+
+def _apply_plugin_disable(
+    *,
+    key: str,
+    source: str,
+    manifest_name: str,
+    kind: str,
+    enabled: set[str],
+    disabled: set[str],
+) -> bool:
+    """Apply one disable transaction and return whether activation changed."""
+    runtime_candidates = _discover_plugin_runtime_candidates()
+    runtime_groups = _plugin_runtime_identity_groups(runtime_candidates)
+    runtime_groups.setdefault(key, {key}).add(manifest_name)
+    if _resolved_plugin_status(
+        manifest_name,
+        enabled,
+        disabled,
+        runtime_identities=runtime_groups[key],
+        key=key,
+        source=source,
+        kind=kind,
+    ) == "disabled":
+        return False
+
+    candidates = _strict_plugin_activation_candidates()
+    identity_groups = _plugin_mutation_identity_groups(candidates)
+    identity_groups.setdefault(key, {key}).add(manifest_name)
+    _disable_plugin_activation(
+        enabled,
+        disabled,
+        key=key,
+        identity_groups=identity_groups,
+    )
+    return True
+
+
+def _enable_plugin_in_config(
+    name: str,
+) -> tuple[str, str, bool, bool, Optional[str]]:
+    """Resolve, safely enable, and persist one plugin activation transaction."""
+    resolved = _resolve_plugin_key_and_source(name, for_enable=True)
+    if resolved is None:
+        raise PluginOperationError(f"Plugin '{name}' is not installed or bundled.")
+    key, source, manifest_name, kind = resolved
+    enabled = _get_enabled_set()
+    disabled = _get_disabled_set()
+    already_enabled, repaired, warning = _apply_plugin_enable(
+        key=key,
+        source=source,
+        manifest_name=manifest_name,
+        kind=kind,
+        enabled=enabled,
+        disabled=disabled,
+    )
+    if not already_enabled:
+        _save_enabled_set(enabled)
+        _save_disabled_set(disabled)
+    elif repaired:
+        _save_enabled_set(enabled)
+    return key, source, already_enabled, repaired, warning
+
+
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
@@ -976,56 +1364,24 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     console = Console()
     # Discover the plugin — check installed (user) AND bundled, including
     # nested category plugins — and normalize to its canonical registry key.
-    resolved = _resolve_plugin_key_and_source(name, for_enable=True)
-    if resolved is None:
-        console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+    try:
+        key, source, already_enabled, _repaired, repair_warning = (
+            _enable_plugin_in_config(name)
+        )
+    except PluginOperationError as exc:
+        console.print(f"[red]{exc}[/red]")
         sys.exit(1)
-    key, source, manifest_name, kind = resolved
-
-    enabled = _get_enabled_set()
-    disabled = _get_disabled_set()
-    candidates = _discover_plugin_candidates()
-    identity_groups = _plugin_runtime_identity_groups(candidates)
-    runtime_identities = identity_groups.setdefault(key, {key})
-    runtime_identities.add(manifest_name)
-
-    already_enabled = _plugin_status(
-        manifest_name,
-        enabled,
-        disabled,
-        key=key,
-        source=source,
-        kind=kind,
-        aliases=runtime_identities,
-    ) == "enabled"
 
     if not already_enabled:
-        enabled.add(key)
-        # Drop every alias of this plugin from the disabled list so an
-        # explicit disable under a different form can't keep it off. The
-        # loader's disable check matches on BOTH the canonical key
-        # (``web/firecrawl``) AND the manifest name (``web-firecrawl``);
-        # a stale entry under either form makes "explicit disable wins"
-        # (plugins.py) silently veto this enable. Discard the key, its
-        # bare leaf, and the manifest name. (#40190 follow-up.)
-        try:
-            _clear_plugin_activation_denies(
-                disabled,
-                key=key,
-                identity_groups=identity_groups,
-                aliases=(name,),
-            )
-        except PluginActivationConflictError as exc:
-            console.print(f"[red]{exc}[/red]")
-            sys.exit(1)
-        _save_enabled_set(enabled)
-        _save_disabled_set(disabled)
         console.print(
             f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. "
             "Takes effect on next session."
         )
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
+
+    if repair_warning:
+        console.print(f"[yellow]Warning:[/yellow] {repair_warning}")
 
     # Built-in tool override is a privileged grant. Bundled plugins ship with
     # Hermes core and are trusted; every other source needs operator opt-in.
@@ -1088,22 +1444,22 @@ def cmd_disable(name: str) -> None:
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
-
-    if _plugin_status(
-        manifest_name,
-        enabled,
-        disabled,
-        key=key,
-        source=source,
-        kind=kind,
-    ) == "disabled":
+    try:
+        changed = _apply_plugin_disable(
+            key=key,
+            source=source,
+            manifest_name=manifest_name,
+            kind=kind,
+            enabled=enabled,
+            disabled=disabled,
+        )
+    except PluginActivationConflictError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+    if not changed:
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
 
-    aliases = {name, manifest_name, key, key.split("/")[-1]}
-    enabled.difference_update(aliases)
-    disabled.difference_update(aliases)
-    disabled.add(key)
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
     console.print(
@@ -1117,7 +1473,7 @@ def _plugin_exists(name: str) -> bool:
     return _resolve_plugin_key(name) is not None
 
 
-def _read_manifest_info(d: Path, prefix: str):
+def _read_manifest_info(d: Path, prefix: str, *, strict: bool = False):
     """Read manifest metadata used by side-effect-free plugin listing.
 
     Returns None if no manifest file exists.
@@ -1127,26 +1483,36 @@ def _read_manifest_info(d: Path, prefix: str):
         manifest_file = d / "plugin.yml"
     if not manifest_file.exists():
         return None
-    try:
-        import yaml
-    except ImportError:
-        yaml = None
     name = d.name
     version = ""
     description = ""
     kind = "standalone"
-    if yaml:
-        try:
-            with open(manifest_file, encoding="utf-8") as f:
-                manifest = yaml.safe_load(f) or {}
-            name = manifest.get("name", d.name)
-            version = manifest.get("version", "")
-            description = manifest.get("description", "")
-            raw_kind = manifest.get("kind", "standalone")
-            if isinstance(raw_kind, str) and raw_kind.strip():
-                kind = raw_kind.strip().lower()
-        except Exception:
-            pass
+    try:
+        with open(manifest_file, encoding="utf-8") as manifest_stream:
+            manifest = fast_safe_load(manifest_stream) or {}
+        if not isinstance(manifest, dict):
+            raise ValueError("plugin manifest must be a mapping")
+        raw_name = manifest.get("name", d.name)
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise ValueError("plugin manifest name must be a non-empty string")
+        name = raw_name.strip()
+        version = manifest.get("version", "")
+        description = manifest.get("description", "")
+        raw_kind = manifest.get("kind", "standalone")
+        if not isinstance(raw_kind, str) or not raw_kind.strip():
+            raise ValueError("plugin manifest kind must be a non-empty string")
+        kind = raw_kind.strip().lower()
+        if kind not in {
+            "standalone",
+            "backend",
+            "exclusive",
+            "platform",
+            "model-provider",
+        }:
+            raise ValueError(f"unknown plugin kind: {raw_kind}")
+    except Exception:
+        if strict:
+            raise
     key = f"{prefix}/{d.name}" if prefix else name
     return name, version, description, key, kind
 
@@ -1159,6 +1525,8 @@ def _scan_level(
     depth: int,
     seen: dict,
     candidates: Optional[list] = None,
+    *,
+    strict: bool = False,
 ) -> None:
     """Recursive directory scan matching PluginManager._scan_directory_level.
 
@@ -1172,7 +1540,7 @@ def _scan_level(
             continue
         if depth == 0 and skip_names and d.name in skip_names:
             continue
-        info = _read_manifest_info(d, prefix)
+        info = _read_manifest_info(d, prefix, strict=strict)
         if info is not None:
             name, version, description, key, kind = info
             src_label = source
@@ -1188,10 +1556,23 @@ def _scan_level(
         if depth >= 1:
             continue
         sub_prefix = f"{prefix}/{d.name}" if prefix else d.name
-        _scan_level(d, source, set(), sub_prefix, depth + 1, seen, candidates)
+        _scan_level(
+            d,
+            source,
+            set(),
+            sub_prefix,
+            depth + 1,
+            seen,
+            candidates,
+            strict=strict,
+        )
 
 
-def _discover_plugin_candidates() -> list:
+def _discover_plugin_candidates(
+    *,
+    include_inactive_project: bool = False,
+    strict_inventory: bool = False,
+) -> list:
     """Return every discoverable plugin candidate in runtime priority order.
 
     Unlike :func:`_discover_all_plugins`, this retains lower-priority copies
@@ -1205,6 +1586,8 @@ def _discover_plugin_candidates() -> list:
     from hermes_cli.plugins import get_bundled_plugins_dir
 
     repo_plugins = get_bundled_plugins_dir()
+    if strict_inventory and not repo_plugins.is_dir():
+        raise FileNotFoundError(f"Bundled plugins directory not found: {repo_plugins}")
     _scan_level(
         repo_plugins,
         "bundled",
@@ -1213,6 +1596,7 @@ def _discover_plugin_candidates() -> list:
         0,
         seen,
         candidates,
+        strict=strict_inventory,
     )
     _scan_level(
         repo_plugins / "platforms",
@@ -1222,10 +1606,23 @@ def _discover_plugin_candidates() -> list:
         0,
         seen,
         candidates,
+        strict=strict_inventory,
     )
-    _scan_level(_plugins_dir(), "user", set(), "", 0, seen, candidates)
+    _scan_level(
+        _plugins_dir(),
+        "user",
+        set(),
+        "",
+        0,
+        seen,
+        candidates,
+        strict=strict_inventory,
+    )
 
-    if env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+    if (
+        include_inactive_project
+        or env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS")
+    ):
         _scan_level(
             Path.cwd() / ".hermes" / "plugins",
             "project",
@@ -1234,9 +1631,15 @@ def _discover_plugin_candidates() -> list:
             0,
             seen,
             candidates,
+            strict=strict_inventory,
         )
 
-    for name, version, description, path in _discover_entrypoint_plugins():
+    entrypoints = (
+        _discover_entrypoint_plugins(strict=True)
+        if strict_inventory
+        else _discover_entrypoint_plugins()
+    )
+    for name, version, description, path in entrypoints:
         candidates.append(
             (
                 name,
@@ -1248,7 +1651,123 @@ def _discover_plugin_candidates() -> list:
                 "standalone",
             )
         )
+    if strict_inventory and not any(
+        entry[3] == "bundled"
+        and PluginActivationState().status(
+            source=entry[3],
+            kind=entry[6],
+        ) == "enabled"
+        for entry in candidates
+    ):
+        raise RuntimeError("Bundled plugin inventory contains no default-on plugins")
     return candidates
+
+
+def _sorted_plugin_candidates(candidates: list) -> list:
+    """Return candidates in the source precedence used by plugin runtimes."""
+    source_rank = {
+        "bundled": 0,
+        "user": 1,
+        "git": 1,
+        "project": 2,
+        "entrypoint": 3,
+        "legacy": 4,
+    }
+    return sorted(candidates, key=lambda entry: source_rank.get(entry[3], 5))
+
+
+def _discover_plugin_runtime_candidates(
+    *,
+    include_inactive_project: bool = False,
+    strict: bool = False,
+) -> list:
+    """Return manifested and manifestless candidates used by plugin runtimes."""
+    if include_inactive_project or strict:
+        candidates = _discover_plugin_candidates(
+            include_inactive_project=include_inactive_project,
+            strict_inventory=strict,
+        )
+    else:
+        candidates = _discover_plugin_candidates()
+
+    roots = [(_plugins_dir() / "model-providers", "user")]
+    if include_inactive_project or env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+        roots.append(
+            (Path.cwd() / ".hermes" / "plugins" / "model-providers", "project")
+        )
+    for root, source in roots:
+        if not root.is_dir():
+            continue
+        try:
+            children = sorted(root.iterdir())
+        except OSError:
+            if strict:
+                raise
+            continue
+        for child in children:
+            if (
+                not child.is_dir()
+                or child.name.startswith(("_", "."))
+                or not (child / "__init__.py").is_file()
+                or (child / "plugin.yaml").is_file()
+                or (child / "plugin.yml").is_file()
+            ):
+                continue
+            key = f"model-providers/{child.name}"
+            source_label = (
+                "git" if source == "user" and (child / ".git").exists() else source
+            )
+            candidates.append((key, "", "", source_label, child, key, "model-provider"))
+
+    return _sorted_plugin_candidates(candidates)
+
+
+def _discover_plugin_activation_candidates(
+    *,
+    include_inactive_project: bool = False,
+    strict: bool = False,
+) -> list:
+    """Return every current or compatibility activation-identity consumer.
+
+    Runtime candidates are extended with trusted-installation
+    ``providers/*.py`` compatibility modules without importing plugin code.
+    Strict mode is used before destructive consent migrations.
+    """
+    candidates = _discover_plugin_runtime_candidates(
+        include_inactive_project=include_inactive_project,
+        strict=strict,
+    )
+
+    providers_dir = Path(__file__).resolve().parent.parent / "providers"
+    try:
+        provider_modules = list(providers_dir.glob("*.py"))
+        provider_modules.extend(
+            child
+            for child in providers_dir.iterdir()
+            if child.is_dir() and (child / "__init__.py").is_file()
+        )
+        provider_modules.sort()
+    except OSError:
+        if strict:
+            raise
+        provider_modules = []
+    for module_path in provider_modules:
+        module_name = module_path.name if module_path.is_dir() else module_path.stem
+        if module_name == "base" or module_name.startswith("_"):
+            continue
+        candidates.append(
+            (
+                module_name,
+                "",
+                "",
+                "legacy",
+                module_path,
+                f"model-providers/{module_name}",
+                "model-provider",
+            )
+        )
+
+    return _sorted_plugin_candidates(candidates)
 
 
 def _resolve_plugin_entry_winners(
@@ -1301,13 +1820,16 @@ def _discover_all_plugins() -> list:
     return [
         entry
         for entry, _status in _resolve_plugin_entry_winners(
-            _discover_plugin_candidates(),
+            _discover_plugin_runtime_candidates(),
             load_plugin_activation_state(),
         )
     ]
 
 
-def _discover_entrypoint_plugins() -> list[tuple[str, str, str, str]]:
+def _discover_entrypoint_plugins(
+    *,
+    strict: bool = False,
+) -> list[tuple[str, str, str, str]]:
     """Return plugin entries advertised through ``hermes_agent.plugins``.
 
     Entry-point plugins are installed as Python packages, so they do not have a
@@ -1319,25 +1841,39 @@ def _discover_entrypoint_plugins() -> list[tuple[str, str, str, str]]:
     try:
         eps = importlib.metadata.entry_points()
         if hasattr(eps, "select"):
-            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+            group_eps = list(eps.select(group=ENTRY_POINTS_GROUP))
         elif isinstance(eps, dict):
-            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+            group_eps = list(eps.get(ENTRY_POINTS_GROUP, []))
         else:
-            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+            group_eps = [ep for ep in list(eps) if ep.group == ENTRY_POINTS_GROUP]
     except Exception as exc:
+        if strict:
+            raise
         logger.debug("Entry-point plugin discovery failed: %s", exc)
         return []
 
     entries: list[tuple[str, str, str, str]] = []
     for ep in group_eps:
+        try:
+            name = ep.name
+            value = ep.value
+        except Exception as exc:
+            if strict:
+                raise
+            logger.debug("Skipping invalid plugin entry point: %s", exc)
+            continue
+
         version = ""
         description = ""
-        dist = getattr(ep, "dist", None)
-        metadata = getattr(dist, "metadata", None)
-        if metadata is not None:
-            version = str(getattr(dist, "version", "") or "")
-            description = str(metadata.get("Summary", "") or "")
-        entries.append((ep.name, version, description, ep.value))
+        try:
+            dist = getattr(ep, "dist", None)
+            metadata = getattr(dist, "metadata", None)
+            if metadata is not None:
+                version = str(getattr(dist, "version", "") or "")
+                description = str(metadata.get("Summary", "") or "")
+        except Exception as exc:
+            logger.debug("Plugin entry-point metadata unavailable: %s", exc)
+        entries.append((name, version, description, value))
     return entries
 
 
@@ -1366,18 +1902,55 @@ def _plugin_status(
     )
 
 
-def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set) -> list:
+def _resolved_plugin_status(
+    name: str,
+    enabled: set,
+    disabled: set,
+    *,
+    runtime_identities: Iterable[str],
+    key: str,
+    source: str,
+    kind: str,
+) -> str:
+    """Return one candidate's exact status with canonical-group deny semantics."""
+    status = _plugin_status(
+        name,
+        enabled,
+        disabled,
+        key=key,
+        source=source,
+        kind=kind,
+    )
+    if status != "disabled" and set(runtime_identities) & disabled:
+        return "disabled"
+    return status
+
+
+def _filter_plugin_entries(
+    entries: list,
+    args: Any,
+    enabled: set,
+    disabled: set,
+    *,
+    identity_groups: Optional[dict[str, set[str]]] = None,
+) -> list:
     """Apply ``hermes plugins list`` CLI filters."""
+    groups = identity_groups
+    if groups is None:
+        groups = {}
+        for entry in entries:
+            groups.setdefault(entry[5], {entry[5]}).add(entry[0])
     filtered = entries
     if getattr(args, "no_bundled", False) or getattr(args, "user", False):
         filtered = [entry for entry in filtered if entry[3] != "bundled"]
     if getattr(args, "enabled", False):
         filtered = [
             entry for entry in filtered
-            if _plugin_status(
+            if _resolved_plugin_status(
                 entry[0],
                 enabled,
                 disabled,
+                runtime_identities=groups.get(entry[5], {entry[5], entry[0]}),
                 key=entry[5],
                 source=entry[3],
                 kind=entry[6],
@@ -1400,7 +1973,14 @@ def cmd_list(args: Any | None = None) -> None:
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
-    entries = _filter_plugin_entries(entries, args, enabled, disabled)
+    identity_groups = _plugin_runtime_identity_groups()
+    entries = _filter_plugin_entries(
+        entries,
+        args,
+        enabled,
+        disabled,
+        identity_groups=identity_groups,
+    )
     manifest_name_counts: dict[str, int] = {}
     for entry in entries:
         manifest_name_counts[entry[0]] = manifest_name_counts.get(entry[0], 0) + 1
@@ -1410,19 +1990,23 @@ def cmd_list(args: Any | None = None) -> None:
             return f"{name} [{key}]"
         return name
 
+    def _status_for(name: str, key: str, source: str, kind: str) -> str:
+        return _resolved_plugin_status(
+            name,
+            enabled,
+            disabled,
+            runtime_identities=identity_groups.get(key, {key, name}),
+            key=key,
+            source=source,
+            kind=kind,
+        )
+
     if getattr(args, "json", False):
         payload = [
             {
                 "name": name,
                 "key": key,
-                "status": _plugin_status(
-                    name,
-                    enabled,
-                    disabled,
-                    key=key,
-                    source=source,
-                    kind=kind,
-                ),
+                "status": _status_for(name, key, source, kind),
                 "version": str(version),
                 "description": description,
                 "source": source,
@@ -1434,14 +2018,7 @@ def cmd_list(args: Any | None = None) -> None:
 
     if getattr(args, "plain", False):
         for name, version, _description, source, _dir, key, kind in entries:
-            status = _plugin_status(
-                name,
-                enabled,
-                disabled,
-                key=key,
-                source=source,
-                kind=kind,
-            )
+            status = _status_for(name, key, source, kind)
             print(
                 f"{status:12} {source:8} {str(version):8} "
                 f"{_display_name(name, key)}"
@@ -1460,14 +2037,7 @@ def cmd_list(args: Any | None = None) -> None:
     table.add_column("Source", style="dim")
 
     for name, version, description, source, _dir, key, kind in entries:
-        status_name = _plugin_status(
-            name,
-            enabled,
-            disabled,
-            key=key,
-            source=source,
-            kind=kind,
-        )
+        status_name = _status_for(name, key, source, kind)
         if status_name == "disabled":
             status = "[red]disabled[/red]"
         elif status_name == "enabled":
@@ -1660,8 +2230,17 @@ def cmd_toggle() -> None:
 
     # -- General plugins discovery (bundled + user) --
     entries = _discover_all_plugins()
-    candidates = _discover_plugin_candidates()
+    candidates = _discover_plugin_runtime_candidates()
     identity_groups = _plugin_runtime_identity_groups(candidates)
+    try:
+        activation_candidates = _strict_plugin_activation_candidates()
+    except PluginActivationConflictError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return
+    mutation_identity_groups = _plugin_composite_identity_groups(
+        candidates,
+        activation_candidates,
+    )
     enabled_set = _get_enabled_set()
     disabled_set = _get_disabled_set()
 
@@ -1678,6 +2257,7 @@ def cmd_toggle() -> None:
     plugin_sources = []
     plugin_kinds = []
     plugin_identities = []
+    plugin_grant_identities = []
     plugin_selected = set()
 
     for i, (name, _version, description, source, _d, key, kind) in enumerate(entries):
@@ -1691,17 +2271,20 @@ def cmd_toggle() -> None:
         runtime_identities = set(identity_groups.get(key, {key}))
         runtime_identities.add(name)
         plugin_identities.append(runtime_identities)
+        plugin_grant_identities.append(
+            set(PluginActivationState.identities(name=name, key=key))
+        )
         # Use the same source/kind policy as runtime discovery. Bundled
         # backends, platforms, and model profiles are on by default; every
         # non-bundled plugin remains opt-in and explicit disable always wins.
-        is_on = _plugin_status(
+        is_on = _resolved_plugin_status(
             name,
             enabled_set,
             disabled_set,
+            runtime_identities=plugin_identities[-1],
             key=key,
             source=source,
             kind=kind,
-            aliases=plugin_identities[-1],
         ) == "enabled"
         if is_on:
             plugin_selected.add(i)
@@ -1741,6 +2324,10 @@ def cmd_toggle() -> None:
             categories,
             console,
             plugin_identities=plugin_identities,
+            plugin_grant_identities=plugin_grant_identities,
+            enabled=enabled_set,
+            identity_groups=mutation_identity_groups,
+            activation_candidates=activation_candidates,
         )
     except ImportError:
         _run_composite_fallback(
@@ -1753,6 +2340,10 @@ def cmd_toggle() -> None:
             categories,
             console,
             plugin_identities=plugin_identities,
+            plugin_grant_identities=plugin_grant_identities,
+            enabled=enabled_set,
+            identity_groups=mutation_identity_groups,
+            activation_candidates=activation_candidates,
         )
 
 
@@ -1767,6 +2358,10 @@ def _run_composite_ui(
     categories,
     console,
     plugin_identities=None,
+    plugin_grant_identities=None,
+    enabled=None,
+    identity_groups=None,
+    activation_candidates=None,
 ):
     """Custom curses screen with checkboxes + category action rows."""
     from hermes_cli.curses_ui import flush_stdin
@@ -1999,9 +2594,13 @@ def _run_composite_ui(
         chosen,
         disabled,
         plugin_identities=plugin_identities,
+        plugin_grant_identities=plugin_grant_identities,
+        enabled=enabled,
+        identity_groups=identity_groups,
+        activation_candidates=activation_candidates,
     )
 
-    prev_enabled = _get_enabled_set()
+    prev_enabled = _get_enabled_set() if enabled is None else set(enabled)
     enabled_changed = new_enabled != prev_enabled
     disabled_changed = new_disabled != disabled
 
@@ -2038,6 +2637,10 @@ def _run_composite_fallback(
     categories,
     console,
     plugin_identities=None,
+    plugin_grant_identities=None,
+    enabled=None,
+    identity_groups=None,
+    activation_candidates=None,
 ):
     """Text-based fallback for the composite plugins UI."""
     from hermes_cli.colors import Colors, color
@@ -2076,8 +2679,12 @@ def _run_composite_fallback(
             chosen,
             disabled,
             plugin_identities=plugin_identities,
+            plugin_grant_identities=plugin_grant_identities,
+            enabled=enabled,
+            identity_groups=identity_groups,
+            activation_candidates=activation_candidates,
         )
-        prev_enabled = _get_enabled_set()
+        prev_enabled = _get_enabled_set() if enabled is None else set(enabled)
         if new_enabled != prev_enabled or new_disabled != disabled:
             _save_enabled_set(new_enabled)
             _save_disabled_set(new_disabled)
@@ -2108,14 +2715,18 @@ def _composite_activation_sets(
     disabled,
     *,
     plugin_identities=None,
+    plugin_grant_identities=None,
+    enabled=None,
+    identity_groups=None,
+    activation_candidates=None,
 ):
-    """Build persisted activation policy from a composite-menu selection.
+    """Apply a composite selection without mutating undisplayed groups.
 
     Bundled backends, platforms, and model providers are active by default, so
     checking one is not an operator grant and must not enter
     ``plugins.enabled``. Bundled standalone plugins and every external plugin
-    remain opt-in. All kinds share the same checkbox behavior: checking clears
-    an explicit deny and unchecking writes one.
+    remain opt-in. Existing grants and explicit-block state for undisplayed
+    compatibility providers are preserved exactly.
     """
     if not (len(plugin_keys) == len(plugin_sources) == len(plugin_kinds)):
         raise ValueError("plugin keys, sources, and kinds must have matching lengths")
@@ -2123,63 +2734,166 @@ def _composite_activation_sets(
         plugin_identities = [()] * len(plugin_keys)
     elif len(plugin_identities) != len(plugin_keys):
         raise ValueError("plugin identities and keys must have matching lengths")
+    if plugin_grant_identities is None:
+        plugin_grant_identities = plugin_identities
+    elif len(plugin_grant_identities) != len(plugin_keys):
+        raise ValueError("plugin grant identities and keys must have matching lengths")
+
     runtime_identities_by_row = [
         set(PluginActivationState.identities(key=key, aliases=aliases))
         for key, aliases in zip(plugin_keys, plugin_identities)
     ]
+    grant_identities_by_row = [
+        set(PluginActivationState.identities(key=key, aliases=aliases))
+        for key, aliases in zip(plugin_keys, plugin_grant_identities)
+    ]
 
-    new_enabled: set = set()
-    new_disabled: set = set(disabled)
-    default_state = PluginActivationState()
+    groups = {
+        group_key: set(identities)
+        for group_key, identities in (identity_groups or {}).items()
+    }
+    for key, identities in zip(plugin_keys, runtime_identities_by_row):
+        groups.setdefault(key, {key}).update(identities)
 
-    # Two phases make the result independent of discovery/display order.  A
-    # selected row may clear a legacy alias that is another row's canonical
-    # key; all selected cleanup happens first, then every unselected row gets
-    # an exact runtime deny written back.
-    selected_runtime_identities: set[str] = set()
-    selected_cleanup_identities: set[str] = set()
-    for i, (key, source, kind) in enumerate(
-        zip(plugin_keys, plugin_sources, plugin_kinds)
-    ):
-        bare = key.split("/")[-1]
-        if i not in chosen:
-            continue
-        runtime_identities = runtime_identities_by_row[i]
-        selected_runtime_identities.update(runtime_identities)
-        selected_cleanup_identities.update(runtime_identities)
-        selected_cleanup_identities.add(bare)
-        enabled_by_default = default_state.status(
-            name=key,
-            key=key,
-            source=source,
-            kind=kind,
-        ) == "enabled"
-        if not enabled_by_default:
-            new_enabled.add(key)
-
-    new_disabled.difference_update(selected_cleanup_identities)
-
-    for i, key in enumerate(plugin_keys):
-        if i in chosen:
-            continue
-        deny_identity = _nonconflicting_plugin_identity(
-            key,
-            runtime_identities_by_row[i],
-            selected_runtime_identities,
+    original_enabled = set(enabled or ())
+    original_disabled = set(disabled)
+    new_enabled = set(original_enabled)
+    new_disabled = set(original_disabled)
+    displayed_keys = set(plugin_keys)
+    selected_keys = {key for i, key in enumerate(plugin_keys) if i in chosen}
+    unselected_keys = displayed_keys - selected_keys
+    consent_keys = {
+        entry[5]
+        for entry in (activation_candidates or ())
+        if not _plugin_is_enabled_by_default(source=entry[3], kind=entry[6])
+    }
+    selected_consent_keys = {
+        key
+        for i, (key, source, kind) in enumerate(
+            zip(plugin_keys, plugin_sources, plugin_kinds)
         )
-        if deny_identity is None:
-            # The schema cannot satisfy both selections when every runtime
-            # identity overlaps.  Keep the unchecked row denied (and avoid
-            # crashing the UI); fail-closed means the colliding checked row
-            # may remain disabled until its manifest/key is disambiguated.
-            logger.warning(
-                "Cannot independently disable plugin key '%s': all activation "
-                "identities collide with a selected plugin; keeping canonical "
-                "deny fail-closed",
+        if i in chosen
+        and (
+            key in consent_keys
+            or not _plugin_is_enabled_by_default(source=source, kind=kind)
+        )
+    }
+    grant_protected_keys = (set(groups) - displayed_keys) | selected_consent_keys
+
+    try:
+        if activation_candidates:
+            for i, (key, source, kind) in enumerate(
+                zip(plugin_keys, plugin_sources, plugin_kinds)
+            ):
+                if i in chosen and _plugin_is_enabled_by_default(
+                    source=source,
+                    kind=kind,
+                ):
+                    _clear_default_plugin_activation_grants(
+                        new_enabled,
+                        key=key,
+                        candidates=activation_candidates,
+                    )
+
+        # Revoke grants consumed only by rows the operator unchecked. Grants
+        # shared with a selected or hidden provider remain untouched.
+        for identity in tuple(new_enabled):
+            owners = {
+                group_key
+                for group_key, identities in groups.items()
+                if identity in identities
+            }
+            if owners and not (owners & grant_protected_keys):
+                new_enabled.discard(identity)
+
+        # A batch may intentionally grant one shared identity when every
+        # current consumer is selected. Hidden consumers always make it unsafe.
+        forbidden_grant_identities = {
+            identity
+            for group_key, identities in groups.items()
+            if group_key not in selected_keys
+            for identity in identities
+        }
+        for i, (key, source, kind) in enumerate(
+            zip(plugin_keys, plugin_sources, plugin_kinds)
+        ):
+            if i not in chosen or _plugin_is_enabled_by_default(
+                source=source,
+                kind=kind,
+            ):
+                continue
+            candidate_identities = grant_identities_by_row[i]
+            if new_enabled & candidate_identities:
+                continue
+            grant_identity = _nonconflicting_plugin_identity(
                 key,
+                candidate_identities,
+                {
+                    identity
+                    for group_key, identities in groups.items()
+                    if group_key != key
+                    for identity in identities
+                },
             )
-            deny_identity = key
-        new_disabled.add(deny_identity)
+            if grant_identity is None:
+                grant_identity = _nonconflicting_plugin_identity(
+                    key,
+                    candidate_identities,
+                    forbidden_grant_identities,
+                )
+            if grant_identity is None:
+                raise PluginActivationConflictError(
+                    f"Cannot enable plugin '{key}' independently from an "
+                    "undisplayed or unchecked provider."
+                )
+            new_enabled.add(grant_identity)
+
+        desired_blocked = {
+            group_key: (
+                False
+                if group_key in selected_keys
+                else True
+                if group_key in unselected_keys
+                else bool(original_disabled & identities)
+            )
+            for group_key, identities in groups.items()
+        }
+        desired_unblocked_identities = {
+            identity
+            for group_key, identities in groups.items()
+            if not desired_blocked[group_key]
+            for identity in identities
+        }
+        new_disabled.difference_update(desired_unblocked_identities)
+
+        for group_key, identities in groups.items():
+            if not desired_blocked[group_key] or new_disabled & identities:
+                continue
+            deny_identity = _nonconflicting_plugin_identity(
+                group_key,
+                identities,
+                desired_unblocked_identities,
+            )
+            if deny_identity is None:
+                raise PluginActivationConflictError(
+                    f"Cannot disable plugin '{group_key}' without also "
+                    "disabling a selected or previously unblocked provider."
+                )
+            new_disabled.add(deny_identity)
+
+        for group_key, identities in groups.items():
+            if bool(new_disabled & identities) != desired_blocked[group_key]:
+                raise PluginActivationConflictError(
+                    f"Cannot preserve activation state for '{group_key}'."
+                )
+    except PluginActivationConflictError as exc:
+        logger.warning(
+            "Cannot apply composite plugin selection independently: %s; "
+            "keeping the existing activation policy fail-closed",
+            exc,
+        )
+        return original_enabled, original_disabled
+
     return new_enabled, new_disabled
 
 
@@ -2209,15 +2923,19 @@ def dashboard_install_plugin(
         return {"ok": False, "error": str(exc)}
 
     missing_env = _missing_requires_env_names(installed_manifest)
+    enabled_after_install = False
     if enable:
-        en = _get_enabled_set()
-        dis = _get_disabled_set()
-        en.add(installed_name)
-        dis.discard(installed_name)
-        _save_enabled_set(en)
-        _save_disabled_set(dis)
-    else:
-        _invalidate_provider_discovery()
+        try:
+            _key, _source, _already, _repaired, activation_warning = (
+                _enable_plugin_in_config(installed_name)
+            )
+        except PluginOperationError as exc:
+            warnings.append(f"Plugin installed but could not be enabled safely: {exc}")
+        else:
+            enabled_after_install = True
+            if activation_warning:
+                warnings.append(activation_warning)
+    _invalidate_provider_discovery()
 
     hint: str | None = None
     ap = target / "after-install.md"
@@ -2227,10 +2945,10 @@ def dashboard_install_plugin(
     return {
         "ok": True,
         "plugin_name": installed_name,
+        "enabled": enabled_after_install,
         "warnings": warnings,
         "missing_env": missing_env,
         "after_install_path": hint,
-        "enabled": enable,
     }
 
 
@@ -2331,29 +3049,19 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
 
     en = _get_enabled_set()
     dis = _get_disabled_set()
-    candidates = _discover_plugin_candidates()
-    identity_groups = _plugin_runtime_identity_groups(candidates)
-    runtime_identities = identity_groups.setdefault(key, {key})
-    runtime_identities.add(manifest_name)
-    status = _plugin_status(
-        manifest_name,
-        en,
-        dis,
-        key=key,
-        source=source,
-        kind=kind,
-        aliases=runtime_identities,
-    )
-
     if enabled:
-        if status == "enabled":
-            return {"ok": True, "name": name, "key": key, "unchanged": True}
         try:
-            _clear_plugin_activation_denies(
-                dis,
+            (
+                already_enabled,
+                repaired_default_grants,
+                repair_warning,
+            ) = _apply_plugin_enable(
                 key=key,
-                identity_groups=identity_groups,
-                aliases=(name,),
+                source=source,
+                manifest_name=manifest_name,
+                kind=kind,
+                enabled=en,
+                disabled=dis,
             )
         except PluginActivationConflictError as exc:
             return {
@@ -2362,19 +3070,42 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
                 "key": key,
                 "error": str(exc),
             }
-        en.add(key)
-        _save_enabled_set(en)
-        _save_disabled_set(dis)
-        _toggle_plugin_toolset(key, enable=True)
-        return {"ok": True, "name": name, "key": key, "unchanged": False}
+        if already_enabled:
+            if repaired_default_grants:
+                _save_enabled_set(en)
+        else:
+            _save_enabled_set(en)
+            _save_disabled_set(dis)
+            _toggle_plugin_toolset(key, enable=True)
+        result = {
+            "ok": True,
+            "name": name,
+            "key": key,
+            "unchanged": already_enabled and not repaired_default_grants,
+        }
+        if repair_warning:
+            result["warning"] = repair_warning
+        return result
 
-    if status == "disabled":
+    try:
+        changed = _apply_plugin_disable(
+            key=key,
+            source=source,
+            manifest_name=manifest_name,
+            kind=kind,
+            enabled=en,
+            disabled=dis,
+        )
+    except PluginActivationConflictError as exc:
+        return {
+            "ok": False,
+            "name": name,
+            "key": key,
+            "error": str(exc),
+        }
+    if not changed:
         return {"ok": True, "name": name, "key": key, "unchanged": True}
 
-    disable_aliases = {name, manifest_name, key, key.split("/")[-1]}
-    en.difference_update(disable_aliases)
-    dis.difference_update(disable_aliases)
-    dis.add(key)
     _save_enabled_set(en)
     _save_disabled_set(dis)
     _toggle_plugin_toolset(key, enable=False)
@@ -2391,7 +3122,7 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
 
     key = _resolve_plugin_key(name)
     if key is not None:
-        for entry in reversed(_discover_plugin_candidates()):
+        for entry in reversed(_discover_plugin_runtime_candidates()):
             if entry[5] != key or entry[3] not in {"user", "git"}:
                 continue
             try:

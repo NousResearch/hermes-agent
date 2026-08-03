@@ -130,6 +130,70 @@ def _installed_user_model_provider_grants(
     return grants
 
 
+def _scope_legacy_bundled_default_grants(
+    enabled: list[Any],
+    candidates: list[tuple],
+) -> tuple[list[Any], list[str], list[str]]:
+    """Remove bundled-default identities with no consent-requiring consumer.
+
+    Old management paths persisted source-agnostic keys or manifest names for
+    bundled plugins that are now enabled by policy.  Leaving those grants in
+    place would authorize an external plugin installed later under the same
+    runtime identity.  A specific identity is retained whenever any currently
+    installed external or bundled standalone candidate consumes it, regardless
+    of whether that consumer shares the same canonical key.
+    """
+    from hermes_cli.plugin_activation import PluginActivationState
+
+    default_state = PluginActivationState()
+
+    def _identities(entry: tuple) -> frozenset[str]:
+        return PluginActivationState.identities(
+            name=entry[0],
+            key=entry[5],
+        )
+
+    def _enabled_by_default(entry: tuple) -> bool:
+        return default_state.status(
+            source=entry[3],
+            kind=entry[6],
+        ) == "enabled"
+
+    default_identities: set[str] = set()
+    consent_identities: set[str] = set()
+    for entry in candidates:
+        identities = _identities(entry)
+        if _enabled_by_default(entry):
+            default_identities.update(identities)
+        else:
+            consent_identities.update(identities)
+
+    removable_identities = default_identities - consent_identities
+
+    migrated: list[Any] = []
+    removed: list[str] = []
+    unresolved: list[str] = []
+    for raw_identity in enabled:
+        if not isinstance(raw_identity, str) or not raw_identity.strip():
+            migrated.append(raw_identity)
+            continue
+        identity = raw_identity.strip()
+        if identity not in default_identities:
+            migrated.append(raw_identity)
+            continue
+
+        if identity not in removable_identities:
+            migrated.append(raw_identity)
+            if identity not in unresolved:
+                unresolved.append(identity)
+            continue
+
+        if identity not in removed:
+            removed.append(identity)
+
+    return migrated, removed, unresolved
+
+
 def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 11 → 12: migrate custom_providers list → providers dict ──
     _c = _cfg()
@@ -775,6 +839,56 @@ def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
         )
 
 
+def _migrate_to_35(results: Dict[str, Any], quiet: bool) -> None:
+    """Remove redundant legacy grants for bundled default plugins."""
+    _c = _cfg()
+    config = _c.read_raw_config()
+    plugins_cfg = config.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        return
+    raw_enabled = plugins_cfg.get("enabled")
+    if not isinstance(raw_enabled, list) or not raw_enabled:
+        return
+
+    try:
+        from hermes_cli.plugins_cmd import _discover_plugin_activation_candidates
+
+        candidates = _discover_plugin_activation_candidates(
+            include_inactive_project=True,
+            strict=True,
+        )
+        migrated, removed, unresolved = _scope_legacy_bundled_default_grants(
+            raw_enabled,
+            candidates,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not safely inventory plugin activation grants; "
+            "configuration version was not advanced; retry migration"
+        ) from exc
+
+    if migrated != raw_enabled:
+        plugins_cfg["enabled"] = migrated
+        config["plugins"] = plugins_cfg
+        _c._persist_migration(config)
+        results["config_added"].append(
+            "plugins.enabled "
+            f"({len(removed)} legacy bundled-default grant(s) removed)"
+        )
+        if not quiet:
+            print(
+                "  ✓ Removed redundant bundled-plugin activation grants: "
+                + ", ".join(removed)
+            )
+
+    if unresolved:
+        results["warnings"].append(
+            "Preserved shared plugin activation grant(s) used by installed "
+            "external or bundled opt-in candidates: "
+            + ", ".join(unresolved)
+        )
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: version captured before the ladder started. Order matters: later steps may
@@ -797,6 +911,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (32, _migrate_to_32),
     (33, _migrate_to_33),
     (34, _migrate_to_34),
+    (35, _migrate_to_35),
 )
 
 

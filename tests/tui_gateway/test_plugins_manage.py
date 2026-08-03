@@ -79,7 +79,11 @@ def test_plugins_manage_reports_and_toggles_active_bundled_fallback(monkeypatch)
             "backend",
         ),
     ]
-    monkeypatch.setattr(plugins_cmd, "_discover_plugin_candidates", lambda: candidates)
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_discover_plugin_candidates",
+        lambda **_kwargs: candidates,
+    )
     enabled_keys = set()
     disabled_keys = set()
     monkeypatch.setattr(

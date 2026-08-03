@@ -115,7 +115,7 @@ def test_dashboard_enable_targets_inactive_higher_precedence_override(monkeypatc
     monkeypatch.setattr(
         plugins_cmd,
         "_discover_plugin_candidates",
-        lambda: [bundled, user],
+        lambda **_kwargs: [bundled, user],
     )
     monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: [bundled])
     monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
@@ -171,7 +171,11 @@ def test_dashboard_enable_clears_manifest_deny_without_reviving_colliding_key(
             "backend",
         ),
     )
-    monkeypatch.setattr(plugins_cmd, "_discover_plugin_candidates", lambda: candidates)
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_discover_plugin_candidates",
+        lambda **_kwargs: candidates,
+    )
     monkeypatch.setattr(
         plugins_cmd,
         "_get_enabled_set",

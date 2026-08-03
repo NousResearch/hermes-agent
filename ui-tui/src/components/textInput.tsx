@@ -1,8 +1,10 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
+import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
+import { $uiCopyOnSelect } from '../app/uiStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
 import { copyTextToClipboard, readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
@@ -12,7 +14,8 @@ import {
   isMac,
   isMacActionFallback,
   isVoiceToggleKey,
-  type ParsedVoiceRecordKey
+  type ParsedVoiceRecordKey,
+  resolveCopyOnSelect
 } from '../lib/platform.js'
 import { isTermuxTuiMode } from '../lib/termux.js'
 
@@ -774,6 +777,12 @@ const isPasteResultPromise = (
   value: PasteResult | Promise<PasteResult> | null | undefined
 ): value is Promise<PasteResult> => !!value && typeof (value as PromiseLike<PasteResult>).then === 'function'
 
+export const shouldCopyMouseSelection = (
+  configured: boolean | null | undefined,
+  mask: string | undefined,
+  platformIsMac = isMac
+): boolean => !mask && resolveCopyOnSelect(configured, platformIsMac)
+
 export function TextInput({
   columns = 80,
   value,
@@ -796,6 +805,7 @@ export function TextInput({
   )
 
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
+  const copyOnSelect = useStore($uiCopyOnSelect)
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
@@ -1354,7 +1364,7 @@ export function TextInput({
 
     const normalized = selRange()
 
-    if (isMac && normalized) {
+    if (shouldCopyMouseSelection(copyOnSelect, mask) && normalized) {
       void copyTextToClipboard(vRef.current.slice(normalized.start, normalized.end))
     }
   }

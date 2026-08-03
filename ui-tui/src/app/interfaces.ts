@@ -337,6 +337,7 @@ export interface UiState {
   // Context compaction in progress (idle/preflight/auto). Distinct from
   // `compact`, which is the /compact layout-density flag.
   compacting: boolean
+  copyOnSelect: boolean | null
   destructiveSlashConfirm: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean

@@ -1,6 +1,20 @@
 import { describe, expect, it } from 'vitest'
 
-import { decideRightClickAction } from '../components/textInput.js'
+import { decideRightClickAction, shouldCopyMouseSelection } from '../components/textInput.js'
+
+describe('shouldCopyMouseSelection', () => {
+  it('honors explicit overrides and the platform fallback', () => {
+    expect(shouldCopyMouseSelection(undefined, undefined, false)).toBe(false)
+    expect(shouldCopyMouseSelection(null, undefined, true)).toBe(true)
+    expect(shouldCopyMouseSelection(true, undefined, false)).toBe(true)
+    expect(shouldCopyMouseSelection(false, undefined, true)).toBe(false)
+  })
+
+  it('never auto-copies masked input contents', () => {
+    expect(shouldCopyMouseSelection(true, '*', false)).toBe(false)
+    expect(shouldCopyMouseSelection(null, '*', true)).toBe(false)
+  })
+})
 
 describe('decideRightClickAction', () => {
   it('returns paste when there is no selection', () => {

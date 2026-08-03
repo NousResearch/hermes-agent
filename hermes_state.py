@@ -1992,6 +1992,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._conn = _connect_tracked_db(
                     str(self.db_path),
                     check_same_thread=False,
+                    # Defensive hardening: disable CPython's prepared-statement
+                    # cache. On Python 3.12+ this can produce intermittent
+                    # "no more rows available" when one permitted connection
+                    # crosses worker threads (#118172); harmless on 3.11.
+                    cached_statements=0,
                     # Short timeout — application-level retry with random
                     # jitter handles contention instead of sitting in
                     # SQLite's internal busy handler for up to 30s.
@@ -2124,6 +2129,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 f"file:{self.db_path}?mode=ro",
                 tracking_path=self.db_path,
                 uri=True,
+                # Defensive hardening: per-thread read connections also
+                # disable the prepared-statement cache (Python 3.12+, harmless
+                # on 3.11) so cached cursors don't survive thread-pool reuse.
+                cached_statements=0,
                 timeout=5.0,
                 isolation_level=None,
             )
@@ -3981,11 +3990,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if not session_id:
             return None
         now = time.time()
-        row = self._conn.execute(
-            "SELECT holder FROM compression_locks "
-            "WHERE session_id = ? AND expires_at >= ?",
-            (session_id, now),
-        ).fetchone()
+        # The gateway's single SessionDB connection is allowed to cross worker
+        # threads.  Reads that touch the writer connection must share its lock;
+        # otherwise they can race BEGIN/commit/cursor activity and surface
+        # spurious sqlite state errors such as "no more rows available".
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT holder FROM compression_locks "
+                "WHERE session_id = ? AND expires_at >= ?",
+                (session_id, now),
+            ).fetchone()
         if row is None:
             return None
         return row["holder"] if isinstance(row, sqlite3.Row) else row[0]
@@ -8972,12 +8986,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         no handoff record.
         """
         try:
-            cur = self._conn.execute(
-                "SELECT handoff_state, handoff_platform, handoff_error "
-                "FROM sessions WHERE id = ?",
-                (session_id,),
-            )
-            row = cur.fetchone()
+            # Never touch the shared writer connection unlocked: an
+            # unlocked read's sqlite3_step() runs with the GIL released and
+            # overwrites the db handle's global error state, so a concurrent
+            # writer's SQLITE_BUSY surfaces as errstr(SQLITE_DONE) =
+            # "no more rows available" and escapes _execute_write's
+            # locked/busy retry classifier. _read_ctx() uses a per-thread
+            # read-only connection under WAL, or the writer lock otherwise.
+            with self._read_ctx() as conn:
+                row = conn.execute(
+                    "SELECT handoff_state, handoff_platform, handoff_error "
+                    "FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
             if not row:
                 return None
             return {
@@ -8994,12 +9015,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Used by the gateway's handoff watcher.
         """
         try:
-            cur = self._conn.execute(
-                "SELECT * FROM sessions "
-                "WHERE handoff_state = 'pending' "
-                "ORDER BY started_at ASC"
-            )
-            return [dict(r) for r in cur.fetchall()]
+            # See get_handoff_state: this runs on the gateway's 2s watcher
+            # cadence and must not read the shared writer connection
+            # without serialization (errmsg-scrambling race).
+            with self._read_ctx() as conn:
+                return [dict(r) for r in conn.execute(
+                    "SELECT * FROM sessions "
+                    "WHERE handoff_state = 'pending' "
+                    "ORDER BY started_at ASC"
+                ).fetchall()]
         except Exception:
             return []
 

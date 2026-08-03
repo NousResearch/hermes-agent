@@ -2253,7 +2253,22 @@ class AIAgent:
             # Force a full re-scan on the next flush: an exception mid-loop
             # leaves messages with mixed dispositions.
             self._db_flush_scan_prefix = None
-            logger.warning("Session DB append_message failed: %s", e)
+            # Diagnostic detail (2026-07-28 incident): the bare str(e) hid
+            # the exception class and sqlite errcode, which delayed root-
+            # causing the errmsg-scrambling race. sqlite_errorcode 101/100
+            # ("no more rows available"/"another row available") means the
+            # shared connection's error state was overwritten by an
+            # unserialized reader — see SessionDB.get_handoff_state.
+            logger.warning(
+                "Session DB append_message failed: %s: %s "
+                "(sqlite_errorcode=%s, thread=%s, db=%s)",
+                type(e).__name__,
+                e,
+                getattr(e, "sqlite_errorcode", None),
+                threading.current_thread().name,
+                hex(id(getattr(self, "_session_db", None))),
+                exc_info=True,
+            )
             return False
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:

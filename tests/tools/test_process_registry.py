@@ -903,6 +903,26 @@ class TestCheckpoint:
             data = json.loads(checkpoint.read_text())
             assert data == []
 
+    def test_checkpoint_redacts_command_with_inline_secret(self, registry, tmp_path):
+        """Issue #77484: the checkpoint file persists raw commands; inline
+        credentials (e.g. ``curl -H 'Authorization: Bearer sk-...'``) must be
+        redacted before write. Recovery only uses command for display/logging
+        (the process is already running), so masking is lossless."""
+        checkpoint = tmp_path / "procs.json"
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            secret = "sk-secret1234567890"
+            command = f"curl -H 'Authorization: Bearer {secret}' http://x"
+            s = _make_session(sid="proc_secret", command=command)
+            s.pid = 12345
+            s.host_start_time = int(time.time())
+            registry._running[s.id] = s
+            registry._write_checkpoint()
+
+            data = json.loads(checkpoint.read_text())
+            assert data[0]["session_id"] == "proc_secret"
+            assert secret not in data[0]["command"]
+            assert data[0]["command"] != command
+
 # =========================================================================
 # Kill process
 # =========================================================================

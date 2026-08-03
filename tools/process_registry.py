@@ -49,6 +49,8 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 
+from agent.redact import redact_sensitive_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -2067,7 +2069,14 @@ class ProcessRegistry:
                             s.host_start_time = self._safe_host_start_time(s.pid)
                         entries.append({
                             "session_id": s.id,
-                            "command": s.command,
+                            # Redact inline credentials before persisting to
+                            # disk — the checkpoint file lives under
+                            # ~/.hermes/processes.json with the raw command
+                            # (issue #77484). Recovery only uses command for
+                            # display/logging (the process is already running;
+                            # adoption re-validates the PID, never re-runs the
+                            # command), so masking is lossless.
+                            "command": redact_sensitive_text(s.command, code_file=True),
                             "pid": s.pid,
                             "pid_scope": s.pid_scope,
                             "host_start_time": s.host_start_time,

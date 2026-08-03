@@ -313,6 +313,56 @@ class TestVerifierEnabled:
         agent = _bare_agent()
         assert agent._file_mutation_verifier_enabled() is False
 
+    def test_config_read_once_then_cached(self, monkeypatch):
+        """Measured-work pin: the config lookup happens once per agent.
+
+        The footer gate runs at the end of every turn, so a fresh
+        ``load_config()`` per call is wasted work (~1 ms deepcopy per turn,
+        see #74211 for the sibling per-turn-config kill).  The config read
+        must be cached after the first call; the env-var override must still
+        win on every call, cached or not.
+        """
+        monkeypatch.delenv("HERMES_FILE_MUTATION_VERIFIER", raising=False)
+        agent = _bare_agent()
+        calls = {"n": 0}
+
+        import hermes_cli.config as _cfg_mod
+
+        def counting_load():
+            calls["n"] += 1
+            return {"display": {"file_mutation_verifier": True}}
+
+        monkeypatch.setattr(_cfg_mod, "load_config", counting_load)
+
+        # First call reads config and caches the result.
+        assert agent._file_mutation_verifier_enabled() is True
+        assert calls["n"] == 1
+        # Subsequent calls must not re-read config.
+        assert agent._file_mutation_verifier_enabled() is True
+        assert agent._file_mutation_verifier_enabled() is True
+        assert calls["n"] == 1
+        # Env override stays authoritative even after the cache is warm.
+        monkeypatch.setenv("HERMES_FILE_MUTATION_VERIFIER", "0")
+        assert agent._file_mutation_verifier_enabled() is False
+        assert calls["n"] == 1  # env path never touches config
+
+    def test_cache_respects_config_value(self, monkeypatch):
+        """A disabled config value is cached as False, not re-read."""
+        monkeypatch.delenv("HERMES_FILE_MUTATION_VERIFIER", raising=False)
+        agent = _bare_agent()
+
+        import hermes_cli.config as _cfg_mod
+        monkeypatch.setattr(
+            _cfg_mod, "load_config", lambda: {"display": {"file_mutation_verifier": False}}
+        )
+        assert agent._file_mutation_verifier_enabled() is False
+        # Warm cache: flip the underlying config; the agent still reports the
+        # cached value (same next-session semantics as _credits_notices_enabled).
+        monkeypatch.setattr(
+            _cfg_mod, "load_config", lambda: {"display": {"file_mutation_verifier": True}}
+        )
+        assert agent._file_mutation_verifier_enabled() is False
+
 
 
 

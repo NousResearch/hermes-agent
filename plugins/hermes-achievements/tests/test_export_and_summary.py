@@ -168,7 +168,7 @@ class AgentSummaryFileTests(unittest.TestCase):
                 plugin_api._write_agent_summary(sample_data())
                 path = Path(tmp) / "plugins" / "hermes-achievements" / "agent_summary.json"
                 self.assertTrue(path.exists())
-                payload = json.loads(path.read_text())
+                payload = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(payload["top_tier"], "Gold")
                 self.assertEqual(payload["unlocked_ids"], ["red_text", "night_owl"])
             finally:

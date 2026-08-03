@@ -1519,6 +1519,14 @@ DEFAULT_CONFIG = {
         # "STT transcribed the wrong language". Set to "" to restore
         # auto-detect, or to your language code ("es", "zh", "uk", ...).
         "language": "en",
+        # Pre-upload silence trim for cloud providers (groq/openai/mistral/
+        # xai/elevenlabs/deepinfra). Local whisper gets Silero VAD; cloud
+        # endpoints otherwise receive raw audio — silence inflates upload
+        # time, per-audio-minute billing, and hallucination risk. Collapses
+        # pauses with ffmpeg client-side; any failure uploads the original.
+        "cloud_trim_silence": True,
+        "cloud_trim_threshold_db": -40,  # audio quieter than this counts as silence
+        "cloud_trim_keep_ms": 300,  # how much of each pause survives (keeps natural pacing)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force

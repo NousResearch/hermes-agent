@@ -2347,6 +2347,160 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Cloud pre-upload silence trim
+# ---------------------------------------------------------------------------
+#
+# Local faster-whisper gets Silero VAD (build_local_transcribe_kwargs) so
+# silence never reaches the model. Cloud providers get no such protection:
+# the raw file is uploaded, so every second of silence is paid for twice —
+# once in upload time and once in per-audio-minute billing — and cloud
+# Whisper hallucinates junk tokens on silent stretches exactly like local
+# Whisper did before the VAD hardening.
+#
+# Before uploading to a built-in cloud provider we collapse long pauses with
+# ffmpeg's silenceremove filter, keeping ``stt.cloud_trim_keep_ms`` of every
+# pause so word boundaries and natural pacing survive. The trim is purely
+# best-effort — ANY of these falls back to uploading the original untouched:
+#   - ``stt.cloud_trim_silence: false``
+#   - ffmpeg or ffprobe not installed
+#   - the trim command fails or times out
+#   - the trimmed result is suspiciously empty (mostly-silence clip — the
+#     provider, not a client-side heuristic, decides whether it has speech)
+#   - the trim saves less than ~10% (re-encoding for nothing)
+#
+# Command-type and plugin providers are deliberately NOT trimmed: they may
+# wrap local CLIs that want the original bytes (and may run their own VAD).
+
+_CLOUD_TRIM_THRESHOLD_DB_DEFAULT = -40  # audio below this level counts as silence
+_CLOUD_TRIM_KEEP_MS_DEFAULT = 300  # how much of each pause survives the trim
+_CLOUD_TRIM_MIN_SAVING = 0.10  # use the trimmed file only when >=10% shorter
+_CLOUD_TRIM_MIN_RESULT_SECONDS = 0.3  # all-silence guard: never upload ~empty audio
+
+# Built-in providers that upload audio to a remote API.
+CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - {"local", "local_command"})
+
+
+def _find_ffprobe_binary() -> Optional[str]:
+    return _find_binary("ffprobe")
+
+
+def _probe_audio_duration(file_path: str) -> Optional[float]:
+    """Return the audio duration in seconds via ffprobe, or None."""
+    ffprobe = _find_ffprobe_binary()
+    if not ffprobe:
+        return None
+    command = [
+        ffprobe, "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        file_path,
+    ]
+    try:
+        result = subprocess.run(
+            command, check=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
+            stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
+        )
+        return float(result.stdout.strip())
+    except Exception:  # noqa: BLE001 - probe is best-effort
+        return None
+
+
+def _cloud_trim_settings(stt_config: Dict[str, Any]) -> tuple[bool, int, int]:
+    """Resolve (enabled, threshold_db, keep_ms) for the cloud silence trim."""
+    cfg = stt_config if isinstance(stt_config, dict) else {}
+    enabled = cfg.get("cloud_trim_silence", True)
+    if enabled is None:
+        enabled = True
+    try:
+        threshold_db = int(cfg.get("cloud_trim_threshold_db", _CLOUD_TRIM_THRESHOLD_DB_DEFAULT))
+    except (TypeError, ValueError):
+        threshold_db = _CLOUD_TRIM_THRESHOLD_DB_DEFAULT
+    try:
+        keep_ms = int(cfg.get("cloud_trim_keep_ms", _CLOUD_TRIM_KEEP_MS_DEFAULT))
+    except (TypeError, ValueError):
+        keep_ms = _CLOUD_TRIM_KEEP_MS_DEFAULT
+    return bool(enabled), threshold_db, max(keep_ms, 0)
+
+
+def _trim_silence_for_cloud_stt(
+    file_path: str, stt_config: Dict[str, Any]
+) -> Optional[str]:
+    """Return a silence-trimmed copy of *file_path* for cloud upload, or None.
+
+    ``None`` always means "upload the original file": the trim is disabled,
+    the tools are missing, the trim failed, the clip is mostly silence, or
+    trimming would not save enough to justify the re-encode. On success the
+    caller owns deleting the returned file's parent directory.
+    """
+    enabled, threshold_db, keep_ms = _cloud_trim_settings(stt_config)
+    if not enabled:
+        return None
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        logger.debug("Cloud STT silence trim skipped: ffmpeg not found")
+        return None
+    original_duration = _probe_audio_duration(file_path)
+    if not original_duration or original_duration <= 0:
+        logger.debug("Cloud STT silence trim skipped: could not probe %s", file_path)
+        return None
+
+    keep_seconds = keep_ms / 1000.0
+    # start_periods=1 strips leading silence; stop_periods=-1 collapses every
+    # interior/trailing silence, keeping ``keep_seconds`` of each pause.
+    filter_expr = (
+        f"silenceremove="
+        f"start_periods=1:start_threshold={threshold_db}dB:start_silence={keep_seconds}:"
+        f"stop_periods=-1:stop_threshold={threshold_db}dB:stop_silence={keep_seconds}"
+    )
+    work_dir = tempfile.mkdtemp(prefix="hermes-stt-trim-")
+    trimmed_path = os.path.join(work_dir, f"{Path(file_path).stem or 'audio'}-trimmed.m4a")
+    command = [
+        ffmpeg, "-y", "-i", file_path,
+        "-vn", "-af", filter_expr,
+        "-ac", "1", "-ar", "16000",
+        "-c:a", "aac", "-b:a", "32k", "-movflags", "+faststart",
+        trimmed_path,
+    ]
+    keep_result = False
+    try:
+        subprocess.run(
+            command, check=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=120,
+            stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
+        )
+        trimmed_duration = _probe_audio_duration(trimmed_path)
+        if not trimmed_duration or trimmed_duration < _CLOUD_TRIM_MIN_RESULT_SECONDS:
+            # Mostly/all silence. Deciding "no speech" belongs to the
+            # provider, not a client-side dB heuristic — upload the original.
+            logger.debug(
+                "Cloud STT silence trim discarded for %s: trimmed result ~empty (%.2fs)",
+                Path(file_path).name, trimmed_duration or 0.0,
+            )
+            return None
+        if trimmed_duration > original_duration * (1 - _CLOUD_TRIM_MIN_SAVING):
+            logger.debug(
+                "Cloud STT silence trim discarded for %s: saves <%.0f%% (%.1fs -> %.1fs)",
+                Path(file_path).name, _CLOUD_TRIM_MIN_SAVING * 100,
+                original_duration, trimmed_duration,
+            )
+            return None
+        logger.info(
+            "Trimmed silence from %s before cloud STT upload (%.1fs -> %.1fs, -%d%%)",
+            Path(file_path).name, original_duration, trimmed_duration,
+            round((1 - trimmed_duration / original_duration) * 100),
+        )
+        keep_result = True
+        return trimmed_path
+    except Exception as exc:  # noqa: BLE001 - trim is best-effort
+        logger.debug("Cloud STT silence trim failed for %s: %s", file_path, exc)
+        return None
+    finally:
+        if not keep_result:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -2410,6 +2564,31 @@ def _transcribe_prepared_audio(file_path: str, model: Optional[str] = None) -> D
             return {"success": False, "transcript": "",
                     "error": "CAF audio could not be converted to WAV."}
 
+    # Pre-upload silence trim for built-in cloud providers: local whisper gets
+    # Silero VAD, cloud endpoints get the raw file — collapse long pauses
+    # client-side so silence isn't uploaded, billed, or hallucinated on.
+    # Best-effort: any failure uploads the original untouched.
+    trim_cleanup_dir: Optional[str] = None
+    if provider in CLOUD_STT_PROVIDERS:
+        trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)
+        if trimmed:
+            file_path = trimmed
+            trim_cleanup_dir = os.path.dirname(trimmed)
+
+    try:
+        return _dispatch_stt_provider(file_path, provider, stt_config, model)
+    finally:
+        if trim_cleanup_dir:
+            shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
+
+
+def _dispatch_stt_provider(
+    file_path: str,
+    provider: str,
+    stt_config: Dict[str, Any],
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
     if provider == "local":
         local_cfg = stt_config.get("local") or {}
         model_name = _normalize_local_model(

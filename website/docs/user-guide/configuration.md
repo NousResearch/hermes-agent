@@ -1861,6 +1861,9 @@ stt:
   echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
   language: "en"               # GLOBAL language hint for every provider (per-provider language wins); set "" for auto-detect
+  cloud_trim_silence: true     # trim long pauses with ffmpeg before uploading to a cloud provider (default: true)
+  cloud_trim_threshold_db: -40 # audio quieter than this counts as silence
+  cloud_trim_keep_ms: 300      # how much of each pause survives the trim (keeps natural pacing)
   local:
     model: "base"              # tiny, base, small, medium, large-v3
     language: ""               # per-provider override of stt.language
@@ -1886,6 +1889,8 @@ Provider behavior:
 - `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`. Silence-hallucination hardening is on by default: a Silero VAD filter keeps silence/noise from ever reaching Whisper, cross-window conditioning is disabled, and segments the model itself flags as probably-not-speech *and* low-confidence are dropped. Set `stt.local.vad: false` to transcribe non-speech audio (music, ambient) with the raw behavior.
 - `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`. Pass `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip auto-detection and reduce latency.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
+
+Cloud providers (groq, openai, mistral, xai, elevenlabs, deepinfra) get a **pre-upload silence trim** by default when `ffmpeg` is installed: long pauses in a voice note are collapsed client-side before the file uploads, keeping `cloud_trim_keep_ms` of each pause so natural pacing survives. Shorter audio means faster uploads, lower per-audio-minute billing, and fewer silence hallucinations from the remote model. The trim is best-effort — if ffmpeg is missing, the trim fails, the clip is mostly silence, or trimming would save less than ~10%, the original file is uploaded untouched. Set `stt.cloud_trim_silence: false` to always upload the original (e.g. when transcribing music or ambient audio through a cloud provider). Command-type and plugin providers never get trimmed audio.
 
 If the requested provider is unavailable, Hermes falls back automatically in this order: `local` → `groq` → `openai`.
 

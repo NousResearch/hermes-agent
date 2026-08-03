@@ -52,31 +52,22 @@ logger = logging.getLogger(__name__)
 _MAX_AUTH_REFRESH_ATTEMPTS = 2
 
 
-_REASONING_BLOCK_PATTERNS = (
-    re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE),
-    re.compile(r'<thinking>.*?</thinking>', re.DOTALL | re.IGNORECASE),
-    re.compile(r'<reasoning>.*?</reasoning>', re.DOTALL | re.IGNORECASE),
-    re.compile(
-        r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>',
-        re.DOTALL | re.IGNORECASE,
-    ),
-    re.compile(r'<thought>.*?</thought>', re.DOTALL | re.IGNORECASE),
+_REASONING_TAG_NAMES = ("think", "thinking", "reasoning", "REASONING_SCRATCHPAD", "thought")
+_TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
+
+_REASONING_BLOCK_PATTERNS = tuple(
+    re.compile(rf"<{name}>.*?</{name}>", re.DOTALL | re.IGNORECASE)
+    for name in _REASONING_TAG_NAMES
 )
 
-_TOOL_CALL_BLOCK_PATTERNS = (
-    re.compile(r'<tool_call\b[^>]*>.*?</tool_call>', re.DOTALL | re.IGNORECASE),
-    re.compile(r'<tool_calls\b[^>]*>.*?</tool_calls>', re.DOTALL | re.IGNORECASE),
-    re.compile(r'<tool_result\b[^>]*>.*?</tool_result>', re.DOTALL | re.IGNORECASE),
-    re.compile(
-        r'<function_call\b[^>]*>.*?</function_call>',
-        re.DOTALL | re.IGNORECASE,
-    ),
-    re.compile(
-        r'<function_calls\b[^>]*>.*?</function_calls>',
-        re.DOTALL | re.IGNORECASE,
-    ),
+_TOOL_CALL_BLOCK_PATTERNS = tuple(
+    re.compile(rf"<{name}\b[^>]*>.*?</{name}>", re.DOTALL | re.IGNORECASE)
+    for name in _TOOL_CALL_TAG_NAMES
 )
 
+# Named <function name=...> blocks — see strip_think_blocks step 1c for the
+# full rationale (sentence-boundary lookbehind + tempered-dot body so a plain
+# prose mention of "function" is never eaten).
 _NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
     r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
     r'<function\b[^>]*\bname\s*=[^>]*>'
@@ -85,17 +76,17 @@ _NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
 )
 
 _UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
-    r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$',
+    rf'(?:^|\n)[ \t]*<(?:{"|".join(_REASONING_TAG_NAMES)})\b[^>]*>.*$',
     re.DOTALL | re.IGNORECASE,
 )
 
 _ORPHAN_REASONING_TAG_PATTERN = re.compile(
-    r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
+    rf'</?(?:{"|".join(_REASONING_TAG_NAMES)})>\s*',
     re.IGNORECASE,
 )
 
 _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
-    r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
+    rf'</(?:{"|".join(_TOOL_CALL_TAG_NAMES)}|function)>\s*',
     re.IGNORECASE,
 )
 

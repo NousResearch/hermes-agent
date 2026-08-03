@@ -25,10 +25,10 @@ import tools.terminal_tool as terminal_tool
 
 
 @pytest.fixture
-def _isolated_cwd(safe_tmp_path, monkeypatch):
+def _isolated_cwd(tmp_path, monkeypatch):
     """Two checkouts: workspace (intended) + decoy (process cwd)."""
-    workspace = safe_tmp_path / "workspace"
-    decoy = safe_tmp_path / "decoy"
+    workspace = tmp_path / "workspace"
+    decoy = tmp_path / "decoy"
     workspace.mkdir()
     decoy.mkdir()
     (workspace / "target.py").write_text("WORKSPACE_ORIGINAL\n")

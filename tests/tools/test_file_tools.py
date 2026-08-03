@@ -439,8 +439,8 @@ class TestSearchHints:
 class TestSensitivePathCheck:
     """Verify that _check_sensitive_path blocks writes to protected locations."""
 
-    def test_hermes_config_blocked_for_write_file(self, safe_tmp_path, monkeypatch):
-        fake_config = safe_tmp_path / "config.yaml"
+    def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
+        fake_config = tmp_path / "config.yaml"
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
 
@@ -449,8 +449,8 @@ class TestSensitivePathCheck:
         assert "error" in result
         assert "Hermes config" in result["error"]
 
-    def test_hermes_config_blocked_via_tilde_path(self, safe_tmp_path, monkeypatch):
-        fake_config = safe_tmp_path / "config.yaml"
+    def test_hermes_config_blocked_via_tilde_path(self, tmp_path, monkeypatch):
+        fake_config = tmp_path / "config.yaml"
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
 
@@ -640,12 +640,12 @@ class TestSilentFileMisplacementE2E:
     makes the resolved path correct.
     """
 
-    def test_relative_write_after_env_cleanup_lands_in_user_cwd(self, safe_tmp_path, monkeypatch):
+    def test_relative_write_after_env_cleanup_lands_in_user_cwd(self, tmp_path, monkeypatch):
         import tools.terminal_tool as tt
         import tools.file_tools as ft
 
-        project = safe_tmp_path / "project"
-        config_default = safe_tmp_path / "config_default"
+        project = tmp_path / "project"
+        config_default = tmp_path / "config_default"
         project.mkdir()
         config_default.mkdir()
         monkeypatch.delenv("TERMINAL_CWD", raising=False)

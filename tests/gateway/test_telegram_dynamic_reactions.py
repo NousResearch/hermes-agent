@@ -1,9 +1,12 @@
 """Focused tests for Telegram dynamic processing-state reactions."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+
+from gateway.platforms.base import ProcessingOutcome
 
 
 @pytest.mark.asyncio
@@ -83,6 +86,42 @@ async def test_processing_activity_deduplicates_concurrent_same_reaction(monkeyp
     )
 
     adapter._bot.set_message_reaction.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (ProcessingOutcome.SUCCESS, "👍"),
+        (ProcessingOutcome.FAILURE, "👎"),
+    ],
+)
+async def test_processing_complete_forgets_terminal_reaction_state(
+    monkeypatch, outcome, expected
+):
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = object.__new__(TelegramAdapter)
+    adapter._bot = AsyncMock()
+    adapter._bot.set_message_reaction = AsyncMock()
+
+    from gateway.session import SessionSource
+
+    source = SessionSource(
+        platform="telegram", chat_id="123", chat_type="private", user_id="42"
+    )
+    event = SimpleNamespace(source=source, message_id="456")
+
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, outcome)
+
+    assert adapter._processing_reactions == {}
+    assert adapter._bot.set_message_reaction.await_args_list[-1].kwargs == {
+        "chat_id": 123,
+        "message_id": 456,
+        "reaction": expected,
+    }
 
 
 @pytest.mark.asyncio

@@ -9794,28 +9794,41 @@ class TelegramAdapter(BasePlatformAdapter):
             lock = self._processing_reactions_lock = asyncio.Lock()
         return lock
 
-    async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+    async def _set_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str,
+        *,
+        retain_state: bool = True,
+    ) -> bool:
         """Set one reaction, skipping duplicate state updates."""
-        if not self._bot:
-            return False
         key = (str(chat_id), str(message_id))
         async with self._reaction_update_lock():
             states = getattr(self, "_processing_reactions", None)
             if states is None:
                 states = self._processing_reactions = {}
             if states.get(key) == emoji:
+                if not retain_state:
+                    states.pop(key, None)
                 return True
             try:
+                if not self._bot:
+                    return False
                 await self._bot.set_message_reaction(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     reaction=emoji,
                 )
-                states[key] = emoji
+                if retain_state:
+                    states[key] = emoji
                 return True
             except Exception as e:
                 logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, _redact_telegram_error_text(e))
                 return False
+            finally:
+                if not retain_state:
+                    states.pop(key, None)
 
     async def _clear_reactions(self, chat_id: str, message_id: str) -> bool:
         """Clear all reactions from a Telegram message.
@@ -9825,22 +9838,24 @@ class TelegramAdapter(BasePlatformAdapter):
         reactions on a message — equivalent to Bot API 10.0's
         ``deleteMessageReaction`` but supported in PTB 22.6 already.
         """
-        if not self._bot:
-            return False
+        key = (str(chat_id), str(message_id))
         async with self._reaction_update_lock():
             try:
+                if not self._bot:
+                    return False
                 await self._bot.set_message_reaction(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     reaction=None,
                 )
-                states = getattr(self, "_processing_reactions", None)
-                if states is not None:
-                    states.pop((str(chat_id), str(message_id)), None)
                 return True
             except Exception as e:
                 logger.debug("[%s] clear reactions failed: %s", self.name, _redact_telegram_error_text(e))
                 return False
+            finally:
+                states = getattr(self, "_processing_reactions", None)
+                if states is not None:
+                    states.pop(key, None)
 
     async def on_processing_activity(
         self,
@@ -9906,6 +9921,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id,
                 message_id,
                 "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+                retain_state=False,
             )
 
 

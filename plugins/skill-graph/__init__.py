@@ -924,8 +924,9 @@ def _build_skill_candidates_context(user_message: str) -> str | None:
         + "\n".join(lines)
     )
     logger.info(
-        "skill-graph: injected %d skill candidates (from %d intents)",
+        "skill-graph: injected %d skill candidates (from %d intents): %s",
         len(candidates), len(intents),
+        ", ".join(c["name"] for c in candidates),
     )
     return block
 
@@ -3186,16 +3187,23 @@ def register(ctx):
             task_id: str | None = None,
             preprocess: bool = True,
         ) -> str:
+            logger.debug("skill-graph: _patched_skill_view called for '%s' (file_path=%s)", name, file_path)
             result = _orig_skill_view(
                 name, file_path=file_path,
                 task_id=task_id, preprocess=preprocess,
             )
             data = json.loads(result)
             if data.get("success") or file_path:
+                logger.debug("skill-graph: skill_view '%s' resolved by original (success=%s)", name, data.get("success"))
                 return result
+            logger.info("skill-graph: skill_view '%s' not found by original, falling back to graph", name)
             sg = _handle_skill_load({"name": name})
             sg_data = json.loads(sg)
-            return sg if sg_data.get("success") else result
+            if sg_data.get("success"):
+                logger.info("skill-graph: skill_view '%s' resolved by graph fallback", name)
+                return sg
+            logger.debug("skill-graph: skill_view '%s' not found in graph either", name)
+            return result
 
         _st.skill_view = _patched_skill_view
         logger.info("skill-graph: patched skill_view with graph fallback")
@@ -3219,8 +3227,10 @@ def register(ctx):
         _orig_find_skill = _smt._find_skill
 
         def _patched_find_skill(name: str):
+            logger.debug("skill-graph: _patched_find_skill called for '%s'", name)
             result = _orig_find_skill(name)
             if result is not None:
+                logger.debug("skill-graph: _find_skill '%s' resolved by original", name)
                 return result
             # Graph fallback: resolve physical path from the graph's index
             graph_path = _find_skill_path(name)
@@ -3230,6 +3240,7 @@ def register(ctx):
                     name, graph_path,
                 )
                 return {"path": graph_path.parent}
+            logger.debug("skill-graph: _find_skill '%s' not found in original or graph", name)
             return None
 
         _smt._find_skill = _patched_find_skill

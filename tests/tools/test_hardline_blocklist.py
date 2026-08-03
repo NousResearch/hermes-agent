@@ -748,6 +748,36 @@ _ABS_PATH_ALLOW = [
     "env --chdir /tmp/reboot /bin/echo ok",
     "env --chdir /tmp/reboot echo ok",
     "env --argv0 /tmp/reboot /bin/echo ok",
+    "env -C /sbin/reboot /bin/echo ok",
+    # sudo option operands are data; only the command after them executes.
+    "sudo -D /sbin/reboot /bin/echo ok",
+    "sudo -D/sbin/reboot /bin/echo ok",
+    "sudo --chdir /sbin/reboot /bin/echo ok",
+    "sudo --chroot=/sbin/reboot /bin/echo ok",
+    # Exact `-h` only consumes a following non-option, non-assignment host.
+    # With an option-looking/assignment next word it selects help mode, so no
+    # later executable runs even when an option operand resembles one.
+    "sudo -h -D /sbin/reboot /bin/echo ok",
+    "sudo -h --chdir /sbin/reboot /bin/echo ok",
+    "sudo -h -D/sbin/reboot /bin/echo ok",
+    "sudo -h VAR=x /sbin/reboot",
+    "sudo -h 1VAR=x /sbin/reboot",
+    "sudo -h -- /sbin/reboot",
+    "sudo -nh host /sbin/reboot",
+    # sudo only treats an equals-bearing word as environment data when its
+    # first byte is neither '/' nor '='; these are command words instead.
+    "sudo /tmp=x /sbin/reboot",
+    "sudo =x /sbin/reboot",
+    "sudo -- 1VAR=x /sbin/reboot",
+    # Shell assignment syntax does not restart after an ordinary wrapper.
+    "exec VAR=x /sbin/reboot",
+    "nohup VAR=x /sbin/reboot",
+    # GNU env stops option parsing at the first NAME=VALUE operand. Later
+    # option-shaped words are a command (or another assignment), not options.
+    "env 1VAR=x -S /sbin/reboot",
+    "env 1VAR=x --split-string /sbin/reboot",
+    "env 1VAR=x --split-string=/sbin/reboot",
+    "/usr/bin/env 1VAR=x -S /sbin/reboot",
     # `}` is not a shell metacharacter: it can end a legitimate word
     "/tmp/reboot}",
 ]
@@ -772,6 +802,75 @@ def test_abs_path_hardline_not_bypassed_by_yolo(clean_session, monkeypatch):
     result = check_all_command_guards("/sbin/shutdown -h now", "local")
     assert result["approved"] is False
     assert result.get("hardline") is True
+
+
+_EXECUTABLE_WRAPPER_OPERAND_BLOCK = [
+    # GNU env -S parses its operand into the command it executes. Until that
+    # separate grammar is modeled, every split-string spelling must fail safe.
+    "env -S /sbin/reboot",
+    "env -S/sbin/reboot",
+    "env -vS'/sbin/reboot -h now'",
+    "env --split-string /sbin/reboot",
+    "env --split-string=/sbin/reboot",
+    "env --sp=/sbin/reboot",
+    # sudo options below consume data before the command word. Short clusters,
+    # attached operands, and unique long-option abbreviations use sudo's real
+    # getopt grammar and must still expose the executable that follows.
+    "sudo -D /tmp /sbin/reboot",
+    "sudo -nD /tmp /sbin/reboot",
+    "sudo -ED /tmp /sbin/reboot",
+    "sudo -D/tmp /sbin/reboot",
+    "sudo --chdir /tmp /sbin/reboot",
+    "sudo --chd /tmp /sbin/reboot",
+    "sudo -R /tmp /sbin/reboot",
+    "sudo -r staff_r /sbin/reboot",
+    "sudo -T 5 /sbin/reboot",
+    "sudo -t staff_t /sbin/reboot",
+    # sudo's historical separated host form applies only to an exact `-h`.
+    # Attached hosts and a following ordinary host still leave a real command.
+    "sudo -h host /sbin/reboot",
+    "sudo -hhost /sbin/reboot",
+    "sudo -h-D /sbin/reboot",
+    "sudo -hD /sbin/reboot",
+    "sudo -h /tmp=x /sbin/reboot",
+    "sudo -h =x /sbin/reboot",
+    # Wrapper-owned assignments are not limited to shell identifiers. sudo's
+    # `is_envar` and GNU env both consume digit/dash-leading NAME=VALUE words
+    # before resuming option/command parsing. Cover bare and path spellings so
+    # both command-position walkers share the same state transition.
+    "sudo 1VAR=x -D /tmp /sbin/reboot",
+    "sudo name-with-dash=x -D /tmp /sbin/reboot",
+    "/usr/bin/sudo 1VAR=x -D /tmp /sbin/reboot",
+    "env 1VAR=x /sbin/reboot",
+    "env name-with-dash=x /sbin/reboot",
+    "env -- 1VAR=x /sbin/reboot",
+    "/usr/bin/env 1VAR=x /sbin/reboot",
+    # Uppercase -A is a flag, not lowercase -a with an operand.
+    "sudo -A /sbin/reboot",
+    # Ambiguous and unknown long options cannot place the command word safely.
+    "sudo --ch /tmp /sbin/reboot",
+    "sudo --not-a-sudo-option /sbin/reboot",
+]
+
+
+@pytest.mark.parametrize("command", _EXECUTABLE_WRAPPER_OPERAND_BLOCK)
+def test_executable_wrapper_operand_is_hardline_blocked(command):
+    is_hl, desc = detect_hardline_command(command)
+
+    assert is_hl, f"wrapper operand bypassed the floor: {command!r}"
+    assert desc, "hardline match must provide a description"
+
+
+@pytest.mark.parametrize("command", _EXECUTABLE_WRAPPER_OPERAND_BLOCK)
+def test_executable_wrapper_operand_not_bypassed_by_yolo(
+    clean_session, command
+):
+    enable_session_yolo("hardline_test")
+
+    result = check_all_command_guards(command, "local")
+
+    assert result["approved"] is False, command
+    assert result.get("hardline") is True, command
 
 
 @pytest.mark.parametrize(

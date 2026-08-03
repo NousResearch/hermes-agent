@@ -1057,26 +1057,36 @@ _COMMAND_WRAPPER_WORDS = {
     "nice",
     "stdbuf",
 }
-_SUDO_OPTIONS_WITH_ARG = {
-    "-c", "--close-from",
-    "-g", "--group",
-    "-h", "--host",
-    "-p", "--prompt",
-    "-u", "--user",
-}
-# GNU env options whose value arrives as the NEXT word. Their operand is
-# data (`env --chdir /tmp/reboot /bin/echo` never executes reboot), so the
-# projection walker must not treat it as the command word. `=`-attached
-# forms are already handled by the generic option check. `-S/--split-string`
-# is listed here only for the walker's word skipping — its payload is
-# executable-bearing, but parsing it is a separate fail-closed change
-# (same verdict as the design review); skipping keeps parity with main.
-_ENV_OPTIONS_WITH_ARG = {
-    "-a", "--argv0",
-    "-c", "--chdir",
-    "-s", "--split-string",
-    "-u", "--unset",
-}
+# sudo uses getopt_long and its short options are case-sensitive. Keep the
+# complete option namespace here so unique long abbreviations can be resolved
+# exactly as sudo resolves them. Unknown or ambiguous spellings fail closed.
+_SUDO_LONG_OPTIONS_WITH_ARG = frozenset({
+    "auth-type", "close-from", "login-class", "chdir", "group", "host",
+    "prompt", "chroot", "role", "command-timeout", "type", "other-user",
+    "user",
+})
+_SUDO_LONG_OPTIONS = _SUDO_LONG_OPTIONS_WITH_ARG | frozenset({
+    "background", "preserve-env", "edit", "set-home", "login",
+    "remove-timestamp", "list", "preserve-groups", "shell", "validate",
+    "askpass", "bell", "help", "reset-timestamp", "no-update",
+    "non-interactive", "stdin", "version",
+})
+_SUDO_SHORT_FLAGS = frozenset("ABbEeHiKklNnPSsVv")
+_SUDO_SHORT_OPTIONS_WITH_ARG = frozenset("aCcDgpRrTtUu")
+
+# GNU env has its own case-sensitive getopt grammar. Split-string is not a
+# data operand: env parses it into the argv it executes. Its quoting,
+# expansion, escaping, and comment rules differ from shell parsing, so the
+# safe bounded behavior is to mark every recognized -S/--split-string form
+# unresolved instead of attempting a partial parser here.
+_ENV_LONG_OPTIONS_WITH_ARG = frozenset({"argv0", "unset", "chdir"})
+_ENV_LONG_OPTIONS = _ENV_LONG_OPTIONS_WITH_ARG | frozenset({
+    "null", "ignore-environment", "default-signal", "ignore-signal",
+    "block-signal", "list-signal-handling", "debug", "split-string",
+    "help", "version",
+})
+_ENV_SHORT_FLAGS = frozenset("0iv")
+_ENV_SHORT_OPTIONS_WITH_ARG = frozenset("aCu")
 
 # `command` takes options of its own before the executable, and none of them
 # take a separate operand: `command -p /sbin/reboot` and `command -- ...`
@@ -1204,20 +1214,100 @@ def _short_wrapper_option_action(
     return ("skip", False)
 
 
+def _resolve_unique_long_option(
+    word: str, options: frozenset[str]
+) -> str | None:
+    """Resolve an exact or unambiguous getopt_long option name."""
+    option_name = word[2:].split("=", 1)[0]
+    if not option_name:
+        return None
+    if option_name in options:
+        return option_name
+    matches = [option for option in options if option.startswith(option_name)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _sudo_option_action(word: str) -> tuple[str, bool]:
+    """Classify one sudo option using sudo's case-sensitive getopt grammar."""
+    if word.startswith("--"):
+        option = _resolve_unique_long_option(word, _SUDO_LONG_OPTIONS)
+        if option is None:
+            return ("unresolved", False)
+        return (
+            "skip",
+            "=" not in word and option in _SUDO_LONG_OPTIONS_WITH_ARG,
+        )
+
+    cluster = word[1:]
+    if not cluster:
+        return ("unresolved", False)
+    for index, option in enumerate(cluster):
+        has_attached_operand = index < len(cluster) - 1
+        if option in _SUDO_SHORT_OPTIONS_WITH_ARG:
+            return ("skip", not has_attached_operand)
+        if option == "h":
+            if has_attached_operand:
+                return ("skip", False)
+            # Only an exact `-h` may consume the next ordinary word as sudo's
+            # historical remote-host operand. A bundled `-nh` selects help,
+            # and exact `-h` also selects help when the next word is another
+            # option or an environment assignment. The walkers perform that
+            # one-word lookahead before deciding whether execution continues.
+            return (
+                "sudo_host_or_help" if word == "-h" else "stop",
+                False,
+            )
+        if option not in _SUDO_SHORT_FLAGS:
+            return ("unresolved", False)
+    return ("skip", False)
+
+
+def _env_option_action(word: str) -> tuple[str, bool]:
+    """Classify one GNU env option without parsing executable -S payloads."""
+    if word == "-":
+        return ("skip", False)
+    if word.startswith("--"):
+        option = _resolve_unique_long_option(word, _ENV_LONG_OPTIONS)
+        if option is None or option == "split-string":
+            return ("unresolved", False)
+        return (
+            "skip",
+            "=" not in word and option in _ENV_LONG_OPTIONS_WITH_ARG,
+        )
+
+    cluster = word[1:]
+    if not cluster:
+        return ("unresolved", False)
+    for index, option in enumerate(cluster):
+        if option == "S":
+            return ("unresolved", False)
+        if option in _ENV_SHORT_OPTIONS_WITH_ARG:
+            return ("skip", index == len(cluster) - 1)
+        if option not in _ENV_SHORT_FLAGS:
+            return ("unresolved", False)
+    return ("skip", False)
+
+
 def _wrapper_option_action(wrapper: str, word: str) -> tuple[str | None, bool]:
     """Classify one option-shaped word for a pass-through wrapper.
 
     The action is ``skip`` for a recognized option, ``end`` for ``--``,
-    ``stop`` for command lookup-only modes, ``unresolved`` for an option the
-    wrapper's exhaustive grammar does not know (the walker cannot place the
-    program word and must fail safe), and ``None`` when the word is the
-    program name rather than an option. The boolean reports whether the next
-    word is the option's separate operand.
+    ``stop`` for non-executing modes, ``sudo_host_or_help`` when exact ``-h``
+    needs one-word lookahead, ``unresolved`` for an option the wrapper's
+    exhaustive grammar does not know (the walker cannot place the program word
+    and must fail safe), and ``None`` when the word is the program name rather
+    than an option. The boolean reports whether the next word is the option's
+    separate operand.
     """
+    if word == "--":
+        return ("end", False)
+    if wrapper == "sudo":
+        return _sudo_option_action(word)
+    if wrapper == "env":
+        return _env_option_action(word)
+
     lowered = word.lower()
     option_name = lowered.split("=", 1)[0]
-    if lowered == "--":
-        return ("end", False)
     if wrapper == "command" and _is_lookup_only_option(option_name):
         return ("stop", False)
     if wrapper == "nice" and re.fullmatch(r"-\d+", lowered):
@@ -1228,13 +1318,7 @@ def _wrapper_option_action(wrapper: str, word: str) -> tuple[str | None, bool]:
     if short_action is not None:
         return short_action
 
-    if wrapper == "sudo":
-        options = None
-        options_with_arg = _SUDO_OPTIONS_WITH_ARG
-    elif wrapper == "env":
-        options = None
-        options_with_arg = _ENV_OPTIONS_WITH_ARG
-    elif wrapper == "command":
+    if wrapper == "command":
         options = _COMMAND_OPTIONS
         options_with_arg = frozenset()
     elif wrapper == "exec":
@@ -1266,6 +1350,59 @@ def _wrapper_option_action(wrapper: str, word: str) -> tuple[str | None, bool]:
     return (
         "skip",
         "=" not in lowered and option_name in options_with_arg,
+    )
+
+
+def _wrapper_assignment_is_data(
+    wrapper: str, word: str, *, options_enabled: bool
+) -> bool:
+    """Return whether ``word`` is assignment data owned by ``wrapper``.
+
+    Shell assignment prefixes, sudo's interspersed environment entries, and
+    GNU env's NAME=VALUE operands have different grammars. Keep the wrapper
+    grammars here so both command-position walkers make the same transition.
+    """
+    if wrapper == "sudo":
+        # sudo parse_args.c:is_envar. `--` disables this interspersed form.
+        return (
+            options_enabled
+            and bool(word)
+            and word[0] not in {"/", "="}
+            and "=" in word
+        )
+    if wrapper == "env":
+        # GNU env consumes every equals-bearing operand before COMMAND, even
+        # after `--`; putenv itself decides whether the name is acceptable.
+        return "=" in word
+    return False
+
+
+def _wrapper_prefix_action(
+    wrapper: str, word: str, *, options_enabled: bool
+) -> tuple[str | None, bool, bool]:
+    """Classify one wrapper-prefix word at the shared state-machine choke point."""
+    # getopt owns option-shaped words before NAME=VALUE processing. This order
+    # is load-bearing for forms such as `env --split-string=PAYLOAD`.
+    if options_enabled and word.startswith("-"):
+        action, skip_next = _wrapper_option_action(wrapper, word)
+        return (action, skip_next, False if action == "end" else options_enabled)
+    if _wrapper_assignment_is_data(
+        wrapper, word, options_enabled=options_enabled
+    ):
+        # sudo resumes getopt after each interspersed assignment. GNU env's
+        # first NAME=VALUE permanently ends its option phase.
+        return ("skip", False, False if wrapper == "env" else options_enabled)
+    return (None, False, options_enabled)
+
+
+def _sudo_historical_host_follows(command: str, pos: int) -> bool:
+    """Return whether exact ``sudo -h`` consumes the next word as a host."""
+    word_start, word_end, word = _read_shell_word(command, pos)
+    if word_start == word_end:
+        return False
+    deobfuscated = _deobfuscate_shell_word_for_detection(word)
+    return not deobfuscated.startswith("-") and not _wrapper_assignment_is_data(
+        "sudo", deobfuscated, options_enabled=True
     )
 
 _INTERPRETER_EXEC_FLAGS = {
@@ -2137,9 +2274,15 @@ def _iter_shell_command_word_spans(command: str):
                 skip_next_wrapper_arg = False
                 pos = word_end
                 continue
-            if skip_wrapper_options and lower_word.startswith("-"):
-                action, skip_next_wrapper_arg = _wrapper_option_action(
-                    active_wrapper, lower_word
+            if active_wrapper:
+                (
+                    action,
+                    skip_next_wrapper_arg,
+                    skip_wrapper_options,
+                ) = _wrapper_prefix_action(
+                    active_wrapper,
+                    deobfuscated,
+                    options_enabled=skip_wrapper_options,
                 )
                 if action == "unresolved":
                     raise _UnresolvedCommandWalk(
@@ -2147,9 +2290,12 @@ def _iter_shell_command_word_spans(command: str):
                     )
                 if action == "stop":
                     break
+                if action == "sudo_host_or_help":
+                    if _sudo_historical_host_follows(command, word_end):
+                        skip_next_wrapper_arg = True
+                    else:
+                        break
                 if action is not None:
-                    if action == "end":
-                        skip_wrapper_options = False
                     pos = word_end
                     continue
             if skip_timeout_duration:
@@ -2166,7 +2312,7 @@ def _iter_shell_command_word_spans(command: str):
                 skip_timeout_duration = lower_word == "timeout"
                 pos = word_end
                 continue
-            if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
+            if not active_wrapper and _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
                 active_wrapper = ""
                 skip_wrapper_options = False
                 pos = word_end
@@ -2272,11 +2418,15 @@ def _project_path_spelled_executables(command: str) -> str | None:
                 skip_next_wrapper_arg = False
                 continue
             deobfuscated = _deobfuscate_shell_word_for_detection(word) or word
-            if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
-                continue  # VAR=value prefix: data, keep walking
-            if skip_wrapper_options and deobfuscated.startswith("-"):
-                action, skip_next_wrapper_arg = _wrapper_option_action(
-                    active_wrapper, deobfuscated
+            if active_wrapper:
+                (
+                    action,
+                    skip_next_wrapper_arg,
+                    skip_wrapper_options,
+                ) = _wrapper_prefix_action(
+                    active_wrapper,
+                    deobfuscated,
+                    options_enabled=skip_wrapper_options,
                 )
                 if action == "unresolved":
                     raise _UnresolvedCommandWalk(
@@ -2284,10 +2434,15 @@ def _project_path_spelled_executables(command: str) -> str | None:
                     )
                 if action == "stop":
                     break
+                if action == "sudo_host_or_help":
+                    if _sudo_historical_host_follows(command, pos):
+                        skip_next_wrapper_arg = True
+                    else:
+                        break
                 if action is not None:
-                    if action == "end":
-                        skip_wrapper_options = False
                     continue
+            if not active_wrapper and _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
+                continue  # shell VAR=value prefix: data, keep walking
             if skip_timeout_duration:
                 skip_timeout_duration = False
                 skip_wrapper_options = False

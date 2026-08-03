@@ -194,3 +194,101 @@ class TestHtmlDetection:
         assert _is_html("**bold** and *italic*") is False
         assert _is_html("# Heading\n\nParagraph") is False
         assert _is_html("Just plain text.") is False
+
+
+class TestStandaloneSendSMTPPort:
+    """_standalone_send must select SMTP_SSL for port 465 (implicit TLS)."""
+
+    def test_port_465_uses_smtp_ssl(self):
+        import asyncio
+        from types import SimpleNamespace
+        from plugins.platforms.email.adapter import _standalone_send
+        from unittest.mock import patch
+
+        captured = {}
+
+        class FakeSSL:
+            def __init__(self, *a, **k):
+                captured["cls"] = "SMTP_SSL"
+                captured["port"] = k.get("port") or (a[1] if len(a) > 1 else None)
+
+            def login(self, *a, **k):
+                return None
+
+            def send_message(self, msg):
+                return None
+
+            def quit(self):
+                return None
+
+        class FakeSMTP:
+            def __init__(self, *a, **k):
+                captured["cls"] = "SMTP"
+                captured["port"] = k.get("port") or (a[1] if len(a) > 1 else None)
+
+            def starttls(self, context=None):
+                return None
+
+            def login(self, *a, **k):
+                return None
+
+            def send_message(self, msg):
+                return None
+
+            def quit(self):
+                return None
+
+        import os
+        os.environ["EMAIL_ADDRESS"] = "a@b.ch"
+        os.environ["EMAIL_PASSWORD"] = "x"
+        os.environ["EMAIL_SMTP_HOST"] = "smtp.test.com"
+        os.environ["EMAIL_SMTP_PORT"] = "465"
+
+        pconfig = SimpleNamespace(token=None, api_key=None, extra={"address": "a@b.ch", "smtp_host": "smtp.test.com"})
+
+        with patch("smtplib.SMTP_SSL", FakeSSL), patch("smtplib.SMTP", FakeSMTP):
+            result = asyncio.run(_standalone_send(pconfig, "c@d.ch", "hello"))
+
+        assert captured.get("cls") == "SMTP_SSL", f"port 465 must use SMTP_SSL, got {captured.get('cls')}"
+        assert result.get("success") is True
+
+    def test_port_587_uses_starttls(self):
+        import asyncio
+        from types import SimpleNamespace
+        from plugins.platforms.email.adapter import _standalone_send
+        from unittest.mock import patch
+
+        captured = {}
+
+        class FakeSMTP:
+            def __init__(self, *a, **k):
+                captured["cls"] = "SMTP"
+                captured["starttls"] = False
+
+            def starttls(self, context=None):
+                captured["starttls"] = True
+                return None
+
+            def login(self, *a, **k):
+                return None
+
+            def send_message(self, msg):
+                return None
+
+            def quit(self):
+                return None
+
+        import os
+        os.environ["EMAIL_ADDRESS"] = "a@b.ch"
+        os.environ["EMAIL_PASSWORD"] = "x"
+        os.environ["EMAIL_SMTP_HOST"] = "smtp.test.com"
+        os.environ["EMAIL_SMTP_PORT"] = "587"
+
+        pconfig = SimpleNamespace(token=None, api_key=None, extra={"address": "a@b.ch", "smtp_host": "smtp.test.com"})
+
+        with patch("smtplib.SMTP", FakeSMTP):
+            result = asyncio.run(_standalone_send(pconfig, "c@d.ch", "hello"))
+
+        assert captured.get("cls") == "SMTP"
+        assert captured.get("starttls") is True
+        assert result.get("success") is True

@@ -23,6 +23,27 @@ _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 # Keys handled explicitly by _sanitize_messages; every OTHER key is swept generically.
 _MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role"})
 
+try:
+    from agent.tool_repair_stats import record_repair as _record_repair
+    from agent.tool_repair_stats import RepairPattern as _RP
+except ImportError:
+    _record_repair = None  # type: ignore[assignment]
+    _RP = None  # type: ignore[assignment]
+
+
+def _stat(pattern: Any, tool: str = "?") -> None:
+    """Emit a repair stat event.  No-op when stats module is unavailable."""
+    if _record_repair is not None:
+        try:
+            # Resolve string pattern names to RepairPattern enums for
+            # consistent counting (prevents typos / mismatched keys).
+            rp_pattern = pattern
+            if _RP is not None and isinstance(pattern, str):
+                rp_pattern = _RP(pattern)
+            _record_repair(rp_pattern, tool)
+        except Exception:
+            pass
+
 
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD; no-op when none present."""
@@ -214,10 +235,12 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
 
     if not raw_stripped:
         logger.warning("Sanitized empty tool_call arguments for %s", tool_name)
+        _stat("empty_args", tool_name)
         return "{}"
 
     if raw_stripped == "None":
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
+        _stat("none_literal", tool_name)
         return "{}"
 
     # Pass 0: strict=False accepts literal control chars inside strings (the most common
@@ -225,7 +248,11 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     try:
         reserialised = json.dumps(json.loads(raw_stripped, strict=False), separators=(",", ":"))
         if reserialised != raw_stripped:
-            logger.warning("Repaired unescaped control chars in tool_call arguments for %s", tool_name)
+            logger.warning(
+                "Repaired unescaped control chars in tool_call arguments for %s",
+                tool_name,
+            )
+            _stat("control_char_escape", tool_name)
         return reserialised
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
@@ -247,6 +274,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
 
     if _loads_ok(fixed):
         logger.warning("Repaired malformed tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], fixed[:80])
+        _stat("malformed_json_repair", tool_name)
         return fixed
 
     # Pass 5: escape control chars inside strings (strict=False alone fails when other
@@ -254,14 +282,17 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     escaped = _escape_invalid_chars_in_json_strings(fixed)
     if escaped != fixed and _loads_ok(escaped):
         logger.warning(
-            "Repaired control-char-laced tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], escaped[:80],
+            "Repaired control-char-laced tool_call arguments for %s: %s → %s",
+            tool_name, raw_stripped[:80], escaped[:80],
         )
+        _stat("control_char_escape", tool_name)
         return escaped
 
     logger.warning(
         "Unrepairable tool_call arguments for %s — replaced with empty object (was: %s)",
         tool_name, raw_stripped[:_FULL_ARGS_LOG_BOUND],
     )
+    _stat("unrepairable", tool_name)
     return "{}"
 
 

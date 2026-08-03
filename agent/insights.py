@@ -211,9 +211,6 @@ class InsightsEngine:
             "skills": self._compute_skill_breakdown(skill_usage),
         }
 
-    def get_skill_breakdown(self, days: int = 30, source: str = None) -> Dict[str, Any]:
-        return self.get_usage_breakdown(days=days, source=source)["skills"]
-
     # =========================================================================
     # Data gathering (SQL queries)
     # =========================================================================

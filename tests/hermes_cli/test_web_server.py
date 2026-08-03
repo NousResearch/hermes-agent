@@ -2223,7 +2223,7 @@ class TestNewEndpoints:
         assert top_skill["last_used_at"] is not None
 
     def test_analytics_usage_skips_full_insights_generate(self):
-        """get_usage_analytics must call get_skill_breakdown, not generate()."""
+        """get_usage_analytics must call get_usage_breakdown, not generate()."""
         from unittest.mock import patch
         from agent.insights import InsightsEngine
         from hermes_state import SessionDB

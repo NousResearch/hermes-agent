@@ -148,6 +148,23 @@ class TestHooksInert:
 
 
 class TestPayloadSanitization:
+    def test_safe_value_redacts_nested_secrets_before_export(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        import importlib
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        api_key = "sk-" + ("A" * 32)
+        bearer = "ghp_" + ("B" * 36)
+        result = mod._safe_value(
+            {
+                "api_key": api_key,
+                "nested": [{"authorization": f"Bearer {bearer}"}],
+            }
+        )
+
+        assert api_key not in str(result)
+        assert bearer not in str(result)
+
     def test_safe_value_redacts_base64_data_uri_instead_of_truncating(self):
         sys.modules.pop("plugins.observability.langfuse", None)
         import importlib

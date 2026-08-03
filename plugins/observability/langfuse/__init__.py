@@ -31,6 +31,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from agent.redact import redact_sensitive_text
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -436,7 +438,11 @@ def _safe_value(value: Any, *, max_chars: Optional[int] = None, depth: int = 0,
             parsed = _maybe_parse_json_string(value)
             if parsed is not value:
                 return _safe_value(parsed, max_chars=max_chars, depth=depth, parse_json_strings=True)
-        return _truncate_text(value, max_chars)
+        if _is_base64_data_uri(value):
+            return _redact_data_uri(value)
+        # Langfuse is an external telemetry boundary: redact before truncation
+        # so long credentials cannot leak their leading characters.
+        return _truncate_text(redact_sensitive_text(value, force=True), max_chars)
     if isinstance(value, dict):
         normalized = _normalize_payload(value)
         if normalized is not value:

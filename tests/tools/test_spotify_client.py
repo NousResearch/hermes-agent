@@ -229,3 +229,127 @@ def test_handle_spotify_queue_add_blocks_when_no_active_device(
     )
     assert "error" in response
     assert "No active Spotify playback device" in response["error"]
+
+
+# ── Handler-level coverage requested by the cross-PR triage review ─────────
+# Covers the four gaps the consolidation review asked to confirm:
+#   1. empty playback input (uris=[""] must not reach start_playback as [])
+#   2. inactive-only device lists block playback, not just queue
+#   3. lookup failures propagate instead of being masked as "no active device"
+#   4. queue raw-ID coercion (covered above — listed here for completeness)
+
+
+def test_playback_play_rejects_empty_uris_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A truthy uris=[''] must NOT reach start_playback as an empty list.
+
+    The play path routes through normalize_spotify_uris (via _as_list, which
+    drops blank entries), so the batch normalizer's non-empty contract still
+    rejects it. Guards against the regression flagged at tools.py:134.
+    """
+    started: list[dict] = []
+
+    class _PlayStub:
+        def get_devices(self):
+            return {"devices": [{"id": "dev-1", "is_active": True}]}
+
+        def start_playback(self, **kw):
+            started.append(kw)
+            return {}
+
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: _PlayStub())
+    response = json.loads(
+        spotify_tool._handle_spotify_playback({"action": "play", "uris": [""]})
+    )
+    assert "error" in response
+    assert "At least one Spotify item" in response["error"]
+    # Crucially, the API client was never called with an empty uris list.
+    assert started == []
+
+
+def test_playback_play_blocks_when_only_inactive_devices_listed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """playback 'play' with no device_id and only inactive devices is blocked.
+
+    A nonempty device list does not establish the active device required when
+    device_id is omitted (docs contract at spotify.md:106).
+    """
+    started: list[dict] = []
+
+    class _PlayStub:
+        def get_devices(self):
+            return {"devices": [{"id": "dev-1", "is_active": False}]}
+
+        def start_playback(self, **kw):
+            started.append(kw)
+            return {}
+
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: _PlayStub())
+    response = json.loads(
+        spotify_tool._handle_spotify_playback(
+            {"action": "play", "uris": ["spotify:track:abc"]}
+        )
+    )
+    assert "error" in response
+    assert "No active Spotify playback device" in response["error"]
+    assert started == []
+
+
+def test_playback_play_propagates_device_lookup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_devices() failures must surface, not be masked as 'no active device'.
+
+    _has_active_device deliberately does NOT swallow lookup errors; the
+    caller's top-level except surfaces them via _spotify_tool_error so the
+    real cause (e.g. a 401 / network failure) stays visible.
+    """
+    started: list[dict] = []
+
+    class _PlayStub:
+        def get_devices(self):
+            raise spotify_mod.SpotifyAPIError(
+                "Spotify rejected this playback request. "
+                "Playback control usually requires a Spotify Premium account "
+                "and an active Spotify Connect device.",
+                status_code=403,
+            )
+
+        def start_playback(self, **kw):
+            started.append(kw)
+            return {}
+
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: _PlayStub())
+    response = json.loads(
+        spotify_tool._handle_spotify_playback(
+            {"action": "play", "uris": ["spotify:track:abc"]}
+        )
+    )
+    assert "error" in response
+    # The real cause is surfaced, NOT the misleading "no active device" message.
+    assert "No active Spotify playback device" not in response["error"]
+    assert started == []
+
+
+def test_playback_play_proceeds_when_active_device_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sanity: playback 'play' proceeds when a device with is_active=True exists."""
+    started: list[dict] = []
+
+    class _PlayStub:
+        def get_devices(self):
+            return {"devices": [{"id": "dev-1", "is_active": True}]}
+
+        def start_playback(self, **kw):
+            started.append(kw)
+            return {}
+
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: _PlayStub())
+    response = json.loads(
+        spotify_tool._handle_spotify_playback(
+            {"action": "play", "uris": ["spotify:track:abc"]}
+        )
+    )
+    assert response.get("success") is True
+    assert started and started[0]["uris"] == ["spotify:track:abc"]

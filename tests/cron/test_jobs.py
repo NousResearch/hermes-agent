@@ -323,11 +323,45 @@ class TestMarkJobRun:
         assert updated["repeat"]["completed"] == 1
         assert updated["last_status"] == "ok"
 
-    def test_repeat_limit_removes_job(self, tmp_cron_dir):
+    def test_repeat_limit_retains_completed_record(self, tmp_cron_dir):
+        """A finished one-shot must stay inspectable, not vanish from the store."""
         job = create_job(prompt="Once", schedule="30m", repeat=1)
         mark_job_run(job["id"], success=True)
-        # Job should be removed after hitting repeat limit
-        assert get_job(job["id"]) is None
+        updated = get_job(job["id"])
+        assert updated is not None, "completed one-shot was deleted from jobs.json"
+        assert updated["state"] == "completed"
+        assert updated["enabled"] is False
+        assert updated["next_run_at"] is None
+        assert updated["last_status"] == "ok"
+
+    def test_repeat_limit_retains_delivery_error(self, tmp_cron_dir):
+        """A one-shot whose delivery failed must keep the error on its record."""
+        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        mark_job_run(
+            job["id"], success=True,
+            delivery_error="platform 'telegram' not configured",
+        )
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["state"] == "completed"
+        assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+
+    def test_completed_oneshot_visible_in_list(self, tmp_cron_dir):
+        """list_jobs(include_disabled=True) surfaces the completed record."""
+        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        mark_job_run(job["id"], success=True, delivery_error="send failed: 502")
+        listed = {j["id"]: j for j in list_jobs(include_disabled=True)}
+        assert job["id"] in listed
+        assert listed[job["id"]]["state"] == "completed"
+        assert listed[job["id"]]["last_delivery_error"] == "send failed: 502"
+        # Default (enabled-only) listing hides it, matching paused/disabled jobs.
+        assert job["id"] not in {j["id"] for j in list_jobs()}
+
+    def test_completed_oneshot_not_due(self, tmp_cron_dir):
+        """A retained completed one-shot must never be dispatched again."""
+        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        mark_job_run(job["id"], success=True)
+        assert job["id"] not in {j["id"] for j in get_due_jobs()}
 
 
     def test_error_status(self, tmp_cron_dir):
@@ -639,9 +673,14 @@ class TestGetDueJobs:
         assert get_job("slowrun") is not None
 
         # Run completes → outcome lands on a record that still exists
-        # (times=1 reached, so mark_job_run retires the job normally).
+        # (times=1 reached, so mark_job_run retires the job as a terminal
+        # completed record instead of deleting it).
         mark_job_run("slowrun", True)
-        assert get_job("slowrun") is None
+        retired = get_job("slowrun")
+        assert retired is not None
+        assert retired["state"] == "completed"
+        assert retired["enabled"] is False
+        assert retired["last_status"] == "ok"
 
 
     def test_heartbeat_run_claim_rejects_replaced_owner(self, tmp_cron_dir):
@@ -900,12 +939,17 @@ class TestClaimDispatch:
 
     def test_mark_job_run_does_not_double_count_preclaimed_oneshot(self, tmp_cron_dir):
         # Full lifecycle: claim bumps completed to times, then mark_job_run must
-        # NOT increment again — it recognizes the pre-claim and removes the job.
+        # NOT increment again — it recognizes the pre-claim and retires the job
+        # as a terminal completed record (retained for inspection, not re-fired).
         save_jobs([self._oneshot(times=1, completed=0)])
         assert claim_dispatch("os1") is True
         assert load_jobs()[0]["repeat"]["completed"] == 1
         mark_job_run("os1", success=True)
-        assert load_jobs() == []  # completed once, removed — not fired twice
+        retired = load_jobs()
+        assert len(retired) == 1  # completed once, retired — not fired twice
+        assert retired[0]["repeat"]["completed"] == 1  # no double count
+        assert retired[0]["state"] == "completed"
+        assert retired[0]["enabled"] is False
 
 
     def test_get_due_jobs_removes_stale_maxed_oneshot(self, tmp_cron_dir):
@@ -1139,3 +1183,70 @@ class TestAdvanceNextRuns:
         assert advance_next_run(rec_ids[0]) is True
         assert advance_next_run(one_ids[0]) is False
         assert advance_next_run("missing-id") is False
+
+
+# =========================================================================
+# Completed one-shot retention sweep
+# =========================================================================
+
+class TestCompletedOneshotRetentionSweep:
+    """Completed one-shots are retained for inspection, then pruned by age."""
+
+    def _completed_oneshot(self, age_days: float):
+        """Create a one-shot, complete it, and backdate its last_run_at."""
+        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        mark_job_run(job["id"], success=True, delivery_error="boom")
+        stamp = (
+            datetime.now(timezone.utc) - timedelta(days=age_days)
+        ).isoformat()
+        jobs = load_jobs()
+        for j in jobs:
+            if j["id"] == job["id"]:
+                j["last_run_at"] = stamp
+        save_jobs(jobs)
+        return job["id"]
+
+    def test_sweep_prunes_old_completed_oneshot(self, tmp_cron_dir):
+        old_id = self._completed_oneshot(age_days=30)
+        get_due_jobs()  # sweep runs as part of the due scan
+        assert get_job(old_id) is None
+
+    def test_sweep_keeps_recent_completed_oneshot(self, tmp_cron_dir):
+        recent_id = self._completed_oneshot(age_days=1)
+        get_due_jobs()
+        kept = get_job(recent_id)
+        assert kept is not None
+        assert kept["state"] == "completed"
+        assert kept["last_delivery_error"] == "boom"
+
+    def test_sweep_ignores_recurring_jobs(self, tmp_cron_dir):
+        """Old recurring jobs are never candidates, whatever their history."""
+        job = create_job(prompt="Recurring", schedule="every 1h")
+        stamp = (
+            datetime.now(timezone.utc) - timedelta(days=365)
+        ).isoformat()
+        jobs = load_jobs()
+        for j in jobs:
+            if j["id"] == job["id"]:
+                j["last_run_at"] = stamp
+        save_jobs(jobs)
+        get_due_jobs()
+        assert get_job(job["id"]) is not None
+
+    def test_sweep_disabled_by_nonpositive_retention(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setattr(
+            "cron.jobs._completed_oneshot_retention_days", lambda: 0.0
+        )
+        old_id = self._completed_oneshot(age_days=30)
+        get_due_jobs()
+        assert get_job(old_id) is not None
+
+    def test_recurring_jobs_unaffected_by_retention_change(self, tmp_cron_dir):
+        """A recurring job still cycles normally alongside retained one-shots."""
+        recurring = create_job(prompt="Recurring", schedule="every 1h")
+        self._completed_oneshot(age_days=1)
+        mark_job_run(recurring["id"], success=True)
+        updated = get_job(recurring["id"])
+        assert updated["enabled"] is True
+        assert updated["state"] == "scheduled"
+        assert updated["next_run_at"] is not None

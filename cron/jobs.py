@@ -1738,8 +1738,19 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
 
                     # Check if we've hit the repeat limit
                     if times is not None and times > 0 and completed >= times:
-                        # Remove the job (limit reached)
-                        jobs.pop(i)
+                        # Limit reached: retain the record as a terminal
+                        # completion instead of popping it. Deleting the job
+                        # here discarded the last_status / last_error /
+                        # last_delivery_error written above — a finished
+                        # one-shot vanished from `cronjob list` with no
+                        # inspectable outcome, and a failed delivery was
+                        # invisible. Mirror the terminal shape of the
+                        # next_run_at-is-None branch below; the retention
+                        # sweep prunes these after
+                        # COMPLETED_ONESHOT_RETENTION_DAYS.
+                        job["enabled"] = False
+                        job["state"] = "completed"
+                        job["next_run_at"] = None
                         save_jobs(jobs)
                         return
                 
@@ -1857,13 +1868,29 @@ def claim_dispatch(job_id: str) -> bool:
                 return True  # infinite — always dispatch
             completed = repeat.get("completed", 0)
             if completed >= times:
-                # Already dispatched the max number of times (e.g. a prior
-                # tick claimed then died before mark_job_run could remove it).
-                # Clean up so it stops appearing as due on every tick.
+                # Already dispatched the max number of times.
+                if job.get("last_run_at") is not None:
+                    # A prior run completed normally (e.g. mark_job_run raced
+                    # with this tick). Retain the terminal record — same shape
+                    # as mark_job_run's repeat-limit branch — instead of
+                    # deleting the job and its final status/delivery error.
+                    job["enabled"] = False
+                    job["state"] = "completed"
+                    job["next_run_at"] = None
+                    save_jobs(jobs)
+                    logger.info(
+                        "Job '%s': dispatch limit reached (%d/%d) — marking completed",
+                        job.get("name", job.get("id", "?")),
+                        completed,
+                        times,
+                    )
+                    return False
+                # A prior tick claimed the dispatch then died before the run
+                # completed (#73973) — a genuinely wedged claim. Remove it so
+                # it stops appearing as due, and leave an operator-visible
+                # diagnostic instead of vanishing silently.
                 jobs.pop(i)
                 save_jobs(jobs)
-                # If the claimed run never completed (#73973), leave an
-                # operator-visible diagnostic instead of vanishing silently.
                 _write_wedged_oneshot_diagnostic(job)
                 logger.info(
                     "Job '%s': dispatch limit reached (%d/%d) — removing",
@@ -2049,6 +2076,82 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
         return False
 
 
+# Completed one-shot job records are retained in jobs.json (final status +
+# delivery error stay inspectable via `cronjob list`) instead of being deleted
+# at completion, then pruned by _sweep_completed_oneshots once they age out.
+COMPLETED_ONESHOT_RETENTION_DAYS = 7
+
+
+def _completed_oneshot_retention_days() -> float:
+    """Resolve the completed one-shot retention window from config.
+
+    ``cron.completed_retention_days`` (number, default
+    ``COMPLETED_ONESHOT_RETENTION_DAYS``). A non-positive value disables the
+    sweep, retaining completed one-shot records indefinitely.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        return float(
+            cron_cfg.get(
+                "completed_retention_days", COMPLETED_ONESHOT_RETENTION_DAYS
+            )
+        )
+    except Exception:
+        return float(COMPLETED_ONESHOT_RETENTION_DAYS)
+
+
+def _sweep_completed_oneshots(raw_jobs: List[Dict[str, Any]], now: datetime) -> bool:
+    """Prune terminal ``state == "completed"`` one-shot records past retention.
+
+    Mutates *raw_jobs* in place; returns True when anything was removed (the
+    caller persists). Only one-shot (``schedule.kind == "once"``) records in
+    the terminal completed state are candidates; recurring jobs and non-
+    terminal one-shots are never touched. Age is measured from
+    ``last_run_at`` — a completed record without a parseable ``last_run_at``
+    is kept (never guess a record into deletion).
+    """
+    retention_days = _completed_oneshot_retention_days()
+    if retention_days <= 0:
+        return False
+    cutoff = now - timedelta(days=retention_days)
+    removed = False
+    for rj in list(raw_jobs):
+        try:
+            if rj.get("state") != "completed":
+                continue
+            schedule = rj.get("schedule")
+            kind = schedule.get("kind") if isinstance(schedule, dict) else None
+            if kind != "once":
+                continue
+            last_run = rj.get("last_run_at")
+            if not isinstance(last_run, str):
+                continue
+            try:
+                last_run_dt = _ensure_aware(datetime.fromisoformat(last_run))
+            except Exception:
+                continue
+            if last_run_dt >= cutoff:
+                continue
+            raw_jobs.remove(rj)
+            removed = True
+            logger.info(
+                "Job '%s': pruning completed one-shot record "
+                "(finished %s, retention %.1f days)",
+                rj.get("name", rj.get("id", "?")),
+                last_run,
+                retention_days,
+            )
+        except Exception:
+            logger.debug(
+                "Retention sweep skipped malformed job record %r",
+                rj.get("id", "?"),
+                exc_info=True,
+            )
+    return removed
+
+
 def get_due_jobs() -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now.
 
@@ -2167,6 +2270,15 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     # Resolve the one-shot running-claim stale-recovery TTL once per scan
     # (derived from HERMES_CRON_TIMEOUT). See _oneshot_run_claim_ttl_seconds.
     _run_claim_ttl = _oneshot_run_claim_ttl_seconds()
+
+    # Retention sweep: completed one-shots are retained (so their final
+    # status / delivery error stay inspectable via `cronjob list`) instead of
+    # being deleted on completion, but they must not accumulate in jobs.json
+    # forever. Prune terminal one-shot records older than the retention
+    # window each scan.
+    if _sweep_completed_oneshots(raw_jobs, now):
+        needs_save = True
+        jobs = [j for j in jobs if any(rj.get("id") == j.get("id") for rj in raw_jobs)]
 
     for job in jobs:
         # Per-job containment (structural guard): one malformed or

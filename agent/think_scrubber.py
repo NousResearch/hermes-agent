@@ -58,6 +58,8 @@ from __future__ import annotations
 
 from typing import Tuple
 
+from agent.harmony_scrub import HarmonyStreamGate
+
 __all__ = ["StreamingThinkScrubber"]
 
 
@@ -96,12 +98,16 @@ class StreamingThinkScrubber:
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
+        # Front stage: suppress a leaked harmony reasoning prefix before the
+        # tag machine ever sees it (the leak has no <think>-style tags).
+        self._harmony = HarmonyStreamGate()
 
     def reset(self) -> None:
         """Reset all state.  Call at the top of every new turn."""
         self._in_block = False
         self._buf = ""
         self._last_emitted_ended_newline = True
+        self._harmony.reset()
 
     def feed(self, text: str) -> str:
         """Feed one delta; return the scrubbed visible portion.
@@ -112,6 +118,16 @@ class StreamingThinkScrubber:
         """
         if not text:
             return ""
+        # Front stage — harmony reasoning-leak suppression. While the gate is
+        # watching/suppressing it holds text back (returns ""); once resolved it
+        # hands the answer tail to the tag machine below. Inactive after that.
+        if self._harmony.active:
+            passthrough, done = self._harmony.feed(text)
+            if not done:
+                return ""
+            text = passthrough
+            if not text:
+                return ""
         buf = self._buf + text
         self._buf = ""
         out: list[str] = []
@@ -216,12 +232,25 @@ class StreamingThinkScrubber:
         stream's opening ``<think>`` look mid-line and leak into the
         visible reply.
         """
+        out = ""
+        # Release any harmony-gate leftover into the tag machine first (a watch
+        # buffer that never resolved, or a benign bare-word "analysis" answer).
+        if self._harmony.active:
+            leftover = self._harmony.flush()  # gate → done
+            if leftover:
+                out += self.feed(leftover)
+        # Re-arm the harmony gate for the next stream. Intra-turn retries
+        # (thinking-only prefill, empty-response retry) flush then stream again
+        # without calling reset() — same reason upstream re-arms the boundary
+        # flag here (a569226f8). Done AFTER the leftover release above, which
+        # relies on the gate being spent so feed() passes the leftover through.
+        self._harmony.reset()
         if self._in_block:
             self._buf = ""
             self._in_block = False
             # Next feed() is a new stream — start-of-stream is a boundary.
             self._last_emitted_ended_newline = True
-            return ""
+            return out
         tail = self._buf
         self._buf = ""
         # Same for the non-block path: do NOT derive the boundary flag
@@ -229,8 +258,8 @@ class StreamingThinkScrubber:
         # means the next feed() starts a new model response.
         self._last_emitted_ended_newline = True
         if not tail:
-            return ""
-        return self._strip_orphan_close_tags(tail)
+            return out
+        return out + self._strip_orphan_close_tags(tail)
 
     # ── internal helpers ───────────────────────────────────────────────
 

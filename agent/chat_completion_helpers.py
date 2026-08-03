@@ -2310,8 +2310,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = (_summary_result.content or "").strip()
 
         if final_response:
-            if "<think>" in final_response:
-                final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+            # Centralised strip (all reasoning-tag variants + leaked harmony
+            # channels), matching the storage-boundary scrub in
+            # build_assistant_message — this summary bypasses that boundary by
+            # appending straight to ``messages``.
+            final_response = agent._strip_think_blocks(final_response).strip()
             if final_response:
                 summary_call_outcome = "success"
                 messages.append({"role": "assistant", "content": final_response})
@@ -2372,8 +2375,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = (_retry_result.content or "").strip()
 
             if final_response:
-                if "<think>" in final_response:
-                    final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                # Centralised strip (see the sibling site above).
+                final_response = agent._strip_think_blocks(final_response).strip()
                 if final_response:
                     summary_call_outcome = "success"
                     messages.append({"role": "assistant", "content": final_response})

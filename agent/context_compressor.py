@@ -4676,12 +4676,11 @@ This compaction should PRIORITISE preserving all information related to the focu
                 call_kwargs["model"] = self.summary_model
             _aux_provider = ""
             _aux_model = self.summary_model or ""
-            _aux_base_url: Optional[str] = None
             _aux_context = None
             try:
                 from agent.auxiliary_client import _resolve_task_provider_model
 
-                _resolved_provider, _resolved_model, _resolved_base_url, _, _ = (
+                _resolved_provider, _resolved_model, _, _, _ = (
                     _resolve_task_provider_model(
                         "compression",
                         model=(self.summary_model or ""),
@@ -4689,27 +4688,27 @@ This compaction should PRIORITISE preserving all information related to the focu
                 )
                 _aux_provider = _resolved_provider or ""
                 _aux_model = _resolved_model or _aux_model or self.model or ""
-                _aux_base_url = _resolved_base_url
                 if _aux_model == self.model:
                     _aux_context = self.context_length
             except Exception:
                 pass
             # Reset the wire-route snapshot at the start of each attempt; the
-            # authoritative version is written by the route_callback inside
-            # call_llm AFTER the actual client is resolved (auto-detection,
-            # fallback chains, client.base_url). _resolve_task_provider_model
-            # above returns a config-layer guess that call_llm may override,
-            # so we do NOT persist it as the wire identity (#72636).
+            # authoritative version is written by call_llm's route_callback
+            # before each physical request (auto-detection, retries, fallback
+            # chains, client.base_url). _resolve_task_provider_model above
+            # returns a config-layer guess that call_llm may override, so we do
+            # NOT persist it as the wire identity (#72636).
             self._last_aux_call_provider = ""
             self._last_aux_call_model = ""
             self._last_aux_call_base_url = ""
 
             def _record_aux_route(provider, model, base_url):
-                # Invoked by call_llm once the real client is built; this is
-                # the route actually used on the wire, after auto-detection /
-                # fallback. Strip any query string defensively — some proxies
-                # carry credentials as ?key=... and this value is surfaced in
-                # user-facing diagnostics on Telegram/Discord/Slack/CLI (#72636).
+                # Invoked before every call_llm physical request; the final
+                # callback is therefore the route that terminated the call,
+                # after auto-detection / fallback. Strip any query string
+                # defensively — some proxies carry credentials as ?key=... and
+                # this value is surfaced in user-facing diagnostics on
+                # Telegram/Discord/Slack/CLI (#72636).
                 _safe_base = ""
                 if base_url:
                     try:

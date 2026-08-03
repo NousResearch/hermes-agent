@@ -3276,6 +3276,9 @@ def _set_relay_auxiliary_route(
     provider: str | None,
     model: str | None,
     api_mode: str | None,
+    *,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> None:
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is None:
@@ -3284,6 +3287,81 @@ def _set_relay_auxiliary_route(
     context["model"] = str(model or "unknown")
     context["response_model"] = None
     context["api_mode"] = str(api_mode or "chat_completions")
+    context["route_callback"] = route_callback
+    runtime = main_runtime or {}
+    context["main_runtime"] = {
+        "provider": str(runtime.get("provider") or ""),
+        "base_url": str(runtime.get("base_url") or ""),
+    }
+
+
+def _wire_provider_name(
+    provider: str | None,
+    base_url: str,
+    main_runtime: Optional[Dict[str, Any]],
+) -> str:
+    """Return the concrete provider label for one physical wire attempt."""
+    raw_provider = str(provider or "").strip()
+    wrapped = re.search(r"\(([^()]*)\)$", raw_provider)
+    if wrapped:
+        raw_provider = wrapped.group(1).strip()
+    normalized = _normalize_aux_provider(raw_provider)
+    if normalized not in {"", "auto"}:
+        return raw_provider or normalized
+
+    runtime = main_runtime or {}
+    runtime_provider = str(runtime.get("provider") or "").strip()
+    runtime_base = str(runtime.get("base_url") or "").strip()
+    if (
+        runtime_provider
+        and runtime_provider not in {"auto"}
+        and runtime_base
+        and base_url_hostname(runtime_base) == base_url_hostname(base_url)
+    ):
+        return runtime_provider
+
+    try:
+        from agent.model_metadata import _infer_provider_from_url
+
+        inferred = _infer_provider_from_url(base_url)
+        if inferred:
+            return inferred
+    except Exception:
+        pass
+
+    # An auto-selected HTTP client with an otherwise unknown endpoint is a
+    # custom route. Reporting "custom" is more actionable than preserving the
+    # config-layer "auto" label, which never went over the wire.
+    return "custom" if base_url else "auto"
+
+
+def _notify_relay_auxiliary_route(
+    client: Any,
+    kwargs: Dict[str, Any],
+    provider: str | None,
+) -> None:
+    """Publish the latest physical route without affecting request success."""
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None:
+        return
+    route_callback = context.get("route_callback")
+    if not callable(route_callback):
+        return
+
+    base_url = str(getattr(client, "base_url", "") or "")
+    try:
+        clean_base, _ = _extract_url_query_params(base_url)
+        route_callback(
+            _wire_provider_name(
+                provider or context.get("provider"),
+                clean_base,
+                context.get("main_runtime"),
+            ),
+            str(kwargs.get("model") or context.get("model") or "") or None,
+            clean_base,
+        )
+    except Exception:
+        logger.debug("route_callback error in auxiliary wire attempt", exc_info=True)
 
 
 def _record_route_info(
@@ -3327,6 +3405,7 @@ def _relay_sync_completion(
     create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
     callback = create or (lambda request: client.chat.completions.create(**request))
+    _notify_relay_auxiliary_route(client, kwargs, provider)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Protected compression calls isolate only the provider callback and stream
     # aggregation.  The owning thread remains free to unwind its lease/DB
@@ -3378,6 +3457,7 @@ def _relay_sync_stream(
     provider: str | None = None,
     api_mode: str | None = None,
 ) -> Any:
+    _notify_relay_auxiliary_route(client, kwargs, provider)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return client.chat.completions.create(**kwargs)
@@ -9322,6 +9402,10 @@ def _call_llm_impl(
             output can stream to the user.
         stream_options: Passed through to the request when stream is True
             (e.g. {"include_usage": True}).
+        route_callback: Optional observer invoked immediately before every
+            physical sync wire attempt with the concrete provider, request
+            model, and query-stripped client endpoint. Later retries and
+            fallbacks replace the caller's previous route snapshot.
 
     Returns:
         Response object with .choices[0].message.content, OR — when stream=True —
@@ -9428,6 +9512,8 @@ def _call_llm_impl(
         request_provider,
         final_model,
         resolved_api_mode,
+        route_callback=route_callback,
+        main_runtime=main_runtime,
     )
     _record_route_info(
         route_info, _fallback_provider_from_label(request_provider), final_model
@@ -9435,23 +9521,6 @@ def _call_llm_impl(
 
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
-    # Report the route ACTUALLY used on the wire (after auto-detection,
-    # fallback chains, and client construction) so callers that need to
-    # attribute a failure point at the real endpoint, not the pre-resolution
-    # guess from _resolve_task_provider_model (#72636). The base_url is
-    # query-stripped so credentials some proxies carry as ?key=... are not
-    # leaked into user-facing diagnostics; the callback also re-strips
-    # defensively in case a future caller bypasses this path.
-    if route_callback is not None:
-        try:
-            _clean_base, _dropped_q = _extract_url_query_params(_base_info)
-            route_callback(
-                resolved_provider or "auto",
-                final_model,
-                _clean_base,
-            )
-        except Exception:
-            logger.debug("route_callback error in call_llm", exc_info=True)
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
                      task, request_provider or "auto", final_model or "default",

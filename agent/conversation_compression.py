@@ -2236,10 +2236,10 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     compression aborted on the auxiliary summary call (#72636).
 
     The identity ACTUALLY used on the wire is recorded by
-    ``call_llm``'s ``route_callback`` — invoked after the real client is
-    built (auto-detection, fallback chains, and ``client.base_url``
-    applied), so it reflects the route the failed request really took,
-    not the config-layer pre-resolution from
+    ``call_llm``'s ``route_callback`` — invoked before every physical wire
+    attempt after the real client is built (auto-detection, fallback chains,
+    and ``client.base_url`` applied), so the final snapshot reflects the route
+    the failed request really took, not the config-layer pre-resolution from
     ``_resolve_task_provider_model`` (which ``call_llm`` may override).
     The callback writes ``_last_aux_call_provider`` /
     ``_last_aux_call_model`` / ``_last_aux_call_base_url`` on the

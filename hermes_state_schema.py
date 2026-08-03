@@ -290,6 +290,126 @@ class SessionSchemaMixin:
         )
         cursor.execute("DROP TABLE gateway_routing_legacy_pk")
 
+    def _heal_session_model_usage_pk(self, cursor: sqlite3.Cursor) -> None:
+        """Rebuild ``session_model_usage`` when its PRIMARY KEY lacks ``task``.
+
+        Installs whose ``state.db`` reached ``schema_version >= 22`` before
+        the ``task`` dimension was added carry a 5-column PRIMARY KEY
+        ``(session_id, model, billing_provider, billing_base_url,
+        billing_mode)``.  ``_reconcile_columns()`` ADDs the ``task`` column
+        as a bare nullable, but SQLite cannot ALTER a primary key, so the
+        shipped composite 6-column key never lands.  The version-gated v22
+        rebuild is unreachable on those installs (``current_version < 22``
+        is already false), so every upsert in ``_record_model_usage()``
+        fails with "ON CONFLICT clause does not match any PRIMARY KEY or
+        UNIQUE constraint" — aborting the enclosing write transaction and
+        silently zeroing all token *and* cost accounting (#73823).
+
+        Idempotent; runs unconditionally on every open, same pattern as
+        :meth:`_heal_gateway_routing_pk` above.  On healthy databases the
+        PRAGMA check short-circuits and this is a no-op.
+        """
+        try:
+            rows = cursor.execute(
+                'PRAGMA table_info("session_model_usage")'
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+        if not rows:
+            # Table doesn't exist yet — SCHEMA_SQL creates it correctly.
+            return
+
+        def _col(row, idx, name):
+            return row[idx] if isinstance(row, (tuple, list)) else row[name]
+
+        pk_cols = {
+            _col(r, 1, "name") for r in rows if _col(r, 5, "pk")
+        }
+        if "task" in pk_cols:
+            # task is already in the PK — healthy.
+            return
+
+        logger.info(
+            "session_model_usage has legacy primary key %r (missing task); "
+            "rebuilding with composite 6-column key",
+            sorted(pk_cols),
+        )
+        # FK-off window: the connection enables PRAGMA foreign_keys=ON
+        # before _init_schema runs, and session_model_usage.session_id
+        # REFERENCES sessions(id).  INSERT OR IGNORE does NOT suppress
+        # foreign-key violations (OR IGNORE only covers uniqueness/NOT
+        # NULL conflicts), so an orphaned usage row — possible after a
+        # partial prune while accounting was broken — would abort the
+        # whole rebuild.  Disable FK enforcement for the copy and restore
+        # it afterwards.  PRAGMA foreign_keys is a no-op inside a
+        # transaction, which is fine here: _init_schema runs on an
+        # isolation_level=None connection with no transaction open.
+        cursor.execute("PRAGMA foreign_keys=OFF")
+        try:
+            cursor.execute(
+                "ALTER TABLE session_model_usage "
+                "RENAME TO session_model_usage_legacy_pk"
+            )
+            cursor.execute(
+                """CREATE TABLE session_model_usage (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    billing_provider TEXT NOT NULL DEFAULT '',
+    billing_base_url TEXT NOT NULL DEFAULT '',
+    billing_mode TEXT NOT NULL DEFAULT '',
+    task TEXT NOT NULL DEFAULT '',
+    api_call_count INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    actual_cost_usd REAL NOT NULL DEFAULT 0,
+    cost_status TEXT,
+    cost_source TEXT,
+    first_seen REAL,
+    last_seen REAL,
+    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
+)"""
+            )
+            # OR IGNORE: while the PK was wrong the reconciler may have left
+            # ``task`` NULL on old rows; COALESCE to '' can theoretically
+            # collide with a genuine ''-task row — keep the first, drop the
+            # duplicate rather than fail the heal.
+            cursor.execute(
+                """INSERT OR IGNORE INTO session_model_usage (
+                       session_id, model, billing_provider, billing_base_url,
+                       billing_mode, task, api_call_count, input_tokens,
+                       output_tokens, cache_read_tokens, cache_write_tokens,
+                       reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                       cost_status, cost_source, first_seen, last_seen
+                   )
+                   SELECT session_id, model,
+                          COALESCE(billing_provider, ''),
+                          COALESCE(billing_base_url, ''),
+                          COALESCE(billing_mode, ''),
+                          COALESCE(task, ''),
+                          api_call_count, input_tokens,
+                          output_tokens, cache_read_tokens, cache_write_tokens,
+                          reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                          cost_status, cost_source, first_seen, last_seen
+                   FROM session_model_usage_legacy_pk"""
+            )
+            cursor.execute("DROP TABLE session_model_usage_legacy_pk")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_model_usage_session "
+                "ON session_model_usage(session_id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_model_usage_model "
+                "ON session_model_usage(model)"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("session_model_usage PK heal skipped: %s", exc)
+        finally:
+            cursor.execute("PRAGMA foreign_keys=ON")
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -318,6 +438,12 @@ class SessionSchemaMixin:
         # KEY (session_key alone). ADD COLUMN cannot fix a PK, so this is
         # the one table-shape repair reconciliation can't express.
         self._heal_gateway_routing_pk(cursor)
+
+        # Rebuild session_model_usage if its PRIMARY KEY lacks the ``task``
+        # column (5-column PK on installs already at v22+ when the column
+        # landed — the version-gated rebuild is unreachable there, #73823).
+        # Same PK-rebuild constraint as gateway_routing above.
+        self._heal_session_model_usage_pk(cursor)
 
         # Indexes that reference reconciler-added columns must be created
         # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
@@ -604,7 +730,8 @@ class SessionSchemaMixin:
             # FTS_STORAGE_VERSION; a legacy DB is left at whatever it had
             # (absent/0) until `optimize-storage` runs. An INTERRUPTED
             # optimize (legacy vtables already demoted, but rebuild markers
-            # or demoted trash tables still present) is NOT stamped either —
+            # or demoted trash tables still present, or an empty external
+            # index against non-empty messages) is NOT stamped either —
             # the marker is the source of truth for "fully optimized", and
             # `fts_optimize_available()` keeps offering the resume until the
             # transition actually completes.
@@ -616,6 +743,7 @@ class SessionSchemaMixin:
                     "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
                 ).fetchone() is None
                 and not self._has_fts_trash(cursor)
+                and not self._fts_external_index_empty_with_messages(cursor)
             ):
                 self.set_meta(
                     "fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor

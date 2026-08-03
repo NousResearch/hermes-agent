@@ -382,8 +382,9 @@ class GitHubAuth:
             if self._cached_method != "github-app" or time.time() < self._app_token_expiry:
                 return self._cached_token
 
-        # 1. Environment variable
-        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        # 1. Environment variable (profile-scoped under a multiplexed gateway)
+        from agent.secret_scope import get_secret
+        token = get_secret("GITHUB_TOKEN") or get_secret("GH_TOKEN")
         if token:
             self._cached_token = token
             self._cached_method = "pat"
@@ -424,9 +425,10 @@ class GitHubAuth:
 
     def _try_github_app(self) -> Optional[str]:
         """Try GitHub App JWT authentication if credentials are configured."""
-        app_id = os.environ.get("GITHUB_APP_ID")
-        key_path = os.environ.get("GITHUB_APP_PRIVATE_KEY_PATH")
-        installation_id = os.environ.get("GITHUB_APP_INSTALLATION_ID")
+        from agent.secret_scope import get_secret
+        app_id = get_secret("GITHUB_APP_ID")
+        key_path = get_secret("GITHUB_APP_PRIVATE_KEY_PATH")
+        installation_id = get_secret("GITHUB_APP_INSTALLATION_ID")
 
         if not all([app_id, key_path, installation_id]):
             return None
@@ -462,7 +464,7 @@ class GitHubAuth:
             if resp.status_code == 201:
                 return resp.json().get("token")
         except Exception as e:
-            logger.debug(f"GitHub App auth failed: {e}")
+            logger.debug("GitHub App auth failed: %s", e)
 
         return None
 
@@ -623,7 +625,7 @@ class GitHubSource(SkillSource):
                     if query_lower in searchable:
                         results.append(skill)
             except Exception as e:
-                logger.debug(f"Failed to search {tap['repo']}: {e}")
+                logger.debug("Failed to search %s: %s", tap['repo'], e)
                 continue
 
         # Deduplicate by identifier, preferring higher trust levels.
@@ -2221,6 +2223,10 @@ class ClawHubSource(SkillSource):
             latest_version = data.get("latestVersion")
             if latest_version is not None and "latestVersion" not in merged:
                 merged["latestVersion"] = latest_version
+            # Carry over top-level fields that the listing API nests alongside
+            # the skill object — owner is needed for building valid detail URLs.
+            if "owner" in data and "owner" not in merged:
+                merged["owner"] = data["owner"]
             return merged
         return data
 
@@ -2409,6 +2415,14 @@ class ClawHubSource(SkillSource):
             display_name = item.get("displayName") or item.get("name") or slug
             summary = item.get("summary") or item.get("description") or ""
             tags = self._normalize_tags(item.get("tags", []))
+            extra: Dict[str, Any] = {}
+            owner = item.get("owner")
+            if isinstance(owner, dict):
+                handle = owner.get("handle")
+                if isinstance(handle, str) and handle:
+                    extra["owner"] = handle
+            elif isinstance(owner, str) and owner:
+                extra["owner"] = owner
             results.append(SkillMeta(
                 name=display_name,
                 description=summary,
@@ -2416,6 +2430,7 @@ class ClawHubSource(SkillSource):
                 identifier=slug,
                 trust_level="community",
                 tags=tags,
+                extra=extra,
             ))
 
         final_results = self._finalize_search_results(query, results, limit)
@@ -2471,6 +2486,16 @@ class ClawHubSource(SkillSource):
             return None
 
         tags = self._normalize_tags(data.get("tags", []))
+        extra: Dict[str, Any] = {}
+        # The detail API returns owner info — capture it so callers can build
+        # valid ClawHub URLs (https://clawhub.ai/{owner}/skills/{slug}).
+        owner = data.get("owner")
+        if isinstance(owner, dict):
+            handle = owner.get("handle")
+            if isinstance(handle, str) and handle:
+                extra["owner"] = handle
+        elif isinstance(owner, str) and owner:
+            extra["owner"] = owner
 
         return SkillMeta(
             name=data.get("displayName") or data.get("name") or data.get("slug") or slug,
@@ -2479,6 +2504,7 @@ class ClawHubSource(SkillSource):
             identifier=data.get("slug") or slug,
             trust_level="community",
             tags=tags,
+            extra=extra,
         )
 
     def _search_catalog(self, query: str, limit: int = 10) -> List[SkillMeta]:
@@ -2564,6 +2590,16 @@ class ClawHubSource(SkillSource):
                 display_name = item.get("displayName") or item.get("name") or slug
                 summary = item.get("summary") or item.get("description") or ""
                 tags = self._normalize_tags(item.get("tags", []))
+                extra: Dict[str, Any] = {}
+                # The listing API may include owner info (handle) in future;
+                # capture it if present so we can build valid detail URLs.
+                owner = item.get("owner")
+                if isinstance(owner, dict):
+                    handle = owner.get("handle")
+                    if isinstance(handle, str) and handle:
+                        extra["owner"] = handle
+                elif isinstance(owner, str) and owner:
+                    extra["owner"] = owner
                 results.append(SkillMeta(
                     name=display_name,
                     description=summary,
@@ -2571,6 +2607,7 @@ class ClawHubSource(SkillSource):
                     identifier=slug,
                     trust_level="community",
                     tags=tags,
+                    extra=extra,
                 ))
 
             cursor = data.get("nextCursor") if isinstance(data, dict) else None
@@ -2622,6 +2659,170 @@ class ClawHubSource(SkillSource):
                 if isinstance(version, str) and version:
                     return version
         return None
+
+    def _fetch_owner_handle(self, slug: str) -> Optional[str]:
+        """Fetch the owner handle for a single ClawHub skill via the detail API.
+
+        Returns the owner handle string, or None if unavailable.
+        The detail endpoint at ``/api/v1/skills/{slug}`` returns an ``owner``
+        object with a ``handle`` field — the listing API does not include this.
+
+        Retry semantics (bounded):
+        - Up to 3 attempts total (initial + 2 retries).
+        - On HTTP 429: respects ``Retry-After`` header (seconds) when present,
+          otherwise exponential backoff (2s → 4s).
+        - On HTTP 5xx: exponential backoff (transient server errors).
+        - On HTTP 4xx (non-429): no retry — the resource doesn't exist.
+        """
+        url = f"{self.BASE_URL}/skills/{slug}"
+        max_attempts = 3
+        backoff_base = 2.0  # seconds
+
+        for attempt in range(max_attempts):
+            try:
+                resp = httpx.get(url, timeout=20)
+            except (httpx.HTTPError, OSError):
+                # Network/transport error — treat as transient, retry with backoff.
+                if attempt < max_attempts - 1:
+                    delay = backoff_base * (2 ** attempt)
+                    logger.debug(
+                        "_fetch_owner_handle(%s): transport error on attempt %d/%d, "
+                        "retrying in %.1fs",
+                        slug, attempt + 1, max_attempts, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                return None
+
+            if resp.status_code == 200:
+                try:
+                    raw = resp.json()
+                except (json.JSONDecodeError, ValueError):
+                    return None
+                data = self._coerce_skill_payload(raw)
+                if not isinstance(data, dict):
+                    return None
+                owner = data.get("owner")
+                if isinstance(owner, dict):
+                    handle = owner.get("handle")
+                    if isinstance(handle, str) and handle:
+                        return handle
+                if isinstance(owner, str) and owner:
+                    return owner
+                return None
+
+            if resp.status_code == 429:
+                # Rate-limited — honour Retry-After if present, else backoff.
+                if attempt < max_attempts - 1:
+                    retry_after_raw = resp.headers.get("Retry-After")
+                    try:
+                        delay = float(retry_after_raw) if retry_after_raw else backoff_base * (2 ** attempt)
+                    except (TypeError, ValueError):
+                        delay = backoff_base * (2 ** attempt)
+                    logger.debug(
+                        "_fetch_owner_handle(%s): HTTP 429 on attempt %d/%d, "
+                        "retrying in %.1fs",
+                        slug, attempt + 1, max_attempts, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                return None
+
+            if 500 <= resp.status_code < 600:
+                # Transient server error — retry with backoff.
+                if attempt < max_attempts - 1:
+                    delay = backoff_base * (2 ** attempt)
+                    logger.debug(
+                        "_fetch_owner_handle(%s): HTTP %d on attempt %d/%d, "
+                        "retrying in %.1fs",
+                        slug, resp.status_code, attempt + 1, max_attempts, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                return None
+
+            # 4xx (non-429) — resource doesn't exist / bad request. No retry.
+            return None
+
+        return None
+
+    def enrich_owners(self, skills: List[SkillMeta], max_workers: int = 30) -> int:
+        """Batch-fetch owner handles for ClawHub skills missing ``extra["owner"]``.
+
+        Mutates each SkillMeta in-place, setting ``extra["owner"]`` when the
+        detail API returns a handle. Returns the number of skills enriched.
+
+        This is intended for the offline index builder, which walks the full
+        50k+ catalog. The listing API does not include owner info, so we
+        fetch each skill's detail page concurrently. With ``max_workers=30``
+        the full catalog takes ~5–10 minutes — acceptable for a twice-daily
+        batch job.
+
+        Safety rails:
+        - Aborts early if 50 consecutive requests all fail (systemic outage).
+        - Respects HTTP 429 rate-limit responses with exponential backoff.
+        - Logs progress every 1000 skills so the batch job is observable.
+        """
+        needs_enrichment = [
+            s for s in skills
+            if s.source == "clawhub" and not (s.extra or {}).get("owner")
+        ]
+        if not needs_enrichment:
+            return 0
+
+        enriched = 0
+        consecutive_failures = 0
+        max_consecutive_failures = 50
+        processed = 0
+        import threading
+        lock = threading.Lock()
+
+        def _fetch(meta: SkillMeta) -> Optional[str]:
+            return self._fetch_owner_handle(meta.identifier)
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_fetch, s): s for s in needs_enrichment}
+            for future in as_completed(futures):
+                meta = futures[future]
+                processed += 1
+                try:
+                    handle = future.result()
+                    if handle:
+                        with lock:
+                            if not meta.extra:
+                                meta.extra = {}
+                            meta.extra["owner"] = handle
+                            enriched += 1
+                            consecutive_failures = 0
+                    else:
+                        with lock:
+                            consecutive_failures += 1
+                except Exception:
+                    with lock:
+                        consecutive_failures += 1
+
+                if processed % 1000 == 0:
+                    logger.info(
+                        "ClawHub owner enrichment: %d/%d processed, %d enriched",
+                        processed, len(needs_enrichment), enriched,
+                    )
+
+                with lock:
+                    if consecutive_failures >= max_consecutive_failures:
+                        logger.warning(
+                            "ClawHub owner enrichment: %d consecutive failures — "
+                            "aborting early (%d/%d processed, %d enriched). "
+                            "The ClawHub API may be down or rate-limited.",
+                            max_consecutive_failures, processed,
+                            len(needs_enrichment), enriched,
+                        )
+                        # Cancel pending futures
+                        for f in futures:
+                            f.cancel()
+                        break
+
+        return enriched
 
     def _extract_files(self, version_data: Dict[str, Any]) -> Dict[str, str]:
         files: Dict[str, str] = {}
@@ -3481,6 +3682,32 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     return dest
 
 
+def _category_skill_dirs(directory: Path) -> List[str]:
+    """Names of direct children of *directory* that contain skills.
+
+    A child counts when it is a non-hidden directory holding at least one
+    active ``SKILL.md`` anywhere below it (recursive, so nested category
+    layouts like ``mlops/training/<skill>`` are detected). Vendored,
+    cache, and progressive-disclosure support paths are pruned via
+    :func:`is_excluded_skill_path` so a lone ``node_modules`` or
+    ``references/pkg/SKILL.md`` hit does not misclassify the directory as
+    a category. Shared by the install-time category guard here and
+    ``hermes_cli.skills_hub._existing_categories``.
+    """
+    skill_dirs: List[str] = []
+    for entry in directory.iterdir():
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        for skill_md in entry.rglob("SKILL.md"):
+            if is_excluded_skill_path(
+                skill_md.relative_to(directory), root=directory
+            ):
+                continue
+            skill_dirs.append(entry.name)
+            break
+    return skill_dirs
+
+
 def install_from_quarantine(
     quarantine_path: Path,
     skill_name: str,
@@ -3507,7 +3734,50 @@ def install_from_quarantine(
     # path can never refer to a redirected target.
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
 
+    # Refuse to nest a skill inside an existing skill directory. Installing
+    # with ``--category <name-of-an-existing-skill>`` would create a hybrid
+    # skill-plus-category directory; a later update or uninstall of the outer
+    # skill would then rmtree the inner one — the sibling case of the
+    # category-bucket wipe reported in issue #75983.
+    skills_root = _skills_dir().resolve()
+    ancestor = install_dir.parent
+    while ancestor != skills_root and ancestor.is_relative_to(skills_root):
+        if (ancestor / "SKILL.md").is_file():
+            raise ValueError(
+                f"Refusing to install into '{ancestor.name}': it is an "
+                f"existing skill directory, not a category. Choose a "
+                f"different category."
+            )
+        ancestor = ancestor.parent
+
     if install_dir.exists():
+        if not install_dir.is_dir():
+            # A stray regular file at the install path. rmtree() on a file
+            # raises NotADirectoryError (an uncaught traceback at the CLI);
+            # refuse with the same actionable ValueError contract instead.
+            raise ValueError(
+                f"Refusing to install: '{install_dir.name}' already exists "
+                f"and is not a directory. Remove it or choose a different "
+                f"skill name."
+            )
+        # Guard against silent data loss when the install target collides with
+        # an existing category bucket (a directory that holds other skills).
+        # This was reported as GitHub issue #75983: installing a skill with
+        # --name matching an existing category directory caused rmtree to wipe
+        # all sibling skills.  A directory that directly contains SKILL.md is
+        # an existing skill installation and stays overwritable (hub-installed
+        # skills are additionally guarded by the lock-file check in
+        # do_install()).  But a directory that contains *other* skill
+        # directories is a category bucket and must NOT be silently deleted.
+        if not (install_dir / "SKILL.md").exists():
+            skill_dirs_in = _category_skill_dirs(install_dir)
+            if skill_dirs_in:
+                raise ValueError(
+                    f"Refusing to overwrite category directory '{install_dir}' "
+                    f"which contains {len(skill_dirs_in)} skill(s): "
+                    f"{', '.join(sorted(skill_dirs_in))}. "
+                    f"Use a different --name or install into a subcategory."
+                )
         shutil.rmtree(install_dir)
 
     # Warn (but don't block) if SKILL.md is very large

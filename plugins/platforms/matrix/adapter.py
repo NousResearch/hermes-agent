@@ -70,6 +70,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+from agent.secret_scope import UnscopedSecretError, get_secret
+
 try:
     from mautrix.types import (
         ContentURI,
@@ -813,6 +815,24 @@ def _handle_generated_matrix_recovery_key(mxid: str, recovery_key: str) -> None:
         )
 
 
+def _scoped_recovery_key() -> str:
+    """Resolve MATRIX_RECOVERY_KEY honoring the active profile's secret scope.
+
+    Under ``gateway.multiplex_profiles`` the secret scope holds the secondary
+    profile's credentials, while ``os.environ`` may carry the default profile's
+    key — so a bare ``os.getenv`` resolves the wrong key and E2EE verification
+    fails with "Key MAC does not match" (#69090). We read through
+    :func:`get_secret`, which is scope-aware. An *unscoped* read under multiplex
+    (e.g. the default-profile startup loop) raises ``UnscopedSecretError``; in
+    that context ``os.environ`` is that profile's own value, so we fall back to
+    it — mirroring the established Slack app-token pattern (#59739).
+    """
+    try:
+        return (get_secret("MATRIX_RECOVERY_KEY") or "").strip()
+    except UnscopedSecretError:
+        return os.getenv("MATRIX_RECOVERY_KEY", "").strip()
+
+
 def _sanitize_matrix_html(html: str) -> str:
     sanitizer = _MatrixHtmlSanitizer()
     try:
@@ -854,6 +874,20 @@ def _pre_sanitize_matrix_markdown(text: str) -> str:
     return result
 
 
+def _startup_env_secret(name: str) -> str:
+    """Read a Matrix credential at adapter-startup time, scope-aware.
+
+    Slack pattern (#59739): a scoped read honors the installed profile's
+    secret scope verdict (scoped miss ⇒ empty, no borrowing the process
+    env); only an UNSCOPED read under multiplex (default-profile startup
+    loop) falls back to ``os.environ``, which is that profile's own value.
+    """
+    try:
+        return (get_secret(name) or "").strip()
+    except UnscopedSecretError:
+        return os.getenv(name, "").strip()
+
+
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used.
 
@@ -865,8 +899,8 @@ def check_matrix_requirements() -> bool:
     forever and broke E2EE connect with ``No module named 'asyncpg'``
     (#31116).  Rebinds module-level type globals on success.
     """
-    token = os.getenv("MATRIX_ACCESS_TOKEN", "")
-    password = os.getenv("MATRIX_PASSWORD", "")
+    token = _startup_env_secret("MATRIX_ACCESS_TOKEN")
+    password = _startup_env_secret("MATRIX_PASSWORD")
     homeserver = os.getenv("MATRIX_HOMESERVER", "")
 
     if not token and not password:
@@ -993,12 +1027,14 @@ class MatrixAdapter(BasePlatformAdapter):
         self._homeserver: str = (
             config.extra.get("homeserver", "") or os.getenv("MATRIX_HOMESERVER", "")
         ).rstrip("/")
-        self._access_token: str = config.token or os.getenv("MATRIX_ACCESS_TOKEN", "")
+        self._access_token: str = config.token or _startup_env_secret(
+            "MATRIX_ACCESS_TOKEN"
+        )
         self._user_id: str = config.extra.get("user_id", "") or os.getenv(
             "MATRIX_USER_ID", ""
         )
-        self._password: str = config.extra.get("password", "") or os.getenv(
-            "MATRIX_PASSWORD", ""
+        self._password: str = config.extra.get("password", "") or _startup_env_secret(
+            "MATRIX_PASSWORD"
         )
         self._e2ee_mode: str = _resolve_e2ee_mode(config.extra)
         self._encryption: bool = self._e2ee_mode != "off"
@@ -1577,7 +1613,11 @@ class MatrixAdapter(BasePlatformAdapter):
                             return False
                         logger.warning("Matrix: share_keys() warning during startup: %s", exc)
 
-                    recovery_key = os.getenv("MATRIX_RECOVERY_KEY", "").strip()
+                    # Honor the active profile's secret scope so a secondary
+                    # profile under gateway.multiplex_profiles resolves its own
+                    # recovery key instead of the default profile's (which fails
+                    # E2EE verification with "Key MAC does not match", #69090).
+                    recovery_key = _scoped_recovery_key()
                     if recovery_key:
                         try:
                             await olm.verify_with_recovery_key(recovery_key)
@@ -1875,7 +1915,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 "enabled": bool(self._encryption),
                 "deps_available": _check_e2ee_deps(),
                 "crypto_store_path": str(_CRYPTO_DB_PATH),
-                "recovery_key_configured": bool(os.getenv("MATRIX_RECOVERY_KEY", "").strip()),
+                "recovery_key_configured": bool(
+                    _scoped_recovery_key().strip()
+                ),
             },
             "policy": {
                 "allowed_user_count": len(self._allowed_user_ids),
@@ -4775,7 +4817,10 @@ async def _standalone_send(
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         homeserver = (extra.get("homeserver") or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
-        token = token or os.getenv("MATRIX_ACCESS_TOKEN", "")
+        # In-turn read: standalone sends run inside an installed secret
+        # scope, so honor get_secret's verdict directly (no env fallback on
+        # a scoped miss).
+        token = token or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
         if not homeserver or not token:
             return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}
         txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"

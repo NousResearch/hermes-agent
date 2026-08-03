@@ -28,6 +28,7 @@ Usage:
 import os
 import re
 import difflib
+import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
@@ -178,6 +179,11 @@ class WriteResult:
     """Result from writing a file."""
     bytes_written: int = 0
     dirs_created: bool = False
+    # True when the on-disk sha256 matched the intended content after the
+    # write (post-write verification). None when the backend couldn't
+    # verify (no sha256sum). A mismatch never reaches the caller as a
+    # flag — it becomes a hard error.
+    verified: Optional[bool] = None
     lint: Optional[Dict[str, Any]] = None
     # Semantic diagnostics from the LSP layer, when applicable.  Kept in
     # its own field (not folded into ``lint``) so the model and any
@@ -205,9 +211,18 @@ class PatchResult:
     # See :class:`WriteResult.lsp_diagnostics`.
     lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
-    
+    # Set on success-shaped no-ops: the requested edit was already present
+    # in the file, so nothing was written. Carries a short note for the
+    # model explaining why no diff is included.
+    no_change: bool = False
+    note: Optional[str] = None
+
     def to_dict(self) -> dict:
-        result = {"success": self.success}
+        result: Dict[str, Any] = {"success": self.success}
+        if self.no_change:
+            result["no_change"] = True
+        if self.note:
+            result["note"] = self.note
         if self.diff:
             result["diff"] = self.diff
         if self.files_modified:
@@ -435,7 +450,7 @@ class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
     
     @abstractmethod
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """Read a file with pagination support."""
         ...
 
@@ -711,7 +726,7 @@ MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_FILE_SIZE = 50 * 1024  # 50KB
 DEFAULT_READ_OFFSET = 1
-DEFAULT_READ_LIMIT = 500
+DEFAULT_READ_LIMIT = 2000
 DEFAULT_SEARCH_OFFSET = 0
 DEFAULT_SEARCH_LIMIT = 50
 
@@ -884,6 +899,17 @@ class ShellFileOperations(FileOperations):
         
         # Content analysis: >30% non-printable chars = binary
         if content_sample:
+            # Undecodable bytes: the terminal env decodes stdout with
+            # errors="replace", so any non-UTF-8 byte arrives here already
+            # turned into U+FFFD. That char is "printable" (ord 65533), so the
+            # non-printable ratio below never catches it — and returning the
+            # lossy text would let a read→edit→write round-trip silently
+            # overwrite the original bytes with mojibake. Treat a file whose
+            # sample carries the replacement char as binary (read-only) so the
+            # agent can't corrupt it. Legitimate UTF-8 text effectively never
+            # contains U+FFFD.
+            if "\ufffd" in content_sample[:1000]:
+                return True
             non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')
             return non_printable / min(len(content_sample), 1000) > 0.30
@@ -1022,11 +1048,21 @@ class ShellFileOperations(FileOperations):
         script = (
             "set -e; "
             f"d={q_parent}; t={q_path}; "
+            # Follow a symlink target so we edit the file the link points at,
+            # rather than replacing the symlink itself with a plain file (which
+            # orphans the real target and destroys the link). Recompute the
+            # temp dir from the RESOLVED target so `mv` stays same-filesystem
+            # atomic. Best-effort: a broken link or missing readlink/realpath
+            # falls back to the original path (pre-fix behavior, no regression).
+            'if [ -L "$t" ]; then '
+            'rt="$(readlink -f "$t" 2>/dev/null || realpath "$t" 2>/dev/null || true)"; '
+            '[ -n "$rt" ] && { t="$rt"; d="$(dirname "$t")"; }; '
+            "fi; "
             'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
             '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
             '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
             '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '
-            "trap 'rm -f \"$tmp\"' EXIT; "
+            "trap 'rm -f \\\"$tmp\\\"' EXIT; "
             # preserve mode of an existing target (best-effort, never fatal)
             'if [ -e "$t" ]; then '
             'm="$(stat -c%a "$t" 2>/dev/null || stat -f%Lp "$t" 2>/dev/null || true)"; '
@@ -1095,7 +1131,7 @@ class ShellFileOperations(FileOperations):
     # READ Implementation
     # =========================================================================
     
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
         
@@ -1537,6 +1573,33 @@ class ShellFileOperations(FileOperations):
         except ValueError:
             bytes_written = len(content.encode('utf-8'))
 
+        # Post-write content verification (cheap, one shell call): compare
+        # the on-disk sha256 to the intended content's hash. Production
+        # mining shows models re-reading files right after writing them to
+        # confirm persistence (154 verify-reads in a 400k-msg window) —
+        # an explicit verified flag makes that turn unnecessary, and a
+        # mismatch is surfaced as a hard error instead of silent corruption
+        # (mirrors patch_replace's post-write verification).
+        content_verified: Optional[bool] = None
+        try:
+            hash_cmd = f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null"
+            hash_result = self._exec(hash_cmd)
+            if hash_result.exit_code == 0 and hash_result.stdout.strip():
+                disk_sha = hash_result.stdout.strip().split()[0]
+                expected_sha = hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()
+                content_verified = disk_sha == expected_sha
+                if not content_verified:
+                    return WriteResult(
+                        error=(
+                            f"Post-write verification failed for {path}: on-disk "
+                            "content hash differs from the intended write. The "
+                            "write did not persist correctly — re-read the file "
+                            "and retry."
+                        )
+                    )
+        except Exception:
+            content_verified = None
+
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
 
@@ -1557,6 +1620,7 @@ class ShellFileOperations(FileOperations):
         return WriteResult(
             bytes_written=bytes_written,
             dirs_created=dirs_created,
+            verified=content_verified,
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
         )
@@ -1610,6 +1674,23 @@ class ShellFileOperations(FileOperations):
         )
         
         if error or match_count == 0:
+            # Already-applied detection: the most common patch failure in
+            # production is a re-send of an edit that has already landed
+            # (identical old/new strings, or old_string gone while
+            # new_string is present verbatim). Surface that as an explicit
+            # success-shaped no-op so the model moves on instead of
+            # burning turns on re-reads and re-patches.
+            from tools.fuzzy_match import is_already_applied
+            if is_already_applied(content, old_string, new_string):
+                return PatchResult(
+                    success=True,
+                    no_change=True,
+                    note=(
+                        f"File already contains the target text — the edit "
+                        f"appears to be already applied to {path}. No write "
+                        "performed; do not re-send this patch."
+                    ),
+                )
             err_msg = error or f"Could not find match for old_string in {path}"
             try:
                 from tools.fuzzy_match import format_no_match_hint
@@ -2090,6 +2171,15 @@ class ShellFileOperations(FileOperations):
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:
+            # Multi-path recovery: models frequently pass several paths in
+            # one string ("dir1 dir2 dir3" or comma-separated). Instead of
+            # failing the whole call, split, search every path that exists,
+            # merge the results, and report the skipped parts.
+            multi = self._try_multi_path_search(
+                pattern, path, target, file_glob, limit, offset, output_mode, context
+            )
+            if multi is not None:
+                return multi
             # Try to suggest nearby paths
             parent = os.path.dirname(path) or "."
             basename_query = os.path.basename(path)
@@ -2126,6 +2216,129 @@ class ShellFileOperations(FileOperations):
             return self._search_content(pattern, path, file_glob, limit, offset, 
                                         output_mode, context)
     
+    def _try_multi_path_search(self, pattern: str, path: str, target: str,
+                               file_glob: Optional[str], limit: int, offset: int,
+                               output_mode: str, context: int) -> Optional[SearchResult]:
+        """Recover a not-found ``path`` that is really several paths in one string.
+
+        Production trajectories show models passing "dir1 dir2 dir3" (or
+        comma-separated lists) as ``path``. Split on whitespace/commas; when
+        at least one candidate exists and at least two candidates were given,
+        search every existing path, merge results, and note skipped parts.
+        Returns None when this doesn't look like a multi-path string.
+        """
+        parts = [p for chunk in path.split(",") for p in chunk.split() if p.strip()]
+        if len(parts) < 2:
+            return None
+        existing, missing = [], []
+        for p in parts:
+            expanded = self._expand_path(p)
+            chk = self._exec(
+                f"test -e {self._escape_shell_arg(expanded)} && echo exists || echo not_found"
+            )
+            (existing if "exists" in chk.stdout else missing).append(expanded)
+        if not existing:
+            return None
+
+        merged = SearchResult()
+        for p in existing:
+            if target == "files":
+                sub = self._search_files(pattern, p, limit, offset)
+            else:
+                sub = self._search_content(pattern, p, file_glob, limit, offset,
+                                           output_mode, context)
+            if sub.error:
+                continue
+            merged.matches.extend(sub.matches)
+            merged.files.extend(sub.files)
+            merged.counts.update(sub.counts)
+            merged.total_count += sub.total_count
+            merged.truncated = merged.truncated or sub.truncated
+        # Respect the caller's limit across the merged set.
+        merged.matches = merged.matches[:limit]
+        merged.files = merged.files[:limit]
+        note = f"path contained {len(parts)} entries; searched {len(existing)} that exist"
+        if missing:
+            note += "; skipped missing: " + ", ".join(missing[:3])
+            if len(missing) > 3:
+                note += f" (+{len(missing) - 3} more)"
+        merged.warning = note
+        return merged
+
+    def _zero_match_probe(self, pattern: str, path: str,
+                          file_glob: Optional[str]) -> Optional[str]:
+        """Return a hint for a 0-match content search, or None.
+
+        13.9% of production content searches return zero matches and give
+        the model nothing to steer by. Run ONE cheap case-insensitive count
+        probe; if it hits, say so. If the pattern contains regex
+        metacharacters, also probe it as a fixed string. Bounded: two rg
+        invocations max, count-only output.
+        """
+        if not self._has_command('rg'):
+            return None
+        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        probe = self._exec(
+            f"rg -i --count-matches{glob_expr} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"2>/dev/null | head -50",
+            timeout=30,
+        )
+        ci_total = 0
+        ci_files = 0
+        for line in (probe.stdout or "").strip().splitlines():
+            _p, _sep, n = line.rpartition(":")
+            if n.isdigit():
+                ci_total += int(n)
+                ci_files += 1
+        if ci_total > 0:
+            return (
+                f"0 exact matches, but {ci_total} case-insensitive match(es) "
+                f"in {ci_files} file(s) — the pattern's casing may be wrong."
+            )
+        # Hidden/ignored probe: rg skips dotdirs and .gitignore'd files by
+        # default. When the pattern exists only there, say so instead of
+        # returning a bare zero (bench case: match in .hidden/ silently
+        # missing from results).
+        hidden = self._exec(
+            f"rg --hidden --no-ignore --count-matches{glob_expr} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"2>/dev/null | head -50",
+            timeout=30,
+        )
+        h_total = 0
+        h_files = 0
+        for line in (hidden.stdout or "").strip().splitlines():
+            _p, _sep, n = line.rpartition(":")
+            if n.isdigit():
+                h_total += int(n)
+                h_files += 1
+        if h_total > 0:
+            return (
+                f"0 matches in visible files, but {h_total} match(es) in "
+                f"{h_files} hidden or gitignored file(s) — these are excluded "
+                "by default. Search the hidden path explicitly to include them."
+            )
+        if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
+            fixed = self._exec(
+                f"rg -F --count-matches{glob_expr} "
+                f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+                f"2>/dev/null | head -50",
+                timeout=30,
+            )
+            f_total = sum(
+                int(line.rpartition(":")[2])
+                for line in (fixed.stdout or "").strip().splitlines()
+                if line.rpartition(":")[2].isdigit()
+            )
+            if f_total > 0:
+                return (
+                    f"0 regex matches, but {f_total} literal match(es) — the "
+                    "pattern contains regex metacharacters that likely need "
+                    "escaping (or pass a simpler substring)."
+                )
+        return None
+
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
         # Auto-prepend **/ for recursive search if not already present
@@ -2262,7 +2475,9 @@ class ShellFileOperations(FileOperations):
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search for content inside files (grep-like)."""
         # Try ripgrep first (fast), fallback to grep (slower but works)
+        used_rg = False
         if self._has_command('rg'):
+            used_rg = True
             result = self._search_with_rg(pattern, path, file_glob, limit, offset,
                                           output_mode, context)
         elif self._has_command('grep'):
@@ -2275,13 +2490,39 @@ class ShellFileOperations(FileOperations):
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
             )
 
+        # Zero-match steering: a 0-match result with no guidance is a dead
+        # turn. Probe cheaply for near-misses (wrong casing, hidden-only
+        # matches, unescaped regex metacharacters) and attach the finding
+        # as a warning. Runs for BOTH engines.
+        if (not result.error and result.total_count == 0
+                and not result.matches and not result.files and not result.counts):
+            try:
+                hint = self._zero_match_probe(pattern, path, file_glob)
+            except Exception:
+                hint = None
+            if hint:
+                result.warning = hint if not result.warning else f"{result.warning} {hint}"
+
+        # rg auto-enables --multiline for \n patterns, so the line-oriented
+        # explanation only applies to the grep fallback engine.
+        if used_rg:
+            return result
         return _maybe_warn_line_oriented_newline_pattern(result, pattern)
     
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
-        
+
+        # Auto-multiline: a regex `\n` (or a literal newline in the pattern)
+        # cannot match in rg's default line-oriented mode — it used to hard
+        # error ("the literal \"\\n\" is not allowed") and burn a turn. When
+        # the pattern clearly wants to cross lines, enable -U/--multiline
+        # up front and note it in the result.
+        multiline = _pattern_has_regex_newline(pattern)
+        if multiline:
+            cmd_parts.append("--multiline")
+
         # Add context if requested
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
@@ -2331,6 +2572,10 @@ class ShellFileOperations(FileOperations):
 
         # Parse the diagnostic-free payload so error text never becomes a match.
         stdout = payload
+        _ml_note = (
+            "Pattern contains \\n — multiline mode (-U) was enabled automatically "
+            "so the regex can match across line boundaries."
+        ) if multiline else None
         # Parse results based on output mode
         if output_mode == "files_only":
             all_files = [f for f in stdout.strip().split('\n') if f]
@@ -2341,6 +2586,7 @@ class ShellFileOperations(FileOperations):
                 total_count=total,
                 truncated=bool(limit_reason),
                 limit_reason=limit_reason,
+                warning=_ml_note,
             )
         
         elif output_mode == "count":
@@ -2401,6 +2647,7 @@ class ShellFileOperations(FileOperations):
                 total_count=total,
                 truncated=total > offset + limit or bool(limit_reason),
                 limit_reason=limit_reason,
+                warning=_ml_note,
             )
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],

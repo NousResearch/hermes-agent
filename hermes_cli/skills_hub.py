@@ -23,7 +23,6 @@ from rich.table import Table
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
 from hermes_constants import display_hermes_home
-from agent.skill_utils import is_excluded_skill_path
 
 _console = Console()
 
@@ -184,29 +183,18 @@ def _existing_categories() -> List[str]:
     Used to suggest reusable categories when interactively installing from a
     URL. Hidden dirs (``.hub``, ``.trash``) are skipped.
     """
-    from tools.skills_hub import SKILLS_DIR
-    out: List[str] = []
+    from tools.skills_hub import SKILLS_DIR, _category_skill_dirs
     try:
-        for entry in SKILLS_DIR.iterdir():
-            if not entry.is_dir() or entry.name.startswith("."):
-                continue
-            # Only count as a category if it contains skills, not if it IS a skill.
-            # Heuristic: if ``<entry>/SKILL.md`` exists, it's a skill at the
-            # top level (no category); otherwise treat as a category bucket.
-            if (entry / "SKILL.md").exists():
-                continue
-            # Has at least one nested SKILL.md (excluding dependency/cache dirs)?
-            try:
-                if any(
-                    not is_excluded_skill_path(p)
-                    for p in entry.rglob("SKILL.md")
-                ):
-                    out.append(entry.name)
-            except OSError:
-                continue
+        # _category_skill_dirs returns children containing any active
+        # SKILL.md — including top-level skills themselves. Only children
+        # WITHOUT their own SKILL.md are category buckets.
+        return sorted(
+            name
+            for name in set(_category_skill_dirs(SKILLS_DIR))
+            if not (SKILLS_DIR / name / "SKILL.md").exists()
+        )
     except (FileNotFoundError, OSError):
         return []
-    return sorted(set(out))
 
 
 def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[str]:

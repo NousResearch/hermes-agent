@@ -14,6 +14,7 @@ import re
 import stat
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 INSTALL_SH = Path(__file__).resolve().parent.parent / "scripts" / "install.sh"
 
@@ -126,3 +127,88 @@ def test_acp_launcher_does_not_follow_a_symlink_into_the_venv(tmp_path):
     assert not shim_path.is_symlink(), (
         "command_link_dir/hermes-acp must be replaced with a regular file"
     )
+
+
+# ---------------------------------------------------------------------------
+# hermes-agent launcher regression (#74819)
+# ---------------------------------------------------------------------------
+
+HERMES_AGENT_BLOCK = re.compile(
+    r'(rm -f "\$command_link_dir/hermes-agent".*?'
+    r'log_success "Installed hermes-agent launcher[^\n]*\n)',
+    re.S,
+)
+
+
+def _extract_hermes_agent_shim_block() -> str:
+    match = HERMES_AGENT_BLOCK.search(INSTALL_SH.read_text(encoding="utf-8"))
+    assert match, (
+        "could not locate the hermes-agent launcher block in scripts/install.sh — "
+        "if it was renamed, update this test with it"
+    )
+    return match.group(1)
+
+
+def _run_hermes_agent_block(tmp_path: Path, use_venv: str) -> Path | None:
+    """Execute the extracted hermes-agent block with the env vars setup_path() sets."""
+    if use_venv == "false":
+        # --no-venv: hermes-agent is NOT installed by this block (handled
+        # elsewhere), so there's nothing to test here.
+        return None
+
+    command_link_dir = tmp_path / "local_bin"
+    command_link_dir.mkdir()
+    hermes_bin = tmp_path / "venv" / "bin" / "python"
+    hermes_bin.parent.mkdir(parents=True)
+    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+
+    script = (
+        "set -e\n"
+        f"HERMES_BIN={hermes_bin}\n"
+        f"INSTALL_DIR={install_dir}\n"
+        f"command_link_dir={command_link_dir}\n"
+        f"command_link_display_dir={command_link_dir}\n"
+        f"USE_VENV={use_venv}\n"
+        "log_success(){ :; }\n" + _extract_hermes_agent_shim_block()
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, (
+        f"hermes-agent shim block failed:\nstdout={result.stdout}\nstderr={result.stderr}"
+    )
+    return command_link_dir / "hermes-agent"
+
+
+def test_venv_install_writes_executable_hermes_agent_launcher(tmp_path):
+    """venv install must write a user-executable hermes-agent launcher."""
+    shim = _run_hermes_agent_block(tmp_path, "true")
+    assert shim is not None
+    assert shim.is_file()
+    assert shim.stat().st_mode & stat.S_IXUSR, "launcher must be user-executable"
+
+    text = shim.read_text(encoding="utf-8")
+    assert "unset PYTHONPATH" in text
+    assert "unset PYTHONHOME" in text
+    assert "run_agent.py" in text, "hermes-agent must dispatch to run_agent.py"
+
+
+def test_hermes_agent_launcher_cleanup_on_uninstall(tmp_path):
+    """uninstall.remove_wrapper_script() must remove hermes-agent alongside
+    hermes and hermes-acp."""
+    from hermes_cli.uninstall import remove_wrapper_script
+
+    # Simulate a hermes-agent wrapper in the user-local location
+    local_shim = tmp_path / ".local" / "bin" / "hermes-agent"
+    local_shim.parent.mkdir(parents=True)
+    local_shim.write_text("#!/usr/bin/env bash\nexec hermes-agent\n", encoding="utf-8")
+
+    with patch.object(Path, "home", return_value=tmp_path):
+        removed = remove_wrapper_script()
+
+    assert local_shim in removed, "local hermes-agent wrapper must be removed"

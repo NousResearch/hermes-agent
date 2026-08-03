@@ -77,7 +77,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
@@ -255,22 +255,34 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         # Allowlist: honor the *documented* WHATSAPP_CLOUD_ALLOWED_USERS (the
         # var the setup wizard writes) in addition to WHATSAPP_CLOUD_ALLOW_FROM.
-        # The adapter historically read only ALLOW_FROM, so an allowlist
-        # configured via the documented var silently dropped every inbound.
+        # Precedence matches construction forever: explicit config (by key
+        # presence, including empty []), then legacy ALLOW_FROM, then
+        # ALLOWED_USERS. Track the winning source so live DM checks do not let
+        # a lower-precedence env broaden access.
+        if "allow_from" in extra:
+            self._dm_allowlist_source = "config"
+            allow_raw = extra.get("allow_from")
+        elif "allowFrom" in extra:
+            self._dm_allowlist_source = "config"
+            allow_raw = extra.get("allowFrom")
+        elif _get_wsecret("WHATSAPP_CLOUD_ALLOW_FROM"):
+            self._dm_allowlist_source = "WHATSAPP_CLOUD_ALLOW_FROM"
+            allow_raw = _get_wsecret("WHATSAPP_CLOUD_ALLOW_FROM")
+        elif _get_wsecret("WHATSAPP_CLOUD_ALLOWED_USERS"):
+            self._dm_allowlist_source = "WHATSAPP_CLOUD_ALLOWED_USERS"
+            allow_raw = _get_wsecret("WHATSAPP_CLOUD_ALLOWED_USERS")
+        else:
+            self._dm_allowlist_source = None
+            allow_raw = None
         self._allow_from: set[str] = self._normalize_allow_ids(
-            self._coerce_allow_list(
-                extra.get("allow_from")
-                or extra.get("allowFrom")
-                or os.getenv("WHATSAPP_CLOUD_ALLOW_FROM")
-                or os.getenv("WHATSAPP_CLOUD_ALLOWED_USERS")
-            )
+            self._coerce_allow_list(allow_raw)
         )
         # DM policy: explicit config wins; otherwise choose a safe, working
         # default -- "open" if the operator opted into allow-all, else
         # "allowlist" when an allowlist is configured (so it is actually
         # enforced instead of silently dropping), else "open".
         _allow_all_optin = str(
-            os.getenv("WHATSAPP_CLOUD_ALLOW_ALL_USERS", "")
+            _get_wsecret("WHATSAPP_CLOUD_ALLOW_ALL_USERS", default="") or ""
         ).strip().lower() in {"true", "1", "yes"}
         _default_dm_policy = (
             "open" if _allow_all_optin
@@ -278,20 +290,21 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         self._dm_policy: str = str(
             extra.get("dm_policy")
-            or os.getenv("WHATSAPP_CLOUD_DM_POLICY")
-            or os.getenv("WHATSAPP_DM_POLICY")
+            or _get_wsecret("WHATSAPP_CLOUD_DM_POLICY")
+            or _get_wsecret("WHATSAPP_DM_POLICY")
             or _default_dm_policy
         ).strip().lower()
         self._group_policy: str = str(
             extra.get("group_policy")
-            or os.getenv("WHATSAPP_CLOUD_GROUP_POLICY")
-            or os.getenv("WHATSAPP_GROUP_POLICY", "open")
+            or _get_wsecret("WHATSAPP_CLOUD_GROUP_POLICY")
+            or _get_wsecret("WHATSAPP_GROUP_POLICY", default="open")
+            or "open"
         ).strip().lower()
         self._group_allow_from: set[str] = self._normalize_allow_ids(
             self._coerce_allow_list(
                 extra.get("group_allow_from")
                 or extra.get("groupAllowFrom")
-                or os.getenv("WHATSAPP_CLOUD_GROUP_ALLOW_FROM")
+                or _get_wsecret("WHATSAPP_CLOUD_GROUP_ALLOW_FROM")
             )
         )
         self._mention_patterns = self._compile_mention_patterns()
@@ -389,7 +402,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Allowlist check against the normalized bare wa_id."""
         if self._dm_policy == "allowlist":
             bare = re.sub(r"\D", "", str(sender_id).split("@", 1)[0])
-            return (bare or sender_id) in self._allow_from
+            allow_from = self._normalize_allow_ids(self._live_dm_allow_from())
+            return (bare or sender_id) in allow_from
         return super()._is_dm_allowed(sender_id)
 
     def _open_dm_opted_in(self) -> bool:
@@ -399,7 +413,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         WHATSAPP_ALLOW_ALL_USERS; the Cloud adapter's documented open-access
         opt-in is WHATSAPP_CLOUD_ALLOW_ALL_USERS, so honor it here too.
         """
-        if str(os.getenv("WHATSAPP_CLOUD_ALLOW_ALL_USERS", "")).strip().lower() in {"true", "1", "yes"}:
+        if str(_get_wsecret("WHATSAPP_CLOUD_ALLOW_ALL_USERS", default="") or "").strip().lower() in {"true", "1", "yes"}:
             return True
         return super()._open_dm_opted_in()
 

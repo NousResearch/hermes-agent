@@ -464,6 +464,215 @@ class TestExistingMemoryStorePreserved:
         assert backups[0].read_text(encoding="utf-8") == EXISTING_MEMORY
 
 
+# ---------------------------------------------------------------------------
+# config.yaml preservation (sibling of the MEMORY.md case above)
+# ---------------------------------------------------------------------------
+
+EXISTING_CONFIG = """\
+model: hermes-4-405b
+api_key_env: OPENROUTER_API_KEY
+command_allowlist:
+  - ls *
+  - cat *
+approvals:
+  deny:
+    - shutdown *
+mcp_servers:
+  local-notes:
+    command: uvx
+    args:
+      - notes-mcp
+telegram:
+  enabled: true
+  chat_id: 12345
+"""
+
+MALFORMED_CONFIG = """\
+model: hermes-4-405b
+command_allowlist:
+  - ls *
+   - cat *
+approvals: [unclosed
+"""
+
+CONFIG_WRITING_KINDS = ("command-allowlist", "command-denylist", "mcp-servers")
+
+
+class TestExistingConfigPreserved:
+    """An import must not destroy the config.yaml it merges into.
+
+    ``load_yaml_file`` returned ``{}`` for an absent file AND for a present
+    file it could not read or parse.  The three importers below read
+    config.yaml, merge one section into it, and write the whole mapping back —
+    so a YAML syntax error or a permission problem meant every existing
+    setting was replaced by just the merged section, reported as ``imported``.
+    """
+
+    @pytest.fixture()
+    def config_path(self, hermes_home):
+        return hermes_home / "config.yaml"
+
+    @staticmethod
+    def items_for(report, kind):
+        return [i for i in report["items"] if i["kind"] == kind]
+
+    # -- present but unreadable: refuse, change nothing --------------------
+
+    def test_malformed_config_is_left_byte_identical(
+            self, claude_tree, hermes_home, config_path):
+        config_path.write_text(MALFORMED_CONFIG, encoding="utf-8")
+        before = config_path.read_bytes()
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        assert config_path.read_bytes() == before
+
+    def test_malformed_config_records_an_error_not_an_import(
+            self, claude_tree, hermes_home, config_path):
+        config_path.write_text(MALFORMED_CONFIG, encoding="utf-8")
+
+        report = run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        for kind in CONFIG_WRITING_KINDS:
+            items = self.items_for(report, kind)
+            assert items, f"no {kind} item recorded"
+            assert [i["status"] for i in items] == ["error"], kind
+            reason = items[0]["reason"]
+            assert str(config_path) in reason
+            assert "not valid YAML" in reason
+            # Points the user at a way out.
+            assert "hermes config edit" in reason
+
+    def test_unreadable_config_is_left_byte_identical(
+            self, claude_tree, hermes_home, config_path):
+        """A permission problem is the other half of the same root cause."""
+        import os
+
+        if os.name != "posix":
+            pytest.skip("chmod-based permission denial is POSIX-only")
+        if getattr(os, "geteuid", lambda: 1)() == 0:
+            pytest.skip("root bypasses file permissions")
+        config_path.write_text(EXISTING_CONFIG, encoding="utf-8")
+        before = config_path.read_bytes()
+        config_path.chmod(0o000)
+        try:
+            report = run_import("claude-code", claude_tree, hermes_home,
+                                execute=True)
+            statuses = {
+                i["status"]
+                for kind in CONFIG_WRITING_KINDS
+                for i in self.items_for(report, kind)
+            }
+            assert statuses == {"error"}
+        finally:
+            config_path.chmod(0o600)
+        assert config_path.read_bytes() == before
+
+    def test_non_mapping_config_is_refused(
+            self, claude_tree, hermes_home, config_path):
+        """Valid YAML that is not a mapping was also collapsed to {}."""
+        config_path.write_text("- just\n- a\n- list\n", encoding="utf-8")
+        before = config_path.read_bytes()
+
+        report = run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        assert config_path.read_bytes() == before
+        reasons = [i["reason"] for i in self.items_for(report, "command-allowlist")]
+        assert any("YAML mapping" in r for r in reasons)
+
+    def test_dry_run_reports_the_refusal_rather_than_a_preview(
+            self, claude_tree, hermes_home, config_path):
+        """--dry-run must not promise an import that would destroy the file."""
+        config_path.write_text(MALFORMED_CONFIG, encoding="utf-8")
+
+        report = run_import("claude-code", claude_tree, hermes_home, execute=False)
+
+        for kind in CONFIG_WRITING_KINDS:
+            statuses = [i["status"] for i in self.items_for(report, kind)]
+            assert statuses == ["error"], kind
+            assert "imported" not in statuses
+
+    # -- the regression that actually pins the data loss -------------------
+
+    def test_import_preserves_every_pre_existing_config_key(
+            self, claude_tree, hermes_home, config_path):
+        config_path.write_text(EXISTING_CONFIG, encoding="utf-8")
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        merged = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        # Untouched sections survive verbatim.
+        assert merged["model"] == "hermes-4-405b"
+        assert merged["api_key_env"] == "OPENROUTER_API_KEY"
+        assert merged["telegram"] == {"enabled": True, "chat_id": 12345}
+        # Merged-into sections keep their existing members ...
+        assert "ls *" in merged["command_allowlist"]
+        assert "shutdown *" in merged["approvals"]["deny"]
+        assert "local-notes" in merged["mcp_servers"]
+        # ... alongside the imported ones.
+        assert "npm run build" in merged["command_allowlist"]
+        assert "github" in merged["mcp_servers"]
+
+    def test_absent_config_is_still_created(
+            self, claude_tree, hermes_home, config_path):
+        """The guard must not break first-time creation."""
+        assert not config_path.exists()
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        created = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert "npm run build" in created["command_allowlist"]
+
+    def test_empty_config_is_treated_as_absent(
+            self, claude_tree, hermes_home, config_path):
+        config_path.write_text("", encoding="utf-8")
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        created = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert "npm run build" in created["command_allowlist"]
+
+    # -- the write itself --------------------------------------------------
+
+    def test_config_write_is_atomic_and_leaves_no_temp_files(
+            self, claude_tree, hermes_home, config_path):
+        config_path.write_text(EXISTING_CONFIG, encoding="utf-8")
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        leftovers = [p.name for p in hermes_home.glob(".tmp*")]
+        assert leftovers == []
+
+    def test_symlinked_config_stays_a_symlink(
+            self, claude_tree, hermes_home, tmp_path, config_path):
+        """A non-atomic ``write_text`` would follow it; ``os.replace`` would
+        clobber it.  ``atomic_replace`` keeps the link and writes the target."""
+        real = tmp_path / "real-config.yaml"
+        real.write_text(EXISTING_CONFIG, encoding="utf-8")
+        config_path.symlink_to(real)
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        assert config_path.is_symlink()
+        assert "npm run build" in real.read_text(encoding="utf-8")
+
+    def test_failed_write_does_not_truncate_the_existing_config(
+            self, hermes_home, config_path, monkeypatch):
+        """An interrupted dump leaves the previous file complete."""
+        from hermes_cli import agent_import
+
+        config_path.write_text(EXISTING_CONFIG, encoding="utf-8")
+        before = config_path.read_bytes()
+
+        def boom(*_args, **_kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(agent_import, "atomic_yaml_write", boom)
+        with pytest.raises(OSError):
+            agent_import.dump_yaml_file(config_path, {"model": "replacement"})
+
+        assert config_path.read_bytes() == before
+
 
 # ---------------------------------------------------------------------------
 # CLI wiring

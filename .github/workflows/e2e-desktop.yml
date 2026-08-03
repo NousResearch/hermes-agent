@@ -39,8 +39,13 @@ jobs:
       # ── Node ───────────────────────────────────────────────────────────
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
+
+      - name: grab npm 12
+        run: |
+          npm i -g npm@12
+
       # Full npm ci (not --ignore-scripts): electron's postinstall
       # downloads the binary we launch, and node-pty's native build is
       # needed for the terminal pane.
@@ -56,7 +61,7 @@ jobs:
           # fetching a manifest from raw.githubusercontent.com on EVERY job —
           # a transient fetch failure fails the whole job (2026-07-28 slice-5
           # incident). Pinned, the binary downloads directly; no manifest hop.
-          version: "0.9.28"
+          version: '0.9.28'
           enable-cache: true
           cache-dependency-glob: |
             pyproject.toml
@@ -106,11 +111,11 @@ jobs:
               npx playwright test --reporter=list
           fi
         env:
-          CI: "true"
+          CI: 'true'
           # Ensure no real API keys leak into the test env.
-          OPENROUTER_API_KEY: ""
-          OPENAI_API_KEY: ""
-          NOUS_API_KEY: ""
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''
 
       # ── Save updated baselines to cache (main only) ───────────────────
       - name: Save updated baselines to cache

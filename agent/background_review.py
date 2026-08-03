@@ -18,6 +18,7 @@ for invariants and PR review criteria.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -284,6 +285,15 @@ _SKILL_REVIEW_PROMPT = (
     "  • One-off task narratives. A user asking 'summarize today's "
     "market' or 'analyze this PR' is not a class of work that warrants "
     "a skill.\n\n"
+    "  • Unresolved failures: if the session ended WITHOUT actually "
+    "finding a working method — you tried several things, none worked, "
+    "and told the user to check manually — do NOT write those attempts "
+    "up as a 'reliable workflow' or 'recommended approach'. That presents "
+    "an untested sequence of failures as validated guidance a future "
+    "session will trust and repeat. Either say 'Nothing to save', or, "
+    "only if you are independently confident of a real working alternative "
+    "(not something you are merely guessing might work), capture ONLY that "
+    "alternative — never the dead ends, and never dressed up as best practice.\n\n"
     "If a tool failed because of setup state, capture the FIX (install "
     "command, config step, env var to set) under an existing setup or "
     "troubleshooting skill — never 'this tool does not work' as a "
@@ -377,6 +387,15 @@ _COMBINED_REVIEW_PROMPT = (
     "  • One-off task narratives. A user asking 'summarize today's "
     "market' or 'analyze this PR' is not a class of work that warrants "
     "a skill.\n\n"
+    "  • Unresolved failures: if the session ended WITHOUT actually "
+    "finding a working method — you tried several things, none worked, "
+    "and told the user to check manually — do NOT write those attempts "
+    "up as a 'reliable workflow' or 'recommended approach'. That presents "
+    "an untested sequence of failures as validated guidance a future "
+    "session will trust and repeat. Either say 'Nothing to save', or, "
+    "only if you are independently confident of a real working alternative "
+    "(not something you are merely guessing might work), capture ONLY that "
+    "alternative — never the dead ends, and never dressed up as best practice.\n\n"
     "If a tool failed because of setup state, capture the FIX (install "
     "command, config step, env var to set) under an existing setup or "
     "troubleshooting skill — never 'this tool does not work' as a "
@@ -727,6 +746,43 @@ def _run_review_in_thread(
             # _cached_system_prompt below.
             if not _routed:
                 _fork_kwargs["reasoning_config"] = getattr(agent, "reasoning_config", None)
+                # Gateway session context is appended to the parent's cached
+                # system prompt at API-call time through this field.  Preserve
+                # it on same-model forks so the complete effective system
+                # prompt remains byte-identical and can reuse the warm prefix.
+                _fork_kwargs["ephemeral_system_prompt"] = getattr(
+                    agent, "ephemeral_system_prompt", None
+                )
+                # Prefill messages are inserted immediately after the system
+                # message at API-call time (chat_completion_helpers.py /
+                # conversation_loop.py), so a parent with prefill configured
+                # (gateway prefill_messages_file) would otherwise diverge
+                # from the warm prefix at message index 1 — same bug class
+                # as the ephemeral prompt above, one position later.
+                # Deep copy: the unicode-error recovery path mutates
+                # prefill entries IN PLACE (_sanitize_messages_surrogates
+                # via conversation_loop), so sharing dicts would let a
+                # fork-side sanitize rewrite the parent's prefill bytes.
+                _parent_prefill = copy.deepcopy(
+                    getattr(agent, "prefill_messages", None) or []
+                )
+                if _parent_prefill:
+                    _fork_kwargs["prefill_messages"] = _parent_prefill
+                # OpenRouter provider-routing pins: prompt caches live per
+                # UPSTREAM provider, so a fork without the parent's pins can
+                # be routed to a different upstream and miss the warm cache
+                # even with byte-identical prompt/tools bytes.
+                for _pref_attr in (
+                    "providers_allowed",
+                    "providers_ignored",
+                    "providers_order",
+                    "provider_sort",
+                    "provider_require_parameters",
+                    "provider_data_collection",
+                ):
+                    _pref_val = getattr(agent, _pref_attr, None)
+                    if _pref_val:
+                        _fork_kwargs[_pref_attr] = _pref_val
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
                 max_iterations=16,

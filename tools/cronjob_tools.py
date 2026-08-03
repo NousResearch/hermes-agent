@@ -9,12 +9,30 @@ import json
 import logging
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
+
+# Cadence for the heartbeat that keeps the calling agent's inactivity watchdog
+# at bay while a manual `cronjob(action="run")` executes the job synchronously
+# in-process (#76502). Mirrors the 10s cadence of
+# tools/environments/base.py::touch_activity_if_due (delegate_task's heartbeat
+# uses 30s) — comfortably below the 1800s default HERMES_AGENT_TIMEOUT.
+_CRON_RUN_HEARTBEAT_INTERVAL = 10.0
+
+# Hard ceiling on how long the heartbeat keeps the parent watchdog at bay.
+# The child cron run has its own inactivity watchdog (HERMES_CRON_TIMEOUT,
+# default 600s) that bounds a wedged job, but with HERMES_CRON_TIMEOUT=0
+# (explicit "unlimited") a truly hung run_one_job would otherwise mask the
+# gateway watchdog forever — pre-#76502 the parent was at least reaped at
+# ~1800s. After this ceiling the heartbeat stops and the gateway watchdog
+# regains authority over the turn.
+_CRON_RUN_HEARTBEAT_CEILING = 6 * 3600.0
 
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -81,7 +99,7 @@ _CRON_THREAT_PATTERNS = [
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|id_rsa|id_ed25519|id_ecdsa)', "read_secrets"),
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
@@ -180,12 +198,18 @@ def _strip_cron_safe_constructs(prompt: str) -> str:
     github-pr-workflow + github-code-review) contains several such blocks,
     and the old ``re.search`` + single ``str.replace`` left the rest to trip
     the exfil_curl_auth_header detector on every run. The trailing
-    ``[^\\n]*`` also consumes the rest of the URL path so no dangling
-    fragment remains.
+    ``[^\\s;&|$`]*`` consumes only the URL path — never whitespace, command
+    separators, or subshell openers — so a payload smuggled onto the same
+    line (``;``, ``&&``, ``|``, ``$(...)``, backticks) survives the strip
+    and is still scanned. The host must be exactly ``api.github.com``
+    followed by ``/``, whitespace, quote, or end: lookalike authorities
+    (``api.github.com.evil.com``, ``api.github.com@evil.com``) are not the
+    trusted construct and fall through to the exfil detectors, while
+    legitimately quoted bare-host URLs stay exempt.
     """
     return re.sub(
-        rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
-        r'\s+["\']?https://api\.github\.com(?:/|\b)[^\n]*',
+        rf'curl\s+[^\n;&|$`]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
+        r'\s+["\']?https://api\.github\.com(?::\d+)?(?:/|\s|$|["\'])[^\s;&|$`]*',
         'curl https://api.github.com/user',
         prompt,
         flags=re.IGNORECASE,
@@ -602,7 +626,70 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
+        #
+        # A manual `run` executes the job synchronously on the caller's thread,
+        # and a cron job is itself a full agent run that routinely takes
+        # minutes. The calling turn emits no tool activity for that entire
+        # window, so the gateway inactivity watchdog concludes the agent is
+        # hung and kills the parent turn (#76502). Fire a heartbeat into the
+        # caller's activity tracker (the same signal tool progress uses) while
+        # the job runs, so the watchdog sees a working tool instead of a
+        # silent one — mirrors the delegate_task heartbeat pattern. Best-effort:
+        # if no activity callback is registered (direct Python callers, tests),
+        # behavior is unchanged.
+        try:
+            from tools.environments.base import get_activity_callback
+
+            # Capture on THIS thread: the callback is thread-local (installed
+            # by the tool executor as the calling agent's _touch_activity), so
+            # a freshly spawned thread cannot read it back.
+            activity_cb = get_activity_callback()
+        except Exception:
+            activity_cb = None
+
+        _heartbeat_stop = threading.Event()
+        _heartbeat_thread = None
+
+        if activity_cb is not None:
+            job_name = str(job.get("name") or job_id)
+
+            def _heartbeat_loop() -> None:
+                started = time.monotonic()
+                while not _heartbeat_stop.wait(_CRON_RUN_HEARTBEAT_INTERVAL):
+                    elapsed = time.monotonic() - started
+                    if elapsed > _CRON_RUN_HEARTBEAT_CEILING:
+                        # Stop masking the gateway watchdog — a run this long
+                        # with an unlimited child watchdog is likely wedged.
+                        logger.warning(
+                            "cronjob run heartbeat ceiling reached for job "
+                            "'%s' (%.0fs) — stopping heartbeat; gateway "
+                            "watchdog regains authority",
+                            job_name, elapsed,
+                        )
+                        return
+                    try:
+                        activity_cb(
+                            f"cronjob: running job '{job_name}' ({int(elapsed)}s elapsed)"
+                        )
+                    except Exception:
+                        # Never break the job run; keep heartbeating — one
+                        # transient callback error must not silently drop
+                        # watchdog protection for the rest of a long job.
+                        continue
+
+            _heartbeat_thread = threading.Thread(
+                target=_heartbeat_loop,
+                daemon=True,
+                name="cronjob-run-heartbeat",
+            )
+            _heartbeat_thread.start()
+
+        try:
+            processed = run_one_job(job)
+        finally:
+            _heartbeat_stop.set()
+            if _heartbeat_thread is not None:
+                _heartbeat_thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
         refreshed = get_job(job_id) or {}
         ok = refreshed.get("last_status") == "ok"
         return {

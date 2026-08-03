@@ -6,6 +6,7 @@ import json
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -256,6 +257,211 @@ class TestWebServerEndpoints:
 
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    @pytest.mark.requires_wal
+    def test_get_sessions_poll_preserves_pending_wal(self):
+        """Repeated GET-only polls must not checkpoint another writer's WAL."""
+        import sqlite3
+
+        from hermes_cli import web_server
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        web_server._last_auto_archive_check.clear()
+        db_path = get_hermes_home() / "state.db"
+        wal_path = Path(f"{db_path}-wal")
+        writer = SessionDB(db_path=db_path)
+        monitor = None
+        try:
+            writer._conn.execute("PRAGMA wal_autocheckpoint=0")
+            writer.create_session("poll-wal", source="cli")
+            writer.append_message(
+                "poll-wal",
+                role="user",
+                content="pending writer frame " + ("x" * 65_536),
+            )
+
+            monitor = sqlite3.connect(str(db_path), isolation_level=None)
+            wal_bytes_before = wal_path.stat().st_size
+            data_version_before = monitor.execute(
+                "PRAGMA data_version"
+            ).fetchone()[0]
+            counts_before = monitor.execute(
+                "SELECT (SELECT COUNT(*) FROM sessions), "
+                "(SELECT COUNT(*) FROM messages)"
+            ).fetchone()
+
+            responses = [
+                self.client.get(
+                    "/api/sessions?limit=50&offset=0&order=created"
+                )
+                for _ in range(3)
+            ]
+
+            wal_bytes_after = wal_path.stat().st_size
+            data_version_after = monitor.execute(
+                "PRAGMA data_version"
+            ).fetchone()[0]
+            counts_after = monitor.execute(
+                "SELECT (SELECT COUNT(*) FROM sessions), "
+                "(SELECT COUNT(*) FROM messages)"
+            ).fetchone()
+
+            assert all(response.status_code == 200 for response in responses)
+            assert all(response.json()["total"] == 1 for response in responses)
+            assert wal_bytes_before > 0
+            assert wal_bytes_after == wal_bytes_before
+            assert data_version_after == data_version_before
+            assert counts_after == counts_before == (1, 1)
+        finally:
+            if monitor is not None:
+                monitor.close()
+            writer.close()
+
+    def test_get_status_loads_gateway_config_off_event_loop(self, monkeypatch):
+        """Cold gateway config loading must not block the WebSocket loop.
+
+        On Windows the first ``load_gateway_config()`` call imports and
+        discovers platform adapters and can take longer than Desktop's 15s
+        WebSocket timeout.  Running it inline makes a concurrent /api/ws
+        handshake time out before ``gateway.ready`` can be sent.
+        """
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as web_server
+
+        seen = {}
+
+        class _Config:
+            @staticmethod
+            def get_connected_platforms():
+                return []
+
+        def _load():
+            seen["thread"] = threading.get_ident()
+            return _Config()
+
+        monkeypatch.setattr(gateway_config, "load_gateway_config", _load)
+
+        async def _run():
+            event_loop_thread = threading.get_ident()
+            await web_server.get_status()
+            return event_loop_thread
+
+        event_loop_thread = asyncio.run(_run())
+
+        assert seen["thread"] != event_loop_thread
+
+    def test_get_sessions_auto_archive_uses_maintenance_writer(self):
+        from hermes_cli import web_server
+        from hermes_cli.config import load_config, save_config
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session("stale", source="cli")
+            seed.create_session("fresh", source="cli")
+            seed._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (time.time() - 30 * 86400, "stale"),
+            )
+        finally:
+            seed.close()
+
+        config = load_config()
+        config.setdefault("sessions", {}).update(
+            {
+                "auto_archive": True,
+                "auto_archive_days": 3,
+                "min_interval_hours": 0,
+            }
+        )
+        save_config(config)
+        web_server._last_auto_archive_check.clear()
+
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        assert [row["id"] for row in response.json()["sessions"]] == ["fresh"]
+        verify = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert verify.get_session("stale")["archived"] == 1
+            assert verify.get_meta("last_auto_archive")
+        finally:
+            verify.close()
+
+    def test_get_sessions_fresh_store_returns_empty_list(self):
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        assert response.json()["sessions"] == []
+        assert response.json()["total"] == 0
+
+    @pytest.mark.parametrize("missing_column", ["archived", "pinned"])
+    def test_get_sessions_heals_stale_schema_store(self, missing_column):
+        import sqlite3
+
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session("stale-schema", source="cli")
+        finally:
+            seed.close()
+
+        legacy = sqlite3.connect(str(db_path))
+        try:
+            legacy.execute(f"ALTER TABLE sessions DROP COLUMN {missing_column}")
+            legacy.commit()
+        finally:
+            legacy.close()
+
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        assert [row["id"] for row in response.json()["sessions"]] == [
+            "stale-schema"
+        ]
+        healed = sqlite3.connect(str(db_path))
+        try:
+            columns = {
+                row[1] for row in healed.execute("PRAGMA table_info(sessions)")
+            }
+        finally:
+            healed.close()
+        assert missing_column in columns
+
+    def test_get_sessions_zero_byte_store_returns_empty_list(self):
+        from hermes_constants import get_hermes_home
+
+        db_path = get_hermes_home() / "state.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.touch()
+
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        assert response.json()["sessions"] == []
+        assert response.json()["total"] == 0
+
+    def test_concurrent_first_load_reads_all_succeed_on_fresh_store(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        paths = [
+            "/api/sessions?limit=50&offset=0",
+            "/api/sessions/stats",
+            "/api/sessions/empty/count",
+            "/api/sessions?limit=10&offset=0&order=recent",
+        ] * 2
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            responses = list(pool.map(self.client.get, paths))
+
+        assert [response.status_code for response in responses] == [
+            200
+        ] * len(paths)
 
 
 
@@ -1273,6 +1479,109 @@ class TestWebServerEndpoints:
         model_cfg = load_config()["model"]
         assert model_cfg["api_key"] == "sk-legacy"
 
+    def test_get_sessions_rejects_negative_limit(self):
+        """limit=-1 must be rejected (422), not passed through to SQLite as
+        LIMIT -1 (unbounded) — issue #74316."""
+        resp = self.client.get("/api/sessions?limit=-1")
+        assert resp.status_code == 422
+
+    def test_get_sessions_rejects_negative_offset(self):
+        resp = self.client.get("/api/sessions?offset=-1")
+        assert resp.status_code == 422
+
+    def test_get_sessions_positive_limit_still_works(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i in range(5):
+                db.create_session(session_id=f"pos-limit-{i}", source="cli")
+                db.append_message(session_id=f"pos-limit-{i}", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=3&offset=0")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["limit"] == 3
+        assert len(payload["sessions"]) == 3
+
+    def test_profiles_sessions_rejects_negative_limit(self):
+        """Same guard on the cross-profile aggregate route — negative limit
+        previously bypassed the per-profile 500-row clamp entirely."""
+        resp = self.client.get("/api/profiles/sessions?limit=-1")
+        assert resp.status_code == 422
+
+    def test_profiles_sessions_rejects_negative_offset(self):
+        resp = self.client.get("/api/profiles/sessions?offset=-1")
+        assert resp.status_code == 422
+
+    def test_profiles_sessions_positive_limit_still_works(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i in range(5):
+                db.create_session(session_id=f"pos-plimit-{i}", source="cli")
+                db.append_message(session_id=f"pos-plimit-{i}", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/profiles/sessions?limit=3&offset=0")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["limit"] == 3
+        assert len(payload["sessions"]) == 3
+
+    def test_get_session_messages_rejects_negative_limit(self):
+        """limit=-1 previously bypassed the documented 500-row clamp because
+        min(-1, 500) == -1, which SQLite treats as 'no limit'."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="neg-limit-messages", source="cli")
+            for i in range(60):
+                db.append_message(
+                    session_id="neg-limit-messages", role="user", content=f"msg {i}"
+                )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/neg-limit-messages/messages?limit=-1")
+        assert resp.status_code == 422
+
+    def test_get_session_messages_rejects_negative_offset(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="neg-offset-messages", source="cli")
+            db.append_message(session_id="neg-offset-messages", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/neg-offset-messages/messages?offset=-1")
+        assert resp.status_code == 422
+
+    def test_get_session_messages_limit_above_500_is_capped_not_rejected(self):
+        """A limit above the documented 500-row cap is silently clamped
+        (existing ``min(limit, 500)`` behaviour), not rejected — the request
+        still succeeds."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="many-messages", source="cli")
+            for i in range(60):
+                db.append_message(session_id="many-messages", role="user", content=f"msg {i}")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/many-messages/messages?limit=1000")
+        assert resp.status_code == 200
+        assert resp.json()["pagination"]["limit"] == 500
+
 
 
 
@@ -1452,6 +1761,26 @@ class TestConfigRoundTrip:
             elif expected == "list" and not isinstance(val, list):
                 mismatches.append(f"{key}: expected list, got {type(val).__name__}")
         assert not mismatches, "Type mismatches:\n" + "\n".join(mismatches)
+
+    def test_desktop_terminal_font_round_trip_preserves_terminal_config(self):
+        """The Appearance picker persists a font without replacing sibling settings."""
+        from hermes_cli.config import load_config
+
+        web_config = self.client.get("/api/config").json()
+        terminal_before = dict(web_config.get("terminal", {}))
+        web_config.setdefault("terminal", {})["font_family"] = "MesloLGS NF"
+
+        response = self.client.put("/api/config", json={"config": web_config})
+
+        assert response.status_code == 200
+        persisted = load_config()["terminal"]
+        assert persisted["font_family"] == "MesloLGS NF"
+        for key, value in terminal_before.items():
+            if key != "font_family":
+                assert persisted[key] == value
+
+        reloaded = self.client.get("/api/config").json()
+        assert reloaded["terminal"]["font_family"] == "MesloLGS NF"
 
 
 # ---------------------------------------------------------------------------
@@ -3516,5 +3845,3 @@ class TestDashboardComponentHealth:
         assert self.ws.DASHBOARD_HEALTH.selftest_status == "failing"
         assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
         assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
-
-

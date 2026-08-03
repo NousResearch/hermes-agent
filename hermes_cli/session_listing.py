@@ -46,6 +46,7 @@ def query_session_listing(
     session_db: Any,
     *,
     source: str | None,
+    session_key: str | None = None,
     current_session_id: str | None = None,
     include_all_sources: bool = False,
     include_unnamed: bool = False,
@@ -58,6 +59,8 @@ def query_session_listing(
     This is the shared selection policy behind CLI/gateway session browsing:
     source-scoped by default, optionally global, hide unnamed sessions unless
     the caller asks for a full listing, and never include the current session.
+    ``session_key`` further restricts gateway callers to one exact conversation
+    lane before the database applies its result limit.
     With ``search_query``, rows are filtered by title/id match (SQL-level, see
     ``SessionDB.list_sessions_rich``) and ordered by most-recent activity;
     unnamed sessions stay visible since an id match may be the only handle.
@@ -67,6 +70,7 @@ def query_session_listing(
     search = (search_query or "").strip()
     rows = session_db.list_sessions_rich(
         source=query_source,
+        session_key=session_key,
         exclude_sources=exclude_sources,
         limit=fetch_limit,
         search_query=search or None,

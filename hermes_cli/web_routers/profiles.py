@@ -20,7 +20,7 @@ import time  # noqa: F401
 from pathlib import Path  # noqa: F401
 from typing import Any, Dict, List, Optional, Tuple  # noqa: F401
 
-from fastapi import APIRouter, HTTPException  # noqa: F401
+from fastapi import APIRouter, HTTPException, Query  # noqa: F401
 
 from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
@@ -56,8 +56,8 @@ _write_profile_model = late("_write_profile_model")
 
 @sessions_router.get("/api/profiles/sessions")
 def get_profiles_sessions(
-    limit: int = 20,
-    offset: int = 0,
+    limit: int = Query(20, ge=0),
+    offset: int = Query(0, ge=0),
     min_messages: int = 0,
     archived: str = "exclude",
     order: str = "recent",

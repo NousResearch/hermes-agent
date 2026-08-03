@@ -299,6 +299,48 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     ]
 
 
+def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
+    """A KeyboardInterrupt mid-batch must not leave dangling tool_calls.
+
+    When a tool handler raises KeyboardInterrupt, the sequential executor
+    re-raises to abort the turn — but it must first append a tool result for
+    the interrupted call AND every remaining call, or the assistant tool-call
+    turn is left without matching tool results (a message-role alternation
+    violation that malforms the next provider request). Mirrors the
+    cooperative-interrupt and concurrent paths, which already do this.
+    """
+    agent = _make_agent()
+    tool_calls = [
+        _mock_tool_call(name="web_search", call_id="c1"),
+        _mock_tool_call(name="web_search", call_id="c2"),
+        _mock_tool_call(name="web_search", call_id="c3"),
+    ]
+    messages: list = []
+    assistant_message = SimpleNamespace(content="", tool_calls=tool_calls)
+
+    def _interrupt_dispatch(function_name, function_args, effective_task_id, **kwargs):
+        # First tool raises a hard interrupt mid-batch.
+        raise KeyboardInterrupt()
+
+    agent._flush_messages_to_session_db = MagicMock()
+
+    with (
+        patch("run_agent.handle_function_call", side_effect=_interrupt_dispatch),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+
+    # Every call_id has a matching tool result — alternation preserved.
+    tool_results = [m for m in messages if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in tool_results] == ["c1", "c2", "c3"]
+    # The results are marked as cancelled, not fabricated successes.
+    assert all("cancelled" in m["content"].lower() for m in tool_results)
+
+
 @pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])
 def test_tool_result_is_durable_before_ui_completion_on_abnormal_exit(
     tmp_path,

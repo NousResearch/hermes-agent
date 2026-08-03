@@ -58,6 +58,64 @@ class TestCheckRequirements:
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "  my-token  ")
         assert _get_bot_token() == "my-token"
 
+    def test_multiplex_scope_token_wins_over_process_environment(self, monkeypatch):
+        from agent import secret_scope
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "another-profile-token")
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope(
+            {"DISCORD_BOT_TOKEN": "  active-profile-token  "}
+        )
+        try:
+            assert _get_bot_token() == "active-profile-token"
+            assert check_discord_tool_requirements() is True
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_multiplex_scope_missing_token_fails_closed(self, monkeypatch):
+        from agent import secret_scope
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "another-profile-token")
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope({"UNRELATED_SECRET": "value"})
+        invalidate_check_fn_cache()
+        try:
+            assert _get_bot_token() is None
+            assert check_discord_tool_requirements() is False
+            assert registry.get_definitions({"discord", "discord_admin"}) == []
+        finally:
+            invalidate_check_fn_cache()
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_non_multiplex_scope_miss_keeps_environment_compatibility(self, monkeypatch):
+        from agent import secret_scope
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "process-token")
+        secret_scope.set_multiplex_active(False)
+        scope_token = secret_scope.set_secret_scope({"UNRELATED_SECRET": "value"})
+        try:
+            assert _get_bot_token() == "process-token"
+            assert check_discord_tool_requirements() is True
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+
+    def test_gateway_tool_prompt_gate_uses_active_profile_token(self, monkeypatch):
+        from agent import secret_scope
+        from gateway.session import _discord_tools_loaded
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "another-profile-token")
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope({"UNRELATED_SECRET": "value"})
+        try:
+            with patch("hermes_cli.config.load_config") as load_config:
+                assert _discord_tools_loaded() is False
+                load_config.assert_not_called()
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
 
 # ---------------------------------------------------------------------------
 # Channel type names

@@ -111,6 +111,23 @@ _PREFIX_PATTERNS = [
     r"fw-[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
+    # GitLab token families (each pattern keeps a full literal prefix so the
+    # _PREFIX_SUBSTRINGS pre-screen stays false-negative-free). Ported from
+    # openclaw/openclaw#112954; follow-up invited in #4541.
+    r"glpat-[A-Za-z0-9_\-]{10,}",       # GitLab personal access token
+    r"gloas-[A-Za-z0-9_\-]{10,}",       # GitLab OAuth application secret
+    r"gldt-[A-Za-z0-9_\-]{10,}",        # GitLab deploy token
+    r"glrt-[A-Za-z0-9_.\-]{10,}",       # GitLab runner authentication token (routable tokens are dotted)
+    r"glrtr-[A-Za-z0-9_.\-]{10,}",      # GitLab runner registration token (routable)
+    r"glcbt-[A-Za-z0-9_\-]{10,}",       # GitLab CI/CD job token
+    r"glptt-[A-Za-z0-9_\-]{10,}",       # GitLab pipeline trigger token
+    r"glft-[A-Za-z0-9_\-]{10,}",        # GitLab feed token
+    r"glimt-[A-Za-z0-9_\-]{10,}",       # GitLab incoming mail token
+    r"glagent-[A-Za-z0-9_\-]{10,}",     # GitLab agent (KAS) token
+    r"glsoat-[A-Za-z0-9_\-]{10,}",      # GitLab service-account access token
+    r"glffct-[A-Za-z0-9_\-]{10,}",      # GitLab feature-flags client token
+    r"glwt-[A-Za-z0-9_\-]{10,}",        # GitLab workspace token
+    r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.
@@ -154,9 +171,13 @@ _ENV_LOOKUP_VALUE_RE = re.compile(
     r"^(?:os\.(?:getenv|environ)|process\.env|\$ENV\{)"
 )
 # Namespaced (dotted) key: the secret word may sit anywhere in a dotted path.
+# NOTE(perf): possessive quantifiers (py3.11+) replace the nested quantifier
+# ``(?:[A-Za-z0-9_\-]+\.)+`` (exponential backtracking on long dotted runs).
+# The ``*`` runs bordering {_SECRET_CFG_NAMES} must stay backtrackable
+# (secret words are matchable by the class, e.g. ``app.api.key=…``).
 _CFG_DOTTED_RE = re.compile(
-    rf"((?:[A-Za-z0-9_\-]+\.)+[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*"
-    rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]+)"
+    rf"([A-Za-z0-9_\-]++\.[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*+"
+    rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]++)"
     rf"={_CFG_VALUE}",
     re.IGNORECASE,
 )
@@ -175,8 +196,10 @@ _CFG_ANCHORED_RE = re.compile(
 # is masked by _AUTH_HEADER_RE); ``auth_token``/``auth-token`` still match via
 # the ``token`` keyword. Quoted values defer to _JSON_FIELD_RE via the lookahead.
 _YAML_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential)"
+# NOTE(perf): possessive quantifiers wherever the successor is disjoint; the
+# leading ``[A-Za-z0-9_.\-]*`` stays backtrackable (see _CFG_DOTTED_RE note).
 _YAML_ASSIGN_RE = re.compile(
-    rf"(^[ \t]*[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*)(:[ \t]*)(?!['\"])([^\s&]+)",
+    rf"(^[ \t]*+[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)(?!['\"])([^\s&]++)",
     re.IGNORECASE | re.MULTILINE,
 )
 

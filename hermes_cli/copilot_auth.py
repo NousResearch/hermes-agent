@@ -102,6 +102,11 @@ def resolve_copilot_token() -> tuple[str, str]:
     #    cold-start stall (#60800). The user can run `copilot login` or
     #    set a supported token (gho_*/github_pat_*/ghu_) explicitly.
     if any_env_var_set:
+        logger.debug(
+            "Copilot env var(s) set but none held a supported token; "
+            "skipping `gh auth token` fallback to honor explicit env-var "
+            "intent (and avoid the subprocess cost on cold start, #60800)."
+        )
         return "", ""
 
     token = _try_gh_cli_token()

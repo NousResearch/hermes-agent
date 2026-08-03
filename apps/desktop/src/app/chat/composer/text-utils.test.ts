@@ -247,8 +247,7 @@ describe('extractClipboardImageBlobs', () => {
   it('drops sub-thumbnail inline images — spacers, trackers, blurhash placeholders', () => {
     const clipboard = {
       files: { length: 0, item: () => null },
-      getData: (type: string) =>
-        type === 'text/html' ? `<img src="data:image/png;base64,${'A'.repeat(64)}">` : '',
+      getData: (type: string) => (type === 'text/html' ? `<img src="data:image/png;base64,${'A'.repeat(64)}">` : ''),
       items: []
     } as unknown as DataTransfer
 

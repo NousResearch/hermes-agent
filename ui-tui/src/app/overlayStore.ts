@@ -107,17 +107,28 @@ export const $isBlocked = computed(
  * `statusBar: 'off'` needs no branch: `StatusRulePane` returns null for both
  * slots, so the timers are never mounted in the first place.
  */
-export const $isStatusRuleOccluded = computed([$overlayState, $uiState], (overlay, ui) =>
+/**
+ * True when any floating overlay PANEL is open (widget overlays and inline
+ * completions are separate concerns — see $isStatusRuleOccluded for why
+ * completions never occlude the status rule).
+ *
+ * SINGLE SOURCE for the floating-panel kind set: consumed by both
+ * FloatingOverlays' render gate (plus completions, which it adds locally)
+ * and $isStatusRuleOccluded's top-statusbar occlusion arm. Add new floating
+ * panels HERE so the timer gate can't silently miss them.
+ */
+export const hasFloatingPanel = (overlay: OverlayState): boolean =>
   Boolean(
-    overlay.widget ||
-      (ui.statusBar === 'top' &&
-        (overlay.modelPicker ||
-          overlay.pager ||
-          overlay.petPicker ||
-          overlay.pluginsHub ||
-          overlay.sessions ||
-          overlay.skillsHub))
+    overlay.modelPicker ||
+      overlay.pager ||
+      overlay.petPicker ||
+      overlay.pluginsHub ||
+      overlay.sessions ||
+      overlay.skillsHub
   )
+
+export const $isStatusRuleOccluded = computed([$overlayState, $uiState], (overlay, ui) =>
+  Boolean(overlay.widget || (ui.statusBar === 'top' && hasFloatingPanel(overlay)))
 )
 
 export const getOverlayState = () => $overlayState.get()

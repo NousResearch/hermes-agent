@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
-import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
+import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
@@ -191,14 +191,7 @@ export function FloatingOverlays({
   const sid = useStore($uiSessionId)
   const theme = useStore($uiTheme)
 
-  const hasAny =
-    overlay.modelPicker ||
-    overlay.pager ||
-    overlay.petPicker ||
-    overlay.sessions ||
-    overlay.skillsHub ||
-    overlay.pluginsHub ||
-    completions.length
+  const hasAny = hasFloatingPanel(overlay) || completions.length
 
   if (!hasAny) {
     return null

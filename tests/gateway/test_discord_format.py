@@ -46,16 +46,13 @@ class TestDiscordFormatMessage:
 
 class TestDiscordToolPreviewFormatting:
     def test_truncated_url_keeps_full_click_target(self):
+        from agent.display import ToolPreview
+
         adapter = _make_discord_adapter()
         url = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
         visible = "https://hermes-agent.nousresearch..."
 
-        out = adapter.format_tool_preview(
-            visible,
-            full_preview=url,
-            tool_name="web_extract",
-            args={"urls": [url]},
-        )
+        out = adapter.format_tool_preview(ToolPreview(visible, truncated=True, url=url))
 
         assert out == f"[{visible}]({url})"
 
@@ -75,42 +72,22 @@ class TestDiscordToolPreviewFormatting:
         assert out is not None
         assert f"[{visible}]({url})" in out
 
-    def test_url_already_shortened_upstream_uses_full_url_from_args(self):
-        adapter = _make_discord_adapter()
-        url = "https://example.com/a/very/long/path/to/a/page"
-        visible = "https://example.com/a/very..."
-
-        out = adapter.format_tool_preview(
-            visible,
-            full_preview=visible,
-            tool_name="browser_navigate",
-            args={"url": url},
-        )
-
-        assert out == f"[{visible}]({url})"
-
     def test_untruncated_url_remains_plain(self):
+        from agent.display import ToolPreview
+
         adapter = _make_discord_adapter()
         url = "https://example.com/page"
 
-        out = adapter.format_tool_preview(
-            url,
-            full_preview=url,
-            tool_name="browser_navigate",
-            args={"url": url},
-        )
+        out = adapter.format_tool_preview(ToolPreview(url))
 
         assert out == url
 
     def test_truncated_non_url_remains_plain(self):
+        from agent.display import ToolPreview
+
         adapter = _make_discord_adapter()
         visible = "a long search query that was trunc..."
 
-        out = adapter.format_tool_preview(
-            visible,
-            full_preview="a long search query that was truncated for display",
-            tool_name="web_search",
-            args={"query": "a long search query that was truncated for display"},
-        )
+        out = adapter.format_tool_preview(ToolPreview(visible, truncated=True))
 
         assert out == visible

@@ -31,7 +31,7 @@ from urllib.parse import quote, urljoin
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
 )
-from agent.display import get_tool_preview_url
+from agent.display import ToolPreview
 
 logger = logging.getLogger(__name__)
 
@@ -977,40 +977,13 @@ class DiscordAdapter(BasePlatformAdapter):
     PLAYBACK_TIMEOUT = 120
     PLAYBACK_TIMEOUT_PADDING = 30
 
-    def format_tool_preview(
-        self,
-        preview: str,
-        *,
-        full_preview: Optional[str] = None,
-        tool_name: Optional[str] = None,
-        args: Optional[Dict[str, Any]] = None,
-    ) -> str:
+    def format_tool_preview(self, preview: ToolPreview) -> str:
         """Keep a truncated URL preview clickable in Discord markdown."""
-        if preview.endswith("..."):
-            visible_prefix = preview[:-3]
-        elif preview.endswith(_DISCORD_ELLIPSIS):
-            visible_prefix = preview[:-1]
-        else:
-            return preview
+        if not preview.url:
+            return preview.text
 
-        destination = get_tool_preview_url(
-            tool_name or "",
-            args,
-            fallback=full_preview,
-        )
-        if (
-            not destination
-            or destination == preview
-            or not destination.startswith(visible_prefix)
-        ):
-            return preview
-
-        # Escape the label's link delimiters and URL-encode characters that
-        # can prematurely terminate Discord's markdown destination.
-        label = (
-            preview.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
-        )
-        href = quote(destination, safe=":/?#[]@!$&'*+,;=%")
+        label = re.sub(r"([\\\[\]])", r"\\\1", preview.text)
+        href = quote(preview.url, safe=":/?#[]@!$&'*+,;=%")
         return f"[{label}]({href})"
 
     def __init__(self, config: PlatformConfig):

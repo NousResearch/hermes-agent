@@ -712,6 +712,28 @@ class TestZaiParallelProbe:
         monkeypatch.setattr("hermes_cli.auth.httpx.post", self._mock_post({}))
         assert detect_zai_endpoint("bad-key", timeout=1.0) is None
 
+    def test_early_exit_does_not_wait_for_slow_losers(self, monkeypatch):
+        """When the highest-priority endpoint succeeds fast, the caller must
+        return without waiting for slow lower-priority probes to finish."""
+        import time as _time
+
+        from hermes_cli.auth import ZAI_ENDPOINTS, detect_zai_endpoint
+
+        first = ZAI_ENDPOINTS[0]
+        inner = self._mock_post({(first[1], first[2][0]): True})
+
+        def _slow_losers(url, headers=None, json=None, timeout=None):
+            if not url.startswith(first[1]):
+                _time.sleep(2.0)  # slow lower-priority endpoints
+            return inner(url, headers=headers, json=json, timeout=timeout)
+
+        monkeypatch.setattr("hermes_cli.auth.httpx.post", _slow_losers)
+        t0 = _time.perf_counter()
+        result = detect_zai_endpoint("test-key", timeout=5.0)
+        elapsed = _time.perf_counter() - t0
+        assert result is not None and result["id"] == first[0]
+        assert elapsed < 1.5, f"early exit failed: waited {elapsed:.2f}s for losers"
+
 
 # =============================================================================
 # Kimi / Moonshot model list isolation tests

@@ -698,11 +698,17 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    with ThreadPoolExecutor(max_workers=len(ZAI_ENDPOINTS)) as pool:
+    # No `with` block: a context manager would join ALL probe threads on
+    # exit, defeating the early return below. shutdown(wait=False) lets the
+    # surviving daemon-style probes drain in the background instead of
+    # blocking the caller on slow/unreachable endpoints.
+    pool = ThreadPoolExecutor(max_workers=len(ZAI_ENDPOINTS))
+    try:
         futures = {
             pool.submit(_probe_single_zai_endpoint, api_key, ep, timeout): ep[0]
             for ep in ZAI_ENDPOINTS
         }
+        by_id = {ep_id: f for f, ep_id in futures.items()}
         results: Dict[str, Dict[str, str]] = {}
         for future in as_completed(futures):
             ep_id = futures[future]
@@ -712,12 +718,24 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
                     results[ep_id] = result
             except Exception:
                 pass
+            # Early exit in PRIORITY order: walk endpoints highest-priority
+            # first; if one has succeeded and every higher-priority probe
+            # has already finished (without success), no later completion
+            # can win — return now instead of waiting out slow endpoints
+            # (main's sequential loop also stopped at first success).
+            for ep in ZAI_ENDPOINTS:
+                if not by_id[ep[0]].done():
+                    break  # a higher-priority probe is still in flight
+                if ep[0] in results:
+                    return results[ep[0]]
 
-    # Return first match in priority order (ZAI_ENDPOINTS list order)
-    for ep in ZAI_ENDPOINTS:
-        if ep[0] in results:
-            return results[ep[0]]
-    return None
+        # All probes finished: first match in priority order, if any.
+        for ep in ZAI_ENDPOINTS:
+            if ep[0] in results:
+                return results[ep[0]]
+        return None
+    finally:
+        pool.shutdown(wait=False)
 
 
 def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> str:

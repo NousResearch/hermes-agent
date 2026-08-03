@@ -4,7 +4,7 @@ import asyncio
 import json
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
@@ -18,6 +18,7 @@ hex_to_npub = _buzz_mod.hex_to_npub
 npub_to_hex = _buzz_mod.npub_to_hex
 _normalize_user_ref = _buzz_mod._normalize_user_ref
 _cli_error_message = _buzz_mod._cli_error_message
+_exec_buzz = _buzz_mod._exec_buzz
 _resolve_private_key = _buzz_mod._resolve_private_key
 check_requirements = _buzz_mod.check_requirements
 validate_config = _buzz_mod.validate_config
@@ -86,13 +87,15 @@ class _ScriptedCli:
     def __init__(self):
         self.responses = {}  # (group, cmd) -> list of (code, stdout, stderr)
         self.calls = []
+        self.timeouts = []
 
     def script(self, group, cmd, payload, code=0, stderr=""):
         stdout = payload if isinstance(payload, str) else json.dumps(payload)
         self.responses.setdefault((group, cmd), []).append((code, stdout, stderr))
 
-    async def __call__(self, args, *, input_text=None):
+    async def __call__(self, args, *, input_text=None, timeout=30.0):
         self.calls.append((list(args), input_text))
+        self.timeouts.append(timeout)
         queue = self.responses.get((args[0], args[1]), [])
         if len(queue) > 1:
             return queue.pop(0)
@@ -135,6 +138,12 @@ class TestBuzzAdapterInit:
         assert adapter.channels == ["ccc"]
         assert adapter.poll_interval == 2.0
         assert adapter.home_channel == "ccc"
+        assert adapter.presence_enabled is True
+
+    @pytest.mark.parametrize("value", [False, "false", "0", "no", "off"])
+    def test_presence_can_be_disabled_in_config(self, value):
+        adapter = _make_adapter({"presence": value})
+        assert adapter.presence_enabled is False
 
     def test_env_overrides_config(self, monkeypatch):
         monkeypatch.setenv("BUZZ_RELAY_URL", "https://env.relay")
@@ -151,6 +160,52 @@ class TestCliErrorContract:
     def test_parses_json_error(self):
         msg = _cli_error_message('{"error":"relay_error","message":"boom","retryable":false}', 2)
         assert "relay_error" in msg and "boom" in msg and "exit 2" in msg
+
+
+class TestCliExecution:
+
+    @pytest.mark.asyncio
+    async def test_cancellation_kills_the_cli_subprocess(self, monkeypatch):
+        communicate_started = asyncio.Event()
+
+        class FakeProcess:
+            returncode = None
+            killed = False
+            waited = False
+
+            async def communicate(self, input_bytes):
+                communicate_started.set()
+                await asyncio.Event().wait()
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+
+            async def wait(self):
+                self.waited = True
+                return self.returncode
+
+        process = FakeProcess()
+
+        async def create_subprocess(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess)
+        task = asyncio.create_task(
+            _exec_buzz(
+                "/fake/buzz",
+                ["users", "set-presence", "--status", "online"],
+                relay_url="https://test.relay",
+                private_key="nsec1test",
+            )
+        )
+        await asyncio.wait_for(communicate_started.wait(), timeout=1)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert process.killed is True
+        assert process.waited is True
 
 
 # ── Seeding / high-water mark / de-dupe ───────────────────────────────────
@@ -321,6 +376,25 @@ class TestDmClassification:
         assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
         assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
         assert adapter._dispatched[0]["chat_type"] == "dm"
+        assert adapter._dispatched[0]["thread_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_dm_reply_preserves_explicit_thread_root(self, adapter):
+        """A real inbound thread reply carries its root into SessionSource."""
+        adapter._channel_state[DM_CHANNEL]["chat_type"] = "dm"
+        event = _tagged_event(
+            "e2",
+            DM_CHANNEL,
+            content="reply in a thread",
+            p=SELF_PUBKEY,
+            reply_to="immediate-parent",
+        )
+        event["tags"].insert(1, ["e", "thread-root", "", "root"])
+
+        await self._poll_with(adapter, DM_CHANNEL, event)
+
+        assert len(adapter._dispatched) == 1
+        assert adapter._dispatched[0]["thread_id"] == "thread-root"
 
 
     @pytest.mark.asyncio
@@ -407,6 +481,61 @@ class TestBuzzAdapterSend:
         # Our own event id is marked seen for echo suppression
         assert "evt123" in adapter._channel_state[CHANNEL]["seen"]
 
+    @pytest.mark.asyncio
+    async def test_top_level_dm_ignores_gateway_reply_anchor(self):
+        """A generic reply anchor must not hide a DM response in a thread."""
+        adapter = _make_adapter()
+        adapter._channel_state[DM_CHANNEL] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt124"})
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            DM_CHANNEL,
+            "visible in the main DM",
+            reply_to="triggering-message",
+        )
+
+        assert result.success is True
+        args, _stdin = cli.calls[0]
+        assert "--reply-to" not in args
+
+    @pytest.mark.asyncio
+    async def test_threaded_dm_uses_explicit_thread_root(self):
+        adapter = _make_adapter()
+        adapter._channel_state[DM_CHANNEL] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt125"})
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            DM_CHANNEL,
+            "stays in the real thread",
+            reply_to="triggering-message",
+            metadata={"thread_id": "thread-root"},
+        )
+
+        assert result.success is True
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "thread-root"
+
+    @pytest.mark.asyncio
+    async def test_channel_keeps_gateway_reply_anchor(self):
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt126"})
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "channel reply",
+            reply_to="triggering-message",
+        )
+
+        assert result.success is True
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "triggering-message"
 
     @pytest.mark.asyncio
     async def test_send_image_local_file_uses_file_flag(self, tmp_path):
@@ -421,12 +550,243 @@ class TestBuzzAdapterSend:
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
 
+    @pytest.mark.asyncio
+    async def test_top_level_dm_image_ignores_gateway_reply_anchor(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter()
+        adapter._channel_state[DM_CHANNEL] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt127"})
+        adapter._run_cli = cli
+
+        result = await adapter.send_image(
+            DM_CHANNEL,
+            str(img),
+            caption="visible image",
+            reply_to="triggering-message",
+        )
+
+        assert result.success is True
+        args, _stdin = cli.calls[0]
+        assert "--reply-to" not in args
+
+
+# ── Inbound thread source ─────────────────────────────────────────────────
+
+
+class TestBuzzAdapterDispatch:
+
+    @pytest.mark.asyncio
+    async def test_dispatch_stamps_real_thread_on_session_source(self):
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        await adapter._dispatch_message(
+            text="inside thread",
+            chat_id=DM_CHANNEL,
+            chat_type="dm",
+            user_id=OTHER_PUBKEY,
+            user_name="Chris",
+            message_id="reply-event",
+            created_at=1000,
+            thread_id="thread-root",
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_id == "reply-event"
+        assert event.source.message_id == "reply-event"
+        assert event.source.thread_id == "thread-root"
+        assert event.source.parent_chat_id == DM_CHANNEL
+
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
 
 
 class TestBuzzAdapterLifecycle:
 
+    @pytest.mark.asyncio
+    async def test_presence_lifecycle_publishes_online_then_offline(self):
+        adapter = _make_adapter()
+        online_started = asyncio.Event()
+
+        async def publish(status, *, timeout):
+            if status == "online":
+                online_started.set()
+            return True
+
+        adapter._set_presence = AsyncMock(side_effect=publish)
+
+        await adapter._start_presence()
+        assert adapter._presence_task is not None
+        await asyncio.wait_for(online_started.wait(), timeout=0.1)
+        adapter._set_presence.assert_awaited_once_with(
+            "online", timeout=_buzz_mod._PRESENCE_CLI_TIMEOUT
+        )
+
+        await adapter._stop_presence()
+        assert adapter._presence_task is None
+        assert adapter._set_presence.await_args_list == [
+            call("online", timeout=_buzz_mod._PRESENCE_CLI_TIMEOUT),
+            call("offline", timeout=_buzz_mod._PRESENCE_OFFLINE_TIMEOUT),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_presence_refreshes_after_initial_publish_failure(self, monkeypatch):
+        """Presence is advisory and later heartbeats recover a transient failure."""
+        adapter = _make_adapter()
+        refreshed = asyncio.Event()
+        online_attempts = 0
+
+        async def publish(status, *, timeout):
+            nonlocal online_attempts
+            if status != "online":
+                return True
+            online_attempts += 1
+            if online_attempts == 1:
+                return False
+            refreshed.set()
+            return True
+
+        adapter._set_presence = AsyncMock(side_effect=publish)
+        monkeypatch.setattr(_buzz_mod, "_PRESENCE_HEARTBEAT_INTERVAL", 0.001)
+
+        await adapter._start_presence()
+        await asyncio.wait_for(refreshed.wait(), timeout=1)
+        await adapter._stop_presence()
+
+        online_calls = [
+            call for call in adapter._set_presence.await_args_list
+            if call.args == ("online",)
+        ]
+        assert len(online_calls) >= 2
+
+    def test_presence_cadence_tolerates_one_failed_heartbeat(self):
+        """One failed refresh must leave time for the next bounded attempt."""
+        assert (
+            2 * _buzz_mod._PRESENCE_HEARTBEAT_INTERVAL
+            + _buzz_mod._PRESENCE_CLI_TIMEOUT
+            < _buzz_mod._PRESENCE_RELAY_TTL
+        )
+
+    @pytest.mark.asyncio
+    async def test_initial_presence_publish_does_not_delay_start(self):
+        adapter = _make_adapter()
+        online_started = asyncio.Event()
+        release_online = asyncio.Event()
+        online_completed = False
+
+        async def publish(status, *, timeout):
+            nonlocal online_completed
+            if status == "online":
+                online_started.set()
+                await release_online.wait()
+                online_completed = True
+            return True
+
+        adapter._set_presence = AsyncMock(side_effect=publish)
+
+        await asyncio.wait_for(adapter._start_presence(), timeout=0.1)
+        await asyncio.wait_for(online_started.wait(), timeout=0.1)
+        assert online_completed is False
+
+        await asyncio.wait_for(adapter._stop_presence(), timeout=0.1)
+        assert online_completed is False
+        release_online.set()
+
+    @pytest.mark.asyncio
+    async def test_repeated_start_keeps_only_one_heartbeat(self):
+        adapter = _make_adapter()
+        adapter._set_presence = AsyncMock(return_value=True)
+
+        await adapter._start_presence()
+        first_task = adapter._presence_task
+        await adapter._start_presence()
+        second_task = adapter._presence_task
+
+        assert first_task is not None and first_task.done()
+        assert second_task is not None and second_task is not first_task
+        await adapter._stop_presence()
+
+    @pytest.mark.asyncio
+    async def test_disabled_presence_does_not_publish(self):
+        adapter = _make_adapter({"presence": False})
+        adapter._set_presence = AsyncMock()
+
+        await adapter._start_presence()
+        await adapter._stop_presence()
+
+        adapter._set_presence.assert_not_awaited()
+        assert adapter._presence_task is None
+
+    @pytest.mark.asyncio
+    async def test_presence_reject_and_cli_failure_are_nonfatal(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("users", "set-presence", {"accepted": False})
+        adapter._run_cli = cli
+        assert await adapter._set_presence("online", timeout=10) is False
+
+        cli.responses.clear()
+        cli.script(
+            "users",
+            "set-presence",
+            "",
+            code=2,
+            stderr='{"error":"relay_error","message":"unavailable"}',
+        )
+        assert await adapter._set_presence("online", timeout=10) is False
+
+        assert cli.calls == [
+            (["users", "set-presence", "--status", "online"], None),
+            (["users", "set-presence", "--status", "online"], None),
+        ]
+        assert cli.timeouts == [10, 10]
+
+        adapter._run_cli = AsyncMock(side_effect=OSError("spawn failed"))
+        assert await adapter._set_presence("online", timeout=10) is False
+
+    @pytest.mark.asyncio
+    async def test_connect_starts_presence_after_transport_is_ready(self, monkeypatch):
+        import gateway.status as gateway_status
+
+        monkeypatch.setattr(
+            gateway_status, "acquire_scoped_lock", lambda platform, key: True
+        )
+        monkeypatch.setattr(
+            gateway_status, "release_scoped_lock", lambda platform, key: None
+        )
+        monkeypatch.setattr(
+            _buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1test"
+        )
+        adapter = _make_adapter({"transport": "poll"})
+        adapter.cli_path = "/fake/buzz"
+        cli = _ScriptedCli()
+        cli.script(
+            "users",
+            "get",
+            [{"pubkey": SELF_PUBKEY, "display_name": "Chip"}],
+        )
+        cli.script(
+            "channels",
+            "list",
+            [{"channel_id": CHANNEL, "name": "general", "description": ""}],
+        )
+        cli.script("messages", "get", [])
+        cli.script("dms", "list", [])
+        adapter._run_cli = cli
+        presence_start_states = []
+
+        async def record_presence_start():
+            presence_start_states.append(adapter.is_connected)
+
+        adapter._start_presence = record_presence_start
+
+        assert await adapter.connect() is True
+        assert presence_start_states == [True]
+        await adapter.disconnect()
 
     @pytest.mark.asyncio
     async def test_disconnect_releases_scoped_lock(self, monkeypatch):
@@ -536,5 +896,3 @@ class TestStandaloneSend:
         assert captured["input_text"] == "cron says hi"
         # The private key must never be part of argv
         assert all("nsec1x" not in str(a) for a in captured["args"])
-
-

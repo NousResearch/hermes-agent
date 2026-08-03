@@ -23,7 +23,9 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
       session.preview === other.preview &&
       session.message_count === other.message_count &&
       session.last_active === other.last_active &&
-      session.ended_at === other.ended_at
+      session.ended_at === other.ended_at &&
+      session.pinned === other.pinned &&
+      session.archived === other.archived
     )
   })
 }

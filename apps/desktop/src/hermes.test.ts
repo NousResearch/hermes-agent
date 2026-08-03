@@ -20,6 +20,7 @@ import {
   listSidebarSessions,
   resetSidebarBatchCapability,
   setApiRequestProfile,
+  setSessionArchived,
   speakText,
   transcribeAudio
 } from './hermes'
@@ -330,6 +331,19 @@ describe('Hermes REST helpers', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
+    })
+  })
+
+  it('clears the durable pin in the same profile-scoped archive request', async () => {
+    api.mockResolvedValue({ ok: true })
+
+    await setSessionArchived('session-1', true, 'work', false)
+
+    expect(api).toHaveBeenCalledWith({
+      body: { archived: true, pinned: false },
+      method: 'PATCH',
+      path: '/api/sessions/session-1',
+      profile: 'work'
     })
   })
 

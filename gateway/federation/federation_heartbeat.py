@@ -302,7 +302,7 @@ async def federation_heartbeat_loop(
     if config.mode == "shared_db":
         db_path = _resolve_db_path(config.db_path)
         if db_path:
-            await _run_shared_db_loop(config, device_id, tick, db_path)
+            await _run_shared_db_loop(config, device_id, tick, db_path, adapter)
         else:
             logger.info("Federation: no database path resolved, skipping")
             return
@@ -329,6 +329,7 @@ async def _run_shared_db_loop(
     device_id: str,
     tick: int,
     db_path: Optional[Path] = None,
+    adapter: Optional[Any] = None,
 ) -> None:
     """v1 shared database heartbeat loop."""
     if db_path is None:
@@ -341,6 +342,9 @@ async def _run_shared_db_loop(
         "Federation heartbeat started (shared_db mode, device=%s, db=%s, interval=%ds)",
         device_id, db_path, tick,
     )
+
+    # Track active task executions to avoid duplicate spawns.
+    _active_executions: set = set()
 
     try:
         while True:
@@ -362,10 +366,35 @@ async def _run_shared_db_loop(
                             r["device"], r["hostname"], r["task_id"], r["task_title"],
                         )
                     if claimed:
-                        logger.info(
-                            "Federation: claimed task %s (%s)",
-                            claimed["task_id"], claimed["title"],
-                        )
+                        task_id = claimed["task_id"]
+                        if task_id not in _active_executions:
+                            _active_executions.add(task_id)
+                            logger.info(
+                                "Federation: executing claimed task %s (%s)",
+                                claimed["task_id"], claimed["title"],
+                            )
+                            # Spawn async execution via adapter or direct executor.
+                            if adapter and hasattr(adapter, "claim_and_execute"):
+                                asyncio.create_task(
+                                    adapter.claim_and_execute(
+                                        task_id=task_id,
+                                        title=claimed["title"],
+                                        description=claimed.get("description", ""),
+                                        context_snapshot=claimed.get("context", {}),
+                                    ),
+                                    name=f"fed-exec-{task_id}",
+                                )
+                            else:
+                                # Fallback: mark as in_progress and rely on external executor.
+                                logger.info(
+                                    "Federation: task %s claimed — awaiting external execution",
+                                    task_id,
+                                )
+                        else:
+                            logger.debug(
+                                "Federation: task %s already executing, skipping",
+                                task_id,
+                            )
                 finally:
                     conn.close()
 

@@ -751,6 +751,19 @@ class FederationConfig:
     # Seconds between heartbeat cycles.
     heartbeat_interval_s: int = 60
 
+    def resolve_db_path(self) -> Optional["Path"]:
+        """Resolve the database path, expanding ~ and env vars."""
+        if not self.db_path:
+            # Default to iCloud Drive on macOS.
+            icloud = Path.home() / "Library" / "Mobile Documents" / \
+                "com~apple~CloudDocs" / "hermes-federation"
+            default = icloud / "federation.db"
+            if default.parent.exists():
+                return default
+            return None
+        raw = os.path.expandvars(os.path.expanduser(self.db_path))
+        return Path(raw)
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FederationConfig":
         data = _coerce_dict(data)

@@ -106,3 +106,55 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
                 assert "HERMES_SESSION_ID" not in f.read()
     finally:
         env.cleanup()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
+def test_shared_snapshot_does_not_persist_profile_identity(tmp_path):
+    """A command in one profile must not redirect later local commands."""
+    from agent import secret_scope
+    from tools.environments.local import LocalEnvironment
+
+    canonical_home = tmp_path / "owner-home"
+    canonical_hermes = canonical_home / ".hermes"
+    canonical_real_home = tmp_path / "owner-real-home"
+    canonical_hermes.mkdir(parents=True)
+    canonical_real_home.mkdir()
+
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    env = LocalEnvironment(
+        cwd=str(tmp_path),
+        timeout=30,
+        env={
+            "HOME": str(canonical_home),
+            "HERMES_HOME": str(canonical_hermes),
+            "HERMES_REAL_HOME": str(canonical_real_home),
+        },
+    )
+    try:
+        poisoned_home = tmp_path / "foreign-home"
+        poisoned_hermes = poisoned_home / ".hermes"
+        poisoned_real_home = tmp_path / "foreign-real-home"
+        result = env.execute(
+            f'export HOME="{poisoned_home}"; '
+            f'export HERMES_HOME="{poisoned_hermes}"; '
+            f'export HERMES_REAL_HOME="{poisoned_real_home}"; true'
+        )
+        assert result.get("returncode") == 0
+
+        observed = env.execute(
+            'printf "%s\\n%s\\n%s\\n" "$HOME" "$HERMES_HOME" "$HERMES_REAL_HOME"'
+        )
+        assert observed.get("returncode") == 0
+        assert observed.get("output", "").splitlines()[:3] == [
+            str(canonical_home),
+            str(canonical_hermes),
+            str(canonical_real_home),
+        ]
+
+        snapshot = open(env._snapshot_path, encoding="utf-8").read()
+        assert "foreign-home" not in snapshot
+        assert "foreign-real-home" not in snapshot
+    finally:
+        env.cleanup()
+        secret_scope.set_multiplex_active(previous_multiplex)

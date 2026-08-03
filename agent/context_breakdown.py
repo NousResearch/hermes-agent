@@ -313,3 +313,39 @@ def render_context_breakdown_lines(
     elif detail_lines := render_context_details_lines(details):
         lines.extend(["", *detail_lines])
     return lines
+
+
+def context_window_usage(agent: Any) -> Dict[str, int]:
+    """Resolve the live context-window occupancy for an agent.
+
+    Returns ``{"context_limit": int, "context_used": int}`` suitable for
+    persisting onto the session row. Field name ``context_limit`` aligns with
+    upstream's micro-compaction report (``ac48add3a``: the resolved window);
+    the derived ``occupancy_pct`` is computed at the API boundary
+    (``api_server._session_response``) from these two raw values.
+
+    - ``context_limit`` is the resolved window from the compressor
+      (``context_length``).
+    - ``context_used`` is the current-window occupancy
+      (``last_prompt_tokens``), the *measured* last-prompt size -- NOT the
+      cumulative lifetime total (which would fabricate impossible readings
+      like 1.9m/120k, see issue #50421).
+    - The ``-1`` "compression just ran, awaiting real usage" sentinel is
+      clamped to 0 so the transitional turn reads as unknown.
+    - When either value is missing/falsy, both are returned as ``0`` so the
+      caller can treat ``0`` as "unknown" and avoid clobbering a prior
+      good reading.
+
+    Returns ``{"context_limit": 0, "context_used": 0}`` for an agent with no
+    compressor (e.g. before the first turn runs).
+    """
+    comp = getattr(agent, "context_compressor", None)
+    if not comp:
+        return {"context_limit": 0, "context_used": 0}
+    ctx_max = int(getattr(comp, "context_length", 0) or 0)
+    last_prompt = int(getattr(comp, "last_prompt_tokens", 0) or 0)
+    if last_prompt < 0:
+        last_prompt = 0
+    if not (ctx_max and last_prompt):
+        return {"context_limit": 0, "context_used": 0}
+    return {"context_limit": ctx_max, "context_used": last_prompt}

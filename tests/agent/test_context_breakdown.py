@@ -2,7 +2,10 @@
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_breakdown import compute_session_context_breakdown
+from agent.context_breakdown import (
+    compute_session_context_breakdown,
+    context_window_usage,
+)
 
 
 def _make_agent(
@@ -49,6 +52,54 @@ def test_breakdown_includes_major_categories():
     assert data["context_max"] == 200_000
     assert data["estimated_total"] > 0
 
+
+# ── context_window_usage ────────────────────────────────────────────────────
+
+
+def _agent_with_compressor(context_length=128_000, last_prompt_tokens=45_000):
+    """Build a mock agent whose compressor reports the given values."""
+    agent = MagicMock()
+    agent.context_compressor = MagicMock(
+        context_length=context_length,
+        last_prompt_tokens=last_prompt_tokens,
+    )
+    return agent
+
+
+def test_context_window_usage_returns_both_fields():
+    result = context_window_usage(_agent_with_compressor())
+    assert result == {"context_limit": 128_000, "context_used": 45_000}
+
+
+def test_context_window_usage_clamps_negative_sentinel():
+    """The -1 "compression just ran" sentinel yields unknown (0,0)."""
+    result = context_window_usage(_agent_with_compressor(
+        context_length=128_000, last_prompt_tokens=-1,
+    ))
+    assert result == {"context_limit": 0, "context_used": 0}
+
+
+def test_context_window_usage_no_compressor():
+    agent = MagicMock(spec=[])
+    result = context_window_usage(agent)
+    assert result == {"context_limit": 0, "context_used": 0}
+
+
+def test_context_window_usage_compressor_missing_values():
+    agent = MagicMock()
+    agent.context_compressor = MagicMock(
+        context_length=0, last_prompt_tokens=0,
+    )
+    result = context_window_usage(agent)
+    assert result == {"context_limit": 0, "context_used": 0}
+
+
+def test_context_window_usage_zero_window_yields_unknown():
+    """A context_length of 0 means 'not configured' -> both are 0."""
+    result = context_window_usage(_agent_with_compressor(
+        context_length=0, last_prompt_tokens=50_000,
+    ))
+    assert result == {"context_limit": 0, "context_used": 0}
 
 
 # ── /context renderers (pure functions over the payload) ────────────────────

@@ -14,9 +14,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
-from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
-from agent.sdk_transform_bypass import bypass_sdk_request_transform
-from agent.usage_anchor import set_usage_anchor
+from agent.context_breakdown import context_window_usage
 
 logger = logging.getLogger(__name__)
 _codex_watchdog_state_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
@@ -101,10 +99,27 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         if compressor is not None and getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage cannot adjudicate the pending compaction; unlatch preflight deferral.
             compressor.update_from_response({})
-        if compressor is not None and callable(getattr(compressor, "note_usage_less_response", None)):
-            compressor.note_usage_less_response()
-        _queue_token_counts(agent, "Codex app-server api-call persistence failed (session=%s): %s",
-                            counts=lambda: billing(billing_mode="subscription_included"))
+        if agent._session_db and agent.session_id:
+            try:
+                if not agent._session_db_created:
+                    agent._ensure_db_session()
+                # Enqueued for the SessionDB background writer — keeps the
+                # per-call accounting write off the turn thread (see
+                # conversation_loop's queue_token_counts call).
+                agent._session_db.queue_token_counts(
+                    agent.session_id,
+                    model=agent.model,
+                    billing_provider=agent.provider,
+                    billing_base_url=agent.base_url,
+                    billing_mode="subscription_included",
+                    api_call_count=1,
+                    **context_window_usage(agent),
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Codex app-server api-call persistence failed (session=%s): %s",
+                    agent.session_id, exc,
+                )
         return {}
     from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
     canonical_usage = CanonicalUsage(
@@ -137,17 +152,49 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     cost_result = estimate_usage_cost(
         agent.model, canonical_usage, provider=agent.provider, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
     )
-    cost_usd = float(cost_result.amount_usd) if cost_result.amount_usd is not None else None
-    if cost_usd is not None:
-        agent.session_estimated_cost_usd += cost_usd
-    agent.session_cost_status, agent.session_cost_source = cost_result.status, cost_result.source
-    cost_fields = {"estimated_cost_usd": cost_usd, "cost_status": cost_result.status, "cost_source": cost_result.source}
-    _queue_token_counts(
-        agent, "Codex app-server token persistence failed (session=%s, tokens=%d): %s", total_tokens,
-        counts=lambda: billing(**token_counts, **cost_fields,
-                               billing_mode="subscription_included" if cost_result.status == "included" else None),
-    )
-    return {**usage_dict, "last_prompt_tokens": prompt_tokens, **cost_fields}
+    if cost_result.amount_usd is not None:
+        agent.session_estimated_cost_usd += float(cost_result.amount_usd)
+    agent.session_cost_status = cost_result.status
+    agent.session_cost_source = cost_result.source
+
+    if agent._session_db and agent.session_id:
+        try:
+            if not agent._session_db_created:
+                agent._ensure_db_session()
+            # Enqueued for the SessionDB background writer (see above).
+            agent._session_db.queue_token_counts(
+                agent.session_id,
+                input_tokens=canonical_usage.input_tokens,
+                output_tokens=canonical_usage.output_tokens,
+                cache_read_tokens=canonical_usage.cache_read_tokens,
+                cache_write_tokens=canonical_usage.cache_write_tokens,
+                reasoning_tokens=canonical_usage.reasoning_tokens,
+                estimated_cost_usd=float(cost_result.amount_usd)
+                if cost_result.amount_usd is not None else None,
+                cost_status=cost_result.status,
+                cost_source=cost_result.source,
+                billing_provider=agent.provider,
+                billing_base_url=agent.base_url,
+                billing_mode="subscription_included"
+                if cost_result.status == "included" else None,
+                model=agent.model,
+                api_call_count=1,
+                **context_window_usage(agent),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Codex app-server token persistence failed (session=%s, tokens=%d): %s",
+                agent.session_id, total_tokens, exc,
+            )
+
+    return {
+        **usage_dict,
+        "last_prompt_tokens": prompt_tokens,
+        "estimated_cost_usd": float(cost_result.amount_usd)
+        if cost_result.amount_usd is not None else None,
+        "cost_status": cost_result.status,
+        "cost_source": cost_result.source,
+    }
 
 
 def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | None = None, force: bool = False) -> bool:

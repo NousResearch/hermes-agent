@@ -1499,6 +1499,817 @@ class SessionDB(
         "billing_mode", "source",
     )
 
+    def queue_token_counts(self, session_id: str, **kwargs) -> None:
+        """Enqueue a token/cost delta for the background writer.
+
+        Accepts the same keyword arguments as :meth:`update_token_counts`
+        and applies them asynchronously with identical semantics.  Cheap
+        (append + notify) — safe to call on the turn thread after every
+        API call.  After close() has stopped the writer, falls back to the
+        synchronous path and may raise like :meth:`update_token_counts`.
+        """
+        with self._token_queue_cond:
+            thread = self._token_writer_thread
+            writer_stopped = self._token_writer_stop and (
+                thread is None or not thread.is_alive()
+            )
+            if not writer_stopped:
+                self._token_queue.append((session_id, kwargs))
+                if thread is None or not thread.is_alive():
+                    # Daemon so process exit never hangs on accounting; the
+                    # atexit hook drains anything still queued at interpreter
+                    # shutdown (registered once per instance, on first use).
+                    # ``not is_alive()`` (rather than ``is None`` only)
+                    # respawns the writer if it ever died from an unexpected
+                    # escape — otherwise a dead thread object would block
+                    # respawn forever and deltas would pile up on the deque
+                    # until a reader's flush drained them synchronously.
+                    thread = threading.Thread(
+                        target=self._token_writer_loop,
+                        name="session-db-token-writer",
+                        daemon=True,
+                    )
+                    self._token_writer_thread = thread
+                    thread.start()
+                    if self._token_atexit_hook is None:
+                        self_ref = weakref.ref(self)
+
+                        def _drain_at_exit() -> None:
+                            db = self_ref()
+                            if db is not None:
+                                db._drain_token_queue_at_exit()
+
+                        self._token_atexit_hook = _drain_at_exit
+                        atexit.register(_drain_at_exit)
+                self._token_queue_cond.notify_all()
+        if writer_stopped:
+            # Writer permanently stopped (close() ran; a stop-flagged but
+            # still-live writer keeps accepting — its loop drains before
+            # exiting). Enqueueing now would drop the delta silently: no
+            # writer will run and close() already unregistered the atexit
+            # hook. Apply inline instead so a closed-connection failure
+            # raises at the call site, exactly like the old synchronous
+            # update_token_counts path these call sites still guard for.
+            self.update_token_counts(session_id, **kwargs)
+
+    def flush_token_counts(self, timeout: float = 5.0) -> bool:
+        """Block until every queued token delta has been applied.
+
+        Returns True when the queue is fully drained, False on timeout
+        (callers then read totals that are stale by the still-queued
+        deltas — no worse than reading before the flush existed).
+        Never raises: apply failures are logged by the writer.
+        """
+        # Fast path — nothing queued, nothing in flight.
+        if not self._token_queue and not self._token_writer_busy:
+            return True
+        batch = None
+        with self._token_queue_cond:
+            deadline = time.monotonic() + timeout
+            while self._token_queue or self._token_writer_busy:
+                # A live writer is authoritative even when stop-flagged
+                # (close() in progress): its loop drains the queue before
+                # exiting, and draining here instead would race its
+                # in-flight batch — newer deltas committing before older
+                # ones breaks the last-non-None-wins / first-accounted-
+                # route / COALESCE-backfill fields. Only when the writer is
+                # dead (or never started for these deltas) does the caller
+                # take the leftovers. Re-checked each wakeup: the writer
+                # can exit mid-wait with deltas enqueued after its final
+                # empty-queue check. busy is claimed while draining (same
+                # protocol as the writer) so a concurrent flush cannot
+                # report drained — or pop a newer delta — while this batch
+                # is still unapplied; a claimed busy therefore also means
+                # "wait", never "drain alongside".
+                thread = self._token_writer_thread
+                if (
+                    (thread is None or not thread.is_alive())
+                    and not self._token_writer_busy
+                ):
+                    self._token_writer_busy = True
+                    batch = list(self._token_queue)
+                    self._token_queue.clear()
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._token_queue_cond.wait(remaining)
+        if batch:
+            try:
+                self._apply_token_batch(batch)
+            finally:
+                with self._token_queue_cond:
+                    self._token_writer_busy = False
+                    self._token_queue_cond.notify_all()
+        return True
+
+    def _token_writer_loop(self) -> None:
+        while True:
+            with self._token_queue_cond:
+                idle_deadline = time.monotonic() + self._TOKEN_WRITER_IDLE_SECONDS
+                while not self._token_queue and not self._token_writer_stop:
+                    remaining = idle_deadline - time.monotonic()
+                    if remaining <= 0:
+                        # Publish retirement under the same lock used by
+                        # queue_token_counts() to decide whether to spawn. An
+                        # enqueue cannot strand a delta behind an exiting worker.
+                        self._token_writer_thread = None
+                        return
+                    self._token_queue_cond.wait(remaining)
+                if not self._token_queue:
+                    self._token_writer_thread = None
+                    return  # stop requested and fully drained
+                # busy is set BEFORE the queue is cleared: the lock-free
+                # fast path in flush_token_counts() reads queue-then-busy,
+                # so this order guarantees it can never observe an empty
+                # queue while the popped batch is still unapplied.
+                self._token_writer_busy = True
+                batch = list(self._token_queue)
+                self._token_queue.clear()
+            try:
+                self._apply_token_batch(batch)
+            finally:
+                with self._token_queue_cond:
+                    self._token_writer_busy = False
+                    self._token_queue_cond.notify_all()
+
+    def _apply_token_batch(self, batch: List[Tuple[str, Dict[str, Any]]]) -> None:
+        """Apply queued deltas in order, coalescing where safe. Never raises."""
+        try:
+            coalesced = self._coalesce_token_deltas(batch)
+        except Exception as exc:
+            # Coalescing must never kill the writer thread (a dead writer
+            # can't be observed by callers). Fall back to applying the raw
+            # batch delta-by-delta — the merge is an optimization only.
+            logger.warning(
+                "async token accounting: coalesce failed, applying raw "
+                "batch: %s", exc,
+            )
+            coalesced = batch
+        for session_id, kwargs in coalesced:
+            try:
+                self.update_token_counts(session_id, **kwargs)
+            except Exception as exc:
+                # Same contract as the old inline call sites: accounting
+                # loss is logged, never raised into a turn.
+                logger.warning(
+                    "async token accounting: apply failed (session=%s): %s",
+                    session_id, exc,
+                )
+
+    def _coalesce_token_deltas(
+        self, batch: List[Tuple[str, Dict[str, Any]]]
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        """Merge consecutive incremental deltas with an identical route.
+
+        Only adjacent deltas merge, so ordering across sessions and across
+        a mid-session /model switch is preserved exactly.  absolute=True
+        deltas (cumulative overwrites) never merge.
+        """
+        groups: List[Tuple[Optional[tuple], str, Dict[str, Any]]] = []
+        for session_id, kwargs in batch:
+            key = None
+            if not kwargs.get("absolute"):
+                key = (session_id,) + tuple(
+                    kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS
+                )
+            if groups and key is not None and groups[-1][0] == key:
+                merged = groups[-1][2]
+                for f in self._TOKEN_DELTA_SUM_FIELDS:
+                    merged[f] = merged.get(f, 0) + kwargs.get(f, 0)
+                for f in self._TOKEN_DELTA_COST_FIELDS:
+                    value = kwargs.get(f)
+                    if value is not None:
+                        # None-preserving sum: an all-None run must stay
+                        # None so COALESCE keeps the stored value untouched.
+                        merged[f] = (merged.get(f) or 0.0) + value
+            else:
+                groups.append((key, session_id, dict(kwargs)))
+        return [(sid, kw) for _, sid, kw in groups]
+
+    def _stop_token_writer(self, join_timeout: float = 10.0) -> None:
+        """Stop the writer thread and drain remaining deltas. Never raises."""
+        with self._token_queue_cond:
+            self._token_writer_stop = True
+            self._token_queue_cond.notify_all()
+            thread = self._token_writer_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=join_timeout)
+            if thread.is_alive():
+                # Writer stuck mid-apply (pathological lock contention).
+                # Leave any queued deltas unapplied rather than racing the
+                # stuck apply and misordering/double-counting.
+                logger.warning(
+                    "async token accounting: writer did not stop within %.0fs; "
+                    "%d queued delta(s) not persisted",
+                    join_timeout, len(self._token_queue),
+                )
+                return
+        # Writer exited (or never started) — apply leftovers synchronously.
+        # Claim busy like the writer/flush drains do, so a concurrent
+        # flush_token_counts cannot fast-path True while this batch is
+        # still being applied; conversely, wait out a flush caller-drain
+        # that already claimed busy — close() nulls the connection right
+        # after this returns, and must not yank it mid-batch.
+        with self._token_queue_cond:
+            deadline = time.monotonic() + join_timeout
+            while self._token_writer_busy:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "async token accounting: concurrent drain did not "
+                        "finish within %.0fs; %d queued delta(s) not persisted",
+                        join_timeout, len(self._token_queue),
+                    )
+                    return
+                self._token_queue_cond.wait(remaining)
+            # busy is claimed BEFORE the queue is cleared — same ordering
+            # as the writer loop and the flush caller-drain. The lock-free
+            # fast path in flush_token_counts() reads queue-then-busy
+            # without the cond, so clearing first would let a concurrent
+            # flush observe "empty and idle" and return True while this
+            # popped batch is still unapplied.
+            batch = list(self._token_queue)
+            if batch:
+                self._token_writer_busy = True
+                self._token_queue.clear()
+        if batch:
+            try:
+                self._apply_token_batch(batch)
+            finally:
+                with self._token_queue_cond:
+                    self._token_writer_busy = False
+                    self._token_queue_cond.notify_all()
+
+    def _drain_token_queue_at_exit(self) -> None:
+        try:
+            self._stop_token_writer()
+        except Exception:
+            pass  # Best effort — never fatal at interpreter shutdown.
+
+    def update_token_counts(
+        self,
+        session_id: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        model: str = None,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        estimated_cost_usd: Optional[float] = None,
+        actual_cost_usd: Optional[float] = None,
+        cost_status: Optional[str] = None,
+        cost_source: Optional[str] = None,
+        pricing_version: Optional[str] = None,
+        billing_provider: Optional[str] = None,
+        billing_base_url: Optional[str] = None,
+        billing_mode: Optional[str] = None,
+        api_call_count: int = 0,
+        absolute: bool = False,
+        context_limit: int = 0,
+        context_used: int = 0,
+    ) -> None:
+        """Update token counters and backfill model if not already set.
+
+        When *absolute* is False (default), values are **incremented** — use
+        this for per-API-call deltas (CLI path).
+
+        When *absolute* is True, values are **set directly** — use this when
+        the caller already holds cumulative totals (gateway path, where the
+        cached agent accumulates across messages).
+        """
+        # Ensure the session row exists so the UPDATE doesn't silently affect
+        # 0 rows.  Under concurrent load (cron + kanban + delegate_task) the
+        # initial create_session() may have failed due to SQLite locking.
+        # INSERT OR IGNORE is cheap and idempotent.
+        self._insert_session_row(session_id, "unknown", model=model)
+        if absolute:
+            sql = """UPDATE sessions SET
+                   input_tokens = ?,
+                   output_tokens = ?,
+                   cache_read_tokens = ?,
+                   cache_write_tokens = ?,
+                   reasoning_tokens = ?,
+                   estimated_cost_usd = COALESCE(?, 0),
+                   actual_cost_usd = CASE
+                       WHEN ? IS NULL THEN actual_cost_usd
+                       ELSE ?
+                   END,
+                   cost_status = COALESCE(?, cost_status),
+                   cost_source = COALESCE(?, cost_source),
+                   pricing_version = COALESCE(?, pricing_version),
+                   billing_provider = COALESCE(billing_provider, ?),
+                   billing_base_url = COALESCE(billing_base_url, ?),
+                   billing_mode = COALESCE(billing_mode, ?),
+                   model = COALESCE(model, ?),
+                   api_call_count = ?,
+                   context_limit = COALESCE(?, context_limit),
+                   context_used = COALESCE(?, context_used)
+                   WHERE id = ?"""
+        else:
+            sql = """UPDATE sessions SET
+                   input_tokens = input_tokens + ?,
+                   output_tokens = output_tokens + ?,
+                   cache_read_tokens = cache_read_tokens + ?,
+                   cache_write_tokens = cache_write_tokens + ?,
+                   reasoning_tokens = reasoning_tokens + ?,
+                   estimated_cost_usd = COALESCE(estimated_cost_usd, 0) + COALESCE(?, 0),
+                   actual_cost_usd = CASE
+                       WHEN ? IS NULL THEN actual_cost_usd
+                       ELSE COALESCE(actual_cost_usd, 0) + ?
+                   END,
+                   cost_status = COALESCE(?, cost_status),
+                   cost_source = COALESCE(?, cost_source),
+                   pricing_version = COALESCE(?, pricing_version),
+                   billing_provider = COALESCE(billing_provider, ?),
+                   billing_base_url = COALESCE(billing_base_url, ?),
+                   billing_mode = COALESCE(billing_mode, ?),
+                   model = COALESCE(model, ?),
+                   api_call_count = COALESCE(api_call_count, 0) + ?,
+                   context_limit = COALESCE(?, context_limit),
+                   context_used = COALESCE(?, context_used)
+                   WHERE id = ?"""
+        has_accounted_usage = bool(
+            input_tokens or output_tokens or cache_read_tokens
+            or cache_write_tokens or reasoning_tokens or api_call_count
+            or estimated_cost_usd or actual_cost_usd
+        )
+        params = (
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+            estimated_cost_usd,
+            actual_cost_usd,
+            actual_cost_usd,
+            cost_status,
+            cost_source,
+            pricing_version,
+            billing_provider if has_accounted_usage else None,
+            billing_base_url if has_accounted_usage else None,
+            billing_mode if has_accounted_usage else None,
+            model if has_accounted_usage else None,
+            api_call_count,
+            context_limit if context_limit else None,
+            context_used if context_used else None,
+            session_id,
+        )
+        # Per-model usage attribution.  ``update_token_counts`` is the single
+        # chokepoint every per-API-call delta flows through (CLI, gateway, cron,
+        # delegated runs — see conversation_loop / codex_runtime), and each call
+        # carries the model/provider *active at the time of that call*.  The
+        # ``sessions`` row only keeps one (model, billing_provider) pair, so a
+        # mid-session ``/model`` switch otherwise attributes every token to the
+        # initial model (issue #51607).  Recording the per-call delta into
+        # session_model_usage keyed by the live model preserves an accurate
+        # per-model breakdown regardless of how many times the user switches.
+        #
+        # Only the incremental path records here. Absolute cumulative updates
+        # cannot be split back into routes; Insights reconciles any positive
+        # residual against the aggregate session row instead.
+        record_model_usage = (not absolute) and (
+            input_tokens or output_tokens or cache_read_tokens
+            or cache_write_tokens or reasoning_tokens or api_call_count
+            or estimated_cost_usd
+        )
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            existing_model = row["model"] if row is not None else None
+            existing_provider = row["billing_provider"] if row is not None else None
+            existing_api_calls = int((row["api_call_count"] if row is not None else 0) or 0)
+
+            # Session creation records the requested primary route before any API
+            # call. If it fails and fallback succeeds, the first accounted usage
+            # event is the first authoritative route. After that, preserve the
+            # legacy row: one row cannot represent mixed-provider usage.
+            first_accounted_route = (
+                existing_api_calls == 0
+                and has_accounted_usage
+                and bool(model)
+                and bool(billing_provider)
+                and (existing_model != model or existing_provider != billing_provider)
+            )
+            if first_accounted_route:
+                conn.execute(
+                    """UPDATE sessions
+                       SET model = ?, billing_provider = ?,
+                       billing_base_url = ?, billing_mode = ?
+                       WHERE id = ?""",
+                    (model, billing_provider, billing_base_url, billing_mode, session_id),
+                )
+            conn.execute(sql, params)
+            if record_model_usage:
+                self._record_model_usage(
+                    conn,
+                    session_id,
+                    model=model,
+                    billing_provider=billing_provider,
+                    billing_base_url=billing_base_url,
+                    billing_mode=billing_mode,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    estimated_cost_usd=estimated_cost_usd,
+                    actual_cost_usd=actual_cost_usd,
+                    cost_status=cost_status,
+                    cost_source=cost_source,
+                    api_call_count=api_call_count,
+                )
+        self._execute_write(_do)
+
+    def _record_model_usage(
+        self,
+        conn,
+        session_id: str,
+        *,
+        model: Optional[str],
+        billing_provider: Optional[str],
+        billing_base_url: Optional[str],
+        billing_mode: Optional[str],
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+        reasoning_tokens: int,
+        estimated_cost_usd: Optional[float],
+        actual_cost_usd: Optional[float],
+        cost_status: Optional[str],
+        cost_source: Optional[str],
+        api_call_count: int,
+        task: str = "",
+    ) -> None:
+        """Accumulate a per-API-call usage delta into session_model_usage.
+
+        Runs inside the caller's write transaction (after the ``sessions``
+        UPDATE) so the per-model rows stay consistent with the summary row.
+        When the caller omits the model/provider (some paths only pass token
+        deltas), fall back to the values already recorded on the session row —
+        the same COALESCE-from-session behaviour the summary update uses.
+
+        ``task`` distinguishes what kind of work consumed the tokens:
+        ``''`` (empty) is the main agent loop; auxiliary calls record their
+        task name (``vision``, ``compression``, ``title_generation``, ...)
+        via :meth:`record_auxiliary_usage` (issue #23270).
+        """
+        row = conn.execute(
+            "SELECT model, billing_provider, billing_base_url, billing_mode "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        sess_model = row["model"] if row is not None else None
+        sess_provider = row["billing_provider"] if row is not None else None
+        sess_base_url = row["billing_base_url"] if row is not None else None
+        sess_billing_mode = row["billing_mode"] if row is not None else None
+
+        # Aux-task rows (task != '') must NOT inherit the session's main-loop
+        # route: an aux call may use a completely different provider/model
+        # (vision on gemini while the main loop runs anthropic). Missing info
+        # stays 'unknown'/empty rather than borrowing a misleading route.
+        if task:
+            eff_model = model or "unknown"
+            eff_provider = billing_provider or ""
+            eff_base_url = billing_base_url or ""
+            eff_billing_mode = billing_mode or ""
+        else:
+            eff_model = model or sess_model or "unknown"
+            eff_provider = billing_provider or sess_provider or ""
+            eff_base_url = billing_base_url or sess_base_url or ""
+            eff_billing_mode = billing_mode or sess_billing_mode or ""
+        now = time.time()
+        conn.execute(
+            """INSERT INTO session_model_usage (
+                   session_id, model, billing_provider, billing_base_url, billing_mode,
+                   task, api_call_count, input_tokens, output_tokens,
+                   cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                   estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                   first_seen, last_seen
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task)
+               DO UPDATE SET
+                   api_call_count = api_call_count + excluded.api_call_count,
+                   input_tokens = input_tokens + excluded.input_tokens,
+                   output_tokens = output_tokens + excluded.output_tokens,
+                   cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+                   cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                   reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
+                   estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
+                   actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd,
+                   cost_status = COALESCE(excluded.cost_status, cost_status),
+                   cost_source = COALESCE(excluded.cost_source, cost_source),
+                   last_seen = excluded.last_seen""",
+            (
+                session_id,
+                eff_model,
+                eff_provider,
+                eff_base_url,
+                eff_billing_mode,
+                task or "",
+                api_call_count or 0,
+                input_tokens or 0,
+                output_tokens or 0,
+                cache_read_tokens or 0,
+                cache_write_tokens or 0,
+                reasoning_tokens or 0,
+                float(estimated_cost_usd or 0.0),
+                float(actual_cost_usd or 0.0),
+                cost_status,
+                cost_source,
+                now,
+                now,
+            ),
+        )
+
+    def ensure_session(
+        self,
+        session_id: str,
+        source: str = "unknown",
+        model: str = None,
+        **kwargs,
+    ) -> str:
+        """Ensure a session row exists (INSERT OR IGNORE). Accepts optional kwargs."""
+        self._insert_session_row(session_id, source, model=model, **kwargs)
+        return session_id
+
+    def record_auxiliary_usage(
+        self,
+        session_id: str,
+        task: str,
+        *,
+        model: Optional[str] = None,
+        billing_provider: Optional[str] = None,
+        billing_base_url: Optional[str] = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        estimated_cost_usd: Optional[float] = None,
+        api_call_count: int = 1,
+    ) -> None:
+        """Record an auxiliary LLM call's usage against *session_id* (issue #23270).
+
+        Auxiliary calls (vision, compression, title_generation, web_extract,
+        session_search, ...) historically discarded their usage, leaving the
+        dashboard's per-model analytics blind to aux model spend. This writes
+        a per-(model, provider, task) delta into ``session_model_usage`` —
+        the same table the main loop's ``update_token_counts`` feeds — WITHOUT
+        touching the ``sessions`` summary row. That separation is deliberate:
+        the gateway overwrites session counters with absolute main-loop totals,
+        so folding aux tokens into the summary row would either be clobbered
+        or double-counted. Insights/analytics read the union of both.
+
+        ``api_call_count`` defaults to 1 (one aux LLM call). Background-review
+        forks record an aggregate of N fork API calls in one write with
+        ``task='background_review'`` (issue #87250).
+
+        Best-effort by contract: callers must never fail an aux call because
+        accounting failed.
+        """
+        if not session_id or not task:
+            return
+        # FK on session_model_usage.session_id → sessions.id: ensure the row
+        # exists (same INSERT OR IGNORE guard update_token_counts uses — the
+        # initial create_session() can fail under concurrent SQLite locking).
+        self._insert_session_row(session_id, "unknown")
+
+        def _do(conn):
+            self._record_model_usage(
+                conn,
+                session_id,
+                model=model,
+                billing_provider=billing_provider,
+                billing_base_url=billing_base_url,
+                billing_mode=None,
+                input_tokens=input_tokens or 0,
+                output_tokens=output_tokens or 0,
+                cache_read_tokens=cache_read_tokens or 0,
+                cache_write_tokens=cache_write_tokens or 0,
+                reasoning_tokens=reasoning_tokens or 0,
+                estimated_cost_usd=estimated_cost_usd,
+                actual_cost_usd=None,
+                cost_status=None,
+                cost_source=None,
+                api_call_count=(
+                    1 if api_call_count is None else int(api_call_count)
+                ),
+                task=task,
+            )
+        self._execute_write(_do)
+
+    def prune_empty_ghost_sessions(self, sessions_dir: "Optional[Path]" = None) -> int:
+        """Remove empty TUI ghost sessions (no messages, no title, >24hr old)."""
+        cutoff = time.time() - 86400  # Only sessions older than 24 hours
+
+        def _do(conn):
+            rows = conn.execute("""
+                SELECT id FROM sessions
+                WHERE source = 'tui'
+                  AND title IS NULL
+                  AND ended_at IS NOT NULL
+                  AND started_at < ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id
+                  )
+            """, (cutoff,)).fetchall()
+            ids = [r[0] if isinstance(r, (tuple, list)) else r["id"] for r in rows]
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                conn.execute(
+                    f"DELETE FROM sessions WHERE id IN ({placeholders})", ids
+                )
+                self._delete_unreferenced_system_prompts(conn)
+            return ids
+
+        removed_ids = self._execute_write(_do) or []
+        # Clean up any on-disk session files (belt-and-suspenders)
+        if sessions_dir and removed_ids:
+            for sid in removed_ids:
+                self._remove_session_files(sessions_dir, sid)
+        return len(removed_ids)
+
+    def finalize_orphaned_compression_sessions(self) -> int:
+        """Mark orphaned compression continuation sessions as ended.
+
+        Targets child sessions that were never finalized: parent is ended
+        with reason='compression', child has messages but no end_reason/ended_at
+        and api_call_count=0.  Non-destructive: preserves all messages and sets
+        end_reason='orphaned_compression'.  Fix for #20001.
+        """
+        cutoff = time.time() - 604800  # 7 days
+
+        def _do(conn):
+            now = time.time()
+            result = conn.execute(
+                """
+                UPDATE sessions
+                SET ended_at = ?,
+                    end_reason = 'orphaned_compression'
+                WHERE api_call_count = 0
+                  AND end_reason IS NULL
+                  AND ended_at IS NULL
+                  AND started_at < ?
+                  AND parent_session_id IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1 FROM sessions p
+                      WHERE p.id = sessions.parent_session_id
+                        AND p.end_reason = 'compression'
+                        AND p.ended_at IS NOT NULL
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM messages m
+                      WHERE m.session_id = sessions.id
+                  )
+                """,
+                (now, cutoff),
+            )
+            return result.rowcount
+
+        return self._execute_write(_do) or 0
+
+    def sweep_orphaned_sessions(
+        self,
+        *,
+        max_idle_seconds: float,
+        sources: Tuple[str, ...] = ("tui", "desktop", "subagent"),
+        exclude_ids: Tuple[str, ...] = (),
+    ) -> List[str]:
+        """Close session rows orphaned by a dead gateway process (#65194).
+
+        The TUI/desktop gateway reaps disconnected websocket sessions with an
+        in-process ``threading.Timer`` grace timer; a gateway restart destroys
+        the timer and leaves the row ``ended_at IS NULL`` forever.  This is
+        the startup-time complement: it closes rows for the given ``sources``
+        whose ``started_at`` AND newest ``messages.timestamp`` are both older
+        than ``max_idle_seconds``, with a distinct
+        ``end_reason='startup_orphan_reap'`` for traceability.
+
+        Both timestamps must be stale on purpose: message recency alone would
+        sweep a freshly created compression/branch child carrying old copied
+        message timestamps, while ``started_at`` alone would sweep a
+        long-lived session that is still actively producing messages.
+        Message-less rows fall back to ``started_at`` via COALESCE.
+
+        Only pass sources owned by the local UI stack (never messaging-gateway
+        platforms like ``telegram`` — ending those triggers the #60609 routing
+        loop).  ``exclude_ids`` spares rows this process still holds in
+        memory (a ``session.resume`` that landed during the startup grace
+        window).  Non-destructive: messages are preserved and the row remains
+        resumable.  First-reason-wins is preserved via ``ended_at IS NULL``.
+
+        The SELECT + UPDATE run in one ``BEGIN IMMEDIATE`` write, so a sibling
+        process cannot sneak a new message or end-reason between the
+        staleness check and the close.  Returns the swept session ids.
+        """
+        srcs = tuple(s for s in sources if s)
+        if max_idle_seconds <= 0 or not srcs:
+            return []
+        cutoff = time.time() - max_idle_seconds
+        placeholders = ",".join("?" for _ in srcs)
+        staleness = (
+            "started_at < ? AND COALESCE((SELECT MAX(m.timestamp) FROM messages m"
+            " WHERE m.session_id = sessions.id), started_at) < ?"
+        )
+
+        def _do(conn):
+            rows = conn.execute(
+                f"SELECT id FROM sessions WHERE ended_at IS NULL"
+                f" AND source IN ({placeholders}) AND {staleness}",
+                (*srcs, cutoff, cutoff),
+            ).fetchall()
+            excluded = {str(x) for x in exclude_ids if x}
+            victims = [str(r["id"]) for r in rows if str(r["id"]) not in excluded]
+            if not victims:
+                return []
+            now = time.time()
+            marks = ",".join("?" for _ in victims)
+            # Re-apply the same staleness predicate under the write lock so a
+            # row that raced to activity between SELECT and UPDATE is spared.
+            conn.execute(
+                f"UPDATE sessions SET ended_at = ?, end_reason = 'startup_orphan_reap'"
+                f" WHERE id IN ({marks}) AND ended_at IS NULL AND {staleness}",
+                (now, *victims, cutoff, cutoff),
+            )
+            return victims
+
+        return self._execute_write(_do) or []
+
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get a session by ID."""
+        # Cost/usage readers (/status, /usage, gateway endpoints) reach the
+        # row through here; drain queued token deltas so they see exact
+        # totals. No-op attribute check when nothing is queued.
+        self.flush_token_counts()
+        with self._read_ctx() as conn:
+            cursor = conn.execute(
+                "SELECT s.*, "
+                "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
+                "FROM sessions s "
+                "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+                "WHERE s.id = ?",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+        return self._session_row_dict(row) if row else None
+
+    def get_dominant_session_model_route(
+        self, session_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the main-loop model route that served most API calls.
+
+        ``sessions`` is a legacy aggregate row and can hold model/provider fields
+        written by different route changes. ``session_model_usage`` keeps the
+        coherent per-call tuple, so persisted status and billing reads should use
+        its dominant main-loop route when one is available.
+        """
+        self.flush_token_counts()
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                """SELECT model, billing_provider, billing_base_url, billing_mode,
+                          api_call_count
+                     FROM session_model_usage
+                    WHERE session_id = ?
+                      AND task = ''
+                      AND model <> 'unknown'
+                      AND billing_provider <> ''
+                    ORDER BY api_call_count DESC,
+                             (input_tokens + output_tokens + cache_read_tokens +
+                              cache_write_tokens + reasoning_tokens) DESC,
+                             last_seen DESC
+                    LIMIT 1""",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
+        """Resolve an exact or uniquely prefixed session ID to the full ID.
+
+        Returns the exact ID when it exists. Otherwise treats the input as a
+        prefix and returns the single matching session ID if the prefix is
+        unambiguous. Returns None for no matches or ambiguous prefixes.
+        """
+        exact = self.get_session(session_id_or_prefix)
+        if exact:
+            return exact["id"]
+
+        escaped = _escape_like(session_id_or_prefix)
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
+                (f"{escaped}%",),
+            )
+            matches = [row["id"] for row in cursor.fetchall()]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    # Maximum length for session titles
     MAX_TITLE_LENGTH = 100
 
     # Title provenance, lowest to highest authority: auto-titling may only replace a

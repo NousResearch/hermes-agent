@@ -2709,8 +2709,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _session_db_unavailable() -> "web.Response":
         return _error_response("Session database unavailable", 503, code="session_db_unavailable")
 
-    @staticmethod
-    def _session_response(session: Dict[str, Any]) -> Dict[str, Any]:
+    def _session_response(self, session: Dict[str, Any]) -> Dict[str, Any]:
         """Return a stable, client-safe session representation."""
         safe_keys = (
             "id", "source", "user_id", "model", "title", "started_at", "ended_at", "end_reason",
@@ -2725,6 +2724,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Full system prompts / model_config never cross the client API; only their presence.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
         payload["has_model_config"] = bool(session.get("model_config"))
+        # Live context-window occupancy, persisted per session by the agent's
+        # own loop (context_window_usage / update_token_counts) from the same
+        # source the desktop uses (agent.context_compressor). Field name
+        # ``context_limit`` aligns with upstream's micro-compaction report
+        # (ac48add3a: the resolved window). ``context_used`` is the measured
+        # last-prompt size. 0 means "unknown" (no measured occupancy yet) --
+        # never a fabricated reading. The derived percentage is deliberately
+        # NOT emitted here: upstream already defines ``occupancy_pct`` as
+        # used/threshold (compaction threshold), a different denominator, so
+        # reusing that name for a window-based ratio would be a semantic
+        # collision. Thin clients compute their own ratio from these two raw
+        # values.
+        payload["context_limit"] = int(session.get("context_limit") or 0)
+        payload["context_used"] = int(session.get("context_used") or 0)
         return payload
 
     @staticmethod

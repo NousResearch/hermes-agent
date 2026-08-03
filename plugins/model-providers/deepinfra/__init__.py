@@ -29,9 +29,9 @@ class _DeepInfraProfile(ProviderProfile):
         ``vision`` capability) so an image-gen/edit model that merely carries
         a ``vision`` tag can't be picked as a chat-completions vision backend.
         """
-        import os
+        from agent.secret_scope import get_secret
 
-        if not (os.environ.get("DEEPINFRA_API_KEY") or "").strip():
+        if not (get_secret("DEEPINFRA_API_KEY") or "").strip():
             return None
         try:
             from hermes_cli.models import _fetch_deepinfra_models_by_tag

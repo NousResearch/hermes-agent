@@ -1660,6 +1660,7 @@ export const ar = defineLocale({
     newSessionPlaceholders: ['اسأل Hermes عن شيء...', 'اطلب من Hermes تنفيذ مهمة...', 'ابدأ محادثة جديدة...'],
     followUpPlaceholders: ['اكتب متابعة...', 'أضف توجيها...', 'اسأل سؤالا آخر...'],
     startVoice: 'بدء الصوت',
+    openDirective: 'فتح',
     queueMessage: 'إضافة الرسالة للطابور',
     steer: 'توجيه',
     stop: 'إيقاف',
@@ -2235,6 +2236,7 @@ export const ar = defineLocale({
     closeRunningBody:
       'هذه المحادثة ما زالت تعمل (أو تنتظر إدخالك). إغلاق التبويب يخفيها فقط — ستحتفظ الجلسة بتقدمها ويمكن إعادة فتحها من الشريط الجانبي.',
     closeRunningConfirm: 'إغلاق التبويب',
+    reload: 'إعادة التحميل',
     closeOthers: 'إغلاق الأخرى',
     closeToRight: 'إغلاق ما على اليمين',
     closeAll: 'إغلاق الكل',

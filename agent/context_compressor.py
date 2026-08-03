@@ -25,7 +25,12 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
+from agent.auxiliary_client import (
+    AuxiliaryExplicitCancellation,
+    _is_connection_error,
+    aux_interrupt_protection,
+    call_llm,
+)
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.model_metadata import (
@@ -1828,6 +1833,11 @@ class ContextCompressor(ContextEngine):
         refresh: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""
+        if refresh:
+            # Transaction rollback must distinguish an authoritative empty row
+            # from a failed/unavailable durable read. The public return value
+            # cannot do so because it deliberately falls back to local state.
+            self._last_cooldown_refresh_was_authoritative = None
         now_mono = time.monotonic()
         local_state = None
         if self._summary_failure_cooldown_until > now_mono:
@@ -1852,10 +1862,16 @@ class ContextCompressor(ContextEngine):
         try:
             state = getter(session_id)
         except sqlite3.Error as exc:
+            if refresh:
+                self._last_cooldown_refresh_was_authoritative = False
             logger.debug("compression failure cooldown lookup failed: %s", exc)
             return local_state
         except Exception:
+            if refresh:
+                self._last_cooldown_refresh_was_authoritative = False
             return local_state
+        if refresh:
+            self._last_cooldown_refresh_was_authoritative = True
         if not state:
             if refresh:
                 if local_state is not None and self._cooldown_persist_failed:
@@ -1916,7 +1932,43 @@ class ContextCompressor(ContextEngine):
             self._cooldown_persist_failed = True
             logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
 
+    def record_timeout_failure(self, error: str) -> None:
+        """Record a consecutive timeout failure using the shared cooldown ladder.
+
+        Used by both the summary-LLM exception handler (inline at line ~3714)
+        and the host-level ``compress_context`` timeout wrapper in
+        ``run_compress_context_with_progress_timeout``. Avoids re-implementing
+        the ladder at each call site (#62452).
+        """
+        _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+        self._consecutive_timeout_failures = (
+            getattr(self, "_consecutive_timeout_failures", 0) + 1
+        )
+        cooldown = _TIMEOUT_COOLDOWN_LADDER[
+            min(self._consecutive_timeout_failures,
+                len(_TIMEOUT_COOLDOWN_LADDER)) - 1
+        ]
+        self._record_compression_failure_cooldown(float(cooldown), error)
+
     def _clear_compression_failure_cooldown(self) -> None:
+        # #76354 review F4: fence check BEFORE cooldown-clear. A late worker
+        # whose host already timed out (and recorded a timeout cooldown) must
+        # not undo that cooldown when its summary eventually succeeds. The
+        # hook is installed by compress_context for the duration of the
+        # fenced call; when it reports cancellation, keep the host's cooldown.
+        cancelled_check = getattr(self, "_compression_cancelled_check", None)
+        if callable(cancelled_check):
+            try:
+                if cancelled_check():
+                    logger.info(
+                        "Skipping compression cooldown clear: host already "
+                        "cancelled this compression attempt"
+                    )
+                    return
+            except Exception:
+                logger.debug(
+                    "compression cancellation check failed", exc_info=True
+                )
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
@@ -6056,6 +6108,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # — take the narrow rescan, miss a beyond-window fossil, and discard the
         # rehydrated state as cross-session leakage (#57835).
         _previous_summary_before_scan = self._previous_summary
+        _summary_has_user_turn_before_scan = getattr(self, "_summary_has_user_turn", None)
         # A persisted handoff summary can sit in the protected head after a
         # resume (commonly immediately after the system prompt). Search from
         # the first non-system message through the compression window. On the
@@ -6264,11 +6317,19 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Deriving the auto focus topic scans recent user turns — only pay
             # for it when a summary will actually be generated.
             summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-            summary = self._generate_summary(
-                turns_to_summarize,
-                focus_topic=summary_focus_topic,
-                memory_context=memory_context,
-            )
+            try:
+                summary = self._generate_summary(
+                    turns_to_summarize,
+                    focus_topic=summary_focus_topic,
+                    memory_context=memory_context,
+                )
+            except AuxiliaryExplicitCancellation:
+                # Explicit cancellation is a true no-op. Restore state mutated by
+                # the resume/handoff self-heal scan before the exception escapes to
+                # the outer transaction, which restores the transcript and lease.
+                self._previous_summary = _previous_summary_before_scan
+                self._summary_has_user_turn = _summary_has_user_turn_before_scan
+                raise
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):

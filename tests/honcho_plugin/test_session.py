@@ -791,6 +791,10 @@ class TestTrivialPromptHeuristic:
         for t in ("ok", "OK", " ok ", "y", "yes", "sure", "thanks", "lgtm", "/help", "", "   "):
             assert HonchoMemoryProvider._is_trivial_prompt(t), f"expected trivial: {t!r}"
 
+    def test_classifier_catches_greetings(self):
+        """Greeting words must register as trivial so context injection is skipped."""
+        for t in ("hi", "HI", "hey", "hello", "yo", "sup", " hi ", "hey!", "hello."):
+            assert HonchoMemoryProvider._is_trivial_prompt(t), f"expected trivial: {t!r}"
 
     def test_prefetch_skips_on_trivial_prompt(self):
         provider = self._make_provider()
@@ -880,7 +884,7 @@ class TestDialecticCadenceAdvancesOnSuccess:
         provider._turn_count = 5
         provider._last_dialectic_turn = 0
 
-        provider.queue_prefetch("hello")
+        provider.queue_prefetch("what changed in the repo today")
         if provider._prefetch_thread:
             provider._prefetch_thread.join(timeout=2.0)
 
@@ -905,7 +909,7 @@ class TestDialecticCadenceAdvancesOnSuccess:
         provider._prefetch_thread = fresh
         provider._prefetch_thread_started_at = _time.monotonic()  # fresh start
 
-        provider.queue_prefetch("hello")
+        provider.queue_prefetch("what changed in the repo today")
         # Should have short-circuited — no new dialectic call
         assert provider._manager.dialectic_query.call_count == 0
         hold.set()
@@ -1011,7 +1015,7 @@ class TestDialecticLiveness:
         # timeout=2.0, multiplier=2.0, so anything older than 4s is stale
         p._prefetch_thread_started_at = 0.0  # very old (1970 monotonic baseline)
 
-        p.queue_prefetch("hello")
+        p.queue_prefetch("what changed in the repo today")
         # New thread should have been spawned since stuck one is stale
         assert p._prefetch_thread is not stuck, "stale thread must be recycled"
         if p._prefetch_thread:

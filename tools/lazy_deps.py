@@ -732,7 +732,18 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         uv_env["VIRTUAL_ENV"] = str(venv_root)
 
         # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
-        uv_bin = shutil.which("uv")
+        # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare
+        # which() misses the uv Hermes installed and falls through to the
+        # slower pip tier. Deliberately a lookup and not ensure_uv(): this runs
+        # mid-turn to install an optional dependency, and downloading uv +
+        # migrating the Python runtime as a side effect of that is a far bigger
+        # action than the caller asked for. Tier 2 pip covers the no-uv case.
+        try:
+            from hermes_cli.managed_uv import resolve_uv
+
+            uv_bin = resolve_uv() or shutil.which("uv")
+        except Exception:
+            uv_bin = shutil.which("uv")
         if uv_bin:
             try:
                 r = subprocess.run(
@@ -835,6 +846,35 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     unsupported = _unsupported_feature_reason(feature)
     if unsupported:
         raise FeatureUnavailable(feature, missing, unsupported)
+
+    # Package-manager installs (NixOS, and any other distro that ships Hermes
+    # from a read-only store) cannot receive lazy pip installs: the venv's
+    # site-packages lives in the store, so the uv -> pip -> ensurepip ladder
+    # below burns ~15s bootstrapping ensurepip only to fail on a read-only
+    # target. Fail fast with an actionable message instead.
+    #
+    # Skipped when a durable install target is configured: the container
+    # deployment sets HERMES_MANAGED=true *and* HERMES_LAZY_INSTALL_TARGET
+    # (a writable volume), where lazy installs legitimately work.
+    #
+    # The reason string starts with "unsupported " on purpose:
+    # refresh_active_features classifies FeatureUnavailable by that prefix and
+    # reports anything else as a hard failure rather than a skip.
+    if _lazy_install_target() is None:
+        try:
+            from hermes_cli.config import get_managed_system
+
+            managed_by = get_managed_system()
+        except Exception:
+            managed_by = ""  # config unreadable — proceed with the install
+        if managed_by:
+            raise FeatureUnavailable(
+                feature, missing,
+                f"unsupported on {managed_by}-managed installs: this build's "
+                f"packages come from {managed_by}, so Hermes cannot install "
+                f"them at runtime. Add the dependencies for {feature!r} via "
+                f"{managed_by} (or run a pip/uv install of Hermes instead)."
+            )
 
     # Validate every spec against the allowlist + safety regex. Belt and
     # braces — the keys-in-LAZY_DEPS check above already constrains this.

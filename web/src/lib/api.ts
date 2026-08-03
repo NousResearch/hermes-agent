@@ -1725,14 +1725,17 @@ export interface MemoryProviderFieldOption {
 export interface MemoryProviderField {
   key: string;
   label: string;
-  kind: "text" | "secret" | "select" | "boolean";
+  kind: "text" | "secret" | "select" | "boolean" | "integer" | "number";
   description: string;
   placeholder: string;
   required: boolean;
-  value: string | boolean;
+  value: string | boolean | number;
   is_set: boolean;
   options: MemoryProviderFieldOption[];
   url: string;
+  minimum?: number | null;
+  maximum?: number | null;
+  step?: number | null;
   when?: Record<string, string | boolean | number> | null;
 }
 

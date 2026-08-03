@@ -19,6 +19,7 @@ releases it.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -383,10 +384,35 @@ def update_managed_uv(
 # ---------------------------------------------------------------------------
 
 
-def _venv_python(venv_dir: Path) -> Path:
-    from hermes_constants import venv_python_path
+def _reload_hermes_constants():
+    """Re-execute ``hermes_constants`` from disk and return the fresh module.
 
-    return venv_python_path(venv_dir, windows=platform.system() == "Windows")
+    ``hermes update`` imports ``hermes_constants`` from the OLD checkout,
+    ``git pull`` then replaces that file, and this freshly-pulled module runs
+    its lazy imports against the module object Python already cached in
+    ``sys.modules`` — the pre-upgrade one. A symbol added by the update is
+    absent there while the file named in the resulting ``ImportError`` plainly
+    contains it, which is what made this read as a contradiction:
+
+        cannot import name 'venv_python_path' from 'hermes_constants'
+        (~/.hermes/hermes-agent/hermes_constants.py)
+
+    Reloading picks up the definitions actually on disk, so callers keep using
+    the shared helper instead of hand-rolling a second copy of its logic. Same
+    update-boundary class as the ``ensure_uv()`` arity skew on :class:`_UvResult`.
+    """
+    import hermes_constants
+
+    return importlib.reload(hermes_constants)
+
+
+def _venv_python(venv_dir: Path) -> Path:
+    windows = platform.system() == "Windows"
+    try:
+        from hermes_constants import venv_python_path
+    except ImportError:
+        venv_python_path = _reload_hermes_constants().venv_python_path
+    return venv_python_path(venv_dir, windows=windows)
 
 
 def _remove_tree(path: Path, *, boundary: Path) -> None:
@@ -750,6 +776,10 @@ def _stage_candidate_venv(
         logger.warning("candidate dependency sync refused: uv.lock is missing")
         _remove_tree(candidate, boundary=runtime_root)
         return None
+    # Locked sync must see project [tool.uv] exclude-newer; --no-config /
+    # UV_NO_CONFIG drops it and uv 0.12+ refuses --locked.
+    sync_env = dict(env)
+    sync_env.pop("UV_NO_CONFIG", None)
     synced = subprocess.run(
         [
             uv_bin,
@@ -759,10 +789,9 @@ def _stage_candidate_venv(
             "--locked",
             "--python",
             str(_venv_python(candidate)),
-            "--no-config",
         ],
         cwd=project_root,
-        env=env,
+        env=sync_env,
         check=False,
     )
     if synced.returncode != 0:

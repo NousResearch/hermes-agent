@@ -439,6 +439,12 @@ export const en: Translations = {
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
+      terminalFontTitle: 'Terminal Font',
+      terminalFontDesc:
+        'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',
+      terminalFontPlaceholder: 'MesloLGS NF or a CSS font stack',
+      terminalFontPreview: 'Glyph preview',
+      terminalFontReset: 'Use default',
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
       backdropTitle: 'Chat Backdrop',
@@ -713,6 +719,8 @@ export const en: Translations = {
       sshHermesPathTitle: 'Hermes path (optional)',
       sshHermesPathDesc: 'Full path to the remote hermes binary. Blank = auto-detect.',
       sshHermesPathPlaceholder: 'auto-detect',
+      sshRemoteProfileTitle: 'Remote profile (optional)',
+      sshRemoteProfileDesc: 'Profile name on the remote host. Blank = use the Desktop profile name.',
       sshTestConnection: 'Test SSH',
       sshConnect: 'Connect',
       sshButtonsHint: 'Save applies on the next launch. Connect reconnects now.',
@@ -1972,6 +1980,7 @@ export const en: Translations = {
       'Adjust or continue'
     ],
     startVoice: 'Start voice conversation',
+    openDirective: 'Open',
     queueMessage: 'Queue message',
     steer: 'Steer the current run',
     stop: 'Stop',
@@ -2654,6 +2663,7 @@ export const en: Translations = {
     closeRunningBody:
       'This chat is still working (or waiting on your input). Closing the tab hides it — the session keeps its progress and can be reopened from the sidebar.',
     closeRunningConfirm: 'Close tab',
+    reload: 'Reload',
     closeOthers: 'Close others',
     closeToRight: 'Close to the right',
     closeAll: 'Close all',

@@ -392,6 +392,235 @@ class TestAgentExecution:
             task_id="session-123",
         )
 
+    @pytest.mark.asyncio
+    async def test_run_agent_sets_and_clears_process_ownership_markers(self, adapter):
+        """#76188 review: this surface runs its own agent lifecycle outside
+        TurnRunner, so it needs its own baseline snapshot/clear — verify the
+        markers _reap_disconnected_agent_processes() reads are actually
+        populated during the turn and cleared once it finishes."""
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        captured = {}
+
+        def _capture_markers(**_kwargs):
+            captured["task_id"] = mock_agent._gateway_turn_process_task_id
+            captured["baseline"] = mock_agent._gateway_turn_process_baseline
+            return {"final_response": "ok"}
+
+        mock_agent.run_conversation.side_effect = _capture_markers
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-456",
+                requested_model="MiniMax-M3",
+                requested_provider="minimax",
+                model_options={"reasoning": {"enabled": False}, "fast": False},
+            )
+
+        assert captured["task_id"] == "session-456"
+        assert isinstance(captured["baseline"], frozenset)
+        # Turn completed normally — markers must be cleared so a disconnect
+        # arriving after this point can't reap work this turn left running.
+        assert mock_agent._gateway_turn_process_task_id == ""
+        assert mock_agent._gateway_turn_process_baseline == frozenset()
+
+
+class TestDisconnectedAgentReap:
+    """#76188 review: SSE disconnect handlers must reap only the background
+    processes the disconnected turn created, and must no-op when no turn
+    ownership was ever recorded on the agent."""
+
+    def test_reaps_baseline_diff_for_owned_turn(self, monkeypatch):
+        from gateway.platforms.api_server import _reap_disconnected_agent_processes
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda task_id, baseline, *, source: calls.append(
+                (task_id, baseline, source)
+            )
+            or 1,
+        )
+        agent = types.SimpleNamespace(
+            _gateway_turn_process_task_id="session-abc",
+            _gateway_turn_process_baseline=frozenset({"proc-1"}),
+        )
+
+        _reap_disconnected_agent_processes(agent)
+
+        deadline = time.time() + 1.0
+        while not calls and time.time() < deadline:
+            time.sleep(0.01)
+        assert calls == [
+            ("session-abc", frozenset({"proc-1"}), "api_server_sse_disconnect")
+        ]
+
+    def test_noop_when_agent_has_no_ownership_markers(self, monkeypatch):
+        from gateway.platforms.api_server import _reap_disconnected_agent_processes
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda *a, **k: calls.append(True),
+        )
+        agent = types.SimpleNamespace(
+            _gateway_turn_process_task_id="",
+            _gateway_turn_process_baseline=None,
+        )
+
+        _reap_disconnected_agent_processes(agent)
+
+        time.sleep(0.1)
+        assert calls == []
+
+    def test_stale_epoch_skips_reap_when_newer_run_claimed_task_id(self, monkeypatch):
+        """#76188 follow-up: concurrent API runs can share a client-provided
+        session_id (same task_id). A disconnecting run whose epoch has been
+        superseded must NOT kill the newer run's processes."""
+        from gateway.platforms.api_server import (
+            _clear_turn_process_ownership,
+            _publish_turn_process_ownership,
+            _reap_disconnected_agent_processes,
+        )
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda *a, **k: calls.append(True) or 1,
+        )
+        monkeypatch.setattr(
+            process_registry, "snapshot_running_ids", lambda _tid: frozenset()
+        )
+
+        run_a = types.SimpleNamespace()
+        run_b = types.SimpleNamespace()
+        _publish_turn_process_ownership(run_a, "shared-session")
+        # Run B claims the same session_id — supersedes A's epoch.
+        _publish_turn_process_ownership(run_b, "shared-session")
+
+        _reap_disconnected_agent_processes(run_a)
+        time.sleep(0.2)
+        assert calls == [], "stale run A must not reap run B's processes"
+
+        # Run B disconnecting IS current — its reap proceeds.
+        _reap_disconnected_agent_processes(run_b)
+        deadline = time.time() + 1.0
+        while not calls and time.time() < deadline:
+            time.sleep(0.01)
+        assert calls == [True]
+        _clear_turn_process_ownership(run_b)
+
+    def test_reap_proceeds_when_own_clear_pruned_the_epoch_entry(self, monkeypatch):
+        """A missing epoch entry (the abandoned run's own finally already
+        cleared it) means no newer claimant — the reap must proceed using a
+        pre-captured marker snapshot, or the leak survives."""
+        from gateway.platforms.api_server import (
+            _clear_turn_process_ownership,
+            _publish_turn_process_ownership,
+            _reap_disconnected_agent_processes,
+        )
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda *a, **k: calls.append(True) or 1,
+        )
+        monkeypatch.setattr(
+            process_registry, "snapshot_running_ids", lambda _tid: frozenset()
+        )
+
+        run = types.SimpleNamespace()
+        _publish_turn_process_ownership(run, "solo-session")
+        # Simulate the disconnect handler capturing the agent while the
+        # worker's finally clears ownership: snapshot markers, then clear.
+        stale_view = types.SimpleNamespace(
+            _gateway_turn_process_task_id=run._gateway_turn_process_task_id,
+            _gateway_turn_process_baseline=run._gateway_turn_process_baseline,
+            _gateway_turn_process_epoch=run._gateway_turn_process_epoch,
+        )
+        _clear_turn_process_ownership(run)
+
+        _reap_disconnected_agent_processes(stale_view)
+        deadline = time.time() + 1.0
+        while not calls and time.time() < deadline:
+            time.sleep(0.01)
+        assert calls == [True]
+
+    def test_publish_and_clear_ownership_roundtrip(self, monkeypatch):
+        from gateway.platforms.api_server import (
+            _TURN_PROCESS_EPOCHS,
+            _clear_turn_process_ownership,
+            _publish_turn_process_ownership,
+        )
+        from tools.process_registry import process_registry
+
+        monkeypatch.setattr(
+            process_registry,
+            "snapshot_running_ids",
+            lambda tid: frozenset({f"pre-{tid}"}),
+        )
+
+        agent = types.SimpleNamespace()
+        _publish_turn_process_ownership(agent, "sess-rt")
+        assert agent._gateway_turn_process_task_id == "sess-rt"
+        assert agent._gateway_turn_process_baseline == frozenset({"pre-sess-rt"})
+        assert isinstance(agent._gateway_turn_process_epoch, int)
+        assert "sess-rt" in _TURN_PROCESS_EPOCHS
+
+        _clear_turn_process_ownership(agent)
+        assert agent._gateway_turn_process_task_id == ""
+        assert agent._gateway_turn_process_baseline == frozenset()
+        assert agent._gateway_turn_process_epoch is None
+        # Entry pruned — dict stays bounded to in-flight runs.
+        assert "sess-rt" not in _TURN_PROCESS_EPOCHS
+
+    @pytest.mark.asyncio
+    async def test_stop_run_reaps_owned_processes(self, adapter, monkeypatch):
+        """POST /v1/runs/{id}/stop abandons the run — it must reap the
+        background processes that run created (#76115 sibling surface)."""
+        from gateway.platforms.api_server import _publish_turn_process_ownership
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda task_id, baseline, *, source: calls.append(
+                (task_id, baseline, source)
+            )
+            or 1,
+        )
+        monkeypatch.setattr(
+            process_registry, "snapshot_running_ids", lambda _tid: frozenset()
+        )
+
+        agent = MagicMock()
+        _publish_turn_process_ownership(agent, "run-stop-sess")
+        adapter._active_run_agents["run_x"] = agent
+
+        request = MagicMock()
+        request.match_info = {"run_id": "run_x"}
+        resp = await adapter._handle_stop_run(request)
+        assert resp.status == 200
+
+        deadline = time.time() + 1.0
+        while not calls and time.time() < deadline:
+            time.sleep(0.01)
+        assert calls == [("run-stop-sess", frozenset(), "api_server_run_stop")]
+        agent.interrupt.assert_called_once()
+
 
 class TestRunEventCallback:
 
@@ -684,6 +913,7 @@ class TestToolsetsEndpoint:
             ("default", "Default Tools", "Core tools"),
             ("web", "Web Tools", "Search and extract"),
         ]
+        feature_snapshot = object()
         with patch(
             "hermes_cli.tools_config._get_effective_configurable_toolsets",
             return_value=fake_toolsets,
@@ -691,9 +921,12 @@ class TestToolsetsEndpoint:
             "hermes_cli.tools_config._get_platform_tools",
             return_value={"default"},
         ), patch(
+            "hermes_cli.tools_config.get_nous_subscription_features",
+            return_value=feature_snapshot,
+        ) as resolve_features, patch(
             "hermes_cli.tools_config._toolset_has_keys",
             return_value=True,
-        ), patch(
+        ) as has_keys, patch(
             "toolsets.resolve_toolset",
             side_effect=lambda name: {
                 "default": ["terminal", "read_file"],
@@ -713,6 +946,13 @@ class TestToolsetsEndpoint:
                 assert by_name["web"]["enabled"] is False
                 assert by_name["web"]["tools"] == ["web_search"]
                 assert by_name["default"]["configured"] is True
+
+        resolve_features.assert_called_once()
+        assert has_keys.call_count == len(fake_toolsets)
+        assert all(
+            call.kwargs["features"] is feature_snapshot
+            for call in has_keys.call_args_list
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2616,5 +2856,4 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
-
 

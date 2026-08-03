@@ -122,6 +122,7 @@ Hermes supports seven terminal backends. Each determines where the agent's shell
 terminal:
   backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
+  font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
@@ -129,6 +130,8 @@ terminal:
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
 ```
+
+`terminal.font_family` controls the embedded terminal in Hermes Desktop. It accepts either one locally installed family name (for example, `MesloLGS NF`) or a CSS font stack. Hermes appends its bundled JetBrains Mono stack as a fallback, and an empty value keeps the default. You can edit the same profile-scoped setting in **Settings → Appearance → Terminal Font**; no Google Fonts download or system-font permission is required.
 
 For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
@@ -792,6 +795,8 @@ compression:
   hygiene_timeout_seconds: 30                       # Max seconds of NO summary-model output before hygiene compression is cut off
   hygiene_total_ceiling_seconds: 600                # Absolute cap on the hygiene wait even while tokens are still streaming
   hygiene_failure_cooldown_seconds: 300             # Skip repeated failed hygiene attempts for this session
+  context_timeout_seconds: 120                      # Inactivity budget for in-agent compress_context (loop /compress / preflight) — see below
+  context_total_ceiling_seconds: 600                # Absolute cap on the *pre-commit* in-agent compress_context wait even while tokens are still streaming (an already-started SessionDB commit is never abandoned; overruns are logged + surfaced)
   proactive_prune_tokens: 0                         # Opt-in tokens trigger for the no-LLM tool-result prune (0 = off; see below)
   proactive_prune_min_result_chars: 8000            # Prune's summarize pass only touches tool results larger than this (clamped >= 200)
   proactive_prune_min_reclaim_tokens: 4096          # Prune only commits when it reclaims at least this many tokens (0 = commit any)
@@ -817,6 +822,10 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 `hygiene_total_ceiling_seconds` (default `600`) bounds the total wait even while tokens are still moving, so a degenerate trickle stream can't hold a turn hostage indefinitely. It is clamped to at least `hygiene_timeout_seconds`.
 
 `hygiene_failure_cooldown_seconds` controls that per-session cooldown after a hygiene compression timeout or abort. During the cooldown, the gateway skips repeated hygiene attempts for the same oversized session so every incoming message does not block on the same broken auxiliary backend. `/compress`, `/reset`, or a healthy later turn can still recover the session.
+
+`context_timeout_seconds` (default `120`) is the same **inactivity budget** for in-agent `compress_context` — the conversation loop, preflight compaction, and manual `/compress` — so a hung summary model cannot stall a session indefinitely. Streamed summary tokens extend the wait; only a silent worker is cut off. On timeout Hermes skips compaction, keeps the existing messages, and warns the user. Set to `0` to disable. Gateway session hygiene keeps its own `hygiene_timeout_seconds` path and is not double-wrapped.
+
+`context_total_ceiling_seconds` (default `600`) bounds the in-agent **pre-commit** wait (summary / stream phase) even while tokens are still moving. It is clamped to at least `context_timeout_seconds`. The exact guarantee: **the summary phase is bounded by this ceiling; the commit phase is logged and surfaced if it exceeds it.** Once the worker has entered the compression commit fence and SessionDB mutation is in flight, the commit is never abandoned mid-flight — that would risk transcript divergence — but the wait is no longer silent: if the commit runs past the ceiling, Hermes logs the overrun (WARNING, escalating to ERROR on repeat), sends a one-shot warning through the user-visible warning channel, and keeps waiting in bounded increments until the commit completes.
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
 
@@ -871,6 +880,25 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 :::warning Summary model context length requirement
 The summary model **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override the model, verify its context length meets or exceeds your main model's.
 :::
+
+## Session Stall Watchdog
+
+The gateway runs a notify-only stall watchdog (`agent.session_stall_timeout`, default `300` seconds, `0` = disabled). When a busy session has a **pending inbound follow-up** and the agent's shared activity clock has been idle for at least this long, the gateway logs a WARNING and sends the user a one-shot notification:
+
+```
+⚠️ Agent session appears stalled (last activity N min ago). Try /new to reset.
+```
+
+Semantics:
+
+- **Notify-only.** The watchdog never kills the turn — contrast `agent.gateway_timeout`, which cancels a run after prolonged inactivity. The stall notice just tells you the agent looks wedged so you can decide (`/new`, `/stop`, or keep waiting).
+- **One notification per stall episode.** The latch clears when the pending inbound drains or activity resumes, so a session that recovers and stalls again notifies again.
+- Progress comes only from the shared activity snapshot (tool calls, API stream progress, compression heartbeats). Pending inbound is a notify gate, not a progress clock.
+
+```yaml
+agent:
+  session_stall_timeout: 300   # seconds; 0 disables the watchdog
+```
 
 ## Context Engine
 
@@ -1704,8 +1732,19 @@ When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-cont
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # supported fields: model, context_pct, cwd
+    fields: ["model", "context_pct", "cwd"]   # order shown; drop any to hide
 ```
+
+Supported fields:
+
+| Field | Renders | Example |
+| --- | --- | --- |
+| `model` | Bare model id, vendor prefix dropped | `gpt-5.4` |
+| `context_pct` | Last-call context occupancy as a percent | `5%` |
+| `latency` | Wall-clock duration of the turn | `22s`, `1m05s` |
+| `cwd` | Home-relative working directory | `~` |
+
+The default field set is `["model", "context_pct", "cwd"]`. `latency` is opt-in — add it to `fields` to use it. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
 
 The `/footer` slash command toggles this at runtime in any session.
 

@@ -24,6 +24,18 @@ from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
+from agent.secret_scope import get_secret as _get_secret
+
+
+def _getenv(name: str, default: str = "") -> str:
+    """Profile-scoped replacement for os.getenv on credential reads.
+
+    Routes through the secret scope (Workstream A): identical to os.getenv
+    when multiplexing is off, scope-aware (and fail-closed on an unscoped
+    read) when on. Mirrors the same wrapper in hermes_cli/runtime_provider.py.
+    """
+    val = _get_secret(name, default)
+    return val if val is not None else default
 
 # NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
 # ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
@@ -1322,7 +1334,7 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
         # to auth.json or trigger a network refresh from a bare resolve. select()
         # is deliberately NOT used — it runs clear_expired=True, refresh=True,
         # which would violate this read-only contract.
-        entries = pool._available_entries(clear_expired=False, refresh=False)
+        entries, _pending = pool._available_entries(clear_expired=False, refresh=False)
     except Exception:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None
@@ -1358,7 +1370,7 @@ def resolve_anthropic_token() -> Optional[str]:
     creds = read_claude_code_credentials()
 
     # 1. Hermes-managed OAuth/setup token env var
-    token = os.getenv("ANTHROPIC_TOKEN", "").strip()
+    token = _getenv("ANTHROPIC_TOKEN").strip()
     if token:
         preferred = _prefer_refreshable_claude_code_token(token, creds)
         if preferred:
@@ -1366,7 +1378,7 @@ def resolve_anthropic_token() -> Optional[str]:
         return token
 
     # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
-    cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    cc_token = _getenv("CLAUDE_CODE_OAUTH_TOKEN").strip()
     if cc_token:
         preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
         if preferred:
@@ -1385,7 +1397,7 @@ def resolve_anthropic_token() -> Optional[str]:
 
     # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    api_key = _getenv("ANTHROPIC_API_KEY").strip()
     if api_key:
         return api_key
 
@@ -1428,7 +1440,7 @@ def run_oauth_setup_token() -> Optional[str]:
 
     # Check env vars that may have been set
     for env_var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_TOKEN"):
-        val = os.getenv(env_var, "").strip()
+        val = _getenv(env_var).strip()
         if val:
             return val
 
@@ -2299,13 +2311,14 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     """Validate and convert a user message to anthropic format."""
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
-        if not converted_blocks or all(
-            (b.get("text") or "").strip() == ""
-            for b in converted_blocks
-            if isinstance(b, dict) and b.get("type") == "text"
-        ):
-            converted_blocks = [{"type": "text", "text": "(empty message)"}]
-        return {"role": "user", "content": converted_blocks}
+        kept_blocks = _fix_blank_text_blocks_in_list(
+            converted_blocks,
+            placeholder_text="(empty message)",
+            msg_index=-1,
+            role="user",
+            location="_convert_user_message",
+        )
+        return {"role": "user", "content": kept_blocks}
     else:
         if not content or (isinstance(content, str) and not content.strip()):
             content = "(empty message)"
@@ -2608,9 +2621,114 @@ def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
     Mirror the Bedrock Converse adapter, which unconditionally prepends a
     minimal user turn when the first message is not user
     (convert_messages_to_converse).
+
+    The inserted text block must be non-whitespace: Anthropic separately
+    rejects any text content block whose text is empty or whitespace-only
+    ("text content blocks must contain non-whitespace text"), so a single
+    space here traded the "leading assistant turn" 400 for that one (#69512
+    class). Uses the same placeholder as every other synthesized filler
+    block in this module for consistency.
     """
     if result and result[0].get("role") != "user":
-        result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
+        result.insert(
+            0, {"role": "user", "content": [{"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}]}
+        )
+
+
+def _fix_blank_text_blocks_in_list(
+    blocks: List[Any],
+    *,
+    placeholder_text: str,
+    msg_index: int,
+    role: Any,
+    location: str,
+) -> List[Any]:
+    """Drop blank/whitespace-only text blocks from ``blocks``, in place logic.
+
+    Non-text blocks (tool_use, tool_result, image, document, thinking, …)
+    and the relative order of everything else are left untouched. A
+    cache_control marker riding on a dropped block is relocated onto the
+    last surviving text/tool_use block so a breakpoint is never silently
+    lost. If nothing survives, a single non-blank placeholder text block
+    takes the dropped blocks' place (carrying the relocated cache_control,
+    if any) so the message never has empty content.
+
+    Returns a new list; does not mutate ``blocks``.
+    """
+    kept: List[Any] = []
+    relocated_cache_control = None
+    for block_index, blk in enumerate(blocks):
+        if (
+            isinstance(blk, dict)
+            and blk.get("type") == "text"
+            and not (isinstance(blk.get("text"), str) and blk["text"].strip())
+        ):
+            if isinstance(blk.get("cache_control"), dict):
+                relocated_cache_control = blk["cache_control"]
+            logger.warning(
+                "Pre-call sanitizer: dropped blank text content block "
+                "(message_index=%d role=%s location=%s block_index=%d "
+                "block_type=text)",
+                msg_index,
+                role,
+                location,
+                block_index,
+            )
+            continue
+        kept.append(blk)
+    if not kept:
+        placeholder: Dict[str, Any] = {"type": "text", "text": placeholder_text}
+        if relocated_cache_control is not None:
+            placeholder["cache_control"] = relocated_cache_control
+        kept.append(placeholder)
+    elif relocated_cache_control is not None:
+        _apply_assistant_cache_control_to_last_cacheable_block(kept, relocated_cache_control)
+    return kept
+
+
+def _scrub_blank_text_blocks(result: List[Dict[str, Any]]) -> None:
+    """Final provider-boundary guard against blank Anthropic text blocks.
+
+    Anthropic rejects any text content block whose ``text`` is empty or
+    whitespace-only with HTTP 400 ("text content blocks must contain
+    non-whitespace text"). ``_convert_assistant_message``,
+    ``_convert_user_message`` and ``_ensure_leading_user_turn`` already
+    avoid emitting these for the paths that build them, but this pass runs
+    last — after every other transform in ``convert_messages_to_anthropic``
+    — so a blank block from any current or future producer (including one
+    nested inside a ``tool_result``'s own content list) never reaches the
+    wire. Diagnostics are structural only: message index, role, content
+    location, block index/type. Never logs message text, tool arguments,
+    tokens, or credentials. Mutates ``result`` in place.
+    """
+    for msg_index, msg in enumerate(result):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        if not isinstance(content, list) or not content:
+            continue
+        placeholder_text = _EMPTY_TEXT_PLACEHOLDER if role == "assistant" else "(empty message)"
+        new_content = _fix_blank_text_blocks_in_list(
+            content,
+            placeholder_text=placeholder_text,
+            msg_index=msg_index,
+            role=role,
+            location="content",
+        )
+        for blk in new_content:
+            if not isinstance(blk, dict) or blk.get("type") != "tool_result":
+                continue
+            inner = blk.get("content")
+            if isinstance(inner, list) and inner:
+                blk["content"] = _fix_blank_text_blocks_in_list(
+                    inner,
+                    placeholder_text="(no output)",
+                    msg_index=msg_index,
+                    role=role,
+                    location="tool_result",
+                )
+        msg["content"] = new_content
 
 
 def convert_messages_to_anthropic(
@@ -2674,6 +2792,7 @@ def convert_messages_to_anthropic(
     _ensure_leading_user_turn(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
+    _scrub_blank_text_blocks(result)
 
     return system, result
 

@@ -104,7 +104,10 @@ def test_cron_audit_redacts_prompt_updates(cron_audit_env):
     assert "secret body" not in (cron_audit_env / "cron" / "audit.log").read_text()
 
 
-def test_cron_audit_records_run_completion_and_repeat_removal(cron_audit_env):
+def test_cron_audit_records_run_completion_and_terminal_retention(cron_audit_env):
+    """Repeat-limit completion retains the record as terminal (main's
+    retention model) — the audit trail records the completion, and the
+    "removed" event moves to the retention sweep that actually deletes it."""
     _enable_audit(cron_audit_env)
 
     from cron.jobs import create_job, get_job, mark_job_run
@@ -112,10 +115,38 @@ def test_cron_audit_records_run_completion_and_repeat_removal(cron_audit_env):
     job = create_job(prompt="one shot", schedule="30m", name="repeat job", repeat=1)
     mark_job_run(job["id"], success=True)
 
-    assert get_job(job["id"]) is None
+    retained = get_job(job["id"])
+    assert retained is not None and retained["state"] == "completed"
     entries = _read_audit_entries(cron_audit_env)
-    assert [entry["action"] for entry in entries] == ["created", "completed", "removed"]
-    assert entries[-1]["details"]["reason"] == "repeat_limit"
+    assert [entry["action"] for entry in entries] == ["created", "completed"]
+
+
+def test_cron_audit_records_retention_sweep_removal(cron_audit_env):
+    """The retention sweep is now the real deletion point for exhausted
+    one-shots — it must audit each pruned record."""
+    _enable_audit(cron_audit_env)
+
+    from cron.jobs import get_due_jobs, save_jobs
+
+    stale_completed = {
+        "id": "old-oneshot",
+        "name": "old one-shot",
+        "enabled": False,
+        "state": "completed",
+        "schedule": {"kind": "once", "run_at": "2020-01-01T00:00:00+00:00"},
+        "next_run_at": None,
+        "last_run_at": "2020-01-01T00:00:05+00:00",  # far past retention
+        "repeat": {"times": 1, "completed": 1},
+    }
+    save_jobs([stale_completed])
+
+    get_due_jobs()
+
+    entries = _read_audit_entries(cron_audit_env)
+    removed = [e for e in entries if e["action"] == "removed"]
+    assert len(removed) == 1
+    assert removed[0]["job_id"] == "old-oneshot"
+    assert removed[0]["details"]["reason"] == "retention_sweep"
 
 
 def test_cron_audit_records_stale_dispatch_removal_via_claim(cron_audit_env):

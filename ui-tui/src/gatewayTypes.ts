@@ -274,6 +274,7 @@ export interface SessionUndoResponse {
 }
 
 export interface SessionUsageResponse {
+  account_lines?: string[]
   active_subagents?: number
   avg_latency_s?: number
   avg_tps?: number
@@ -293,6 +294,7 @@ export interface SessionUsageResponse {
   input?: number
   model?: string
   output?: number
+  rate_limit_lines?: string[]
   total?: number
   // Shared dollar usage model (two-bar view) so /usage renders the same bars
   // as /subscription. Dollars only — never "credits".

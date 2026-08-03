@@ -43,12 +43,16 @@ import type { RpcEvent } from '@/types/hermes'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
 
-// After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
-// raise a recoverable boot error. Otherwise a dropped remote gateway loops the
-// backoff forever behind the fullscreen CONNECTING overlay with no way to reach
-// Settings / sign in / switch to local — the "lost connection breaks the app"
-// dead end. The next successful reconnect clears it.
-const RECONNECT_ESCALATE_AFTER = 6
+// After the reconnect loop has been failing for this long, raise a recoverable
+// boot error. Otherwise a dropped remote gateway loops the backoff forever
+// behind the fullscreen CONNECTING overlay with no way to reach Settings /
+// sign in / switch to local — the "lost connection breaks the app" dead end.
+// The next successful reconnect clears it. Time-based (not attempt-count)
+// because the full-jitter backoff makes attempt counts a meaningless clock:
+// six jittered attempts can elapse in ~9s, while the old deterministic
+// 1→15s ladder took ~45s to reach six failures — this threshold keeps that
+// original ~45s calibration.
+const RECONNECT_ESCALATE_AFTER_MS = 45_000
 
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
@@ -115,13 +119,18 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    // Wall-clock start of the current disconnect episode (first failed
+    // reconnect attempt); null while healthy. Drives the time-based
+    // escalation below. Reset on a clean open or a manual/wake reconnect.
+    let reconnectFailingSince: number | null = null
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
     let reauthNotified = false
-    // Raised once the reconnect loop crosses RECONNECT_ESCALATE_AFTER so the
-    // recovery overlay replaces the dead-end CONNECTING screen. Reset on a clean
-    // open or a manual/wake-driven reconnect.
+    // Raised once the reconnect loop has been failing for
+    // RECONNECT_ESCALATE_AFTER_MS so the recovery overlay replaces the
+    // dead-end CONNECTING screen. Reset on a clean open or a manual/
+    // wake-driven reconnect.
     let escalated = false
 
     // Wrap the live getter in a call so TS control-flow analysis doesn't narrow
@@ -174,6 +183,7 @@ export function useGatewayBoot({
         }
 
         reconnectAttempt = 0
+        reconnectFailingSince = null
         // A respawned backend re-mints (recycles) runtime ids, so any tile's
         // bound runtime id is now stale — drop them so each tile re-resumes.
         resetTileRuntimeBindings()
@@ -193,7 +203,11 @@ export function useGatewayBoot({
         reconnecting = false
 
         if (!cancelled && !gatewayOpen() && !$gatewaySwitching.get()) {
-          if (reconnectAttempt >= RECONNECT_ESCALATE_AFTER && !escalated) {
+          if (reconnectFailingSince === null) {
+            reconnectFailingSince = Date.now()
+          }
+
+          if (Date.now() - reconnectFailingSince >= RECONNECT_ESCALATE_AFTER_MS && !escalated) {
             escalated = true
             failDesktopBoot(translateNow('boot.errors.gatewayConnectionLost'))
           }
@@ -227,6 +241,7 @@ export function useGatewayBoot({
 
       clearReconnectTimer()
       reconnectAttempt = 0
+      reconnectFailingSince = null
       escalated = false
       reconnectSecondaryGateways()
 
@@ -273,6 +288,7 @@ export function useGatewayBoot({
       $gatewaySwitching.set(true)
       clearReconnectTimer()
       reconnectAttempt = 0
+      reconnectFailingSince = null
       escalated = false
       reauthNotified = false
       callbacksRef.current.beforeConnectionSwitch()
@@ -375,6 +391,7 @@ export function useGatewayBoot({
 
       if (st === 'open') {
         reconnectAttempt = 0
+        reconnectFailingSince = null
         reauthNotified = false
         escalated = false
         clearReconnectTimer()

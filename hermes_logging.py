@@ -532,6 +532,18 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         exc = sys.exc_info()[1]
         if _is_windows_concurrent_log_lock_timeout(exc):
             return
+        # A temporary HERMES_HOME can be removed while the shared QueueListener
+        # is still draining records (notably during test teardown and clean
+        # process shutdown).  RotatingFileHandler reports the missing parent via
+        # handleError; do not turn an already-closed log destination into a
+        # stderr traceback.  If the parent still exists, preserve the normal
+        # error path so real permission/disk failures remain visible.
+        if isinstance(exc, FileNotFoundError):
+            try:
+                if not Path(self.baseFilename).parent.exists():
+                    return
+            except OSError:
+                return
         super().handleError(record)
 
     def _open(self):

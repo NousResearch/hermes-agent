@@ -3054,6 +3054,11 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        # Keep the typing refresh separately addressable from the processing
+        # task. Reset-like commands must send their acknowledgement before
+        # cancelling the old processing task, but they still need to stop the
+        # old typing loop before that potentially slow send begins.
+        self._session_typing_tasks: Dict[str, asyncio.Task] = {}
         # Legacy busy_text_mode env var; when unset the runner syncs the
         # resolved value (driven by busy_input_mode) onto the adapter after
         # construction (gateway/run.py). Default to "interrupt" so a stray
@@ -5284,6 +5289,21 @@ class BasePlatformAdapter(ABC):
         finally:
             self._typing_paused.discard(chat_id)
 
+    async def _stop_session_typing(
+        self,
+        session_key: str,
+        chat_id: str,
+        *,
+        metadata=None,
+    ) -> None:
+        """Stop the typing refresh owned by the current session task."""
+        typing_task = self._session_typing_tasks.pop(session_key, None)
+        await self._stop_typing_refresh(
+            chat_id,
+            typing_task,
+            metadata=metadata,
+        )
+
     def pause_typing_for_chat(self, chat_id: str) -> None:
         """Pause typing indicator for a chat (e.g. during approval waits).
 
@@ -6004,6 +6024,14 @@ class BasePlatformAdapter(ABC):
             # after cancel_session_processing, which could silently drop the
             # "/new" confirmation when an agent was actively running.
             if _text:
+                # Keep the response-before-processing-cancel ordering required
+                # by #18912, while preventing the old task from refreshing the
+                # typing indicator during a slow command-response send.
+                await self._stop_session_typing(
+                    session_key,
+                    event.source.chat_id,
+                    metadata=thread_meta,
+                )
                 logger.info(
                     "[%s] Sending command '/%s' response (%d chars) to %s",
                     self.name,
@@ -6326,8 +6354,11 @@ class BasePlatformAdapter(ABC):
                     **_keep_typing_kwargs,
                 )
             )
+            self._session_typing_tasks[session_key] = typing_task
 
         async def _stop_typing_task() -> None:
+            if self._session_typing_tasks.get(session_key) is typing_task:
+                self._session_typing_tasks.pop(session_key, None)
             await self._stop_typing_refresh(
                 event.source.chat_id,
                 typing_task,
@@ -7103,6 +7134,10 @@ class BasePlatformAdapter(ABC):
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
         self._session_tasks.clear()
+        for task in self._session_typing_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._session_typing_tasks.clear()
         # Flush pending messages to disk before clearing (#72680).
         try:
             from gateway.shutdown_flush import flush_pending_to_file

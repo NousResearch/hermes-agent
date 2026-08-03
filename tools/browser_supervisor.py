@@ -520,6 +520,61 @@ class CDPSupervisor:
         """Return the dedicated page target for this task, if attached."""
         return self._page_target_id
 
+    def page_target_tab_ref(self, timeout: float = 5.0) -> Dict[str, Any]:
+        """Return agent-browser's stable tab ref for this owned page.
+
+        ``agent-browser --cdp`` connects to the browser endpoint and keeps its
+        own page list.  It has no CLI flag for a raw CDP target id, so the
+        Hermes path binds the command by switching that daemon to the matching
+        stable tab id inside one ``batch`` request.  The stable id is derived
+        from the same filtered ``Target.getTargets`` order agent-browser uses
+        when it creates its page list.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return {"ok": False, "error": "supervisor loop is not running"}
+        with self._state_lock:
+            if not self._active:
+                return {"ok": False, "error": "supervisor is not active"}
+            target_id = self._page_target_id
+        if not target_id:
+            return {"ok": False, "error": "supervisor has no dedicated page target"}
+
+        async def _resolve() -> Dict[str, Any]:
+            response = await self._cdp("Target.getTargets", timeout=timeout)
+            infos = (response.get("result") or {}).get("targetInfos") or []
+            pages = [
+                info
+                for info in infos
+                if isinstance(info, dict)
+                and info.get("type") in {"page", "webview"}
+                and not str(info.get("url") or "").startswith(
+                    ("chrome://", "chrome-extension://", "devtools://")
+                )
+            ]
+            for index, info in enumerate(pages, start=1):
+                if info.get("targetId") == target_id:
+                    return {
+                        "ok": True,
+                        "target_id": target_id,
+                        "tab_ref": f"t{index}",
+                    }
+            return {
+                "ok": False,
+                "error": "dedicated page target is not present in Target.getTargets",
+                "target_id": target_id,
+            }
+
+        try:
+            from agent.async_utils import safe_schedule_threadsafe
+
+            fut = safe_schedule_threadsafe(_resolve(), loop)
+            if fut is None:
+                return {"ok": False, "error": "Browser supervisor loop unavailable"}
+            return fut.result(timeout=timeout + 1)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
     def activate_owned_page(self, timeout: float = 5.0) -> Dict[str, Any]:
         """Bring this supervisor's dedicated page to the front (shared CDP).
 

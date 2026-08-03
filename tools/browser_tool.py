@@ -55,6 +55,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import shutil
 import sys
@@ -1568,6 +1569,34 @@ _cleanup_running = False
 # (subagents run concurrently via ThreadPoolExecutor)
 _cleanup_lock = threading.Lock()
 
+# agent-browser's CDP mode has no command-line target/session selector.  For a
+# shared endpoint we therefore use its own stable tab ids inside a single
+# ``batch`` request (``tab tN`` followed by the real operation).  The fallback
+# lock below protects older/proxy backends where that tab lookup is unavailable
+# by keeping Target.activateTarget and the CLI command in one critical section.
+_CDP_PAGE_BOUND_COMMANDS = frozenset({
+    "back",
+    "click",
+    "console",
+    "errors",
+    "eval",
+    "fill",
+    "open",
+    "press",
+    "record",
+    "screenshot",
+    "scroll",
+    "snapshot",
+})
+_cdp_binding_locks: Dict[str, threading.Lock] = {}
+_cdp_binding_locks_guard = threading.Lock()
+
+
+def _cdp_binding_lock(cdp_url: str) -> threading.Lock:
+    """Return the process-wide lock for one shared CDP endpoint."""
+    with _cdp_binding_locks_guard:
+        return _cdp_binding_locks.setdefault(cdp_url, threading.Lock())
+
 
 def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
     """Return a provider-authoritative session expiry as epoch seconds.
@@ -2327,6 +2356,29 @@ def _activate_session_page_target(task_id: str, session_info: Dict[str, Any]) ->
         logger.debug("activate_owned_page error for task=%s: %s", task_id, exc)
 
 
+def _session_page_tab_ref(task_id: str, session_info: Dict[str, Any]) -> Optional[str]:
+    """Return the agent-browser tab ref bound to this Hermes task's page."""
+    if not session_info.get("cdp_url"):
+        return None
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None:
+            return None
+        result = supervisor.page_target_tab_ref()
+        if result.get("ok") and result.get("tab_ref"):
+            return str(result["tab_ref"])
+        logger.debug(
+            "Could not resolve agent-browser tab ref for task=%s: %s",
+            task_id,
+            result.get("error"),
+        )
+    except Exception as exc:
+        logger.debug("page-target tab binding error for task=%s: %s", task_id, exc)
+    return None
+
+
 def _navigate_via_supervisor_page(
     task_id: str, url: str, session_info: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
@@ -2601,12 +2653,26 @@ def _run_browser_command(
     # Cloud mode: --cdp <websocket_url> connects to Browserbase.
     # Local mode: --session <name> launches a local headless Chromium.
     # The rest of the command (--json, command, args) is identical.
+    cdp_tab_ref = None
+    cdp_binding_lock = None
+    uses_cdp_tab_batch = False
     if session_info.get("cdp_url"):
-        # Cloud / user CDP — connect via CDP. Focus this task's dedicated page
-        # first so multi-session headed browsers do not race on one tab (#69727).
+        # Cloud / user CDP — connect via CDP.  agent-browser exposes no raw
+        # target/session flag, so bind page operations through its stable tab
+        # state in one batch request.  Older/proxy backends that cannot expose
+        # Target.getTargets use the serialized activation fallback below.
         _ensure_cdp_supervisor(task_id)
         _bind_session_page_target(task_id, session_info)
-        _activate_session_page_target(task_id, session_info)
+        if command in _CDP_PAGE_BOUND_COMMANDS:
+            cdp_tab_ref = _session_page_tab_ref(task_id, session_info)
+            uses_cdp_tab_batch = cdp_tab_ref is not None
+            if not uses_cdp_tab_batch:
+                cdp_binding_lock = _cdp_binding_lock(str(session_info["cdp_url"]))
+                cdp_binding_lock.acquire()
+        if not uses_cdp_tab_batch:
+            # Keep activation and the CLI request linearized when a target
+            # index cannot be queried from the remote CDP proxy.
+            _activate_session_page_target(task_id, session_info)
         # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
         # --session creates a local browser instance and silently ignores --cdp.
         backend_args = ["--cdp", session_info["cdp_url"]]
@@ -2633,10 +2699,20 @@ def _run_browser_command(
     else:
         cmd_prefix = [browser_cmd]
 
-    cmd_parts = cmd_prefix + backend_args + [
-        "--json",
-        command
-    ] + args
+    if uses_cdp_tab_batch:
+        # ``batch`` executes both commands in the same agent-browser daemon,
+        # making the selected target/session part of the operation rather than
+        # a racy browser-global focus side effect.
+        batch_commands = [
+            shlex.join(["tab", str(cdp_tab_ref)]),
+            shlex.join([command, *(str(arg) for arg in args)]),
+        ]
+        cmd_parts = cmd_prefix + backend_args + ["--json", "batch", *batch_commands]
+    else:
+        cmd_parts = cmd_prefix + backend_args + [
+            "--json",
+            command
+        ] + args
 
     try:
         # Give each task its own socket directory to prevent concurrency conflicts.
@@ -2778,6 +2854,17 @@ def _run_browser_command(
             elif stdout_text:
                 try:
                     parsed = json.loads(stdout_text)
+                    if uses_cdp_tab_batch:
+                        if not isinstance(parsed, list) or not parsed:
+                            raise ValueError("agent-browser batch returned no command result")
+                        final = parsed[-1]
+                        result = {
+                            "success": bool(final.get("success")),
+                            "data": final.get("result") or {},
+                        }
+                        if final.get("error"):
+                            result["error"] = final["error"]
+                        parsed = result
                     # Warn if snapshot came back empty (common sign of daemon/CDP issues)
                     if command == "snapshot" and parsed.get("success"):
                         snap_data = parsed.get("data", {})
@@ -2831,6 +2918,9 @@ def _run_browser_command(
     except Exception as e:
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}
+
+    if cdp_binding_lock is not None:
+        cdp_binding_lock.release()
 
     # --- Lightpanda automatic Chrome fallback ---
     # If engine is lightpanda and the result looks broken, retry with Chrome.

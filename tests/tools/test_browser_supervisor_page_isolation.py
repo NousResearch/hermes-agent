@@ -247,6 +247,119 @@ def test_navigate_page_uses_owned_session_and_activates_target(monkeypatch):
     )
 
 
+def test_page_target_tab_ref_matches_agent_browser_target_order(monkeypatch):
+    """The tab ref must identify the owned target, not merely activate it."""
+    sup = _make_supervisor()
+    sup._active = True
+    sup._page_target_id = "TAB-OWNED"
+    methods: List[str] = []
+
+    async def fake_cdp(
+        method: str,
+        params: Optional[dict] = None,
+        session_id: Optional[str] = None,
+        timeout: float = 10.0,
+    ) -> dict:
+        methods.append(method)
+        if method == "Target.getTargets":
+            return {
+                "result": {
+                    "targetInfos": [
+                        {"targetId": "DEVTOOLS", "type": "page", "url": "devtools://devtools"},
+                        {"targetId": "TAB-OTHER", "type": "page", "url": "https://other.example"},
+                        {"targetId": "TAB-OWNED", "type": "page", "url": "about:blank"},
+                    ]
+                }
+            }
+        return {"result": {}}
+
+    class _Loop:
+        def is_running(self) -> bool:
+            return True
+
+    class _Fut:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self, timeout=None):
+            return self._value
+
+    def schedule(coro, loop):
+        loop_local = asyncio.new_event_loop()
+        try:
+            return _Fut(loop_local.run_until_complete(coro))
+        finally:
+            loop_local.close()
+
+    monkeypatch.setattr("agent.async_utils.safe_schedule_threadsafe", schedule)
+    sup._loop = _Loop()  # type: ignore[assignment]
+    sup._cdp = fake_cdp  # type: ignore[method-assign]
+
+    result = sup.page_target_tab_ref()
+
+    assert result == {"ok": True, "target_id": "TAB-OWNED", "tab_ref": "t2"}
+    assert methods == ["Target.getTargets"]
+
+
+def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(monkeypatch, tmp_path):
+    """Click/type-style operations must select the owned tab in the same daemon call."""
+    import json
+    from unittest.mock import MagicMock, mock_open
+
+    import tools.browser_tool as browser_tool
+
+    session = {
+        "session_name": "cdp-task",
+        "cdp_url": "wss://browser.example/cdp",
+    }
+    captured: List[List[str]] = []
+    process = MagicMock()
+    process.wait.return_value = 0
+    process.returncode = 0
+    stdout = json.dumps([
+        {"command": ["tab", "t2"], "success": True, "result": []},
+        {"command": ["click", "@e1"], "success": True, "result": {"clicked": "@e1"}},
+    ])
+
+    def capture_popen(command, **kwargs):
+        captured.append(command)
+        return process
+
+    monkeypatch.setattr(browser_tool, "_get_session_info", lambda _task_id: session)
+    monkeypatch.setattr(browser_tool, "_find_agent_browser", lambda: "/usr/bin/agent-browser")
+    monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda _task_id: None)
+    monkeypatch.setattr(browser_tool, "_bind_session_page_target", lambda _task_id, _session: None)
+    monkeypatch.setattr(browser_tool, "_session_page_tab_ref", lambda _task_id, _session: "t2")
+    monkeypatch.setattr(browser_tool, "_get_browser_engine", lambda: "auto")
+    monkeypatch.setattr(browser_tool, "_socket_safe_tmpdir", lambda: str(tmp_path))
+    monkeypatch.setattr(browser_tool, "_build_browser_env", lambda: {})
+    monkeypatch.setattr(browser_tool, "_write_owner_pid", lambda *_args: None)
+    monkeypatch.setattr(browser_tool, "_needs_chromium_sandbox_bypass", lambda: False)
+    monkeypatch.setattr(browser_tool, "_safe_command_timeout", lambda: 10)
+    monkeypatch.setattr(browser_tool.subprocess, "Popen", capture_popen)
+    monkeypatch.setattr(browser_tool.os, "open", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(browser_tool.os, "close", lambda *_args: None)
+    monkeypatch.setattr(browser_tool.os, "unlink", lambda *_args: None)
+    monkeypatch.setattr(browser_tool.os, "makedirs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_tool, "_read_command_output_files", lambda *_args: (stdout, ""))
+    monkeypatch.setattr(browser_tool, "_unlink_command_output_files", lambda *_args: None)
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    monkeypatch.setattr("builtins.open", mock_open(read_data=stdout))
+
+    result = browser_tool._run_browser_command("task", "click", ["@e1"])
+
+    assert result == {"success": True, "data": {"clicked": "@e1"}}
+    assert captured == [[
+        "/usr/bin/agent-browser",
+        "--cdp",
+        "wss://browser.example/cdp",
+        "--json",
+        "batch",
+        "tab t2",
+        "click @e1",
+    ]]
+
+
 def test_browser_navigate_cdp_uses_supervisor_page(monkeypatch):
     """browser_navigate on a CDP session must not fall through to unbound CLI."""
     import json

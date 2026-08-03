@@ -134,9 +134,24 @@ def agent_env():
     prev_home = os.environ.get("HERMES_HOME")
     os.environ["HERMES_HOME"] = os.path.join(test_home, ".hermes")
 
-    # Import fresh so the patched conversation_loop is exercised even when the
-    # module was imported earlier in the same worker.
+    # Import fresh so the dispatch logic is exercised even when the module was
+    # imported earlier in the same worker.  We purge run_agent + agent.*/tools.*/hermes_*
+    # EXCEPT for a curated set of modules that other test files hold direct class
+    # references to.  agent.context_compressor binds call_llm at module level
+    # via from agent.auxiliary_client import call_llm; if we purge and reimport
+    # it, a new module object is created, but tests that did
+    # from agent.context_compressor import ContextCompressor at their own
+    # module load still reference the OLD class.  patch("agent.context_compressor.
+    # call_llm") then patches the NEW module's binding, which the OLD class never
+    # sees — the real call_llm runs, hits the network, and the fallback path is
+    # never taken (confirmed contamination: test_ghost_skill_pruning lines 268/302).
+    _PRESERVE_MODULES = {
+        "agent.context_compressor",
+        "agent.auxiliary_client",
+    }
     for mod in list(sys.modules):
+        if mod in _PRESERVE_MODULES:
+            continue
         if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("hermes_"):
             del sys.modules[mod]
     from run_agent import AIAgent
@@ -154,6 +169,18 @@ def agent_env():
         yield agent, _MockHandler
     finally:
         srv.shutdown()
+        # Stop the async QueueListener and close file handlers that point at
+        # the temporary HERMES_HOME/logs/ *before* we rmtree the directory.
+        # AIAgent.__init__ calls hermes_logging.setup_logging(), which starts a
+        # QueueListener whose RotatingFileHandlers write to
+        # <test_home>/.hermes/logs/agent.log and errors.log.  If we delete the
+        # directory while the listener is still alive, subsequent log records
+        # hit FileNotFoundError on the missing parent and emit tracebacks.
+        # _reset_queued_handlers() stops the listener (draining pending records),
+        # closes the handlers, and clears the module-level state so a later
+        # setup_logging() in the same interpreter starts clean.
+        import hermes_logging
+        hermes_logging._reset_queued_handlers()
         shutil.rmtree(test_home, ignore_errors=True)
         if prev_home is None:
             os.environ.pop("HERMES_HOME", None)
@@ -312,3 +339,46 @@ def test_mixed_batch_invalid_call_with_broken_json_does_not_retry_turn(agent_env
     # retry would add a third identical request.
     chat_calls = [r for r in handler.captured_requests if "messages" in r]
     assert len(chat_calls) == 2
+
+def test_agent_env_preserves_context_compressor_identity(agent_env):
+    """Regression: the module purge must not replace agent.context_compressor.
+
+    Other test files (test_ghost_skill_pruning, test_compressor_fallback_update,
+    ...) import ContextCompressor at their module load time and later patch
+    agent.context_compressor.call_llm.  If this fixture purges and reimports
+    agent.context_compressor, a NEW module object is created, but those tests
+    still hold the OLD ContextCompressor class — whose compress() calls the OLD
+    module-level call_llm binding, not the patched one.  The patch silently
+    misses and the real call_llm runs (network hit, no fallback).
+    """
+    import agent.context_compressor as cc
+    # The module in sys.modules must be the same object that other test files
+    # imported — not a fresh reimport created by the fixture's purge loop.
+    assert sys.modules["agent.context_compressor"] is cc
+    # call_llm must be a live attribute of the preserved module so that
+    # patch("agent.context_compressor.call_llm") reaches ContextCompressor.
+    assert hasattr(cc, "call_llm")
+
+
+def test_agent_env_teardown_flushes_queue_listener():
+    """Regression: the fixture must stop the async QueueListener before
+    deleting the temporary HERMES_HOME so file handlers do not keep writing to
+    deleted agent.log/errors.log paths (FileNotFoundError tracebacks).
+
+    Drives the fixture generator manually to inspect post-teardown state.
+    """
+    import hermes_logging
+    # agent_env is a @pytest.fixture-wrapped generator; call the underlying
+    # generator function directly to control setup/teardown.
+    original = agent_env.__wrapped__
+    gen = original()
+    next(gen)  # setup + yield (agent, handler)
+    try:
+        gen.send(None)  # trigger finally
+    except StopIteration:
+        pass
+    # After teardown, the listener must be stopped and file handlers cleared.
+    assert hermes_logging._queue_listener is None, \
+        "QueueListener leaked after fixture teardown"
+    assert len(hermes_logging._queued_file_handlers) == 0, \
+        "file handlers leaked after fixture teardown"

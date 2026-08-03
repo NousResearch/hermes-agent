@@ -6,9 +6,9 @@ event's ``media_urls`` name connector re-hosted attachments
 ``source_url`` the connector resolves back to bytes. This module is the
 gateway-side HTTP client for that plane:
 
-  - ``download(url)``  → GET a re-hosted attachment to a local temp file (the
-    agent's vision/file tools consume LOCAL paths, matching every native
-    adapter's inbound media behaviour).
+  - ``download(url)``  → GET a re-hosted attachment to the managed profile
+    cache (the agent's vision/file tools consume LOCAL paths, matching every
+    native adapter's inbound media behaviour).
   - ``upload(path)``   → POST local file bytes to ``/relay/media``; returns the
     ``/relay/media/{id}`` reference for a subsequent ``send_media`` op. This is
     how a locally-generated artifact (image_generate output, TTS voice note,
@@ -33,8 +33,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
-import os
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -152,7 +150,7 @@ class RelayMediaClient:
         return await asyncio.get_running_loop().run_in_executor(None, _post)
 
     async def download(self, url: str, *, suggested_name: Optional[str] = None) -> Optional[str]:
-        """GET a re-hosted attachment to a local temp file; return its path.
+        """GET a re-hosted attachment to the managed media cache; return its path.
 
         Presents the per-gateway bearer for connector re-host URLs; plain
         public URLs (e.g. a Discord CDN pass-through) are fetched without it.
@@ -187,14 +185,16 @@ class RelayMediaClient:
                         cd = resp.headers.get("Content-Disposition") or ""
                         if "filename=" in cd:
                             name = cd.split("filename=", 1)[1].strip().strip('"')
-                    ext = Path(name).suffix if name else ""
-                    if not ext:
-                        mime = (resp.headers.get("Content-Type") or "").split(";")[0]
-                        ext = mimetypes.guess_extension(mime) or ".bin"
-                    fd, tmp_path = tempfile.mkstemp(prefix="relay_media_", suffix=ext)
-                    with os.fdopen(fd, "wb") as fh:
-                        fh.write(data)
-                    return tmp_path
+                    mime = (resp.headers.get("Content-Type") or "").split(";")[0]
+                    if not mime and name:
+                        mime = mimetypes.guess_type(name)[0] or ""
+                    from gateway.platforms.media_cache import cache_media_bytes
+
+                    return cache_media_bytes(
+                        data,
+                        mime or "application/octet-stream",
+                        filename_hint=name,
+                    )
             except (urllib.error.URLError, ValueError, OSError) as exc:
                 logger.warning("relay media download failed for %s: %s", url, exc)
                 return None

@@ -168,6 +168,51 @@ async def test_inbound_without_client_keeps_public_drops_rehost():
 
 
 @pytest.mark.asyncio
+async def test_client_download_routes_bytes_to_managed_cache(monkeypatch):
+    data = b"\x89PNG\r\n\x1a\npayload"
+    captured = {}
+
+    class _Response:
+        headers = {
+            "Content-Length": str(len(data)),
+            "Content-Type": "image/png; charset=binary",
+            "Content-Disposition": 'attachment; filename="relay-shot.png"',
+        }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return data
+
+    def fake_urlopen(request, *, timeout):
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["timeout"] = timeout
+        return _Response()
+
+    def fake_cache(payload, mime, *, filename_hint):
+        captured.update(payload=payload, mime=mime, filename_hint=filename_hint)
+        return "/managed/cache/relay-shot.png"
+
+    monkeypatch.setattr("gateway.relay.media.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "gateway.platforms.media_cache.cache_media_bytes", fake_cache
+    )
+    client = RelayMediaClient("https://conn.example", "gw1", "secret")
+
+    result = await client.download("https://conn.example/relay/media/aa11")
+
+    assert result == "/managed/cache/relay-shot.png"
+    assert captured["payload"] == data
+    assert captured["mime"] == "image/png"
+    assert captured["filename_hint"] == "relay-shot.png"
+    assert captured["authorization"].startswith("Bearer ")
+
+
+@pytest.mark.asyncio
 async def test_client_upload_rejects_oversize_and_missing(tmp_path: Path):
     c = RelayMediaClient("https://c.example", "gw1", "sec")
     # Missing file → None (no network attempted).

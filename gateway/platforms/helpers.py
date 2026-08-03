@@ -1,7 +1,7 @@
 """Shared helper classes for gateway platform adapters.
 
 Extracts common patterns that were duplicated across 5-7 adapters:
-message deduplication, text batch aggregation, markdown stripping,
+message deduplication, text batch aggregation, markdown formatting/stripping,
 and thread participation tracking.
 """
 
@@ -12,6 +12,7 @@ import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict
+from urllib.parse import quote
 
 from utils import atomic_json_write
 
@@ -181,7 +182,20 @@ class TextBatchAggregator:
 
 # ─── Markdown Stripping ──────────────────────────────────────────────────────
 
-# Pre-compiled regexes for performance
+# Standard Markdown links are supported by several rich-text adapters. Keep
+# delimiter escaping here; platform-specific dialect conversion stays in each
+# adapter.
+_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
+
+
+def format_markdown_link(label: str, url: str) -> str:
+    """Return a standard Markdown link with safe label and destination text."""
+    escaped_label = _MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
+    escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
+    return f"[{escaped_label}]({escaped_url})"
+
+
+# Pre-compiled regexes for Markdown stripping
 _RE_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _RE_ITALIC_STAR = re.compile(r"\*(.+?)\*", re.DOTALL)
 _RE_BOLD_UNDER = re.compile(r"\b__(?![\s_])(.+?)(?<![\s_])__\b", re.DOTALL)

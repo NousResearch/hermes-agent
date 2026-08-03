@@ -1079,6 +1079,28 @@ class TestCronOutputRetention:
         assert _prune_job_output(d, keep=3) == 7
         assert sorted(p.name for p in d.glob("*.md")) == names[-3:]
 
+    def test_prune_removes_matching_structured_sidecar(self, tmp_path):
+        from cron.jobs import _prune_job_output
+
+        output_dir = tmp_path / "job"
+        output_dir.mkdir()
+        outputs = [
+            output_dir / f"2026-06-25_10-00-0{i}.run.md"
+            for i in range(3)
+        ]
+        sidecars = []
+        for output in outputs:
+            output.write_text("markdown", encoding="utf-8")
+            sidecar = output.with_suffix(".response.json")
+            sidecar.write_text('{"response": "exact"}', encoding="utf-8")
+            sidecars.append(sidecar)
+
+        assert _prune_job_output(output_dir, keep=2) == 1
+        assert not outputs[0].exists()
+        assert not sidecars[0].exists()
+        assert all(path.exists() for path in outputs[1:])
+        assert all(path.exists() for path in sidecars[1:])
+
 
 # =========================================================================
 # claim_dispatch — pre-run one-shot crash safety (issue #38758)

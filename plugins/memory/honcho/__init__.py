@@ -23,7 +23,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
-from agent.memory_provider import TRIVIAL_PROMPT_RE, MemoryProvider
+from agent.memory_provider import TRIVIAL_PROMPT_RE, MemoryProvider, is_trivial_prompt
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -1198,24 +1198,15 @@ class HonchoMemoryProvider(MemoryProvider):
 
     # Prompts that carry no semantic signal — trivial acknowledgements, greetings,
     # slash commands, empty input. Skipping injection here saves tokens and prevents
-    # stale user-model context from derailing one-word replies. The pattern is
-    # shared with the core prefetch gate (agent/memory_provider.TRIVIAL_PROMPT_RE)
-    # so the provider-side classifier and the core gate can never drift apart.
+    # stale user-model context from derailing one-word replies. Classification is
+    # fully delegated to the shared agent/memory_provider.is_trivial_prompt so the
+    # provider-side classifier and the core prefetch gate can never drift apart.
     _TRIVIAL_PROMPT_RE = TRIVIAL_PROMPT_RE
 
     @classmethod
     def _is_trivial_prompt(cls, text: str) -> bool:
         """Return True if the prompt is too trivial to warrant context injection."""
-        if not text:
-            return True
-        stripped = text.strip()
-        if not stripped:
-            return True
-        if stripped.startswith("/"):
-            return True
-        if cls._TRIVIAL_PROMPT_RE.match(stripped):
-            return True
-        return False
+        return is_trivial_prompt(text)
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence and injection_frequency logic."""

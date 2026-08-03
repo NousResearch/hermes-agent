@@ -1789,21 +1789,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # legitimately held for multi-second stretches by sibling Hermes
     # processes: a TRUNCATE checkpoint at close on a large WAL, VACUUM after
     # an auto-prune, offline recovery, or an older still-running process
-    # whose FTS maintenance predates the bounded-merge protocol (every
-    # `hermes update` leaves mixed-version processes sharing the DB until
-    # the old ones exit).  An attempt-counted budget (~15s incidental worst
-    # case) silently loses that race and surfaces as
-    # session_persistence_failed — a destroyed turn — even though the store
-    # is healthy and merely busy (#74478).
-    #
-    # Two budgets: routine writes give up after _WRITE_PATIENCE_S so
-    # background/UI callers don't stall excessively, while transcript
-    # writes (append_message / session-row creation — the ones whose
-    # failure aborts the user's turn) ride out anything shorter than
-    # _TRANSCRIPT_WRITE_PATIENCE_S.  Jitter stays small for the first
-    # _WRITE_RETRY_SLOW_AFTER_S (fast reclaim on millisecond contention),
-    # then backs off so a long hold isn't hammered with BEGIN IMMEDIATE
-    # attempts.
+    # whose FTS maintenance predates the bounded-merge protocol.
     _WRITE_PATIENCE_S = 20.0
     _TRANSCRIPT_WRITE_PATIENCE_S = 60.0
     # Observation-only activity heartbeat/label writes (#76354 review S1):
@@ -2512,6 +2498,29 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     continue
                 # Non-lock error or patience exhausted — propagate.
                 raise
+            except CompressionSessionBusyError as exc:
+                # In-place compression briefly owns a session-level lock while
+                # rewriting transcript rows. Treat that like SQLite write-lock
+                # pressure: back off with the same time-based patience budget
+                # rather than failing a turn on a transient owner overlap.
+                now = time.monotonic()
+                if now < deadline:
+                    elapsed = now - (deadline - patience_s)
+                    if elapsed >= self._WRITE_RETRY_SLOW_AFTER_S:
+                        jitter = random.uniform(
+                            self._WRITE_RETRY_SLOW_MIN_S,
+                            self._WRITE_RETRY_SLOW_MAX_S,
+                        )
+                    else:
+                        jitter = random.uniform(
+                            self._WRITE_RETRY_MIN_S,
+                            self._WRITE_RETRY_MAX_S,
+                        )
+                    time.sleep(min(jitter, max(deadline - now, 0.001)))
+                    continue
+                raise CompressionSessionBusyError(
+                    f"session compression lock held for over {patience_s:.0f}s"
+                ) from exc
             except sqlite3.DatabaseError as exc:
                 if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
@@ -5998,6 +6007,68 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return self._execute_write(
             _do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S
         )
+
+    def append_messages(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        *,
+        compression_lock_holder: Optional[str] = None,
+    ) -> int:
+        """Append multiple transcript rows in one write transaction.
+
+        Turn-final persistence can contain many tool/result rows. Calling
+        :meth:`append_message` for each row acquires and releases SQLite's WAL
+        write lock repeatedly, which amplifies cross-process lock pressure on a
+        large shared ``state.db``.  This batch path performs the same
+        compression/session safety checks once, inserts every row atomically,
+        and updates session counters once.  No rows are marked durable by the
+        caller unless this method returns successfully.
+        """
+        if not messages:
+            return 0
+
+        def _do(conn):
+            active_lock = conn.execute(
+                "SELECT holder FROM compression_locks "
+                "WHERE session_id = ? AND expires_at > ?",
+                (session_id, time.time()),
+            ).fetchone()
+            if (
+                active_lock is not None
+                and active_lock["holder"] != compression_lock_holder
+            ):
+                raise CompressionSessionBusyError(
+                    f"Session {session_id!r} is being compressed by another writer"
+                )
+            session = conn.execute(
+                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if (
+                session is not None
+                and session["ended_at"] is not None
+                and session["end_reason"] == "compression"
+            ):
+                raise CompressionSessionClosedError(session_id)
+
+            total_messages, total_tool_calls = self._insert_message_rows(
+                conn, session_id, messages
+            )
+            if total_tool_calls > 0:
+                conn.execute(
+                    """UPDATE sessions SET message_count = message_count + ?,
+                       tool_call_count = tool_call_count + ? WHERE id = ?""",
+                    (total_messages, total_tool_calls, session_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE sessions SET message_count = message_count + ? WHERE id = ?",
+                    (total_messages, session_id),
+                )
+            return total_messages
+
+        return self._execute_write(_do)
 
     def set_latest_matching_message_display_kind(
         self, session_id: str, *, role: str, content: str, display_kind: str,

@@ -118,7 +118,7 @@ def extract_media(message: Any) -> Tuple[MessageType, List[str], List[str]]:
     for item in _rich_list(message) or ():
         if not isinstance(item, dict):
             continue
-        dl_code = item.get("downloadCode") or item.get("download_code") or ""
+        dl_code = item.get("downloadUrl") or item.get("downloadCode") or item.get("download_code") or ""
         if not dl_code:
             continue
         item_type = item.get("type", "")

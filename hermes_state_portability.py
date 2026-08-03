@@ -156,6 +156,21 @@ class SessionPortabilityMixin:
         ids = [sid for sid in session_ids if sid]
         if not ids:
             return {}
+        # Old SQLite builds cap bound variables at 999
+        # (SQLITE_MAX_VARIABLE_NUMBER); large pages (limit=10000 callers
+        # exist) could exceed it. Chunk the IN list so the helper is safe at
+        # any page size — this is the single choke point for the enriched
+        # multi-row fetch, so the bound lives here, not at call sites.
+        _CHUNK = 900
+        if len(ids) > _CHUNK:
+            result: Dict[str, Dict[str, Any]] = {}
+            for start in range(0, len(ids), _CHUNK):
+                result.update(
+                    self._get_session_rich_rows_batch(
+                        ids[start:start + _CHUNK], compact_rows=compact_rows
+                    )
+                )
+            return result
         # Same read-your-writes guarantee as list_sessions_rich.
         self.flush_token_counts()
         _sel = self._compact_session_cols() if compact_rows else "s.*"

@@ -491,12 +491,12 @@ def _export_dump_excluding_session_vars(
     lines. ``|| true`` keeps the success contract for callers that chain on it.
 
     The dump MUST be wrapped in a brace group with the redirection applied to
-    the group. *tmp_path* typically embeds ``$BASHPID`` for concurrency-safe
-    temp names; a redirection attached to a pipeline segment would expand
-    ``$BASHPID`` inside that segment's subshell (a different PID than the
-    parent that expands the follow-up ``mv``), silently orphaning the dump.
-    The brace-group redirect is expanded in the current shell, keeping both
-    expansions consistent.
+    the group. *tmp_path* is typically a shell-variable expansion (a
+    mktemp-allocated per-writer temp name); a redirection attached to a
+    pipeline segment would expand it inside that segment's subshell,
+    potentially inconsistently with the parent that expands the follow-up
+    ``mv``. The brace-group redirect is expanded in the current shell,
+    keeping both expansions consistent.
     """
     # ${!PREFIX*} is bash 3.2+ name-prefix expansion; empty matches are fine
     # because ``unset`` with only missing names is ignored under 2>/dev/null.
@@ -668,14 +668,19 @@ class BaseEnvironment(ABC):
         # calls run) ``$$`` stays the *parent* shell's PID — so two concurrent
         # writers would pick the SAME temp name, clobber each other's temp
         # mid-write, and mv would then publish a torn file (the corruption is
-        # only narrowed, not closed).  ``$BASHPID`` is the actual subshell PID
-        # and is genuinely unique per writer, which closes the race.  The
-        # static path is shell-quoted (Windows/Git-Bash drive letters, spaces)
-        # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # only narrowed, not closed).  ``$BASHPID`` would be unique per writer,
+        # but macOS ships bash 3.2 which does NOT provide it — the name expands
+        # empty there, so every writer shares one temp path and the race is
+        # back.  ``mktemp`` allocates a per-writer unique path portably across
+        # bash versions.  The template is shell-quoted (Windows/Git-Bash drive
+        # letters, spaces) and the resulting path lives in a shell variable so
+        # every later expansion is consistent.
+        _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
+        _snap_tmp = '"$__hermes_snap_tmp"'
         snapshot_excluded = self._snapshot_excluded_passthrough_names()
         bootstrap = (
             f"umask 077\n"
+            f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) || exit 1\n"
             f"{_export_dump_excluding_session_vars(_snap_tmp, snapshot_excluded)}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
@@ -784,11 +789,13 @@ class BaseEnvironment(ABC):
         # Use atomic file replacement for env snapshot updates (issue #38249).
         # Assemble into a per-writer-unique temp file, then mv to atomically
         # replace the snapshot so concurrent source() calls never read a
-        # truncated/half-written file.  ``$BASHPID`` (not ``$$``) is the actual
-        # subshell PID — unique per concurrent ``&``-launched writer — so two
-        # writers never share a temp name and clobber each other before the mv.
-        # Static path shell-quoted (Windows/spaces); ``$BASHPID`` left to expand.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # truncated/half-written file.  ``mktemp`` is used instead of
+        # ``$BASHPID``/``$$`` because macOS bash 3.2 lacks ``$BASHPID`` (it
+        # expands empty, collapsing every writer onto one temp name) and ``$$``
+        # is shared by ``&``-launched subshells.  Template shell-quoted
+        # (Windows/spaces); the allocated path lives in a shell variable.
+        _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
+        _snap_tmp = '"$__hermes_snap_tmp"'
 
         parts = []
         passthrough_names = self._snapshot_excluded_passthrough_names()
@@ -842,13 +849,13 @@ class BaseEnvironment(ABC):
         # Chain mv on the export succeeding so a failed/partial dump never
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
-        # NOTE: the redirection must be attached to a brace group — ``_snap_tmp``
-        # embeds ``$BASHPID``, and a redirect on a pipeline segment expands
-        # inside that segment's subshell (a different PID than the parent that
-        # expands the ``mv`` operand), silently orphaning the dump. See
-        # _export_dump_excluding_session_vars.
+        # NOTE: the temp path is allocated with mktemp into a shell variable
+        # first — the redirection inside _export_dump_excluding_session_vars is
+        # attached to a brace group so the variable expands in the same shell
+        # that later expands the ``mv`` operand, keeping both consistent.
         if self._snapshot_ready:
             parts.append(
+                f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) && "
                 f"{{ {_export_dump_excluding_session_vars(_snap_tmp, passthrough_names)} "
                 f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"

@@ -182,3 +182,55 @@ def test_is_authorized_result_identical_across_hermes_home_overrides(monkeypatch
             hermes_constants.reset_hermes_home_override(token)
 
     assert results == [True, True, True]
+
+
+class TestPlatformGateEnvMultiplexIsolation:
+    """The chat-scoped allowlist and ``{PLATFORM}_ALLOW_BOTS`` reads must go
+    through ``_platform_gate_env`` (multiplex-authoritative), not the plain
+    ``env_get``/``_auth_env`` every other read in this function still uses.
+
+    ``_auth_env`` falls through to ``os.environ`` on a scoped miss; under
+    multiplex, that environ value can be ANOTHER profile's first-writer-bridged
+    setting for the same var name (#72348) — a false affirmative on one of
+    these two gate checks leaks profile A's allowlist into profile B. Pins the
+    live wrapper (``GatewayRunner._is_user_authorized``), the actual call path
+    that regresses if a future rebase silently drops the ``platform_gate_env``
+    seam back to ``env_get`` at either of these two call sites.
+    """
+
+    def test_group_chat_allowlist_does_not_inherit_environ_leak(self, monkeypatch):
+        from agent import secret_scope as ss
+
+        # Primary profile's env has a chat allowlisted; the secondary
+        # profile's scope explicitly has none configured. The secondary must
+        # NOT inherit the primary's environ-leaked chat ID.
+        monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            source = SessionSource(
+                platform=Platform.TELEGRAM, chat_id="-100", chat_type="group",
+                user_id=None, user_name=None,
+            )
+            runner = _make_runner()
+            assert runner._is_user_authorized(source) is False
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+    def test_allow_bots_does_not_inherit_environ_leak(self, monkeypatch):
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("TELEGRAM_ALLOW_BOTS", "all")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            source = SessionSource(
+                platform=Platform.TELEGRAM, chat_id="1", chat_type="dm",
+                user_id=None, user_name=None, is_bot=True,
+            )
+            runner = _make_runner()
+            assert runner._is_user_authorized(source) is False
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)

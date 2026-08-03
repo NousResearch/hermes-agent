@@ -258,6 +258,8 @@ def test_profile_call_cannot_retarget_ticker_store_mid_write(
 
 @pytest.mark.asyncio
 async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_profiles):
+    from fastapi import Request
+
     from hermes_cli import web_server
 
     worker_job = web_server._call_cron_for_profile(
@@ -268,7 +270,13 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
         name="named-profile-job",
     )
 
-    paused = await web_server.pause_cron_job(worker_job["id"])
+    # pause_cron_job is admin-gated (_require_dashboard_admin) since the Mini
+    # App tiered access control landed; a bare Request with no
+    # request.state.token_principal set resolves to the cookie/session
+    # caller's unrestricted scope, same as this direct call always got before
+    # that gate existed.
+    request = Request(scope={"type": "http", "headers": []})
+    paused = await web_server.pause_cron_job(request, worker_job["id"])
     assert paused["profile"] == "worker_alpha"
     assert paused["enabled"] is False
 

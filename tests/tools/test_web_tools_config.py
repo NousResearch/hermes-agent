@@ -915,6 +915,63 @@ class TestFirecrawlEnvResolution:
             assert kwargs["api_url"] == fake_url.rstrip("/")
 
 
+class TestProviderEnvPreferDotenv:
+    """Regression coverage for #65459: dotenv-first provider keys + scoped empty.
+
+    Scope is stale/rotated process env vs ~/.hermes/.env — not cross-host
+    TUI/container credential plumbing.
+    """
+
+    def test_prefer_dotenv_over_stale_process_env(self, tmp_path, monkeypatch):
+        """Real temp HERMES_HOME .env must beat a stale process export."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / ".env").write_text("TAVILY_API_KEY=from-dotenv-rotated\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("TAVILY_API_KEY", "stale-process-export")
+
+        import hermes_cli.config as cfg
+        cfg.invalidate_env_cache()
+
+        from agent.web_search_provider import get_provider_env
+
+        assert get_provider_env("TAVILY_API_KEY") == "from-dotenv-rotated"
+
+    def test_empty_prefer_dotenv_is_authoritative(self, monkeypatch):
+        """Empty preferred result must NOT fall through to env-first get_env_value."""
+        monkeypatch.setenv("TAVILY_API_KEY", "process-global-should-not-win")
+        with patch(
+            "hermes_cli.config.get_env_value_prefer_dotenv",
+            return_value=None,
+        ), patch(
+            "hermes_cli.config.get_env_value",
+            return_value="must-not-be-used",
+        ) as env_first:
+            from agent.web_search_provider import get_provider_env
+
+            assert get_provider_env("TAVILY_API_KEY") == ""
+            env_first.assert_not_called()
+
+    def test_legacy_fallback_only_when_prefer_helper_missing(self, monkeypatch):
+        """When prefer-dotenv helper is unavailable, fall back to get_env_value."""
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+        import hermes_cli.config as cfg_mod
+        real_import = __import__
+
+        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "hermes_cli.config" and fromlist and "get_env_value_prefer_dotenv" in fromlist:
+                raise ImportError("prefer helper unavailable")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=guarded_import), patch.object(
+            cfg_mod, "get_env_value", return_value="legacy-fallback-key"
+        ):
+            from agent.web_search_provider import get_provider_env
+
+            assert get_provider_env("TAVILY_API_KEY") == "legacy-fallback-key"
+
+
 class TestSiblingProvidersEnvResolution:
     """The same #40190 bug class widened: every keyed web provider must
     resolve its credential through the config-aware lookup (os.environ OR

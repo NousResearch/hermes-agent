@@ -114,14 +114,16 @@ class InsightsEngine:
             self._has_assistant_calls_index = False
         if not self._has_assistant_calls_index:
             _strip = f" INDEXED BY {self._MESSAGES_ASSISTANT_CALLS_INDEX}"
-            self._GET_TOOL_CALLS_WITH_SOURCE = (
-                self._GET_TOOL_CALLS_WITH_SOURCE.replace(_strip, "")
-            )
-            self._GET_TOOL_CALLS_ALL = self._GET_TOOL_CALLS_ALL.replace(_strip, "")
-            self._GET_SKILL_CALLS_WITH_SOURCE = (
-                self._GET_SKILL_CALLS_WITH_SOURCE.replace(_strip, "")
-            )
-            self._GET_SKILL_CALLS_ALL = self._GET_SKILL_CALLS_ALL.replace(_strip, "")
+            # Loop over every pinned statement so adding a new one can't
+            # forget its strip line (which would be a hard `no such index`
+            # crash on read-only DBs — the exact bug this fallback prevents).
+            for _attr in (
+                "_GET_TOOL_CALLS_WITH_SOURCE",
+                "_GET_TOOL_CALLS_ALL",
+                "_GET_SKILL_CALLS_WITH_SOURCE",
+                "_GET_SKILL_CALLS_ALL",
+            ):
+                setattr(self, _attr, getattr(self, _attr).replace(_strip, ""))
 
     def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
         """

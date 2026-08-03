@@ -504,11 +504,13 @@ class SessionUsageParams(SessionParams):
 
 
 class SessionUsageResult(Usage):
+    account_lines: list[str] | None = None
     credits_lines: list[str] | None = None
+    rate_limit_lines: list[str] | None = None
 
 
 method("session.usage", params=SessionUsageParams, result=SessionUsageResult,
-       doc="Token / context / cost counters for the session (+ Nous credit lines when available).")
+       doc="Session token / context / cost counters, provider quota / rate limits and Nous credit lines when available.")
 
 
 class SessionContextBreakdownParams(SessionParams):
@@ -777,4 +779,3 @@ class LlmOneshotResult(Result):
 
 method("llm.oneshot", params=LlmOneshotParams, result=LlmOneshotResult,
        doc="Stateless one-shot LLM completion (titles, ideas) on the session's or the task backend.")
-

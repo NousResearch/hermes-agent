@@ -23,7 +23,7 @@ import { getUiState, patchUiState } from '../../uiStore.js'
 import { canonicalReasoning, canonicalUsage } from '../canonicalSessionCommands.js'
 import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
-import { usageTotalsSections } from '../usagePanel.js'
+import { usageProviderBlocks, usageTotalsSections } from '../usagePanel.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const REASONING_SESSION_FLAGS = new Set(['--session'])
@@ -804,6 +804,8 @@ export const sessionCommands: SlashCommand[] = [
             usage: { calls: r.calls ?? 0, input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0 }
           })
         }
+
+        usageProviderBlocks(r).forEach(block => sys(block))
 
         // Nous balance block is agent-independent (a portal fetch), so it shows
         // even with zero API calls or on a resumed session. Prefer the shared

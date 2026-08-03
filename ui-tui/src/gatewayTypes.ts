@@ -4,6 +4,7 @@ import type {
   GatewayEvent,
   GatewayEventMap,
   InflightTurn,
+  SessionUsageResult,
   TranscriptMessage,
   Usage
 } from '@hermes/shared/gateway-events'
@@ -295,7 +296,7 @@ export interface SessionUndoResponse {
   removed?: number
 }
 
-export interface SessionUsageResponse {
+export interface SessionUsageResponse extends Pick<SessionUsageResult, 'account_lines' | 'rate_limit_lines'> {
   active_subagents?: number
   avg_latency_s?: number
   avg_tps?: number

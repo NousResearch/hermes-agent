@@ -3662,7 +3662,7 @@
     },
     {
       "name": "session.usage",
-      "summary": "Token / context / cost counters for the session (+ Nous credit lines when available).",
+      "summary": "Session token / context / cost counters, provider quota / rate limits and Nous credit lines when available.",
       "params": [
         {
           "name": "params",
@@ -38417,6 +38417,21 @@
             "default": null,
             "title": "Cost Status"
           },
+          "account_lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Account Lines"
+          },
           "credits_lines": {
             "anyOf": [
               {
@@ -38431,6 +38446,21 @@
             ],
             "default": null,
             "title": "Credits Lines"
+          },
+          "rate_limit_lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rate Limit Lines"
           }
         },
         "title": "SessionUsageResult",

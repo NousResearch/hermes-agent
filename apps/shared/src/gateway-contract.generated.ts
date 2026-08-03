@@ -3471,7 +3471,9 @@ export interface SessionUsageResult {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  account_lines?: string[] | null
   credits_lines?: string[] | null
+  rate_limit_lines?: string[] | null
   [key: string]: unknown
 }
 export interface SessionContextBreakdownParams {
@@ -6276,7 +6278,7 @@ export interface RpcMethods {
   'session.title': { params: SessionTitleParams; result: SessionTitleResult }
   /** Drop the last user turn (and everything after it) from an idle session. */
   'session.undo': { params: SessionUndoParams; result: SessionUndoResult }
-  /** Token / context / cost counters for the session (+ Nous credit lines when available). */
+  /** Session token / context / cost counters, provider quota / rate limits and Nous credit lines when available. */
   'session.usage': { params: SessionUsageParams; result: SessionUsageResult }
   /** Re-home a stored session's workspace; git identity is replaced and a live agent follows. */
   'session.workspace.move': { params: SessionWorkspaceMoveParams; result: SessionWorkspaceMoveResult }

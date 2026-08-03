@@ -2663,6 +2663,7 @@ export const en: Translations = {
     closeRunningBody:
       'This chat is still working (or waiting on your input). Closing the tab hides it — the session keeps its progress and can be reopened from the sidebar.',
     closeRunningConfirm: 'Close tab',
+    reload: 'Reload',
     closeOthers: 'Close others',
     closeToRight: 'Close to the right',
     closeAll: 'Close all',

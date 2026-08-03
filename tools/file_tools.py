@@ -164,7 +164,7 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPa
 # (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
 # sessions get the same protection. See references/worktree-cwd-discipline.md.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
-_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
 
 
 def _terminal_env_type_for_task(task_id: str = "default") -> str:
@@ -269,103 +269,37 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     return _sentinel_free_abs_cwd(overrides.get("cwd"))
 
 
-def _live_cwd_if_owned(env, task_id: str) -> str | None:
-    """The env's live cwd, but only when THIS session owns it.
-
-    The terminal env is shared (collapsed to the ``"default"`` container), so its
-    ``cwd`` tracks the LAST session that ran a command. With two worktree
-    sessions open, trusting it blindly routes one session's edits into the other
-    session's checkout (the wrong-worktree-patch bug). ``terminal_tool`` stamps
-    ``env.cwd_owner`` with the session that last drove the env; return its cwd
-    only when that owner matches the resolving session, else ``None`` so the
-    caller falls through to this session's own registered cwd override. Unknown
-    owner / ``default`` keys keep the prior behavior (single-session / CLI).
-    """
-    if env is None:
-        return None
-    live = getattr(env, "cwd", None)
-    if not live:
-        return None
-    owner = str(getattr(env, "cwd_owner", "") or "")
-    tid = str(task_id or "")
-    if owner and tid and owner != "default" and tid != "default" and owner != tid:
-        return None
-    return live
-
-
-def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
-    """Return the task's live terminal cwd for bookkeeping when available."""
-    try:
-        from tools.terminal_tool import _resolve_container_task_id
-        container_key = _resolve_container_task_id(task_id)
-    except Exception:
-        container_key = task_id
-
-    with _file_ops_lock:
-        cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
-    if cached is not None:
-        env = getattr(cached, "env", None)
-        live_cwd = _live_cwd_if_owned(env, task_id)
-        if live_cwd:
-            _remember_last_known_cwd(container_key, live_cwd)
-            return live_cwd
-        # Legacy: a cache entry carrying its own cwd with no env to own it.
-        if env is None and getattr(cached, "cwd", None):
-            legacy_cwd = getattr(cached, "cwd", None)
-            _remember_last_known_cwd(container_key, legacy_cwd)
-            return legacy_cwd
-
-    try:
-        from tools.terminal_tool import _active_environments, _env_lock
-
-        with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
-        live_cwd = _live_cwd_if_owned(env, task_id)
-        if live_cwd:
-            _remember_last_known_cwd(container_key, live_cwd)
-            return live_cwd
-    except Exception:
-        pass
-
-    return None
-
-
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     """Best-effort absolute workspace root for divergence checks.
 
-    Prefers the live terminal cwd (the directory the agent is actually working
-    in). When no terminal command has run yet — so the live registry is empty —
-    falls back to a registered task/session cwd override (TUI/Desktop/ACP
-    sessions register a raw-keyed cwd before any tool runs), then to a
-    sentinel-free absolute ``$TERMINAL_CWD``. This is what lets a worktree or
-    Desktop session warn about (and resolve into) its workspace from the very
-    first ``write_file``/``patch``, before any ``cd`` has populated the live cwd.
+    Resolution:
+
+      1. The session's own cwd RECORD (``terminal_tool.get_session_cwd``) —
+         written on every completed terminal command and seeded by workspace
+         registration, keyed by the raw session id. Because the record is
+         per-session, one session's ``cd`` can never leak into another
+         session's resolution.
+      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
+         register a raw-keyed cwd before any tool runs). Normally already
+         mirrored into the record at registration; kept as a direct fallback
+         so a cleared/never-written record still resolves the workspace.
+      3. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
+         ``cli.py``/``main.py`` for ``-w`` sessions).
 
     Returns ``None`` only when there is genuinely no reliable anchor, in which
     case callers fall back to the process cwd.
     """
-    live = _get_live_tracking_cwd(task_id)
-    if live:
-        return live
-    # A session-specific registered override (TUI/Desktop/ACP workspace cwd)
-    # is more authoritative than the shared last-known anchor: it is keyed by
-    # the raw session id, so when two worktree sessions share the single
-    # "default" terminal env, a NON-owning session must resolve against its OWN
-    # registered worktree — never the other session's leftover cwd. (Checked
-    # before _last_known_cwd, which is keyed by the shared container id.)
+    try:
+        from tools.terminal_tool import get_session_cwd
+
+        recorded = get_session_cwd(task_id)
+    except Exception:
+        recorded = None
+    if recorded:
+        return recorded
     registered = _registered_task_cwd_override(task_id)
     if registered:
         return registered
-    # When the terminal env was cleaned up mid-conversation, the live cwd is
-    # gone but the directory the agent navigated to is still recorded in the
-    # durable _last_known_cwd registry. Prefer it over the config/process
-    # fallback so a relative-path write resolved BEFORE the env is rebuilt
-    # still lands in the user's directory (root cause of #26211: write happens
-    # via _resolve_path_for_task -> here, which runs before _get_file_ops
-    # rebuilds the env). Keyed by the resolved container id, same as the save.
-    preserved = _last_known_cwd_for(task_id)
-    if preserved:
-        return preserved
     return _configured_terminal_cwd()
 
 
@@ -505,6 +439,79 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
         return None
 
 
+def _file_ops_uses_host_paths(file_ops) -> bool:
+    """Return True when *file_ops* targets the same host filesystem as Hermes.
+
+    Only then may we rewrite V4A header paths to resolved host-absolute
+    paths: a container/remote backend has its own filesystem namespace where
+    a host-absolute path would be meaningless.
+    """
+    env = getattr(file_ops, "env", None)
+    if env is None:
+        return True
+    try:
+        from tools.environments.local import LocalEnvironment
+    except ImportError:
+        return True
+    return isinstance(env, LocalEnvironment)
+
+
+def _rewrite_v4a_patch_paths_for_host(
+    patch: str,
+    path_to_resolved: dict,
+    file_ops,
+) -> str:
+    """Rewrite V4A file headers to the exact host paths the tool layer resolved.
+
+    ``patch_tool`` resolves every header path against the task's workspace for
+    locking, staleness, and reporting, but historically handed the *original*
+    patch text to ``file_ops.patch_v4a`` — so the shell layer re-resolved the
+    (often relative) header against its own cwd, which can differ from the
+    tool layer's workspace (the git-worktree cwd bug). That made a relative
+    header land in a different directory than everything else the tool
+    reported. This rewrites ``*** Update/Add/Delete/Move File:`` headers to the
+    resolved absolute paths so both layers agree on the target.
+
+    Header patterns mirror ``patch_parser`` (``\\s*`` after ``***`` accepts the
+    no-space ``***Update File:`` form) and cover ``Move File: src -> dst``.
+    Only applied when *file_ops* targets the host filesystem.
+    """
+    if not _file_ops_uses_host_paths(file_ops):
+        return patch
+
+    import re as _re
+
+    def _resolved_or_original(raw: str) -> str:
+        raw = raw.strip()
+        return path_to_resolved.get(raw) or raw
+
+    def _replace_single(match):
+        prefix = match.group(1)
+        resolved = _resolved_or_original(match.group(2))
+        return f"{prefix}{resolved}"
+
+    patch = _re.sub(
+        r'^(\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*)(.+)$',
+        _replace_single,
+        patch,
+        flags=_re.MULTILINE,
+    )
+
+    def _replace_move(match):
+        prefix = match.group(1)
+        src = _resolved_or_original(match.group(2))
+        dst = _resolved_or_original(match.group(3))
+        return f"{prefix}{src} -> {dst}"
+
+    patch = _re.sub(
+        r'^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+)$',
+        _replace_move,
+        patch,
+        flags=_re.MULTILINE,
+    )
+    return patch
+
+
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
     normalized = os.path.normpath(_expand_tilde(path))
@@ -634,7 +641,13 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
-    "/private/etc/", "/private/var/",
+    "/private/etc/",
+    # macOS: /private/var mirrors /var. Block the sensitive subtrees, NOT the
+    # whole thing — a blanket "/private/var/" refused every legitimate temp-file
+    # write, because $TMPDIR, /tmp, and /var/folders all realpath() into
+    # /private/var/folders/... on macOS (and _resolve_path_for_task resolves
+    # symlinks), and /private/var/tmp is a normal temp dir.
+    "/private/var/db/", "/private/var/root/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
@@ -794,45 +807,6 @@ def _is_expected_write_exception(exc: Exception) -> bool:
 
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
-# Per-task last-known CWD — preserved across env re-creation so
-# relative-path file writes land in the right directory after the
-# terminal environment is cleaned up and rebuilt (root cause of #26211).
-_last_known_cwd: dict = {}
-
-
-def _remember_last_known_cwd(task_id: str, cwd: str | None) -> None:
-    """Mirror a live terminal cwd into the durable ``_last_known_cwd`` registry.
-
-    Belt-and-suspenders for #26211: the cleanup thread can pop BOTH
-    ``_file_ops_cache`` and ``_active_environments`` before ``_get_file_ops``
-    reaches its stale-cache detection branch, in which case the old cwd is
-    never saved and the rebuilt env falls back to the config default — exactly
-    the silent-misplacement bug. By recording the cwd on every successful live
-    read (which happens on every relative-path file resolution while the env is
-    alive), the durable anchor no longer depends on the cleanup-detection
-    branch firing, so it survives recreation regardless of pop ordering.
-    """
-    if not cwd:
-        return
-    with _file_ops_lock:
-        if _last_known_cwd.get(task_id) != cwd:
-            _last_known_cwd[task_id] = cwd
-
-
-def _last_known_cwd_for(task_id: str = "default") -> str | None:
-    """Read the durable last-known cwd for *task_id*, container-key aware.
-
-    The registry is keyed by the resolved container id (the same key used by
-    the save sites in ``_get_file_ops`` / ``_get_live_tracking_cwd``), so look
-    up the resolved key first and fall back to the raw task id.
-    """
-    try:
-        from tools.terminal_tool import _resolve_container_task_id
-        container_key = _resolve_container_task_id(task_id)
-    except Exception:
-        container_key = task_id
-    with _file_ops_lock:
-        return _last_known_cwd.get(container_key) or _last_known_cwd.get(task_id)
 
 # Track files read per task to detect re-read loops and deduplicate reads.
 # Per task_id we store:
@@ -898,6 +872,8 @@ def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
 _READ_HISTORY_CAP = 500       # set; used only by get_read_files_summary
 _DEDUP_CAP = 1000             # dict; skip-identical-reread guard
 _READ_TIMESTAMPS_CAP = 1000   # dict; external-edit detection for write/patch
+_NOT_FOUND_CAP = 500          # dict; per-task negative-result cache for missing paths
+_NOT_FOUND_TTL_SECONDS = 60.0 # short TTL — a path that didn't exist may be created soon
 _READ_DEDUP_STATUS_MESSAGE = (
     "File unchanged since last read. The content from "
     "the earlier read_file result in this conversation is "
@@ -954,6 +930,79 @@ def _cap_read_tracker_data(task_data: dict) -> None:
                 ts.pop(next(iter(ts)))
             except (StopIteration, KeyError):
                 break
+
+    nf = task_data.get("not_found")
+    if nf is not None and len(nf) > _NOT_FOUND_CAP:
+        excess = len(nf) - _NOT_FOUND_CAP
+        for _ in range(excess):
+            try:
+                nf.pop(next(iter(nf)))
+            except (StopIteration, KeyError):
+                break
+
+
+def _check_not_found_cache(op: str, resolved_str: str, task_id: str) -> str | None:
+    """Return cached not-found JSON for *(op, resolved_str)* if still fresh.
+
+    Skips the expensive subprocess + suggestion walk when the model retries
+    the same missing path. Observed in agent.log: a single typo'd path was
+    retried 13 times — each retry forked a shell to walk the parent directory
+    and score similar names.
+
+    *op* is "read" or "search" — kept separate because the two callers return
+    different error JSON shapes ("File not found:" vs "Path not found:").
+
+    Eviction: TTL or write_file/patch on the path (see invalidate_for_path).
+    """
+    import os as _os
+    import time
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        if not task_data:
+            return None
+        nf = task_data.get("not_found")
+        if not nf:
+            return None
+        entry = nf.get((op, resolved_str))
+        if entry is None:
+            return None
+        ts, cached_json = entry
+        if time.monotonic() - ts > _NOT_FOUND_TTL_SECONDS:
+            nf.pop((op, resolved_str), None)
+            return None
+    # Existence guard: the path may have been created since we cached the
+    # miss — by a terminal command, another agent, or any external process
+    # (write_file/patch invalidate explicitly, but they're not the only
+    # writers). The agent pattern "check file → create it → read it" is
+    # common; serving a stale miss for up to the TTL breaks it. One stat is
+    # ~free next to the subprocess walk we're skipping.
+    #
+    # The stat runs OUTSIDE _read_tracker_lock (matching the dedup mtime
+    # check below in read_file_tool): the lock is global across all tasks,
+    # and a hung stat on a dead network mount must not stall every other
+    # task's read/search bookkeeping.
+    if _os.path.exists(resolved_str):
+        with _read_tracker_lock:
+            task_data = _read_tracker.get(task_id)
+            nf = task_data.get("not_found") if task_data else None
+            if nf:
+                nf.pop((op, resolved_str), None)
+        return None
+    return cached_json
+
+
+def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str) -> None:
+    """Cache a not-found error so the next *op* call for *resolved_str* skips I/O."""
+    import time
+    with _read_tracker_lock:
+        task_data = _read_tracker.setdefault(task_id, {
+            "last_key": None, "consecutive": 0,
+            "read_history": set(), "dedup": {},
+            "dedup_hits": {}, "read_timestamps": {},
+        })
+        nf = task_data.setdefault("not_found", {})
+        nf[(op, resolved_str)] = (time.monotonic(), error_json)
+        _cap_read_tracker_data(task_data)
 
 
 def _is_internal_file_status_text(content: str) -> bool:
@@ -1069,13 +1118,18 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 _last_activity[task_id] = time.time()
                 return cached
             else:
-                # Environment was cleaned up -- preserve the old cwd before
-                # invalidating the stale cache entry (fixes #26211: silent
-                # file-creation failures in long-running conversations).
+                # Environment was cleaned up -- preserve the old cwd in the
+                # session record before invalidating the stale cache entry
+                # (fixes #26211: silent file-creation failures in long-running
+                # conversations). Usually a no-op: every completed command
+                # already recorded its cwd.
                 old_cwd = getattr(cached, "cwd", None)
                 if old_cwd:
-                    with _file_ops_lock:
-                        _last_known_cwd[task_id] = old_cwd
+                    try:
+                        from tools.terminal_tool import record_session_cwd
+                        record_session_cwd(raw_task_id, old_cwd)
+                    except Exception:
+                        pass
                 with _file_ops_lock:
                     _file_ops_cache.pop(task_id, None)
 
@@ -1113,7 +1167,12 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             else:
                 image = ""
 
-            cwd = overrides.get("cwd") or _last_known_cwd.get(task_id) or config["cwd"]
+            try:
+                from tools.terminal_tool import get_session_cwd
+                recorded_cwd = get_session_cwd(raw_task_id)
+            except Exception:
+                recorded_cwd = None
+            cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
             # Re-apply the container cwd guard that _get_env_config() already
             # ran on config["cwd"] (see #50636).  A per-task cwd override
             # registered by the gateway/TUI/ACP for workspace tracking is a
@@ -1137,12 +1196,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona"}:
+            if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
+                    "vercel_runtime": config.get("vercel_runtime", ""),
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
@@ -1201,7 +1261,7 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -1211,12 +1271,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # blocking on input).  Pure path check — no I/O.
         device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
         if _is_blocked_device(path, base_dir=device_base):
-            return json.dumps({
-                "error": (
-                    f"Cannot read '{path}': this is a device file that would "
-                    "block or produce infinite output."
-                ),
-            })
+            return tool_error(
+                f"Cannot read '{path}': this is a device file that would "
+                "block or produce infinite output."
+            )
 
         _resolved = _resolve_path_for_task(path, task_id)
 
@@ -1283,12 +1341,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # Block binary files by extension (no I/O).
         if has_binary_extension(str(_resolved)):
             _ext = _resolved.suffix.lower()
-            return json.dumps({
-                "error": (
-                    f"Cannot read binary file '{path}' ({_ext}). "
-                    "Use vision_analyze for images, or terminal to inspect binary files."
-                ),
-            })
+            return tool_error(
+                f"Cannot read binary file '{path}' ({_ext}). "
+                "Use vision_analyze for images, or terminal to inspect binary files."
+            )
 
         # ── Hermes internal path guard ────────────────────────────────
         # Prevent prompt injection via catalog or hub metadata files,
@@ -1299,7 +1355,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # the Python process cwd, which can differ.
         block_error = get_read_block_error(str(_resolved))
         if block_error:
-            return json.dumps({"error": block_error})
+            return tool_error(block_error)
+
+        # ── Negative-result cache ─────────────────────────────────────
+        # If we already discovered this path doesn't exist (within TTL),
+        # return the cached error without spawning the subprocess +
+        # similar-files walk. Cleared by write_file/patch on the same path.
+        resolved_str_for_neg = str(_resolved)
+        cached_not_found = _check_not_found_cache("read", resolved_str_for_neg, task_id)
+        if cached_not_found is not None:
+            return cached_not_found
 
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
@@ -1337,19 +1402,17 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                         _cap_read_tracker_data(task_data)
 
                     if hits >= 2:
-                        return json.dumps({
-                            "error": (
-                                f"BLOCKED: You have called read_file on this "
-                                f"exact region {hits + 1} times and the file "
-                                "has NOT changed. STOP calling read_file for "
-                                "this path — the content from your earlier "
-                                "read_file result in this conversation is "
-                                "still current. Proceed with your task using "
-                                "the information you already have."
-                            ),
-                            "path": path,
-                            "already_read": hits + 1,
-                        }, ensure_ascii=False)
+                        return tool_error(
+                            f"BLOCKED: You have called read_file on this "
+                            f"exact region {hits + 1} times and the file "
+                            "has NOT changed. STOP calling read_file for "
+                            "this path — the content from your earlier "
+                            "read_file result in this conversation is "
+                            "still current. Proceed with your task using "
+                            "the information you already have.",
+                            path=path,
+                            already_read=hits + 1,
+                        )
 
                     return json.dumps({
                         "status": "unchanged",
@@ -1365,6 +1428,20 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
+
+        # ── Populate negative-result cache on not-found ───────────────
+        # _suggest_similar_files returns ReadResult(error="File not found: ..").
+        # Cache the JSON we'd return so a retry skips the parent-dir walk.
+        # Deliberately NO early return: on upstream, error results flow
+        # through the tracking block below (consecutive-loop detection,
+        # dedup bookkeeping via the resolved path) and the normal exit —
+        # short-circuiting here changes that behavior (and broke a real
+        # test interaction). Serving from the cache (above) is the
+        # optimization; recording must stay side-effect-identical.
+        _err = result_dict.get("error") or ""
+        if isinstance(_err, str) and _err.startswith("File not found:"):
+            _not_found_json = json.dumps(result_dict, ensure_ascii=False)
+            _record_not_found("read", resolved_str_for_neg, task_id, _not_found_json)
 
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are
@@ -1475,15 +1552,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         if count >= 4:
             # Hard block: stop returning content to break the loop
-            return json.dumps({
-                "error": (
-                    f"BLOCKED: You have read this exact file region {count} times in a row. "
-                    "The content has NOT changed. You already have this information. "
-                    "STOP re-reading and proceed with your task."
-                ),
-                "path": path,
-                "already_read": count,
-            }, ensure_ascii=False)
+            return tool_error(
+                f"BLOCKED: You have read this exact file region {count} times in a row. "
+                "The content has NOT changed. You already have this information. "
+                "STOP re-reading and proceed with your task.",
+                path=path,
+                already_read=count,
+            )
         elif count >= 3:
             result_dict["_warning"] = (
                 f"You have read this exact file region {count} times consecutively. "
@@ -1543,6 +1618,15 @@ def notify_other_tool_call(task_id: str = "default"):
             # progress, so clear per-key dedup hit counters too.
             if "dedup_hits" in task_data:
                 task_data["dedup_hits"].clear()
+            # Any other tool (terminal, delegate, ...) may have created a
+            # previously-missing path — a cached miss is no longer
+            # trustworthy. The serve-side existence guard in
+            # _check_not_found_cache already covers this, but clearing
+            # here keeps the cache honest and covers exotic cases the
+            # stat can't (e.g. permission flips).
+            nf = task_data.get("not_found")
+            if nf:
+                nf.clear()
 
 
 def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
@@ -1559,7 +1643,7 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
     internally.
     """
     try:
-        resolved = str(_resolve_path(filepath))
+        resolved = str(_resolve_path(filepath, task_id))
     except (OSError, ValueError):
         return
     with _read_tracker_lock:
@@ -1567,12 +1651,18 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
         if task_data is None:
             return
         dedup = task_data.get("dedup")
-        if not dedup:
-            return
-        # Collect keys to remove (can't mutate dict during iteration).
-        stale_keys = [k for k in dedup if k[0] == resolved]
-        for k in stale_keys:
-            del dedup[k]
+        if dedup:
+            # Collect keys to remove (can't mutate dict during iteration).
+            stale_keys = [k for k in dedup if k[0] == resolved]
+            for k in stale_keys:
+                del dedup[k]
+        # Also evict from the negative-result cache: a write_file that
+        # creates the path means subsequent reads (or searches under it)
+        # must hit disk.
+        nf = task_data.get("not_found")
+        if nf:
+            nf.pop(("read", resolved), None)
+            nf.pop(("search", resolved), None)
 
 
 def _update_read_timestamp(filepath: str, task_id: str) -> None:
@@ -1870,7 +1960,15 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(patch)
+                # Rewrite V4A headers to the resolved absolute paths so the
+                # shell layer patches the exact files the tool layer resolved
+                # (locked/reported). Without this a relative header re-resolves
+                # against the shell's cwd, which can differ from the workspace
+                # (git-worktree cwd bug) — landing the edit elsewhere.
+                patch_for_ops = _rewrite_v4a_patch_paths_for_host(
+                    patch, _path_to_resolved, file_ops
+                )
+                result = file_ops.patch_v4a(patch_for_ops)
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1973,15 +2071,13 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             count = task_data["consecutive"]
 
         if count >= 4:
-            return json.dumps({
-                "error": (
-                    f"BLOCKED: You have run this exact search {count} times in a row. "
-                    "The results have NOT changed. You already have this information. "
-                    "STOP re-searching and proceed with your task."
-                ),
-                "pattern": pattern,
-                "already_searched": count,
-            }, ensure_ascii=False)
+            return tool_error(
+                f"BLOCKED: You have run this exact search {count} times in a row. "
+                "The results have NOT changed. You already have this information. "
+                "STOP re-searching and proceed with your task.",
+                pattern=pattern,
+                already_searched=count,
+            )
 
         try:
             resolved_path = _resolve_path_for_task(path, task_id)
@@ -1989,7 +2085,20 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             resolved_path = None
         block_error = get_read_block_error(str(resolved_path) if resolved_path else path)
         if block_error:
-            return json.dumps({"error": block_error}, ensure_ascii=False)
+            return tool_error(block_error)
+
+        # ── Negative-result cache ─────────────────────────────────────
+        # Search returns "Path not found: <path>" when the search root
+        # doesn't exist. The error path also lists the parent directory
+        # (file_operations.py:1402) — expensive to repeat. Cache so the
+        # next call to a known-missing root skips both shells.
+        try:
+            resolved_search_path = str(_resolve_path_for_task(path, task_id))
+        except (OSError, ValueError):
+            resolved_search_path = path
+        cached_search_nf = _check_not_found_cache("search", resolved_search_path, task_id)
+        if cached_search_nf is not None:
+            return cached_search_nf
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
@@ -2008,6 +2117,14 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 f"{omitted} result(s) omitted because they target credential, "
                 "token, cache, or secret-bearing environment files."
             )
+
+        # Populate negative cache when search root was missing. No early
+        # return — same rationale as the read path: error results keep
+        # flowing through the consecutive-search bookkeeping below.
+        _search_err = result_dict.get("error") or ""
+        if isinstance(_search_err, str) and _search_err.startswith("Path not found:"):
+            _search_nf_json = json.dumps(result_dict, ensure_ascii=False)
+            _record_not_found("search", resolved_search_path, task_id, _search_nf_json)
 
         if count >= 3:
             result_dict["_warning"] = (
@@ -2047,7 +2164,7 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": 2000, "maximum": 2000}
         },
         "required": ["path"]
     }
@@ -2055,7 +2172,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out).",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
     "parameters": {
         "type": "object",
         "properties": {

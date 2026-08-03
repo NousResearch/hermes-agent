@@ -66,6 +66,12 @@ export function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boole
 // `scripts/profile-typing-lag.md` for the measurement work behind this.
 export const STREAM_DELTA_FLUSH_MS = 33
 
+// Ceiling for the ADAPTIVE flush gap (see scheduleDeltaFlush). Under heavy
+// multi-stream load the gap stretches to 3x the measured flush cost so the
+// main thread stays responsive to input; this cap guarantees streaming text
+// still visibly updates at least ~4x per second no matter the load.
+export const MAX_STREAM_FLUSH_GAP_MS = 250
+
 // Gateway/provider failures sometimes arrive as message.complete text instead
 // of an explicit error event. Treat matches as inline assistant errors so they
 // persist like real error events and don't get erased by hydrate fallback.

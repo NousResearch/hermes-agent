@@ -147,7 +147,7 @@ def _try_gh_cli_token() -> Optional[str]:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 timeout=5,
                 env=clean_env,
                 **_popen_kwargs,
@@ -297,11 +297,166 @@ _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
 _EDITOR_VERSION = "vscode/1.104.1"
 _EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
 
+# Transient-failure hardening for the token exchange. Gateway startup often
+# races network readiness (launchd relaunch, DHCP/VPN settling); a single-shot
+# exchange that fails there silently degrades to the RAW GitHub token, which the
+# Copilot server routes to the "copilot-language-server" integrator whose model
+# allowlist omits enterprise-only models (e.g. claude-opus-4.8) → HTTP 400 on
+# every turn until the next restart. Retry a few times, and persist the last
+# good exchanged JWT to disk so a restart during a blip reuses the still-valid
+# ~30-min token instead of degrading.
+_EXCHANGE_MAX_ATTEMPTS = 3
+_EXCHANGE_BACKOFF_BASE_SECONDS = 1.5  # sleeps ~1.5s, ~3.0s between attempts
+_JWT_DISK_FILENAME = ".copilot_jwt.json"
+_JWT_DISK_MAX_BYTES = 1_048_576  # 1 MiB cap on the persisted JWT store read
+
+# Negative cache for failed exchanges. Without it, every load_pool("copilot")
+# call re-runs the full exchange — and on a permanently-rejected token
+# (HTTP 403: account not Copilot-entitled, expired grant, org policy) the
+# retry backoff burned ~4.5s of time.sleep() on EVERY provider-discovery
+# pass. The /model picker, delegation child spawns, and the web dashboard
+# all walk that path, so a single bad Copilot token made all of them crawl.
+# Maps raw-token fingerprint -> epoch until which exchange attempts are
+# skipped (raise immediately). Success clears the entry.
+_exchange_failure_cache: dict[str, float] = {}
+_EXCHANGE_FAILURE_TTL_TRANSIENT_SECONDS = 60.0     # network blips: retry soon
+_EXCHANGE_FAILURE_TTL_PERMANENT_SECONDS = 1800.0   # 401/403/404: won't heal
+# HTTP statuses that indicate the token itself is rejected — retrying with
+# backoff is pointless (the retry loop exists for startup network races,
+# not for auth rejections) and sleeping on them just blocks the caller.
+_EXCHANGE_PERMANENT_HTTP_STATUSES = frozenset({401, 403, 404})
+
 
 def _token_fingerprint(raw_token: str) -> str:
     """Short fingerprint of a raw token for cache keying (avoids storing full token)."""
     import hashlib
     return hashlib.sha256(raw_token.encode()).hexdigest()[:16]
+
+
+def _read_jwt_store(path: Path) -> Optional[dict]:
+    """Bounded read of the on-disk JWT store → dict, or None if unusable.
+
+    Single chokepoint for every read of the persisted store (load, eviction,
+    save-merge). A well-formed store is a few KB; a file over the 1 MiB cap or
+    with non-dict content is treated as unusable so a corrupt/oversized file
+    can't balloon memory or get rewritten back out.
+    """
+    try:
+        if path.stat().st_size > _JWT_DISK_MAX_BYTES:
+            logger.debug(
+                "Persisted Copilot JWT store exceeds %d bytes; ignoring", _JWT_DISK_MAX_BYTES
+            )
+            return None
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else None
+    except Exception as exc:
+        logger.debug("Failed to read persisted Copilot JWT store: %s", exc)
+        return None
+
+
+def evict_cached_exchanged_token(raw_token: str) -> None:
+    """Drop any cached exchanged JWT for ``raw_token`` (in-process + on-disk).
+
+    Used by the runtime stale-credential recovery path: when a live request
+    starts failing with a Copilot ``model_not_available_for_integrator`` /
+    ``model_not_supported`` 400, the cached exchanged token (or a degraded raw
+    fallback that was cached in its place) is stale. Evicting both cache tiers
+    forces the next ``exchange_copilot_token`` call to hit the network and mint
+    a fresh token instead of returning the poisoned cache entry.
+    """
+    if not raw_token:
+        return
+    fp = _token_fingerprint(raw_token)
+    _jwt_cache.pop(fp, None)
+    # Also clear any negative-cache entry: eviction is an explicit "force a
+    # fresh exchange" signal from the stale-credential recovery path, so the
+    # next exchange_copilot_token() must be allowed to hit the network.
+    _exchange_failure_cache.pop(fp, None)
+    path = _jwt_disk_path()
+    if not path or not path.exists():
+        return
+    try:
+        store = _read_jwt_store(path)
+        if store is not None and fp in store:
+            del store[fp]
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(store), encoding="utf-8")
+            try:
+                os.chmod(tmp, 0o600)
+            except Exception:
+                pass
+            os.replace(tmp, path)
+    except Exception as exc:
+        logger.debug("Failed to evict cached Copilot JWT: %s", exc)
+
+
+def _jwt_disk_path() -> Optional[Path]:
+    """Path to the on-disk exchanged-JWT cache (profile-aware), or None."""
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home()) / _JWT_DISK_FILENAME
+    except Exception:
+        return None
+
+
+def _load_jwt_from_disk(fp: str) -> Optional[tuple[str, float, Optional[str]]]:
+    """Load a persisted exchanged JWT for ``fp`` → (api_token, expires_at, base_url)."""
+    path = _jwt_disk_path()
+    if not path or not path.exists():
+        return None
+    try:
+        # Bound the read: this file is a small JSON map of fingerprint → token.
+        # An oversized/corrupt store is treated as unusable — the caller
+        # re-exchanges (bound shared with eviction/save via _read_jwt_store).
+        store = _read_jwt_store(path)
+        entry = store.get(fp) if store is not None else None
+        if not isinstance(entry, dict):
+            return None
+        api_token = entry.get("api_token", "")
+        expires_at = float(entry.get("expires_at", 0) or 0)
+        base_url = entry.get("base_url")
+        if api_token and expires_at:
+            return api_token, expires_at, base_url
+    except Exception as exc:
+        logger.debug("Failed to load persisted Copilot JWT: %s", exc)
+    return None
+
+
+def _save_jwt_to_disk(
+    fp: str, api_token: str, expires_at: float, base_url: Optional[str]
+) -> None:
+    """Persist an exchanged JWT (0o600), pruning expired entries."""
+    path = _jwt_disk_path()
+    if not path:
+        return
+    try:
+        store: dict = {}
+        if path.exists():
+            store = _read_jwt_store(path) or {}
+        now = time.time()
+        store = {
+            k: v
+            for k, v in store.items()
+            if isinstance(v, dict) and float(v.get("expires_at", 0) or 0) > now
+        }
+        store[fp] = {
+            "api_token": api_token,
+            "expires_at": expires_at,
+            "base_url": base_url,
+        }
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(store), encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except Exception:
+            pass
+        os.replace(tmp, path)
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.debug("Failed to persist Copilot JWT: %s", exc)
 
 
 def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[str, float, Optional[str]]:
@@ -324,12 +479,35 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
 
     fp = _token_fingerprint(raw_token)
 
-    # Check cache first
+    # Check in-process cache first
     cached = _jwt_cache.get(fp)
     if cached:
         api_token, expires_at, base_url = cached
         if time.time() < expires_at - _JWT_REFRESH_MARGIN_SECONDS:
             return api_token, expires_at, base_url
+
+    # Then the on-disk cache: a fresh process (e.g. gateway restart) has an
+    # empty in-process cache but may have a still-valid persisted JWT. Reusing
+    # it avoids a network round-trip at startup — precisely when the network is
+    # most likely to be flaky and the single-shot exchange would degrade to the
+    # raw token.
+    disk_cached = _load_jwt_from_disk(fp)
+    if disk_cached:
+        api_token, expires_at, base_url = disk_cached
+        if time.time() < expires_at - _JWT_REFRESH_MARGIN_SECONDS:
+            _jwt_cache[fp] = (api_token, expires_at, base_url)
+            return api_token, expires_at, base_url
+
+    # Negative cache: a recent exchange failure for this token means the
+    # network round-trip (and its retry backoff) would just repeat. Fail
+    # fast so provider discovery / picker opens don't block on a token we
+    # already know is rejected or unreachable.
+    _fail_until = _exchange_failure_cache.get(fp, 0.0)
+    if time.time() < _fail_until:
+        raise ValueError(
+            "Copilot token exchange recently failed; skipping re-attempt "
+            f"for another {int(_fail_until - time.time())}s"
+        )
 
     req = urllib.request.Request(
         _TOKEN_EXCHANGE_URL,
@@ -342,11 +520,49 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
         },
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as exc:
-        raise ValueError(f"Copilot token exchange failed: {exc}") from exc
+    # Retry with backoff. Startup network races (launchd relaunch, VPN/DHCP
+    # settling) make the first attempt flaky; without this the sole failure
+    # silently degrades to the raw token for the whole process lifetime.
+    # Permanent HTTP rejections (401/403/404 — token not Copilot-entitled,
+    # revoked, or org-blocked) skip the retry loop entirely: backoff exists
+    # for transient network races, and sleeping on an auth rejection just
+    # blocks the caller for ~4.5s with an identical outcome.
+    data = None
+    last_exc: Optional[Exception] = None
+    permanent_failure = False
+    for attempt in range(_EXCHANGE_MAX_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+            break
+        except Exception as exc:  # noqa: BLE001 — retry all, re-raise below
+            last_exc = exc
+            status = getattr(exc, "code", None) or getattr(exc, "status", None)
+            if status in _EXCHANGE_PERMANENT_HTTP_STATUSES:
+                permanent_failure = True
+                logger.debug(
+                    "Copilot token exchange rejected (HTTP %s); not retrying",
+                    status,
+                )
+                break
+            if attempt < _EXCHANGE_MAX_ATTEMPTS - 1:
+                sleep_s = _EXCHANGE_BACKOFF_BASE_SECONDS * (attempt + 1)
+                logger.debug(
+                    "Copilot token exchange attempt %d/%d failed (%s); retrying in %.1fs",
+                    attempt + 1, _EXCHANGE_MAX_ATTEMPTS, exc, sleep_s,
+                )
+                time.sleep(sleep_s)
+    if data is None:
+        ttl = (
+            _EXCHANGE_FAILURE_TTL_PERMANENT_SECONDS
+            if permanent_failure
+            else _EXCHANGE_FAILURE_TTL_TRANSIENT_SECONDS
+        )
+        _exchange_failure_cache[fp] = time.time() + ttl
+        raise ValueError(
+            f"Copilot token exchange failed after {_EXCHANGE_MAX_ATTEMPTS} attempts: {last_exc}"
+        ) from last_exc
+    _exchange_failure_cache.pop(fp, None)
 
     api_token = data.get("token", "")
     expires_at = data.get("expires_at", 0)
@@ -372,6 +588,7 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
         base_url = _derive_base_url_from_proxy_ep(api_token)
 
     _jwt_cache[fp] = (api_token, expires_at, base_url)
+    _save_jwt_to_disk(fp, api_token, expires_at, base_url)
     logger.debug(
         "Copilot token exchanged, expires_at=%s, base_url=%s",
         expires_at,

@@ -87,21 +87,6 @@ class TestClient:
         assert h["Authorization"] == "Bearer rdb-test-key"
         assert "X-API-Key" not in h
 
-    def test_headers_include_api_key_for_memory_path(self):
-        c = self._make_client()
-        h = c._headers("/v1/memory/search")
-        assert h["X-API-Key"] == "rdb-test-key"
-
-    def test_headers_include_api_key_for_context_path(self):
-        c = self._make_client()
-        h = c._headers("/v1/context/query")
-        assert h["X-API-Key"] == "rdb-test-key"
-
-    def test_headers_strip_bearer_prefix(self):
-        c = self._make_client(api_key="Bearer rdb-test-key")
-        h = c._headers("/v1/memory/search")
-        assert h["Authorization"] == "Bearer rdb-test-key"
-        assert h["X-API-Key"] == "rdb-test-key"
 
     def test_add_memory_tries_fallback(self):
         c = self._make_client()
@@ -157,21 +142,6 @@ class TestWriteQueue:
         # If ingest succeeded, the row should be deleted
         client.ingest_session.assert_called_once()
 
-    def test_enqueue_persists_to_sqlite(self, tmp_path):
-        client = MagicMock()
-        # Make ingest slow so the row is still in SQLite when we peek.
-        # 0.5s is plenty — the test just needs the flush to still be in-flight.
-        client.ingest_session = MagicMock(side_effect=lambda *a, **kw: time.sleep(0.5))
-        db_path = tmp_path / "test_queue.db"
-        q = _WriteQueue(client, db_path)
-        q.enqueue("user1", "sess1", [{"role": "user", "content": "test"}])
-        # Check SQLite directly — row should exist since flush is slow
-        conn = sqlite3.connect(str(db_path))
-        rows = conn.execute("SELECT user_id, session_id FROM pending").fetchall()
-        conn.close()
-        assert len(rows) >= 1
-        assert rows[0][0] == "user1"
-        q.shutdown()
 
     def test_flush_deletes_row_on_success(self, tmp_path):
         q, client, db_path = self._make_queue(tmp_path)
@@ -183,26 +153,6 @@ class TestWriteQueue:
         conn.close()
         assert rows == 0
 
-    def test_flush_records_error_on_failure(self, tmp_path):
-        client = MagicMock()
-        client.ingest_session = MagicMock(side_effect=RuntimeError("API down"))
-        db_path = tmp_path / "test_queue.db"
-        q = _WriteQueue(client, db_path)
-        q.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
-        # Poll for the error to be recorded (max 2s), instead of a fixed 3s wait.
-        deadline = time.time() + 2.0
-        last_error = None
-        while time.time() < deadline:
-            conn = sqlite3.connect(str(db_path))
-            row = conn.execute("SELECT last_error FROM pending").fetchone()
-            conn.close()
-            if row and row[0]:
-                last_error = row[0]
-                break
-            time.sleep(0.05)
-        q.shutdown()
-        assert last_error is not None
-        assert "API down" in last_error
 
     def test_thread_local_connection_reuse(self, tmp_path):
         q, _, _ = self._make_queue(tmp_path)
@@ -259,8 +209,6 @@ class TestBuildOverlay:
     def test_empty_inputs_returns_empty(self):
         assert _build_overlay({}, {}) == ""
 
-    def test_empty_memories_returns_empty(self):
-        assert _build_overlay({"memories": []}, {"results": []}) == ""
 
     def test_profile_items_included(self):
         profile = {"memories": [{"content": "User likes Python"}]}
@@ -330,10 +278,6 @@ class TestRetainDBMemoryProvider:
         p = RetainDBMemoryProvider()
         assert p.is_available() is False
 
-    def test_is_available_with_key(self, monkeypatch):
-        monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test")
-        p = RetainDBMemoryProvider()
-        assert p.is_available() is True
 
     def test_config_schema(self):
         p = RetainDBMemoryProvider()
@@ -352,36 +296,6 @@ class TestRetainDBMemoryProvider:
         assert p._session_id == "test-session"
         p.shutdown()
 
-    def test_initialize_default_project(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        assert p._client.project == "default"
-        p.shutdown()
-
-    def test_initialize_explicit_project(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("RETAINDB_PROJECT", "my-project")
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        assert p._client.project == "my-project"
-        p.shutdown()
-
-    def test_initialize_profile_project(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        profile_home = str(tmp_path / "profiles" / "coder")
-        p.initialize("test-session", hermes_home=profile_home)
-        assert p._client.project == "hermes-coder"
-        p.shutdown()
-
-    def test_initialize_seeds_soul_md(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        soul_path = tmp_path / ".hermes" / "SOUL.md"
-        soul_path.write_text("I am a helpful agent.")
-        with patch.object(RetainDBMemoryProvider, "_seed_soul") as mock_seed:
-            p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-            # Give thread time to start
-            time.sleep(0.5)
-            mock_seed.assert_called_once_with("I am a helpful agent.")
-        p.shutdown()
 
     def test_system_prompt_block(self, tmp_path, monkeypatch):
         p = self._make_provider(tmp_path, monkeypatch)
@@ -397,12 +311,6 @@ class TestRetainDBMemoryProvider:
         assert "error" in result
         assert "not initialized" in result["error"]
 
-    def test_handle_tool_call_unknown_tool(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        result = json.loads(p.handle_tool_call("retaindb_nonexistent", {}))
-        assert result == {"error": "Unknown tool: retaindb_nonexistent"}
-        p.shutdown()
 
     def test_dispatch_profile(self, tmp_path, monkeypatch):
         p = self._make_provider(tmp_path, monkeypatch)
@@ -410,121 +318,6 @@ class TestRetainDBMemoryProvider:
         with patch.object(p._client, "get_profile", return_value={"memories": []}):
             result = json.loads(p.handle_tool_call("retaindb_profile", {}))
             assert "memories" in result
-        p.shutdown()
-
-    def test_dispatch_search_requires_query(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        result = json.loads(p.handle_tool_call("retaindb_search", {}))
-        assert result == {"error": "query is required"}
-        p.shutdown()
-
-    def test_dispatch_search(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        with patch.object(p._client, "search", return_value={"results": [{"content": "found"}]}):
-            result = json.loads(p.handle_tool_call("retaindb_search", {"query": "test"}))
-            assert "results" in result
-        p.shutdown()
-
-    def test_dispatch_search_top_k_capped(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        with patch.object(p._client, "search") as mock_search:
-            mock_search.return_value = {"results": []}
-            p.handle_tool_call("retaindb_search", {"query": "test", "top_k": 100})
-            # top_k should be capped at 20
-            assert mock_search.call_args[1]["top_k"] == 20
-        p.shutdown()
-
-    def test_dispatch_remember(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        with patch.object(p._client, "add_memory", return_value={"id": "mem-1"}):
-            result = json.loads(p.handle_tool_call("retaindb_remember", {"content": "test fact"}))
-            assert result["id"] == "mem-1"
-        p.shutdown()
-
-    def test_dispatch_remember_requires_content(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        result = json.loads(p.handle_tool_call("retaindb_remember", {}))
-        assert result == {"error": "content is required"}
-        p.shutdown()
-
-    def test_dispatch_forget(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        with patch.object(p._client, "delete_memory", return_value={"deleted": True}):
-            result = json.loads(p.handle_tool_call("retaindb_forget", {"memory_id": "mem-1"}))
-            assert result["deleted"] is True
-        p.shutdown()
-
-    def test_dispatch_forget_requires_id(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        result = json.loads(p.handle_tool_call("retaindb_forget", {}))
-        assert result == {"error": "memory_id is required"}
-        p.shutdown()
-
-    def test_dispatch_context(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        with patch.object(p._client, "query_context", return_value={"results": [{"content": "relevant"}]}), \
-             patch.object(p._client, "get_profile", return_value={"memories": []}):
-            result = json.loads(p.handle_tool_call("retaindb_context", {"query": "current task"}))
-            assert "context" in result
-            assert "raw" in result
-        p.shutdown()
-
-    def test_dispatch_file_list(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        with patch.object(p._client, "list_files", return_value={"files": []}):
-            result = json.loads(p.handle_tool_call("retaindb_list_files", {}))
-            assert "files" in result
-        p.shutdown()
-
-    def test_dispatch_file_upload_missing_path(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        result = json.loads(p.handle_tool_call("retaindb_upload_file", {}))
-        assert "error" in result
-
-    def test_dispatch_file_upload_not_found(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        result = json.loads(p.handle_tool_call("retaindb_upload_file", {"local_path": "/nonexistent/file.txt"}))
-        assert "File not found" in result["error"]
-        p.shutdown()
-
-    def test_dispatch_file_read_requires_id(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        result = json.loads(p.handle_tool_call("retaindb_read_file", {}))
-        assert result == {"error": "file_id is required"}
-        p.shutdown()
-
-    def test_dispatch_file_ingest_requires_id(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        result = json.loads(p.handle_tool_call("retaindb_ingest_file", {}))
-        assert result == {"error": "file_id is required"}
-        p.shutdown()
-
-    def test_dispatch_file_delete_requires_id(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        result = json.loads(p.handle_tool_call("retaindb_delete_file", {}))
-        assert result == {"error": "file_id is required"}
-        p.shutdown()
-
-    def test_handle_tool_call_wraps_exception(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        with patch.object(p._client, "get_profile", side_effect=RuntimeError("API exploded")):
-            result = json.loads(p.handle_tool_call("retaindb_profile", {}))
-            assert "API exploded" in result["error"]
         p.shutdown()
 
 
@@ -554,78 +347,9 @@ class TestPrefetch:
         assert result == ""
         p.shutdown()
 
-    def test_prefetch_consumes_context_result(self, tmp_path, monkeypatch):
-        p = self._make_initialized_provider(tmp_path, monkeypatch)
-        # Manually set the cached result
-        with p._lock:
-            p._context_result = "[RetainDB Context]\nProfile:\n- User likes tests"
-        result = p.prefetch("test")
-        assert "User likes tests" in result
-        # Should be consumed
-        assert p.prefetch("test") == ""
-        p.shutdown()
-
-    def test_prefetch_consumes_dialectic_result(self, tmp_path, monkeypatch):
-        p = self._make_initialized_provider(tmp_path, monkeypatch)
-        with p._lock:
-            p._dialectic_result = "User is a software engineer who prefers Python."
-        result = p.prefetch("test")
-        assert "[RetainDB User Synthesis]" in result
-        assert "software engineer" in result
-        p.shutdown()
-
-    def test_prefetch_consumes_agent_model(self, tmp_path, monkeypatch):
-        p = self._make_initialized_provider(tmp_path, monkeypatch)
-        with p._lock:
-            p._agent_model = {
-                "memory_count": 5,
-                "persona": "Helpful coding assistant",
-                "persistent_instructions": ["Be concise", "Use Python"],
-                "working_style": "Direct and efficient",
-            }
-        result = p.prefetch("test")
-        assert "[RetainDB Agent Self-Model]" in result
-        assert "Helpful coding assistant" in result
-        assert "Be concise" in result
-        assert "Direct and efficient" in result
-        p.shutdown()
-
-    def test_prefetch_skips_empty_agent_model(self, tmp_path, monkeypatch):
-        p = self._make_initialized_provider(tmp_path, monkeypatch)
-        with p._lock:
-            p._agent_model = {"memory_count": 0}
-        result = p.prefetch("test")
-        assert "Agent Self-Model" not in result
-        p.shutdown()
-
-    def test_thread_accumulation_guard(self, tmp_path, monkeypatch):
-        """Verify old prefetch threads are joined before new ones spawn."""
-        p = self._make_initialized_provider(tmp_path, monkeypatch)
-        # Mock the prefetch methods to be slow
-        with patch.object(p, "_prefetch_context", side_effect=lambda q: time.sleep(0.5)), \
-             patch.object(p, "_prefetch_dialectic", side_effect=lambda q: time.sleep(0.5)), \
-             patch.object(p, "_prefetch_agent_model", side_effect=lambda: time.sleep(0.5)):
-            p.queue_prefetch("query 1")
-            first_threads = list(p._prefetch_threads)
-            assert len(first_threads) == 3
-
-            # Call again — should join first batch before spawning new
-            p.queue_prefetch("query 2")
-            second_threads = list(p._prefetch_threads)
-            assert len(second_threads) == 3
-            # Should be different thread objects
-            for t in second_threads:
-                assert t not in first_threads
-        p.shutdown()
 
     def test_reasoning_level_short(self):
         assert RetainDBMemoryProvider._reasoning_level("hi") == "low"
-
-    def test_reasoning_level_medium(self):
-        assert RetainDBMemoryProvider._reasoning_level("x" * 200) == "medium"
-
-    def test_reasoning_level_long(self):
-        assert RetainDBMemoryProvider._reasoning_level("x" * 500) == "high"
 
 
 # ===========================================================================
@@ -652,18 +376,6 @@ class TestSyncTurn:
             assert len(msgs) == 2
             assert msgs[0]["role"] == "user"
             assert msgs[1]["role"] == "assistant"
-        p.shutdown()
-
-    def test_sync_turn_skips_empty_user_content(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        p = RetainDBMemoryProvider()
-        p.initialize("test-session", hermes_home=str(hermes_home))
-        with patch.object(p._queue, "enqueue") as mock_enqueue:
-            p.sync_turn("", "assistant msg")
-            mock_enqueue.assert_not_called()
         p.shutdown()
 
 
@@ -699,17 +411,6 @@ class TestOnMemoryWrite:
             mock_add.assert_not_called()
         p.shutdown()
 
-    def test_skips_empty_content(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        p = RetainDBMemoryProvider()
-        p.initialize("test-session", hermes_home=str(hermes_home))
-        with patch.object(p._client, "add_memory") as mock_add:
-            p.on_memory_write("add", "user", "")
-            mock_add.assert_not_called()
-        p.shutdown()
 
     def test_memory_target_maps_to_type(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")

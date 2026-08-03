@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -229,6 +230,36 @@ def _write_disk_cache(data: dict[str, Any]) -> None:
         logger.info("model catalog cache write failed: %s", exc)
 
 
+# Stale-while-revalidate machinery: at most one background manifest refresh
+# in flight per process. The refreshed manifest lands on disk; the NEXT
+# get_catalog() call picks it up via the mtime check.
+_catalog_swr_lock = threading.Lock()
+_catalog_swr_inflight = False
+
+
+def _spawn_catalog_swr_refresh(url: str) -> None:
+    """Refresh the catalog manifest off-thread (fire-and-forget, deduped)."""
+    global _catalog_swr_inflight
+    with _catalog_swr_lock:
+        if _catalog_swr_inflight:
+            return
+        _catalog_swr_inflight = True
+
+    def _refresh() -> None:
+        global _catalog_swr_inflight
+        try:
+            fetched = _fetch_manifest_with_fallback(url, DEFAULT_FETCH_TIMEOUT)
+            if fetched is not None:
+                _write_disk_cache(fetched)
+        except Exception:
+            logger.debug("catalog SWR refresh failed", exc_info=True)
+        finally:
+            with _catalog_swr_lock:
+                _catalog_swr_inflight = False
+
+    threading.Thread(target=_refresh, daemon=True, name="model-catalog-swr").start()
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -266,6 +297,16 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
     if not force_refresh and disk_fresh and disk_data is not None:
         _catalog_cache = disk_data
         _catalog_cache_source_mtime = disk_mtime
+        return disk_data
+
+    # Stale-while-revalidate: an expired disk copy is served immediately and
+    # refreshed off-thread, so interactive surfaces (the /model picker calls
+    # this via get_curated_nous_model_ids on every open) never block on the
+    # manifest fetch. Only a cold cache (no disk copy at all) still blocks.
+    if not force_refresh and disk_data is not None:
+        _catalog_cache = disk_data
+        _catalog_cache_source_mtime = disk_mtime
+        _spawn_catalog_swr_refresh(cfg["url"])
         return disk_data
 
     # Need to (re)fetch. If it fails, fall back to any stale disk copy.
@@ -354,6 +395,42 @@ def get_curated_nous_models() -> list[str] | None:
         if mid:
             out.append(mid)
     return out or None
+
+
+def _default_model_from_block(block: dict[str, Any] | None) -> str | None:
+    """Return the id of the model entry labeled ``"default": true``, or None."""
+    if not isinstance(block, dict):
+        return None
+    for m in block.get("models", []):
+        if isinstance(m, dict) and m.get("default"):
+            mid = str(m.get("id") or "").strip()
+            if mid:
+                return mid
+    return None
+
+
+def get_default_model_from_cache(provider: str) -> str | None:
+    """Return the catalog's labeled default model for ``provider`` — cache only.
+
+    The manifest marks exactly one model entry per provider with
+    ``"default": true``; that entry is the model Hermes silently lands on when
+    the user never picked one. This accessor reads ONLY the in-process copy or
+    the disk cache — it NEVER triggers a network fetch, so it is safe on hot
+    resolution paths (agent build, gateway session setup) that must stay
+    network-free. The cache is kept fresh by the picker/`hermes update` paths;
+    when no cached manifest exists (fresh install, offline), returns None and
+    the caller falls back to the in-repo constant.
+    """
+    if _catalog_cache is not None:
+        block = _catalog_cache.get("providers", {}).get(provider)
+        found = _default_model_from_block(block)
+        if found:
+            return found
+    disk_data, _mtime = _read_disk_cache()
+    if disk_data is not None:
+        block = disk_data.get("providers", {}).get(provider)
+        return _default_model_from_block(block)
+    return None
 
 
 def seed_cache_from_checkout(project_root: "Path | str") -> bool:

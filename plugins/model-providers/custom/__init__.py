@@ -4,7 +4,9 @@ Covers any endpoint registered as provider="custom", including local
 Ollama instances and OpenAI-compatible reasoning endpoints (GLM-5.2 on
 Volcengine ARK, vLLM, llama.cpp). Key quirks:
   - ollama_num_ctx → extra_body.options.num_ctx (local context window)
-  - reasoning_config disabled → extra_body.think = False
+  - reasoning_config disabled → top-level reasoning_effort="none"
+    (Ollama /v1/chat/completions ignores think=False — ollama#14820)
+    + extra_body.think = False for /api/chat and proxies
   - reasoning_config enabled + effort → top-level reasoning_effort
     (the native OpenAI-compatible format GLM/ARK expect; unset omits it
     so the endpoint's server default applies)
@@ -53,6 +55,13 @@ class CustomProfile(ProviderProfile):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
+                # Ollama's /v1/chat/completions silently ignores
+                # extra_body.think (only /api/chat honours it — ollama#14820)
+                # but respects the top-level reasoning_effort field, so both
+                # are needed to actually stop a thinking-capable model from
+                # reasoning (#25758). Endpoints that recognize neither simply
+                # ignore them.
+                top_level["reasoning_effort"] = "none"
                 extra_body["think"] = False
             elif _effort:
                 top_level["reasoning_effort"] = _effort

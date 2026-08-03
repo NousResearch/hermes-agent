@@ -1343,6 +1343,18 @@ export default class Ink {
   }
 
   /**
+   * True while the terminal is expected to have DEC mouse tracking armed:
+   * alt screen active, not paused for an editor handoff, and the current
+   * preset isn't 'off'. Gates App's mouse-mode watchdog (DECRQM probe) so
+   * it never probes when tracking is intentionally disabled (/mouse off),
+   * during pause (probe bytes would leak into the external editor's
+   * session), or after unmount.
+   */
+  get expectsMouseTracking(): boolean {
+    return this.altScreenActive && !this.isPaused && !this.isUnmounted && this.altScreenMouseTracking !== 'off'
+  }
+
+  /**
    * Re-assert terminal modes after a gap (>5s stdin silence or event-loop
    * stall). Catches tmux detach→attach, ssh reconnect, and laptop
    * sleep/wake — none of which send SIGCONT. The terminal may reset DEC

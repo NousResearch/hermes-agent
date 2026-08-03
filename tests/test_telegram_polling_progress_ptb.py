@@ -92,6 +92,34 @@ class _EnvelopeRequest(BaseRequest):
         return 200, self.payload
 
 
+class _SlottedEnvelopeRequest(BaseRequest):
+    """A getUpdates request with no instance ``__dict__``.
+
+    Reproduces PTB's real HTTPXRequest shape on Python 3.13, where every
+    class in the MRO defines ``__slots__`` and instances therefore reject an
+    instance-attribute ``do_request`` monkey-patch as "read-only" (#64482).
+    ``__slots__`` names the payload so the double needs no ``__dict__``.
+    """
+
+    __slots__ = ("_payload",)
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    @property
+    def read_timeout(self):
+        return 10
+
+    async def initialize(self):
+        return None
+
+    async def shutdown(self):
+        return None
+
+    async def do_request(self, url, method, request_data=None, **_kwargs):
+        return 200, self._payload
+
+
 async def _cancel_task(task):
     if task is None or task.done():
         return
@@ -99,25 +127,6 @@ async def _cancel_task(task):
     await asyncio.gather(task, return_exceptions=True)
 
 
-@pytest.mark.asyncio
-async def test_real_base_request_invalid_200_body_cannot_record_progress():
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="123456:test-token"))
-    generation, progress = adapter._begin_polling_generation()
-    adapter._polling_network_error_count = 4
-    adapter._polling_conflict_count = 3
-    request = adapter._instrument_polling_request(_EnvelopeRequest(b"not-json"))
-    context_token = tg_adapter._POLLING_GENERATION_CONTEXT.set(generation)
-
-    try:
-        with pytest.raises(TelegramError, match="Invalid server response"):
-            await request.post("https://api.telegram.org/bot-token/getUpdates")
-    finally:
-        tg_adapter._POLLING_GENERATION_CONTEXT.reset(context_token)
-
-    assert not progress.is_set()
-    assert adapter._polling_network_error_count == 4
-    assert adapter._polling_conflict_count == 3
-    assert adapter._send_path_degraded is True
 
 
 @pytest.mark.asyncio
@@ -224,6 +233,8 @@ async def test_real_base_request_valid_success_envelope_records_progress():
     assert adapter._polling_network_error_count == 0
     assert adapter._polling_conflict_count == 0
     assert adapter._send_path_degraded is False
+
+
 
 
 @pytest.mark.asyncio

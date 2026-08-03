@@ -40,7 +40,28 @@ from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
-from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+
+# ``agent.auxiliary_client`` pulls credential_pool → hermes_cli.auth → httpx
+# → rich (~50 ms cold); only vision handlers need it. Loaded lazily; both
+# names stay module attributes so tests can keep patching
+# ``tools.vision_tools.async_call_llm``. Truthy-skip: injected mocks win.
+async_call_llm: Any = None
+extract_content_or_reasoning: Any = None
+
+
+def _load_auxiliary_client() -> None:
+    global async_call_llm, extract_content_or_reasoning
+    if async_call_llm is None or extract_content_or_reasoning is None:
+        from agent.auxiliary_client import (
+            async_call_llm as _acl,
+            extract_content_or_reasoning as _ecr,
+        )
+        if async_call_llm is None:
+            async_call_llm = _acl
+        if extract_content_or_reasoning is None:
+            extract_content_or_reasoning = _ecr
+
+
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
@@ -424,10 +445,13 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             if blocked:
                 raise PermissionError(blocked["message"])
 
+            from tools.url_safety import create_ssrf_safe_async_client
+
             # Download the image with appropriate headers using async httpx
             # Enable follow_redirects to handle image CDNs that redirect (e.g., Imgur, Picsum)
-            # SSRF: event_hooks validates each redirect target against private IP ranges
-            async with httpx.AsyncClient(
+            # SSRF: the client validates DNS at TCP connect time; event_hooks
+            # validate each redirect target against private IP ranges.
+            async with create_ssrf_safe_async_client(
                 timeout=_VISION_DOWNLOAD_TIMEOUT,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
@@ -1248,6 +1272,7 @@ async def vision_analyze_tool(
         }
         if model:
             call_kwargs["model"] = model
+        _load_auxiliary_client()
         # Try full-size image first; on size-related rejection, downscale and retry.
         try:
             response = await async_call_llm(**call_kwargs)
@@ -1575,7 +1600,9 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
             if blocked:
                 raise PermissionError(blocked["message"])
 
-            async with httpx.AsyncClient(
+            from tools.url_safety import create_ssrf_safe_async_client
+
+            async with create_ssrf_safe_async_client(
                 timeout=60.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
@@ -1753,6 +1780,7 @@ async def video_analyze_tool(
         if model:
             call_kwargs["model"] = model
 
+        _load_auxiliary_client()
         response = await async_call_llm(**call_kwargs)
         analysis = extract_content_or_reasoning(response)
 

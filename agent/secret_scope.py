@@ -23,6 +23,7 @@ Design rationale lives in ``docs/design/multiplexing-gateway.md`` (Workstream A)
 from __future__ import annotations
 
 import os
+import re
 from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Dict, Mapping, Optional
@@ -105,6 +106,14 @@ _GLOBAL_ENV_EXACT = frozenset({
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",
     # Kanban paths (per-board, not per-profile-secret)
     "HERMES_KANBAN_DB", "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_KANBAN_BOARD",
+    # API-server LISTENER settings — deployment config (Docker compose
+    # ``environment:`` block, systemd ``Environment=``), not profile secrets.
+    # The scoped runner reload (#64674) must keep seeing them or container
+    # deployments silently lose the api_server platform (#69379). NOTE:
+    # API_SERVER_KEY is deliberately NOT here — it IS a credential and stays
+    # profile-scoped.
+    "API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT",
+    "API_SERVER_CORS_ORIGINS",
 })
 _GLOBAL_ENV_PREFIXES = (
     "HERMES_KANBAN_",
@@ -127,10 +136,16 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
 
     1. Genuinely-global vars (``_is_global_env``) always read ``os.environ`` —
        they are deployment settings, not profile secrets.
-    2. When a secret scope is installed (multiplexed turn), read from it; an
-       absent key returns ``default``. The scope is authoritative — we do NOT
-       fall through to ``os.environ``, because in a multiplexer ``os.environ``
-       may hold another profile's value.
+    2. When a secret scope is installed (multiplexed turn), read from it. Under
+       multiplexing the scope is authoritative — an absent key returns
+       ``default`` and we do NOT fall through to ``os.environ``, because in a
+       multiplexer ``os.environ`` may hold another profile's value. When
+       multiplexing is OFF, a scope miss falls through to ``os.environ``:
+       single-profile deployments legitimately provide credentials via the
+       process environment (systemd ``Environment=``, secret-manager wrappers
+       like ``pass-cli run`` / ``op run``, plain shell exports) rather than
+       ``<home>/.env``, and the scope — installed unconditionally around e.g.
+       every cron job — must stay a ``.env`` overlay, not a blindfold.
     3. No scope installed:
        - multiplex INACTIVE (default deployment): read ``os.environ`` —
          identical to the legacy ``os.getenv`` behavior every caller had before.
@@ -144,6 +159,17 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     scope = _SECRET_SCOPE.get()
     if scope is not None:
         val = scope.get(name)
+        if val is not None:
+            return val
+        if _MULTIPLEX_ACTIVE:
+            return default
+        # Multiplex off: the scope is an overlay over the process environment,
+        # not an isolation boundary — there is no other profile to leak from.
+        # Without this fallthrough, credentials injected only into the process
+        # environment vanish inside any set_secret_scope(...) block (the cron
+        # scheduler installs one around every job), so cron jobs send a
+        # placeholder API key and 401 while interactive turns keep working.
+        val = os.environ.get(name)
         return val if val is not None else default
 
     if _MULTIPLEX_ACTIVE:
@@ -160,19 +186,71 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     return val if val is not None else default
 
 
+def _strip_inline_comment(value: str) -> str:
+    """Strip a dotenv-style inline comment from a raw ``.env`` value.
+
+    Mirrors python-dotenv (1.2.2) semantics, verified empirically:
+
+    - Quoted values: scan for the matching close quote
+      (backslash-escape-aware for double quotes, since ``save_env_value``
+      writes ``\\"``/``\\\\`` escapes). Everything through the close quote is
+      kept; a trailing ``# ...`` remainder after it is discarded, so
+      ``KEY="has # inside" # trailing`` yields ``has # inside``. Non-comment
+      trailing junk leaves the value untouched (lenient, unlike dotenv's
+      hard parse error).
+    - Unquoted values: truncate only at a ``#`` PRECEDED BY WHITESPACE, so
+      ``KEY=foo#bar`` keeps ``foo#bar`` while ``KEY=value # comment`` keeps
+      ``value``. A value that *starts* with ``#`` (``KEY=#leading``) is kept.
+    """
+    value = value.strip()
+    if not value:
+        return value
+    quote = value[0]
+    if quote in ("'", '"'):
+        i = 1
+        while i < len(value):
+            ch = value[i]
+            if quote == '"' and ch == "\\":
+                i += 2  # skip the escaped character
+                continue
+            if ch == quote:
+                remainder = value[i + 1:].lstrip()
+                if remainder.startswith("#"):
+                    return value[: i + 1]
+                return value
+            i += 1
+        return value  # unterminated quote: leave as-is
+    return re.split(r"\s+#", value, maxsplit=1)[0].strip()
+
+
 def load_env_file(env_path: Path) -> Dict[str, str]:
     """Parse a ``.env`` file into a plain dict WITHOUT touching ``os.environ``.
 
     Used to load a profile's secrets into an isolated mapping for
-    ``set_secret_scope``. Mirrors python-dotenv's basic parsing (KEY=VALUE,
-    ``export`` prefix, ``#`` comments, optional matching quotes) but never
-    mutates the process environment — that isolation is the whole point.
+    ``set_secret_scope``. Parses the small KEY=VALUE subset Hermes writes
+    itself (``export`` prefix, ``#`` comments — full-line and
+    dotenv-compatible inline, matching quotes with the
+    writer's ``\\"``/``\\\\`` escapes reversed — the same semantics as
+    ``hermes_cli.config._parse_env_value``) but never mutates the process
+    environment — that isolation is the whole point.
+
+    Encoding is ``utf-8-sig`` so a leading UTF-8 BOM (Windows Notepad /
+    PowerShell ``Set-Content -Encoding UTF8``) does not prefix the first
+    key as ``\\ufeffNAME`` and make ``get_secret('NAME')`` miss under scope.
     """
     secrets: Dict[str, str] = {}
     try:
-        text = env_path.read_text(encoding="utf-8")
+        text = env_path.read_text(encoding="utf-8-sig")
     except (FileNotFoundError, OSError, UnicodeDecodeError):
         return secrets
+
+    # Parse values with the canonical Hermes parser: save_env_value
+    # escapes " and \ inside double quotes, and every other reader
+    # (load_env, python-dotenv) reverses those escapes. Stripping only
+    # the outer quotes here would corrupt credentials containing "
+    # or \ — they work interactively but fail in scoped (cron /
+    # multiplex) resolution.
+    from hermes_cli.config import _parse_env_value
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -186,10 +264,7 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
         key = key.strip()
         if not key:
             continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        secrets[key] = value
+        secrets[key] = _parse_env_value(_strip_inline_comment(value))
 
     return secrets
 
@@ -201,5 +276,18 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     global vars are intentionally NOT copied in — ``get_secret`` reads those
     from ``os.environ`` directly, so the scope holds only profile secrets.
     """
-    return load_env_file(Path(hermes_home) / ".env")
+    home = Path(hermes_home)
+    secrets = load_env_file(home / ".env")
 
+    try:
+        from hermes_cli.env_loader import get_secret_source_values
+        external_secrets = get_secret_source_values(home)
+    except Exception:
+        external_secrets = {}
+
+    for key, value in external_secrets.items():
+        if _is_global_env(key):
+            continue
+        secrets[key] = value
+
+    return secrets

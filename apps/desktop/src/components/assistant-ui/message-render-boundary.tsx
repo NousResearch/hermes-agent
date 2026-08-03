@@ -1,6 +1,6 @@
 import { Component, type ReactNode } from 'react'
 
-// `@assistant-ui/store`'s index-keyed child-scope lookup (`tapClientLookup`)
+// `@assistant-ui/store`'s index-keyed child-scope lookup (`useClientLookup`)
 // throws — rather than returning undefined — when a subscriber reads an index
 // that the message/parts list no longer has. This races during high-frequency
 // store replacement (session switch mid-stream, gateway reconnect replay): a
@@ -10,11 +10,16 @@ import { Component, type ReactNode } from 'react'
 // without a local boundary it unwinds to the root and blanks the whole app.
 // Upstream-tracked: assistant-ui/assistant-ui#4051, #3652.
 const isTransientLookupError = (error: unknown): boolean =>
-  error instanceof Error && /tapClient(Lookup|Resource).*out of bounds/.test(error.message)
+  error instanceof Error && /(useClientLookup|tapClient(Lookup|Resource)).*out of bounds/.test(error.message)
 
 interface Props {
-  // Changes whenever the message list mutates; remounting clears the caught
-  // error so the next consistent render recovers silently.
+  // Changes whenever the message list mutates STRUCTURALLY (ids/roles/count);
+  // remounting clears the caught error so the next consistent render recovers
+  // silently. Deliberately NOT the per-token signature: this prop reaches
+  // every turn's boundary, so a value that ticks with content length would
+  // re-render every boundary — and reconcile every turn's subtree — on every
+  // streamed token (measured: 540 wasted Block renders per explain() sample
+  // with two threads streaming).
   resetKey: string
   children: ReactNode
 }

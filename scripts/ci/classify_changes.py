@@ -9,11 +9,16 @@ booleans (one per lane) to ``$GITHUB_OUTPUT`` and stdout. The
 Lanes:
 
 * ``python``      — pytest / ruff / ty / footguns.
+* ``python_prod`` — Python changes OUTSIDE tests/ — gates jobs that ship or
+  run the product (Desktop E2E backend, Docker image) but never import the
+  test suite. A tests-only PR keeps ``python`` (pytest must run) while
+  skipping those product jobs.
 * ``docker_meta`` — Dockerfiles etc.
 * ``frontend``    — TS typecheck matrix + desktop build.
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
+* ``npm_lock``    — semantic package-lock.json diff PR comment.
 * ``mcp_catalog`` — bundled MCP catalog / installer review.
 
 Docker is not a lane — it builds on push-to-main and release only,
@@ -31,6 +36,7 @@ must never skip one a change could break:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -40,6 +46,19 @@ _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
 _PY_SKIP = ("docs/", "website/") + _FRONTEND
+
+# CI-sensitive files: eslint config, workflow files, composite actions.
+# Changes here can influence what code the autofix job executes and pushes to
+# main, so they require explicit maintainer review (ci-reviewed label).
+#
+# package.json is deliberately NOT listed here: npm scripts only execute on the
+# unprivileged generate-patch runner (contents: read), never on the privileged
+# apply-patch job. The two-job split means a malicious package.json script
+# can't get push access — it runs on an ephemeral runner with zero write perms.
+_CI_REVIEW_FILES = {
+    ".prettierrc",
+}
+_CI_REVIEW_PATHS = (".github/workflows/", ".github/actions/")
 
 # Supply-chain scan: files that can execute code at install/import time.
 _SCAN_EXTS = (".py", ".pth")
@@ -59,6 +78,18 @@ def _py_irrelevant(p: str) -> bool:
     return _is_docs(p) or p in _ROOT_NPM or p.startswith(_PY_SKIP) or p.startswith(_DOCKER_META)
 
 
+def _py_test_only(p: str) -> bool:
+    """Is ``p`` inside the test suite (never shipped / imported by the product)?
+
+    Product jobs (Desktop E2E's ``hermes serve`` backend, the Docker image)
+    run installed code — nothing under ``tests/`` is packaged or importable
+    there. scripts/run_tests.sh and run_tests_parallel.py are deliberately
+    NOT test-only: they are runner infrastructure, and a bad edit there can
+    mask real failures, so they stay conservative (python_prod=true).
+    """
+    return p.startswith("tests/")
+
+
 def _is_scan(p: str) -> bool:
     return p.endswith(_SCAN_EXTS) or p in _SCAN_FILES
 
@@ -67,25 +98,44 @@ def _is_mcp_catalog(p: str) -> bool:
     return p.startswith(_MCP_CATALOG_PATHS) or p in _MCP_CATALOG_FILES
 
 
+def _is_ci_review(p: str) -> bool:
+    if p in _CI_REVIEW_FILES or p.startswith(_CI_REVIEW_PATHS):
+        return True
+    # Any eslint config file at any path — eslint configs can define custom
+    # fix functions that execute arbitrary code, so they all require review.
+    return os.path.basename(p).startswith("eslint.config.")
+
+
+def ci_review_files(files: list[str]) -> list[str]:
+    """Return the CI-sensitive paths that need maintainer review."""
+    return sorted({f.strip() for f in files if f.strip() and _is_ci_review(f.strip())})
+
+
 def classify(files: list[str]) -> dict[str, bool]:
     """Map changed paths to ``{lane: should_run}``."""
     files = [f.strip() for f in files if f.strip()]
     ret = {
         "python": any(not _py_irrelevant(f) for f in files),
+        "python_prod": any(not _py_irrelevant(f) and not _py_test_only(f) for f in files),
         "docker_meta":  any(f.startswith(_DOCKER_META) for f in files),
         "frontend": any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files),
         "site": any(f.startswith(_SITE) for f in files),
         "scan": any(_is_scan(f) for f in files),
         "deps": any(f == "pyproject.toml" for f in files),
+        "npm_lock": any(f.split("/")[-1] == "package-lock.json" for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
+        "ci_review": any(_is_ci_review(f) for f in files),
     }
     if not files or any(f.startswith(".github/") for f in files):
         ret["python"] = True
+        ret["python_prod"] = True
         ret["docker_meta"] = True
         ret["frontend"] = True
         ret["site"] = True
         ret["scan"] = True
         ret["deps"] = True
+        ret["npm_lock"] = True
+        ret["ci_review"] = True
 
         # explicitly skip mcp catalog here. it's not needed unless those files are modified.
     return ret
@@ -93,8 +143,12 @@ def classify(files: list[str]) -> dict[str, bool]:
 
 
 def main() -> int:
-    lanes = classify(sys.stdin.read().splitlines())
-    out = "\n".join(f"{k}={str(v).lower()}" for k, v in lanes.items())
+    files = sys.stdin.read().splitlines()
+    lanes = classify(files)
+    out = "\n".join([
+        *(f"{key}={str(value).lower()}" for key, value in lanes.items()),
+        f"ci_review_files={json.dumps(ci_review_files(files))}",
+    ])
     if dest := os.environ.get("GITHUB_OUTPUT"):
         with open(dest, "a", encoding="utf-8") as fh:
             fh.write(out + "\n")

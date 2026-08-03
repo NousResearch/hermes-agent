@@ -328,7 +328,10 @@ class TestMarkJobRun:
         """A finished one-shot must stay inspectable, not vanish from the store."""
         job = create_job(prompt="Once", schedule="30m", repeat=1)
         mark_job_run(job["id"], success=True)
-        updated = get_job(job["id"])
+        # Retained as a runtime_tombstone (not the legacy bare state=="completed"
+        # shape), so a live-only lookup must opt in with include_terminal.
+        assert get_job(job["id"]) is None
+        updated = get_job(job["id"], include_terminal=True)
         assert updated is not None, "completed one-shot was deleted from jobs.json"
         assert updated["state"] == "completed"
         assert updated["enabled"] is False
@@ -342,21 +345,25 @@ class TestMarkJobRun:
             job["id"], success=True,
             delivery_error="platform 'telegram' not configured",
         )
-        updated = get_job(job["id"])
+        updated = get_job(job["id"], include_terminal=True)
         assert updated is not None
         assert updated["state"] == "completed"
         assert updated["last_delivery_error"] == "platform 'telegram' not configured"
 
     def test_completed_oneshot_visible_in_list(self, tmp_cron_dir):
-        """list_jobs(include_disabled=True) surfaces the completed record."""
+        """list_jobs(include_terminal=True) surfaces the completed record."""
         job = create_job(prompt="Once", schedule="30m", repeat=1)
         mark_job_run(job["id"], success=True, delivery_error="send failed: 502")
-        listed = {j["id"]: j for j in list_jobs(include_disabled=True)}
+        listed = {
+            j["id"]: j
+            for j in list_jobs(include_disabled=True, include_terminal=True)
+        }
         assert job["id"] in listed
         assert listed[job["id"]]["state"] == "completed"
         assert listed[job["id"]]["last_delivery_error"] == "send failed: 502"
-        # Default (enabled-only) listing hides it, matching paused/disabled jobs.
+        # Default listing hides a tombstoned record, matching paused/disabled jobs.
         assert job["id"] not in {j["id"] for j in list_jobs()}
+        assert job["id"] not in {j["id"] for j in list_jobs(include_disabled=True)}
 
     def test_completed_oneshot_not_due(self, tmp_cron_dir):
         """A retained completed one-shot must never be dispatched again."""
@@ -706,7 +713,7 @@ class TestGetDueJobs:
         # (times=1 reached, so mark_job_run retires the job as a terminal
         # completed record instead of deleting it).
         mark_job_run("slowrun", True)
-        retired = get_job("slowrun")
+        retired = get_job("slowrun", include_terminal=True)
         assert retired is not None
         assert retired["state"] == "completed"
         assert retired["enabled"] is False
@@ -1295,7 +1302,7 @@ class TestCompletedOneshotRetentionSweep:
     def test_sweep_keeps_recent_completed_oneshot(self, tmp_cron_dir):
         recent_id = self._completed_oneshot(age_days=1)
         get_due_jobs()
-        kept = get_job(recent_id)
+        kept = get_job(recent_id, include_terminal=True)
         assert kept is not None
         assert kept["state"] == "completed"
         assert kept["last_delivery_error"] == "boom"
@@ -1320,7 +1327,7 @@ class TestCompletedOneshotRetentionSweep:
         )
         old_id = self._completed_oneshot(age_days=30)
         get_due_jobs()
-        assert get_job(old_id) is not None
+        assert get_job(old_id, include_terminal=True) is not None
 
     def test_recurring_jobs_unaffected_by_retention_change(self, tmp_cron_dir):
         """A recurring job still cycles normally alongside retained one-shots."""

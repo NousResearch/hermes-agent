@@ -522,9 +522,15 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
 
     # A runtime-tombstoned declaration is a completed job retained for
     # reproducibility; consumers that opted into seeing it must never read it
-    # as schedulable.
+    # as schedulable. Mirror the same terminal shape the legacy bare-one-shot
+    # completion path (mark_job_run's next_run_at-is-None branch) writes
+    # directly to storage, so both completion mechanisms read identically —
+    # a stale future next_run_at or enabled=True must never leak through a
+    # tombstoned record just because storage itself was left untouched.
     if normalized.get("runtime_tombstone"):
         normalized["state"] = "completed"
+        normalized["enabled"] = False
+        normalized["next_run_at"] = None
 
     return normalized
 
@@ -2580,14 +2586,22 @@ def _completed_oneshot_retention_days() -> float:
 
 
 def _sweep_completed_oneshots(raw_jobs: List[Dict[str, Any]], now: datetime) -> bool:
-    """Prune terminal ``state == "completed"`` one-shot records past retention.
+    """Prune terminal one-shot records past retention.
 
     Mutates *raw_jobs* in place; returns True when anything was removed (the
-    caller persists). Only one-shot (``schedule.kind == "once"``) records in
-    the terminal completed state are candidates; recurring jobs and non-
-    terminal one-shots are never touched. Age is measured from
-    ``last_run_at`` — a completed record without a parseable ``last_run_at``
-    is kept (never guess a record into deletion).
+    caller persists). Only one-shot (``schedule.kind == "once"``) records
+    that are terminal — either the legacy ``state == "completed"`` shape (a
+    bare one-shot with no ``repeat`` limit) or a ``runtime_tombstone`` (a
+    repeat-exhausted one-shot; see mark_job_run/claim_dispatch) — are
+    candidates; recurring jobs and non-terminal one-shots are never touched.
+
+    Age is measured from ``last_run_at`` when it is set. A tombstoned wedged
+    dispatch (``claim_dispatch``'s dispatch_limit / the due-scan's
+    stale_dispatch_limit) never reaches ``mark_job_run``, so ``last_run_at``
+    is never written for it — fall back to the tombstone's own ``at``
+    timestamp (always set when the tombstone is created) instead. A record
+    with neither timestamp parseable is kept (never guess a record into
+    deletion).
     """
     retention_days = _completed_oneshot_retention_days()
     if retention_days <= 0:
@@ -2596,20 +2610,25 @@ def _sweep_completed_oneshots(raw_jobs: List[Dict[str, Any]], now: datetime) -> 
     removed = False
     for rj in list(raw_jobs):
         try:
-            if rj.get("state") != "completed":
+            if rj.get("state") != "completed" and not rj.get("runtime_tombstone"):
                 continue
             schedule = rj.get("schedule")
             kind = schedule.get("kind") if isinstance(schedule, dict) else None
             if kind != "once":
                 continue
-            last_run = rj.get("last_run_at")
-            if not isinstance(last_run, str):
+            age_source = rj.get("last_run_at")
+            if not isinstance(age_source, str):
+                tombstone = rj.get("runtime_tombstone")
+                age_source = (
+                    tombstone.get("at") if isinstance(tombstone, dict) else None
+                )
+            if not isinstance(age_source, str):
                 continue
             try:
-                last_run_dt = _ensure_aware(datetime.fromisoformat(last_run))
+                age_dt = _ensure_aware(datetime.fromisoformat(age_source))
             except Exception:
                 continue
-            if last_run_dt >= cutoff:
+            if age_dt >= cutoff:
                 continue
             raw_jobs.remove(rj)
             removed = True
@@ -2617,7 +2636,7 @@ def _sweep_completed_oneshots(raw_jobs: List[Dict[str, Any]], now: datetime) -> 
                 "Job '%s': pruning completed one-shot record "
                 "(finished %s, retention %.1f days)",
                 rj.get("name", rj.get("id", "?")),
-                last_run,
+                age_source,
                 retention_days,
             )
         except Exception:

@@ -225,13 +225,22 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     fixed = raw_stripped
     # 1. Strip trailing commas before } or ]
     fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
-    # 2. Close unclosed structures
-    open_curly = fixed.count('{') - fixed.count('}')
-    open_bracket = fixed.count('[') - fixed.count(']')
-    if open_curly > 0:
-        fixed += '}' * open_curly
-    if open_bracket > 0:
-        fixed += ']' * open_bracket
+    # 2. Close unclosed structures in LIFO order (innermost opened first).
+    #    Naive counting (append all '}' then all ']') produces invalid JSON
+    #    for nested cases like '{"a": [1,2' -> '{"a": [1,2}]' (bracket
+    #    closed after brace). Track the opening stack so the last-opened
+    #    delimiter is closed first. Found by behavioral test 2026-08-03.
+    stack: list[str] = []
+    for ch in fixed:
+        if ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in ("}", "]"):
+            if stack and stack[-1] == ch:
+                stack.pop()
+    for closer in reversed(stack):
+        fixed += closer
     # 3. Remove excess closing braces/brackets (bounded to 50 iterations)
     for _ in range(50):
         try:

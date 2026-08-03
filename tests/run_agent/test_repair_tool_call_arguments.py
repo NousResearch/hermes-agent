@@ -30,6 +30,30 @@ class TestRepairToolCallArguments:
 
     # -- Stage 4: unclosed brackets --
 
+    def test_unclosed_single_brace(self):
+        result = _repair_tool_call_arguments('{"a": 1', "t")
+        assert json.loads(result) == {"a": 1}
+
+    def test_unclosed_single_bracket(self):
+        result = _repair_tool_call_arguments("[1,2", "t")
+        assert json.loads(result) == [1, 2]
+
+    def test_unclosed_nested_bracket_closed_lifo(self):
+        # Regression (2026-08-03): naive counting appended '}' before ']',
+        # producing '{"a": [1,2}]' (invalid) and falling back to '{}'.
+        # Closers must be appended in LIFO order — last opened, first closed.
+        result = _repair_tool_call_arguments('{"a": [1,2', "t")
+        assert result == '{"a": [1,2]}', f"got {result!r}"
+        assert json.loads(result) == {"a": [1, 2]}
+
+    def test_unclosed_nested_object_in_array_lifo(self):
+        result = _repair_tool_call_arguments('{"a": [1, {"b": 2', "t")
+        assert json.loads(result) == {"a": [1, {"b": 2}]}
+
+    def test_lifo_does_not_break_balanced_json(self):
+        result = _repair_tool_call_arguments('{"a": [1, 2]}', "t")
+        assert json.loads(result) == {"a": [1, 2]}
+
 
 
     # -- Stage 5: excess closing delimiters --

@@ -44,6 +44,7 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
             "HERMES_MAX_ITERATIONS",
             "HERMES_AGENT_TIMEOUT",
             "HERMES_AGENT_TIMEOUT_WARNING",
+            "HERMES_SESSION_STALL_TIMEOUT",
             "HERMES_GATEWAY_BUSY_INPUT_MODE",
             "HERMES_GATEWAY_BUSY_TEXT_MODE",
             "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT",
@@ -113,16 +114,19 @@ def test_config_gateway_timeout_wins_over_stale_env(hermes_home: Path) -> None:
     _write_config(hermes_home, agent_cfg={
         "gateway_timeout": 1800,
         "gateway_timeout_warning": 900,
+        "session_stall_timeout": 300,
     })
     _write_env(hermes_home, {
         "HERMES_AGENT_TIMEOUT": "60",
         "HERMES_AGENT_TIMEOUT_WARNING": "30",
+        "HERMES_SESSION_STALL_TIMEOUT": "15",
     })
 
     env = _run_gateway_import(hermes_home, initial_env={})
 
     assert env.get("HERMES_AGENT_TIMEOUT") == "1800"
     assert env.get("HERMES_AGENT_TIMEOUT_WARNING") == "900"
+    assert env.get("HERMES_SESSION_STALL_TIMEOUT") == "300"
 
 
 def test_config_platform_connect_timeout_supplies_env_when_unset(hermes_home: Path) -> None:

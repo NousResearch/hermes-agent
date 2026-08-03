@@ -327,6 +327,62 @@ class TestHTTP413Compression:
         assert result["final_response"] == "Recovered after compression"
 
 
+    def test_provider_context_limit_is_cached_before_retry_succeeds(self, agent):
+        """A confirmed limit survives when the recovery response omits usage."""
+        err_400 = Exception(
+            "Error code: 400 - {'error': {'message': "
+            "\"This model's maximum context length is 262144 tokens. "
+            "However, your messages resulted in 271877 tokens.\", 'code': 400}}"
+        )
+        err_400.status_code = 400
+        # NVIDIA-compatible endpoints can omit usage. Before the fix, caching
+        # happened only in the successful-response usage block, so this lost
+        # the provider-confirmed limit across a restart.
+        ok_resp = _mock_response(
+            content="Recovered without usage metadata",
+            finish_reason="stop",
+            usage=None,
+        )
+        agent.model = "deepseek-ai/deepseek-v4-pro"
+        agent.provider = "nvidia"
+        agent.base_url = "https://integrate.api.nvidia.com/v1"
+        agent.context_compressor.update_model(
+            model=agent.model,
+            context_length=1_000_000,
+            base_url=agent.base_url,
+            api_key=agent.api_key,
+            provider=agent.provider,
+            api_mode=agent.api_mode,
+        )
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("agent.conversation_loop.save_context_length") as mock_save,
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "compressed summary"}],
+                "compressed prompt",
+            )
+            result = agent.run_conversation(
+                "continue",
+                conversation_history=[
+                    {"role": "user", "content": "previous question"},
+                    {"role": "assistant", "content": "previous answer"},
+                ],
+            )
+
+        assert result["completed"] is True
+        mock_save.assert_called_once_with(
+            "deepseek-ai/deepseek-v4-pro",
+            "https://integrate.api.nvidia.com/v1",
+            262_144,
+        )
+
+
     def test_context_length_retry_rebuilds_request_after_compression(self, agent):
         """Retry must send the compressed transcript, not the stale oversized payload."""
         err_400 = Exception(
@@ -1132,5 +1188,3 @@ class TestOverflowWithCompactionDisabled:
         assert result.get("failed") is True
         assert result.get("compaction_disabled") is True
         assert "auto-compaction is disabled" in result["error"]
-
-

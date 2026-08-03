@@ -149,6 +149,19 @@ function validLock(lock, ownershipId) {
   )
 }
 
+function reusableWindowsLock(lock, state, profile, reuseToken, runtime) {
+  return Boolean(
+    state.alive &&
+    state.owned &&
+    lock.port > 0 &&
+    lock.profile === profile &&
+    reuseToken &&
+    lock.tokenFingerprint === fingerprintToken(reuseToken) &&
+    lock.hermesPath === runtime.hermesPath &&
+    lock.hermesHome === runtime.hermesHome
+  )
+}
+
 function assertCurrent(signal) {
   if (signal?.aborted) {
     const error: any = new Error('SSH bootstrap was cancelled.')
@@ -299,14 +312,7 @@ async function connectWindowsRemote(deps) {
       throw error
     }
 
-    const reusable =
-      state.alive &&
-      state.owned &&
-      lock.port > 0 &&
-      Boolean(reuseToken) &&
-      lock.tokenFingerprint === fingerprintToken(reuseToken) &&
-      lock.hermesPath === runtime.hermesPath &&
-      lock.hermesHome === runtime.hermesHome
+    const reusable = reusableWindowsLock(lock, state, profile, reuseToken, runtime)
 
     if (reusable) {
       const localPort = await pickLocalPort()
@@ -451,5 +457,6 @@ export {
   powerShellCommand,
   probeWindowsRemote,
   psLiteral,
+  reusableWindowsLock,
   validLock
 }

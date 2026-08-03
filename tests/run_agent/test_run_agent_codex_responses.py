@@ -260,6 +260,7 @@ def test_api_mode_uses_explicit_provider_when_codex(monkeypatch):
     )
     assert agent.api_mode == "codex_responses"
     assert agent.provider == "openai-codex"
+    assert agent._is_codex_backend() is False
 
 
 
@@ -607,10 +608,72 @@ def test_run_codex_stream_delivers_redacted_commentary_once(monkeypatch):
 
 
 
+def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fails(
+    monkeypatch, caplog
+):
+    """Regression test for issue #74310.
 
+    A transport error while draining the SSE iterator *after* a valid
+    ``response.completed`` has already been observed (and the response
+    object fully assembled) must NOT discard that response and retry with
+    a brand-new physical request -- that would silently duplicate an
+    already-billed inference. Only errors that occur BEFORE a terminal
+    event is captured should trigger the retry-with-new-request path.
+    """
+    import logging
 
+    import httpx
 
+    agent = _build_agent(monkeypatch)
 
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+
+    class _PostTerminalDroppingStream(_FakeCreateStream):
+        """Yields events normally, then raises only on the *next* pull --
+        i.e. after ``response.completed`` has already been consumed and the
+        event-driven parser has broken out of its loop."""
+
+        def __iter__(self):
+            yield from super().__iter__()
+            raise httpx.RemoteProtocolError("connection dropped during drain")
+
+    events = [
+        SimpleNamespace(type="response.output_item.done", item=message_item),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                status="completed",
+                usage=usage,
+                id="resp_post_terminal_1",
+            ),
+        ),
+    ]
+
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        return _PostTerminalDroppingStream(events)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+    # Only ONE physical request was ever opened -- the drain failure did not
+    # trigger a second call to responses.create(stream=True).
+    assert calls["count"] == 1
+    assert response.status == "completed"
+    assert response.usage is usage
+    assert response.id == "resp_post_terminal_1"
+    assert any(
+        "finalization" in record.message for record in caplog.records
+    )
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
@@ -623,6 +686,91 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["final_response"] == "OK"
     assert result["messages"][-1]["role"] == "assistant"
     assert result["messages"][-1]["content"] == "OK"
+
+
+def test_codex_preflight_defangs_harmony_tokens_before_and_after_middleware(monkeypatch):
+    """Both mutable request boundaries must reject literal Harmony wire tokens."""
+    agent = _build_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    token = f"<\x7cstart\x7c>"
+    captured = {}
+
+    def _request_middleware(request, **_context):
+        # Initial preflight runs before request middleware.
+        assert token not in str(request["input"])
+        replacement = dict(request)
+        replacement["instructions"] = "Inspect source containing " + token
+        replacement["input"] = [{
+            "type": "function_call_output",
+            "call_id": "call_poisoned",
+            "output": "source contains " + token,
+        }]
+        return SimpleNamespace(
+            payload=replacement,
+            original_payload=request,
+            changed=True,
+            trace=[],
+        )
+
+    def _execution_middleware(request, next_call, **_context):
+        # Request middleware can reintroduce a reserved token after initial
+        # preflight, so it must still be present before the dispatch chokepoint.
+        assert token in str(request)
+        return next_call(request)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.apply_llm_request_middleware",
+        _request_middleware,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.middleware.run_llm_execution_middleware",
+        _execution_middleware,
+    )
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Read " + token)
+
+    assert result["completed"] is True
+    assert token not in captured["instructions"]
+    assert token not in str(captured["input"])
+    assert "<｜start｜>" in captured["instructions"]
+
+
+def test_copilot_responses_preflight_preserves_harmony_tokens(monkeypatch):
+    """Other Responses-compatible providers remain byte-identical."""
+    agent = _build_copilot_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    token = f"<\x7cstart\x7c>"
+    captured = {}
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Read " + token)
+
+    assert result["completed"] is True
+    assert token in str(captured["input"])
+
+
+def test_codex_backend_detection_is_narrow(monkeypatch):
+    codex = _build_agent(monkeypatch)
+    copilot = _build_copilot_agent(monkeypatch)
+
+    assert codex._is_codex_backend() is True
+    assert copilot._is_codex_backend() is False
+
+    # Exact backend URL detection still works for an explicitly custom route.
+    setattr(codex, "provider", "custom")
+    assert codex._is_codex_backend() is True
+    setattr(codex, "api_mode", "chat_completions")
+    assert codex._is_codex_backend() is False
 
 
 def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
@@ -926,10 +1074,114 @@ def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_dif
 
 
 
+def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    rebuilt = {"kwargs": None}
+
+    class _ExistingClient:
+        pass
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return _RebuiltClient()
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_new_token", "GH_TOKEN"),
+    )
+    # The 401 refresh forces a fresh IDE-token exchange; mock it to a valid
+    # exchanged token so the test is deterministic and network-free.
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.evict_cached_exchanged_token",
+        lambda _raw: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        lambda _raw: ("tid=exchanged-ide-token", None),
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    agent.client = _ExistingClient()
+    ok = agent._try_refresh_copilot_client_credentials()
+
+    assert ok is True
+    # The old client is retired by _replace_primary_openai_client (release is
+    # deferred to GC on current main — no synchronous .close() contract).
+    # The freshly EXCHANGED IDE token — not the raw ghu_/gho_ token — goes on
+    # the wire, which is what fixes the "401 IDE token expired" recurrence.
+    assert rebuilt["kwargs"]["api_key"] == "tid=exchanged-ide-token"
+    assert rebuilt["kwargs"]["base_url"] == "https://api.githubcopilot.com"
+    assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "vscode-chat"
+    assert isinstance(agent.client, _RebuiltClient)
 
 
+def test_try_refresh_copilot_client_credentials_rebuilds_even_if_token_unchanged(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    rebuilt = {"count": 0}
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["count"] += 1
+        return _RebuiltClient()
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gh-token", "gh auth token"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.evict_cached_exchanged_token",
+        lambda _raw: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        lambda _raw: ("tid=fresh-exchanged", None),
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    ok = agent._try_refresh_copilot_client_credentials()
+
+    assert ok is True
+    assert rebuilt["count"] == 1
 
 
+def test_try_refresh_copilot_client_credentials_falls_back_when_exchange_unavailable(monkeypatch):
+    """If the IDE-token re-exchange itself fails (network blip), the refresh
+    still rebuilds the client on the resolved raw token rather than throwing —
+    clears stale client state and degrades gracefully."""
+    agent = _build_copilot_agent(monkeypatch)
+    rebuilt = {"kwargs": None}
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return _RebuiltClient()
+
+    def _boom(_raw):
+        raise RuntimeError("exchange endpoint unreachable")
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_raw_token", "GH_TOKEN"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.evict_cached_exchanged_token",
+        lambda _raw: None,
+    )
+    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token", _boom)
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    ok = agent._try_refresh_copilot_client_credentials()
+
+    assert ok is True
+    # Exchange failed → falls back to the resolved raw token, client still rebuilt.
+    assert rebuilt["kwargs"]["api_key"] == "gho_raw_token"
 
 
 def test_chat_messages_to_responses_input_uses_call_id_for_function_call(monkeypatch):

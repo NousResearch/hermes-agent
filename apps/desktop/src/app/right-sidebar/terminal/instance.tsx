@@ -12,7 +12,13 @@ import { useTerminalSession } from './use-terminal-session'
 
 // Absolute-stacked so inactive tabs keep layout size (a display:none host goes
 // 0×0 and renders garbled on re-show); visibility toggles which one is seen.
-const INSTANCE_CLASS = 'absolute inset-0 flex flex-col bg-(--ui-editor-surface-background) px-2 pb-2 pt-0'
+const INSTANCE_CLASS = 'absolute inset-0 flex flex-col bg-(--ui-terminal-surface-background) px-2 pb-2 pt-0'
+
+// xterm host. The screen/viewport overrides matter for the DOM renderer (the
+// WebGL fast-path paints the canvas from ITheme.background instead) — both
+// resolve to the same token, so the two renderers can't disagree.
+const HOST_CLASS =
+  'h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-terminal-surface-background)! [&_.xterm-viewport]:bg-(--ui-terminal-surface-background)!'
 
 interface TerminalInstanceProps {
   id: string
@@ -81,10 +87,7 @@ export function TerminalInstance({
       )}
       {/* Outer div paints the terminal inset; inner div is the xterm host so the
           canvas sizes to the content area and p-2 stays as terminal padding. */}
-      <div
-        className="h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-editor-surface-background)! [&_.xterm-viewport]:bg-(--ui-editor-surface-background)!"
-        ref={hostRef}
-      />
+      <div className={HOST_CLASS} ref={hostRef} />
     </div>
   )
 }
@@ -107,10 +110,7 @@ export function AgentTerminalInstance({ active, id, procId }: AgentTerminalInsta
       // routes ⌘W here and closes the focused agent tab (not a preview).
       data-terminal=""
     >
-      <div
-        className="h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-editor-surface-background)! [&_.xterm-viewport]:bg-(--ui-editor-surface-background)!"
-        ref={hostRef}
-      />
+      <div className={HOST_CLASS} ref={hostRef} />
     </div>
   )
 }

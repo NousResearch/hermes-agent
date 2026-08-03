@@ -1236,8 +1236,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
             if agent.verbose_logging:
-                logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
-                logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
+                logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
+                logging.debug("Tool result (%d chars): %s", len(function_result), function_result)
 
         agent._current_tool = None
         _status_suffix = " (error)" if is_error else ""
@@ -1296,7 +1296,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     result=display_function_result,
                 )
             except Exception as cb_err:
-                logging.debug(f"Tool progress callback error: {cb_err}")
+                logging.debug("Tool progress callback error: %s", cb_err)
 
         # Print cute message per tool
         if agent._should_emit_quiet_tool_messages():
@@ -1320,7 +1320,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     tc.id, name, display_args, display_function_result,
                 )
             except Exception as cb_err:
-                logging.debug(f"Tool complete callback error: {cb_err}")
+                logging.debug("Tool complete callback error: %s", cb_err)
 
         if (
             risk_metadata is not None
@@ -1339,12 +1339,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug("Tool output risk callback error: %s", cb_err)
 
-        # ── Per-tool /steer drain ───────────────────────────────────
-        # Same as the sequential path: drain between each collected
-        # result so the steer lands as early as possible.
-        agent._apply_pending_steer_to_tool_results(messages, 1)
-
     # ── Per-turn aggregate budget enforcement ─────────────────────────
+    # Keep /steer pending until the final post-budget drain below.  The model
+    # cannot observe a partial batch, while an early drain can be discarded
+    # when aggregate budget enforcement replaces that tool result.
     num_tools = len(parsed_calls)
     if finalize and num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
@@ -1357,6 +1355,26 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if finalize and num_tools > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
+
+
+def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -> None:
+    """Append a cancelled ``tool`` result for each call in ``tool_calls``.
+
+    Used when a hard interrupt (KeyboardInterrupt / BaseException) aborts the
+    sequential executor mid-batch. Without this, the loop re-raises leaving the
+    assistant tool-call turn with no matching tool results — a message-role
+    alternation violation that malforms the next provider request. Mirrors the
+    cooperative-interrupt skip block and the concurrent path, both of which
+    already emit a result for every call_id.
+    """
+    for tc in tool_calls:
+        name = getattr(getattr(tc, "function", None), "name", "") or "tool"
+        messages.append(make_tool_result_message(
+            name,
+            f"[Tool execution cancelled — {name} was skipped due to {reason}]",
+            getattr(tc, "id", "") or "",
+            effect_disposition="none",
+        ))
 
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
@@ -1439,7 +1457,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 stage=f"invalid tool arguments {function_name}",
             ):
                 return
-            agent._apply_pending_steer_to_tool_results(messages, 1)
             continue
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
@@ -1799,6 +1816,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent.interrupt("keyboard interrupt")
                 except Exception:
                     pass
+                # Emit a tool result for THIS call and every remaining call in
+                # the batch before re-raising, so the assistant tool-call turn
+                # is never left without matching tool results (alternation).
+                _append_cancelled_tool_results(
+                    messages,
+                    assistant_message.tool_calls[i - 1:],
+                    reason="keyboard interrupt",
+                )
                 raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -1868,6 +1893,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent.interrupt("keyboard interrupt")
                 except Exception:
                     pass
+                # Emit a tool result for THIS call and every remaining call in
+                # the batch before re-raising (see interactive branch above).
+                _append_cancelled_tool_results(
+                    messages,
+                    assistant_message.tool_calls[i - 1:],
+                    reason="keyboard interrupt",
+                )
                 raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -1944,9 +1976,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
         if agent.verbose_logging:
-            logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
+            logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
             _log_result = _multimodal_text_summary(function_result)
-            logging.debug(f"Tool result ({len(_log_result)} chars): {_log_result}")
+            logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
         display_function_result = function_result
         function_result = maybe_persist_tool_result(
@@ -1988,7 +2020,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     result=display_function_result,
                 )
             except Exception as cb_err:
-                logging.debug(f"Tool progress callback error: {cb_err}")
+                logging.debug("Tool progress callback error: %s", cb_err)
 
         if not _execution_blocked and agent.tool_complete_callback:
             try:
@@ -2003,7 +2035,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     display_function_result,
                 )
             except Exception as cb_err:
-                logging.debug(f"Tool complete callback error: {cb_err}")
+                logging.debug("Tool complete callback error: %s", cb_err)
 
         if (
             risk_metadata is not None
@@ -2021,12 +2053,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
             except Exception as cb_err:
                 logging.debug("Tool output risk callback error: %s", cb_err)
-
-        # ── Per-tool /steer drain ───────────────────────────────────
-        # Drain pending steer BETWEEN individual tool calls so the
-        # injection lands as soon as a tool finishes — not after the
-        # entire batch.  The model sees it on the next API iteration.
-        agent._apply_pending_steer_to_tool_results(messages, 1)
 
         if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             if agent.verbose_logging:
@@ -2057,6 +2083,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             break
 
     # ── Per-turn aggregate budget enforcement ─────────────────────────
+    # Keep /steer pending until the final post-budget drain below.  The model
+    # only receives this batch after all calls finish, and an early drain can
+    # be discarded when aggregate budget enforcement replaces a tool result.
     num_tools_seq = len(assistant_message.tool_calls)
     if finalize and num_tools_seq > 0:
         enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)

@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+from agent.secret_scope import get_secret
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
@@ -177,7 +178,7 @@ def _resolve_managed_krea_gateway():
         logger.debug("Managed Krea gateway resolution unavailable: %s", exc)
         return None
 
-    if os.environ.get("KREA_API_KEY") and not prefers_gateway("image_gen"):
+    if get_secret("KREA_API_KEY") and not prefers_gateway("image_gen"):
         return None
 
     try:
@@ -233,7 +234,7 @@ class KreaImageGenProvider(ImageGenProvider):
         # Available with a direct Krea key OR via the managed Nous gateway
         # (Nous Subscription), so portal users with no Krea key can still
         # reach Krea 2 through the gateway.
-        return bool(os.environ.get("KREA_API_KEY")) or _managed_krea_gateway_ready()
+        return bool(get_secret("KREA_API_KEY")) or _managed_krea_gateway_ready()
 
     def list_models(self) -> List[Dict[str, Any]]:
         return [
@@ -338,7 +339,7 @@ class KreaImageGenProvider(ImageGenProvider):
             auth_token = managed.nous_user_token
         else:
             base_url = BASE_URL
-            auth_token = os.environ.get("KREA_API_KEY")
+            auth_token = get_secret("KREA_API_KEY")
             if not auth_token:
                 return error_response(
                     error=(

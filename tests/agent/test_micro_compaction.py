@@ -752,3 +752,64 @@ class TestMicroCompaction:
         assert not unstamped, (
             "splice must not strip _db_persisted from surviving messages"
         )
+
+
+class TestDefragFlushCursorInvalidation:
+    """Sibling of the finalize_turn pop site (#75170): defrag pops
+    _DB_PERSISTED_MARKER from the live marker dict in place, so the bounded
+    flush-scan cursor must be invalidated or the rewritten summary is
+    identity-skipped and never re-persisted."""
+
+    def _defrag_setup(self):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        cc = _compressor(summary="FRESH DEFRAGGED SUMMARY")
+        messages = _conversation(exchanges=8)
+        messages = cc._micro_compact(list(messages))
+        # Simulate an incremental flush having stamped the marker row.
+        for m in messages:
+            if m.get(COMPRESSED_SUMMARY_METADATA_KEY):
+                m[_DB_PERSISTED_MARKER] = True
+        cc._micro_compact_rolling_summary = "x" * 40_000  # force defrag
+        return cc, messages
+
+    def test_defrag_marker_pop_raises_invalidation_flag(self):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        cc, messages = self._defrag_setup()
+        assert cc._flush_scan_cursor_invalidated is False
+
+        result = cc._micro_compact(list(messages))
+
+        markers = _summary_markers(result)
+        assert len(markers) == 1
+        # The pop happened in place on the live dict...
+        assert not markers[0].get(_DB_PERSISTED_MARKER)
+        # ...so the compressor must flag the flush-scan cursor stale.
+        assert cc._flush_scan_cursor_invalidated is True
+
+    def test_no_defrag_no_flag(self):
+        cc = _compressor()
+        messages = _conversation(exchanges=8)
+        cc._micro_compact(list(messages))
+        assert cc._flush_scan_cursor_invalidated is False
+
+    def test_finalizer_consumes_flag_and_invalidates_agent_cursor(self):
+        """finalize_turn's micro-compaction block must translate the
+        compressor flag into agent._db_flush_scan_prefix = None (and reset
+        the flag) so the next flush re-examines the rewritten marker row."""
+        import inspect
+
+        from agent import turn_finalizer
+
+        src = inspect.getsource(turn_finalizer.finalize_turn)
+        micro_block = src.split("Post-turn micro-compaction", 1)[1]
+        micro_block = micro_block.split("agent._persist_session", 1)[0]
+        assert "_flush_scan_cursor_invalidated" in micro_block, (
+            "finalize_turn must consume the compressor's cursor-invalidation "
+            "flag raised by the defrag marker pop"
+        )
+        assert "agent._db_flush_scan_prefix = None" in micro_block, (
+            "finalize_turn must invalidate the bounded flush-scan cursor "
+            "when the defrag pop stripped a live marker's stamp"
+        )

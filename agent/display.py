@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
@@ -554,6 +555,32 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if max_len > 0 and len(preview) > max_len:
         preview = preview[:max_len - 3] + "..."
     return preview
+
+
+def get_tool_preview_url(
+    tool_name: str,
+    args: dict | None,
+    *,
+    fallback: str | None = None,
+) -> str | None:
+    """Return the uncapped HTTP(S) URL represented by a tool preview.
+
+    Rebuild the preview from the tool's primary display argument so callers
+    can recover information lost to an earlier display-length cap.  ``fallback``
+    covers callback paths that carry a preview but no argument dictionary.
+    """
+    expanded = build_tool_preview(tool_name, args, max_len=0)
+    for value in (expanded, fallback):
+        candidate = _display_url(value)
+        if not candidate:
+            continue
+        try:
+            parsed = urlsplit(candidate)
+        except ValueError:
+            continue
+        if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+            return candidate
+    return None
 
 
 # =========================================================================
@@ -1506,5 +1533,4 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
 

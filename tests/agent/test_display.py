@@ -10,6 +10,7 @@ from agent.display import (
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
+    get_tool_preview_url,
     redact_tool_args_for_display,
     set_tool_preview_max_len,
     _render_inline_unified_diff,
@@ -104,6 +105,25 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+
+class TestGetToolPreviewUrl:
+    def test_recovers_uncapped_web_extract_url(self):
+        url = "https://example.com/a/very/long/path/to/a/page"
+        set_tool_preview_max_len(20)
+
+        assert get_tool_preview_url("web_extract", {"urls": [url]}) == url
+
+    def test_uses_callback_preview_when_args_are_missing(self):
+        url = "https://example.com/page"
+
+        assert get_tool_preview_url("browser_navigate", None, fallback=url) == url
+
+    def test_rejects_non_url_preview(self):
+        assert get_tool_preview_url(
+            "web_search",
+            {"query": "how to parse a URL"},
+        ) is None
 
 
 class TestCuteToolMessagePreviewLength:
@@ -275,4 +295,3 @@ class TestBuildStatusPhrase:
             assert build_status_phrase("terminal", {"command": "ls"}) is None
         finally:
             set_friendly_tool_labels(True)
-

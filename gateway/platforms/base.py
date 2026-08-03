@@ -3095,11 +3095,37 @@ class BasePlatformAdapter(ABC):
         # progress bubbles compact — they persist as permanent messages).
         preview = event.preview
         if preview:
+            full_preview = preview
             cap = preview_max_len if preview_max_len > 0 else 40
             if len(preview) > cap:
                 preview = preview[:cap - 3] + "..."
+            preview = self.format_tool_preview(
+                preview,
+                full_preview=full_preview,
+                tool_name=event.tool_name,
+                args=event.args,
+            )
             return f"{emoji} {event.tool_name}: \"{preview}\""
         return f"{emoji} {event.tool_name}..."
+
+    def format_tool_preview(
+        self,
+        preview: str,
+        *,
+        full_preview: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        args: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Apply platform-native formatting to a compact tool preview.
+
+        The gateway calls this after imposing its display-length cap, while
+        still supplying the original preview and tool arguments.  Most
+        platforms should preserve the compact text unchanged.  Markdown
+        adapters may use the extra context to retain information that would
+        otherwise be lost during truncation (for example, Discord keeps a
+        truncated URL label linked to its full destination).
+        """
+        return preview
 
     @property
     def has_fatal_error(self) -> bool:

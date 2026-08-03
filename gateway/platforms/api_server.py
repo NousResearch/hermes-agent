@@ -3407,7 +3407,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = await self._ensure_session_db_async()
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
-        messages = await asyncio.to_thread(db.get_messages, resolved_id)
+        _, messages = await asyncio.to_thread(db.get_resume_conversations, resolved_id)
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,

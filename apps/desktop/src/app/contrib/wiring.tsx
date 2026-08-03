@@ -152,6 +152,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // intent counter here; the ref skips the initial mount value.
   const billingSettingsSeenRef = useRef(0)
   const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
+  // A slow transcript response must not overwrite a newer response for the
+  // same runtime session.  This is especially important after compaction,
+  // where the live stream and the stored display projection are briefly
+  // different views of the same turn.
+  const transcriptHydrationGenerationRef = useRef(new Map<string, number>())
   // Stable identity for the whole callback surface (see WiringActions). Mutated
   // in place each render so memoized surfaces never re-render on churn.
   const actionsRef = useRef<WiringActions | null>(null)
@@ -323,17 +328,58 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         return
       }
 
+      const generation = (transcriptHydrationGenerationRef.current.get(runtimeSessionId) ?? 0) + 1
+      transcriptHydrationGenerationRef.current.set(runtimeSessionId, generation)
+
       const storedProfile = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))?.profile
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
           const latest = await getSessionMessages(storedSessionId, storedProfile)
+
+          if (transcriptHydrationGenerationRef.current.get(runtimeSessionId) !== generation) {
+            return
+          }
+
+          if (!latest || !Array.isArray(latest.messages)) {
+            throw new Error('Hermes returned an invalid session transcript')
+          }
+
           const messages = toChatMessages(latest.messages)
+          let applied = false
+          let rejectedEmptyTranscript = false
           updateSessionState(
             runtimeSessionId,
-            state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
+            state => {
+              if (transcriptHydrationGenerationRef.current.get(runtimeSessionId) !== generation) {
+
+                return state
+              }
+
+              // A transient backend response must never clear a live
+              // transcript.  A genuinely new/empty session has no visible
+              // messages to protect, so that case may still hydrate to empty.
+              if (messages.length === 0 && state.messages.some(message => !message.hidden)) {
+                rejectedEmptyTranscript = true
+
+                return state
+              }
+
+              applied = true
+
+              return { ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }
+            },
             storedSessionId
           )
+
+          if (transcriptHydrationGenerationRef.current.get(runtimeSessionId) !== generation) {
+
+            return
+          }
+
+          if (rejectedEmptyTranscript || !applied) {
+            throw new Error('Hermes returned an empty session transcript')
+          }
 
           const restored = todosForHydration(latestSessionTodos(messages))
 
@@ -353,7 +399,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         }
       }
     },
-    [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
+    [activeSessionIdRef, selectedStoredSessionIdRef, transcriptHydrationGenerationRef, updateSessionState]
   )
 
   // Refresh the open messaging transcript (inbound platform turns arrive via

@@ -7890,16 +7890,21 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
     "substantive answer vanishes on switch" class of bug.
 
     This reconciles the persisted display lineage (candidate-inclusive, via
-    ``get_messages_as_conversation(..., include_ancestors=True)`` — the same
-    read the eager resume and REST paths use) with the fresh in-memory tail, so
-    all surfaces agree while a not-yet-flushed turn is still shown. Falls back to
-    the in-memory history when the DB/session_key is unavailable or the DB read
-    fails.
+    ``get_resume_conversations()`` — the same read the eager resume and REST
+    paths use) with the fresh in-memory tail, so all surfaces agree while a
+    not-yet-flushed turn is still shown. Falls back to the in-memory history
+    when the DB/session_key is unavailable or the DB read fails.
     """
     key = session.get("session_key")
     if db is not None and key:
         try:
-            display = db.get_messages_as_conversation(key, include_ancestors=True, include_row_ids=True)
+            get_resume_conversations = getattr(db, "get_resume_conversations", None)
+            if callable(get_resume_conversations):
+                _, display = get_resume_conversations(key)
+            else:  # Compatibility for lightweight gateway test/database adapters.
+                display = db.get_messages_as_conversation(
+                    key, include_ancestors=True, include_row_ids=True
+                )
             return _reconcile_display_with_live(display, in_memory_fallback)
         except Exception:
             logger.debug("live display projection read failed", exc_info=True)

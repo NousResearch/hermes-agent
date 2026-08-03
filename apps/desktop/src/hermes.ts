@@ -83,6 +83,10 @@ import type {
 export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+// Full transcripts can include a compressed lineage with many archived rows.
+// Keep this separate from the short default so a large but healthy backend is
+// not reported as unreachable while serializing the display projection.
+export const SESSION_MESSAGES_REQUEST_TIMEOUT_MS = 120_000
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
 // stream / message.complete events, NOT by the RPC return. A long turn (MoA
 // presets running references + aggregator in series, deep reasoning, large tool
@@ -631,7 +635,8 @@ export function getSessionMessages(id: string, profile?: string | null): Promise
 
   return window.hermesDesktop.api<SessionMessagesResponse>({
     ...(profile ? { profile } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
+    path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`,
+    timeoutMs: SESSION_MESSAGES_REQUEST_TIMEOUT_MS
   })
 }
 

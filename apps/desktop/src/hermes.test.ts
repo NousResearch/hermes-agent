@@ -19,6 +19,7 @@ import {
   listSessions,
   listSidebarSessions,
   resetSidebarBatchCapability,
+  SESSION_MESSAGES_REQUEST_TIMEOUT_MS,
   setApiRequestProfile,
   speakText,
   transcribeAudio
@@ -329,7 +330,8 @@ describe('Hermes REST helpers', () => {
 
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
-      profile: 'xiaoxuxu'
+      profile: 'xiaoxuxu',
+      timeoutMs: SESSION_MESSAGES_REQUEST_TIMEOUT_MS
     })
   })
 

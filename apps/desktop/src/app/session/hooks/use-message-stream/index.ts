@@ -466,6 +466,8 @@ export function useMessageStream({
   const completeAssistantMessage = useCallback(
     (sessionId: string, text: string, responsePreviewed?: boolean, failure?: { error: string; partial: boolean }) => {
       let shouldHydrate = false
+      const finalTextForHydration = renderMediaTags(text).trim()
+      const completionErrorForHydration = failure?.error ?? completionErrorText(finalTextForHydration)
 
       const completedState = updateSessionState(sessionId, state => {
         // Late completion from an already-cancelled turn: cancelRun has
@@ -613,8 +615,23 @@ export function useMessageStream({
 
       scheduleSessionsRefresh()
 
-      if (compactedTurnRef.current.delete(sessionId)) {
-        shouldHydrate = false
+      const completedCompaction = compactedTurnRef.current.delete(sessionId)
+
+      if (completedCompaction) {
+        // Compaction rewrites the model context while the live transcript may
+        // still contain only that model projection.  Re-read the durable,
+        // user-visible transcript after the turn settles.  Keep all existing
+        // failure/unresolved-tail guards: a failed turn must not replace its
+        // useful local error/partial state with a best-effort REST snapshot.
+        const hasInlineErrorAfterCompletion = completedState.messages.some(
+          message => message.role === 'assistant' && message.error && !message.hidden
+        )
+
+        const lastVisibleAfterCompletion = [...completedState.messages].reverse().find(message => !message.hidden)
+        const unresolvedUserTailAfterCompletion = lastVisibleAfterCompletion?.role === 'user'
+
+        shouldHydrate =
+          !completionErrorForHydration && !hasInlineErrorAfterCompletion && !unresolvedUserTailAfterCompletion
       }
 
       if (shouldHydrate) {

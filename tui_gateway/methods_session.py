@@ -2445,6 +2445,17 @@ def _(rid, params: dict) -> dict:
                 agent,
                 committed=True,
             )
+            # The in-memory history is the model projection. Use the shared
+            # persisted display projection for transcript replacement so manual
+            # /compress behaves exactly like session.resume.
+            display_messages = messages
+            try:
+                with _session_db(session) as db:
+                    display_session_id = session.get("session_key") or sid
+                    if db is not None and db.get_session(display_session_id):
+                        _, display_messages = db.get_resume_conversations(display_session_id)
+            except Exception:
+                logger.debug("manual compression display projection read failed", exc_info=True)
             return _ok(
                 rid,
                 {
@@ -2461,7 +2472,7 @@ def _(rid, params: dict) -> dict:
                     # raw tool results can contain large or sensitive payloads
                     # that belong in persisted history, not the transcript
                     # replacement response.
-                    "messages": _history_to_messages(messages),
+                    "messages": _history_to_messages(display_messages),
                 },
             )
         finally:
@@ -2583,7 +2594,42 @@ def _(rid, params: dict) -> dict:
             return _db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
         with session["history_lock"]:
-            history = [dict(msg) for msg in session.get("history", [])]
+            in_memory_history = [
+                dict(msg)
+                for msg in list(session.get("display_history_prefix") or []) + list(session.get("history", []))
+                if isinstance(msg, dict)
+            ]
+
+        def _visible_branch_history(messages):
+            visible = []
+            for message in messages or []:
+                if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
+                    continue
+                content = _coerce_message_text(message.get("content")).strip()
+                if not content:
+                    continue
+                copied = {"role": message["role"], "content": content}
+                if message.get("timestamp") is not None:
+                    copied["timestamp"] = message["timestamp"]
+                visible.append(copied)
+            return visible
+
+        # The live session history is the model projection. After compaction it
+        # may contain only a summary and the protected tail, while the persisted
+        # display projection still contains the complete visible transcript. A
+        # branch must snapshot the latter; otherwise the child permanently loses
+        # every turn archived before the fork.
+        history = None
+        get_resume_conversations = getattr(db, "get_resume_conversations", None)
+        if callable(get_resume_conversations):
+            try:
+                _, display_history = get_resume_conversations(old_key)
+                display_history = _reconcile_display_with_live(display_history, in_memory_history)
+                history = _visible_branch_history(display_history)
+            except Exception:
+                logger.debug("branch display projection read failed", exc_info=True)
+        if not history:
+            history = _visible_branch_history(in_memory_history)
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
         count = params.get("count")

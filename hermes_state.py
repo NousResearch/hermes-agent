@@ -144,6 +144,38 @@ def _scrub_surrogates(value: Any) -> Any:
     return _sanitize_surrogates(value) if isinstance(value, str) else value
 
 
+def _canonical_message_value(value: Any) -> str:
+    """Return a stable comparison form for a persisted message field."""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _message_signature(message: Dict[str, Any]) -> tuple[str, ...]:
+    """Identify a replayed compacted row without using content alone."""
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, str):
+        try:
+            tool_calls = json.loads(tool_calls)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return tuple(
+        _canonical_message_value(message.get(key))
+        for key in (
+            "role",
+            "content",
+            "tool_call_id",
+            "tool_calls",
+            "tool_name",
+            "effect_disposition",
+            "finish_reason",
+        )
+    )
+
+
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
     """A session's workspace grouping key: its git repo root when known, else
     its cwd.
@@ -6496,6 +6528,65 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
 
         def _do(conn):
+            active_rows = conn.execute(
+                "SELECT role, content, tool_call_id, tool_calls, tool_name, "
+                "effect_disposition, finish_reason, api_content "
+                "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            replayed_counts: Dict[tuple[str, ...], int] = {}
+            for row in active_rows:
+                stored_tool_calls = row["tool_calls"]
+                if isinstance(stored_tool_calls, str):
+                    try:
+                        stored_tool_calls = json.loads(stored_tool_calls)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                replayed = {
+                    "role": row["role"],
+                    "content": self._decode_content(row["content"]),
+                    "tool_call_id": row["tool_call_id"],
+                    "tool_calls": stored_tool_calls,
+                    "tool_name": row["tool_name"],
+                    "effect_disposition": row["effect_disposition"],
+                    "finish_reason": row["finish_reason"],
+                    "api_content": row["api_content"],
+                }
+                signature = _message_signature(replayed)
+                replayed_counts[signature] = replayed_counts.get(signature, 0) + 1
+
+            # The model snapshot contains a summary and usually copies protected
+            # head/tail rows. Keep those rows in the active model projection, but
+            # make their display-only status explicit before persistence so the
+            # archived originals can be rendered exactly once.
+            try:
+                from agent.context_compressor import (
+                    COMPRESSED_SUMMARY_METADATA_KEY,
+                    ContextCompressor,
+                )
+            except ImportError:  # pragma: no cover - scaffold/import bootstrap
+                COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+                ContextCompressor = None
+
+            prepared_messages = []
+            for message in compacted_messages:
+                prepared = dict(message)
+                is_summary = bool(prepared.get(COMPRESSED_SUMMARY_METADATA_KEY))
+                if not is_summary and ContextCompressor is not None:
+                    is_summary = (
+                        ContextCompressor.classify_summary_content(
+                            prepared.get("content")
+                        )
+                        == "standalone"
+                    )
+                signature = _message_signature(prepared)
+                if is_summary:
+                    prepared["display_kind"] = "hidden"
+                elif replayed_counts.get(signature, 0) > 0:
+                    prepared["display_kind"] = "hidden"
+                    replayed_counts[signature] -= 1
+                prepared_messages.append(prepared)
+
             # Soft-archive the live turns: active=0 hides them from the live
             # context load, compacted=1 marks them as "summarized away" (vs
             # rewind/undo's active=0+compacted=0, which means "user took it
@@ -6508,7 +6599,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (session_id,),
             )
             inserted, tool_calls_total = self._insert_message_rows(
-                conn, session_id, compacted_messages
+                conn, session_id, prepared_messages
             )
             # message_count / tool_call_count reflect the LIVE (active) set —
             # the archived rows are still on disk but not part of the live count.
@@ -6800,7 +6891,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         verbatim.
         """
         session_ids = [session_id]
-        if include_ancestors:
+        if include_ancestors and not self._is_explicit_branch_session(session_id):
             session_ids = self._session_lineage_root_to_tip(session_id)
 
         active_clause = "" if include_inactive else " AND active = 1"
@@ -6836,7 +6927,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
-        "api_content, display_kind, display_metadata"
+        "api_content, display_kind, display_metadata, active, compacted"
     )
 
     def _rows_to_conversation(
@@ -6847,6 +6938,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_ancestors: bool,
         repair_alternation: bool,
         include_row_ids: bool = False,
+        include_storage_state: bool = False,
     ) -> List[Dict[str, Any]]:
         """Decode fetched message rows into the OpenAI conversation format.
 
@@ -6861,6 +6953,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
+            if include_storage_state:
+                msg["_db_active"] = bool(row["active"])
+                msg["_db_compacted"] = bool(row["compacted"])
             # Durable per-message identity for surfaces that need to address a
             # specific row later (desktop reactions). OPT-IN: only the gateway
             # asks for it — every other consumer (ACP restore, export,
@@ -6975,21 +7070,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         - ``model_history`` — the tip session's active rows, alternation-repaired
           (the live-replay working conversation). Equivalent to
           ``get_messages_as_conversation(session_id, repair_alternation=True)``.
-        - ``display_history`` — the full lineage (ancestors → tip), verbatim, with
-          replayed-user dedup. Equivalent to
-          ``get_messages_as_conversation(session_id, include_ancestors=True)``.
+        - ``display_history`` — the full compression lineage (ancestors → tip),
+          verbatim, with replayed-user dedup. Explicit ``/branch`` sessions are
+          excluded from this lineage because their own rows already contain the
+          copied transcript; including the live parent's rows would let messages
+          written to the original after the fork leak into the branch.
 
         The display fetch already reads a superset of the model fetch (the tip
         rows are part of the lineage), so serving both from one lineage SELECT
         halves the resume's DB work versus two separate calls, with byte-identical
         output (see test_get_resume_conversations_matches_separate_reads).
         """
-        session_ids = self._session_lineage_root_to_tip(session_id)
+        session_ids = (
+            [session_id]
+            if self._is_explicit_branch_session(session_id)
+            else self._session_lineage_root_to_tip(session_id)
+        )
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
                 f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} "
-                f"FROM messages WHERE session_id IN ({placeholders}) AND active = 1 "
+                f"FROM messages WHERE session_id IN ({placeholders}) "
+                "AND (active = 1 OR compacted = 1) "
                 # ORDER BY id (insertion order) — see get_messages_as_conversation
                 # for why timestamp ordering is unsafe.
                 "ORDER BY id",
@@ -6999,7 +7101,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # Tip rows are exactly the model-fed set (get_messages_as_conversation
         # with session_ids=[session_id]); filtering the lineage fetch preserves
         # their relative id order.
-        tip_rows = [r for r in rows if r["session_id"] == session_id]
+        tip_rows = [
+            row
+            for row in rows
+            if row["session_id"] == session_id and row["active"]
+        ]
         model_history = self._rows_to_conversation(
             tip_rows,
             session_id=session_id,
@@ -7013,8 +7119,95 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_ancestors=True,
             repair_alternation=False,
             include_row_ids=True,
+            include_storage_state=True,
         )
+        display_history = self._filter_display_history(display_history)
         return model_history, display_history
+
+    @staticmethod
+    def _filter_display_history(
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Remove model-only compaction rows from a user-visible projection."""
+        try:
+            from agent.context_compressor import ContextCompressor
+        except ImportError:  # pragma: no cover - scaffold/import bootstrap
+            ContextCompressor = None
+
+        def _prepare_display_message(message):
+            if message.get("display_kind") == "hidden":
+                return None
+            content = message.get("content")
+            if (
+                message.get("role") == "user"
+                and isinstance(content, str)
+                and content.lstrip().startswith("[System:")
+            ):
+                return None
+            if ContextCompressor is not None:
+                if (
+                    ContextCompressor.classify_summary_content(message.get("content"))
+                    == "standalone"
+                ):
+                    return None
+                message = ContextCompressor._strip_context_summary_handoff_message(message)
+                if message is None:
+                    return None
+            return message
+
+        prepared = []
+        for index, message in enumerate(messages):
+            display_message = _prepare_display_message(message)
+            if display_message is not None:
+                prepared.append((index, display_message))
+
+        # Newer compaction rows carry an explicit hidden marker. Only use the
+        # signature-based fallback for old rows with no such marker; otherwise
+        # a legitimate post-compaction prompt that repeats an archived prompt
+        # could still be mistaken for a replay copy.
+        has_explicit_replay_marker = any(
+            message.get("_db_active") and message.get("display_kind") == "hidden"
+            for message in messages
+        )
+        archived_signatures = [
+            _message_signature(message)
+            for _, message in prepared
+            if message.get("_db_compacted") and not message.get("_db_active")
+        ]
+        active_candidates = [
+            (index, message)
+            for index, message in prepared
+            if message.get("_db_active") and not message.get("_db_compacted")
+        ]
+        replay_indexes = set()
+        if not has_explicit_replay_marker and archived_signatures and active_candidates:
+            active_signatures = [
+                _message_signature(message) for _, message in active_candidates
+            ]
+            longest_match = 0
+            for start in range(len(archived_signatures)):
+                match_length = 0
+                while (
+                    match_length < len(active_signatures)
+                    and start + match_length < len(archived_signatures)
+                    and active_signatures[match_length]
+                    == archived_signatures[start + match_length]
+                ):
+                    match_length += 1
+                longest_match = max(longest_match, match_length)
+            # A single matching row is ambiguous with a new repeated prompt.
+            # Legacy replay suppression is safe only when it identifies a
+            # multi-row contiguous snapshot block.
+            if longest_match >= 2:
+                replay_indexes = {
+                    index for index, _ in active_candidates[:longest_match]
+                }
+
+        return [
+            message
+            for index, message in prepared
+            if index not in replay_indexes
+        ]
 
     def get_ancestor_display_prefix(self, session_id: str) -> List[Dict[str, Any]]:
         """Return the ancestor-only display messages for a session lineage.
@@ -7036,6 +7229,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         returns ONLY the genuine ancestor messages, identified by
         ``session_id != tip_session_id``. (#65919)
         """
+        if self._is_explicit_branch_session(session_id):
+            return []
+
         session_ids = self._session_lineage_root_to_tip(session_id)
         if len(session_ids) <= 1:
             return []
@@ -7043,19 +7239,48 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
                 f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} "
-                f"FROM messages WHERE session_id IN ({placeholders}) AND active = 1 "
+                f"FROM messages WHERE session_id IN ({placeholders}) "
+                "AND (active = 1 OR compacted = 1) "
                 "ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
         ancestor_rows = [r for r in rows if r["session_id"] != session_id]
         if not ancestor_rows:
             return []
-        return self._rows_to_conversation(
+        return self._filter_display_history(self._rows_to_conversation(
             ancestor_rows,
             session_id=session_id,
             include_ancestors=True,
             repair_alternation=False,
-        )
+            include_storage_state=True,
+        ))
+
+    def _is_explicit_branch_session(self, session_id: str) -> bool:
+        """Return whether *session_id* is a copied user-facing branch.
+
+        Branches and compression continuations both use ``parent_session_id``,
+        but they have different history semantics: a branch owns a copied
+        transcript, while a compression continuation needs its ended parent's
+        archived rows for display. The durable ``_branched_from`` marker is the
+        existing discriminator written by all branch creation paths.
+        """
+        if not session_id:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        raw_config = row["model_config"] if hasattr(row, "keys") else row[0]
+        if not raw_config:
+            return False
+        try:
+            config = json.loads(raw_config) if isinstance(raw_config, str) else raw_config
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return isinstance(config, dict) and bool(config.get("_branched_from"))
 
     def get_conversation_root(self, session_id: str) -> str:
         """Return the ROOT id of *session_id*'s lineage chain.

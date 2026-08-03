@@ -312,6 +312,29 @@ describe('toChatMessages', () => {
     ])
   })
 
+  it('keeps archived conversation turns while hiding the compaction handoff', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'archived user turn', timestamp: 1 },
+      { role: 'assistant', content: 'archived assistant turn', timestamp: 2 },
+      {
+        role: 'assistant',
+        content: '[CONTEXT COMPACTION — REFERENCE ONLY] model-only summary',
+        display_kind: 'hidden',
+        timestamp: 3
+      },
+      { role: 'user', content: 'latest user turn', timestamp: 4 },
+      { role: 'assistant', content: 'latest assistant turn', timestamp: 5 }
+    ])
+
+    expect(messages.map(chatMessageText)).toEqual([
+      'archived user turn',
+      'archived assistant turn',
+      'latest user turn',
+      'latest assistant turn'
+    ])
+    expect(messages.map(chatMessageText).join(' ')).not.toContain('model-only summary')
+  })
+
   // A backend older than this app serves display_metadata as unparsed JSON
   // text. Indexing into that string used to throw and fail the whole resume.
   it.each([

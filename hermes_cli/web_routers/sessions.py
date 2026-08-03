@@ -598,9 +598,20 @@ async def get_session_messages(
             if not sid:
                 return None
             sid = db.resolve_resume_session_id(sid)
-            # Clamp limit to prevent abuse (max 500 per page)
+            # Clamp limit to prevent abuse (max 500 per page).  The desktop
+            # transcript is a user-visible projection, not the model's active
+            # context: after compaction the old turns are `active=0,
+            # compacted=1` and must remain visible while the summary stays
+            # model-only.  Reading get_messages() here silently dropped that
+            # archived history and exposed the compaction handoff instead.
             _limit = min(limit, 500) if limit is not None else None
-            return sid, _limit, db.get_messages(sid, limit=_limit, offset=offset)
+            _, display_messages = db.get_resume_conversations(sid)
+            if _limit is None and offset == 0:
+                messages = display_messages
+            else:
+                end = None if _limit is None else offset + _limit
+                messages = display_messages[offset:end]
+            return sid, _limit, messages
         finally:
             db.close()
 

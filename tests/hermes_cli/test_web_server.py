@@ -1582,6 +1582,45 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["pagination"]["limit"] == 500
 
+    def test_get_session_messages_returns_visible_compacted_lineage(self):
+        """Desktop transcript reads must keep archived turns, not just model rows."""
+        from agent.context_compressor import SUMMARY_PREFIX
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="visible-compacted-lineage", source="tui")
+            original = [
+                ("user", "VISIBLE_HEAD"),
+                ("assistant", "HEAD_REPLY"),
+                ("user", "VISIBLE_TAIL"),
+                ("assistant", "TAIL_REPLY"),
+            ]
+            for role, content in original:
+                db.append_message("visible-compacted-lineage", role=role, content=content)
+
+            db.archive_and_compact(
+                "visible-compacted-lineage",
+                [
+                    {
+                        "role": "assistant",
+                        "content": f"{SUMMARY_PREFIX}\nsummary",
+                        "_compressed_summary": True,
+                    },
+                    {"role": "user", "content": "VISIBLE_TAIL"},
+                    {"role": "assistant", "content": "TAIL_REPLY"},
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/visible-compacted-lineage/messages")
+
+        assert resp.status_code == 200
+        assert [message["content"] for message in resp.json()["messages"]] == [
+            content for _, content in original
+        ]
+
 
 
 

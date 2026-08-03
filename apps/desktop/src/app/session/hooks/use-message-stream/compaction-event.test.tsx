@@ -13,6 +13,12 @@ import { useMessageStream } from './index'
 const SID = 'session-1'
 const OTHER_SID = 'session-2'
 let handleEvent: ((event: RpcEvent) => void) | null = null
+type HydrateFromStoredSession = (
+  attempts?: number,
+  storedSessionId?: string | null,
+  runtimeSessionId?: string | null
+) => Promise<void>
+let hydrateFromStoredSession: ReturnType<typeof vi.fn<HydrateFromStoredSession>>
 
 function Harness() {
   const activeSessionIdRef = useRef<string | null>(SID)
@@ -21,7 +27,7 @@ function Harness() {
 
   const stream = useMessageStream({
     activeSessionIdRef,
-    hydrateFromStoredSession: vi.fn(async () => undefined),
+    hydrateFromStoredSession,
     queryClient: queryClientRef.current,
     refreshHermesConfig: vi.fn(async () => undefined),
     refreshSessions: vi.fn(async () => undefined),
@@ -54,6 +60,7 @@ function emit(type: RpcEvent['type'], payload: RpcEvent['payload'] = {}) {
 describe('useMessageStream compaction lifecycle', () => {
   beforeEach(() => {
     handleEvent = null
+    hydrateFromStoredSession = vi.fn<HydrateFromStoredSession>(async () => undefined)
     $compactingSessions.set({})
   })
 
@@ -88,5 +95,17 @@ describe('useMessageStream compaction lifecycle', () => {
     emit('status.update', { kind: 'compacted' })
 
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
+  })
+
+  it('hydrates the durable display transcript after a compacted turn completes', async () => {
+    await mountStream()
+
+    emit('message.start')
+    emit('status.update', { kind: 'compacting' })
+    emit('status.update', { kind: 'compacted' })
+    emit('message.delta', { text: 'continued' })
+    emit('message.complete', { text: 'continued answer' })
+
+    await waitFor(() => expect(hydrateFromStoredSession).toHaveBeenCalledWith(3, null, SID))
   })
 })

@@ -76,6 +76,43 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 
 
 @pytest.mark.asyncio
+async def test_session_messages_returns_complete_visible_compacted_history(adapter, session_db):
+    session_id = session_db.create_session("compacted-api-session", "api_server")
+    original = [
+        ("user", "API_FIRST"),
+        ("assistant", "API_FIRST_REPLY"),
+        ("user", "API_MIDDLE"),
+        ("assistant", "API_MIDDLE_REPLY"),
+        ("user", "API_TAIL"),
+        ("assistant", "API_TAIL_REPLY"),
+    ]
+    for role, content in original:
+        session_db.append_message(session_id, role=role, content=content)
+    session_db.archive_and_compact(
+        session_id,
+        [
+            {
+                "role": "assistant",
+                "content": "[CONTEXT COMPACTION — REFERENCE ONLY] API summary",
+                "_compressed_summary": True,
+            },
+            {"role": "user", "content": "API_TAIL"},
+            {"role": "assistant", "content": "API_TAIL_REPLY"},
+        ],
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert resp.status == 200, await resp.text()
+        payload = await resp.json()
+
+    assert [message["content"] for message in payload["data"]] == [
+        content for _, content in original
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")

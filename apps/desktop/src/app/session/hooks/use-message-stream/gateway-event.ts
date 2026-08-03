@@ -1078,7 +1078,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           compactedTurnRef.current.add(sessionId)
         } else if (sessionId && payload?.kind === 'compacted') {
           setSessionCompacting(sessionId, false)
-          compactedTurnRef.current.delete(sessionId)
+          // Keep the marker until message.complete.  Compaction completes
+          // inside the current turn; later deltas can resume immediately, and
+          // the turn-complete edge uses this marker to rehydrate the durable
+          // user-visible transcript instead of leaving the model projection on
+          // screen. message.start for a genuinely new turn clears stale state.
         } else if (sessionId && payload?.kind === 'process') {
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.

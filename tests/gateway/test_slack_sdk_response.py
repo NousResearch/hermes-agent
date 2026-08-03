@@ -10,7 +10,9 @@ exercises the SDK-shaped response as well.
 """
 
 import asyncio
+import contextlib
 import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -64,6 +66,7 @@ _slack_mod.SLACK_AVAILABLE = True
 from plugins.platforms.slack.adapter import (  # noqa: E402
     SlackAdapter,
     _slack_response_payload,
+    _standalone_send,
     _standalone_upload_file,
 )
 
@@ -248,3 +251,134 @@ class TestSendPaths:
             _standalone_upload_file(client, "C_GEN", str(media))
         )
         assert "not_in_channel" in result["error"]
+
+
+class TestHandoffThread:
+    """``create_handoff_thread`` anchors a session on the seed message's ts."""
+
+    @response_shape
+    def test_seed_ts_becomes_the_thread_id(self, make_response):
+        """Without the ts every handoff send lands in the channel, not a thread."""
+        adapter = _make_adapter()
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock(
+            return_value=make_response({"ok": True, "ts": "1700000000.000100"})
+        )
+        adapter._get_client = lambda *_a, **_kw: client
+        thread_id = asyncio.run(adapter.create_handoff_thread("C_GEN", "review"))
+        assert thread_id == "1700000000.000100"
+
+    def test_unreadable_response_yields_no_thread(self):
+        """Callers must still see a clean ``None`` for genuinely opaque replies."""
+        adapter = _make_adapter()
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock(return_value=object())
+        adapter._get_client = lambda *_a, **_kw: client
+        assert asyncio.run(adapter.create_handoff_thread("C_GEN", "review")) is None
+
+
+# ── standalone (out-of-process cron/send_message) delivery ─────────────────
+
+
+@contextlib.contextmanager
+def _fake_slack_sdk(client):
+    """Make ``from slack_sdk.web.async_client import AsyncWebClient`` yield ``client``."""
+    sdk = ModuleType("slack_sdk")
+    web = ModuleType("slack_sdk.web")
+    async_client = ModuleType("slack_sdk.web.async_client")
+    async_client.AsyncWebClient = MagicMock(return_value=client)
+    sdk.web = web
+    web.async_client = async_client
+
+    modules = {
+        "slack_sdk": sdk,
+        "slack_sdk.web": web,
+        "slack_sdk.web.async_client": async_client,
+    }
+    old = {name: sys.modules.get(name) for name in modules}
+    sys.modules.update(modules)
+    try:
+        yield
+    finally:
+        for name, prev in old.items():
+            if prev is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = prev
+
+
+class TestStandaloneSendMediaPath:
+    """``_standalone_send``'s media branch reads two chat.postMessage replies."""
+
+    @response_shape
+    def test_text_alongside_media_reports_its_ts(self, make_response, tmp_path):
+        """The text post's ts is the message_id cron threads follow-ups onto."""
+        media = tmp_path / "report.pdf"
+        media.write_bytes(b"%PDF-1.4 x")
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock(
+            return_value=make_response({"ok": True, "ts": "111.222"})
+        )
+        client.files_upload_v2 = AsyncMock(
+            return_value=make_response({"ok": True, "file": {}})
+        )
+        with _fake_slack_sdk(client):
+            result = asyncio.run(
+                _standalone_send(
+                    SimpleNamespace(token="xoxb-test", extra={}),
+                    "C_GEN",
+                    "Here is the report",
+                    media_files=[(str(media), False)],
+                )
+            )
+        assert result["success"] is True
+        assert result["message_id"] == "111.222"
+
+    @response_shape
+    def test_text_post_error_is_surfaced(self, make_response, tmp_path):
+        """A rejected text post must fail loudly instead of silently uploading."""
+        media = tmp_path / "report.pdf"
+        media.write_bytes(b"%PDF-1.4 x")
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock(
+            return_value=make_response({"ok": False, "error": "channel_not_found"})
+        )
+        client.files_upload_v2 = AsyncMock()
+        with _fake_slack_sdk(client):
+            result = asyncio.run(
+                _standalone_send(
+                    SimpleNamespace(token="xoxb-test", extra={}),
+                    "C_GEN",
+                    "Here is the report",
+                    media_files=[(str(media), False)],
+                )
+            )
+        assert "channel_not_found" in result["error"]
+        client.files_upload_v2.assert_not_awaited()
+
+    @response_shape
+    def test_caption_fallback_delivers_when_media_is_missing(
+        self, make_response, tmp_path
+    ):
+        """Caption-only delivery was reported as 'nothing deliverable' instead."""
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock(
+            return_value=make_response({"ok": True, "ts": "555.666"})
+        )
+        client.files_upload_v2 = AsyncMock()
+        with _fake_slack_sdk(client):
+            result = asyncio.run(
+                _standalone_send(
+                    SimpleNamespace(token="xoxb-test", extra={}),
+                    "C_GEN",
+                    "",
+                    media_files=[(str(tmp_path / "gone.pdf"), False)],
+                    caption="Here is the report",
+                )
+            )
+        assert result["success"] is True
+        assert result["message_id"] == "555.666"
+        client.chat_postMessage.assert_awaited_once()
+        assert (
+            client.chat_postMessage.await_args.kwargs["text"] == "Here is the report"
+        )

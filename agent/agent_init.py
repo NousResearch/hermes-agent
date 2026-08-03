@@ -1580,6 +1580,17 @@ def init_agent(
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
     }
+    # Persist a process-scoped --yolo launch into the session row so a later
+    # `hermes --resume <id>` can restore the bypass (CLI resume paths read
+    # model_config.yolo_mode back via SessionDB.session_yolo_enabled).
+    # Session-scoped /yolo toggles persist separately through
+    # SessionDB.set_session_yolo at toggle time.
+    try:
+        from tools.approval import _YOLO_MODE_FROZEN
+        if _YOLO_MODE_FROZEN:
+            agent._session_init_model_config["yolo_mode"] = True
+    except Exception:
+        pass
     
     # In-memory todo list for task planning (one per agent/session)
     from tools.todo_tool import TodoStore

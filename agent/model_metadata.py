@@ -836,7 +836,10 @@ def _localhost_to_ipv4(url: str) -> str:
     ``http://localhost...`` (e.g. ``?upstream=http://localhost:11434``)
     passes through untouched.
     """
-    if not url:
+    if not url or not isinstance(url, str):
+        # Non-string values (test doubles, lazily-resolved config objects)
+        # previously flowed through these call sites untouched — keep that
+        # contract; re.sub would raise TypeError.
         return url
     return re.sub(
         r"^(https?://)localhost(?=[:/]|$)",

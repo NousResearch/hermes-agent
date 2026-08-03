@@ -1553,3 +1553,27 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["source"] == "pool:lmstudio-pool"
     assert resolved["provider"] == "custom"
     assert resolved["requested_provider"] == "custom:lmstudio"
+
+
+@pytest.mark.parametrize(
+    ("requested", "blocked_provider"),
+    [
+        ("anthropic", "anthropic"),
+        ("azure-foundry", "azure-foundry"),
+        ("vertex", "vertex"),
+        ("custom:local", "custom"),
+        ("ollama", "custom"),
+    ],
+)
+def test_shortcut_paths_cannot_bypass_disabled_provider_plugin(
+    monkeypatch,
+    requested,
+    blocked_provider,
+):
+    monkeypatch.setattr(
+        "providers.is_provider_plugin_active",
+        lambda provider_id: provider_id != blocked_provider,
+    )
+
+    with pytest.raises(rp.AuthError, match="disabled by plugin configuration"):
+        rp.resolve_runtime_provider(requested=requested)

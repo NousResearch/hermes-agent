@@ -11,6 +11,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -23,11 +25,15 @@ def _clear_provider_caches():
     _pkg._ALIASES.clear()
     _pkg._PROVIDER_LIST_CACHE = None
     _pkg._discovered = False
+    _pkg._ACTIVATION_STATE = None
+    _pkg._DISCOVERY_FINGERPRINT = None
+    _pkg._IMPORTED_PROVIDER_MODULES.clear()
     # Evict any cached plugin modules so the next import re-executes.
     for mod in list(sys.modules.keys()):
         if (
             mod.startswith("plugins.model_providers")
             or mod.startswith("_hermes_user_provider")
+            or mod.startswith("_hermes_project_provider")
         ):
             del sys.modules[mod]
 
@@ -105,6 +111,10 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
         "version: 0.0.1\n"
         "description: Test user override\n"
     )
+    (hermes_home / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - model-providers/gmi\n",
+        encoding="utf-8",
+    )
 
     _clear_provider_caches()
     from providers import get_provider_profile
@@ -123,3 +133,422 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     # No import means the module must NOT be in the plugins list as a loaded one.
     # We check that the general loader didn't crash and didn't raise from the
     # broken __init__.py.
+
+
+def _write_user_provider(
+    home: Path,
+    name: str,
+    *,
+    base_url: str,
+    env_var: str = "TEST_PROVIDER_API_KEY",
+    env_vars: tuple[str, ...] | None = None,
+    aliases: tuple[str, ...] = (),
+    marker: Path | None = None,
+    fail_after_register: bool = False,
+) -> None:
+    plugin_dir = home / "plugins" / "model-providers" / name
+    plugin_dir.mkdir(parents=True)
+    marker_write = ""
+    if marker is not None:
+        marker_write = (
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
+        )
+    registered_env_vars = env_vars or (env_var,)
+    failure = "raise RuntimeError('provider import failed')\n" if fail_after_register else ""
+    (plugin_dir / "__init__.py").write_text(
+        marker_write
+        + "from providers import register_provider\n"
+        + "from providers.base import ProviderProfile\n"
+        + "register_provider(ProviderProfile(\n"
+        + f"    name={name!r},\n"
+        + f"    display_name={name!r},\n"
+        + f"    aliases={aliases!r},\n"
+        + f"    env_vars={registered_env_vars!r},\n"
+        + f"    base_url={base_url!r},\n"
+        + "    auth_type='api_key',\n"
+        + "))\n"
+        + failure,
+        encoding="utf-8",
+    )
+    (plugin_dir / "plugin.yaml").write_text(
+        f"name: {name}\n"
+        "kind: model-provider\n"
+        f"provider_ids: [{name}]\n",
+        encoding="utf-8",
+    )
+
+
+def _write_activation(home: Path, *, enabled=(), disabled=()) -> None:
+    enabled_lines = "".join(f"    - {value}\n" for value in enabled)
+    disabled_lines = "".join(f"    - {value}\n" for value in disabled)
+    (home / "config.yaml").write_text(
+        "plugins:\n"
+        "  enabled:\n"
+        f"{enabled_lines}"
+        "  disabled:\n"
+        f"{disabled_lines}",
+        encoding="utf-8",
+    )
+
+
+def test_user_provider_is_not_imported_until_explicitly_enabled(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    marker = tmp_path / "provider-imported.txt"
+    _write_user_provider(
+        home,
+        "opt-in-provider",
+        base_url="https://opt-in.example/v1",
+        marker=marker,
+    )
+    _write_activation(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+
+    _clear_provider_caches()
+    assert providers.get_provider_profile("opt-in-provider") is None
+    assert not marker.exists()
+
+    _write_activation(
+        home,
+        enabled=("model-providers/opt-in-provider",),
+    )
+    providers.invalidate_provider_discovery()
+
+    assert providers.get_provider_profile("opt-in-provider") is not None
+    assert marker.read_text(encoding="utf-8") == "imported"
+
+
+def test_provider_discovery_refreshes_when_profile_home_changes(
+    tmp_path,
+    monkeypatch,
+):
+    first_home = tmp_path / "first"
+    second_home = tmp_path / "second"
+    first_home.mkdir()
+    second_home.mkdir()
+    _write_user_provider(
+        first_home,
+        "profile-provider",
+        base_url="https://first.example/v1",
+    )
+    _write_user_provider(
+        second_home,
+        "profile-provider",
+        base_url="https://second.example/v1",
+    )
+    for home in (first_home, second_home):
+        _write_activation(
+            home,
+            enabled=("model-providers/profile-provider",),
+        )
+
+    import providers
+
+    monkeypatch.setenv("HERMES_HOME", str(first_home))
+    providers.invalidate_provider_discovery()
+    assert (
+        providers.get_provider_profile("profile-provider").base_url
+        == "https://first.example/v1"
+    )
+
+    # Activation lists are identical; the discovery-root fingerprint must
+    # still force a rebuild for the new profile.
+    monkeypatch.setenv("HERMES_HOME", str(second_home))
+    assert (
+        providers.get_provider_profile("profile-provider").base_url
+        == "https://second.example/v1"
+    )
+
+
+def test_disabling_provider_refreshes_all_derived_surfaces(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_user_provider(
+        home,
+        "refresh-provider",
+        base_url="https://refresh.example/v1",
+        env_var="REFRESH_PROVIDER_API_KEY",
+    )
+    _write_activation(
+        home,
+        enabled=("model-providers/refresh-provider",),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+    from hermes_cli import auth, config, models
+
+    providers.invalidate_provider_discovery()
+    assert "refresh-provider" in auth.PROVIDER_REGISTRY
+    assert any(
+        entry.slug == "refresh-provider"
+        for entry in models.CANONICAL_PROVIDERS
+    )
+    assert "refresh-provider" in models._KNOWN_PROVIDER_NAMES
+    assert "REFRESH_PROVIDER_API_KEY" in config.OPTIONAL_ENV_VARS
+
+    _write_activation(
+        home,
+        disabled=("model-providers/refresh-provider",),
+    )
+    providers.invalidate_provider_discovery()
+
+    assert providers.get_provider_profile("refresh-provider") is None
+    assert "refresh-provider" not in auth.PROVIDER_REGISTRY
+    assert all(
+        entry.slug != "refresh-provider"
+        for entry in models.CANONICAL_PROVIDERS
+    )
+    assert "refresh-provider" not in models._KNOWN_PROVIDER_NAMES
+    assert "REFRESH_PROVIDER_API_KEY" not in config.OPTIONAL_ENV_VARS
+
+
+def test_failed_provider_import_rolls_back_registry_aliases_and_modules(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    plugin_name = "broken-provider"
+    plugin_alias = "broken-provider-alias"
+    _write_user_provider(
+        home,
+        plugin_name,
+        base_url="https://broken.example/v1",
+        aliases=(plugin_alias,),
+        fail_after_register=True,
+    )
+    plugin_dir = home / "plugins" / "model-providers" / plugin_name
+    (plugin_dir / "helper.py").write_text("LOADED = True\n", encoding="utf-8")
+    init_path = plugin_dir / "__init__.py"
+    init_path.write_text(
+        "from . import helper\n" + init_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    _write_activation(
+        home,
+        enabled=(f"model-providers/{plugin_name}",),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+
+    _clear_provider_caches()
+    assert providers.get_provider_profile(plugin_name) is None
+    assert providers.get_provider_profile(plugin_alias) is None
+    assert plugin_name not in providers._REGISTRY
+    assert plugin_alias not in providers._ALIASES
+    module_prefix = "_hermes_user_provider_broken_provider"
+    assert not any(
+        module_name == module_prefix or module_name.startswith(f"{module_prefix}.")
+        for module_name in sys.modules
+    )
+
+
+@pytest.mark.parametrize("source", ["user", "project"])
+def test_provider_override_drives_auth_and_runtime_metadata(
+    source,
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_activation(home, enabled=("model-providers/gmi",))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
+
+    if source == "user":
+        plugin_home = home
+    else:
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+        monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+        plugin_home = project_root / ".hermes"
+
+    key_var = f"{source.upper()}_GMI_API_KEY"
+    base_url_var = f"{source.upper()}_GMI_BASE_URL"
+    profile_base_url = f"https://{source}-profile.example/v1"
+    runtime_base_url = f"https://{source}-runtime.example/v1"
+    _write_user_provider(
+        plugin_home,
+        "gmi",
+        base_url=profile_base_url,
+        env_vars=(key_var, base_url_var),
+    )
+    monkeypatch.setenv(key_var, f"{source}-secret")
+    monkeypatch.setenv(base_url_var, runtime_base_url)
+
+    import providers
+    from hermes_cli import auth, runtime_provider
+
+    providers.invalidate_provider_discovery()
+
+    assert providers.get_provider_profile("gmi").base_url == profile_base_url
+    provider_config = auth.PROVIDER_REGISTRY["gmi"]
+    assert provider_config.inference_base_url == profile_base_url
+    assert provider_config.api_key_env_vars == (key_var,)
+    assert provider_config.base_url_env_var == base_url_var
+
+    credentials = auth.resolve_api_key_provider_credentials("gmi")
+    assert credentials["api_key"] == f"{source}-secret"
+    assert credentials["base_url"] == runtime_base_url
+
+    runtime = runtime_provider.resolve_runtime_provider(requested="gmi")
+    assert runtime["provider"] == "gmi"
+    assert runtime["api_key"] == f"{source}-secret"
+    assert runtime["base_url"] == runtime_base_url
+
+
+def test_third_party_provider_alias_follows_activation_refresh(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    provider_name = "alias-lifecycle-provider"
+    provider_alias = "alias-lifecycle-shortcut"
+    _write_user_provider(
+        home,
+        provider_name,
+        base_url="https://alias-lifecycle.example/v1",
+        aliases=(provider_alias,),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+    from hermes_cli import auth, models
+
+    def assert_active() -> None:
+        assert providers.get_provider_profile(provider_alias).name == provider_name
+        assert models.normalize_provider(provider_alias) == provider_name
+        assert provider_alias in models._KNOWN_PROVIDER_NAMES
+        assert auth.resolve_provider(provider_alias) == provider_name
+
+    _write_activation(
+        home,
+        enabled=(f"model-providers/{provider_name}",),
+    )
+    providers.invalidate_provider_discovery()
+    assert_active()
+
+    _write_activation(
+        home,
+        disabled=(f"model-providers/{provider_name}",),
+    )
+    providers.invalidate_provider_discovery()
+
+    assert providers.get_provider_profile(provider_alias) is None
+    assert models.normalize_provider(provider_alias) == provider_alias
+    assert provider_alias not in models._KNOWN_PROVIDER_NAMES
+    with pytest.raises(auth.AuthError):
+        auth.resolve_provider(provider_alias)
+
+    _write_activation(
+        home,
+        enabled=(f"model-providers/{provider_name}",),
+    )
+    providers.invalidate_provider_discovery()
+    assert_active()
+
+
+def test_auth_refresh_exception_preserves_lkg_and_empty_initial_state(monkeypatch):
+    import providers
+    from hermes_cli import auth
+
+    original_registry = dict(auth.PROVIDER_REGISTRY)
+    original_dynamic_keys = set(auth._DYNAMIC_PROVIDER_REGISTRY_KEYS)
+
+    def fail_discovery():
+        raise RuntimeError("activation refresh failed")
+
+    monkeypatch.setattr(providers, "list_providers", fail_discovery)
+    try:
+        auth.PROVIDER_REGISTRY.replace({})
+        auth._DYNAMIC_PROVIDER_REGISTRY_KEYS.clear()
+        auth._refresh_provider_registry_from_plugins()
+        assert dict(auth.PROVIDER_REGISTRY) == {}
+        assert auth._DYNAMIC_PROVIDER_REGISTRY_KEYS == set()
+
+        lkg_config = auth.ProviderConfig(
+            id="last-known-good",
+            name="Last Known Good",
+            auth_type="api_key",
+            inference_base_url="https://lkg.example/v1",
+            api_key_env_vars=("LKG_API_KEY",),
+        )
+        auth.PROVIDER_REGISTRY.replace({"last-known-good": lkg_config})
+        auth._DYNAMIC_PROVIDER_REGISTRY_KEYS.clear()
+        auth._DYNAMIC_PROVIDER_REGISTRY_KEYS.add("last-known-good")
+
+        auth._refresh_provider_registry_from_plugins()
+
+        assert dict(auth.PROVIDER_REGISTRY) == {"last-known-good": lkg_config}
+        assert auth._DYNAMIC_PROVIDER_REGISTRY_KEYS == {"last-known-good"}
+    finally:
+        auth.PROVIDER_REGISTRY.replace(original_registry)
+        auth._DYNAMIC_PROVIDER_REGISTRY_KEYS.clear()
+        auth._DYNAMIC_PROVIDER_REGISTRY_KEYS.update(original_dynamic_keys)
+
+
+def test_auth_activation_check_fails_closed_on_discovery_error(monkeypatch):
+    import providers
+    from hermes_cli import auth
+
+    def fail_discovery(_provider_id):
+        raise RuntimeError("activation state unavailable")
+
+    monkeypatch.setattr(providers, "is_plugin_managed_provider_id", fail_discovery)
+
+    assert auth._provider_plugin_is_active("uncertain-provider") is False
+
+
+def test_legacy_single_file_provider_requires_explicit_opt_in(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    legacy_root = tmp_path / "legacy-providers"
+    legacy_root.mkdir()
+    marker = tmp_path / "legacy-imported.txt"
+    module_name = "legacy_opt_in_provider"
+    (legacy_root / f"{module_name}.py").write_text(
+        "from pathlib import Path\n"
+        "from providers import register_provider\n"
+        "from providers.base import ProviderProfile\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
+        "register_provider(ProviderProfile(\n"
+        "    name='legacy-opt-in-provider',\n"
+        "    env_vars=('LEGACY_OPT_IN_API_KEY',),\n"
+        "    base_url='https://legacy.example/v1',\n"
+        "))\n",
+        encoding="utf-8",
+    )
+    _write_activation(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import providers
+
+    monkeypatch.setattr(providers, "__path__", [str(legacy_root)])
+    _clear_provider_caches()
+    assert providers.get_provider_profile("legacy-opt-in-provider") is None
+    assert not marker.exists()
+
+    _write_activation(home, enabled=(f"model-providers/{module_name}",))
+    providers.invalidate_provider_discovery()
+    assert providers.get_provider_profile("legacy-opt-in-provider") is not None
+    assert marker.read_text(encoding="utf-8") == "imported"
+
+    _write_activation(home)
+    providers.invalidate_provider_discovery()
+    assert providers.get_provider_profile("legacy-opt-in-provider") is None

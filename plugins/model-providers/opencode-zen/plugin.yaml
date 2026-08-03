@@ -1,5 +1,6 @@
 name: opencode-zen-provider
 kind: model-provider
+provider_ids: [opencode-zen, opencode-go]
 version: 1.0.0
 description: OpenCode (Zen + Go)
 author: Nous Research

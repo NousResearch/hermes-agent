@@ -49,11 +49,12 @@ class TestReadManifestInfo:
         })
         result = _read_manifest_info(d, "")
         assert result is not None
-        name, version, description, key = result
+        name, version, description, key, kind = result
         assert name == "my-plugin"
         assert version == "1.0.0"
         assert description == "test"
         assert key == "my-plugin"  # flat: key == name
+        assert kind == "standalone"
 
 
     def test_no_manifest(self, tmp_path):
@@ -146,6 +147,38 @@ class TestDiscoverAllPlugins:
         assert "web/tavily" in keys
         assert "a/b/c" not in keys
 
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_bundled_platform_key_matches_runtime_loader(
+        self,
+        mock_user_dir,
+        mock_bundled_dir,
+        tmp_path,
+    ):
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        bundled = tmp_path / "bundled"
+        user = tmp_path / "user"
+        user.mkdir()
+        _make_category_plugin(
+            bundled,
+            "platforms",
+            "buzz",
+            {
+                "name": "buzz-platform",
+                "kind": "platform",
+                "version": "1.0.0",
+            },
+        )
+        mock_bundled_dir.return_value = bundled
+        mock_user_dir.return_value = user
+
+        entries = _discover_all_plugins()
+        buzz = next(entry for entry in entries if entry[0] == "buzz-platform")
+
+        assert buzz[5] == "buzz-platform"
+        assert buzz[6] == "platform"
+
 
 # ---------------------------------------------------------------------------
 # _plugin_status — key-aware status
@@ -174,8 +207,16 @@ class TestFilterPluginEntries:
         from hermes_cli.plugins_cmd import _filter_plugin_entries
 
         entries = [
-            ("web-tavily", "1.0.0", "search", "user", Path("/tmp"), "web/tavily"),
-            ("disk-cleanup", "1.0.0", "cleanup", "bundled", Path("/tmp"), "disk-cleanup"),
+            ("web-tavily", "1.0.0", "search", "user", Path("/tmp"), "web/tavily", "standalone"),
+            (
+                "disk-cleanup",
+                "1.0.0",
+                "cleanup",
+                "bundled",
+                Path("/tmp"),
+                "disk-cleanup",
+                "standalone",
+            ),
         ]
         args = MagicMock()
         args.no_bundled = False

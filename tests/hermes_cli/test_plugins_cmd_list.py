@@ -19,9 +19,9 @@ def _args(**kwargs):
 
 def test_filter_plugin_entries_enabled_only():
     entries = [
-        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup"),
-        ("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus"),
-        ("old-plugin", "1.0.0", "Old", "user", None, "old-plugin"),
+        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup", "backend"),
+        ("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus", "standalone"),
+        ("old-plugin", "1.0.0", "Old", "user", None, "old-plugin", "standalone"),
     ]
 
     filtered = plugins_cmd._filter_plugin_entries(
@@ -36,8 +36,8 @@ def test_filter_plugin_entries_enabled_only():
 
 def test_cmd_list_plain_compact_output(monkeypatch, capsys):
     entries = [
-        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup"),
-        ("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus"),
+        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup", "backend"),
+        ("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus", "standalone"),
     ]
     monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
     monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"web-search-plus"})
@@ -90,6 +90,7 @@ def test_discover_all_plugins_includes_entrypoint_plugins(monkeypatch, tmp_path)
             "entrypoint",
             "adapters.hermes.cli_plugin",
             "wiki",
+            "standalone",
         )
     ]
 

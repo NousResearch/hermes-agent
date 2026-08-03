@@ -1,5 +1,6 @@
 name: minimax-provider
 kind: model-provider
+provider_ids: [minimax, minimax-cn, minimax-oauth]
 version: 1.0.0
 description: MiniMax M-series (global + China + OAuth)
 author: Nous Research

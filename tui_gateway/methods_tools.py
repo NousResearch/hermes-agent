@@ -1812,7 +1812,7 @@ def _(rid, params: dict) -> dict:
             enabled = _get_enabled_set()
             disabled = _get_disabled_set()
             out = []
-            for name, version, desc, source, _dir, key in sorted(
+            for name, version, desc, source, _dir, key, kind in sorted(
                 _discover_all_plugins()
             ):
                 out.append(
@@ -1821,7 +1821,14 @@ def _(rid, params: dict) -> dict:
                         "version": str(version or ""),
                         "description": desc or "",
                         "source": source,
-                        "status": _plugin_status(name, enabled, disabled, key=key),
+                        "status": _plugin_status(
+                            name,
+                            enabled,
+                            disabled,
+                            key=key,
+                            source=source,
+                            kind=kind,
+                        ),
                     }
                 )
             return out

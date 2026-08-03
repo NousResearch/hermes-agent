@@ -261,7 +261,7 @@ def _model_flow_ai_gateway(config, current_model=""):
     from hermes_constants import AI_GATEWAY_BASE_URL
     from hermes_cli.main import _prompt_api_key
     from hermes_cli.auth import (
-        PROVIDER_REGISTRY,
+        get_provider_implementation_config,
         _prompt_model_selection,
         _save_model_choice,
         deactivate_provider,
@@ -270,7 +270,7 @@ def _model_flow_ai_gateway(config, current_model=""):
 
     # Route through _prompt_api_key so users can replace a stale/broken key
     # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand.
-    pconfig = PROVIDER_REGISTRY["ai-gateway"]
+    pconfig = get_provider_implementation_config("ai-gateway")
     existing_key = get_env_value("AI_GATEWAY_API_KEY") or ""
     if not existing_key:
         print(
@@ -406,7 +406,7 @@ def _model_flow_nous(config, current_model="", args=None):
         AuthError,
         format_auth_error,
         _login_nous,
-        PROVIDER_REGISTRY,
+        get_nous_service_config,
     )
     from hermes_cli.config import (
         get_env_value,
@@ -431,7 +431,7 @@ def _model_flow_nous(config, current_model="", args=None):
                 ca_bundle=getattr(args, "ca_bundle", None),
                 insecure=bool(getattr(args, "insecure", False)),
             )
-            _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
+            _login_nous(mock_args, get_nous_service_config())
             # Offer Tool Gateway enablement for paid subscribers
             try:
                 _refreshed = load_config() or {}
@@ -484,7 +484,7 @@ def _model_flow_nous(config, current_model="", args=None):
                     ca_bundle=None,
                     insecure=False,
                 )
-                _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
+                _login_nous(mock_args, get_nous_service_config())
             except Exception as login_exc:
                 print(f"Re-login failed: {login_exc}")
             return
@@ -628,7 +628,7 @@ def _model_flow_openai_codex(config, current_model=""):
         _save_model_choice,
         _update_config_for_provider,
         _login_openai_codex,
-        PROVIDER_REGISTRY,
+        get_provider_implementation_config,
         DEFAULT_CODEX_BASE_URL,
     )
     from hermes_cli.codex_models import get_codex_model_ids
@@ -646,7 +646,7 @@ def _model_flow_openai_codex(config, current_model=""):
                 mock_args = argparse.Namespace()
                 _login_openai_codex(
                     mock_args,
-                    PROVIDER_REGISTRY["openai-codex"],
+                    get_provider_implementation_config("openai-codex"),
                     force_new_login=True,
                 )
             except SystemExit:
@@ -666,7 +666,10 @@ def _model_flow_openai_codex(config, current_model=""):
         print()
         try:
             mock_args = argparse.Namespace()
-            _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
+            _login_openai_codex(
+                mock_args,
+                get_provider_implementation_config("openai-codex"),
+            )
         except SystemExit:
             print("Login cancelled or failed.")
             return
@@ -718,7 +721,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         resolve_xai_oauth_runtime_credentials,
         _login_xai_oauth,
         DEFAULT_XAI_OAUTH_BASE_URL,
-        PROVIDER_REGISTRY,
+        get_provider_implementation_config,
     )
     from hermes_cli.models import _PROVIDER_MODELS
 
@@ -740,7 +743,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
                 )
                 _login_xai_oauth(
                     mock_args,
-                    PROVIDER_REGISTRY["xai-oauth"],
+                    get_provider_implementation_config("xai-oauth"),
                     force_new_login=True,
                 )
             except SystemExit:
@@ -759,7 +762,10 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
                 no_browser=bool(getattr(args, "no_browser", False)),
                 timeout=getattr(args, "timeout", None),
             )
-            _login_xai_oauth(mock_args, PROVIDER_REGISTRY["xai-oauth"])
+            _login_xai_oauth(
+                mock_args,
+                get_provider_implementation_config("xai-oauth"),
+            )
         except SystemExit:
             print("Login cancelled or failed.")
             return
@@ -848,7 +854,7 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
         AuthError,
         format_auth_error,
         _login_minimax_oauth,
-        PROVIDER_REGISTRY,
+        get_provider_implementation_config,
     )
 
     state = get_provider_auth_state("minimax-oauth")
@@ -861,7 +867,10 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
                 no_browser=bool(getattr(args, "no_browser", False)),
                 timeout=getattr(args, "timeout", None) or 15.0,
             )
-            _login_minimax_oauth(mock_args, PROVIDER_REGISTRY["minimax-oauth"])
+            _login_minimax_oauth(
+                mock_args,
+                get_provider_implementation_config("minimax-oauth"),
+            )
         except SystemExit:
             print("Login cancelled or failed.")
             return
@@ -3047,14 +3056,16 @@ def _model_flow_anthropic(config, current_model=""):
         # Show what we found
         if existing_key:
             from hermes_cli.env_loader import format_secret_source_suffix
-            from hermes_cli.auth import PROVIDER_REGISTRY
+            from hermes_cli.auth import get_provider_implementation_config
 
             # Surface which env var supplied the key so users with
             # Bitwarden see "(from Bitwarden)" — without this, a detected
             # BSM key looks identical to a key in .env and users assume
             # nothing is wired up.
             source_suffix = ""
-            for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
+            for var in get_provider_implementation_config(
+                "anthropic"
+            ).api_key_env_vars:
                 if os.getenv(var, "").strip() == existing_key:
                     source_suffix = format_secret_source_suffix(var)
                     if source_suffix:

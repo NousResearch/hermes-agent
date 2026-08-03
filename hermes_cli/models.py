@@ -1150,29 +1150,125 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (Multi-model aggregator)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
 ]
+_STATIC_CANONICAL_PROVIDERS = tuple(CANONICAL_PROVIDERS)
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
 # that is not already in the list above.  Adding plugins/model-providers/<name>/
 # is sufficient to expose a new provider in the model picker, /model, and all
 # downstream consumers — no edits to this file needed.
-_canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
-try:
-    from providers import list_providers as _list_providers_for_canonical
-    for _pp in _list_providers_for_canonical():
-        if _pp.name in _canonical_slugs:
+_canonical_slugs: set[str] = set()
+
+
+def _refresh_provider_aliases(profiles: list[Any]) -> None:
+    """Rebuild aliases from the static baseline plus active profiles."""
+    provider_aliases = globals().get("_PROVIDER_ALIASES")
+    static_aliases = globals().get("_STATIC_PROVIDER_ALIASES")
+    if not isinstance(provider_aliases, dict) or not isinstance(
+        static_aliases, dict
+    ):
+        return
+
+    provider_aliases.clear()
+    provider_aliases.update(static_aliases)
+    for profile in profiles:
+        for alias in profile.aliases:
+            # Existing Hermes aliases remain authoritative.
+            provider_aliases.setdefault(alias, profile.name)
+
+
+def _refresh_derived_provider_indexes() -> None:
+    """Refresh indexes that mirror ``CANONICAL_PROVIDERS`` in place."""
+    provider_labels = globals().get("_PROVIDER_LABELS")
+    if isinstance(provider_labels, dict):
+        provider_labels.clear()
+        provider_labels.update(
+            (entry.slug, entry.label) for entry in CANONICAL_PROVIDERS
+        )
+        try:
+            from providers import is_provider_plugin_active
+
+            if is_provider_plugin_active("custom"):
+                provider_labels["custom"] = "Custom endpoint"
+        except Exception:
+            pass
+
+    known_names = globals().get("_KNOWN_PROVIDER_NAMES")
+    if isinstance(known_names, set):
+        known_names.clear()
+        known_names.update(_canonical_slugs)
+        known_names.update(
+            alias
+            for alias, canonical in _PROVIDER_ALIASES.items()
+            if canonical in _canonical_slugs
+        )
+        if isinstance(provider_labels, dict) and "custom" in provider_labels:
+            known_names.add("custom")
+
+
+def _refresh_canonical_providers_from_plugins() -> None:
+    """Rebuild plugin-derived model picker entries after activation changes."""
+    try:
+        from providers import list_providers
+
+        profiles = list_providers()
+    except Exception:
+        profiles = []
+
+    active_provider_ids = {profile.name for profile in profiles}
+    CANONICAL_PROVIDERS[:] = [
+        entry
+        for entry in _STATIC_CANONICAL_PROVIDERS
+        if (
+            not _provider_id_is_plugin_managed(entry.slug)
+            or entry.slug in active_provider_ids
+        )
+    ]
+    _canonical_slugs.clear()
+    _canonical_slugs.update(entry.slug for entry in CANONICAL_PROVIDERS)
+
+    for profile in profiles:
+        if profile.name in _canonical_slugs:
             continue
-        if _pp.auth_type in {"oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex"}:
-            continue  # non-api-key flows need bespoke picker UX; skip auto-inject
-        _label = _pp.display_name or _pp.name
-        _desc = _pp.description or f"{_label} (direct API)"
-        CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _desc))
-        _canonical_slugs.add(_pp.name)
-except Exception:
-    pass
+        if profile.auth_type in {
+            "oauth_device_code",
+            "oauth_external",
+            "external_process",
+            "aws_sdk",
+            "copilot",
+            "vertex",
+        }:
+            continue
+        label = profile.display_name or profile.name
+        description = profile.description or f"{label} (direct API)"
+        CANONICAL_PROVIDERS.append(
+            ProviderEntry(profile.name, label, description)
+        )
+        _canonical_slugs.add(profile.name)
+
+    _refresh_provider_aliases(profiles)
+    _refresh_derived_provider_indexes()
+
+
+def _provider_id_is_plugin_managed(provider_id: str) -> bool:
+    try:
+        from providers import is_plugin_managed_provider_id
+
+        return is_plugin_managed_provider_id(provider_id)
+    except Exception:
+        return False
+
+
+_refresh_canonical_providers_from_plugins()
 
 # Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
-_PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
+try:
+    from providers import is_provider_plugin_active
+
+    if is_provider_plugin_active("custom"):
+        _PROVIDER_LABELS["custom"] = "Custom endpoint"
+except Exception:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -1364,6 +1460,7 @@ _PROVIDER_ALIASES = {
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
 }
+_STATIC_PROVIDER_ALIASES = dict(_PROVIDER_ALIASES)
 
 
 # In-repo fallback for the model Hermes silently lands on when the user never
@@ -2126,11 +2223,14 @@ def _fetch_novita_pricing(
 
 
 # All provider IDs and aliases that are valid for the provider:model syntax.
-_KNOWN_PROVIDER_NAMES: set[str] = (
-    set(_PROVIDER_LABELS.keys())
-    | set(_PROVIDER_ALIASES.keys())
-    | {"openrouter", "custom"}
-)
+_KNOWN_PROVIDER_NAMES: set[str] = set()
+_refresh_canonical_providers_from_plugins()
+try:
+    from providers import register_provider_refresh_hook
+
+    register_provider_refresh_hook(_refresh_canonical_providers_from_plugins)
+except Exception:
+    pass
 
 
 def list_available_providers() -> list[dict[str, str]]:
@@ -2142,8 +2242,9 @@ def list_available_providers() -> list[dict[str, str]]:
     Derives the provider list from :data:`CANONICAL_PROVIDERS` (single
     source of truth shared with ``hermes model``, ``/model``, etc.).
     """
-    # Derive display order from canonical list + custom
-    provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
+    provider_order = [p.slug for p in CANONICAL_PROVIDERS]
+    if "custom" in _PROVIDER_LABELS and "custom" not in provider_order:
+        provider_order.append("custom")
 
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
@@ -2322,6 +2423,15 @@ _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
 )
 
 
+def _provider_is_routable(provider: str) -> bool:
+    try:
+        from hermes_cli.auth import is_runtime_provider_routable
+
+        return is_runtime_provider_routable(provider)
+    except Exception:
+        return False
+
+
 def _resolve_static_model_alias(
     name_lower: str,
     current_keys: set[str],
@@ -2340,6 +2450,8 @@ def _resolve_static_model_alias(
     family = identity.family
 
     def _match(provider: str) -> Optional[str]:
+        if not _provider_is_routable(provider):
+            return None
         models = _PROVIDER_MODELS.get(provider, [])
         if not models:
             return None
@@ -2451,6 +2563,8 @@ def detect_static_provider_for_model(
             continue
         if _is_custom_current:
             continue
+        if not _provider_is_routable(pid):
+            continue
         if any(name_lower == m.lower() for m in _provider_catalog_names(pid)):
             return (pid, name)
 
@@ -2458,6 +2572,8 @@ def detect_static_provider_for_model(
     # native-vendor catalog, and only when one is the current provider.
     for pid in _BORROWED_MODEL_PROVIDERS:
         if pid in current_keys:
+            continue
+        if not _provider_is_routable(pid):
             continue
         if any(name_lower == m.lower() for m in _provider_catalog_names(pid)):
             return (pid, name)
@@ -2822,6 +2938,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     on the platform appear in ``/model`` without a Hermes release.
     """
     normalized = normalize_provider(provider)
+    # Never let static fallbacks or a previous profile's cache make a disabled
+    # provider look selectable. ``openai`` is a legacy catalog alias whose
+    # runtime identity is ``openai-api`` and is not plugin-managed.
+    if normalized != "openai" and not _provider_is_routable(normalized):
+        return []
     if normalized == "openrouter":
         return model_ids(force_refresh=force_refresh)
     if normalized == "openai-codex":
@@ -3160,6 +3281,28 @@ def _credential_fingerprint(provider: str) -> str:
 
     parts: list[str] = []
 
+    # Provider roots and activation are part of discovery identity. This
+    # prevents profile/home/project switches from reusing another winner's
+    # on-disk model catalog when the canonical provider name is unchanged.
+    try:
+        from providers import (
+            get_provider_discovery_identity,
+            get_provider_profile,
+        )
+
+        parts.append(f"discovery={get_provider_discovery_identity()!r}")
+        profile = get_provider_profile(provider)
+        if profile is not None:
+            parts.append(
+                "profile="
+                f"{profile.name!r}|{profile.api_mode!r}|{profile.auth_type!r}|"
+                f"{profile.base_url!r}|{profile.models_url!r}|"
+                f"{profile.env_vars!r}|{profile.aliases!r}|"
+                f"{profile.fallback_models!r}"
+            )
+    except Exception:
+        parts.append("discovery=unavailable")
+
     # Env vars from PROVIDER_REGISTRY for this slug
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
@@ -3261,6 +3404,8 @@ def cached_provider_model_ids(
     """
     normalized = normalize_provider(provider) or (provider or "")
     if not normalized:
+        return []
+    if normalized != "openai" and not _provider_is_routable(normalized):
         return []
 
     cache = _load_provider_models_cache()

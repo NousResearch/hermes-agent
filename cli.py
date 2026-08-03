@@ -10224,8 +10224,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         loaded = {}
 
                     print(f"User plugins ({len(user_entries)}):")
-                    for name, version, _desc, source, _dir, key in sorted(user_entries):
-                        state = _plugin_status(name, enabled, disabled, key=key)
+                    for name, version, _desc, source, _dir, key, kind in sorted(user_entries):
+                        state = _plugin_status(
+                            name,
+                            enabled,
+                            disabled,
+                            key=key,
+                            source=source,
+                            kind=kind,
+                        )
                         glyph = {"enabled": "✓", "disabled": "✗"}.get(state, "○")
                         ver = f" v{version}" if version else ""
                         info = loaded.get(name) or {}

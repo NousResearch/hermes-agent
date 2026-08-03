@@ -29,10 +29,13 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Tuple, Set, TYPE_CHECKING
 
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
+
+if TYPE_CHECKING:
+    from hermes_cli.plugin_activation import PluginActivationState
 
 logger = logging.getLogger(__name__)
 
@@ -3152,6 +3155,28 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def load_plugin_activation_state() -> "PluginActivationState":
+    """Derive plugin activation from the canonical loaded configuration.
+
+    This accessor deliberately performs no parsing of its own.  Environment
+    expansion, managed-scope precedence, cache invalidation, and
+    last-known-good behavior all remain owned by :func:`load_config_readonly`.
+    An unexpected loader failure uses an empty allow-list, which keeps
+    non-bundled plugins fail-closed while bundled defaults remain available.
+    """
+    from hermes_cli.plugin_activation import PluginActivationState
+    from utils import env_var_enabled
+
+    try:
+        config = load_config_readonly()
+    except Exception:
+        config = {}
+    return PluginActivationState.from_config(
+        config,
+        safe_mode=env_var_enabled("HERMES_SAFE_MODE"),
+    )
+
+
 def write_platform_config_field(
     platform_key: str,
     field_key: str,
@@ -5301,6 +5326,7 @@ def config_command(args):
 # Runs once at import time.
 
 _profile_env_vars_injected = False
+_profile_env_var_names: set[str] = set()
 
 
 def _inject_profile_env_vars() -> None:
@@ -5329,12 +5355,29 @@ def _inject_profile_env_vars() -> None:
                     "category": "provider",
                     "advanced": True,
                 }
+                _profile_env_var_names.add(_var)
     except Exception:
         pass
 
 
+def _refresh_profile_env_vars() -> None:
+    """Rebuild provider-plugin environment metadata after activation changes."""
+    global _profile_env_vars_injected
+    for name in _profile_env_var_names:
+        OPTIONAL_ENV_VARS.pop(name, None)
+    _profile_env_var_names.clear()
+    _profile_env_vars_injected = False
+    _inject_profile_env_vars()
+
+
 # Eagerly inject so that OPTIONAL_ENV_VARS is fully populated at import time.
 _inject_profile_env_vars()
+try:
+    from providers import register_provider_refresh_hook
+
+    register_provider_refresh_hook(_refresh_profile_env_vars)
+except Exception:
+    pass
 
 
 # ── Platform-plugin env var injection ────────────────────────────────────────

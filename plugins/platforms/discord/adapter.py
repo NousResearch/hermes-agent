@@ -26,7 +26,7 @@ import time
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from urllib.parse import quote, urljoin
+from urllib.parse import urljoin
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
@@ -121,7 +121,12 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
+from gateway.platforms.helpers import (
+    MessageDeduplicator,
+    ThreadParticipationTracker,
+    convert_table_to_bullets,
+    format_markdown_link,
+)
 from utils import atomic_json_write, env_float, env_int
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -982,9 +987,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not preview.url:
             return preview.text
 
-        label = re.sub(r"([\\\[\]])", r"\\\1", preview.text)
-        href = quote(preview.url, safe=":/?#[]@!$&'*+,;=%")
-        return f"[{label}]({href})"
+        return format_markdown_link(preview.text, preview.url)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)

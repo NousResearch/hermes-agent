@@ -292,3 +292,41 @@ class TestStandaloneSendSMTPPort:
         assert captured.get("cls") == "SMTP"
         assert captured.get("starttls") is True
         assert result.get("success") is True
+
+
+class TestTrimHtmlPreamblePostamble:
+    """HTML-body trimming ported from PR #36853 (chtse53)."""
+
+    def test_strips_cron_wrapper_preamble(self):
+        from plugins.platforms.email.adapter import _trim_html_preamble_postamble
+        body = "Cronjob Response: Test\n-------------\n<div><b>Hi</b></div>"
+        result = _trim_html_preamble_postamble(body)
+        assert result.startswith("<div>")
+        assert "Cronjob Response" not in result
+
+    def test_strips_trailing_commentary_after_html_doc(self):
+        from plugins.platforms.email.adapter import _trim_html_preamble_postamble
+        body = "<html><body><p>x</p></body></html>\n\nModel commentary after"
+        result = _trim_html_preamble_postamble(body)
+        assert result.endswith("</html>")
+        assert "commentary" not in result
+
+    def test_strips_trailing_prose_after_fragment(self):
+        from plugins.platforms.email.adapter import _trim_html_preamble_postamble
+        body = "<div><p>Body</p></div>\n\nDas war mein Bericht."
+        result = _trim_html_preamble_postamble(body)
+        assert result == "<div><p>Body</p></div>"
+
+    def test_plain_text_unchanged(self):
+        from plugins.platforms.email.adapter import _trim_html_preamble_postamble
+        body = "Nur Text, kein HTML hier"
+        result = _trim_html_preamble_postamble(body)
+        assert result == body
+
+    def test_html_detection_path_applies_trim(self):
+        from plugins.platforms.email.adapter import _markdown_to_html_email
+        result = _markdown_to_html_email(
+            "Cronjob Response: X\n-------------\n<div><b>Hi</b></div>"
+        )
+        assert "<b>Hi</b>" in result
+        assert "Cronjob Response" not in result

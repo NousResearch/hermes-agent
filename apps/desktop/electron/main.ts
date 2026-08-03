@@ -2467,6 +2467,25 @@ async function checkUpdates() {
   const gitDir = path.join(updateRoot, '.git')
 
   if (!directoryExists(gitDir)) {
+    if (INSTALL_STAMP?.commit) {
+      // Managed build: installed through the Hermes maintenance channel (the
+      // source checkout is intentionally absent so the self-updater stays
+      // inert). There is no source tree to fall behind on, so report the
+      // bundled install stamp as the current state instead of an error.
+      return {
+        supported: true,
+        branch: branch || INSTALL_STAMP.branch || 'main',
+        currentBranch: branch || INSTALL_STAMP.branch || 'main',
+        behind: 0,
+        currentSha: INSTALL_STAMP.commit,
+        targetSha: INSTALL_STAMP.commit,
+        commits: [],
+        dirty: Boolean(INSTALL_STAMP.dirty),
+        hermesRoot: updateRoot,
+        fetchedAt: Date.now()
+      }
+    }
+
     return {
       supported: false,
       reason: 'not-a-git-checkout',

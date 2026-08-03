@@ -192,7 +192,10 @@ def _max_workers_for_tool_batch(runnable_calls) -> int:
     if not runnable_calls:
         return 0
     max_workers = _MAX_TOOL_WORKERS
-    if any(name == "image_generate" for _, _, name, _ in runnable_calls):
+    if any(
+        (call[2] if len(call) >= 3 else None) == "image_generate"
+        for call in runnable_calls
+    ):
         max_workers = min(max_workers, _image_generate_parallel_limit())
     return min(len(runnable_calls), max_workers)
 

@@ -407,6 +407,22 @@ class PluginContext:
 
     # -- tool registration --------------------------------------------------
 
+    def register_terminal_backend(self, definition: Any) -> None:
+        """Register one standalone terminal-backend implementation.
+
+        Hermes keeps backend selection and lifecycle ownership. The plugin
+        supplies only an immutable definition and an environment factory.
+        """
+        from tools.environments.registry import terminal_backend_registry
+
+        plugin_id = self.manifest.key or self.manifest.name
+        terminal_backend_registry.register(definition, owner=plugin_id)
+        logger.debug(
+            "Plugin %s registered terminal backend: %s",
+            plugin_id,
+            getattr(definition, "name", "<invalid>"),
+        )
+
     def register_tool(
         self,
         name: str,
@@ -1305,10 +1321,16 @@ class PluginManager:
         if self._discovered and not force:
             return
         if env_var_enabled("HERMES_SAFE_MODE"):
+            from tools.environments.registry import terminal_backend_registry
+
+            terminal_backend_registry.unregister_plugin_backends()
             logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
             self._discovered = True
             return
         if force:
+            from tools.environments.registry import terminal_backend_registry
+
+            terminal_backend_registry.unregister_plugin_backends()
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()

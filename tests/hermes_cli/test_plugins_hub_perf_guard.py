@@ -95,3 +95,45 @@ def test_plugins_hub_short_ttl_cache_collapses_duplicate_fetches(monkeypatch):
 
     assert calls["discover"] == 1
     assert first is second
+
+
+def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):
+    import asyncio
+
+    from hermes_cli.web_models import _AgentPluginInstallBody
+
+    tools_registry.invalidate_check_fn_cache()
+    web_server._invalidate_plugins_hub_cache()
+
+    calls = {"discover": 0}
+
+    def discover_all_plugins():
+        calls["discover"] += 1
+        return list(_PLUGIN_ROW)
+
+    _patch_minimal_hub_dependencies(
+        monkeypatch,
+        check_fn=lambda: True,
+        discover_all_plugins=discover_all_plugins,
+    )
+
+    # Prime the TTL cache; a plain fetch must be served from it.
+    web_server._merged_plugins_hub(force_refresh=True)
+    web_server._merged_plugins_hub()
+    assert calls["discover"] == 1
+
+    # Simulate a successful install through the endpoint; its invalidation
+    # hook must drop the memoized payload so the next fetch rebuilds.
+    monkeypatch.setattr(web_server, "_require_token", lambda _request: None)
+    monkeypatch.setattr(
+        plugins_cmd, "dashboard_install_plugin", lambda *a, **k: {"ok": True}
+    )
+
+    asyncio.run(
+        web_server.post_agent_plugin_install(
+            object(), _AgentPluginInstallBody(identifier="demo")
+        )
+    )
+
+    web_server._merged_plugins_hub()
+    assert calls["discover"] == 2

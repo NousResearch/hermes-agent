@@ -2571,7 +2571,14 @@ def _relay_auxiliary_call_async(callback):
     return wrapped
 
 
-def _set_relay_auxiliary_route(provider: str | None, model: str | None, api_mode: str | None) -> None:
+def _set_relay_auxiliary_route(
+    provider: str | None,
+    model: str | None,
+    api_mode: str | None,
+    *,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
+) -> None:
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is None:
         return
@@ -2579,6 +2586,81 @@ def _set_relay_auxiliary_route(provider: str | None, model: str | None, api_mode
     context["model"] = str(model or "unknown")
     context["response_model"] = None
     context["api_mode"] = str(api_mode or "chat_completions")
+    context["route_callback"] = route_callback
+    runtime = main_runtime or {}
+    context["main_runtime"] = {
+        "provider": str(runtime.get("provider") or ""),
+        "base_url": str(runtime.get("base_url") or ""),
+    }
+
+
+def _wire_provider_name(
+    provider: str | None,
+    base_url: str,
+    main_runtime: Optional[Dict[str, Any]],
+) -> str:
+    """Return the concrete provider label for one physical wire attempt."""
+    raw_provider = str(provider or "").strip()
+    wrapped = re.search(r"\(([^()]*)\)$", raw_provider)
+    if wrapped:
+        raw_provider = wrapped.group(1).strip()
+    normalized = _normalize_aux_provider(raw_provider)
+    if normalized not in {"", "auto"}:
+        return raw_provider or normalized
+
+    runtime = main_runtime or {}
+    runtime_provider = str(runtime.get("provider") or "").strip()
+    runtime_base = str(runtime.get("base_url") or "").strip()
+    if (
+        runtime_provider
+        and runtime_provider not in {"auto"}
+        and runtime_base
+        and base_url_hostname(runtime_base) == base_url_hostname(base_url)
+    ):
+        return runtime_provider
+
+    try:
+        from agent.model_metadata import _infer_provider_from_url
+
+        inferred = _infer_provider_from_url(base_url)
+        if inferred:
+            return inferred
+    except Exception:
+        pass
+
+    # An auto-selected HTTP client with an otherwise unknown endpoint is a
+    # custom route. Reporting "custom" is more actionable than preserving the
+    # config-layer "auto" label, which never went over the wire.
+    return "custom" if base_url else "auto"
+
+
+def _notify_relay_auxiliary_route(
+    client: Any,
+    kwargs: Dict[str, Any],
+    provider: str | None,
+) -> None:
+    """Publish the latest physical route without affecting request success."""
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None:
+        return
+    route_callback = context.get("route_callback")
+    if not callable(route_callback):
+        return
+
+    base_url = str(getattr(client, "base_url", "") or "")
+    try:
+        clean_base, _ = _extract_url_query_params(base_url)
+        route_callback(
+            _wire_provider_name(
+                provider or context.get("provider"),
+                clean_base,
+                context.get("main_runtime"),
+            ),
+            str(kwargs.get("model") or context.get("model") or "") or None,
+            clean_base,
+        )
+    except Exception:
+        logger.debug("route_callback error in auxiliary wire attempt", exc_info=True)
 
 
 def _record_route_info(
@@ -2619,6 +2701,7 @@ def _relay_sync_completion(
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
     # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
     callback = create or (lambda request: _create_with_progress(client, request))
+    _notify_relay_auxiliary_route(client, kwargs, provider)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
@@ -2674,6 +2757,7 @@ def _relay_sync_stream(
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
     create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))  # noqa: E731
+    _notify_relay_auxiliary_route(client, kwargs, provider)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return create(kwargs)
@@ -7309,6 +7393,7 @@ def _prepare_aux_request(
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
     route_info: Optional[Dict[str, str]], async_mode: bool,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> _PreparedAuxRequest:
     """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
@@ -7341,7 +7426,10 @@ def _prepare_aux_request(
             leak_guard_config=compression_config, max_tokens=max_tokens,
             extra_body=effective_extra_body,
         )
-    _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)
+    _set_relay_auxiliary_route(
+        request_provider, final_model, resolved_api_mode,
+        route_callback=route_callback, main_runtime=main_runtime,
+    )
     _record_route_info(route_info, _fallback_provider_from_label(request_provider), final_model)
     if async_mode:
         base_info = str(getattr(client, "base_url", "") or "")
@@ -7918,6 +8006,7 @@ def _plan_aux_call(
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
     route_info: Optional[Dict[str, str]],
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> Tuple[_PreparedAuxRequest, Dict[str, Any], Dict[str, Any]]:
     """Shared head of both call impls: prepare the request and bundle the kwargs the recovery
     drivers pass to ``_retry_same_provider_*`` / ``_call_fallback_candidate_*``. One immutable
@@ -7930,6 +8019,7 @@ def _plan_aux_call(
         max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
         reasoning_config=reasoning_config, extra_headers=extra_headers,
         api_mode=api_mode, route_info=route_info, async_mode=async_mode,
+        route_callback=route_callback,
     )
     candidate_kwargs = dict(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,
@@ -7996,32 +8086,19 @@ def _call_llm_impl(
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
     overrides task config; timeout=None reads auxiliary.{task}.timeout; extra_headers override
     client defaults. stream=True returns the raw SDK stream (caller consumes/falls back)
-    instead of a validated response. RuntimeError if no provider is configured."""
+    instead of a validated response. RuntimeError if no provider is configured.
+    route_callback: optional observer invoked immediately before every physical sync
+    wire attempt with the concrete provider, request model, and query-stripped client
+    endpoint. Later retries and fallbacks replace the caller's previous route snapshot."""
     req, retry_kwargs, candidate_kwargs = _plan_aux_call(
         task, async_mode=False, provider=provider, model=model, base_url=base_url,
         api_key=api_key, main_runtime=main_runtime, messages=messages,
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
+        route_callback=route_callback,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
-    # Report the route ACTUALLY used on the wire (after auto-detection,
-    # fallback chains, and client construction) so callers that need to
-    # attribute a failure point at the real endpoint, not the pre-resolution
-    # guess from _resolve_task_provider_model (#72636). The base_url is
-    # query-stripped so credentials some proxies carry as ?key=... are not
-    # leaked into user-facing diagnostics; the callback also re-strips
-    # defensively in case a future caller bypasses this path.
-    if route_callback is not None:
-        try:
-            _clean_base, _dropped_q = _extract_url_query_params(req.base_info or req.resolved_base_url)
-            route_callback(
-                request_provider or "auto",
-                kwargs.get("model"),
-                _clean_base,
-            )
-        except Exception:
-            logger.debug("route_callback error in call_llm", exc_info=True)
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and
     # the fallback chain (they assume a complete response); the caller owns reassembly/fallback.
     if stream:

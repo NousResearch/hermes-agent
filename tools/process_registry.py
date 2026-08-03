@@ -42,7 +42,12 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from tools.environments.local import (
+    _find_shell,
+    _quote_bash_path,
+    _resolve_safe_cwd,
+    _sanitize_subprocess_env,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -86,6 +91,22 @@ def format_uptime_short(seconds: int) -> str:
         return f"{mins}m {secs}s"
     hours, mins = divmod(mins, 60)
     return f"{hours}h {mins}m"
+
+
+def _bg_shell_command(cwd: "str | None", safe_command: str) -> str:
+    """Build the ``bash -lic`` command string for a background spawn.
+
+    The spawner passes ``cwd`` to ``Popen``/``PtyProcess``, which ``chdir(2)``s
+    before ``exec`` — but a login-interactive shell then sources rc files
+    (``~/.bash_profile``, ``~/.bashrc`` …) and any ``cd`` there silently wins,
+    redirecting the background process away from the requested directory
+    (observed with an rc ``cd /a0`` hijacking background builds). Re-pin the
+    cwd as the first command so rc-file ``cd`` statements cannot hijack the
+    process. ``exit 126`` refuses to run the command in the wrong directory
+    if the cwd became unreachable between spawn and shell startup.
+    """
+    target = cwd or os.getcwd()
+    return f"command cd -- {_quote_bash_path(target)} || exit 126; set +m; {safe_command}"
 
 
 @dataclass
@@ -735,7 +756,7 @@ class ProcessRegistry:
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {safe_command}"],
+                    [user_shell, "-lic", _bg_shell_command(session.cwd, safe_command)],
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -779,7 +800,7 @@ class ProcessRegistry:
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {safe_command}"],
+            [user_shell, "-lic", _bg_shell_command(session.cwd, safe_command)],
             text=True,
             cwd=session.cwd,
             env=bg_env,

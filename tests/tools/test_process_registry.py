@@ -1534,3 +1534,71 @@ class TestReaderLoopOrphanedPipe:
             except (ProcessLookupError, PermissionError):
                 pass
 
+
+
+class TestSpawnLocalCwdRepin:
+    """``bash -lic`` sources rc files after the spawner's chdir; an rc ``cd``
+    must not hijack a background process away from its requested cwd."""
+
+    def test_bg_shell_command_repins_cwd(self):
+        from tools.process_registry import _bg_shell_command
+
+        cmd = _bg_shell_command("/tmp/my dir", "echo hi")
+        assert cmd == "command cd -- '/tmp/my dir' || exit 126; set +m; echo hi"
+
+    def test_bg_shell_command_none_cwd_falls_back_to_getcwd(self):
+        import shlex as _shlex
+
+        from tools.process_registry import _bg_shell_command
+
+        cmd = _bg_shell_command(None, "echo hi")
+        expected = (
+            f"command cd -- {_shlex.quote(os.getcwd())} || exit 126; "
+            "set +m; echo hi"
+        )
+        assert cmd == expected
+
+    def test_spawn_local_rc_cd_cannot_hijack_cwd(self, registry, tmp_path, monkeypatch):
+        """Empirical: with rc files that ``cd /``, the process still runs in cwd."""
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        # Cover bash login (.bash_profile) + interactive (.bashrc) and zsh
+        # equivalents so the test is shell-agnostic.
+        for rc_name in (".bashrc", ".bash_profile", ".zshrc", ".zprofile"):
+            (fake_home / rc_name).write_text("cd /\n")
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        session = registry.spawn_local("pwd -P", cwd=str(workdir))
+        deadline = time.time() + 20
+        while not session.exited and time.time() < deadline:
+            time.sleep(0.05)
+        assert session.exited, "spawned pwd did not exit in time"
+        assert session.exit_code == 0, (
+            f"unexpected exit_code={session.exit_code}; output={session.output_buffer!r}"
+        )
+        lines = [ln.strip() for ln in session.output_buffer.splitlines() if ln.strip()]
+        assert lines, f"no output captured: {session.output_buffer!r}"
+        assert lines[-1] == os.path.realpath(workdir)
+
+    def test_bg_shell_command_is_dash_portable(self, tmp_path):
+        import subprocess
+
+        from tools.process_registry import _bg_shell_command
+
+        command = _bg_shell_command(str(tmp_path), "pwd -P")
+        result = subprocess.run(
+            ["dash", "-c", command], text=True, capture_output=True, check=False
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == os.path.realpath(tmp_path)
+
+    def test_bg_shell_command_converts_windows_cwd_for_git_bash(self, monkeypatch):
+        from tools.environments import local as local_mod
+        from tools.process_registry import _bg_shell_command
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        command = _bg_shell_command(r"C:\Users\liush", "pwd")
+        assert command.startswith("command cd -- /c/Users/liush || exit 126;")
+        assert r"C:\Users\liush" not in command

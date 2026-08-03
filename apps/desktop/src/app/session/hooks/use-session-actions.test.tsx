@@ -564,6 +564,36 @@ describe('startFreshSessionDraft', () => {
     )
   })
 
+  it('records failed deletion finalization without blocking durable cleanup', async () => {
+    const closeError = new Error('gateway disconnected')
+    const requestGateway = vi.fn(async () => Promise.reject(closeError))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    let handle: HarnessHandle | null = null
+
+    vi.mocked(deleteSession).mockClear()
+    setSessions([storedSession({ id: 'stored-old' })])
+    render(
+      <Harness
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionId={new Map([['stored-old', 'runtime-tile']])}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.removeSession('stored-old')
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: 'runtime-tile' })
+    expect(warn).toHaveBeenCalledWith('Failed to finalize a desktop session before deletion', closeError)
+    expect(deleteSession).toHaveBeenCalledWith('stored-old', undefined)
+    expect(requestGateway.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(deleteSession).mock.invocationCallOrder[0]
+    )
+    warn.mockRestore()
+  })
+
   it('deduplicates the selected and tiled runtime before archiving', async () => {
     const requestGateway = vi.fn(async () => ({}) as never)
     let handle: HarnessHandle | null = null

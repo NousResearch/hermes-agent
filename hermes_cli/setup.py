@@ -580,6 +580,8 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Speech-to-Text (Groq Whisper)", True, None))
     elif stt_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
         tool_status.append(("Speech-to-Text (ElevenLabs Scribe)", True, None))
+    elif stt_provider == "gladia" and get_env_value("GLADIA_API_KEY"):
+        tool_status.append(("Speech-to-Text (Gladia)", True, None))
     elif stt_provider == "xai":
         tool_status.append(("Speech-to-Text (xAI)", True, None))
     elif stt_provider == "deepinfra" and get_env_value("DEEPINFRA_API_KEY"):

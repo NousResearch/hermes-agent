@@ -450,6 +450,22 @@ export function treeTabCloseTargets(paneId: string): { all: number; others: numb
   return { all: others.length + (isUncloseablePane(paneId) ? 0 : 1), others: others.length, right: right.length }
 }
 
+/**
+ * RELOAD — a pane's remount counter, the tab menu's Reload (browser parity:
+ * right-click a tab, reload what's in it). The zone renderer keys a pane's
+ * body layer on its epoch, so bumping it unmounts the contribution and mounts
+ * it fresh — data effects re-run, measurements are retaken — while the layout
+ * tree, the tab's position, and every other tab stay exactly as they were.
+ * Absent until a pane is first reloaded (no key churn on a normal boot).
+ */
+export const $treePaneEpochs = atom<Readonly<Record<string, number>>>({})
+
+export function reloadTreePane(paneId: string): void {
+  const epochs = $treePaneEpochs.get()
+
+  $treePaneEpochs.set({ ...epochs, [paneId]: (epochs[paneId] ?? 0) + 1 })
+}
+
 /** Close a tab the way its kind expects: a tool panel leaves the strip (and
  *  syncs its toggle), everything else routes through its owning Close. */
 export function closeTabPane(paneId: string) {

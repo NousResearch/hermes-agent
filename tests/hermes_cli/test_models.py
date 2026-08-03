@@ -1480,4 +1480,3 @@ class TestLocalOllamaModelDiscovery:
                 headers={},
             )
         assert probe.call_args.kwargs["headers"] == {}
-

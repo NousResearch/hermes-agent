@@ -218,6 +218,7 @@ def _fetch_picker_live_models(
     native_catalog_provider: str,
     preserve_native_models: bool,
     headers: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> list[str] | None:
     """Fetch live picker models while preserving explicit local Ollama lists."""
     from hermes_cli.models import (
@@ -239,17 +240,24 @@ def _fetch_picker_live_models(
     if use_native:
         if preserve_native_models:
             return []
-        native_models = fetch_ollama_local_models(
-            api_url, headers=resolved_headers
-        )
+        native_kwargs = {"headers": resolved_headers}
+        if timeout is not None:
+            native_kwargs["timeout"] = timeout
+        native_models = fetch_ollama_local_models(api_url, **native_kwargs)
         if native_models is not None:
             return native_models
         # A failed native probe is not authoritative: retry the generic
         # OpenAI-compatible catalog before reporting no models.
+        generic_kwargs = {"headers": resolved_headers}
+        if timeout is not None:
+            generic_kwargs["timeout"] = timeout
         return fetch_api_models(
-            api_key, _normalize_openai_base_url(api_url), headers=resolved_headers
+            api_key, _normalize_openai_base_url(api_url), **generic_kwargs
         )
-    return fetch_api_models(api_key, api_url, headers=resolved_headers)
+    generic_kwargs = {"headers": resolved_headers}
+    if timeout is not None:
+        generic_kwargs["timeout"] = timeout
+    return fetch_api_models(api_key, api_url, **generic_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -3206,6 +3214,9 @@ def list_authenticated_providers(
                         slug,
                         bool(grp.get("has_explicit_models")),
                         headers=grp.get("extra_headers") or None,
+                        timeout=(1.5 if for_picker else 5.0)
+                        if api_key and grp.get("has_explicit_models")
+                        else None,
                     )
                     if live_models is not None and (
                         live_models or str(slug).lower().endswith("ollama")

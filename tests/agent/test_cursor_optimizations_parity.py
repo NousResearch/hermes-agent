@@ -146,6 +146,12 @@ def test_parity_persist_bounded_scan():
             self.rows = []
         def append_message(self, **kw):
             self.rows.append({k: copy.deepcopy(v) for k, v in kw.items()})
+        def append_messages_batch(self, session_id, messages, **kw):
+            for m in messages:
+                row = {k: copy.deepcopy(v) for k, v in m.items()}
+                row["session_id"] = session_id
+                self.rows.append(row)
+            return list(range(1, len(messages) + 1))
 
     def make_agent(bounded):
         a = ra.AIAgent.__new__(ra.AIAgent)

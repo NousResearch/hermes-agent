@@ -317,10 +317,11 @@ class TestVerifierEnabled:
         """Measured-work pin: the config lookup happens once per agent.
 
         The footer gate runs at the end of every turn, so a fresh
-        ``load_config()`` per call is wasted work (~1 ms deepcopy per turn,
-        see #74211 for the sibling per-turn-config kill).  The config read
-        must be cached after the first call; the env-var override must still
-        win on every call, cached or not.
+        ``load_config()`` per call is wasted work (measured ~0.9 ms/call on
+        a warm mtime-cache on this host; the sibling per-turn-config kill in
+        #74211 removed exactly this class of read).  The config read must be
+        cached after the first call; the env-var override must still win on
+        every call, cached or not.
         """
         monkeypatch.delenv("HERMES_FILE_MUTATION_VERIFIER", raising=False)
         agent = _bare_agent()

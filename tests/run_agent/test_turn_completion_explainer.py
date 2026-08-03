@@ -297,8 +297,9 @@ def test_explainer_config_read_once_then_cached():
     """Measured-work pin: the config lookup happens once per agent.
 
     The explainer gate runs at the end of every turn, so a fresh
-    ``load_config()`` per call is wasted work (per-turn config reads were
-    killed repo-wide in #74211; this seam was missed).  The config read must
+    ``load_config()`` per call is wasted work (measured ~0.9 ms/call on a
+    warm mtime-cache on this host; per-turn config reads were killed
+    repo-wide in #74211, and this seam was missed).  The config read must
     be cached after the first call; the env-var override must still win on
     every call, cached or not.
     """

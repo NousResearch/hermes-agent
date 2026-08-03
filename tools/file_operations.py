@@ -1564,10 +1564,12 @@ class ShellFileOperations(FileOperations):
         self._snapshot_lsp_baseline(path)
 
         # Write atomically.  ``mkdir -p`` is folded into _atomic_write
-        # (one fewer subprocess vs. a separate mkdir call).  Report
-        # dirs_created as True when the parent wasn't obviously present;
-        # we don't stat to avoid an extra syscall — if the mkdir succeeds
-        # or was already there, _atomic_write handles it.
+        # (one fewer subprocess vs. a separate mkdir call).
+        # ``dirs_created`` has always meant "parent dirs ensured" —
+        # ``mkdir -p`` exits 0 even when the dirs pre-exist, so the old
+        # separate-mkdir code reported True in exactly the same cases.
+        # A mkdir failure now surfaces as the atomic-write error return
+        # below, before this field is ever emitted.
         parent = os.path.dirname(path)
         dirs_created = bool(parent)
 
@@ -1592,12 +1594,15 @@ class ShellFileOperations(FileOperations):
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
         # Get bytes written — compute from the content we just wrote
-        # (len(content.encode('utf-8')) matches wc -c for UTF-8) instead
-        # of spawning a ``wc -c`` subprocess. ``surrogatepass`` mirrors the
-        # sha256 verification block below: content that flowed through a
-        # surrogateescape decode (backend output via patch_replace) may
-        # carry lone surrogates a strict encode would reject.
-        bytes_written = len(content.encode('utf-8', 'surrogatepass'))
+        # (len of the UTF-8 encoding matches wc -c) instead of spawning a
+        # ``wc -c`` subprocess. ``surrogatepass`` matches the sha256
+        # verification below: content that flowed through a surrogateescape
+        # decode (backend output via patch_replace) may carry lone
+        # surrogates a strict encode would reject.  Encode ONCE and share
+        # the bytes with the sha256 block — a second full encode of a
+        # multi-MB file is measurable.
+        content_bytes = content.encode('utf-8', 'surrogatepass')
+        bytes_written = len(content_bytes)
 
         # Post-write content verification (cheap, one shell call): compare
         # the on-disk sha256 to the intended content's hash. Production
@@ -1612,7 +1617,7 @@ class ShellFileOperations(FileOperations):
             hash_result = self._exec(hash_cmd)
             if hash_result.exit_code == 0 and hash_result.stdout.strip():
                 disk_sha = hash_result.stdout.strip().split()[0]
-                expected_sha = hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()
+                expected_sha = hashlib.sha256(content_bytes).hexdigest()
                 content_verified = disk_sha == expected_sha
                 if not content_verified:
                     return WriteResult(

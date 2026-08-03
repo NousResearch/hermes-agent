@@ -29,6 +29,7 @@ Usage:
 """
 
 import difflib
+import inspect
 import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Any
@@ -517,6 +518,24 @@ def apply_v4a_operations(operations: List[PatchOperation],
     )
 
 
+def _write_file_accepts_pre_content(file_ops: Any) -> bool:
+    """True when ``file_ops.write_file`` accepts a ``pre_content`` kwarg.
+
+    Decided from the signature (not by catching TypeError around the call)
+    so a TypeError raised *inside* a capable ``write_file`` propagates
+    instead of triggering a second, duplicate write.  Unintrospectable
+    callables (some C-implemented ones) conservatively get the basic
+    two-argument form.
+    """
+    try:
+        params = inspect.signature(file_ops.write_file).parameters
+    except (TypeError, ValueError):
+        return False
+    return "pre_content" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
 def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optional[str], Optional[dict]]:
     """Apply an add file operation.
 
@@ -686,11 +705,14 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optiona
     # a redundant cat subprocess inside write_file.  Fall back to the
     # two-argument form when the file_ops implementation doesn't accept
     # ``pre_content`` (duck-typed callers that only implement the basic
-    # ``write_file(path, content)`` contract).
-    try:
+    # ``write_file(path, content)`` contract).  Feature-detect via the
+    # signature instead of catching TypeError around the call: a TypeError
+    # raised *inside* a pre_content-capable write_file must propagate, not
+    # trigger a second (double) write.
+    if _write_file_accepts_pre_content(file_ops):
         write_result = file_ops.write_file(op.file_path, new_content,
                                            pre_content=current_content)
-    except TypeError:
+    else:
         write_result = file_ops.write_file(op.file_path, new_content)
     if write_result.error:
         return False, write_result.error, None, None

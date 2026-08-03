@@ -692,6 +692,62 @@ class _DictFileOps:
         return SimpleNamespace(error=None)
 
 
+class TestDuckTypedWriteFileCompat:
+    """V4A UPDATE must work with basic write_file(path, content) impls.
+
+    apply_v4a_operations is duck-typed (file_ops: Any); external callers may
+    only implement the two-argument contract. The signature-based feature
+    detection must route them to the 2-arg call — and must NOT swallow a
+    TypeError raised INSIDE a pre_content-capable write_file (which would
+    trigger a duplicate write).
+    """
+
+    PATCH = (
+        "*** Begin Patch\n"
+        "*** Update File: f.py\n"
+        "@@\n"
+        "-x = 1\n"
+        "+x = 2\n"
+        "*** End Patch"
+    )
+
+    def test_two_arg_write_file_still_supported(self):
+        calls = []
+
+        class BasicOps(_DictFileOps):
+            def write_file(self, path, content):  # no pre_content
+                calls.append(path)
+                self.files[path] = content
+                return SimpleNamespace(error=None)
+
+        ops, err = parse_v4a_patch(self.PATCH)
+        assert err is None
+        fo = BasicOps({"f.py": "x = 1\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        assert fo.files["f.py"] == "x = 2\n"
+        assert calls == ["f.py"]  # exactly one write, no double invocation
+
+    def test_internal_typeerror_not_silently_retried(self):
+        # A TypeError raised INSIDE a pre_content-capable write_file must not
+        # trigger a second 2-arg write. (The op-loop's blanket except turns it
+        # into a failed result — the key contract is: ONE call, error surfaced.)
+        calls = []
+
+        class ExplodingOps(_DictFileOps):
+            def write_file(self, path, content, pre_content=None):
+                calls.append(path)
+                raise TypeError("bug inside a pre_content-capable impl")
+
+        ops, err = parse_v4a_patch(self.PATCH)
+        assert err is None
+        fo = ExplodingOps({"f.py": "x = 1\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is False
+        assert "bug inside" in result.error
+        assert calls == ["f.py"]  # not silently retried with 2 args
+
+
 class TestMoveThenUpdateSameFile:
     """A rename-then-edit patch must validate and apply (was rejected).
 

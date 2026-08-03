@@ -112,6 +112,70 @@ def test_approval_adds_to_configured_allowlist(store, monkeypatch):
     assert captured.get("TELEGRAM_ALLOWED_USERS") == "owner1,newuser99"
 
 
+def test_profile_approval_mirrors_only_profile_allowlist(tmp_path, monkeypatch):
+    """A named profile grant must not read or overwrite the root allowlist."""
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    root_env = root / ".env"
+    profile_env = profile_home / ".env"
+    root_env.write_text("TELEGRAM_ALLOWED_USERS=root-owner\n", encoding="utf-8")
+    profile_env.write_text(
+        "TELEGRAM_ALLOWED_USERS=profile-owner\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "root-owner")
+
+    from gateway.pairing import PairingStore
+
+    profile_store = PairingStore(profile="worker")
+    _approve_new_user(profile_store, "telegram", "new-profile-user")
+
+    assert profile_env.read_text(encoding="utf-8") == (
+        "TELEGRAM_ALLOWED_USERS=profile-owner,new-profile-user\n"
+    )
+    assert root_env.read_text(encoding="utf-8") == (
+        "TELEGRAM_ALLOWED_USERS=root-owner\n"
+    )
+    assert os.environ["TELEGRAM_ALLOWED_USERS"] == "root-owner"
+
+
+def test_profile_revoke_updates_only_profile_allowlist(tmp_path, monkeypatch):
+    """A named profile revoke must leave root disk and process env untouched."""
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    root_env = root / ".env"
+    profile_env = profile_home / ".env"
+    root_env.write_text(
+        "TELEGRAM_ALLOWED_USERS=root-owner,revoked-user\n", encoding="utf-8"
+    )
+    profile_env.write_text(
+        "TELEGRAM_ALLOWED_USERS=profile-owner,revoked-user\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv(
+        "TELEGRAM_ALLOWED_USERS", "root-owner,revoked-user"
+    )
+
+    from gateway.pairing import PairingStore
+
+    profile_store = PairingStore(profile="worker")
+    profile_store._save_json(
+        profile_store._approved_path("telegram"),
+        {"revoked-user": {"user_name": "", "approved_at": 1.0}},
+    )
+
+    assert profile_store.revoke("telegram", "revoked-user") is True
+    assert profile_env.read_text(encoding="utf-8") == (
+        "TELEGRAM_ALLOWED_USERS=profile-owner\n"
+    )
+    assert root_env.read_text(encoding="utf-8") == (
+        "TELEGRAM_ALLOWED_USERS=root-owner,revoked-user\n"
+    )
+    assert os.environ["TELEGRAM_ALLOWED_USERS"] == "root-owner,revoked-user"
+
+
 def test_revoke_removes_from_allowlist(store, monkeypatch):
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1,newuser99")
     saved = {}

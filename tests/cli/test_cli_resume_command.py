@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
+from run_agent import AIAgent
 
 
 def _make_cli():
@@ -86,6 +87,68 @@ class TestCliResumeCommand:
         assert cli_obj.session_id == "sess_001"
         assert "Resumed session sess_001" in printed
         assert "Research" in printed
+
+    def test_resume_runs_external_context_engine_transition(self):
+        """A reused agent must bind an ordinary engine to the resumed session."""
+        cli_obj = _make_cli()
+        cli_obj.conversation_history = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+        cli_obj._session_db.get_session.return_value = {
+            "id": "target",
+            "title": "Target",
+        }
+        cli_obj._session_db.get_resume_conversations.return_value = (
+            [{"role": "user", "content": "restored"}],
+            [{"role": "user", "content": "restored"}],
+        )
+        cli_obj._session_db.resolve_resume_session_id.return_value = "target"
+
+        calls = []
+
+        class ExternalEngine:
+            context_length = 100_000
+
+            def on_session_end(self, session_id, messages):
+                calls.append(("end", session_id, list(messages)))
+
+            def on_session_reset(self):
+                calls.append(("reset",))
+
+            def on_session_start(self, session_id, **kwargs):
+                calls.append(("start", session_id, kwargs))
+
+        agent = MagicMock()
+        agent.session_id = "current_session"
+        agent.context_compressor = ExternalEngine()
+        agent.reset_session_state.side_effect = lambda **kwargs: (
+            AIAgent._transition_context_engine_session(
+                agent,
+                new_session_id=agent.session_id,
+                reset_engine=True,
+                **kwargs,
+            )
+        )
+        cli_obj.agent = agent
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
+            patch("cli._cprint"),
+        ):
+            cli_obj._handle_resume_command("/resume target")
+
+        assert calls[0] == (
+            "end",
+            "current_session",
+            [
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+            ],
+        )
+        assert calls[1] == ("reset",)
+        assert calls[2][0:2] == ("start", "target")
+        assert calls[2][2]["old_session_id"] == "current_session"
 
     def test_handle_resume_by_index_out_of_range(self):
         cli_obj = _make_cli()

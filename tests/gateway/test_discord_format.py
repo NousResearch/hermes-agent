@@ -54,7 +54,21 @@ class TestDiscordToolPreviewFormatting:
 
         out = adapter.format_tool_preview(ToolPreview(visible, truncated=True, url=url))
 
-        assert out == f"[{visible}]({url})"
+        assert out == f"[hermes-agent.nousresearch...]({url})"
+
+    def test_truncated_url_label_is_not_a_second_url_target(self):
+        from agent.display import ToolPreview
+
+        adapter = _make_discord_adapter()
+        url = "https://centaur.run/secrets/advanced-permissioning"
+        visible = "https://centaur.run/secrets/advanced-..."
+
+        out = adapter.format_tool_preview(ToolPreview(visible, truncated=True, url=url))
+
+        assert out == (
+            "[centaur.run/secrets/advanced-...]"
+            "(https://centaur.run/secrets/advanced-permissioning)"
+        )
 
     def test_link_escapes_discord_markdown_delimiters(self):
         from agent.display import ToolPreview
@@ -67,7 +81,7 @@ class TestDiscordToolPreviewFormatting:
         )
 
         assert adapter.format_tool_preview(preview) == (
-            r"[https://example.com/docs/\[beta\]...]"
+            r"[example.com/docs/\[beta\]...]"
             r"(https://example.com/docs/_%28beta%29)"
         )
 
@@ -85,7 +99,7 @@ class TestDiscordToolPreviewFormatting:
         )
 
         assert out is not None
-        assert f"[{visible}]({url})" in out
+        assert f"[{visible.removeprefix('https://')}]({url})" in out
 
     def test_untruncated_url_remains_plain(self):
         from agent.display import ToolPreview

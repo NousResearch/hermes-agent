@@ -2602,3 +2602,38 @@ class TestHandleProcessTransformHook:
         assert original_secret not in out["output"]
         assert replacement_secret not in out["output"]
         assert "OPENAI_API_KEY=" in out["output"]
+
+
+def test_completion_queue_transforms_and_redacts_output(registry, monkeypatch):
+    """CLI completion events must not bypass the shared output pipeline."""
+    import agent.redact as redact_module
+
+    original_secret = "sk-proj-abc123def456ghi789jkl012mno345"
+    replacement_secret = "sk-proj-zyx987wvu654tsr321qpo098nml765"
+    session = _make_session(
+        sid="proc_completion_hook",
+        command="echo background",
+        task_id="task-completion",
+        output=f"raw output with {original_secret}",
+        exited=True,
+        exit_code=0,
+    )
+    session.notify_on_complete = True
+    registry._running[session.id] = session
+    seen = []
+
+    def _transform(hook_name, **kwargs):
+        if hook_name == "transform_terminal_output":
+            seen.append(kwargs["output"])
+            return [f"hook output with {replacement_secret}"]
+        return []
+
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _transform)
+    monkeypatch.setattr(redact_module, "_REDACT_ENABLED", True)
+    with patch.object(registry, "_write_checkpoint"):
+        registry._move_to_finished(session)
+
+    event = registry.completion_queue.get_nowait()
+    assert seen == [f"raw output with {original_secret}"]
+    assert original_secret not in event["output"]
+    assert replacement_secret not in event["output"]

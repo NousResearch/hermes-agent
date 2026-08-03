@@ -25691,7 +25691,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
           - ``error``  — final raw-output message only when exit code != 0
           - ``off``    — no messages at all
         """
-        from tools.process_registry import process_registry
+        from tools.process_registry import process_registry, transform_terminal_output
 
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
@@ -25738,10 +25738,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # (#10156) — a status check must not suppress this delivery turn.
                 from tools.process_registry import format_process_notification, process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
-                    from agent.redact import redact_terminal_output
-                    from tools.ansi_strip import strip_ansi
                     _command = getattr(session, "command", "") or ""
-                    _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
+                    _raw = session.output_buffer if session.output_buffer else ""
+                    _raw = transform_terminal_output(
+                        _raw,
+                        command=_command,
+                        returncode=session.exit_code,
+                        task_id=getattr(session, "task_id", "") or "",
+                    )
+                    from tools.ansi_strip import strip_ansi
+                    from agent.redact import redact_terminal_output
+                    _raw = strip_ansi(_raw)
                     _raw = redact_terminal_output(_raw, _command)
                     _command = _redact_gateway_user_facing_secrets(_command)
                     # Truncate at line boundaries so notifications never start
@@ -25822,7 +25829,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if should_notify:
                     new_output = session.output_buffer[-1000:] if session.output_buffer else ""
                     if new_output:
+                        new_output = transform_terminal_output(
+                            new_output,
+                            command=getattr(session, "command", "") or "",
+                            returncode=session.exit_code,
+                            task_id=getattr(session, "task_id", "") or "",
+                        )
+                        from tools.ansi_strip import strip_ansi
                         from agent.redact import redact_terminal_output
+                        new_output = strip_ansi(new_output)
                         new_output = redact_terminal_output(
                             new_output, getattr(session, "command", "") or ""
                         )
@@ -25873,7 +25888,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Skip periodic updates for agent_notify watchers (they only care about completion)
                 new_output = session.output_buffer[-500:] if session.output_buffer else ""
                 if new_output:
+                    new_output = transform_terminal_output(
+                        new_output,
+                        command=getattr(session, "command", "") or "",
+                        returncode=session.exit_code,
+                        task_id=getattr(session, "task_id", "") or "",
+                    )
+                    from tools.ansi_strip import strip_ansi
                     from agent.redact import redact_terminal_output
+                    new_output = strip_ansi(new_output)
                     new_output = redact_terminal_output(
                         new_output, getattr(session, "command", "") or ""
                     )

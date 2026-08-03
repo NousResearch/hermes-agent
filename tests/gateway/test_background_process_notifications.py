@@ -180,6 +180,55 @@ async def test_consumed_completion_skips_raw_notification_without_agent_notify(
 
 
 @pytest.mark.asyncio
+async def test_completion_notification_transforms_and_redacts_hook_output(
+    monkeypatch, tmp_path
+):
+    """Autonomous completion delivery uses the same hook/redaction pipeline.
+
+    This exercises the gateway watcher, which does not pass through the
+    process tool's ``_handle_process`` result seam.
+    """
+    import agent.redact as redact_module
+    import tools.process_registry as pr_module
+
+    original_secret = "sk-proj-abc123def456ghi789jkl012mno345"
+    replacement_secret = "sk-proj-zyx987wvu654tsr321qpo098nml765"
+    sessions = [SimpleNamespace(
+        output_buffer=f"raw output with {original_secret}",
+        exited=True,
+        exit_code=0,
+        command="echo background",
+        task_id="task-background",
+        completion_reason="exited",
+        termination_source="",
+        started_at=0,
+    )]
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False)
+    )
+    seen = []
+
+    def _transform(hook_name, **kwargs):
+        if hook_name == "transform_terminal_output":
+            seen.append(kwargs["output"])
+            return [f"hook output with {replacement_secret}"]
+        return []
+
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _transform)
+    monkeypatch.setattr(redact_module, "_REDACT_ENABLED", True)
+
+    runner = _build_runner(monkeypatch, tmp_path, "result")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    await runner._run_process_watcher(_watcher_dict())
+
+    adapter.send.assert_awaited_once()
+    message = adapter.send.await_args.args[1]
+    assert seen == [f"raw output with {original_secret}"]
+    assert original_secret not in message
+    assert replacement_secret not in message
+
+
+@pytest.mark.asyncio
 async def test_inject_watch_notification_routes_from_session_store_origin(monkeypatch, tmp_path):
     from gateway.session import SessionSource
 

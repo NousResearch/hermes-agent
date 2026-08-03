@@ -363,6 +363,45 @@ def format_uptime_short(seconds: int) -> str:
     return f"{hours}h {mins}m"
 
 
+def transform_terminal_output(
+    output: str,
+    *,
+    command: str = "",
+    returncode: Optional[int] = None,
+    task_id: str = "",
+    env_type: str = "",
+) -> str:
+    """Apply the terminal-output hook to one background-process payload.
+
+    Background output has several consumers (process actions, autonomous
+    gateway notifications, and the CLI completion queue). Keeping the hook at
+    this seam gives every consumer the same fail-open, first-string-wins
+    behavior as the foreground terminal path.
+    """
+    if not isinstance(output, str) or not output:
+        return output
+
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        hook_results = invoke_hook(
+            "transform_terminal_output",
+            command=command,
+            output=output,
+            returncode=returncode,
+            task_id=task_id or "",
+            env_type=env_type or "",
+        )
+        for hook_result in hook_results:
+            if isinstance(hook_result, str):
+                return hook_result
+    except Exception:
+        # Hooks are optional extensions. A broken plugin must never make a
+        # background process result unavailable.
+        pass
+    return output
+
+
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
@@ -1571,7 +1610,7 @@ class ProcessRegistry:
         if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
-            notification = {
+            completion = {
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
@@ -1586,8 +1625,9 @@ class ProcessRegistry:
                 # based on which watcher notices exit first.
                 "started_at": session.started_at,
             }
-            _redact_process_result(notification)
-            self.completion_queue.put(notification)
+            self.completion_queue.put(
+                _redact_process_result(completion, task_id=session.task_id)
+            )
 
     # ----- Query Methods -----
 
@@ -3071,32 +3111,17 @@ def _redact_process_result(result: dict, *, task_id: str = "") -> dict:
     # Match the foreground terminal path: transform raw output first, then
     # redact the final value. This prevents a hook replacement from injecting
     # an unmasked credential into the model-visible result.
-    try:
-        from hermes_cli.lifecycle import invoke_hook
-
-        # ``exit_code`` is only present once the process has exited, so a poll
-        # on a running process and every ``log`` read have none. Pass that
-        # through as None instead of defaulting to 0, which would tell a plugin
-        # the command succeeded when it has not finished at all.
-        returncode = result.get("exit_code")
-        for field in ("output", "output_preview"):
-            value = result.get(field)
-            if not isinstance(value, str) or not value:
-                continue
-            hook_results = invoke_hook(
-                "transform_terminal_output",
+    returncode = result.get("exit_code")
+    for field in ("output", "output_preview"):
+        value = result.get(field)
+        if isinstance(value, str) and value:
+            result[field] = transform_terminal_output(
+                value,
                 command=command,
-                output=value,
                 returncode=returncode,
-                task_id=task_id or "",
-                env_type="",
+                task_id=task_id,
+                env_type=result.get("env_type", ""),
             )
-            for hook_result in hook_results:
-                if isinstance(hook_result, str):
-                    result[field] = hook_result
-                    break
-    except Exception:
-        pass
 
     from agent.redact import redact_sensitive_text, redact_terminal_output
 

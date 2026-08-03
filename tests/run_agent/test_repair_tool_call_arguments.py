@@ -54,6 +54,28 @@ class TestRepairToolCallArguments:
         result = _repair_tool_call_arguments('{"a": [1, 2]}', "t")
         assert json.loads(result) == {"a": [1, 2]}
 
+    def test_string_aware_scan_ignores_bracket_in_string_value(self):
+        # Regression (2026-08-03, reviewer finding): a literal '[' inside a
+        # quoted string value is NOT a structural delimiter. A string-blind
+        # scan pushed ']' for it, leaving '{"a":"[" unterminated and falling
+        # back to '{}'. The string/escape-aware scan must preserve it.
+        result = _repair_tool_call_arguments('{"a":"[","b":[1,2', "t")
+        assert result == '{"a":"[","b":[1,2]}', f"got {result!r}"
+        assert json.loads(result) == {"a": "[", "b": [1, 2]}
+
+    def test_string_aware_scan_ignores_brace_in_string_value(self):
+        result = _repair_tool_call_arguments('{"a":"{","b":{"x":1', "t")
+        assert json.loads(result) == {"a": "{", "b": {"x": 1}}
+
+    def test_string_aware_scan_handles_escaped_quotes(self):
+        # A backslash-escaped quote inside a string must not close it.
+        result = _repair_tool_call_arguments('{"a":"\\"","b":[1,2', "t")
+        assert json.loads(result) == {"a": '"', "b": [1, 2]}
+
+    def test_string_aware_scan_ignores_delimiters_after_closed_string(self):
+        result = _repair_tool_call_arguments('{"a":"]","b":{', "t")
+        assert json.loads(result) == {"a": "]", "b": {}}
+
 
 
     # -- Stage 5: excess closing delimiters --

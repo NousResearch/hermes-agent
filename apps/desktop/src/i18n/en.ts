@@ -932,7 +932,9 @@ export const en: Translations = {
       },
       autoReload: {
         threshold: 'Threshold',
+        thresholdAria: 'Auto-refill threshold',
         reloadTo: 'Reload to',
+        reloadToAria: 'Auto-refill reload-to amount',
         turnOffConfirm: 'Turn off auto-refill?',
         turnOff: 'Turn off',
         disable: 'Disable',
@@ -961,7 +963,13 @@ export const en: Translations = {
           title: 'Payment method',
           description: 'Manage the card used for top-ups and subscription renewals.',
           addAction: 'Add payment method',
-          updateAction: 'Update'
+          updateAction: 'Update',
+          provenance: {
+            autoRefill: 'auto-refill card',
+            customerDefault: 'customer default',
+            subPin: 'subscription card',
+            suffix: label => ` - ${label}`
+          }
         },
         buyCredits: {
           description: 'A single charge on your card, added to your balance today.'
@@ -1063,12 +1071,17 @@ export const en: Translations = {
         },
         rateLimited: {
           title: 'Too many charges right now',
-          message: (mins: string) =>
-            `🟡 Too many charges right now${mins}. This isn't a payment failure.`
+          message: (mins: number) =>
+            mins > 0
+              ? `🟡 Too many charges right now (try again in ~${mins} min). This isn't a payment failure.`
+              : "🟡 Too many charges right now. This isn't a payment failure."
         },
         stripeUnavailable: {
           title: 'Stripe is having trouble',
-          message: (mins: string) => `Stripe is having trouble — try again shortly${mins}`
+          message: (mins: number) =>
+            mins > 0
+              ? `Stripe is having trouble — try again in ~${mins} min`
+              : 'Stripe is having trouble — try again shortly'
         },
         upgradeCapExceeded: {
           title: 'Daily plan-change limit reached',

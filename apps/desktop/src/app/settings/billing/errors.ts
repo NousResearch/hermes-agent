@@ -11,13 +11,13 @@ export interface BillingRefusalPresentation {
 const portalAction = (url?: string): BillingRefusalPresentation['action'] => ({ type: 'portal', url })
 
 const retryMessage = (refusal: BillingRefusal): string => {
-  const mins = refusal.retryAfter ? ` (try again in ~${Math.max(1, Math.round(refusal.retryAfter / 60))} min)` : ''
+  const mins = refusal.retryAfter ? Math.max(1, Math.round(refusal.retryAfter / 60)) : 0
 
   return translateNow('settings.billing.errors.rateLimited.message', mins)
 }
 
 const stripeRetryMessage = (refusal: BillingRefusal): string => {
-  const mins = refusal.retryAfter ? ` (try again in ~${Math.max(1, Math.round(refusal.retryAfter / 60))} min)` : ''
+  const mins = refusal.retryAfter ? Math.max(1, Math.round(refusal.retryAfter / 60)) : 0
 
   return translateNow('settings.billing.errors.stripeUnavailable.message', mins)
 }

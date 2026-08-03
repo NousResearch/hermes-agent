@@ -809,7 +809,9 @@ export interface Translations {
       }
       autoReload: {
         threshold: string
+        thresholdAria: string
         reloadTo: string
+        reloadToAria: string
         turnOffConfirm: string
         turnOff: string
         disable: string
@@ -830,6 +832,12 @@ export interface Translations {
           description: string
           addAction: string
           updateAction: string
+          provenance: {
+            autoRefill: string
+            customerDefault: string
+            subPin: string
+            suffix: (label: string) => string
+          }
         }
         buyCredits: {
           description: string
@@ -900,11 +908,11 @@ export interface Translations {
         }
         rateLimited: {
           title: string
-          message: (mins: string) => string
+          message: (mins: number) => string
         }
         stripeUnavailable: {
           title: string
-          message: (mins: string) => string
+          message: (mins: number) => string
         }
         upgradeCapExceeded: { title: string; message: string }
         endpointUnavailable: { title: string; message: string }

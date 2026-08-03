@@ -166,6 +166,8 @@ export function useBillingState(enabled = true) {
 
 export function useSubscriptionState(enabled = true) {
   const api = useBillingApi()
+  // Subscribe to locale changes so deriveBillingView re-runs with the new language.
+  useI18n()
 
   return useQuery({
     ...BILLING_QUERY_OPTIONS,
@@ -791,12 +793,12 @@ function provenanceSuffix(resolvedVia?: null | string): string {
   }
 
   const labels: Record<string, string> = {
-    autoRefill: 'auto-refill card',
-    customerDefault: 'customer default',
-    subPin: 'subscription card'
+    autoRefill: translateNow('settings.billing.state.paymentMethod.provenance.autoRefill'),
+    customerDefault: translateNow('settings.billing.state.paymentMethod.provenance.customerDefault'),
+    subPin: translateNow('settings.billing.state.paymentMethod.provenance.subPin')
   }
 
-  return ` - ${labels[resolvedVia] ?? resolvedVia}`
+  return translateNow('settings.billing.state.paymentMethod.provenance.suffix', labels[resolvedVia] ?? resolvedVia)
 }
 
 function capitalize(value: string): string {

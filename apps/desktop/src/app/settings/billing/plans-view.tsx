@@ -158,9 +158,9 @@ function PlanCard({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierVi
       )}
 
       <div className="mt-auto min-w-0 pt-1">
-        {isCurrent && <Pill tone="primary">Current plan</Pill>}
+        {isCurrent && <Pill tone="primary">{bp.current}</Pill>}
 
-        {tier.state === 'scheduled' && <Pill>Scheduled</Pill>}
+        {tier.state === 'scheduled' && <Pill>{bp.scheduled}</Pill>}
 
         {tier.state === 'upgrade' && (
           <Button
@@ -186,7 +186,7 @@ function PlanCard({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierVi
               type="button"
               variant="outline"
             >
-              Downgrade
+              {bp.downgrade}
             </Button>
           ))}
       </div>

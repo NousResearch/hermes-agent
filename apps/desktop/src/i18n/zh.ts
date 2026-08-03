@@ -1135,7 +1135,9 @@ export const zh: Translations = {
       },
       autoReload: {
         threshold: '阈值',
+        thresholdAria: '自动充值阈值',
         reloadTo: '充值至',
+        reloadToAria: '自动充值金额',
         turnOffConfirm: '关闭自动充值？',
         turnOff: '关闭',
         disable: '禁用',
@@ -1163,7 +1165,13 @@ export const zh: Translations = {
           title: '支付方式',
           description: '管理用于购买和自动充值的银行卡。',
           addAction: '添加支付方式',
-          updateAction: '更新支付方式'
+          updateAction: '更新支付方式',
+          provenance: {
+            autoRefill: '自动充值卡',
+            customerDefault: '客户默认',
+            subPin: '订阅卡',
+            suffix: label => ` - ${label}`
+          }
         },
         buyCredits: {
           description: '购买的额度永不过期。'
@@ -1258,11 +1266,11 @@ export const zh: Translations = {
         },
         rateLimited: {
           title: '请求过于频繁',
-          message: mins => `请求过多。请在 ${mins} 分钟后重试。`
+          message: mins => (mins > 0 ? `请求过多。请在 ${mins} 分钟后重试。` : '请求过多。请稍后重试。')
         },
         stripeUnavailable: {
           title: '账单不可用',
-          message: mins => `账单暂时不可用。请在 ${mins} 分钟后重试。`
+          message: mins => (mins > 0 ? `账单暂时不可用。请在 ${mins} 分钟后重试。` : '账单暂时不可用。请稍后重试。')
         },
         upgradeCapExceeded: {
           title: '超出升级上限',

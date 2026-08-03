@@ -232,11 +232,15 @@ class TestLazyFirstUseConnect:
         mock_run.assert_not_called()
 
     def test_lazy_connect_success_clears_lazy_state(self):
-        mcp._lazy_server_configs["playwright"] = {"command": "npx", "lazy": True}
+        config = {"command": "npx", "lazy": True}
+        mcp._lazy_server_configs["playwright"] = dict(config)
         mcp._lazy_server_fingerprints["playwright"] = "abc"
         mcp._lazy_server_tool_names["playwright"] = ["mcp_playwright_browser_navigate"]
 
-        connected = SimpleNamespace(session=MagicMock())
+        connected = SimpleNamespace(
+            session=MagicMock(),
+            _registered_tool_names=["mcp_playwright_browser_navigate"],
+        )
 
         def _fake_run(coro_or_factory, timeout=30):
             mcp._servers["playwright"] = connected
@@ -251,6 +255,37 @@ class TestLazyFirstUseConnect:
         assert "playwright" not in mcp._lazy_server_configs
         assert "playwright" not in mcp._lazy_server_fingerprints
         assert "playwright" not in mcp._lazy_server_tool_names
+
+    def test_lazy_connect_deregisters_phantom_cached_tools(self):
+        # Stale-cache reconciliation: the cached manifest advertised tool X,
+        # but the live server only registers tool Y → X must be deregistered
+        # after the first-use connect so the model stops seeing a phantom.
+        from tools.registry import registry
+
+        mcp._lazy_server_configs["playwright"] = {"command": "npx", "lazy": True}
+        mcp._lazy_server_fingerprints["playwright"] = "stale-fp"
+        mcp._lazy_server_tool_names["playwright"] = [
+            "mcp_playwright_tool_x",
+            "mcp_playwright_tool_y",
+        ]
+
+        connected = SimpleNamespace(
+            session=MagicMock(),
+            _registered_tool_names=["mcp_playwright_tool_y"],
+        )
+
+        def _fake_run(coro_or_factory, timeout=30):
+            mcp._servers["playwright"] = connected
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+            coro.close()
+            return ["mcp_playwright_tool_y"]
+
+        with patch.object(mcp, "_ensure_mcp_loop"), \
+             patch.object(mcp, "_run_on_mcp_loop", side_effect=_fake_run), \
+             patch.object(registry, "deregister") as mock_dereg:
+            assert mcp._ensure_lazy_server_connected("playwright") is True
+
+        mock_dereg.assert_called_once_with("mcp_playwright_tool_x")
 
     def test_lazy_connect_failure_records_cooldown(self):
         mcp._lazy_server_configs["playwright"] = {"command": "npx", "lazy": True}
@@ -268,6 +303,21 @@ class TestLazyFirstUseConnect:
         mock_record.assert_called_once_with("playwright")
         # Config retained so a later call can retry after cooldown.
         assert "playwright" in mcp._lazy_server_configs
+
+
+class TestCacheLoadDescriptionScan:
+    def test_scan_runs_on_cache_load_path(self):
+        # Defense-in-depth: the cache file is user-writable JSON, so the
+        # cache-load registration path must run the same injection scan as
+        # eager discovery.
+        entry = _fake_cache_entry()
+        config = {"command": "npx", "args": [], "lazy": True}
+        with patch.object(mcp, "_scan_mcp_description", return_value=[]) as mock_scan, \
+             patch.object(mcp, "_convert_mcp_schema", side_effect=RuntimeError("stop")), \
+             pytest.raises(RuntimeError):
+            mcp._register_from_cache_sync("playwright", config, entry)
+
+        mock_scan.assert_called_once_with("playwright", "browser_navigate", "Navigate")
 
 
 class TestResolveServerLazy:

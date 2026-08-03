@@ -2064,6 +2064,16 @@ def cmd_verify(args):
     sys.exit(run_verify_command(args))
 
 
+def cmd_repair_stats(args):
+    """Show tool-call repair observability stats (operator surface)."""
+    try:
+        from agent.tool_repair_stats import get_stats
+
+        print(get_stats().summary())
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"Tool-call repair stats unavailable: {exc}")
+
+
 def cmd_security(args):
     """Dispatch `hermes security <subcmd>`."""
     sub = getattr(args, "security_command", None)
@@ -3213,6 +3223,12 @@ def _build_cli_parser():
     build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
     build_verify_parser(subparsers, cmd_verify=cmd_verify)
     build_security_parser(subparsers, cmd_security=cmd_security)
+    # Operator surface for tool-call repair observability (port of PR #62640/#77941).
+    repair_stats_parser = subparsers.add_parser(
+        "repair-stats",
+        help="Show tool-call repair observability stats (operator surface)",
+    )
+    repair_stats_parser.set_defaults(func=cmd_repair_stats)
     build_approvals_parser(subparsers, cmd_approvals=cmd_approvals)
     build_dump_parser(subparsers, cmd_dump=cmd_dump)
     build_debug_parser(subparsers, cmd_debug=cmd_debug)

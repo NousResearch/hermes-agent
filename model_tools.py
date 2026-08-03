@@ -593,6 +593,125 @@ class _CallIds:
         """Same fields with None -> "" (hook/middleware wire contract)."""
         return {k: v or "" for k, v in asdict(self).items()}
 
+def _try_record_repair(pattern: str, tool_name: str) -> None:
+    """Record a repair observability event.  No-op when stats unavailable."""
+    try:
+        from agent.tool_repair_stats import record_repair, RepairPattern
+
+        record_repair(RepairPattern(pattern), tool_name)
+    except Exception:
+        pass
+
+
+def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce tool call arguments to match their JSON Schema types.
+
+    LLMs frequently return numbers as strings (``"42"`` instead of ``42``)
+    and booleans as strings (``"true"`` instead of ``true``).  This compares
+    each argument value against the tool's registered JSON Schema and attempts
+    safe coercion when the value is a string but the schema expects a different
+    type.  Original values are preserved when coercion fails.
+
+    Handles ``"type": "integer"``, ``"type": "number"``, ``"type": "boolean"``,
+    and union types (``"type": ["integer", "string"]``).
+
+    Also wraps bare scalar values in a single-element list when the schema
+    declares ``"type": "array"``.  Open-weight models (DeepSeek, Qwen, GLM)
+    sometimes emit ``{"urls": "https://a.com"}`` when the tool expects
+    ``{"urls": ["https://a.com"]}``; wrapping here avoids a confusing tool
+    failure on what is otherwise a well-formed call.
+    """
+    if not args or not isinstance(args, dict):
+        return args
+
+    schema = registry.get_schema(tool_name)
+    if not schema:
+        return args
+
+    properties = (schema.get("parameters") or {}).get("properties")
+    if not properties:
+        return args
+
+    # The model saw the SANITIZED schema — property keys violating provider
+    # patterns (e.g. Cloudflare's ``issue_class~neq``) were renamed before
+    # the request. Map any sanitized keys back to the registry's original
+    # wire names before schema lookup / dispatch.
+    try:
+        from tools.schema_sanitizer import unrename_tool_args
+        args = unrename_tool_args(schema.get("parameters"), args)
+    except Exception:  # pragma: no cover — never break dispatch
+        pass
+
+    for key, value in list(args.items()):
+        prop_schema = properties.get(key)
+        if not prop_schema:
+            continue
+        expected = prop_schema.get("type")
+
+        # Wrap bare non-list values when the schema declares ``array``.
+        # Strings still go through _coerce_value first so JSON-encoded
+        # arrays (``'["a","b"]'``) get parsed and nullable ``"null"``
+        # becomes ``None`` rather than ``["null"]``.
+        # ``None`` itself is preserved — we don't know whether the model
+        # meant "omit" or "empty list", and tools with sensible defaults
+        # (e.g. read_file's normalize_read_pagination) already handle it.
+        if expected == "array" and value is not None and not isinstance(value, (list, tuple)):
+            if isinstance(value, str):
+                coerced = _coerce_value(value, expected, schema=prop_schema)
+                if coerced is not value:
+                    # _coerce_value handled it (JSON-parsed list or
+                    # nullable "null" → None).
+                    args[key] = coerced
+                    continue
+                # If the string looks like a JSON array but _coerce_value
+                # failed to parse it, warn clearly instead of silently wrapping.
+                if value.strip().startswith("["):
+                    logger.warning(
+                        "coerce_tool_args: %s.%s looks like a JSON array string "
+                        "but could not be parsed — model may have emitted a "
+                        "JSON-encoded string instead of a native array. "
+                        "Falling back to single-element list.",
+                        tool_name, key,
+                    )
+                args[key] = [value]
+                logger.info(
+                    "coerce_tool_args: wrapped bare string in list for %s.%s",
+                    tool_name, key,
+                )
+                _try_record_repair("bare_string_wrap", tool_name)
+                continue
+            args[key] = [value]
+            logger.info(
+                "coerce_tool_args: wrapped bare %s in list for %s.%s",
+                type(value).__name__, tool_name, key,
+            )
+            _try_record_repair("bare_object_wrap", tool_name)
+            continue
+
+        if not isinstance(value, str):
+            # Recurse into already-native containers so JSON-encoded
+            # *elements* (array items) and *sub-fields* (nested object
+            # properties) get normalized too — e.g. ``todos: ['{"id":...}']``
+            # or ``tasks: [{"goal": "..."}]`` where an element was emitted as
+            # a JSON string. The top-level coercion above only repairs the
+            # outermost value.
+            if expected == "array" and isinstance(value, (list, tuple)):
+                args[key] = _normalize_json_strings_for_schema(value, prop_schema)
+            elif expected == "object" and isinstance(value, dict):
+                args[key] = _normalize_json_strings_for_schema(value, prop_schema)
+            continue
+        if not expected and not _schema_allows_null(prop_schema):
+            continue
+        coerced = _coerce_value(value, expected, schema=prop_schema)
+        if coerced is not value:
+            args[key] = coerced
+            # If we just JSON-parsed a string into a container, recurse so
+            # nested JSON-encoded elements/fields get normalized as well.
+            if isinstance(coerced, (list, tuple, dict)):
+                args[key] = _normalize_json_strings_for_schema(coerced, prop_schema)
+
+    return args
+
 
 def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Optional[str], Optional[str]]:
     """Derive (status, error_type, error_message) from a tool result for observer hooks."""

@@ -1514,8 +1514,9 @@ async def _standalone_send(
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=_ssl.create_default_context())
+        server = smtplib.SMTP_SSL(smtp_host, smtp_port, context=_ssl.create_default_context()) if smtp_port == 465 else smtplib.SMTP(smtp_host, smtp_port, timeout=30)
+        if smtp_port != 465:
+            server.starttls(context=_ssl.create_default_context())
         server.login(address, password)
         server.send_message(msg)
         server.quit()

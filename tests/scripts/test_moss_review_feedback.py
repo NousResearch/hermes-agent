@@ -323,3 +323,49 @@ def test_sahil_escalation_never_executes():
 
     assert result["status"] == "rejected"
     assert invoked == []
+def test_teknium1_login_receives_maintainer_priority_and_safety_classification():
+    """Regression: the exact login ``teknium1`` (added to MAINTAINER_AUTHORS)
+    must receive ``maintainer`` priority through the real ``normalise_feedback``
+    path while remaining subject to the same safety classification as any
+    other reviewer.
+
+    This guards two invariants of the maintainer-priority change:
+      1. ``teknium1`` is recognised as a maintainer by ``normalise_feedback``
+         (priority assignment lives in the real normalisation path, not in a
+         separate lookup that could drift).
+      2. Maintainer priority never bypasses ``classify_feedback``: a
+         safety-laden body still escalates to ``sahil_escalation``.
+    """
+    mod = load_module(MODULE_PATH, "moss_review_feedback_teknium1")
+
+    payload = {
+        "repo": "NousResearch/hermes-agent",
+        "pr": {"number": 7, "title": "Tighten boundary", "url": "https://example.test/pr/7"},
+        "reviews": [
+            # ``teknium1`` must NOT be excluded (not self/bot) and must get priority.
+            {"id": "R-t1", "author": {"login": "teknium1"},
+             "body": "This is a security issue in the credential path.", "state": "CHANGES_REQUESTED"},
+        ],
+        "review_comments": [],
+        "comments": [],
+    }
+
+    records = mod.normalise_feedback(payload)
+    assert len(records) == 1
+    record = records[0]
+
+    # Invariant 1: priority is maintainer via the real normalisation path.
+    assert record["author"] == "teknium1"
+    assert record["priority"] == "maintainer"
+    assert record["surface"] == "review"
+    assert record["pr_number"] == 7
+    assert record["repo"] == "NousResearch/hermes-agent"
+
+    # Invariant 2: safety classification is independent of maintainer priority.
+    classification = mod.classify_feedback(record)
+    assert classification == "sahil_escalation"
+
+    # Belt-and-braces: a benign teknium1 comment stays a routine patch —
+    # maintainer priority does not itself force escalation either.
+    benign = {**record, "body": "nit: rename this helper for clarity"}
+    assert mod.classify_feedback(benign) == "routine_patch"

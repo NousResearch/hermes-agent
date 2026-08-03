@@ -345,6 +345,17 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
   const dedupeId = `poll:${pollId}:${senderId}:${selectedOptions.join('|')}`;
   if (recentlyProcessedPollUpdates.has(dedupeId)) return;
   recentlyProcessedPollUpdates.remember(dedupeId);
+  // Every poll reaching this point was sent by us (recentlySentIds check
+  // above), so the vote is inherently a reply to our own message. Populate
+  // botIds/quotedParticipant so the gateway's reply-to-bot/mention gate
+  // recognizes it — otherwise a poll vote in a mention-gated group
+  // (require_mention: true) satisfies none of "/command", "@mention", or
+  // "reply to bot" and is silently dropped before the agent ever sees it,
+  // leaving any clarify() question that used the poll stuck forever.
+  const botIds = Array.from(new Set([
+    normalizeWhatsAppId(sock?.user?.id),
+    normalizeWhatsAppId(sock?.user?.lid),
+  ].filter(Boolean)));
   const event = {
     messageId: `${pollId || 'poll'}:update:${Date.now()}`,
     chatId,
@@ -368,11 +379,11 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
     mediaUrls: [],
     mentionedIds: [],
     quotedMessageId: pollId,
-    quotedParticipant: '',
+    quotedParticipant: botIds[0] || '',
     quotedRemoteJid: chatId,
     quotedText: '',
     hasQuotedMessage: !!pollId,
-    botIds: [],
+    botIds,
     timestamp: Math.floor(Date.now() / 1000),
   };
   messageQueue.push(event);

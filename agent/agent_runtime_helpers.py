@@ -2011,12 +2011,12 @@ def anthropic_prompt_cache_policy(
     gateway implements the Anthropic cache_control contract
     (MiniMax, Zhipu GLM, LiteLLM's Anthropic proxy mode all do).
 
-    Qwen models on OpenCode and direct Alibaba (DashScope), plus DeepSeek
-    models on OpenCode, also honour Anthropic-style ``cache_control`` markers
-    on OpenAI-wire chat completions. Upstream pi-mono #3392 / pi #3393
-    documented this for opencode-go Qwen; #24617 reports the same gateway
-    contract for DeepSeek. Without markers these providers serve zero cache
-    hits, re-billing the full prompt on every turn.
+    Qwen / Alibaba-family models on OpenCode, OpenCode Go, and direct
+    Alibaba (DashScope) also honour Anthropic-style ``cache_control``
+    markers on OpenAI-wire chat completions. Upstream pi-mono #3392 /
+    pi #3393 documented this for opencode-go Qwen. Without markers
+    these providers serve zero cache hits, re-billing the full prompt
+    on every turn.
 
     If the operator has set ``prompt_caching.cache_ttl`` to a falsy value
     (``false``, ``null``, ``"off"``, etc.) in config.yaml, prompt caching
@@ -2143,22 +2143,21 @@ def anthropic_prompt_cache_policy(
         if is_minimax_provider or is_minimax_host:
             return True, True
 
-    # Qwen on OpenCode (Zen/Go) and native DashScope, plus DeepSeek on
-    # OpenCode only: OpenAI-wire transports that accept Anthropic-style
-    # cache_control markers and reward them with real cache hits. Keep direct
-    # Alibaba specific to Qwen; its catalog does not establish the same
-    # contract for DeepSeek.
+    # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
+    # transport that accepts Anthropic-style cache_control markers and
+    # rewards them with real cache hits.  Without this branch
+    # qwen3.6-plus on opencode-go reports 0% cached tokens and burns
+    # through the subscription on every turn.
+    #
+    # NOTE: DeepSeek models on OpenCode are intentionally excluded.
+    # OpenCode Zen's relay rejects the Anthropic-style content block
+    # format that cache markers produce (content becomes a block array
+    # instead of a plain string), causing HTTP 400 (#77217).
     model_is_qwen = "qwen" in model_lower
-    model_is_deepseek = "deepseek" in model_lower
-    provider_is_opencode = provider_lower in {
-        "opencode", "opencode-zen", "opencode-go",
-    }
     provider_is_alibaba_family = provider_lower in {
         "opencode", "opencode-zen", "opencode-go", "alibaba",
     }
-    if (provider_is_alibaba_family and model_is_qwen) or (
-        provider_is_opencode and model_is_deepseek
-    ):
+    if provider_is_alibaba_family and model_is_qwen:
         # Envelope layout (native_anthropic=False): markers on inner
         # content parts, not top-level tool messages.  Matches
         # pi-mono's "alibaba" cacheControlFormat.

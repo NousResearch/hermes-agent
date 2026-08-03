@@ -188,6 +188,15 @@ def _truncate_preview(text: str, max_len: int | None) -> str:
     return text
 
 
+@dataclass(frozen=True)
+class ToolPreview:
+    """A compact tool preview plus presentation facts lost to truncation."""
+
+    text: str
+    truncated: bool = False
+    url: str | None = None
+
+
 _SHELL_SILENT_HEADS = {"cd", "pushd", "popd", "export", "set", "unset", "source", ".", "true", "false", ":"}
 _SHELL_PIPE_TAIL_HEADS = {"head", "tail", "wc", "sort", "uniq"}
 
@@ -557,30 +566,33 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     return preview
 
 
-def get_tool_preview_url(
+def prepare_tool_preview(
     tool_name: str,
     args: dict | None,
     *,
-    fallback: str | None = None,
-) -> str | None:
-    """Return the uncapped HTTP(S) URL represented by a tool preview.
+    fallback: str,
+    max_len: int,
+) -> ToolPreview:
+    """Build one canonical compact preview before platform formatting.
 
-    Rebuild the preview from the tool's primary display argument so callers
-    can recover information lost to an earlier display-length cap.  ``fallback``
-    covers callback paths that carry a preview but no argument dictionary.
+    The uncapped preview is rebuilt from the tool arguments when possible so
+    an upstream display cap cannot discard its link target.  Platforms then
+    receive explicit truncation and URL metadata instead of inferring either
+    fact from the rendered text.
     """
-    expanded = build_tool_preview(tool_name, args, max_len=0)
-    for value in (expanded, fallback):
-        candidate = _display_url(value)
-        if not candidate:
-            continue
+    full_text = build_tool_preview(tool_name, args, max_len=0) or fallback
+    text = _truncate_preview(full_text, max_len)
+    truncated = text != full_text
+    url = None
+    if truncated:
+        candidate = _display_url(full_text)
         try:
             parsed = urlsplit(candidate)
         except ValueError:
-            continue
-        if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
-            return candidate
-    return None
+            parsed = None
+        if parsed and parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+            url = candidate
+    return ToolPreview(text=text, truncated=truncated, url=url)
 
 
 # =========================================================================
@@ -1533,4 +1545,3 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-

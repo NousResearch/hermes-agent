@@ -541,7 +541,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -550,6 +550,9 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
+
+if TYPE_CHECKING:
+    from agent.display import ToolPreview
 
 
 # ---------------------------------------------------------------------------
@@ -3095,37 +3098,27 @@ class BasePlatformAdapter(ABC):
         # progress bubbles compact — they persist as permanent messages).
         preview = event.preview
         if preview:
-            full_preview = preview
+            from agent.display import prepare_tool_preview
+
             cap = preview_max_len if preview_max_len > 0 else 40
-            if len(preview) > cap:
-                preview = preview[:cap - 3] + "..."
-            preview = self.format_tool_preview(
-                preview,
-                full_preview=full_preview,
-                tool_name=event.tool_name,
-                args=event.args,
+            prepared = prepare_tool_preview(
+                event.tool_name,
+                event.args,
+                fallback=preview,
+                max_len=cap,
             )
-            return f"{emoji} {event.tool_name}: \"{preview}\""
+            rendered = self.format_tool_preview(prepared)
+            return f"{emoji} {event.tool_name}: \"{rendered}\""
         return f"{emoji} {event.tool_name}..."
 
-    def format_tool_preview(
-        self,
-        preview: str,
-        *,
-        full_preview: Optional[str] = None,
-        tool_name: Optional[str] = None,
-        args: Optional[Dict[str, Any]] = None,
-    ) -> str:
+    def format_tool_preview(self, preview: "ToolPreview") -> str:
         """Apply platform-native formatting to a compact tool preview.
 
-        The gateway calls this after imposing its display-length cap, while
-        still supplying the original preview and tool arguments.  Most
-        platforms should preserve the compact text unchanged.  Markdown
-        adapters may use the extra context to retain information that would
-        otherwise be lost during truncation (for example, Discord keeps a
-        truncated URL label linked to its full destination).
+        Most adapters only need the compact text. Rich-text adapters can use
+        the preview's explicit metadata to preserve details such as a URL that
+        was shortened for display.
         """
-        return preview
+        return preview.text
 
     @property
     def has_fatal_error(self) -> bool:

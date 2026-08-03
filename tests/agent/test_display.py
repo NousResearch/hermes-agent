@@ -10,7 +10,7 @@ from agent.display import (
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
-    get_tool_preview_url,
+    prepare_tool_preview,
     redact_tool_args_for_display,
     set_tool_preview_max_len,
     _render_inline_unified_diff,
@@ -107,23 +107,42 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", []) is None
 
 
-class TestGetToolPreviewUrl:
-    def test_recovers_uncapped_web_extract_url(self):
+class TestPrepareToolPreview:
+    def test_recovers_and_describes_truncated_url(self):
         url = "https://example.com/a/very/long/path/to/a/page"
         set_tool_preview_max_len(20)
 
-        assert get_tool_preview_url("web_extract", {"urls": [url]}) == url
+        preview = prepare_tool_preview(
+            "web_extract",
+            {"urls": [url]},
+            fallback=url[:17] + "...",
+            max_len=20,
+        )
 
-    def test_uses_callback_preview_when_args_are_missing(self):
+        assert preview.text == url[:17] + "..."
+        assert preview.truncated is True
+        assert preview.url == url
+
+    def test_untruncated_url_has_no_link_target(self):
         url = "https://example.com/page"
+        preview = prepare_tool_preview(
+            "browser_navigate", None, fallback=url, max_len=40
+        )
 
-        assert get_tool_preview_url("browser_navigate", None, fallback=url) == url
+        assert preview.text == url
+        assert preview.truncated is False
+        assert preview.url is None
 
-    def test_rejects_non_url_preview(self):
-        assert get_tool_preview_url(
+    def test_truncated_non_url_has_no_link_target(self):
+        preview = prepare_tool_preview(
             "web_search",
             {"query": "how to parse a URL"},
-        ) is None
+            fallback="how to parse a URL",
+            max_len=12,
+        )
+
+        assert preview.truncated is True
+        assert preview.url is None
 
 
 class TestCuteToolMessagePreviewLength:

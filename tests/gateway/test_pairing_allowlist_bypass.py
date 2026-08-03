@@ -140,6 +140,29 @@ def test_profile_approval_mirrors_only_profile_allowlist(tmp_path, monkeypatch):
     assert os.environ["TELEGRAM_ALLOWED_USERS"] == "root-owner"
 
 
+def test_explicit_default_profile_approval_keeps_process_env_scoped(
+    tmp_path, monkeypatch
+):
+    """An explicit default profile is scoped; only PairingStore() is legacy."""
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    root_env = root / ".env"
+    root_env.write_text("TELEGRAM_ALLOWED_USERS=file-owner\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "process-owner")
+
+    from gateway.pairing import PairingStore
+
+    _approve_new_user(
+        PairingStore(profile="default"), "telegram", "new-default-user"
+    )
+
+    assert root_env.read_text(encoding="utf-8") == (
+        "TELEGRAM_ALLOWED_USERS=file-owner,new-default-user\n"
+    )
+    assert os.environ["TELEGRAM_ALLOWED_USERS"] == "process-owner"
+
+
 def test_profile_revoke_updates_only_profile_allowlist(tmp_path, monkeypatch):
     """A named profile revoke must leave root disk and process env untouched."""
     root = tmp_path / ".hermes"
@@ -151,7 +174,7 @@ def test_profile_revoke_updates_only_profile_allowlist(tmp_path, monkeypatch):
         "TELEGRAM_ALLOWED_USERS=root-owner,revoked-user\n", encoding="utf-8"
     )
     profile_env.write_text(
-        "TELEGRAM_ALLOWED_USERS=profile-owner,revoked-user\n", encoding="utf-8"
+        "TELEGRAM_ALLOWED_USERS=revoked-user\n", encoding="utf-8"
     )
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv(
@@ -167,9 +190,7 @@ def test_profile_revoke_updates_only_profile_allowlist(tmp_path, monkeypatch):
     )
 
     assert profile_store.revoke("telegram", "revoked-user") is True
-    assert profile_env.read_text(encoding="utf-8") == (
-        "TELEGRAM_ALLOWED_USERS=profile-owner\n"
-    )
+    assert profile_env.read_text(encoding="utf-8") == ""
     assert root_env.read_text(encoding="utf-8") == (
         "TELEGRAM_ALLOWED_USERS=root-owner,revoked-user\n"
     )
@@ -365,6 +386,61 @@ def test_revoke_whatsapp_sole_entry_denies_live_adapter_without_restart(
             chat_type="dm",
         )
     ) is False
+
+
+def test_profile_revoke_purges_only_that_profile_live_adapter(tmp_path, monkeypatch):
+    """A profile revoke must not deny the same principal in sibling adapters."""
+    from types import SimpleNamespace
+
+    from gateway.config import Platform
+    from gateway.pairing import PairingStore
+    import gateway.run as gateway_run
+
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    (profile_home / ".env").write_text(
+        "WHATSAPP_ALLOWED_USERS=15551234567\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    def live_adapter():
+        return SimpleNamespace(
+            platform=Platform.WHATSAPP,
+            _allow_from={"15551234567"},
+            config=SimpleNamespace(extra={"allow_from": ["15551234567"]}),
+        )
+
+    primary = live_adapter()
+    worker = live_adapter()
+    sibling = live_adapter()
+    runner = SimpleNamespace(
+        adapters={Platform.WHATSAPP: primary},
+        _profile_adapters={
+            "worker": {Platform.WHATSAPP: worker},
+            "sibling": {Platform.WHATSAPP: sibling},
+        },
+    )
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+
+    profile_store = PairingStore(profile="worker")
+    profile_store._save_json(
+        profile_store._approved_path("whatsapp"),
+        {
+            "15551234567": {
+                "user_name": "",
+                "approved_at": 1.0,
+            }
+        },
+    )
+
+    assert profile_store.revoke("whatsapp", "15551234567") is True
+    assert worker._allow_from == set()
+    assert worker.config.extra["allow_from"] == []
+    assert primary._allow_from == {"15551234567"}
+    assert primary.config.extra["allow_from"] == ["15551234567"]
+    assert sibling._allow_from == {"15551234567"}
+    assert sibling.config.extra["allow_from"] == ["15551234567"]
 
 
 def test_whatsapp_live_allowlist_keeps_explicit_config_over_env(monkeypatch):

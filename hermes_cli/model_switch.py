@@ -1204,6 +1204,32 @@ def _resolve_named_custom_model_id(
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
 
+
+def _configured_custom_endpoint_slugs(user_providers: Any) -> set[str]:
+    """Return ``providers:`` keys that actually define an endpoint.
+
+    Built-in providers may also have config rows solely to extend their model
+    metadata.  Those rows still route through their own provider plugin and
+    must not become dependent on ``model-providers/custom``.  Only entries
+    carrying one of the URL fields accepted by the provider normalizer are
+    custom endpoint definitions.
+    """
+    if not isinstance(user_providers, dict):
+        return set()
+
+    endpoint_keys = ("base_url", "baseUrl", "url", "api")
+    return {
+        str(slug).strip().lower()
+        for slug, entry in user_providers.items()
+        if str(slug).strip()
+        and isinstance(entry, dict)
+        and any(
+            isinstance(entry.get(key), str) and entry[key].strip()
+            for key in endpoint_keys
+        )
+    }
+
+
 def switch_model(
     raw_input: str,
     current_provider: str,
@@ -1265,11 +1291,7 @@ def switch_model(
     target_provider = current_provider
     resolved_moa_preset = False
 
-    _configured_provider_slugs = {
-        str(slug).strip().lower()
-        for slug in (user_providers or {})
-        if str(slug).strip()
-    }
+    _configured_provider_slugs = _configured_custom_endpoint_slugs(user_providers)
     _custom_shortcuts = {
         "custom",
         "local",

@@ -785,6 +785,30 @@ def _save_enabled_set(enabled: set) -> None:
     save_config(config)
 
 
+def _resolve_plugin_entry(name: str, entries: list) -> Optional[tuple]:
+    """Resolve *name* within ordered entries, preserving key ambiguity rules."""
+
+    def _one_key(matches: list) -> Optional[tuple]:
+        if len({entry[5] for entry in matches}) != 1:
+            return None
+        # Entries are in runtime precedence order. Multiple copies of one
+        # canonical key therefore resolve to the prospective highest-priority
+        # candidate when callers pass the raw candidate inventory.
+        return matches[-1]
+
+    key_match = _one_key([entry for entry in entries if name == entry[5]])
+    if key_match is not None:
+        return key_match
+
+    manifest_match = _one_key([entry for entry in entries if name == entry[0]])
+    if manifest_match is not None:
+        return manifest_match
+
+    return _one_key(
+        [entry for entry in entries if name == entry[5].split("/")[-1]]
+    )
+
+
 def _resolve_plugin_key(name: str) -> Optional[str]:
     """Resolve a user-supplied plugin identifier to its canonical registry key.
 
@@ -797,51 +821,30 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
     ``disable`` write the same key that ``PluginManager`` matches against —
     nested category plugins (e.g. ``observability/nemo_relay``) included.
     """
-    entries = _discover_all_plugins()
-    # 1. Canonical keys are exact and authoritative.
-    key_matches = [entry[5] for entry in entries if name == entry[5]]
-    if len(key_matches) == 1:
-        return key_matches[0]
-    # 2. Manifest names are accepted only when globally unambiguous.
-    manifest_matches = [entry[5] for entry in entries if name == entry[0]]
-    if len(manifest_matches) == 1:
-        return manifest_matches[0]
-    # 3. Fall back to a bare leaf-name match (e.g. "nemo_relay" ->
-    #    "observability/nemo_relay"), but only when it resolves to exactly one
-    #    plugin so we never silently pick the wrong same-named nested plugin.
-    leaf_matches = [entry[5] for entry in entries if name == entry[5].split("/")[-1]]
-    if len(leaf_matches) == 1:
-        return leaf_matches[0]
-    return None
+    entry = _resolve_plugin_entry(name, _discover_plugin_candidates())
+    return entry[5] if entry is not None else None
 
 
-def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
+def _resolve_plugin_key_and_source(
+    name: str,
+    *,
+    for_enable: bool = False,
+) -> Optional[tuple]:
     """Resolve *name* to ``(key, source, manifest_name, kind)`` or ``None``.
 
     Mirrors :func:`_resolve_plugin_key`'s normalization but also returns the
     plugin's source (``"bundled"``, ``"user"``, ``"project"``, ...) so the
     enable path can tell whether a built-in-override consent prompt is needed.
+    Normal management actions resolve the current effective winner. Explicit
+    enable instead resolves the prospective highest-precedence candidate: the
+    config mutation can then activate an installed external override even when
+    an active bundled fallback currently owns the management row.
     """
-    entries = _discover_all_plugins()
-    key_matches = [
-        (entry[5], entry[3], entry[0], entry[6])
-        for entry in entries if name == entry[5]
-    ]
-    if len(key_matches) == 1:
-        return key_matches[0]
-    manifest_matches = [
-        (entry[5], entry[3], entry[0], entry[6])
-        for entry in entries if name == entry[0]
-    ]
-    if len(manifest_matches) == 1:
-        return manifest_matches[0]
-    leaf_matches = [
-        (entry[5], entry[3], entry[0], entry[6]) for entry in entries
-        if name == entry[5].split("/")[-1]
-    ]
-    if len(leaf_matches) == 1:
-        return leaf_matches[0]
-    return None
+    entries = _discover_plugin_candidates() if for_enable else _discover_all_plugins()
+    entry = _resolve_plugin_entry(name, entries)
+    if entry is None:
+        return None
+    return entry[5], entry[3], entry[0], entry[6]
 
 
 def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
@@ -879,7 +882,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     console = Console()
     # Discover the plugin — check installed (user) AND bundled, including
     # nested category plugins — and normalize to its canonical registry key.
-    resolved = _resolve_plugin_key_and_source(name)
+    resolved = _resolve_plugin_key_and_source(name, for_enable=True)
     if resolved is None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
@@ -910,11 +913,10 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         bare = key.split("/")[-1]
         if bare != key:
             disabled.discard(bare)
-        for entry in _discover_all_plugins():
+        for entry in _discover_plugin_candidates():
             # entry = (name, version, description, source, dir_path, key, kind)
             if entry[5] == key:
                 disabled.discard(entry[0])
-                break
         _save_enabled_set(enabled)
         _save_disabled_set(disabled)
         console.print(
@@ -1148,15 +1150,18 @@ def _discover_plugin_candidates() -> list:
     return candidates
 
 
-def _select_active_plugin_entries(entries: list, activation: PluginActivationState) -> list:
-    """Select the highest-priority active candidate for each canonical key."""
+def _resolve_plugin_entry_winners(
+    entries: list,
+    activation: PluginActivationState,
+) -> list[tuple]:
+    """Return ``(entry, status)`` winners under the canonical runtime policy."""
     from hermes_cli.plugins import resolve_plugin_candidate_winner
 
     grouped: dict[str, list] = {}
     for entry in entries:
         grouped.setdefault(entry[5], []).append(entry)
 
-    winners: list = []
+    winners: list[tuple] = []
     for candidates in grouped.values():
         selection = resolve_plugin_candidate_winner(
             candidates,
@@ -1167,26 +1172,38 @@ def _select_active_plugin_entries(entries: list, activation: PluginActivationSta
                 kind=entry[6],
             ),
         )
-        if selection is not None and selection[1] == "enabled":
-            winners.append(selection[0])
+        if selection is not None:
+            winners.append(selection)
     return winners
 
 
-def _discover_all_plugins() -> list:
-    """Return side-effect-free metadata for every effective raw plugin.
+def _select_active_plugin_entries(entries: list, activation: PluginActivationState) -> list:
+    """Select the highest-priority active candidate for each canonical key."""
+    return [
+        entry
+        for entry, status in _resolve_plugin_entry_winners(entries, activation)
+        if status == "enabled"
+    ]
 
-    Matches the ordering/dedup of ``PluginManager.discover_and_load``:
-    bundled first, then user, then project, then entry points. Later sources
-    override earlier ones on key collision.
+
+def _discover_all_plugins() -> list:
+    """Return the effective runtime/introspection winner for each plugin key.
+
+    Source precedence alone is insufficient: an installed but inactive user or
+    project override cannot hide an active bundled fallback.  Resolve the full
+    candidate groups through the same canonical helper as ``PluginManager``.
+    When a group has no active candidate, retain the helper's inactive winner
+    so management surfaces still have one useful row to report and toggle.
     """
-    seen: dict = {}
-    for entry in _discover_plugin_candidates():
-        source = entry[3]
-        key = entry[5]
-        if key in seen and source == "bundled":
-            continue
-        seen[key] = entry
-    return list(seen.values())
+    from hermes_cli.config import load_plugin_activation_state
+
+    return [
+        entry
+        for entry, _status in _resolve_plugin_entry_winners(
+            _discover_plugin_candidates(),
+            load_plugin_activation_state(),
+        )
+    ]
 
 
 def _discover_entrypoint_plugins() -> list[tuple[str, str, str, str]]:
@@ -2202,7 +2219,7 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
 
     key = _resolve_plugin_key(name)
     if key is not None:
-        for entry in _discover_all_plugins():
+        for entry in reversed(_discover_plugin_candidates()):
             if entry[5] != key or entry[3] not in {"user", "git"}:
                 continue
             try:

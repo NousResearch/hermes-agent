@@ -82,6 +82,82 @@ class TestReadManifestInfo:
 
 
 class TestDiscoverAllPlugins:
+    @pytest.mark.parametrize("external_source", ["user", "project"])
+    def test_inactive_external_collision_reports_active_bundled_winner(
+        self,
+        tmp_path,
+        monkeypatch,
+        capsys,
+        external_source,
+    ):
+        from hermes_cli import plugins_cmd
+
+        bundled = tmp_path / "bundled"
+        hermes_home = tmp_path / "home"
+        user_plugins = hermes_home / "plugins"
+        user_plugins.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(
+            "plugins:\n  enabled: []\n  disabled: []\n",
+            encoding="utf-8",
+        )
+        _make_plugin_dir(
+            bundled,
+            "shared",
+            {
+                "name": "shared",
+                "version": "1.0.0",
+                "kind": "backend",
+            },
+        )
+
+        if external_source == "user":
+            external_root = user_plugins
+            monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
+        else:
+            project = tmp_path / "project"
+            project.mkdir()
+            monkeypatch.chdir(project)
+            monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+            external_root = project / ".hermes" / "plugins"
+        _make_plugin_dir(
+            external_root,
+            "shared",
+            {
+                "name": "shared",
+                "version": "9.0.0",
+                "kind": "backend",
+            },
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_bundled_plugins_dir",
+            lambda: bundled,
+        )
+        monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user_plugins)
+        monkeypatch.setattr(plugins_cmd, "_discover_entrypoint_plugins", lambda: [])
+
+        entries = plugins_cmd._discover_all_plugins()
+        shared = [entry for entry in entries if entry[5] == "shared"]
+
+        assert len(shared) == 1
+        assert shared[0][3] == "bundled"
+        assert shared[0][1] == "1.0.0"
+
+        args = MagicMock(
+            json=True,
+            plain=False,
+            no_bundled=False,
+            user=False,
+            enabled=False,
+        )
+        plugins_cmd.cmd_list(args)
+        payload = json.loads(capsys.readouterr().out)
+        listed = next(plugin for plugin in payload if plugin["key"] == "shared")
+        assert listed["source"] == "bundled"
+        assert listed["status"] == "enabled"
+
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     def test_flat_plugins_still_discovered(self, mock_user_dir, mock_bundled_dir, tmp_path):

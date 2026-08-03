@@ -599,9 +599,22 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
             if len(parts) >= 4:
                 plugin_name = parts[3]
                 if plugin_name:
-                    # Determine plugin source.  Check the cached plugin list;
+                    runtime_state_available = True
+                    try:
+                        # The cache fingerprint includes dashboard manifests,
+                        # so out-of-band candidate/identity changes reselect
+                        # the current winner before it is compared with the
+                        # router that was mounted at startup.
+                        plugins = _get_dashboard_plugins()
+                        runtime_entries = _discover_dashboard_runtime_entries()
+                        activation = _load_dashboard_plugin_activation_state()
+                    except Exception:
+                        runtime_state_available = False
+                        plugins = []
+                        runtime_entries = []
+                        activation = None
+                    # Determine plugin source.  Check the current plugin list;
                     # if not found, assume user plugin (safe default — blocks).
-                    plugins = _get_dashboard_plugins()
                     plugin = next(
                         (p for p in plugins if p.get("name") == plugin_name),
                         None,
@@ -610,7 +623,23 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
                         "name": plugin_name,
                         "source": "user",
                     }
-                    if not _dashboard_plugin_is_active(candidate):
+                    current_identity = _dashboard_plugin_api_identity(
+                        candidate,
+                        runtime_entries,
+                    )
+                    mounted_identity = (
+                        _mounted_dashboard_plugin_api_identities.get(plugin_name)
+                    )
+                    if (
+                        not runtime_state_available
+                        or mounted_identity is None
+                        or current_identity != mounted_identity
+                        or not _dashboard_plugin_is_active(
+                            candidate,
+                            runtime_entries,
+                            activation,
+                        )
+                    ):
                         return JSONResponse(
                             status_code=404,
                             content={"detail": "Plugin not found"},
@@ -16840,9 +16869,70 @@ def _dashboard_path_identity(path: Path) -> str:
         return str(path.absolute())
 
 
+def _dashboard_plugin_manifest_fingerprint(bundled_root: Path) -> tuple:
+    """Return cheap content identities for every discoverable manifest.
+
+    Runtime winners are re-discovered for each API request, but dashboard-only
+    extensions have no runtime manifest to anchor that lookup. Include their
+    dashboard manifests in cache invalidation so an out-of-band edit/add/remove
+    cannot leave a stale router authorized under an old canonical identity.
+    """
+    search_dirs = [
+        (bundled_root / "memory", "bundled"),
+        (bundled_root, "bundled"),
+        (get_process_hermes_home() / "plugins", "user"),
+    ]
+    if env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+        search_dirs.append((Path.cwd() / ".hermes" / "plugins", "project"))
+
+    fingerprint = []
+    for plugins_root, source in search_dirs:
+        root_identity = _dashboard_path_identity(plugins_root)
+        try:
+            children = sorted(plugins_root.iterdir())
+        except FileNotFoundError:
+            fingerprint.append((source, root_identity, "missing"))
+            continue
+        except OSError as exc:
+            fingerprint.append(
+                (source, root_identity, "unavailable", type(exc).__name__)
+            )
+            continue
+
+        fingerprint.append((source, root_identity, "present"))
+        for child in children:
+            try:
+                if not child.is_dir():
+                    continue
+                manifest_file = child / "dashboard" / "manifest.json"
+                payload = manifest_file.read_bytes()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                fingerprint.append(
+                    (
+                        source,
+                        _dashboard_path_identity(child),
+                        "unavailable",
+                        type(exc).__name__,
+                    )
+                )
+                continue
+            fingerprint.append(
+                (
+                    source,
+                    _dashboard_path_identity(manifest_file),
+                    hashlib.sha256(payload).digest(),
+                )
+            )
+    return tuple(fingerprint)
+
+
 def _dashboard_plugins_discovery_fingerprint() -> tuple:
     """Return every process value that changes dashboard plugin scope."""
     from hermes_cli.plugins import get_bundled_plugins_dir
+
+    bundled_root = get_bundled_plugins_dir()
 
     try:
         activation = _load_dashboard_plugin_activation_state()
@@ -16861,10 +16951,11 @@ def _dashboard_plugins_discovery_fingerprint() -> tuple:
 
     return (
         _dashboard_path_identity(get_process_hermes_home() / "plugins"),
-        _dashboard_path_identity(get_bundled_plugins_dir()),
+        _dashboard_path_identity(bundled_root),
         _dashboard_path_identity(Path.cwd()),
         env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"),
         activation_identity,
+        _dashboard_plugin_manifest_fingerprint(bundled_root),
     )
 
 
@@ -16973,6 +17064,30 @@ def _dashboard_plugin_identity(
     source = str(plugin.get("source") or "user")
     kind = "backend" if source == "bundled" else "standalone"
     return name, name, source, kind, True
+
+
+_DashboardPluginAPIIdentity = Tuple[str, Path]
+_mounted_dashboard_plugin_api_identities: Dict[
+    str,
+    _DashboardPluginAPIIdentity,
+] = {}
+
+
+def _dashboard_plugin_api_identity(
+    plugin: dict,
+    runtime_entries: Optional[list] = None,
+) -> Optional[_DashboardPluginAPIIdentity]:
+    """Return the canonical key and resolved root for one API router owner."""
+    plugin_root = _dashboard_plugin_root(plugin)
+    if plugin_root is None:
+        return None
+    _name, key, _source, _kind, is_winner = _dashboard_plugin_identity(
+        plugin,
+        runtime_entries,
+    )
+    if not isinstance(key, str) or not key or not is_winner:
+        return None
+    return key, plugin_root
 
 
 def _dashboard_plugin_source_scope_active(plugin: dict, source: str) -> bool:
@@ -17566,6 +17681,16 @@ def _mount_plugin_api_routes():
                 plugin_name,
             )
             continue
+        mounted_identity = _dashboard_plugin_api_identity(
+            plugin,
+            runtime_entries,
+        )
+        if mounted_identity is None:
+            _log.warning(
+                "Plugin %s: skipping API mount (runtime identity unavailable)",
+                plugin_name,
+            )
+            continue
         if plugin.get("source") == "project":
             _log.warning(
                 "Plugin %s: ignoring backend api=%s (project plugins may "
@@ -17616,6 +17741,9 @@ def _mount_plugin_api_routes():
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
                 continue
             app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
+            _mounted_dashboard_plugin_api_identities[
+                plugin["name"]
+            ] = mounted_identity
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)

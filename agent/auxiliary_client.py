@@ -546,6 +546,71 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
+def _aux_provider_plugin_is_active(provider_id: str) -> bool:
+    """Apply the canonical model-provider activation gate to aux routing.
+
+    Auxiliary resolution has several deliberately direct credential/client
+    paths that do not pass through ``resolve_runtime_provider``.  They must
+    still share its provider-plugin activation decision; otherwise a disabled
+    provider can be revived by an env credential, a pool entry, or a cached
+    client.  Provider discovery owns bundled defaults and safe-mode behavior,
+    so do not duplicate either policy here.
+
+    Discovery failures fail closed.  A broken activation read must never turn
+    into permission for an auxiliary network call.
+    """
+    normalized = (provider_id or "").strip().lower()
+    if not normalized or normalized in {"auto", "moa"}:
+        return True
+    try:
+        from providers import is_provider_plugin_active
+
+        active = is_provider_plugin_active(normalized)
+    except Exception as exc:
+        logger.debug(
+            "Auxiliary provider activation check failed for %s: %s",
+            normalized,
+            exc,
+        )
+        return False
+    if not active:
+        logger.debug(
+            "Auxiliary provider %s skipped because its plugin is disabled",
+            normalized,
+        )
+    return active
+
+
+def _aux_provider_activation_id(
+    provider: str,
+    *,
+    original_provider: Optional[str] = None,
+) -> str:
+    """Return the plugin-owned identity for an auxiliary provider request."""
+    original = (original_provider or provider or "").strip().lower()
+    normalized = _normalize_aux_provider(provider)
+    # Named custom endpoints all execute through the bundled ``custom``
+    # provider profile.  Their user-facing suffix is config data, not an
+    # independently activatable model-provider plugin.
+    if original.startswith("custom:"):
+        return "custom"
+    return normalized
+
+
+def _aux_activation_cache_fingerprint() -> Any:
+    """Return the canonical activation state for auxiliary cache isolation."""
+    try:
+        from hermes_cli.config import load_plugin_activation_state
+
+        return load_plugin_activation_state()
+    except Exception as exc:
+        # Keep cache hits fail-closed if the canonical activation accessor is
+        # unexpectedly unavailable.  A unique opaque value avoids reusing a
+        # client that was constructed under a previously readable policy.
+        logger.debug("Auxiliary activation cache fingerprint failed: %s", exc)
+        return object()
+
+
 # Sentinel: when returned by _fixed_temperature_for_model(), callers must
 # strip the ``temperature`` key from API kwargs entirely so the provider's
 # server-side default applies.  Kimi/Moonshot models manage temperature
@@ -2187,6 +2252,9 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
     relying only on whatever raw tokens happen to be sitting in auth.json
     or the credential pool.
     """
+    if not _aux_provider_plugin_is_active("nous"):
+        return None
+
     pooled = _resolve_nous_pool_runtime_api(force_refresh=force_refresh)
     if pooled is not None:
         return pooled
@@ -2222,6 +2290,9 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     auth-store-only logins. Returns ``None`` if the user is not authenticated
     with xAI Grok OAuth.
     """
+    if not _aux_provider_plugin_is_active("xai-oauth"):
+        return None
+
     try:
         from hermes_cli.auth import (
             DEFAULT_XAI_OAUTH_BASE_URL,
@@ -2321,6 +2392,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
     for provider_id, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
+            continue
+        if not _aux_provider_plugin_is_active(provider_id):
             continue
         if _is_provider_unhealthy(provider_id):
             logger.debug("Auxiliary api-key chain: %s is unhealthy, skipping", provider_id)
@@ -2465,6 +2538,9 @@ def _warn_paid_lane_once(model: str) -> None:
 
 
 def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+    if not _aux_provider_plugin_is_active("openrouter"):
+        return None, None
+
     free_only, cfg_model = _aux_openrouter_settings()
     or_model = model or cfg_model
     if free_only and not _is_free_model(or_model):
@@ -2516,6 +2592,9 @@ def _describe_openrouter_unavailable() -> str:
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
+    if not _aux_provider_plugin_is_active("nous"):
+        return None, None
+
     # Check cross-session rate limit guard before attempting Nous —
     # if another session already recorded a 429, skip Nous entirely
     # to avoid piling more requests onto the tapped RPH bucket.
@@ -2620,6 +2699,9 @@ def _refresh_nous_recommended_model(
     still recommends the exact model that just 404'd and the default also
     matches it) — callers should then let the original error propagate.
     """
+    if not _aux_provider_plugin_is_active("nous"):
+        return None
+
     stale = (stale_model or "").strip().lower()
     fresh: Optional[str] = None
     try:
@@ -3128,27 +3210,25 @@ def clear_runtime_main() -> None:
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
-    This covers both env-driven OPENAI_BASE_URL setups and config-saved custom
-    endpoints where the base URL lives in config.yaml instead of the live
-    environment.
+    This covers config-saved custom endpoints and the other endpoint sources
+    accepted by the canonical runtime resolver.
     """
+    if not _aux_provider_plugin_is_active("custom"):
+        return None, None, None
+
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested="custom")
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
-        runtime = None
+        # The canonical resolver owns provider activation and endpoint trust.
+        # Never revive a rejected custom provider from legacy OPENAI_BASE_URL
+        # state: doing so bypasses both plugin disablement and resolver policy.
+        return None, None, None
 
     if not isinstance(runtime, dict):
-        openai_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
-        openai_key = _scoped_key_env("OPENAI_API_KEY")
-        if not openai_base:
-            return None, None, None
-        runtime = {
-            "base_url": openai_base,
-            "api_key": openai_key,
-        }
+        return None, None, None
 
     custom_base = runtime.get("base_url")
     custom_key = runtime.get("api_key")
@@ -3228,6 +3308,9 @@ def _validate_base_url(base_url: str) -> None:
 
 
 def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
+    if not _aux_provider_plugin_is_active("custom"):
+        return None, None
+
     runtime = _resolve_custom_runtime()
     if len(runtime) == 2:
         custom_base, custom_key = runtime
@@ -3289,6 +3372,8 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     would silently rot when xAI's allowlist drifts.  Returns ``(None, None)``
     when the user has not authenticated with xAI Grok OAuth.
     """
+    if not _aux_provider_plugin_is_active("xai-oauth"):
+        return None, None
     if not model:
         logger.warning(
             "Auxiliary client: xai-oauth requested without a model; "
@@ -3321,6 +3406,8 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
 
     Returns (None, None) when no Codex OAuth token is available.
     """
+    if not _aux_provider_plugin_is_active("openai-codex"):
+        return None, None
     if not model:
         logger.warning(
             "Auxiliary client: openai-codex requested without a model; "
@@ -3380,6 +3467,9 @@ def _try_azure_foundry(
 
     Returns ``(client, model)`` or ``(None, None)`` on failure.
     """
+    if not _aux_provider_plugin_is_active("azure-foundry"):
+        return None, None
+
     try:
         from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
         from hermes_cli.auth import AuthError
@@ -3466,6 +3556,9 @@ def _try_azure_foundry(
 
 
 def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
+    if not _aux_provider_plugin_is_active("anthropic"):
+        return None, None
+
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
     except ImportError:
@@ -4204,6 +4297,8 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     would leave current() as None, causing the wrong entry to be marked).
     """
     normalized = _normalize_aux_provider(provider)
+    if not _aux_provider_plugin_is_active(normalized):
+        return False
     try:
         pool = load_pool(normalized)
     except Exception as load_exc:
@@ -4391,6 +4486,8 @@ async def _retry_same_provider_async(
 def _refresh_provider_credentials(provider: str) -> bool:
     """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
     normalized = _normalize_aux_provider(provider)
+    if not _aux_provider_plugin_is_active(normalized):
+        return False
     try:
         if normalized == "copilot":
             from hermes_cli.copilot_auth import (
@@ -5726,6 +5823,25 @@ def resolve_provider_client(
                 explicit_base_url = None
                 explicit_api_key = None
 
+    activation_provider = _aux_provider_activation_id(
+        provider,
+        original_provider=original_provider,
+    )
+    if original_provider and original_provider != provider:
+        # A user may deliberately name a custom endpoint after a built-in
+        # alias (for example ``kimi``).  The named-custom branch below gives
+        # that config entry precedence, so its activation owner is ``custom``
+        # rather than the alias target (``kimi-coding``).
+        try:
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+
+            if _get_named_custom_provider(original_provider) is not None:
+                activation_provider = "custom"
+        except Exception:
+            pass
+    if not _aux_provider_plugin_is_active(activation_provider):
+        return None, None
+
     # Universal model-resolution fallback for concrete providers. ``auto`` is
     # intentionally excluded: `_resolve_auto(main_runtime=...)` returns the
     # model paired with the provider it actually selected. Pre-filling an auto
@@ -6040,6 +6156,8 @@ def resolve_provider_client(
         if custom_entry is None:
             custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
+            if not _aux_provider_plugin_is_active("custom"):
+                return None, None
             custom_base = (custom_entry.get("base_url") or "").strip()
             custom_key = (custom_entry.get("api_key") or "").strip()
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
@@ -6896,7 +7014,8 @@ def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> di
 # Every auxiliary LLM consumer should use these instead of manually
 # constructing clients and calling .chat.completions.create().
 
-# Client cache: (provider, async_mode, base_url, api_key, api_mode, runtime_key) -> (client, default_model, loop)
+# Client cache keys include the canonical plugin activation state so a runtime
+# enable/disable change cannot reuse a client selected under the old policy.
 # NOTE: loop identity is NOT part of the key.  On async cache hits we check
 # whether the cached loop is the *current* loop; if not, the stale entry is
 # replaced in-place.  This bounds cache growth to one entry per unique
@@ -6972,7 +7091,20 @@ def _client_cache_key(
     # model its own client, so concurrent fan-out calls never cross-close.
     model_key = model or runtime.get("model", "")
     api_key_key = _runtime_cache_discriminator("api_key", api_key or "")
-    return (provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key)
+    activation_key = _aux_activation_cache_fingerprint()
+    return (
+        provider,
+        async_mode,
+        base_url or "",
+        api_key_key,
+        api_mode or "",
+        runtime_key,
+        is_vision,
+        task_key,
+        pool_hint,
+        model_key,
+        activation_key,
+    )
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
@@ -6995,6 +7127,9 @@ def _refresh_nous_auxiliary_client(
     is_vision: bool = False,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Refresh Nous runtime creds, rebuild the client, and replace the cache entry."""
+    if not _aux_provider_plugin_is_active("nous"):
+        return None, model
+
     runtime = _resolve_nous_runtime_api(force_refresh=True)
     if runtime is None:
         return None, model
@@ -7177,6 +7312,10 @@ def _get_cached_client(
     preventing the fd-exhaustion that previously occurred in long-running
     gateways where recycled worker threads created unbounded entries (#10200).
     """
+    activation_provider = _aux_provider_activation_id(provider)
+    if not _aux_provider_plugin_is_active(activation_provider):
+        return None, None
+
     # Resolve the current event loop for async clients so we can validate
     # cached entries.  Loop identity is NOT in the cache key — instead we
     # check at hit time whether the cached loop is still current and open.

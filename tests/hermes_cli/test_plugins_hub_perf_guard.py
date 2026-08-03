@@ -165,6 +165,67 @@ def test_plugins_hub_short_ttl_cache_collapses_duplicate_fetches(monkeypatch):
     assert first is second
 
 
+def test_plugins_hub_reports_active_bundled_fallback(monkeypatch, tmp_path):
+    tools_registry.invalidate_check_fn_cache()
+    web_server._invalidate_plugins_hub_cache()
+
+    bundled_dir = tmp_path / "bundled" / "shared"
+    user_dir = tmp_path / "user" / "shared"
+    bundled_dir.mkdir(parents=True)
+    user_dir.mkdir(parents=True)
+    bundled = (
+        "shared",
+        "1.0.0",
+        "bundled fallback",
+        "bundled",
+        bundled_dir,
+        "shared",
+        "backend",
+    )
+    user = (
+        "shared",
+        "9.0.0",
+        "inactive override",
+        "user",
+        user_dir,
+        "shared",
+        "backend",
+    )
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_discover_plugin_candidates",
+        lambda: [bundled, user],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_plugin_activation_state",
+        lambda: PluginActivationState(),
+    )
+    _patch_minimal_hub_dependencies(
+        monkeypatch,
+        check_fn=lambda: True,
+        discover_all_plugins=plugins_cmd._discover_all_plugins,
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_discover_dashboard_runtime_entries",
+        lambda: [bundled],
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_load_dashboard_plugin_activation_state",
+        lambda: PluginActivationState(),
+    )
+    monkeypatch.setattr(plugins_cmd, "_read_manifest", lambda _path: {})
+
+    payload = web_server._merged_plugins_hub(force_refresh=True)
+
+    assert len(payload["plugins"]) == 1
+    row = payload["plugins"][0]
+    assert row["source"] == "bundled"
+    assert row["runtime_status"] == "enabled"
+    assert row["can_remove"] is False
+
+
 def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):
     import asyncio
 

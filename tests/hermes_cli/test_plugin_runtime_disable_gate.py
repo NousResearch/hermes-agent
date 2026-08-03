@@ -14,6 +14,7 @@ Covers two residual bypasses addressed in the PR:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch, AsyncMock
 
@@ -34,11 +35,18 @@ def _activation(*, enabled=(), disabled=(), safe_mode=False):
 @pytest.fixture(autouse=True)
 def _reset_plugin_cache():
     """Bust the plugin cache before and after each test."""
+    mounted_identities = dict(
+        web_server._mounted_dashboard_plugin_api_identities
+    )
     web_server._dashboard_plugins_cache = None
     web_server._dashboard_plugins_cache_fingerprint = None
     yield
     web_server._dashboard_plugins_cache = None
     web_server._dashboard_plugins_cache_fingerprint = None
+    web_server._mounted_dashboard_plugin_api_identities.clear()
+    web_server._mounted_dashboard_plugin_api_identities.update(
+        mounted_identities
+    )
 
 
 @pytest.fixture
@@ -94,19 +102,36 @@ def _make_bundled_plugin(tmp_path, name="bundledx"):
     return dashboard_dir
 
 
-def _make_bundled_runtime_plugin(root, directory, *, key, dashboard_name):
-    """Create a bundled runtime plugin claiming a dashboard route name."""
+def _make_runtime_plugin(
+    root,
+    directory,
+    *,
+    key,
+    dashboard_name,
+    api_source=None,
+):
+    """Create a runtime plugin claiming a dashboard route name."""
     plugin_root = root / directory
     dashboard_dir = plugin_root / "dashboard"
     dashboard_dir.mkdir(parents=True)
     (plugin_root / "plugin.yaml").write_text(
         f"name: {key}\nkind: backend\nversion: 1.0.0\n"
     )
-    (dashboard_dir / "manifest.json").write_text(json.dumps({
+    manifest = {
         "name": dashboard_name,
         "label": dashboard_name,
         "entry": "dist/index.js",
-    }))
+    }
+    if api_source is not None:
+        (dashboard_dir / "api.py").write_text(
+            "from fastapi import APIRouter\n"
+            "router = APIRouter()\n"
+            "@router.get('/probe')\n"
+            "async def probe():\n"
+            f"    return {{'source': {api_source!r}}}\n"
+        )
+        manifest["api"] = "api.py"
+    (dashboard_dir / "manifest.json").write_text(json.dumps(manifest))
     return dashboard_dir
 
 
@@ -224,6 +249,252 @@ class TestPluginApiRuntimeGate:
         assert response.status_code == 404
         call_next.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_middleware_requires_mounted_canonical_key(
+        self,
+        tmp_path,
+    ):
+        """An active route-name claimant cannot borrow another key's mount."""
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+
+        dashboard_dir = tmp_path / "plugins" / "key-swap" / "dashboard"
+        dashboard_dir.mkdir(parents=True)
+        plugin = {
+            "name": "key-swap",
+            "source": "user",
+            "_dir": str(dashboard_dir),
+            "_runtime_name": "current-key",
+            "_runtime_key": "current-key",
+            "_runtime_source": "user",
+            "_runtime_kind": "standalone",
+            "_runtime_managed": False,
+        }
+        request = Request({
+            "type": "http",
+            "method": "GET",
+            "path": "/api/plugins/key-swap/probe",
+            "query_string": b"",
+            "headers": [],
+            "state": {"token_authenticated": True},
+        })
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+
+        with patch.object(
+            web_server,
+            "_get_dashboard_plugins",
+            return_value=[plugin],
+        ), patch.object(
+            web_server,
+            "_discover_dashboard_runtime_entries",
+            return_value=[],
+        ), patch.object(
+            web_server,
+            "_load_dashboard_plugin_activation_state",
+            return_value=_activation(enabled={"current-key"}),
+        ), patch.dict(
+            web_server._mounted_dashboard_plugin_api_identities,
+            {"key-swap": ("mounted-key", dashboard_dir.resolve().parent)},
+        ):
+            response = await web_server._plugin_api_runtime_gate(
+                request,
+                call_next,
+            )
+
+        assert response.status_code == 404
+        call_next.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_middleware_fails_closed_when_winner_discovery_fails(
+        self,
+        tmp_path,
+    ):
+        """A stale router must not run when its current winner is unknown."""
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+
+        dashboard_dir = tmp_path / "plugins" / "unknown-winner" / "dashboard"
+        dashboard_dir.mkdir(parents=True)
+        request = Request({
+            "type": "http",
+            "method": "GET",
+            "path": "/api/plugins/unknown-winner/probe",
+            "query_string": b"",
+            "headers": [],
+            "state": {"token_authenticated": True},
+        })
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+        identity = ("unknown-winner", dashboard_dir.resolve().parent)
+
+        with patch.object(
+            web_server,
+            "_get_dashboard_plugins",
+            side_effect=RuntimeError("discovery unavailable"),
+        ), patch.dict(
+            web_server._mounted_dashboard_plugin_api_identities,
+            {"unknown-winner": identity},
+        ):
+            response = await web_server._plugin_api_runtime_gate(
+                request,
+                call_next,
+            )
+
+        assert response.status_code == 404
+        call_next.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dashboard_only_manifest_change_invalidates_runtime_gate(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Cached dashboard metadata cannot keep an old API identity alive."""
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        dashboard_dir = _make_user_plugin(home, "manifest-swap")
+        api_file = dashboard_dir / "api.py"
+        api_file.write_text(
+            "from fastapi import APIRouter\nrouter = APIRouter()\n"
+        )
+        manifest_file = dashboard_dir / "manifest.json"
+        manifest = json.loads(manifest_file.read_text())
+        manifest["api"] = "api.py"
+        manifest_file.write_text(json.dumps(manifest))
+
+        activation = _activation(enabled={"manifest-swap"})
+        request = Request({
+            "type": "http",
+            "method": "GET",
+            "path": "/api/plugins/manifest-swap/probe",
+            "query_string": b"",
+            "headers": [],
+            "state": {"token_authenticated": True},
+        })
+        expected = JSONResponse({"ok": True})
+        call_next = AsyncMock(return_value=expected)
+
+        with patch(
+            "hermes_cli.config.load_plugin_activation_state",
+            return_value=activation,
+        ):
+            plugins = web_server._get_dashboard_plugins(force_rescan=True)
+            mounted = next(
+                plugin
+                for plugin in plugins
+                if plugin["name"] == "manifest-swap"
+            )
+            mounted_identity = web_server._dashboard_plugin_api_identity(
+                mounted,
+                [],
+            )
+            assert mounted_identity is not None
+
+            with patch.dict(
+                web_server._mounted_dashboard_plugin_api_identities,
+                {"manifest-swap": mounted_identity},
+            ):
+                response = await web_server._plugin_api_runtime_gate(
+                    request,
+                    call_next,
+                )
+                assert response is expected
+                call_next.assert_awaited_once()
+
+                # Keep activation unchanged and mutate only the manifest.
+                # Its new canonical name must invalidate the cached winner.
+                manifest["name"] = "renamed-plugin"
+                manifest_file.write_text(json.dumps(manifest))
+                call_next.reset_mock()
+
+                response = await web_server._plugin_api_runtime_gate(
+                    request,
+                    call_next,
+                )
+
+        assert response.status_code == 404
+        call_next.assert_not_called()
+
+    def test_bundled_fallback_cannot_authorize_mounted_user_override(
+        self,
+        test_client,
+        tmp_path,
+    ):
+        """A fallback with the same namespace must not unlock a stale router."""
+        bundled = tmp_path / "bundled"
+        user_plugins = tmp_path / "home" / "plugins"
+        runtime_key = "shared-runtime"
+        route_name = "winner-swap"
+        _make_runtime_plugin(
+            bundled,
+            "bundled-copy",
+            key=runtime_key,
+            dashboard_name=route_name,
+            api_source="bundled",
+        )
+        _make_runtime_plugin(
+            user_plugins,
+            "user-copy",
+            key=runtime_key,
+            dashboard_name=route_name,
+            api_source="user",
+        )
+        state = {
+            "activation": _activation(enabled={runtime_key}),
+        }
+        original_routes = list(web_server.app.router.routes)
+        module_name = f"hermes_dashboard_plugin_{route_name}"
+
+        try:
+            with patch(
+                "hermes_cli.plugins.get_bundled_plugins_dir",
+                return_value=bundled,
+            ), patch(
+                "hermes_cli.config.load_plugin_activation_state",
+                side_effect=lambda: state["activation"],
+            ):
+                initial = web_server._get_dashboard_plugins(
+                    force_rescan=True
+                )
+                mounted = next(p for p in initial if p["name"] == route_name)
+                assert mounted["source"] == "user"
+                web_server._mount_plugin_api_routes()
+
+                new_routes = [
+                    route
+                    for route in web_server.app.router.routes
+                    if route not in original_routes
+                ]
+                for route in new_routes:
+                    web_server.app.router.routes.remove(route)
+                web_server.app.router.routes[0:0] = new_routes
+
+                response = test_client.get(
+                    f"/api/plugins/{route_name}/probe"
+                )
+                assert response.status_code == 200
+                assert response.json() == {"source": "user"}
+
+                # Removing the user opt-in reselects the bundled candidate,
+                # but FastAPI still points this path at the mounted user
+                # handler until restart.
+                state["activation"] = _activation()
+                current = web_server._get_dashboard_plugins()
+                winner = next(p for p in current if p["name"] == route_name)
+                assert winner["source"] == "bundled"
+
+                response = test_client.get(
+                    f"/api/plugins/{route_name}/probe"
+                )
+                assert response.status_code == 404
+                assert response.json() == {"detail": "Plugin not found"}
+        finally:
+            web_server.app.router.routes[:] = original_routes
+            sys.modules.pop(module_name, None)
+
 
 class TestDashboardRouteNameCollision:
     def test_distinct_canonical_plugins_sharing_route_fail_closed(
@@ -236,13 +507,13 @@ class TestDashboardRouteNameCollision:
         bundled.mkdir()
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
-        _make_bundled_runtime_plugin(
+        _make_runtime_plugin(
             bundled,
             "one",
             key="runtime-one",
             dashboard_name="shared-route",
         )
-        _make_bundled_runtime_plugin(
+        _make_runtime_plugin(
             bundled,
             "two",
             key="runtime-two",

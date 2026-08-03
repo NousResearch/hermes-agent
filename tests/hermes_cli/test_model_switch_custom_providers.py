@@ -152,6 +152,78 @@ def test_disabled_custom_plugin_rejects_before_endpoint_probe(monkeypatch):
     assert "model-providers/custom" in result.error_message
 
 
+def test_disabled_custom_plugin_keeps_builtin_model_overrides_routable(monkeypatch):
+    """A built-in ``providers:`` metadata row is not a custom endpoint."""
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda provider_id: provider_id != "custom",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_provider_full",
+        lambda *_args, **_kwargs: providers_mod.ProviderDef(
+            id="deepseek",
+            name="DeepSeek",
+            transport="openai_chat",
+            api_key_env_vars=("DEEPSEEK_API_KEY",),
+            base_url="https://api.deepseek.com",
+        ),
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.resolve_alias", lambda *_args: None)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "test-key",
+            "base_url": "https://api.deepseek.com",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *_args, **_kwargs: _MOCK_VALIDATION,
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities",
+        lambda *_a, **_k: None,
+    )
+
+    result = switch_model(
+        raw_input="deepseek-chat",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="deepseek",
+        user_providers={"deepseek": {"models": {"deepseek-chat": {}}}},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "deepseek"
+
+
+def test_disabled_custom_plugin_still_rejects_providers_endpoint(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda provider_id: provider_id != "custom",
+    )
+
+    result = switch_model(
+        raw_input="relay-model",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="configured-relay",
+        user_providers={
+            "configured-relay": {
+                "base_url": "https://configured.example/v1",
+                "models": {"relay-model": {}},
+            }
+        },
+        custom_providers=[],
+    )
+
+    assert result.success is False
+    assert "model-providers/custom" in result.error_message
+
+
 
 
 

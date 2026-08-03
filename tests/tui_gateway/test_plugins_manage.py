@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from hermes_cli import plugins_cmd
+from hermes_cli.plugin_activation import PluginActivationState
 import tui_gateway.server as server
 
 
@@ -55,3 +56,70 @@ def test_plugins_manage_toggle_targets_key_and_returns_matching_row(monkeypatch)
     assert result["name"] == "xai"
     assert result["key"] == "video_gen/xai"
     assert result["plugin"]["key"] == "video_gen/xai"
+
+
+def test_plugins_manage_reports_and_toggles_active_bundled_fallback(monkeypatch):
+    candidates = [
+        (
+            "shared",
+            "1.0",
+            "bundled fallback",
+            "bundled",
+            "/plugins/bundled/shared",
+            "shared",
+            "backend",
+        ),
+        (
+            "shared",
+            "9.0",
+            "inactive override",
+            "user",
+            "/plugins/user/shared",
+            "shared",
+            "backend",
+        ),
+    ]
+    monkeypatch.setattr(plugins_cmd, "_discover_plugin_candidates", lambda: candidates)
+    enabled_keys = set()
+    disabled_keys = set()
+    monkeypatch.setattr(
+        "hermes_cli.config.load_plugin_activation_state",
+        lambda: PluginActivationState(
+            enabled=frozenset(enabled_keys),
+            disabled=frozenset(disabled_keys),
+        ),
+    )
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set(enabled_keys))
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set(disabled_keys))
+
+    def _save_enabled(value):
+        enabled_keys.clear()
+        enabled_keys.update(value)
+
+    def _save_disabled(value):
+        disabled_keys.clear()
+        disabled_keys.update(value)
+
+    monkeypatch.setattr(plugins_cmd, "_save_enabled_set", _save_enabled)
+    monkeypatch.setattr(plugins_cmd, "_save_disabled_set", _save_disabled)
+    monkeypatch.setattr(plugins_cmd, "_toggle_plugin_toolset", lambda *a, **k: None)
+
+    rows = _call({"action": "list"})["plugins"]
+
+    assert len(rows) == 1
+    assert rows[0]["source"] == "bundled"
+    assert rows[0]["status"] == "enabled"
+
+    result = _call(
+        {
+            "action": "toggle",
+            "enable": False,
+            "key": rows[0]["key"],
+            "name": rows[0]["name"],
+        }
+    )
+
+    assert disabled_keys == {"shared"}
+    assert result["key"] == "shared"
+    assert result["plugin"]["source"] == "user"
+    assert result["plugin"]["status"] == "disabled"

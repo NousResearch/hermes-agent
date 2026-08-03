@@ -101,6 +101,80 @@ class TestResolvePluginKey:
 
 
 class TestEnableDisableNested:
+    def test_enable_canonical_key_activates_inactive_external_override(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from hermes_cli import plugins_cmd
+        from hermes_cli.plugin_activation import PluginActivationState
+
+        bundled = tmp_path / "bundled"
+        user = tmp_path / "user"
+        _make_plugin_dir(
+            bundled,
+            "shared",
+            {"name": "shared", "version": "1.0.0", "kind": "backend"},
+        )
+        _make_plugin_dir(
+            user,
+            "shared",
+            {"name": "shared", "version": "9.0.0", "kind": "backend"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_bundled_plugins_dir",
+            lambda: bundled,
+        )
+        monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user)
+        monkeypatch.setattr(plugins_cmd, "_discover_entrypoint_plugins", lambda: [])
+        enabled_keys = set()
+        disabled_keys = set()
+        monkeypatch.setattr(
+            "hermes_cli.config.load_plugin_activation_state",
+            lambda: PluginActivationState(
+                enabled=frozenset(enabled_keys),
+                disabled=frozenset(disabled_keys),
+            ),
+        )
+        monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set(enabled_keys))
+        monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set(disabled_keys))
+
+        saved_enabled = []
+        saved_disabled = []
+        override_grants = []
+
+        def _save_enabled(value):
+            enabled_keys.clear()
+            enabled_keys.update(value)
+            saved_enabled.append(set(value))
+
+        def _save_disabled(value):
+            disabled_keys.clear()
+            disabled_keys.update(value)
+            saved_disabled.append(set(value))
+
+        monkeypatch.setattr(plugins_cmd, "_save_enabled_set", _save_enabled)
+        monkeypatch.setattr(plugins_cmd, "_save_disabled_set", _save_disabled)
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_set_plugin_entry_flag",
+            lambda *args: override_grants.append(args),
+        )
+
+        assert plugins_cmd._resolve_plugin_key("shared") == "shared"
+        plugins_cmd.cmd_enable("shared", allow_tool_override=False)
+
+        assert saved_enabled == [{"shared"}]
+        assert saved_disabled == [set()]
+        assert override_grants == [("shared", "allow_tool_override", False)]
+        winner = next(
+            entry
+            for entry in plugins_cmd._discover_all_plugins()
+            if entry[5] == "shared"
+        )
+        assert winner[3] == "user"
+        assert winner[1] == "9.0.0"
+
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd._save_disabled_set")

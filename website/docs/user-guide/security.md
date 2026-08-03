@@ -520,6 +520,8 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 
 Both `execute_code` and `terminal` strip sensitive environment variables from child processes to prevent credential exfiltration by LLM-generated code. However, skills that declare `required_environment_variables` legitimately need access to those vars.
 
+First-party platform credentials — the `BUZZ_*` variables used by the Buzz messaging platform — are passed through to `terminal` children (foreground and background/PTY spawns) by default so a Buzz platform agent can invoke its platform-mandated CLI (e.g. `buzz`) from the terminal tool. Because `_sanitize_subprocess_env` also feeds search workers (e.g. the ddgs web-search subprocess), the computer-use driver binary, and user-script runners (bang `!` commands, quick commands, cron scripts, webhook-filter scripts), those children receive the variables too. This carve-out is **terminal-only**: it does not apply to `execute_code`, browser/TUI-host spawns (`hermes_subprocess_env`), Docker/Modal children, or `env_passthrough` registration, which remain sealed.
+
 ### How It Works
 
 Two mechanisms allow specific variables through the sandbox filters:

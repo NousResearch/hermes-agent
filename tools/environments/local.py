@@ -437,6 +437,53 @@ def _build_provider_env_blocklist() -> frozenset:
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
+# First-party platform credentials the agent's own platform adapters need in
+# terminal children (e.g. the ``BUZZ_*`` vars for the Buzz messaging
+# platform, which drive the platform-mandated ``buzz`` CLI: BUZZ_PRIVATE_KEY,
+# BUZZ_AUTH_TAG, BUZZ_RELAY_URL, and the other BUZZ_* names). These are the
+# agent's OWN credentials — a Buzz community agent is expected to operate the
+# ``buzz`` CLI — so they are carved out of the terminal scrub.
+#
+# Scope is TERMINAL ONLY: the foreground ``_make_run_env`` and background/PTY
+# ``_sanitize_subprocess_env`` paths pass them through. ``_sanitize_subprocess_env``
+# is also consumed by search workers (e.g. the ddgs web-search subprocess),
+# the computer-use driver binary, and user-script runners (bang ``!``
+# commands, quick commands, cron scripts, webhook-filter scripts), so those
+# children receive the vars too — matching the approved background/PTY scope.
+# Every other surface stays sealed — execute_code scrubbing,
+# :func:`hermes_subprocess_env` (browser / TUI host / copilot-executor
+# spawns), docker children, and ``env_passthrough`` registration (skills/config
+# still cannot register these names). The GHSA-rhgp-j443-p4rf seal is
+# preserved because no registration path is opened; this is a scrub-path
+# exemption, not an allowlist addition.
+#
+# First-party matches use the merged env value directly — they are the
+# process's own env values and are never scope-resolved (a profile secret
+# scope under multiplex would otherwise raise UnscopedSecretError at
+# passthrough-resolution call sites); only skill/config passthrough names
+# resolve through the profile secret scope. The snapshot mechanism treats
+# these names like profile-scoped passthrough names (see
+# ``LocalEnvironment._additional_profile_scoped_passthrough_names``) so they
+# never persist in the shared terminal snapshot across profiles.
+#
+# Prefix-based on purpose: future ``BUZZ_*`` names added by the platform's
+# plugin.yaml (or a user's own credentials file) are covered without another
+# code change. Contrast with CLAUDE_CODE_OAUTH_TOKEN above, which is discarded
+# from the blocklist entirely because it is NOT a Hermes credential; these ARE
+# Hermes-managed first-party platform credentials, so they stay IN the
+# blocklist for every non-terminal surface.
+#
+# See issue #78026 (Buzz agents could not use ``buzz`` from the terminal tool).
+_TERMINAL_FIRST_PARTY_ENV_PREFIXES = ("BUZZ_",)
+
+
+def _is_terminal_first_party_env(name: str) -> bool:
+    """Return True if ``name`` is a first-party platform credential that must
+    reach terminal children (the ``BUZZ_*`` set; see
+    ``_TERMINAL_FIRST_PARTY_ENV_PREFIXES``)."""
+    return name.startswith(_TERMINAL_FIRST_PARTY_ENV_PREFIXES)
+
+
 # Active-virtualenv markers that must NOT leak into terminal subprocesses.
 # The gateway runs inside its own venv, so its process environment carries
 # VIRTUAL_ENV (and possibly CONDA_PREFIX). If those leak into commands the
@@ -604,10 +651,17 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             continue
         if key in _plugin_strip:
             continue
+        first_party = _is_terminal_first_party_env(key)
         passthrough = _is_passthrough(key)
-        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
             continue
-        resolved = _resolve_passthrough_value(key, value) if passthrough else value
+        # First-party platform vars are the process's own env values: use them
+        # directly, never scope-resolve (multiplex with no scope would raise
+        # UnscopedSecretError — a regression where the script previously ran
+        # without the var). Only skill/config passthrough names resolve.
+        resolved = value
+        if passthrough and not first_party:
+            resolved = _resolve_passthrough_value(key, value)
         if resolved is not None:
             sanitized[key] = resolved
 
@@ -622,10 +676,13 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         elif key in _plugin_strip:
             continue
         else:
+            first_party = _is_terminal_first_party_env(key)
             passthrough = _is_passthrough(key)
-            if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
                 continue
-            resolved = _resolve_passthrough_value(key, value) if passthrough else value
+            resolved = value
+            if passthrough and not first_party:
+                resolved = _resolve_passthrough_value(key, value)
             if resolved is not None:
                 sanitized[key] = resolved
 
@@ -1433,10 +1490,15 @@ def _make_run_env(env: dict) -> dict:
         elif _is_hermes_internal_secret(k):
             continue
         else:
+            first_party = _is_terminal_first_party_env(k)
             passthrough = _is_passthrough(k)
-            if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
                 continue
-            value = _resolve_passthrough_value(k, v) if passthrough else v
+            # First-party vars use the merged env value directly (see
+            # _sanitize_subprocess_env); only passthrough names resolve.
+            value = v
+            if passthrough and not first_party:
+                value = _resolve_passthrough_value(k, v)
             if value is not None:
                 run_env[k] = value
     path_key = _path_env_key(run_env)
@@ -1849,6 +1911,36 @@ class LocalEnvironment(BaseEnvironment):
     # Commands run on the Hermes host itself — controller-side platform
     # behavior (macOS TCC pruning, etc.) legitimately applies here.
     is_local = True
+
+    def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
+        """Return first-party terminal env names (``BUZZ_*``) present in the
+        current env, so they are excluded from the shared session snapshot.
+
+        The login-shell snapshot (``init_session`` ``export -p`` dump and the
+        per-command re-dump) captures the child env, which now includes the
+        ``BUZZ_*`` vars the terminal carve-out passes through. The exclusion
+        set is derived from ``get_all_passthrough()`` plus backend-specific
+        additions — and ``BUZZ_*`` can NEVER be in it, because env_passthrough
+        refuses blocklisted names (GHSA-rhgp-j443-p4rf). Under a multiplexed
+        gateway, profile A's BUZZ_PRIVATE_KEY would land in
+        ``hermes-snap-<id>.sh`` and a later command from profile B sharing
+        this collapsed LocalEnvironment would ``source`` it: a cross-profile
+        nsec leak that defeats profile isolation.
+
+        Treating these names like profile-scoped passthrough names keeps them
+        out of the dump and save/restores the current profile's value (or
+        unsets the name) per command in ``_wrap_command``. The set is monotonic
+        for the environment lifetime: once a name is seen it stays excluded,
+        so a later profile that lacks the var still gets the unset-guard.
+        """
+        merged = dict(os.environ | self.env)
+        return tuple(
+            sorted(
+                name
+                for name in merged
+                if isinstance(name, str) and _is_terminal_first_party_env(name)
+            )
+        )
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         cwd = _resolve_local_initial_cwd(cwd)

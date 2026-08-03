@@ -557,7 +557,7 @@ describe('preserveLocalPendingTurnMessages', () => {
   // `attachmentRefs`. A naive text compare (chatMessageText a === b) therefore
   // always mismatched whenever an image was attached and re-appended the
   // optimistic row as a distinct, duplicate user bubble. Both sides must now
-  // reduce to the same visible text via textWithoutImageRefs.
+  // reduce to the same visible text via textWithoutReferenceLines.
   it('does not duplicate the optimistic image turn when the persisted turn carries @image refs', () => {
     const previous = [
       msg('1-user', 'user', 'first'),

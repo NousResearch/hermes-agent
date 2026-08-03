@@ -7,6 +7,12 @@ from unittest.mock import patch
 
 import pytest
 
+
+def test_remote_skill_backends_include_apple_container():
+    import tools.skills_tool as skills_tool
+
+    assert "apple_container" in skills_tool._REMOTE_ENV_BACKENDS
+
 import tools.skills_tool as skills_tool_module
 from tools.skills_tool import (
     _get_required_environment_variables,

@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import os
@@ -176,6 +177,65 @@ class AgentSummaryFileTests(unittest.TestCase):
                     os.environ.pop("HERMES_HOME", None)
                 else:
                     os.environ["HERMES_HOME"] = previous
+
+
+class ExportEndpointTests(unittest.TestCase):
+    """Route-level contract for /export and /achievements/summary.
+
+    The rendering helpers are covered above; these drive the endpoint
+    functions themselves so the status codes and response media types stay
+    pinned. ``evaluate_all`` is stubbed so no scan or state file is touched.
+    """
+
+    def setUp(self):
+        self._original_evaluate_all = plugin_api.evaluate_all
+        plugin_api.evaluate_all = sample_data
+        self.addCleanup(self._restore_evaluate_all)
+
+    def _restore_evaluate_all(self):
+        plugin_api.evaluate_all = self._original_evaluate_all
+
+    def test_export_json_returns_ok_with_export_payload(self):
+        resp = asyncio.run(plugin_api.export_achievements(format="json"))
+
+        self.assertEqual(resp.status_code, 200)
+        payload = json.loads(resp.body)
+        self.assertEqual(payload["unlocked_count"], 2)
+        self.assertEqual(payload["total_count"], 4)
+
+    def test_export_markdown_uses_markdown_media_type(self):
+        resp = asyncio.run(plugin_api.export_achievements(format="markdown"))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.media_type, "text/markdown")
+        self.assertIn("Red Text Connoisseur", resp.body.decode("utf-8"))
+
+    def test_export_svg_uses_svg_media_type(self):
+        resp = asyncio.run(plugin_api.export_achievements(format="svg"))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.media_type, "image/svg+xml")
+        self.assertIn("<svg", resp.body.decode("utf-8"))
+
+    def test_export_unsupported_format_returns_400_with_supported_list(self):
+        resp = asyncio.run(plugin_api.export_achievements(format="pdf"))
+
+        self.assertEqual(resp.status_code, 400)
+        payload = json.loads(resp.body)
+        self.assertIn("pdf", payload["error"])
+        self.assertEqual(payload["supported"], ["json", "markdown", "svg"])
+
+    def test_export_format_is_case_insensitive(self):
+        resp = asyncio.run(plugin_api.export_achievements(format="MarkDown"))
+
+        self.assertEqual(resp.media_type, "text/markdown")
+
+    def test_summary_endpoint_returns_agent_summary(self):
+        summary = asyncio.run(plugin_api.achievements_summary())
+
+        self.assertEqual(summary["unlocked_count"], 2)
+        self.assertEqual(summary["top_tier"], "Gold")
+        self.assertEqual(summary["unlocked_ids"], ["red_text", "night_owl"])
 
 
 if __name__ == "__main__":

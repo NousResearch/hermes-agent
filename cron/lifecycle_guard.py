@@ -641,7 +641,11 @@ def _iter_referenced_shell_scripts(
         executable = segment[index]
         executable_name = Path(executable).name
 
-        if executable_name in {".", "source"}:
+        # Compare the RAW token as well as the basename: `Path(".").name` is the
+        # empty string, so a basename-only test silently misses the dot operator
+        # while still catching `source`. `. ./restart.sh` is exactly equivalent
+        # to `source ./restart.sh`, so both must reach the referenced-script scan.
+        if executable in {".", "source"} or executable_name == "source":
             if len(segment) > index + 1:
                 resolved = _resolve_terminal_script_path(segment[index + 1], cwd)
                 if resolved is not None:

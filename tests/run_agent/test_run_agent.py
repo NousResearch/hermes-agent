@@ -4212,8 +4212,69 @@ class TestRunConversation:
         # The retry honored the reduced max_tokens (available_out - 64).
         second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
         assert second_call["max_tokens"] <= 936
+        # LOCK IN THE FIX: the retry must actually SEND the compressed history
+        # (the 1-message payload from _compress_context + its new system
+        # prompt), not the original multi-message window. Without this, the
+        # output-cap retry would call the compressor but re-transmit the same
+        # oversized request forever.
+        second_messages = second_call.get("messages", [])
+        assert second_messages[-1].get("content") == "hello"
+        assert len(second_messages) == 2
+        assert second_messages[0]["role"] == "system"
         # context_length was NOT mutated by an output-cap error.
         assert agent.context_compressor.context_length == 200_000
+
+    def test_output_cap_retry_compression_no_progress_terminates_bounded(self, agent):
+        """Regression: when the compressor cannot reduce the request (zero
+        progress AND no images to strip), the output-cap retry must terminate
+        via the max-attempts guard instead of spinning forever.
+
+        The compressor is injected to return the input unchanged (same list
+        object, no lock-defer — just zero progress), and the provider keeps
+        rejecting, so the only correct outcome is a bounded
+        ``compression_exhausted`` failure, not an unbounded loop.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=True)
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199000 = available_tokens: 1000"
+        )
+
+        def _rejecting(*args, **kwargs):
+            exc = Exception(error_msg)
+            exc.status_code = 400
+            exc.code = 400
+            raise exc
+
+        # The provider never recovers (side effect raises on every call).
+        agent.client.chat.completions.create.side_effect = _rejecting
+
+        def _no_progress(messages, system_message, **kwargs):
+            # Compressor runs but cannot shrink the request: no-op, same list.
+            return messages, system_message
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", side_effect=_no_progress),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result.get("compression_exhausted") is True
+        # Terminated in a bounded number of API calls (default max attempts=3
+        # => ~4 create calls), NOT an unbounded retry loop.
+        assert agent.client.chat.completions.create.call_count <= 6
 
 
 

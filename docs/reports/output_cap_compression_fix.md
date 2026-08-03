@@ -79,9 +79,11 @@ is actually compressed before retrying:
 
 1. The compressor drops the middle window, freeing a large fraction of tokens
    in a single pass.
-2. If compression made real progress, the session continues under the ceiling.
-3. If compression could not reduce further, vision payloads are stripped and it
-   retries again.
+2. If compression made real progress (message count dropped, or ≥5% token
+   savings), the session continues under the ceiling.
+3. If compression could not reduce the request, the loop retries with the already
+   reduced `max_tokens` and, if the error keeps recurring, terminates through the
+   existing max-attempts guard with a clear "cannot compress further" message.
 4. Compression failures are non-fatal: if anything goes wrong during
    compression, the code falls back to retrying on `max_tokens` alone. The
    existing max-attempts guard still bounds the retry loop, so it cannot spin
@@ -90,12 +92,19 @@ is actually compressed before retrying:
 ## Verification
 
 - Both output-cap retry regression tests pass:
-  `test_output_cap_retry_uses_provider_available_out` and
+  `test_output_cap_retry_uses_provider_available_out`, and
   `test_output_cap_retry_with_large_api_only_content`.
-- Full `tests/run_agent/test_run_agent.py`: 232 passed, 1 failed — and the 1
-  failure (`test_interruptible_anthropic_interrupt_never_closes_shared_client`)
-  is a pre-existing environment issue (missing `anthropic` package), failing
-  identically on a clean base without this change.
+- New `test_output_cap_retry_triggers_compression_and_recovers` locks in the
+  fix and asserts that the retry sends the compressed history on the wire (not
+  the original oversized request) and that `context_length` is untouched.
+- New `test_output_cap_retry_compression_no_progress_terminates_bounded` locks
+  in that a zero-progress compression terminates via the max-attempts guard
+  rather than spinning forever.
+- Full `tests/run_agent/test_run_agent.py`: 235 passed with the optional
+  `anthropic` package installed. (Without it, the single
+  `test_interruptible_anthropic_interrupt_never_closes_shared_client` fails on
+  an ``ImportError: The 'anthropic' package is required`` — an environment
+  issue, unrelated to this change.)
 - `ruff check` passes on both modified files.
 
 ## Impact

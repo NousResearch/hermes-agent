@@ -4788,19 +4788,10 @@ def run_conversation(
                                 agent, messages, conversation_history
                             )
                             new_tokens = estimate_messages_tokens_rough(messages)
-                            approx_tokens = new_tokens
                             if len(messages) < original_len:
                                 agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
                             elif new_tokens > 0 and new_tokens < original_tokens * 0.95:
                                 agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
-                            elif agent._try_strip_image_parts_from_tool_messages(
-                                api_messages,
-                                remember_model=False,
-                            ):
-                                agent._buffer_status(
-                                    "📐 Compression could not reduce the request further — "
-                                    "removed retained vision payloads and retrying..."
-                                )
                         except Exception:
                             # Compression must never turn an output-cap error
                             # fatal — fall through and retry on max_tokens alone.

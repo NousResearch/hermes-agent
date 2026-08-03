@@ -4220,6 +4220,64 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
         self._execute_write(_do)
 
+    def set_session_yolo(self, session_id: str, enabled: bool) -> None:
+        """Persist the per-session YOLO bypass flag into ``model_config``.
+
+        Merges ``yolo_mode`` into the existing ``model_config`` JSON (same
+        merge discipline as ``update_session_runtime_lock`` so lineage
+        markers like ``_branched_from`` / ``_delegate_from`` survive). The
+        CLI resume paths read this flag back so a ``/yolo ON`` toggle — or a
+        ``--yolo`` launch — survives ``hermes --resume`` into a fresh
+        process. No-op when the session row doesn't exist yet; the
+        creation-time ``model_config`` carries the flag for ``--yolo``
+        launches.
+        """
+        if not session_id:
+            return
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return
+            raw = row["model_config"] if isinstance(row, sqlite3.Row) else row[0]
+            config: Dict[str, Any] = {}
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        config = parsed
+                except Exception:
+                    config = {}
+            elif isinstance(raw, dict):
+                config = dict(raw)
+            config["yolo_mode"] = bool(enabled)
+            conn.execute(
+                "UPDATE sessions SET model_config = ? WHERE id = ?",
+                (json.dumps(config), session_id),
+            )
+        self._execute_write(_do)
+
+    @staticmethod
+    def session_yolo_enabled(session_meta: Optional[Dict[str, Any]]) -> bool:
+        """Read the persisted YOLO flag off a session row dict.
+
+        Accepts the dict returned by ``get_session`` (``model_config`` is a
+        JSON string) or an already-parsed dict. Returns False on any parse
+        failure — resume must never enable the bypass by accident.
+        """
+        raw = (session_meta or {}).get("model_config")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                return False
+        if not isinstance(raw, dict):
+            return False
+        return bool(raw.get("yolo_mode"))
+
     def update_session_billing_route(
         self,
         session_id: str,

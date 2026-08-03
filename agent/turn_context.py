@@ -25,7 +25,6 @@ move-and-name refactor with no semantic change.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 import uuid
@@ -42,43 +41,13 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
+from agent.memory_provider import is_trivial_prompt
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
 )
 
 logger = logging.getLogger(__name__)
-
-
-# Trivial user-input pattern — used to gate the per-turn memory-provider
-# prefetch on short, semantically-empty queries. Covers greetings,
-# acknowledgements, and trailing-punctuation variants (e.g. "hi!", "hey.",
-# "thanks :)").
-_RE_TRIVIAL_USER_QUERY = re.compile(
-    r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
-    r'hi|hey|hello|yo|sup|'
-    r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)'
-    r'[\s!?.:;,"' + "'" + r'~\u2018\u2019\u201c\u201d\u2014\u2013\u2026()\[\]{}<>*&^%$#@!+=`\u00a0]*$',
-    re.IGNORECASE,
-)
-
-
-def _is_trivial_user_query(query: str) -> bool:
-    """Return True if the query is a greeting or too trivial to warrant prefetch.
-
-    Strips leading/trailing whitespace first, then checks against
-    _RE_TRIVIAL_USER_QUERY which permits common trailing punctuation
-    (exclamation, question mark, emoji, etc.) so variants like "hi!",
-    "hey.", and "thanks :)" register as trivial.
-    """
-    if not query:
-        return True
-    stripped = query.strip()
-    if not stripped:
-        return True
-    if stripped.startswith("/"):
-        return True
-    return bool(_RE_TRIVIAL_USER_QUERY.match(stripped))
 
 
 def compose_user_api_content(
@@ -1191,7 +1160,7 @@ def build_turn_context(
     if agent._memory_manager:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
-            if not _is_trivial_user_query(_query):
+            if not is_trivial_prompt(_query):
                 ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
             pass

@@ -23,7 +23,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import TRIVIAL_PROMPT_RE, MemoryProvider
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -1198,14 +1198,10 @@ class HonchoMemoryProvider(MemoryProvider):
 
     # Prompts that carry no semantic signal — trivial acknowledgements, greetings,
     # slash commands, empty input. Skipping injection here saves tokens and prevents
-    # stale user-model context from derailing one-word replies.
-    _TRIVIAL_PROMPT_RE = re.compile(
-        r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
-        r'hi|hey|hello|yo|sup|'
-        r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)'
-        r'[\s!?.:;,~]*$',
-        re.IGNORECASE,
-    )
+    # stale user-model context from derailing one-word replies. The pattern is
+    # shared with the core prefetch gate (agent/memory_provider.TRIVIAL_PROMPT_RE)
+    # so the provider-side classifier and the core gate can never drift apart.
+    _TRIVIAL_PROMPT_RE = TRIVIAL_PROMPT_RE
 
     @classmethod
     def _is_trivial_prompt(cls, text: str) -> bool:

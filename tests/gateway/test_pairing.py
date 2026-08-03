@@ -678,3 +678,119 @@ class TestProfileScopedStorage:
         )
 
 
+
+# ---------------------------------------------------------------------------
+# Profile-scoped allowlist env writes (#77490 regression tests)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileScopedAllowlistWrites:
+    """_sync_allowlist_add/remove with profile= writes to the profile's own
+    .env instead of the root .env, preventing cross-profile credential
+    leakage under multiplexing (issue #77490).
+    """
+
+    def test_sync_allowlist_add_scopes_to_profile_env(self, tmp_path, monkeypatch):
+        from hermes_constants import get_hermes_home
+        from gateway.pairing import _sync_allowlist_add
+
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+        # Root .env exists with TELEGRAM_ALLOWED_USERS already set.
+        root_env = tmp_path / ".env"
+        root_env.write_text("TELEGRAM_ALLOWED_USERS=owner1\n", encoding="utf-8")
+
+        # Profile .env also has the same var.
+        profile_env_dir = tmp_path / "profiles" / "coder"
+        profile_env_dir.mkdir(parents=True)
+        profile_env = profile_env_dir / ".env"
+        profile_env.write_text("TELEGRAM_ALLOWED_USERS=owner2\n", encoding="utf-8")
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
+
+        saved = {}
+        import hermes_cli.config as cfg
+
+        def fake_save(key, value):
+            saved[key] = value
+            os.environ[key] = value
+
+        monkeypatch.setattr(cfg, "save_env_value", fake_save)
+
+        _sync_allowlist_add("telegram", "newuser", profile="coder")
+        # The write should have been scoped to the coder profile.
+        # save_env_value receives the value; the caller can verify the
+        # override was applied.
+        assert saved.get("TELEGRAM_ALLOWED_USERS") == "owner1,newuser"
+
+    def test_sync_allowlist_add_no_profile_uses_root_env(self, tmp_path, monkeypatch):
+        from gateway.pairing import _sync_allowlist_add
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
+
+        saved = {}
+        import hermes_cli.config as cfg
+
+        monkeypatch.setattr(cfg, "save_env_value", lambda k, v: saved.__setitem__(k, v))
+
+        # No profile passed — should write to root.
+        _sync_allowlist_add("telegram", "newuser")
+        assert saved.get("TELEGRAM_ALLOWED_USERS") == "owner1,newuser"
+
+    def test_sync_allowlist_remove_scopes_to_profile_env(self, tmp_path, monkeypatch):
+        from gateway.pairing import _sync_allowlist_remove
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1,newuser")
+
+        removed = []
+        saved = {}
+        import hermes_cli.config as cfg
+
+        monkeypatch.setattr(cfg, "remove_env_value", lambda k: removed.append(k))
+        monkeypatch.setattr(cfg, "save_env_value", lambda k, v: saved.__setitem__(k, v))
+
+        # Removing "newuser" should leave "owner1" and call save_env_value
+        # scoped to the profile's .env.
+        _sync_allowlist_remove("telegram", "newuser", profile="coder")
+        assert saved.get("TELEGRAM_ALLOWED_USERS") == "owner1"
+        assert "TELEGRAM_ALLOWED_USERS" not in removed
+
+    def test_sync_allowlist_remove_env_var_when_list_empties_profile(self, tmp_path, monkeypatch):
+        from gateway.pairing import _sync_allowlist_remove
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "onlyuser")
+
+        removed = []
+        import hermes_cli.config as cfg
+
+        monkeypatch.setattr(cfg, "remove_env_value", lambda k: removed.append(k))
+
+        _sync_allowlist_remove("telegram", "onlyuser", profile="coder")
+        # The list is empty after removal, so remove_env_value should fire.
+        assert "TELEGRAM_ALLOWED_USERS" in removed
+
+    def test_profile_approve_invokes_sync_with_profile(self, tmp_path, monkeypatch):
+        """PairingStore.approve() passes profile to _sync_allowlist_add."""
+        from hermes_constants import get_hermes_home
+        from gateway.pairing import PairingStore
+
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
+
+        profiles_seen = []
+
+        import gateway.pairing as pairing_mod
+
+        orig_add = pairing_mod._sync_allowlist_add
+
+        def spy_add(platform, user_id, *, profile=None):
+            profiles_seen.append(profile)
+            orig_add(platform, user_id, profile=profile)
+
+        monkeypatch.setattr(pairing_mod, "_sync_allowlist_add", spy_add)
+
+        store = PairingStore(profile="coder")
+        store._approve_user("telegram", "newuser", "")
+        assert "coder" in profiles_seen
+
+

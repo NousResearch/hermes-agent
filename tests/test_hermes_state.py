@@ -3360,6 +3360,48 @@ class TestCompactRows:
         assert "system_prompt" not in row
         assert row["id"] == "s1"
 
+    def test_batch_compact_rows_omits_system_prompt_keeps_git_fields(self, db):
+        """_get_session_rich_rows_batch(compact_rows=True) must apply the same
+        schema-derived compact projection as the single-row path: no
+        system_prompt blob, but git_branch/git_repo_root still present."""
+        self._create(db, "s1", system_prompt="should be gone")
+        db.update_session_cwd("s1", "/tmp/w1", git_branch="main", git_repo_root="/tmp/w1")
+        rows = db._get_session_rich_rows_batch(["s1"], compact_rows=True)
+        assert set(rows) == {"s1"}
+        row = rows["s1"]
+        assert "system_prompt" not in row
+        assert row["git_branch"] == "main"
+        assert row["git_repo_root"] == "/tmp/w1"
+
+    def test_compression_tip_projection_threads_compact_rows(self, db):
+        """list_sessions_rich(compact_rows=True) must thread compact_rows
+        through the batched tip-row fetch: the projected tip row must lack
+        system_prompt but keep git metadata (guards the call site at the
+        projection loop, not just the batch helper)."""
+        import time as _time
+
+        t0 = _time.time() - 3600
+        db.create_session("rootc", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "rootc"))
+        db.append_message("rootc", "user", "start")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 100, "compression", "rootc"),
+        )
+        db.create_session("tipc", "cli", parent_session_id="rootc")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 101, "tipc"))
+        db.append_message("tipc", "user", "continuation")
+        db.update_system_prompt("tipc", "big blob " * 500)
+        db.update_session_cwd("tipc", "/tmp/w2", git_branch="dev", git_repo_root="/tmp/w2")
+        db._conn.commit()
+
+        rows = db.list_sessions_rich(source="cli", compact_rows=True)
+        tip = next(s for s in rows if s["id"] == "tipc")
+        assert tip["_lineage_root_id"] == "rootc"
+        assert "system_prompt" not in tip
+        assert tip["git_branch"] == "dev"
+        assert tip["git_repo_root"] == "/tmp/w2"
+
 
 
 

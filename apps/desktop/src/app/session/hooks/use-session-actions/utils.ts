@@ -251,7 +251,19 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     const nextText = chatMessageText(message).trim()
     const previousText = chatMessageText(previous)
     const previousVisibleText = textWithoutEmbeddedImages(previousText)
+    const previousTrimmed = previousVisibleText.trim()
     let preserved = message
+
+    // #75825: resume can project an empty (or lagging) inflight assistant shell
+    // at the same role-ordinal as the live stream row that still holds the
+    // streamed text, reasoning and tool calls. Prefer that richer pending row
+    // instead of painting the shell — otherwise the reply vanishes until
+    // restart. Guarded to the same reply further along (see
+    // localPendingSupersedes) so a different turn at the same ordinal cannot
+    // hijack the slot.
+    if (localPendingSupersedes(previous, message)) {
+      return withAuthoritativeTurnState(previous, message)
+    }
 
     const sameText = nextText === previousVisibleText || nextText === previousText.trim()
 
@@ -262,8 +274,7 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // the strict equality path — they reconcile a SETTLED row, and a growing
     // row is by definition not settled.
     const sameTurn =
-      sameText ||
-      (nextText.length > 0 && previousVisibleText.length > 0 && nextText.startsWith(previousVisibleText.trim()))
+      sameText || (nextText.length > 0 && previousTrimmed.length > 0 && nextText.startsWith(previousTrimmed))
 
     if (sameTurn) {
       preserved = preserveStructuralParts(preserved, previous)
@@ -316,8 +327,10 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  * history window. Preserve only the newest optimistic user row: compression
  * rewrites past context, so older `user-*` rows in a warm cache are stale
  * history, not in-flight work. The latest authoritative user confirms whether
- * that tail has persisted; any authoritative assistant at the same ordinal
- * supersedes the local stream.
+ * that tail has persisted. An authoritative assistant at the same ordinal
+ * supersedes the local stream only when it is at least as complete; an empty
+ * or lagging inflight shell must not discard a fuller local pending reply
+ * (#75825).
  *
  * Gateway bookkeeping markers (the model-switch / personality notices written
  * by tui_gateway/server.py) are persisted as role=user but are not user turns.
@@ -328,6 +341,71 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  */
 const isGatewaySystemMarker = (message: ChatMessage): boolean =>
   message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
+
+/**
+ * Does the local pending row carry anything a viewer would miss — streamed
+ * text, reasoning, or tool calls? An empty inflight shell carries none of it.
+ */
+const hasStreamedContent = (message: ChatMessage): boolean =>
+  chatMessageText(message).trim().length > 0 ||
+  message.parts.some(part => part.type === 'tool-call' || part.type === 'reasoning')
+
+/**
+ * A live-turn projection row — the gateway's text-only `inflight` snapshot or a
+ * still-streaming local bubble — as opposed to a committed transcript row.
+ */
+const isLiveProjectionRow = (message: ChatMessage): boolean =>
+  message.pending === true || message.id.startsWith('assistant-stream-') || message.id.startsWith('inflight-assistant-')
+
+/**
+ * May the cached local row stand in for this authoritative assistant?
+ *
+ * Only for a live projection of the SAME reply that the local copy is further
+ * along on: an empty shell, or text the local row strictly extends. Comparing
+ * lengths alone lets an unrelated (merely longer) local row hijack the ordinal
+ * — or the stream id — of a genuine stored reply. A retained failure snapshot
+ * (`inflight.error`, projected with empty text) is never a shell: repainting it
+ * from the local partial would hide the error and mark the turn healthy again.
+ */
+const localPendingSupersedes = (local: ChatMessage, authoritative: ChatMessage): boolean => {
+  if (local.role !== 'assistant' || !isLiveProjectionRow(local)) {
+    return false
+  }
+
+  if (!isLiveProjectionRow(authoritative) || authoritative.error) {
+    return false
+  }
+
+  const authoritativeText = chatMessageText(authoritative).trim()
+
+  if (!authoritativeText.length) {
+    return hasStreamedContent(local)
+  }
+
+  const localText = chatMessageText(local).trim()
+
+  return localText.length > authoritativeText.length && localText.startsWith(authoritativeText)
+}
+
+/**
+ * Take the cached row's content, but never its liveness. The renderer holds the
+ * only copy of the streamed parts; the gateway remains the authority on whether
+ * the turn is still running and on durable row identity — so a settled shell
+ * must not repaint the reply as perpetually streaming.
+ */
+const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessage): ChatMessage => {
+  const merged: ChatMessage = { ...local, pending: authoritative.pending === true }
+
+  if (local.rowId === undefined && authoritative.rowId !== undefined) {
+    merged.rowId = authoritative.rowId
+  }
+
+  if (local.reactions === undefined && authoritative.reactions?.length) {
+    merged.reactions = [...authoritative.reactions]
+  }
+
+  return merged
+}
 
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
@@ -379,6 +457,9 @@ export function preserveLocalPendingTurnMessages(
 
   const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
   const preserved: ChatMessage[] = []
+  // Authoritative id → richer local pending row. Replacing (not appending)
+  // avoids painting both the empty inflight shell and the full stream bubble.
+  const replacements = new Map<string, ChatMessage>()
 
   for (const message of previousMessages) {
     if (isGatewaySystemMarker(message)) {
@@ -393,7 +474,21 @@ export function preserveLocalPendingTurnMessages(
     const isPendingAssistant =
       message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
 
-    if ((!isOptimisticUser && !isPendingAssistant) || nextIds.has(message.id)) {
+    if (!isOptimisticUser && !isPendingAssistant) {
+      continue
+    }
+
+    // Same id already present: still prefer a strictly more complete local
+    // pending body over an empty/stale shell that reused the stream id.
+    if (nextIds.has(message.id)) {
+      if (isPendingAssistant) {
+        const existing = nextMessages.find(candidate => candidate.id === message.id)
+
+        if (existing && localPendingSupersedes(message, existing)) {
+          replacements.set(message.id, withAuthoritativeTurnState(message, existing))
+        }
+      }
+
       continue
     }
 
@@ -412,13 +507,41 @@ export function preserveLocalPendingTurnMessages(
 
     const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
 
+    // A settled stream row (`pending: false` after message.complete) whose reply
+    // the authoritative transcript already carries under its committed id is
+    // stale: ordinal pairing can't see it, because the commit shifted the row
+    // one ordinal earlier, and re-appending it renders the same answer twice
+    // (#70209). Only text-identical rows are dropped — a settled row the backend
+    // has NOT committed yet is the only copy of that reply and must survive.
+    if (
+      isPendingAssistant &&
+      message.pending !== true &&
+      nextMessages.some(
+        candidate =>
+          candidate.role === 'assistant' &&
+          textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
+      )
+    ) {
+      continue
+    }
+
     if (authoritative) {
       if (isPendingAssistant) {
+        // Keep the local pending row when it is the same reply further along
+        // and the authoritative row is an empty projection shell or a prefix.
+        // #75825
+        if (!localPendingSupersedes(message, authoritative)) {
+          continue
+        }
+
+        replacements.set(authoritative.id, withAuthoritativeTurnState(message, authoritative))
+
         continue
       }
 
       if (
-        textWithoutReferenceLines(chatMessageText(authoritative)) === textWithoutReferenceLines(chatMessageText(message))
+        textWithoutReferenceLines(chatMessageText(authoritative)) ===
+        textWithoutReferenceLines(chatMessageText(message))
       ) {
         continue
       }
@@ -427,7 +550,10 @@ export function preserveLocalPendingTurnMessages(
     preserved.push(message)
   }
 
-  return preserved.length ? [...nextMessages, ...preserved] : nextMessages
+  const withReplacements =
+    replacements.size > 0 ? nextMessages.map(message => replacements.get(message.id) ?? message) : nextMessages
+
+  return preserved.length ? [...withReplacements, ...preserved] : withReplacements
 }
 
 /**

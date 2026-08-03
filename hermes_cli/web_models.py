@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 
 # --- from web_server.py (originally lines 1273-1372) ---
@@ -629,6 +629,13 @@ class ToolsetToggle(BaseModel):
     profile: Optional[str] = None
 
 
+class ChannelCapabilitiesUpdate(BaseModel):
+    toolsets: List[str]
+    mcp_mode: str = "all"
+    mcp_servers: List[str] = Field(default_factory=list)
+    profile: Optional[str] = None
+
+
 # --- from web_server.py (originally lines 16199-16204) ---
 
 class ToolsetProviderSelect(BaseModel):
@@ -706,4 +713,3 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
-

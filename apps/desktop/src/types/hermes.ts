@@ -928,6 +928,46 @@ export interface ToolsetInfo {
   tools: string[]
 }
 
+export interface ChannelToolsetInfo {
+  description: string
+  enabled: boolean
+  label: string
+  name: string
+  tools: string[]
+}
+
+export interface ChannelImplicitToolset {
+  label: string
+  name: string
+  tools: string[]
+}
+
+export type ChannelMcpMode = 'all' | 'none' | 'allowlist'
+
+export interface ChannelMcpPolicy {
+  available: string[]
+  effective: string[]
+  mode: ChannelMcpMode
+  selected: string[]
+}
+
+export interface ChannelCapability {
+  effective_toolsets: string[]
+  explicit: boolean
+  implicit_toolsets: ChannelImplicitToolset[]
+  label: string
+  mcp: ChannelMcpPolicy
+  platform: string
+  plugins_locked: boolean
+  toolsets: ChannelToolsetInfo[]
+}
+
+export interface ChannelCapabilityUpdate {
+  mcp_mode: ChannelMcpMode
+  mcp_servers: string[]
+  toolsets: string[]
+}
+
 export interface ToolEnvVar {
   key: string
   prompt: string

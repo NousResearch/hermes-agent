@@ -776,6 +776,21 @@ export const api = {
     }),
   getToolsets: (profile?: string) =>
     fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
+  getChannelCapabilities: (profile?: string) =>
+    fetchJSON<ChannelCapability[]>(`/api/tools/channels${profileQuery(profile)}`),
+  updateChannelCapabilities: (
+    platform: string,
+    update: ChannelCapabilityUpdate,
+    profile?: string,
+  ) =>
+    fetchJSON<{ ok: boolean; channel: ChannelCapability }>(
+      `/api/tools/channels/${encodeURIComponent(platform)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...update, profile: profile || undefined }),
+      },
+    ),
   toggleToolset: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; platform: string; enabled: boolean }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}`,
@@ -2294,6 +2309,46 @@ export interface ToolsetInfo {
   enabled: boolean;
   configured: boolean;
   tools: string[];
+}
+
+export interface ChannelToolsetInfo {
+  name: string;
+  label: string;
+  description: string;
+  enabled: boolean;
+  tools: string[];
+}
+
+export interface ChannelImplicitToolset {
+  name: string;
+  label: string;
+  tools: string[];
+}
+
+export type ChannelMcpMode = "all" | "none" | "allowlist";
+
+export interface ChannelMcpPolicy {
+  mode: ChannelMcpMode;
+  available: string[];
+  selected: string[];
+  effective: string[];
+}
+
+export interface ChannelCapability {
+  platform: string;
+  label: string;
+  explicit: boolean;
+  toolsets: ChannelToolsetInfo[];
+  implicit_toolsets: ChannelImplicitToolset[];
+  effective_toolsets: string[];
+  mcp: ChannelMcpPolicy;
+  plugins_locked: boolean;
+}
+
+export interface ChannelCapabilityUpdate {
+  toolsets: string[];
+  mcp_mode: ChannelMcpMode;
+  mcp_servers: string[];
 }
 
 export interface ToolsetProviderEnvVar {

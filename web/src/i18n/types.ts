@@ -441,6 +441,28 @@ export interface Translations {
     resultCount: string;
     noDescription: string;
     toolsets: string;
+    // Optional so existing full locale files continue to compile; the channel
+    // capability panel falls back to its English copy until translated.
+    channels?: string;
+    channelCapabilitiesDescription?: string;
+    connected?: string;
+    notConnected?: string;
+    inheritedDefaults?: string;
+    customBoundary?: string;
+    abilitiesEnabled?: string;
+    highImpact?: string;
+    requiredAbilities?: string;
+    requiredAbilitiesDescription?: string;
+    mcpAccess?: string;
+    mcpAll?: string;
+    mcpNone?: string;
+    mcpSelected?: string;
+    saveCapabilities?: string;
+    savingCapabilities?: string;
+    changesNewSessions?: string;
+    noMcpServers?: string;
+    channelCapabilitiesSaved?: string;
+    channelCapabilitiesFailed?: string;
     toolsetLabel: string;
     noToolsetsMatch: string;
     setupNeeded: string;

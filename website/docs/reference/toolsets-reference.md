@@ -131,7 +131,19 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-github"]
 ```
 
-This creates a `mcp-github` toolset you can reference in `--toolsets` or platform configs.
+This creates a `mcp-github` toolset you can reference in `--toolsets`. For
+message channels, keep toolset selection in `platform_toolsets` and configure
+MCP server access separately under `platform_mcp_policy`:
+
+```yaml
+platform_mcp_policy:
+  email:
+    mode: allowlist
+    servers: [github]
+```
+
+`mode` is `all`, `none`, or `allowlist`. Omitting a channel leaves all globally
+enabled MCP servers available on that channel.
 
 ### Plugin toolsets
 

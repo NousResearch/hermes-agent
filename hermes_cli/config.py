@@ -1862,6 +1862,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "plugins",           # plugin enable/disable lists (hermes_cli/plugins_cmd.py)
     "smart_model_routing",   # written by the setup wizard (hermes_cli/setup.py)
     "platform_toolsets",     # written by the setup wizard (hermes_cli/setup.py)
+    "platform_mcp_policy",   # per-platform MCP policy written by channel settings
     "known_plugin_toolsets", # written/read by hermes_cli/tools_config.py toolset-save flow
     "known_builtin_toolsets",  # ditto — which builtin toolsets a platform's checklist has offered
     "session_reset",         # top-level form read by gateway/config.py + setup
@@ -2258,8 +2259,16 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         from toolsets import validate_toolset
         from hermes_cli.toolset_validation import validate_platform_toolsets
 
+        raw_config = read_raw_config()
+        legacy_mcp_names = {
+            str(name)
+            for name in (raw_config.get("mcp_servers") or {})
+        }
+        legacy_mcp_names.add("no_mcp")
         ts_warnings = validate_platform_toolsets(
-            read_raw_config().get("platform_toolsets"), validate_toolset
+            raw_config.get("platform_toolsets"),
+            validate_toolset,
+            ignored_names=legacy_mcp_names,
         )
         for w in ts_warnings:
             results["warnings"].append(w)
@@ -4655,6 +4664,7 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
     "providers",
     "credential_pool_strategies",
     "mcp_servers",
+    "platform_mcp_policy",
     "hooks",
     "quick_commands",
     "personalities",

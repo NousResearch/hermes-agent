@@ -2137,6 +2137,93 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     }
 
 
+def _mcp_toolset_name(server_name: str) -> str:
+    """Return the canonical runtime toolset name for an MCP server."""
+    return f"mcp-{server_name}"
+
+
+def _legacy_mcp_server_names(config: dict, names: Set[str]) -> Set[str]:
+    """Return legacy flat-list MCP names without mistaking dynamic aliases.
+
+    A connected MCP server registers its raw name as an alias for
+    ``mcp-<server>``.  ``validate_toolset`` therefore cannot distinguish that
+    alias from an authored toolset: using it here can either widen an
+    allowlist or let an MCP server called ``terminal`` select the built-in
+    terminal toolset.  The legacy config predates runtime aliases, so compare
+    only against static/bundled toolset names.
+    """
+    from toolsets import TOOLSETS
+
+    authored_toolsets = set(TOOLSETS) | _get_plugin_toolset_keys()
+    return (names & enabled_mcp_server_names(config)) - authored_toolsets
+
+
+def platform_mcp_policy(config: dict, platform: str) -> tuple[str, Set[str]]:
+    """Resolve a channel's MCP access policy from its dedicated config section.
+
+    ``platform_toolsets`` is exclusively a toolset namespace.  Earlier
+    channel-capability builds stored MCP names and the ``no_mcp`` sentinel in
+    that list, which made a server named ``web`` indistinguishable from the
+    built-in ``web`` toolset.  Read that legacy shape for compatibility, but
+    every new write uses ``platform_mcp_policy.<platform>``.
+    """
+    _missing = object()
+    policies = (config or {}).get("platform_mcp_policy", _missing)
+    if policies is not _missing and not isinstance(policies, dict):
+        logger.warning(
+            "Invalid platform_mcp_policy config; disabling MCP access for platform %s",
+            platform,
+        )
+        return "none", set()
+
+    raw_policy = policies.get(platform, _missing) if isinstance(policies, dict) else _missing
+    if raw_policy is not _missing:
+        if not isinstance(raw_policy, dict):
+            logger.warning(
+                "Invalid MCP policy for platform %s; disabling MCP access",
+                platform,
+            )
+            return "none", set()
+        mode = str(raw_policy.get("mode") or "all").strip().lower()
+        if mode not in {"all", "none", "allowlist"}:
+            logger.warning(
+                "Invalid MCP policy mode %r for platform %s; disabling MCP access",
+                raw_policy.get("mode"),
+                platform,
+            )
+            return "none", set()
+        if mode != "allowlist":
+            return mode, set()
+        enabled_servers = enabled_mcp_server_names(config)
+        raw_servers = raw_policy.get("servers") or []
+        if not isinstance(raw_servers, list):
+            logger.warning(
+                "Invalid MCP policy server list for platform %s; disabling MCP access",
+                platform,
+            )
+            return "none", set()
+        servers = {
+            str(name)
+            for name in raw_servers
+            if str(name) in enabled_servers
+        }
+        return mode, servers
+
+    # Legacy fallback. A name that is also an authored toolset stays a
+    # toolset; old configs cannot unambiguously express an MCP allowlist entry
+    # with the same name, so the dedicated policy is required for that case.
+    raw_toolsets = ((config or {}).get("platform_toolsets") or {}).get(platform)
+    names = {
+        name.strip()
+        for name in raw_toolsets
+        if isinstance(name, str) and name.strip()
+    } if isinstance(raw_toolsets, list) else set()
+    if "no_mcp" in names:
+        return "none", set()
+    servers = _legacy_mcp_server_names(config, names)
+    return ("allowlist", servers) if servers else ("all", set())
+
+
 def _exempt_explicit_platform_native(
     default_off: Set[str], platform: str, *, explicitly_configured: bool
 ) -> None:
@@ -2230,6 +2317,18 @@ def _get_platform_tools(
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
+    # Keep an explicit empty list authoritative: it is the existing shared
+    # resolver contract for intentionally suppressing memory/context-engine
+    # tools. A non-empty YAML list with no usable name is malformed instead,
+    # so recover the official baseline rather than interpreting ``[null]`` or
+    # ``[" "]`` as an intentional no-tool selection.
+    if isinstance(toolset_names, list) and toolset_names:
+        semantic_names = [
+            name.strip() for name in toolset_names
+            if isinstance(name, str) and name.strip()
+        ]
+        if not semantic_names:
+            toolset_names = None
     # Track whether the user explicitly saved a toolset list for this platform
     # (vs. falling back to the platform default). An explicit composite (e.g.
     # ``hermes-discord``) is an opt-in to the platform's native default-off
@@ -2449,35 +2548,43 @@ def _get_platform_tools(
     if context_engine_name and context_engine_name != "compressor" and not explicit_empty_selection:
         enabled_toolsets.add("context_engine")
 
-    # Preserve any explicit non-configurable toolset entries (for example,
-    # custom toolsets or MCP server names saved in platform_toolsets).
+    # Preserve explicit non-configurable *toolset* entries.  MCP routing no
+    # longer shares this namespace; retaining a server name here would recreate
+    # the ambiguity that ``platform_mcp_policy`` was introduced to remove.
+    enabled_mcp_servers = enabled_mcp_server_names(config)
+    from toolsets import validate_toolset
+
+    mcp_only_names = _legacy_mcp_server_names(config, set(toolset_names))
     explicit_passthrough = {
         ts
         for ts in toolset_names
         if ts not in configurable_keys
         and ts not in plugin_ts_keys
         and ts not in platform_default_keys
+        and ts not in mcp_only_names
+        and ts != "no_mcp"
     }
 
+    enabled_toolsets.update(explicit_passthrough)
+
     # MCP servers are expected to be available on all platforms by default.
-    # If the platform explicitly lists one or more MCP server names, treat that
-    # as an allowlist. Otherwise include every globally enabled MCP server.
-    # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
-    enabled_mcp_servers = enabled_mcp_server_names(config)
-    # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
-    if "no_mcp" in toolset_names:
-        explicit_mcp_servers = set()
-        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})
-    else:
-        explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
-        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
+    # Channel selection is stored separately from toolsets so a server called
+    # ``web`` cannot delete or shadow the built-in ``web`` toolset.
+    mcp_mode, explicit_mcp_servers = platform_mcp_policy(config, platform)
+    explicit_mcp_toolsets = {
+        _mcp_toolset_name(name) for name in explicit_mcp_servers
+    }
+    all_mcp_toolsets = {
+        _mcp_toolset_name(name) for name in enabled_mcp_servers
+    }
     if include_default_mcp_servers:
-        if explicit_mcp_servers or "no_mcp" in toolset_names:
-            enabled_toolsets.update(explicit_mcp_servers)
-        else:
-            enabled_toolsets.update(enabled_mcp_servers)
+        if mcp_mode == "allowlist":
+            enabled_toolsets.update(explicit_mcp_toolsets)
+        elif mcp_mode == "all":
+            enabled_toolsets.update(all_mcp_toolsets)
     else:
-        enabled_toolsets.update(explicit_mcp_servers)
+        if mcp_mode == "allowlist":
+            enabled_toolsets.update(explicit_mcp_toolsets)
 
     # Honor agent.disabled_toolsets from config.yaml — allows users to
     # globally suppress specific toolsets (e.g. "memory") across all
@@ -2489,20 +2596,73 @@ def _get_platform_tools(
         disabled_set = {str(ts) for ts in disabled_toolsets}
         enabled_toolsets -= disabled_set
 
+    # A hand-edited list containing only unknown names is as incapable as an
+    # empty list. Recover the official platform baseline before a session sees
+    # it, but let the recursive resolution re-apply disabled_toolsets: an
+    # explicit global security policy must remain authoritative.
+    _explicit = platform_toolsets.get(platform)
+    if isinstance(_explicit, list) and _explicit:
+        from toolsets import validate_toolset
+
+        _named = [str(t) for t in _explicit if isinstance(t, str) and t]
+        legacy_mcp_names = _legacy_mcp_server_names(config, set(_named))
+        has_recognized_name = (
+            any(validate_toolset(t) for t in _named)
+            or bool(legacy_mcp_names)
+            or "no_mcp" in _named
+        )
+        if _named and not has_recognized_name:
+            fallback_platform_toolsets = dict(platform_toolsets)
+            fallback_platform_toolsets.pop(platform, None)
+            fallback_config = dict(config)
+            fallback_config["platform_toolsets"] = fallback_platform_toolsets
+            fallback = _get_platform_tools(
+                fallback_config,
+                platform,
+                include_default_mcp_servers=include_default_mcp_servers,
+            )
+            if fallback:
+                logger.warning(
+                    "platform '%s' has no valid toolsets configured (unknown "
+                    "name(s): %s); falling back to the official platform "
+                    "baseline. See issue #38798.",
+                    platform,
+                    ", ".join(_named),
+                )
+            else:
+                logger.warning(
+                    "platform '%s' has no valid toolsets configured (unknown "
+                    "name(s): %s); the official baseline is fully disabled by "
+                    "agent.disabled_toolsets.",
+                    platform,
+                    ", ".join(_named),
+                )
+            return fallback
+
+    if not enabled_toolsets:
+        logger.warning(
+            "platform '%s' resolves no toolsets after global disabled_toolsets; "
+            "preserving the explicit global security policy",
+            platform,
+        )
+
     # #38798: if this platform was explicitly configured but every toolset name
     # is invalid (e.g. a migration or hand-edit left `hermes` instead of
     # `hermes-cli`), resolve_toolset() returns [] for each and the platform ends
     # up with no native tools — silently, with no error. Surface it at the point
     # tools are resolved for a session so an already-corrupted config is caught
     # at runtime, not only during the next `hermes update`/`hermes doctor`.
-    _explicit = platform_toolsets.get(platform)
     if isinstance(_explicit, list) and _explicit:
         from toolsets import validate_toolset
 
         _named = [str(t) for t in _explicit if isinstance(t, str) and t]
         if (
             _named
-            and not any(validate_toolset(t) for t in _named)
+            and not (
+                any(validate_toolset(t) for t in _named)
+                or _legacy_mcp_server_names(config, set(_named))
+                or "no_mcp" in _named
+            )
             and platform not in _warned_invalid_platform_toolsets
         ):
             _warned_invalid_platform_toolsets.add(platform)
@@ -2517,11 +2677,13 @@ def _get_platform_tools(
     return enabled_toolsets
 
 
-def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
+def _save_platform_tools(
+    config: dict, platform: str, enabled_toolset_keys: Set[str], *, save: bool = True
+):
     """Save the selected toolset keys for a platform to config.
 
-    Preserves any non-configurable toolset entries (like MCP server names)
-    that were already in the config for this platform.
+    Preserves non-configurable toolset entries already configured for this
+    platform. MCP policy is stored separately in ``platform_mcp_policy``.
     """
     config.setdefault("platform_toolsets", {})
 
@@ -2532,6 +2694,14 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         ts for ts in enabled_toolset_keys
         if _toolset_allowed_for_platform(ts, platform)
     }
+    # MCP runtime toolsets are derived from ``platform_mcp_policy``.  Generic
+    # callers can start from _get_platform_tools(), which includes these
+    # canonical names, but persisting them in platform_toolsets would collapse
+    # the two namespaces we deliberately keep separate.
+    mcp_runtime_toolsets = {
+        _mcp_toolset_name(name) for name in enabled_mcp_server_names(config)
+    }
+    enabled_toolset_keys -= mcp_runtime_toolsets
 
     # Get the set of all configurable toolset keys (built-in + plugin)
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
@@ -2549,19 +2719,41 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         existing_toolsets = []
     existing_toolsets = [str(ts) for ts in existing_toolsets]
 
-    # Preserve any entries that are NOT configurable toolsets and NOT platform
-    # defaults (i.e. only MCP server names should be preserved)
+    # Migrate a legacy flat MCP rule before dropping its old entries. This
+    # keeps ``no_mcp`` and old allowlists from becoming the default "all"
+    # policy after an unrelated toolset save.
+    legacy_names = {
+        name.strip() for name in existing_toolsets
+        if isinstance(name, str) and name.strip()
+    }
+    legacy_mcp_servers = _legacy_mcp_server_names(config, legacy_names)
+    legacy_mcp_servers |= {
+        name for name in enabled_mcp_server_names(config)
+        if _mcp_toolset_name(name) in legacy_names
+    }
+    policies = config.get("platform_mcp_policy")
+    has_dedicated_policy = isinstance(policies, dict) and platform in policies
+    if (
+        ("no_mcp" in legacy_names or legacy_mcp_servers)
+        and not has_dedicated_policy
+    ):
+        if not isinstance(policies, dict):
+            policies = {}
+            config["platform_mcp_policy"] = policies
+        mode = "none" if "no_mcp" in legacy_names else "allowlist"
+        policies[platform] = {
+            "mode": mode,
+            "servers": sorted(legacy_mcp_servers) if mode == "allowlist" else [],
+        }
+
     preserved_entries = {
         entry for entry in existing_toolsets
         if entry not in configurable_keys and entry not in platform_default_keys
+        and entry != "no_mcp"
+        and entry not in legacy_mcp_servers
+        and entry not in mcp_runtime_toolsets
     }
-    # Opening `hermes tools` is the user's opt-in to reconfigure tools, so treat
-    # saving from the picker as consent to clear the "no_mcp" sentinel. The
-    # picker has no checkbox for no_mcp, so without this users who once set it
-    # by hand could never re-enable MCP servers through the UI.
-    preserved_entries.discard("no_mcp")
 
-    # Merge preserved entries with new enabled toolsets
     config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
 
     # Track which plugin toolsets are "known" for this platform so we can
@@ -2584,33 +2776,8 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS
     )
 
-    # Reconcile with agent.disabled_toolsets. _get_platform_tools() applies
-    # that list as a final override AFTER reading platform_toolsets.<platform>,
-    # so a toolset listed there stays permanently OFF no matter what this
-    # function writes — the toggle "saves" but silently can't ever take
-    # effect. Blank Slate installs pre-populate this list with ~27 toolsets,
-    # making most of the desktop Toolsets UI unusable for re-enabling
-    # anything (issue #49995).
-    #
-    # Only toolsets the user just explicitly enabled FOR THIS PLATFORM are
-    # cleared from the global disabled list — toolsets the user did not
-    # touch (still unchecked) or that remain disabled on other platforms
-    # are left alone, so agent.disabled_toolsets keeps working as a
-    # cross-platform suppression list for anything not actively re-enabled.
-    agent_cfg = config.get("agent")
-    if isinstance(agent_cfg, dict):
-        disabled_toolsets = agent_cfg.get("disabled_toolsets")
-        if isinstance(disabled_toolsets, list) and disabled_toolsets:
-            newly_enabled = enabled_toolset_keys - preserved_entries
-            if newly_enabled:
-                remaining = [
-                    ts for ts in disabled_toolsets
-                    if str(ts) not in newly_enabled
-                ]
-                if remaining != disabled_toolsets:
-                    agent_cfg["disabled_toolsets"] = remaining
-
-    save_config(config)
+    if save:
+        save_config(config)
 
 
 def _toolset_has_keys(

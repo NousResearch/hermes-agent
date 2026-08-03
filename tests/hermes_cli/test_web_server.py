@@ -1948,6 +1948,157 @@ class TestNewEndpoints:
             config["platform_toolsets"]["discord"]
         )
 
+    def test_channel_capabilities_save_an_exact_configurable_boundary(self):
+        """The GUI writes the exact configurable boundary plus native tools."""
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        resp = self.client.get("/api/tools/channels")
+        assert resp.status_code == 200
+        rows = {row["platform"]: row for row in resp.json()}
+        assert "email" in rows
+        assert rows["email"]["toolsets"]
+        assert {row["name"] for row in rows["email"]["toolsets"]} >= {
+            "memory",
+            "web",
+        }
+
+        resp = self.client.put(
+            "/api/tools/channels/email",
+            json={
+                "toolsets": ["memory", "web"],
+                "mcp_mode": "none",
+                "mcp_servers": [],
+            },
+        )
+        assert resp.status_code == 200
+        channel = resp.json()["channel"]
+        assert channel["explicit"] is True
+        assert channel["mcp"]["mode"] == "none"
+
+        config = load_config()
+        assert set(config["platform_toolsets"]["email"]) == {
+            "memory",
+            "web",
+        }
+        assert config["platform_mcp_policy"]["email"] == {
+            "mode": "none",
+            "servers": [],
+        }
+        implicit = {row["name"] for row in channel["implicit_toolsets"]}
+        assert _get_platform_tools(config, "email") == {"memory", "web"} | implicit
+
+    def test_channel_capabilities_mcp_allowlist_is_effective(self):
+        """Selected MCP servers are channel-scoped instead of defaulting global."""
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        config = load_config()
+        config["mcp_servers"] = {
+            "alpha": {"command": "alpha", "enabled": True},
+            "beta": {"command": "beta", "enabled": True},
+        }
+        save_config(config)
+
+        resp = self.client.put(
+            "/api/tools/channels/qqbot",
+            json={
+                "toolsets": ["web"],
+                "mcp_mode": "allowlist",
+                "mcp_servers": ["beta"],
+            },
+        )
+        assert resp.status_code == 200
+        channel = resp.json()["channel"]
+        assert channel["mcp"] == {
+            "mode": "allowlist",
+            "available": ["alpha", "beta"],
+            "selected": ["beta"],
+            "effective": ["beta"],
+        }
+
+        config = load_config()
+        assert config["platform_mcp_policy"]["qqbot"] == {
+            "mode": "allowlist",
+            "servers": ["beta"],
+        }
+        assert "mcp-beta" in _get_platform_tools(config, "qqbot")
+        assert "mcp-alpha" not in _get_platform_tools(config, "qqbot")
+
+    def test_channel_capabilities_keeps_toolset_when_mcp_uses_same_name(self):
+        """MCP allowlists cannot delete a same-named built-in toolset."""
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        config = load_config()
+        config["mcp_servers"] = {
+            "web": {"command": "mcp-web", "enabled": True},
+            "other": {"command": "other", "enabled": True},
+        }
+        save_config(config)
+
+        resp = self.client.put(
+            "/api/tools/channels/email",
+            json={
+                "toolsets": ["web"],
+                "mcp_mode": "allowlist",
+                "mcp_servers": ["other"],
+            },
+        )
+
+        assert resp.status_code == 200
+        config = load_config()
+        assert "web" in config["platform_toolsets"]["email"]
+        assert config["platform_mcp_policy"]["email"] == {
+            "mode": "allowlist",
+            "servers": ["other"],
+        }
+        resolved = _get_platform_tools(config, "email")
+        assert "web" in resolved
+        assert "mcp-other" in resolved
+
+    def test_channel_capabilities_rejects_empty_toolset_submission(self):
+        resp = self.client.put(
+            "/api/tools/channels/email",
+            json={"toolsets": [], "mcp_mode": "none", "mcp_servers": []},
+        )
+
+        assert resp.status_code == 400
+        assert "Select at least one toolset" in resp.json()["detail"]
+
+    def test_channel_capabilities_replaces_legacy_empty_selection(self):
+        """The Channels boundary repairs a legacy empty selection on save."""
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        config["platform_toolsets"] = {"email": []}
+        save_config(config)
+
+        resp = self.client.put(
+            "/api/tools/channels/email",
+            json={"toolsets": ["web"], "mcp_mode": "none", "mcp_servers": []},
+        )
+
+        assert resp.status_code == 200
+        assert load_config()["platform_toolsets"]["email"] == ["web"]
+
+    def test_channel_capabilities_rejects_malformed_mcp_policy_without_saving(self):
+        """A manual scalar config must not become a partial channel update."""
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        config["platform_mcp_policy"] = "not-a-mapping"
+        save_config(config)
+
+        resp = self.client.put(
+            "/api/tools/channels/email",
+            json={"toolsets": ["web"], "mcp_mode": "none", "mcp_servers": []},
+        )
+
+        assert resp.status_code == 400
+        assert "platform_mcp_policy must be a mapping" in resp.json()["detail"]
+        assert load_config()["platform_mcp_policy"] == "not-a-mapping"
+
 
     def test_get_toolset_config_returns_provider_matrix(self):
         """GET .../config returns provider rows with structured env_vars."""

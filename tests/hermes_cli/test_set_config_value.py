@@ -488,6 +488,7 @@ class TestValidateConfigKey:
         "discord.gateway_restart_notification",
         "telegram.bot_token",
         "mcp_servers.foo.command",
+        "platform_mcp_policy.email.mode",
         "providers.openrouter.api_key",
         "gateway.strict",
         "platforms.discord.enabled",

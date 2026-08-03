@@ -962,6 +962,8 @@ agent:
 #   teams:            hermes-teams            (same as telegram)
 #   google_chat:      hermes-google_chat      (same as telegram)
 #
+# MCP server names do not belong in platform_toolsets. Channel-specific MCP
+# access is configured separately with platform_mcp_policy below.
 platform_toolsets:
   cli: [hermes-cli]
   telegram: [hermes-telegram]
@@ -975,6 +977,18 @@ platform_toolsets:
   teams: [hermes-teams]
   google_chat: [hermes-google_chat]
 
+# Per-channel MCP access policy. Omit a channel to allow every globally enabled
+# MCP server. The policy keeps server names separate from toolset names, so a
+# server called "terminal" cannot enable the built-in terminal toolset.
+#
+# platform_mcp_policy:
+#   email:
+#     mode: none                 # all | none | allowlist
+#     servers: []
+#   telegram:
+#     mode: allowlist
+#     servers: [github, calendar]
+#
 # =============================================================================
 # Gateway Platform Settings
 # =============================================================================

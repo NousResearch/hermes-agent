@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  getChannelCapabilities,
   getCuratorStatus,
   getMcpCatalog,
   getMemoryStatus,
@@ -13,7 +14,8 @@ import {
   selectToolsetModel,
   setCuratorPaused,
   setMcpServerEnabled,
-  testMcpServer
+  testMcpServer,
+  updateChannelCapabilities
 } from './hermes'
 
 describe('Hermes REST parity helpers (hub / mcp / maintenance)', () => {
@@ -86,6 +88,25 @@ describe('Hermes REST parity helpers (hub / mcp / maintenance)', () => {
     await getMcpCatalog()
 
     expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/mcp/catalog' }))
+  })
+
+  it('reads and updates channel capability boundaries', async () => {
+    await getChannelCapabilities()
+    await updateChannelCapabilities('telegram', {
+      toolsets: ['memory', 'web'],
+      mcp_mode: 'none',
+      mcp_servers: []
+    })
+
+    expect(api).toHaveBeenNthCalledWith(1, expect.objectContaining({ path: '/api/tools/channels' }))
+    expect(api).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        path: '/api/tools/channels/telegram',
+        method: 'PUT',
+        body: { toolsets: ['memory', 'web'], mcp_mode: 'none', mcp_servers: [] }
+      })
+    )
   })
 
   it('reads memory status and resets a specific target', async () => {

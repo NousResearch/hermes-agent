@@ -1353,6 +1353,7 @@ from hermes_cli.web_models import (  # noqa: F401
     SkillCreate,
     SkillContentUpdate,
     ToolsetToggle,
+    ChannelCapabilitiesUpdate,
     ToolsetProviderSelect,
     ToolsetModelSelect,
     ToolsetEnvUpdate,
@@ -13597,6 +13598,8 @@ from hermes_cli.web_routers import tools as _tools_routes  # noqa: E402
 app.include_router(_tools_routes.router)
 from hermes_cli.web_routers.tools import (  # noqa: E402,F401 — legacy re-exports; tests call these via web_server.<name>
     get_toolsets,
+    get_channel_capabilities,
+    update_channel_capabilities,
     toggle_toolset,
     get_toolset_config,
     get_toolset_models,

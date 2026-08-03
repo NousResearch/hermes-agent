@@ -41,6 +41,7 @@ import type {
 } from "@/lib/api";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
+import { ChannelCapabilitiesPanel } from "@/components/ChannelCapabilitiesPanel";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
@@ -130,7 +131,7 @@ export default function SkillsPage() {
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
+  const [view, setView] = useState<"skills" | "toolsets" | "channels" | "hub">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
   const [configToolset, setConfigToolset] = useState<ToolsetInfo | null>(null);
@@ -139,6 +140,14 @@ export default function SkillsPage() {
   const [editorSkill, setEditorSkill] = useState<string | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const showChannelError = useCallback(
+    (message: string) => showToast(message, "error"),
+    [showToast],
+  );
+  const showChannelSaved = useCallback(
+    (message: string) => showToast(message, "success"),
+    [showToast],
+  );
   const { setAfterTitle, setEnd } = usePageHeader();
 
   // ── Profile scoping ──
@@ -414,6 +423,15 @@ export default function SkillsPage() {
                   }}
                 />
                 <PanelItem
+                  icon={ShieldCheck}
+                  label={t.skills.channels ?? "Channel abilities"}
+                  active={view === "channels"}
+                  onClick={() => {
+                    setView("channels");
+                    setSearch("");
+                  }}
+                />
+                <PanelItem
                   icon={Search}
                   label="Browse hub"
                   active={view === "hub"}
@@ -465,7 +483,7 @@ export default function SkillsPage() {
         </aside>
 
         <div className="flex-1 min-w-0">
-          {isSearching ? (
+          {isSearching && view === "skills" ? (
             <Card className="rounded-none">
               <CardHeader className="py-3 px-4">
                 <div className="flex items-center justify-between">
@@ -650,6 +668,13 @@ export default function SkillsPage() {
                 </div>
               )}
             </>
+          ) : view === "channels" ? (
+            <ChannelCapabilitiesPanel
+              profile={selectedProfile || undefined}
+              query={search}
+              onError={showChannelError}
+              onSaved={showChannelSaved}
+            />
           ) : (
             <HubBrowser showToast={showToast} profile={selectedProfile || undefined} />
           )}

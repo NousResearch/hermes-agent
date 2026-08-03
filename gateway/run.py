@@ -22687,6 +22687,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "Cleared conversation scope for %s (%s)", session_key, reason
         )
 
+    def _freeze_conversation_toolsets(
+        self,
+        session_key: str,
+        session_id: Optional[str],
+        resolved_toolsets: list[str],
+    ) -> list[str]:
+        """Return the toolsets frozen for this conversation.
+
+        Tool schemas are part of the system-prompt prefix. The gateway reads
+        config.yaml for each turn, but applying a changed channel capability to
+        a cached conversation would alter that prefix and force an agent rebuild.
+        Snapshot the first resolved selection by durable ``session_id`` instead;
+        a true conversation boundary either clears ``ConversationState`` or
+        arrives with a new id, both of which intentionally read current config.
+        """
+        if not session_key or not session_id:
+            # Stateless callers have no durable conversation to freeze.
+            return list(resolved_toolsets)
+
+        conversation = self._session_state(session_key).conversation
+        if (
+            conversation.toolsets_snapshot_session_id != session_id
+            or conversation.toolsets_snapshot is None
+        ):
+            conversation.toolsets_snapshot = tuple(resolved_toolsets)
+            conversation.toolsets_snapshot_session_id = session_id
+
+        return list(conversation.toolsets_snapshot)
+
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
         """Clear per-session control state that must not survive a boundary switch."""
         if not session_key:
@@ -24037,6 +24066,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = self._freeze_conversation_toolsets(
+            session_key, session_id, enabled_toolsets
+        )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

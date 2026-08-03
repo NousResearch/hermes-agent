@@ -1014,6 +1014,7 @@ export const ja = defineLocale({
   skills: {
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
+    tabChannels: 'チャンネル',
     tabMcp: 'MCP',
     all: 'すべて',
     searchSkills: 'スキルを検索...',
@@ -1065,7 +1066,27 @@ export const ja = defineLocale({
     edit: '編集',
     archive: 'アーカイブ',
     skillArchivedTitle: 'スキルをアーカイブしました',
-    skillArchivedMessage: 'hermes curator restore で復元できます。'
+    skillArchivedMessage: 'hermes curator restore で復元できます。',
+    channels: {
+      search: 'チャンネル、機能、ツールを検索…',
+      loadFailed: 'チャンネル機能を読み込めませんでした。',
+      description: 'このチャンネルの新しい Agent セッションで使えるツールセットと MCP サーバーを選択します。',
+      customBoundary: 'カスタム境界',
+      inheritedDefaults: '既定値を継承',
+      toolsets: 'Agent 機能',
+      toggleToolset: label => `このチャンネルの ${label} を切り替え`,
+      highImpact: '高影響',
+      required: '必須チャンネル機能',
+      mcpAccess: 'MCP アクセス',
+      mcpAll: '有効なものをすべて',
+      mcpNone: 'なし',
+      mcpSelected: '選択したもののみ',
+      noMcp: '有効な MCP サーバーがありません。',
+      save: '機能を保存',
+      savedTitle: 'チャンネル機能を保存しました',
+      savedMessage: channel => `${channel} の新規セッションにこの境界を適用します。`,
+      saveFailed: channel => `${channel} の機能を保存できませんでした`
+    }
   },
 
   starmap: {

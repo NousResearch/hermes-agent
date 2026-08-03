@@ -10,6 +10,7 @@ late-binding seam in :mod:`hermes_cli.web_deps` (``late`` for callables,
 stays authoritative.
 """
 
+import copy
 import logging
 import sys  # noqa: F401 — used by handlers
 from typing import Any, Dict, List, Optional  # noqa: F401
@@ -18,6 +19,7 @@ from fastapi import APIRouter, HTTPException  # noqa: F401
 
 from hermes_cli.web_deps import late, LateState
 from hermes_cli.web_models import (
+    ChannelCapabilitiesUpdate,
     TerminalBackendSelect,
     ToolsetEnvUpdate,
     ToolsetModelSelect,
@@ -48,6 +50,108 @@ save_config = late("save_config")
 _MODEL_CATALOG_TOOLSETS = LateState("_MODEL_CATALOG_TOOLSETS")
 _TERMINAL_BACKENDS = LateState("_TERMINAL_BACKENDS")
 _TERMINAL_BACKEND_NAMES = LateState("_TERMINAL_BACKEND_NAMES")
+
+_NON_MESSAGE_CAPABILITY_PLATFORMS = {"cli", "cron"}
+
+
+def _channel_capability_rows(config: dict, only_platform: Optional[str] = None):
+    """Return the effective, editable Agent capability boundary per channel."""
+    from hermes_cli.platforms import get_all_platforms
+    from hermes_cli.tools_config import (
+        _CONFIG_ONLY_TOOLSETS,
+        _get_effective_configurable_toolsets,
+        _get_platform_tools,
+        _mcp_toolset_name,
+        _toolset_allowed_for_platform,
+        enabled_mcp_server_names,
+        gui_toolset_label,
+        platform_mcp_policy,
+    )
+    from toolsets import resolve_toolset
+
+    platforms = get_all_platforms()
+    if only_platform is not None and (
+        only_platform not in platforms
+        or only_platform in _NON_MESSAGE_CAPABILITY_PLATFORMS
+    ):
+        raise HTTPException(
+            status_code=400, detail=f"Unknown messaging channel: {only_platform}"
+        )
+
+    configurable_rows = _get_effective_configurable_toolsets()
+    enabled_mcp = enabled_mcp_server_names(config)
+    platform_toolsets = (config or {}).get("platform_toolsets") or {}
+    known_plugins = (config or {}).get("known_plugin_toolsets") or {}
+    result = []
+
+    for platform, info in platforms.items():
+        if platform in _NON_MESSAGE_CAPABILITY_PLATFORMS:
+            continue
+        if only_platform is not None and platform != only_platform:
+            continue
+
+        raw_selection = platform_toolsets.get(platform)
+        explicit = isinstance(raw_selection, list)
+        effective = _get_platform_tools(config, platform)
+        effective_without_mcp = _get_platform_tools(
+            config, platform, include_default_mcp_servers=False
+        )
+
+        mcp_mode, selected_mcp = platform_mcp_policy(config, platform)
+
+        toolsets = []
+        configurable_names = set()
+        for name, label, description in configurable_rows:
+            if (
+                name in _CONFIG_ONLY_TOOLSETS
+                or not _toolset_allowed_for_platform(name, platform)
+            ):
+                continue
+            configurable_names.add(name)
+            try:
+                tools = sorted(set(resolve_toolset(name)))
+            except Exception:
+                tools = []
+            toolsets.append({
+                "name": name,
+                "label": gui_toolset_label(label),
+                "description": description,
+                "enabled": name in effective_without_mcp,
+                "tools": tools,
+            })
+
+        implicit = []
+        for name in sorted(effective_without_mcp - configurable_names):
+            try:
+                tools = sorted(set(resolve_toolset(name)))
+            except Exception:
+                tools = []
+            implicit.append({
+                "name": name,
+                "label": gui_toolset_label(name.replace("_", " ").title()),
+                "tools": tools,
+            })
+
+        result.append({
+            "platform": platform,
+            "label": gui_toolset_label(info.label),
+            "explicit": explicit,
+            "toolsets": toolsets,
+            "implicit_toolsets": implicit,
+            "effective_toolsets": sorted(effective),
+            "mcp": {
+                "mode": mcp_mode,
+                "available": sorted(enabled_mcp),
+                "selected": sorted(selected_mcp & enabled_mcp),
+                "effective": sorted(
+                    server
+                    for server in enabled_mcp
+                    if _mcp_toolset_name(server) in effective
+                ),
+            },
+            "plugins_locked": isinstance(known_plugins.get(platform), list),
+        })
+    return result
 
 
 @router.get("/api/tools/toolsets")
@@ -108,6 +212,115 @@ async def get_toolsets(profile: Optional[str] = None):
             "tools": tools,
         })
     return result
+
+
+@router.get("/api/tools/channels")
+async def get_channel_capabilities(profile: Optional[str] = None):
+    with _profile_scope(profile):
+        return _channel_capability_rows(load_config())
+
+
+@router.put("/api/tools/channels/{platform}")
+async def update_channel_capabilities(
+    platform: str,
+    body: ChannelCapabilitiesUpdate,
+    profile: Optional[str] = None,
+):
+    from hermes_cli.platforms import get_all_platforms
+    from hermes_cli.tools_config import (
+        _CONFIG_ONLY_TOOLSETS,
+        _get_effective_configurable_toolsets,
+        _get_platform_tools,
+        _save_platform_tools,
+        _toolset_allowed_for_platform,
+        enabled_mcp_server_names,
+    )
+
+    with _profile_scope(body.profile or profile):
+        # Platform and plugin discovery is profile-scoped.  Performing it
+        # before entering this context caused profile-only channel plugins to
+        # be validated against the default profile.
+        platforms = get_all_platforms()
+        if platform not in platforms or platform in _NON_MESSAGE_CAPABILITY_PLATFORMS:
+            raise HTTPException(
+                status_code=400, detail=f"Unknown messaging channel: {platform}"
+            )
+
+        valid_toolsets = {
+            name
+            for name, _, _ in _get_effective_configurable_toolsets()
+            if name not in _CONFIG_ONLY_TOOLSETS
+            and _toolset_allowed_for_platform(name, platform)
+        }
+        requested_toolsets = {str(name) for name in body.toolsets}
+        if not requested_toolsets:
+            raise HTTPException(
+                status_code=400,
+                detail="Select at least one toolset; channel defaults provide the minimum agent baseline.",
+            )
+        invalid_toolsets = sorted(requested_toolsets - valid_toolsets)
+        if invalid_toolsets:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Toolsets unavailable on {platform}: {', '.join(invalid_toolsets)}",
+            )
+
+        mcp_mode = str(body.mcp_mode or "").strip().lower()
+        if mcp_mode not in {"all", "none", "allowlist"}:
+            raise HTTPException(
+                status_code=400, detail="mcp_mode must be all, none, or allowlist"
+            )
+
+        config = load_config()
+        enabled_mcp = enabled_mcp_server_names(config)
+        requested_mcp = {str(name) for name in body.mcp_servers}
+        if mcp_mode == "allowlist" and not requested_mcp:
+            raise HTTPException(
+                status_code=400,
+                detail="Select at least one MCP server, or use none",
+            )
+        invalid_mcp = sorted(requested_mcp - enabled_mcp)
+        if invalid_mcp:
+            raise HTTPException(
+                status_code=400,
+                detail=f"MCP servers are not enabled: {', '.join(invalid_mcp)}",
+            )
+
+        _save_platform_tools(config, platform, requested_toolsets, save=False)
+        policies = config.get("platform_mcp_policy")
+        if policies is None:
+            policies = {}
+            config["platform_mcp_policy"] = policies
+        elif not isinstance(policies, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="platform_mcp_policy must be a mapping",
+            )
+        policies[platform] = {
+            "mode": mcp_mode,
+            "servers": sorted(requested_mcp) if mcp_mode == "allowlist" else [],
+        }
+        no_mcp_candidate = copy.deepcopy(config)
+        no_mcp_candidate["platform_mcp_policy"][platform] = {
+            "mode": "none",
+            "servers": [],
+        }
+        effective_builtin = _get_platform_tools(
+            no_mcp_candidate, platform, include_default_mcp_servers=False
+        )
+        if not effective_builtin:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This channel would have no enabled toolsets after "
+                    "agent.disabled_toolsets is applied. Change that global "
+                    "security policy or choose another channel toolset."
+                ),
+            )
+        save_config(config)
+        rows = _channel_capability_rows(config, only_platform=platform)
+
+    return {"ok": True, "channel": rows[0]}
 
 
 @router.put("/api/tools/toolsets/{name}")

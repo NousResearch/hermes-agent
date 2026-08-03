@@ -980,6 +980,7 @@ export const zhHant = defineLocale({
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
+    tabChannels: '訊息渠道',
     tabMcp: 'MCP',
     all: '全部',
     searchSkills: '搜尋技能...',
@@ -1030,7 +1031,27 @@ export const zhHant = defineLocale({
     edit: '編輯',
     archive: '封存',
     skillArchivedTitle: '技能已封存',
-    skillArchivedMessage: '可透過 hermes curator restore 還原。'
+    skillArchivedMessage: '可透過 hermes curator restore 還原。',
+    channels: {
+      search: '搜尋渠道、能力或工具…',
+      loadFailed: '渠道能力載入失敗。',
+      description: '明確選擇此訊息渠道的新 Agent 工作階段可使用的工具集與 MCP 服務。',
+      customBoundary: '自訂能力邊界',
+      inheritedDefaults: '繼承預設能力',
+      toolsets: 'Agent 能力',
+      toggleToolset: label => `切換此渠道的 ${label}`,
+      highImpact: '高影響',
+      required: '渠道必要能力',
+      mcpAccess: 'MCP 存取',
+      mcpAll: '全部已啟用服務',
+      mcpNone: '全部禁止',
+      mcpSelected: '僅所選服務',
+      noMcp: '目前沒有已啟用的 MCP 服務。',
+      save: '儲存能力',
+      savedTitle: '渠道能力已儲存',
+      savedMessage: channel => `${channel} 的新工作階段將使用此能力邊界。`,
+      saveFailed: channel => `儲存 ${channel} 的能力失敗`
+    }
   },
 
   starmap: {

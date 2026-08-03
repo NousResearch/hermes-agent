@@ -12,12 +12,13 @@ significant debugging to find. Surfacing invalid toolset names (and the
 zero-tools end state) loudly turns that silent failure into an actionable one.
 """
 
-from typing import Callable, List
+from typing import Callable, Iterable, List
 
 
 def validate_platform_toolsets(
     platform_toolsets: object,
     is_valid_toolset: Callable[[str], bool],
+    ignored_names: Iterable[str] = (),
 ) -> List[str]:
     """Return human-readable warnings for a ``platform_toolsets`` mapping.
 
@@ -27,8 +28,9 @@ def validate_platform_toolsets(
        renamed entry. When ``hermes-<platform>`` would have been valid (the exact
        #38798 shape, where ``cli`` held ``hermes`` instead of ``hermes-cli``),
        the warning includes that as a suggestion.
-    2. The mapping is non-empty but resolves to *zero* valid toolsets, so the
-       agent would start with no tools at all.
+    2. The mapping is non-empty but contains *zero* valid toolsets. Runtime
+       resolution falls back to the channel's official baseline, but the
+       warning still identifies the corrupt configuration.
 
     ``is_valid_toolset`` is injected (normally :func:`toolsets.validate_toolset`)
     so this function performs no imports or I/O and is testable in isolation.
@@ -38,6 +40,9 @@ def validate_platform_toolsets(
             ``dict`` values carry toolset entries; anything else yields no
             warnings (nothing to validate).
         is_valid_toolset: Predicate returning ``True`` for a known toolset name.
+        ignored_names: Legacy entries that are no longer toolset names (for
+            example old MCP allowlist entries). They are read for compatibility
+            but must not produce a false validation warning.
 
     Returns:
         A list of warning strings (empty when everything is valid).
@@ -45,12 +50,15 @@ def validate_platform_toolsets(
     warnings: List[str] = []
     if not isinstance(platform_toolsets, dict) or not platform_toolsets:
         return warnings
+    ignored = {str(name) for name in ignored_names}
 
     valid_count = 0
     for platform, raw in platform_toolsets.items():
         names = raw if isinstance(raw, list) else [raw]
         for name in names:
             if not isinstance(name, str) or not name:
+                continue
+            if name in ignored:
                 continue
             if is_valid_toolset(name):
                 valid_count += 1
@@ -68,7 +76,8 @@ def validate_platform_toolsets(
 
     if valid_count == 0:
         warnings.append(
-            "platform_toolsets resolves to zero valid toolsets — the agent will "
-            "have no tools. Run `hermes tools` to reconfigure."
+            "platform_toolsets contains zero valid toolsets — runtime will "
+            "fall back to the platform baseline. Run `hermes tools` to "
+            "reconfigure."
         )
     return warnings

@@ -360,6 +360,7 @@ export function useMessageStream({
   // Page Visibility does not report every Windows/Linux focus transition.
   // Flush queued deltas on both signals so returning to a chat cannot leave a
   // completed chunk waiting for the next throttled timer.
+  // eslint-disable-next-line no-restricted-syntax -- timer-handle clear inside effect, not an atom mirror
   useEffect(() => {
     const flushPendingDeltas = () => {
       if (flushHandleRef.current !== null) {

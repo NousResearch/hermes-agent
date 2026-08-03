@@ -7334,14 +7334,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return cursor.fetchone()[0]
 
     def session_count_ge(self, n: int = 1) -> bool:
-        """Check if at least N sessions exist.
+        """Check if at least N sessions exist (archived included).
 
-        Short-circuits via LIMIT — much cheaper than COUNT(*) when
-        you only need an existence check.  Use this instead of
-        ``session_count() >= n`` when the exact count is irrelevant.
+        Short-circuits via LIMIT — much cheaper than ``session_count()``,
+        which pays a full index scan for its default ``archived = 0``
+        filter (measured 543us vs 4us on a 20k-session DB). Archived
+        sessions count: every caller so far asks "has this install ever
+        had sessions", and an archived session is still a created one.
+        Use this instead of ``session_count() >= n`` when the exact count
+        is irrelevant.
         """
-        cursor = self._conn.execute("SELECT 1 FROM sessions LIMIT ?", (n,))
-        rows = cursor.fetchall()
+        with self._lock:
+            cursor = self._conn.execute("SELECT 1 FROM sessions LIMIT ?", (n,))
+            rows = cursor.fetchall()
         return len(rows) >= n
 
     def session_count_by_source(

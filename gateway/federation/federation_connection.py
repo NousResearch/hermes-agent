@@ -82,6 +82,7 @@ class FederationConnectionManager:
 
         # Rate limiting: {ip: [timestamps]}
         self._conn_times: dict[str, list[float]] = {}
+        self._conn_times_lock = asyncio.Lock()  # Phase 12: protect rate-limit state
 
         # Server
         self._server: Optional[Any] = None

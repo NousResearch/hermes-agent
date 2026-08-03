@@ -59,8 +59,9 @@ class TestFederationLeaderElection:
         e = self._make_election()
         import asyncio
         asyncio.get_event_loop().run_until_complete(e.initiate_election())
-        e.adapter.send.assert_called_once()
-        msg = e.adapter.send.call_args[0][0]
+        # initiate_election sends election + (if alone) victory
+        assert e.adapter.send.call_count >= 1
+        msg = e.adapter.send.call_args_list[0][0][0]
         assert msg.msg_type == "election"
         assert msg.payload["election_id"] != ""
 
@@ -73,7 +74,8 @@ class TestFederationLeaderElection:
             "initiator": "dev-b",
             "score": 20.0,
         }
-        e.handle_election(msg)
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(e.handle_election(msg))
         assert e._current_election is not None
         assert "dev-b" in e._current_election.candidates
 
@@ -87,10 +89,9 @@ class TestFederationLeaderElection:
             "initiator": "dev-b",
             "score": 25.0,
         }
-        e.handle_election(msg)
-        e._current_election.candidates["dev-b"] = 25.0
-
         import asyncio
+        asyncio.get_event_loop().run_until_complete(e.handle_election(msg))
+        e._current_election.candidates["dev-b"] = 25.0
         asyncio.get_event_loop().run_until_complete(e._wait_for_election_result())
 
         assert e.get_leader() == "dev-b"  # Higher score wins
@@ -146,6 +147,9 @@ class TestFederationConfigSync:
     def test_init(self, tmp_path):
         s = self._make_sync(tmp_path)
         assert s.device_id == "dev-a"
+        # Hash is computed on start(); after start it should be non-empty
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(s.start())
         assert s._local_config_hash != ""
 
     def test_compute_hash(self, tmp_path):
@@ -174,7 +178,8 @@ class TestFederationConfigSync:
             "config_hash": "new_hash_123",
             "config": "model: claude-3\nprovider: anthropic\n",
         }
-        s.handle_config_sync(msg)
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(s.handle_config_sync(msg))
 
         # Config was applied
         assert s._local_config_hash == "new_hash_123"

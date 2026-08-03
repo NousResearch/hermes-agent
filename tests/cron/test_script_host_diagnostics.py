@@ -35,18 +35,22 @@ def _reset_notice_state():
 
 def test_backend_defaults_to_local(monkeypatch):
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    _raw(monkeypatch, {})  # don't read this machine's real config.yaml
     monkeypatch.setattr(sched, "load_config", lambda: {})
     assert sched._effective_terminal_backend() == "local"
 
 
 def test_backend_is_read_and_normalized(monkeypatch):
+    """Merged-config fallback: no raw section, no env."""
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    _raw(monkeypatch, {})
     monkeypatch.setattr(sched, "load_config", lambda: {"terminal": {"backend": "  SSH "}})
     assert sched._effective_terminal_backend() == "ssh"
 
 
 def test_backend_read_failure_degrades_to_local(monkeypatch):
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    _raw(monkeypatch, {})
 
     def _boom():
         raise RuntimeError("config exploded")
@@ -56,53 +60,85 @@ def test_backend_read_failure_degrades_to_local(monkeypatch):
     assert sched._effective_terminal_backend() == "local"
 
 
-# --- TERMINAL_ENV precedence -----------------------------------------------
+# --- backend resolution order ----------------------------------------------
 #
-# The terminal tool treats an explicit TERMINAL_ENV as authoritative and only
-# bridges terminal.backend into the unset case (tools/terminal_tool.py,
-# _ensure_terminal_env_bridged / _get_env_config). These diagnostics have to
-# agree with it: naming a backend the terminal tool isn't actually using would
-# point the operator at the wrong host while they debug a missing script.
+# These diagnostics must name the backend the terminal tool ACTUALLY uses; a
+# wrong answer sends the operator to the wrong machine while they debug a
+# missing script. terminal_tool's order (_ensure_terminal_env_bridged /
+# _get_env_config) is:
+#
+#   1. explicit RAW config.yaml terminal.backend  (bridged with override=True,
+#      so it beats even a deliberate TERMINAL_ENV, which may be stale from
+#      `hermes setup`)
+#   2. an existing TERMINAL_ENV selection
+#   3. the merged config default, floor "local"
+#
+# Only keys present in the raw terminal section override env, so a raw section
+# without `backend` leaves TERMINAL_ENV authoritative — hence raw vs merged.
 
 
-def test_env_override_wins_over_config(monkeypatch):
-    """TERMINAL_ENV=local + terminal.backend=docker → terminal runs LOCAL."""
+def _raw(monkeypatch, value):
+    """Stub hermes_cli.config.read_raw_config, which the helper imports."""
+    import hermes_cli.config as hc
+
+    monkeypatch.setattr(hc, "read_raw_config", lambda: value, raising=False)
+
+
+def test_raw_config_backend_wins_over_env(monkeypatch):
+    """terminal.backend in config.yaml beats TERMINAL_ENV (override=True)."""
     monkeypatch.setenv("TERMINAL_ENV", "local")
+    _raw(monkeypatch, {"terminal": {"backend": "docker"}})
+    assert sched._effective_terminal_backend() == "docker"
+    # ...and the mismatch IS explained, because terminal really runs docker.
+    assert "docker" in sched._script_runs_on_scheduler_host_hint()
+
+
+def test_raw_config_backend_is_normalized(monkeypatch):
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    _raw(monkeypatch, {"terminal": {"backend": "  SSH "}})
+    assert sched._effective_terminal_backend() == "ssh"
+
+
+def test_env_used_when_raw_section_has_no_backend_key(monkeypatch):
+    """A raw terminal section without `backend` doesn't override env."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    _raw(monkeypatch, {"terminal": {"docker_image": "x"}})
+    assert sched._effective_terminal_backend() == "ssh"
+
+
+def test_env_used_when_no_raw_terminal_section(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "  DOCKER ")
+    _raw(monkeypatch, {})
+    assert sched._effective_terminal_backend() == "docker"
+    assert "docker" in sched._script_runs_on_scheduler_host_hint()
+
+
+def test_env_local_wins_when_config_is_silent(monkeypatch):
+    """No raw backend + TERMINAL_ENV=local → local, so no hint is emitted."""
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    _raw(monkeypatch, {})
     monkeypatch.setattr(sched, "load_config", lambda: {"terminal": {"backend": "docker"}})
     assert sched._effective_terminal_backend() == "local"
-    # ...so no isolation hint is emitted: there is no mismatch to explain.
     assert sched._script_runs_on_scheduler_host_hint() == ""
 
 
-def test_env_override_is_normalized(monkeypatch):
-    monkeypatch.setenv("TERMINAL_ENV", "  DOCKER ")
-    monkeypatch.setattr(sched, "load_config", lambda: {})
-    assert sched._effective_terminal_backend() == "docker"
-
-
-def test_env_override_names_the_backend_config_does_not_know(monkeypatch):
-    """The inverse: env selects a remote backend, config says nothing."""
-    monkeypatch.setenv("TERMINAL_ENV", "ssh")
-    monkeypatch.setattr(sched, "load_config", lambda: {})
-    assert sched._effective_terminal_backend() == "ssh"
-    assert "ssh" in sched._script_runs_on_scheduler_host_hint()
-
-
-def test_blank_env_override_falls_back_to_config(monkeypatch):
+def test_blank_env_falls_back_to_merged_config(monkeypatch):
     """An empty/whitespace TERMINAL_ENV is not a deliberate choice."""
     monkeypatch.setenv("TERMINAL_ENV", "   ")
+    _raw(monkeypatch, {})
     monkeypatch.setattr(sched, "load_config", lambda: {"terminal": {"backend": "docker"}})
     assert sched._effective_terminal_backend() == "docker"
 
 
-def test_env_override_skips_config_read_entirely(monkeypatch):
-    """An explicit env choice must not depend on config being readable."""
-    monkeypatch.setenv("TERMINAL_ENV", "docker")
+def test_raw_config_read_failure_degrades_to_env(monkeypatch):
+    """Diagnostics must never raise into the job runner."""
+    import hermes_cli.config as hc
 
     def _boom():
-        raise AssertionError("config must not be read when TERMINAL_ENV is set")
+        raise RuntimeError("raw config exploded")
 
-    monkeypatch.setattr(sched, "load_config", _boom)
+    monkeypatch.setattr(hc, "read_raw_config", _boom, raising=False)
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
     assert sched._effective_terminal_backend() == "docker"
 
 

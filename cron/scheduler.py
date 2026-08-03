@@ -2118,17 +2118,41 @@ def _effective_terminal_backend() -> str:
     messages below can name the mismatch instead of leaving the operator with a
     bare "not found". Never changes where anything runs.
 
-    Mirrors the terminal tool's own precedence rather than reading config alone:
-    ``TERMINAL_ENV`` wins when set (a launcher's bridge or the user's .env made
-    a deliberate choice) and ``terminal.backend`` only fills the unset case
-    (``tools/terminal_tool.py`` ``_ensure_terminal_env_bridged`` /
-    ``_get_env_config``). Reading config alone would name a remote backend in
-    these messages even where terminal calls actually run local — pointing the
-    operator at the wrong host while diagnosing a missing script.
+    Mirrors the terminal tool's own resolution order rather than reading either
+    source alone (``tools/terminal_tool.py`` ``_ensure_terminal_env_bridged`` /
+    ``_get_env_config``), which is:
+
+    1. An explicit ``terminal.backend`` in config.yaml wins. The bridge calls
+       ``apply_terminal_config_to_env(override=True)`` when the RAW config has a
+       ``terminal`` section, overwriting even a deliberate ``TERMINAL_ENV``
+       (which may be stale from ``hermes setup``).
+    2. Otherwise an existing ``TERMINAL_ENV`` selection is preserved.
+    3. Otherwise the merged config default, floor ``local``.
+
+    Only keys present in the raw ``terminal`` section override env, so a section
+    without ``backend`` leaves an explicit ``TERMINAL_ENV`` authoritative —
+    hence the raw-vs-merged distinction here. Getting this order wrong names
+    the wrong host in the messages below and sends the operator to the wrong
+    machine while they diagnose a missing script.
     """
+    # 1. Explicit raw terminal.backend overrides the environment.
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw_terminal = (read_raw_config() or {}).get("terminal")
+        if isinstance(raw_terminal, dict):
+            raw_backend = raw_terminal.get("backend")
+            if raw_backend and str(raw_backend).strip():
+                return str(raw_backend).strip().lower()
+    except Exception:
+        logger.debug(
+            "could not read raw terminal.backend for cron diagnostics", exc_info=True
+        )
+    # 2. An explicit environment selection is preserved when config is silent.
     env_backend = os.environ.get("TERMINAL_ENV")
     if env_backend and env_backend.strip():
         return env_backend.strip().lower()
+    # 3. Fall back to the merged config default.
     try:
         cfg = load_config() or {}
         terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}

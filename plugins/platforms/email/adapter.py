@@ -990,10 +990,20 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
+    html_format = extra.get("html_format", True)  # platforms.email.html_format
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
     try:
-        msg = MIMEText(message, "plain", "utf-8")
+        if html_format:
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(message, "plain", "utf-8"))
+            try:
+                html = _markdown_to_html_email(message)
+                msg.attach(MIMEText(html, "html", "utf-8"))
+            except Exception as e:
+                logger.warning("[Email] Standalone HTML conversion failed, sending plain only: %s", e, exc_info=True)
+        else:
+            msg = MIMEText(message, "plain", "utf-8")
         for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)

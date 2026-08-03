@@ -46,6 +46,11 @@ def test_list_providers_reuses_cached_snapshot_until_registration_changes():
 
     assert providers.list_providers() == [first]
 
+    # Hit-path copy guard: mutating a CACHED return must not corrupt the
+    # module-level snapshot for later callers (aliasing bug class).
+    providers.list_providers().clear()
+    assert providers.list_providers() == [first]
+
     second = _profile("beta")
     providers.register_provider(second)
 

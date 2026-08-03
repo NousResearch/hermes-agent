@@ -290,6 +290,13 @@ class TestFlushAfterCompression:
             agent.session_id = parent_sid
             agent.compression_in_place = False
             agent._ensure_db_session()
+            # This fixture switches session_id after construction and supplies
+            # an in-memory projection that is intentionally ahead of the empty
+            # durable parent. Bind the matching durable identity explicitly;
+            # compression must not infer it from the new session id alone.
+            agent._durable_transcript_revision = db.get_active_message_revision(
+                parent_sid
+            )
 
             # Plain marked messages only: the exact-equality assertion below
             # relies on `compressed` containing no message that _flush filters

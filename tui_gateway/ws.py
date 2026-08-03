@@ -288,6 +288,17 @@ def _disable_nagle(ws: Any) -> None:
         sock = transport.get_extra_info("socket") if transport is not None else None
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            # Dead-peer detection: without keepalive a silently-dropped client
+            # (SSH tunnel reset, client sleep) leaves the TCP leg half-open
+            # forever, receive_text() blocks indefinitely, and the disconnect
+            # teardown (detach + orphan reap + resume replay) never runs.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            if hasattr(socket, "TCP_KEEPIDLE"):  # Linux
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+            elif hasattr(socket, "TCP_KEEPALIVE"):  # macOS idle seconds
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 30)
     except Exception as exc:  # pragma: no cover - best-effort tuning
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 

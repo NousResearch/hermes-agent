@@ -264,15 +264,14 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             return None, True
-        if metadata.st_size > _MAX_REFERENCED_SCRIPT_BYTES:
-            return None, True
+        # Read a bounded chunk first — even for oversized files, the first
+        # chunk tells us if this is a binary (NUL bytes) that should be
+        # skipped as "nothing to scan" rather than failing closed (#76762).
         data = os.read(descriptor, _MAX_REFERENCED_SCRIPT_BYTES + 1)
     except OSError:
         return None, False
     finally:
         os.close(descriptor)
-    if len(data) > _MAX_REFERENCED_SCRIPT_BYTES:
-        return None, True
     # A NUL byte in the first chunk means this is a binary (ELF/Mach-O/
     # PE), not a shell script — scanning its decoded contents would
     # tokenize machine code and feed junk paths into the recursion
@@ -281,6 +280,8 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     # executed by the user is not a referenced *shell script*.
     if b"\x00" in data:
         return None, False
+    if len(data) > _MAX_REFERENCED_SCRIPT_BYTES:
+        return None, True
     return data.decode("utf-8", errors="replace"), False
 
 

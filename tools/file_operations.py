@@ -1593,8 +1593,11 @@ class ShellFileOperations(FileOperations):
 
         # Get bytes written — compute from the content we just wrote
         # (len(content.encode('utf-8')) matches wc -c for UTF-8) instead
-        # of spawning a ``wc -c`` subprocess.
-        bytes_written = len(content.encode('utf-8'))
+        # of spawning a ``wc -c`` subprocess. ``surrogatepass`` mirrors the
+        # sha256 verification block below: content that flowed through a
+        # surrogateescape decode (backend output via patch_replace) may
+        # carry lone surrogates a strict encode would reject.
+        bytes_written = len(content.encode('utf-8', 'surrogatepass'))
 
         # Post-write content verification (cheap, one shell call): compare
         # the on-disk sha256 to the intended content's hash. Production

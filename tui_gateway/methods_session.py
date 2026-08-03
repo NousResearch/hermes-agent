@@ -1204,6 +1204,11 @@ def _(rid, params: dict) -> dict:
     usage: dict = _session_usage_snapshot(session)
     if agent is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
+    account_lines, rate_limit_lines = _usage_provider_lines(session)
+    if account_lines:
+        usage["account_lines"] = account_lines
+    if rate_limit_lines:
+        usage["rate_limit_lines"] = rate_limit_lines
     # Nous credits block — agent-independent (a portal fetch), so it shows even
     # with zero API calls or on a resumed session. The TUI /usage panel renders
     # these lines regardless of `calls`. Fail-open: [] when not logged into Nous

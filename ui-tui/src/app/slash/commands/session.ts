@@ -659,6 +659,17 @@ export const sessionCommands: SlashCommand[] = [
           })
         }
 
+        const accountLines = r?.account_lines ?? []
+        const rateLimitLines = r?.rate_limit_lines ?? []
+
+        if (accountLines.length) {
+          sys(accountLines.join('\n'))
+        }
+
+        if (rateLimitLines.length) {
+          sys(rateLimitLines.join('\n'))
+        }
+
         // Nous balance block is agent-independent (a portal fetch), so it shows
         // even with zero API calls or on a resumed session. Prefer the shared
         // dollar usage model (two-bar view, dollars-only); fall back to the

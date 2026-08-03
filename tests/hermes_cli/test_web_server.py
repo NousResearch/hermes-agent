@@ -326,6 +326,8 @@ class TestWebServerEndpoints:
         WebSocket timeout.  Running it inline makes a concurrent /api/ws
         handshake time out before ``gateway.ready`` can be sent.
         """
+        from fastapi import Request
+
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server
 
@@ -342,9 +344,16 @@ class TestWebServerEndpoints:
 
         monkeypatch.setattr(gateway_config, "load_gateway_config", _load)
 
+        # get_status reads _dashboard_requester_scope(request) since the Mini
+        # App tiered access control landed; a bare Request with no
+        # request.state.token_principal set resolves to the cookie/session
+        # caller's unrestricted (None, None) scope, same as this direct call
+        # always got before that scoping existed.
+        request = Request(scope={"type": "http", "headers": []})
+
         async def _run():
             event_loop_thread = threading.get_ident()
-            await web_server.get_status()
+            await web_server.get_status(request)
             return event_loop_thread
 
         event_loop_thread = asyncio.run(_run())

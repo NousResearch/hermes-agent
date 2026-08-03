@@ -410,8 +410,7 @@ def _is_hermes_internal_secret(key: str) -> bool:
     return False
 
 
-_configured_bws_token_env: str | None = None
-_configured_bws_token_env_loaded = False
+_configured_bws_token_env_by_home: dict[str, str] = {}
 
 
 def _get_configured_bws_token_env() -> str:
@@ -424,25 +423,42 @@ def _get_configured_bws_token_env() -> str:
     ``*_ACCESS_TOKEN`` suffix) is what keeps legitimate third-party access
     tokens ``env_passthrough``-registerable.
 
-    Resolved once per process and cached; tests that exercise a remap reset
-    the module globals before calling.
+    Cached **per active Hermes home**: the gateway can serve multiple
+    profiles in one process by switching a context-local Hermes home per
+    turn, so a single process-global cache would keep matching the first
+    profile's token-variable name for every later profile — letting a later
+    profile's differently-named vault bootstrap token pass into child
+    processes.  Keying the cache by the active home (context override →
+    ``HERMES_HOME`` env → platform default) keeps each profile's exact
+    configured name authoritative.
     """
-    global _configured_bws_token_env, _configured_bws_token_env_loaded
-    if not _configured_bws_token_env_loaded:
-        _configured_bws_token_env_loaded = True
-        name = "BWS_ACCESS_TOKEN"
-        try:
-            from hermes_cli.config import cfg_get, read_raw_config
+    try:
+        from hermes_constants import get_hermes_home
 
-            configured = cfg_get(
-                read_raw_config(), "secrets", "bitwarden", "access_token_env"
-            )
-            if isinstance(configured, str) and configured.strip():
-                name = configured.strip()
-        except Exception:
-            pass
-        _configured_bws_token_env = name
-    return _configured_bws_token_env or "BWS_ACCESS_TOKEN"
+        home_key = str(get_hermes_home())
+    except Exception:
+        # Home resolution can fail in stripped-down environments (no
+        # LOCALAPPDATA/HOME/USERPROFILE, e.g. the test runner's clean env).
+        # Fall back to the process env var, then a shared slot — the old
+        # process-global behavior, never a raise.
+        home_key = os.environ.get("HERMES_HOME", "") or "<unknown-home>"
+    cached = _configured_bws_token_env_by_home.get(home_key)
+    if cached is not None:
+        return cached
+
+    name = "BWS_ACCESS_TOKEN"
+    try:
+        from hermes_cli.config import cfg_get, read_raw_config
+
+        configured = cfg_get(
+            read_raw_config(), "secrets", "bitwarden", "access_token_env"
+        )
+        if isinstance(configured, str) and configured.strip():
+            name = configured.strip()
+    except Exception:
+        pass
+    _configured_bws_token_env_by_home[home_key] = name
+    return name
 
 
 def _is_credential_shaped_password(key: str) -> bool:
@@ -1364,6 +1380,8 @@ def _make_run_env(env: dict) -> dict:
         else:
             passthrough = _is_passthrough(k)
             if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+                continue
+            if _is_credential_shaped_password(k) and not passthrough:
                 continue
             value = _resolve_passthrough_value(k, v) if passthrough else v
             if value is not None:

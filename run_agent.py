@@ -148,6 +148,7 @@ from tools.browser_tool import cleanup_browser
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import sanitize_context
+from agent.memory_provider import is_trivial_prompt
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.message_content import flatten_message_text
@@ -4106,10 +4107,15 @@ class AIAgent:
                 response_text,
                 **sync_kwargs,
             )
-            self._memory_manager.queue_prefetch_all(
-                user_text,
-                session_id=self.session_id or "",
-            )
+            # Sibling of the build_turn_context() prefetch gate: warming the
+            # next turn's recall with a trivial prompt ("hi", "thanks") keys
+            # provider searches on zero-signal text — skip it. The sync above
+            # still runs so the turn itself is persisted.
+            if not is_trivial_prompt(user_text):
+                self._memory_manager.queue_prefetch_all(
+                    user_text,
+                    session_id=self.session_id or "",
+                )
         except Exception:
             pass
 

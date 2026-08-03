@@ -64,7 +64,10 @@ import uuid
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from hermes_state import DurableTranscriptRevision
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import (
@@ -87,6 +90,43 @@ _TERMINAL_COMPRESSION_PROVENANCES = frozenset(
         ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
     }
 )
+logger = logging.getLogger(__name__)
+
+
+class CompressionSnapshotStaleError(RuntimeError):
+    """The durable transcript changed after the caller captured its snapshot."""
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        expected_revision: Optional[DurableTranscriptRevision],
+        observed_revision: DurableTranscriptRevision,
+    ) -> None:
+        self.session_id = session_id
+        self.expected_revision = expected_revision
+        self.observed_revision = observed_revision
+        super().__init__(
+            f"durable transcript revision changed for session {session_id}"
+        )
+
+
+class CompressionProjectionUnverifiableError(RuntimeError):
+    """A caller-supplied projection could not be tied to a durable revision."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(
+            f"durable transcript projection could not be verified for session {session_id}"
+        )
+
+
+class CompressionCommitFailedError(RuntimeError):
+    """A generated compaction could not be committed to durable state."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"context compression commit failed for session {session_id}")
 
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
 # status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
@@ -1203,6 +1243,27 @@ def compression_skipped_due_to_lock(agent: Any) -> bool:
     return _sig is True or isinstance(_sig, str)
 
 
+def _rebind_durable_transcript_revision(
+    agent: Any,
+    session_db: Any,
+    session_id: str,
+) -> None:
+    """Bind the agent revision to the active rows of its current segment."""
+    loader = getattr(type(session_db), "get_active_message_revision", None)
+    if not callable(loader):
+        agent._durable_transcript_revision = None
+        return
+    try:
+        agent._durable_transcript_revision = loader(session_db, session_id)
+    except Exception:
+        agent._durable_transcript_revision = None
+        logger.debug(
+            "Durable transcript revision rebind failed for session=%s",
+            session_id,
+            exc_info=True,
+        )
+
+
 def _adopt_live_compression_child(
     agent: Any,
     session_db: Any,
@@ -1219,9 +1280,12 @@ def _adopt_live_compression_child(
     if not callable(finder) or not callable(loader):
         return None
     child = finder(session_db, parent_session_id)
-    if not child or not child.get("id"):
+    if not isinstance(child, dict) or not child.get("id"):
         return None
     child_session_id = str(child["id"])
+    immediate_parent_session_id = str(
+        child.get("parent_session_id") or parent_session_id
+    )
     recovered = loader(session_db, child_session_id)
     if not isinstance(recovered, list) or not recovered:
         return None
@@ -1232,6 +1296,7 @@ def _adopt_live_compression_child(
         return None
 
     agent.session_id = child_session_id
+    _rebind_durable_transcript_revision(agent, session_db, child_session_id)
     try:
         from gateway.session_context import set_current_session_id
 
@@ -1254,13 +1319,19 @@ def _adopt_live_compression_child(
         id(message) for message in recovered if isinstance(message, dict)
     }
 
+    # This is adoption of an already-published session, not a new compression
+    # boundary. Replaying ``boundary_reason='compression'`` would migrate stale
+    # counters from the ancestor into a tip that may already have newer state.
+    # ``resume`` makes engines load the durable tip as-is; the extra flag keeps
+    # the recovery provenance available to plugins without re-emitting a split.
     on_session_start = getattr(agent.context_compressor, "on_session_start", None)
     if callable(on_session_start):
         try:
             on_session_start(
                 child_session_id,
-                boundary_reason="compression",
-                old_session_id=parent_session_id,
+                boundary_reason="resume",
+                old_session_id=immediate_parent_session_id,
+                recovered_from_compression=True,
                 session_db=session_db,
                 platform=getattr(agent, "platform", None) or "cli",
                 conversation_id=getattr(agent, "_gateway_session_key", None),
@@ -1278,9 +1349,9 @@ def _adopt_live_compression_child(
         if agent._memory_manager:
             agent._memory_manager.on_session_switch(
                 child_session_id,
-                parent_session_id=parent_session_id,
+                parent_session_id=immediate_parent_session_id,
                 reset=False,
-                reason="compression",
+                reason="resume",
             )
     except Exception as exc:
         logger.debug("memory manager compression-child adoption failed: %s", exc)
@@ -2166,6 +2237,13 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    # Keep durable state lazy: gateway configuration imports this module during
+    # collection, before per-test/runtime ``HERMES_HOME`` redirects are active.
+    from hermes_state import (
+        CompressionSessionBusyError,
+        CompressionTranscriptRevisionError,
+    )
+
     _compressor_attempt_snapshot = _snapshot_compressor_attempt_state(
         agent.context_compressor
     )
@@ -2700,46 +2778,38 @@ def compress_context(
                     _lock_refresher = _candidate_refresher
                     _lock_refresher.start()
 
-        # The caller's history snapshot predates lease acquisition. Reload the
-        # durable parent after the lease is live; MORE durable rows than the
-        # snapshot carries means a frontend/background writer committed a turn
-        # in that window, so publishing from this snapshot would omit it.
-        # Deliberately a LENGTH check, not content equality: in-memory
-        # mutation of past turns is legal (multimodal compression, retry
-        # history replacement, think-tag stripping), and a content-equality
-        # abort would permanently wedge compression on such sessions — the
-        # #14694 failure shape.
-        # Rotation-only: in-place compaction (archive_and_compact) is
-        # non-destructive — pre-compaction rows are soft-archived (active=0,
-        # compacted=1), stay searchable and recoverable, so snapshot/durable
-        # drift cannot lose data there and must not abort compaction.
-        #
-        # When durable DID grow, ADOPT it and continue rather than aborting.
-        # Aborting returned the stale snapshot unchanged, so busy sessions
-        # (memory review / shared session_id writers) stayed permanently
-        # behind the DB: every /compress and auto-compress saw
-        # "changed before lease acquisition", surfaced as the misleading
-        # "No changes from compression", and never reclaimed tokens.
-        if not in_place and _lock_db is not None and _lock_sid:
-            durable_loader = getattr(
-                type(_lock_db), "get_messages_as_conversation", None
+        # Fence the caller's projection against the durable active-row set.
+        # Deliberately do NOT compare durable and projected message counts:
+        # projections may deduplicate or omit rows while still representing the
+        # same atomic durable snapshot.
+        # Apply the fence in both rotation and in-place modes. In-place keeps
+        # archived rows recoverable, but activating a summary built from a stale
+        # projection would still hide a concurrently committed active turn.
+        if _lock_db is not None and _lock_sid:
+            revision_loader = getattr(
+                type(_lock_db), "get_active_message_revision", None
             )
-            if callable(durable_loader):
-                durable_parent = durable_loader(_lock_db, _lock_sid)
-                if isinstance(durable_parent, list) and len(durable_parent) > len(messages):
-                    logger.info(
-                        "compression: session=%s grew before lease "
-                        "(%d → %d msgs); adopting durable snapshot",
-                        _lock_sid,
-                        len(messages),
-                        len(durable_parent),
+            if callable(revision_loader):
+                expected_revision = getattr(
+                    agent, "_durable_transcript_revision", None
+                )
+                observed_revision = revision_loader(_lock_db, _lock_sid)
+                if (
+                    expected_revision is not None
+                    and expected_revision.session_id != _lock_sid
+                ):
+                    # Legacy/plugin callers may assign ``session_id`` directly
+                    # after agent construction. A revision belongs only to the
+                    # session it names; rebaseline instead of comparing across
+                    # unrelated sessions.
+                    agent._durable_transcript_revision = observed_revision
+                    expected_revision = observed_revision
+                if expected_revision is not None and expected_revision != observed_revision:
+                    raise CompressionSnapshotStaleError(
+                        session_id=_lock_sid,
+                        expected_revision=expected_revision,
+                        observed_revision=observed_revision,
                     )
-                    messages = durable_parent
-                    _pre_msg_count = len(messages)
-                    # Token estimate was for the stale snapshot; clear it so
-                    # the compressor re-derives from the adopted transcript
-                    # instead of under-counting the newly visible rows.
-                    approx_tokens = 0
 
         # Notify external memory provider before compression discards context.
         # The provider's on_pre_compress() may return a string of insights it
@@ -3192,7 +3262,20 @@ def compress_context(
                     # for search/recovery (Teknium review — keep one durable id
                     # WITHOUT destroying history, unlike a hard replace_messages).
                     # See #38763.
-                    agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    agent._session_db.archive_and_compact(
+                        agent.session_id,
+                        compressed,
+                        compression_lock_holder=_lock_holder,
+                        require_compression_lease=_lock_holder is not None,
+                        expected_revision=getattr(
+                            agent, "_durable_transcript_revision", None
+                        ),
+                    )
+                    _rebind_durable_transcript_revision(
+                        agent,
+                        agent._session_db,
+                        agent.session_id,
+                    )
                     split_status = "in_place_committed"
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
@@ -3232,6 +3315,11 @@ def compress_context(
                             messages,
                             conversation_history=persisted_history,
                         )
+                        _rebind_durable_transcript_revision(
+                            agent,
+                            agent._session_db,
+                            agent.session_id,
+                        )
                     except Exception:
                         pass  # best-effort — don't block compression on a flush error
                     # Publish parent closure + child row + compacted handoff in
@@ -3268,8 +3356,16 @@ def compress_context(
                         profile_name=_profile_for_child,
                         compression_lock_holder=_lock_holder,
                         require_compression_lease=_lock_holder is not None,
+                        expected_parent_revision=getattr(
+                            agent, "_durable_transcript_revision", None
+                        ),
                     )
                     agent.session_id = new_session_id
+                    _rebind_durable_transcript_revision(
+                        agent,
+                        agent._session_db,
+                        new_session_id,
+                    )
                     try:
                         from gateway.session_context import set_current_session_id
 
@@ -3317,35 +3413,39 @@ def compress_context(
                         if isinstance(message, dict)
                     }
                 _session_commit_succeeded = True
+            except CompressionTranscriptRevisionError as e:
+                messages[:] = copy.deepcopy(messages_before_compression)
+                compressed = messages
+                _compression_made_progress = False
+                raise CompressionSnapshotStaleError(
+                    session_id=e.session_id,
+                    expected_revision=e.expected_revision,
+                    observed_revision=e.observed_revision,
+                ) from e
             except Exception as e:
-                if (
-                    not in_place
-                    and locals().get("old_session_id")
-                    and agent.session_id == old_session_id
-                ):
-                    # Atomic publication failed (including lease loss): keep the
-                    # parent live and discard the stale compacted snapshot.
+                # Any durable commit failure invalidates the generated compacted
+                # projection. Restore the exact pre-compression in-memory state
+                # in both rotation and in-place modes and stop the turn; otherwise
+                # the model could continue from context that never committed.
+                messages[:] = copy.deepcopy(messages_before_compression)
+                compressed = messages
+                _compression_made_progress = False
+                if not in_place and locals().get("old_session_id"):
                     old_session_id = None
-                    messages[:] = copy.deepcopy(messages_before_compression)
-                    compressed = messages
-                    _compression_made_progress = False
-                split_status = (
-                    "aborted"
-                    if locals().get("old_session_id") is None and not in_place
-                    else "failed_not_indexed"
+                split_status = "aborted"
+                logger.warning(
+                    "Compression durable commit failed and in-memory context was "
+                    "restored (session=%s): %s",
+                    agent.session_id or "?",
+                    e,
                 )
-                # If the rotation rolled back to the parent (orphan-avoidance
-                # above), agent.session_id is the still-indexed parent and
-                # old_session_id was cleared — so this is recovery, not an
-                # un-indexed orphan. Otherwise an earlier step failed before the
-                # child was created and the warning's original meaning holds.
-                if locals().get("old_session_id") is None and not in_place:
-                    logger.warning(
-                        "Compression rotation aborted and rolled back to the "
-                        "parent session (%s): %s", agent.session_id or "?", e,
-                    )
-                else:
-                    logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+                if isinstance(e, CompressionSessionBusyError):
+                    raise CompressionCommitFailedError(agent.session_id or "") from e
+                _existing_sp = getattr(agent, "_cached_system_prompt", None)
+                if not _existing_sp:
+                    _existing_sp = agent._build_system_prompt(system_message)
+                _release_lock()
+                return messages, _existing_sp
 
         # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
         # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`

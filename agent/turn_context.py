@@ -29,11 +29,15 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
+
+if TYPE_CHECKING:
+    from hermes_state import DurableTranscriptRevision
 
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
+    CompressionProjectionUnverifiableError,
     compression_skipped_due_to_lock,
     conversation_history_after_compression,
     recover_rotated_compression_session,
@@ -325,6 +329,8 @@ class TurnContext:
     ext_prefetch_cache: str = ""
     # Turn-start preflight already proved an immediate retry ineffective.
     preflight_compression_blocked: bool = False
+    # Immutable fence for the durable active rows represented by this turn.
+    durable_transcript_revision: Optional[DurableTranscriptRevision] = None
 
 
 def build_turn_context(
@@ -347,6 +353,7 @@ def build_turn_context(
     set_current_write_origin,
     ra,
     moa_active: bool = False,
+    conversation_history_revision: Optional[Any] = None,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -354,6 +361,13 @@ def build_turn_context(
     ``conversation_loop`` module are passed in explicitly to keep this module
     free of an import cycle with ``agent.conversation_loop``.
     """
+    # Keep durable state lazy: gateway configuration imports this module during
+    # collection, before per-test/runtime ``HERMES_HOME`` redirects are active.
+    from hermes_state import (
+        DurableTranscriptRevision,
+        normalize_durable_transcript_revision,
+    )
+
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
@@ -363,6 +377,62 @@ def build_turn_context(
     recovered_history = recover_rotated_compression_session(agent)
     if recovered_history is not None:
         conversation_history = recovered_history
+        conversation_history_revision = getattr(
+            agent, "_durable_transcript_revision", None
+        )
+
+    # Compatibility callers historically supplied only a projected history.
+    # Never authenticate those bytes with the independent revision captured by
+    # AIAgent.__init__: an append can land between the caller's read and agent
+    # construction. Re-anchor history + revision in one SessionDB snapshot.
+    if (
+        recovered_history is None
+        and conversation_history is not None
+        and conversation_history_revision is None
+        and getattr(agent, "_session_db", None) is not None
+        and agent.session_id
+    ):
+        try:
+            reanchored = agent._session_db.get_messages_as_conversation(
+                agent.session_id,
+                with_revision=True,
+                repair_alternation=True,
+            )
+        except TypeError:
+            # SessionDB-like adapter predating the atomic (history, revision)
+            # contract. It cannot fence at all, so there is nothing to verify
+            # against — keep the caller's projection and the agent-owned fence,
+            # exactly as before this contract existed.
+            reanchored = None
+        except Exception as exc:
+            # The store supports the contract but the read failed: the supplied
+            # bytes stay unverifiable, so stop before any summarizer/provider.
+            raise CompressionProjectionUnverifiableError(agent.session_id) from exc
+        if isinstance(reanchored, tuple) and len(reanchored) == 2:
+            durable_history, durable_revision = reanchored
+            if isinstance(durable_revision, DurableTranscriptRevision):
+                if durable_revision.active_message_count:
+                    # Durable rows exist, so the caller's copy is a projection
+                    # of them and the durable set is the authority the fence
+                    # describes.
+                    conversation_history = durable_history
+                # Otherwise the session holds nothing to omit and the history
+                # is client-managed (e.g. the ``/responses`` stateless path,
+                # which supplies its own transcript against a fresh session
+                # id). Keep those bytes and pair them with the honest empty
+                # fence instead of erasing the turn.
+                conversation_history_revision = durable_revision
+
+    if conversation_history_revision is None:
+        durable_transcript_revision = getattr(
+            agent, "_durable_transcript_revision", None
+        )
+    else:
+        durable_transcript_revision = normalize_durable_transcript_revision(
+            conversation_history_revision,
+            session_id=agent.session_id,
+        )
+    agent._durable_transcript_revision = durable_transcript_revision
 
     # NOTE: the DB session row is created later, AFTER the system prompt is
     # restored/built (see _ensure_db_session() below the system-prompt block).
@@ -1208,11 +1278,32 @@ def build_turn_context(
                 _db = getattr(agent, "_session_db", None)
                 if _db is not None:
                     try:
-                        _db.set_latest_user_api_content(
-                            agent.session_id,
-                            _turn_user_msg.get("content"),
-                            _api_content,
-                        )
+                        # api_content is model-facing, so this write moves the
+                        # durable revision. Adopt the committed fence: leaving
+                        # the agent on its pre-backfill token would make its own
+                        # backfill look like a foreign write and abort the next
+                        # compression in this turn as spuriously stale.
+                        try:
+                            _backfilled = _db.set_latest_user_api_content(
+                                agent.session_id,
+                                _turn_user_msg.get("content"),
+                                _api_content,
+                                with_revision=True,
+                            )
+                        except TypeError:
+                            # Adapter without the revision-returning contract.
+                            _backfilled = _db.set_latest_user_api_content(
+                                agent.session_id,
+                                _turn_user_msg.get("content"),
+                                _api_content,
+                            )
+                        if (
+                            isinstance(_backfilled, tuple)
+                            and len(_backfilled) == 2
+                            and _backfilled[0]
+                            and isinstance(_backfilled[1], DurableTranscriptRevision)
+                        ):
+                            agent._durable_transcript_revision = _backfilled[1]
                     except Exception:
                         logger.warning(
                             "in-place compaction api_content backfill failed "
@@ -1264,4 +1355,7 @@ def build_turn_context(
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
         preflight_compression_blocked=_preflight_compression_blocked,
+        durable_transcript_revision=getattr(
+            agent, "_durable_transcript_revision", durable_transcript_revision
+        ),
     )

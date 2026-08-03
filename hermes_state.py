@@ -17,6 +17,8 @@ Key design decisions:
 import asyncio
 import atexit
 import errno
+import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -27,7 +29,9 @@ import sys
 import threading
 import time
 from collections import deque
+from collections.abc import Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -83,6 +87,137 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 logger = logging.getLogger(__name__)
 
 _COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
+
+
+@dataclass(frozen=True)
+class DurableTranscriptRevision:
+    """Immutable identity for one session segment's active durable rows."""
+
+    session_id: str
+    active_message_count: int
+    max_active_message_id: int
+    active_rows_digest: str = ""
+
+
+# The model-facing bytes an in-place UPDATE can rewrite without moving
+# ``(active_message_count, max_active_message_id)``.
+#
+# Every other mutator either changes cardinality (append, replace, rewind,
+# restore, archive — all of which flip ``active`` or insert rows with fresh
+# AUTOINCREMENT ids) or touches presentation-only sidecars. Today
+# ``set_latest_user_api_content`` is the single in-place writer of a
+# model-facing column, so hashing ``(id, api_content)`` closes the whole hole
+# while keeping the fence proportional to the row count rather than to the
+# transcript's bytes — a full-content digest costs ~100 ms per read on a
+# 2 000-row session and runs inside the SQLite writer transaction on every
+# durable append.
+#
+# ``display_kind`` / ``display_metadata`` are deliberately absent: they are
+# stamped after every gateway/CLI turn by
+# ``set_latest_matching_message_display_kind`` outside any compression lease,
+# and the model never sees them, so fencing on them would abort the next
+# compression as spuriously stale.
+#
+# ANY new in-place ``UPDATE messages SET`` on a model-facing column must be
+# added to ``_DURABLE_REVISION_MUTABLE_COLUMNS`` (and take
+# ``compression_lock_holder``), or it will slip past the compression fence.
+_DURABLE_REVISION_MUTABLE_COLUMNS = ("api_content",)
+_DURABLE_REVISION_ROW_COLUMNS = ("id",) + _DURABLE_REVISION_MUTABLE_COLUMNS
+
+
+def _active_rows_digest(rows) -> str:
+    """Fingerprint the in-place-mutable model-facing bytes of active rows.
+
+    Keyed by row id and taken in insertion order. Rows whose mutable columns
+    are all unset contribute nothing, so the ordinary transcript — no
+    ``api_content`` sidecar anywhere — folds to ``""`` without hashing a byte;
+    stamping or clearing a sidecar still moves the fence.
+    """
+    digest = hashlib.sha256()
+    stamped = False
+    for row in rows:
+        keys = row.keys()
+        payload = [
+            row[column] if column in keys else None
+            for column in _DURABLE_REVISION_MUTABLE_COLUMNS
+        ]
+        if all(value is None for value in payload):
+            continue
+        stamped = True
+        digest.update(
+            json.dumps(
+                [row["id"], *payload],
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8", errors="surrogatepass")
+        )
+        digest.update(b"\n")
+    return digest.hexdigest() if stamped else ""
+
+
+def _durable_revision_from_rows(
+    session_id: str, rows
+) -> DurableTranscriptRevision:
+    """Derive a revision from selected rows without a second SQLite read."""
+    current_active_rows = [
+        row
+        for row in rows
+        if row["session_id"] == session_id and row["active"] == 1
+    ]
+    return DurableTranscriptRevision(
+        session_id=session_id,
+        active_message_count=len(current_active_rows),
+        max_active_message_id=max(
+            (int(row["id"]) for row in current_active_rows),
+            default=0,
+        ),
+        active_rows_digest=_active_rows_digest(current_active_rows),
+    )
+
+
+def _active_message_revision_in_transaction(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> DurableTranscriptRevision:
+    """Read one session's active-row revision on the caller's transaction."""
+    rows = conn.execute(
+        "SELECT " + ", ".join(_DURABLE_REVISION_ROW_COLUMNS) + " "
+        "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+        (session_id,),
+    ).fetchall()
+    return DurableTranscriptRevision(
+        session_id=session_id,
+        active_message_count=len(rows),
+        max_active_message_id=max((int(row["id"]) for row in rows), default=0),
+        active_rows_digest=_active_rows_digest(rows),
+    )
+
+
+def normalize_durable_transcript_revision(
+    value: Any,
+    *,
+    session_id: str,
+) -> Optional[DurableTranscriptRevision]:
+    """Normalize an internal transport mapping into an immutable revision."""
+    if value is None:
+        return None
+    if isinstance(value, DurableTranscriptRevision):
+        revision = value
+    elif isinstance(value, Mapping):
+        revision = DurableTranscriptRevision(
+            session_id=str(value["session_id"]),
+            active_message_count=int(value["active_message_count"]),
+            max_active_message_id=int(value["max_active_message_id"]),
+            active_rows_digest=str(value.get("active_rows_digest", "")),
+        )
+    else:
+        raise TypeError("conversation_history_revision must be a mapping")
+    if revision.session_id != session_id:
+        raise ValueError("conversation_history_revision session_id mismatch")
+    if revision.active_message_count < 0 or revision.max_active_message_id < 0:
+        raise ValueError("conversation_history_revision values must be non-negative")
+    return revision
 
 
 def _compression_lock_holder_process_is_dead(holder: str) -> bool:
@@ -236,7 +371,7 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 
 T = TypeVar("T")
 
-DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+DEFAULT_DB_PATH = Path(get_hermes_home()) / "state.db"
 
 # Import-time snapshot used by _default_db_path() to detect a deliberately
 # re-pointed DEFAULT_DB_PATH (tests monkeypatch the constant directly).
@@ -1577,6 +1712,60 @@ class SessionCompressionInProgressError(CompressionSessionBusyError):
     Subclassing keeps every existing ``except CompressionSessionBusyError``
     handler working unchanged.
     """
+class CompressionTranscriptRevisionError(RuntimeError):
+    """A compression commit no longer matches its durable transcript snapshot."""
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        expected_revision: DurableTranscriptRevision,
+        observed_revision: DurableTranscriptRevision,
+    ) -> None:
+        self.session_id = session_id
+        self.expected_revision = expected_revision
+        self.observed_revision = observed_revision
+        super().__init__(
+            f"Durable transcript revision changed for session {session_id!r} "
+            "before compression commit"
+        )
+
+
+def _assert_compression_write_allowed(
+    conn: sqlite3.Connection,
+    session_id: str,
+    compression_lock_holder: Optional[str] = None,
+) -> None:
+    """Reject a transcript mutation while another writer owns a live lease."""
+    lock_row = conn.execute(
+        "SELECT holder, expires_at FROM compression_locks WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if (
+        lock_row is not None
+        and float(lock_row["expires_at"]) > time.time()
+        and lock_row["holder"] != compression_lock_holder
+    ):
+        raise CompressionSessionBusyError(
+            f"Session {session_id!r} is being compressed by another writer"
+        )
+
+
+def _assert_expected_active_revision(
+    conn: sqlite3.Connection,
+    session_id: str,
+    expected_revision: Optional[DurableTranscriptRevision],
+) -> None:
+    """Fail a delayed rewrite whose active durable snapshot has moved on."""
+    if expected_revision is None:
+        return
+    observed_revision = _active_message_revision_in_transaction(conn, session_id)
+    if observed_revision != expected_revision:
+        raise CompressionTranscriptRevisionError(
+            session_id=session_id,
+            expected_revision=expected_revision,
+            observed_revision=observed_revision,
+        )
 
 
 def _connect_tracked_db(path, tracking_path=None, **kwargs):
@@ -3269,41 +3458,112 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def find_live_compression_child(
         self, parent_session_id: str
     ) -> Optional[Dict[str, Any]]:
-        """Return the unique live direct child of a compression-ended session.
+        """Return the unique live leaf of a compression continuation chain.
 
-        A stale agent may observe that another compression path already rotated
-        its parent. Recovery is safe only when the durable lineage identifies
-        exactly one live direct continuation. Multiple children are treated as
-        ambiguous and fail closed rather than guessing which transcript owns
-        subsequent messages.
+        Every hop is resolved from one SQLite read snapshot. Malformed child
+        metadata, invalid lifecycle states, canonical forks, and cycles fail
+        closed rather than selecting a transcript heuristically.
         """
         if not parent_session_id:
             return None
+
         with self._lock:
-            parent = self._conn.execute(
-                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
-                (parent_session_id,),
-            ).fetchone()
-            if (
-                parent is None
-                or parent["ended_at"] is None
-                or parent["end_reason"] != "compression"
-            ):
+            conn = self._conn
+            if conn is None or conn.in_transaction:
                 return None
-            rows = self._conn.execute(
-                """
-                SELECT * FROM sessions
-                WHERE parent_session_id = ?
-                  AND ended_at IS NULL
-                  AND json_extract(COALESCE(model_config, '{}'), '$._branched_from') IS NULL
-                  AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL
-                  AND COALESCE(source, '') != 'tool'
-                ORDER BY started_at ASC
-                LIMIT 2
-                """,
-                (parent_session_id,),
-            ).fetchall()
-        return dict(rows[0]) if len(rows) == 1 else None
+
+            def _canonical_children(session_id: str):
+                rows = conn.execute(
+                    """
+                    SELECT id, ended_at, end_reason, model_config, source
+                    FROM sessions
+                    WHERE parent_session_id = ?
+                    ORDER BY started_at ASC, id ASC
+                    """,
+                    (session_id,),
+                ).fetchall()
+                canonical = []
+                for row in rows:
+                    source = row["source"]
+                    if not isinstance(source, str) or not source:
+                        return None
+                    if source.lower() == "tool":
+                        continue
+                    raw_config = row["model_config"]
+                    if raw_config is None:
+                        model_config = {}
+                    elif not isinstance(raw_config, str):
+                        return None
+                    else:
+                        try:
+                            model_config = json.loads(raw_config)
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            return None
+                        if not isinstance(model_config, dict):
+                            return None
+                    markers = [
+                        marker
+                        for marker in ("_branched_from", "_delegate_from")
+                        if marker in model_config
+                    ]
+                    if len(markers) > 1:
+                        return None
+                    if markers:
+                        marker_value = model_config[markers[0]]
+                        if (
+                            not isinstance(marker_value, str)
+                            or not marker_value
+                            or marker_value != session_id
+                        ):
+                            return None
+                        continue
+                    canonical.append(row)
+                return canonical
+
+            conn.execute("BEGIN")
+            try:
+                current_session_id = parent_session_id
+                seen: set[str] = set()
+                while current_session_id not in seen:
+                    seen.add(current_session_id)
+                    parent = conn.execute(
+                        "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+                        (current_session_id,),
+                    ).fetchone()
+                    if (
+                        parent is None
+                        or parent["ended_at"] is None
+                        or parent["end_reason"] != "compression"
+                    ):
+                        return None
+                    children = _canonical_children(current_session_id)
+                    if children is None or len(children) != 1:
+                        return None
+                    child = children[0]
+                    child_id = child["id"]
+                    if (
+                        not isinstance(child_id, str)
+                        or not child_id
+                        or child_id in seen
+                    ):
+                        return None
+                    if child["ended_at"] is None:
+                        if child["end_reason"] is not None:
+                            return None
+                        descendants = _canonical_children(child_id)
+                        if descendants is None or descendants:
+                            return None
+                        live_child = conn.execute(
+                            "SELECT * FROM sessions WHERE id = ?", (child_id,)
+                        ).fetchone()
+                        return dict(live_child) if live_child is not None else None
+                    if child["end_reason"] != "compression":
+                        return None
+                    current_session_id = child_id
+                return None
+            finally:
+                if conn.in_transaction:
+                    conn.rollback()
 
     def publish_compression_child(
         self,
@@ -3319,6 +3579,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         profile_name: str = None,
         compression_lock_holder: str = None,
         require_compression_lease: bool = True,
+        expected_parent_revision: Optional[DurableTranscriptRevision] = None,
     ) -> None:
         """Atomically close a parent and publish its durable compression child.
 
@@ -3340,6 +3601,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 raise CompressionSessionBusyError(
                     f"Compression lease lost before publication: {parent_session_id}"
                 )
+            if expected_parent_revision is not None:
+                observed_revision = _active_message_revision_in_transaction(
+                    conn, parent_session_id
+                )
+                if observed_revision != expected_parent_revision:
+                    raise CompressionTranscriptRevisionError(
+                        session_id=parent_session_id,
+                        expected_revision=expected_parent_revision,
+                        observed_revision=observed_revision,
+                    )
             parent = conn.execute(
                 """SELECT ended_at, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
@@ -5929,9 +6200,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None,
         compression_lock_holder: Optional[str] = None,
-    ) -> int:
+        with_revision: bool = False,
+    ):
         """
-        Append a message to a session. Returns the message row ID.
+        Append a message to a session. Returns the message row ID, or
+        ``(message_id, revision)`` when ``with_revision=True`` — the durable
+        fence read inside the same transaction as the insert, so the appending
+        writer can advance its own snapshot without a racy second read.
 
         Also increments the session's message_count (and tool_call_count
         if role is 'tool' or tool_calls is present).
@@ -6060,6 +6335,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 conn.execute(
                     "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
                     (session_id,),
+                )
+            if with_revision:
+                return msg_id, _active_message_revision_in_transaction(
+                    conn, session_id
                 )
             return msg_id
 
@@ -6416,6 +6695,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         messages: List[Dict[str, Any]],
         active_only: bool = False,
+        *,
+        compression_lock_holder: Optional[str] = None,
+        expected_revision: Optional[DurableTranscriptRevision] = None,
     ) -> None:
         """Atomically replace the stored messages for a session.
 
@@ -6441,6 +6723,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         active_clause = " AND active = 1" if active_only else ""
 
         def _do(conn):
+            _assert_compression_write_allowed(
+                conn, session_id, compression_lock_holder
+            )
+            _assert_expected_active_revision(conn, session_id, expected_revision)
             session = conn.execute(
                 "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
                 (session_id,),
@@ -6484,7 +6770,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return cursor.fetchone() is not None
 
     def archive_and_compact(
-        self, session_id: str, compacted_messages: List[Dict[str, Any]]
+        self,
+        session_id: str,
+        compacted_messages: List[Dict[str, Any]],
+        *,
+        compression_lock_holder: Optional[str] = None,
+        require_compression_lease: bool = False,
+        expected_revision: Optional[DurableTranscriptRevision] = None,
     ) -> int:
         """Non-destructive in-place compaction for a single durable session id.
 
@@ -6511,6 +6803,37 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
 
         def _do(conn):
+            lock_row = conn.execute(
+                "SELECT holder, expires_at FROM compression_locks WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            lease_is_live = (
+                lock_row is not None
+                and float(lock_row["expires_at"]) > time.time()
+            )
+            lease_holder = lock_row["holder"] if lock_row is not None else None
+            if require_compression_lease and (
+                not lease_is_live
+                or not compression_lock_holder
+                or lease_holder != compression_lock_holder
+            ):
+                raise CompressionSessionBusyError(
+                    f"Compression lease lost before in-place commit: {session_id}"
+                )
+            if lease_is_live and lease_holder != compression_lock_holder:
+                raise CompressionSessionBusyError(
+                    f"Session {session_id!r} is being compressed by another writer"
+                )
+            if expected_revision is not None:
+                observed_revision = _active_message_revision_in_transaction(
+                    conn, session_id
+                )
+                if observed_revision != expected_revision:
+                    raise CompressionTranscriptRevisionError(
+                        session_id=session_id,
+                        expected_revision=expected_revision,
+                        observed_revision=observed_revision,
+                    )
             # Soft-archive the live turns: active=0 hides them from the live
             # context load, compacted=1 marks them as "summarized away" (vs
             # rewind/undo's active=0+compacted=0, which means "user took it
@@ -6536,8 +6859,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return self._execute_write(_do)
 
     def set_latest_user_api_content(
-        self, session_id: str, content: Any, api_content: str
-    ) -> int:
+        self,
+        session_id: str,
+        content: Any,
+        api_content: str,
+        *,
+        compression_lock_holder: Optional[str] = None,
+        with_revision: bool = False,
+    ):
         """Backfill the ``api_content`` sidecar onto the newest ACTIVE user row.
 
         In-place preflight compaction (:meth:`archive_and_compact`) inserts the
@@ -6550,11 +6879,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         The ``content`` match is a defensive guard: if the newest active user
         row is not the message the caller stamped (racing rewrite, unexpected
         tail shape), nothing is written. Returns the number of rows updated
-        (0 or 1).
+        (0 or 1), or ``(updated, revision)`` when ``with_revision=True`` — the
+        sidecar is model-facing, so it moves the durable revision and the
+        writer needs the committed fence to stay in sync without a second read.
         """
         encoded = self._encode_content(content)
 
         def _do(conn):
+            _assert_compression_write_allowed(
+                conn, session_id, compression_lock_holder
+            )
             cursor = conn.execute(
                 "UPDATE messages SET api_content = ? WHERE id = ("
                 "SELECT id FROM messages "
@@ -6563,6 +6897,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ") AND content IS ?",
                 (_scrub_surrogates(api_content), session_id, encoded),
             )
+            if with_revision:
+                return cursor.rowcount, _active_message_revision_in_transaction(
+                    conn, session_id
+                )
             return cursor.rowcount
 
         return self._execute_write(_do)
@@ -6795,7 +7133,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_inactive: bool = False,
         repair_alternation: bool = False,
         include_row_ids: bool = False,
-    ) -> List[Dict[str, Any]]:
+        *,
+        with_revision: bool = False,
+    ):
         """
         Load messages in the OpenAI conversation format (role + content dicts).
         Used by the gateway to restore conversation history.
@@ -6813,6 +7153,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         mutates only the per-request list, never the stored transcript.
         Inspection/export consumers keep the default and see the transcript
         verbatim.
+
+        ``with_revision=True`` returns ``(messages, revision)``. The immutable
+        revision is computed from the exact active current-segment rows selected
+        for this read, under the same connection lock and without a second query.
         """
         session_ids = [session_id]
         if include_ancestors:
@@ -6822,7 +7166,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                f"SELECT {self._CONVERSATION_ROW_COLUMNS} "
+                f"SELECT session_id, active, {self._CONVERSATION_ROW_COLUMNS} "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -6835,14 +7179,46 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 f"{active_clause} ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
+            messages = self._rows_to_conversation(
+                rows,
+                session_id=session_id,
+                include_ancestors=include_ancestors,
+                repair_alternation=repair_alternation,
+                include_row_ids=include_row_ids,
+            )
+            if not with_revision:
+                return messages
+            return messages, _durable_revision_from_rows(session_id, rows)
 
-        return self._rows_to_conversation(
-            rows,
+    def get_active_message_revision(
+        self, session_id: str
+    ) -> DurableTranscriptRevision:
+        """Return the active-row revision for one current session segment."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT " + ", ".join(_DURABLE_REVISION_ROW_COLUMNS) + " "
+                "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        return DurableTranscriptRevision(
             session_id=session_id,
-            include_ancestors=include_ancestors,
-            repair_alternation=repair_alternation,
-            include_row_ids=include_row_ids,
+            active_message_count=len(rows),
+            max_active_message_id=max(
+                (int(row["id"]) for row in rows), default=0
+            ),
+            active_rows_digest=_active_rows_digest(rows),
         )
+
+    def _active_message_revision_in_current_transaction(
+        self, session_id: str
+    ) -> DurableTranscriptRevision:
+        """Read a revision without opening a second transaction boundary.
+
+        Callers must hold ``self._lock`` and an SQLite read/write transaction.
+        This seam lets mixins pair a projection and its revision on one durable
+        snapshot without importing this module back into the mixin.
+        """
+        return _active_message_revision_in_transaction(self._conn, session_id)
 
     # Columns every conversation projection decodes. Shared by
     # get_messages_as_conversation and get_resume_conversations so a single
@@ -7127,7 +7503,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # =========================================================================
 
     def rewind_to_message(
-        self, session_id: str, target_message_id: int
+        self,
+        session_id: str,
+        target_message_id: int,
+        *,
+        compression_lock_holder: Optional[str] = None,
+        expected_revision: Optional[DurableTranscriptRevision] = None,
     ) -> Dict[str, Any]:
         """Soft-delete all messages with id >= ``target_message_id`` in *session_id*.
 
@@ -7178,6 +7559,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         rewound: List[int] = []
 
         def _do(conn):
+            _assert_compression_write_allowed(
+                conn, session_id, compression_lock_holder
+            )
+            _assert_expected_active_revision(conn, session_id, expected_revision)
             cursor = conn.execute(
                 "SELECT id FROM messages "
                 "WHERE session_id = ? AND id >= ? AND active = 1",
@@ -7213,7 +7598,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             "new_head_id": new_head_id,
         }
 
-    def restore_rewound(self, session_id: str, since_message_id: int) -> int:
+    def restore_rewound(
+        self,
+        session_id: str,
+        since_message_id: int,
+        *,
+        compression_lock_holder: Optional[str] = None,
+        expected_revision: Optional[DurableTranscriptRevision] = None,
+    ) -> int:
         """Mark inactive messages with id >= *since_message_id* active again.
 
         Returns the number of rows flipped back to ``active=1``.
@@ -7221,6 +7613,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         slash command in v1.
         """
         def _do(conn):
+            _assert_compression_write_allowed(
+                conn, session_id, compression_lock_holder
+            )
+            _assert_expected_active_revision(conn, session_id, expected_revision)
             cursor = conn.execute(
                 "SELECT id FROM messages "
                 "WHERE session_id = ? AND id >= ? AND active = 0",
@@ -7504,9 +7900,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 continue
         return lineage if session_id in lineage else [session_id]
 
-    def clear_messages(self, session_id: str) -> None:
+    def clear_messages(
+        self,
+        session_id: str,
+        *,
+        compression_lock_holder: Optional[str] = None,
+    ) -> None:
         """Delete all messages for a session and reset its counters."""
         def _do(conn):
+            _assert_compression_write_allowed(
+                conn, session_id, compression_lock_holder
+            )
             conn.execute(
                 "DELETE FROM messages WHERE session_id = ?", (session_id,)
             )
@@ -7565,6 +7969,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         sessions_dir: Optional[Path] = None,
         expected_delete_ids: Optional[List[str]] = None,
+        *,
+        compression_lock_holder: Optional[str] = None,
     ) -> bool:
         """Delete a session and all its messages.
 
@@ -7593,11 +7999,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             if cursor.fetchone() is None:
                 return False
+            actual_ids = {
+                session_id,
+                *_collect_delegate_child_ids(conn, [session_id]),
+            }
+            for delete_id in actual_ids:
+                _assert_compression_write_allowed(
+                    conn, delete_id, compression_lock_holder
+                )
             if expected_ids is not None:
-                actual_ids = {
-                    session_id,
-                    *_collect_delegate_child_ids(conn, [session_id]),
-                }
                 if actual_ids != expected_ids:
                     return False
             removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
@@ -7664,6 +8074,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         session_ids: List[str],
         sessions_dir: Optional[Path] = None,
+        *,
+        compression_lock_holder: Optional[str] = None,
     ) -> int:
         """Delete every session in *session_ids* in a single transaction.
 
@@ -7712,6 +8124,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             existing = [row["id"] for row in cursor.fetchall()]
             if not existing:
                 return 0
+
+            delete_ids = {
+                *existing,
+                *_collect_delegate_child_ids(conn, existing),
+            }
+            for delete_id in delete_ids:
+                _assert_compression_write_allowed(
+                    conn, delete_id, compression_lock_holder
+                )
 
             existing_placeholders = ",".join("?" * len(existing))
             removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
@@ -8093,6 +8514,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         older_than_days: Optional[float] = 90,
         source: str = None,
         sessions_dir: Optional[Path] = None,
+        compression_lock_holder: Optional[str] = None,
         **filters,
     ) -> int:
         """Delete sessions matching the filters. Returns count deleted.
@@ -8150,6 +8572,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             if not session_ids:
                 return 0
+
+            for session_id in session_ids:
+                _assert_compression_write_allowed(
+                    conn, session_id, compression_lock_holder
+                )
 
             # Orphan any sessions whose parent is about to be deleted
             placeholders = ",".join("?" * len(session_ids))

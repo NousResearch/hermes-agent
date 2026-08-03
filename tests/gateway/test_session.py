@@ -1279,8 +1279,139 @@ class TestSessionMetadata:
         )
 
 
+def test_load_transcript_with_revision_degrades_instead_of_raising(tmp_path):
+    """A missing/failing store must not crash every inbound gateway turn.
+
+    ``(history, None)`` hands the fail-closed decision to the agent chokepoint,
+    which re-anchors or returns ``compression_projection_unverifiable``.
+    """
+    store = object.__new__(SessionStore)
+    store._db = None
+    assert store.load_transcript("s1", with_revision=True) == ([], None)
+
+    class _BoomDb:
+        def get_messages_as_conversation(self, *args, **kwargs):
+            raise RuntimeError("database disk image is malformed")
+
+    store._db = _BoomDb()
+    assert store.load_transcript("s1", with_revision=True) == ([], None)
+
+
+def test_rewind_session_supports_legacy_db_adapters(tmp_path):
+    """Adapters predating the revision kwargs must still rewind."""
+    import threading
+
+    class LegacyDb:
+        def __init__(self):
+            self.rewound = []
+
+        def list_recent_user_messages(self, session_id, limit=10):
+            return [{"id": 7, "content": "old"}]
+
+        def rewind_to_message(self, session_id, target_id):
+            self.rewound.append((session_id, target_id))
+            return {
+                "target_message": {"id": target_id, "content": "old"},
+                "rewound_count": 2,
+            }
+
+    store = object.__new__(SessionStore)
+    store._db = LegacyDb()
+    store._transcript_retry_lock = threading.Lock()
+    store._dirty_transcripts = {}
+    store._transcript_append_failures = {}
+    store._fts_rebuild_attempted = True
+
+    result = store.rewind_session("s1", 1)
+
+    assert result is not None
+    assert store._db.rewound == [("s1", 7)]
+
+
+def test_rewind_session_rejects_append_after_atomic_target_load(tmp_path, monkeypatch):
+    from hermes_state import CompressionTranscriptRevisionError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+    store._db.close()
+    db = SessionDB(db_path=tmp_path / "rewind-state.db")
+    store._db = db
+    db.create_session("rewind-race", source="telegram")
+    db.append_message("rewind-race", "user", "target")
+    db.append_message("rewind-race", "assistant", "answer")
+    real_rewind = db.rewind_to_message
+
+    def append_then_rewind(*args, **kwargs):
+        db.append_message("rewind-race", "user", "late")
+        return real_rewind(*args, **kwargs)
+
+    monkeypatch.setattr(db, "rewind_to_message", append_then_rewind)
+
+    with pytest.raises(CompressionTranscriptRevisionError):
+        store.rewind_session("rewind-race", 1)
+
+    assert [m["content"] for m in db.get_messages_as_conversation("rewind-race")] == [
+        "target",
+        "answer",
+        "late",
+    ]
+
+
+def test_recent_user_targets_and_revision_do_not_cross_transaction_boundary(
+    tmp_path, monkeypatch
+):
+    db = SessionDB(db_path=tmp_path / "rewind-snapshot.db")
+    session_id = "rewind-snapshot"
+    db.create_session(session_id, source="telegram")
+    db.append_message(session_id, "user", "target")
+    db.append_message(session_id, "assistant", "answer")
+
+    def forbidden_second_boundary(_session_id):
+        raise AssertionError("revision must share the target-list transaction")
+
+    monkeypatch.setattr(db, "get_active_message_revision", forbidden_second_boundary)
+
+    targets, revision = db.list_recent_user_messages(
+        session_id, limit=1, with_revision=True
+    )
+
+    assert [target["preview"] for target in targets] == ["target"]
+    assert revision.active_message_count == 2
+
+
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
+
+    def test_rewrite_rejects_late_append_after_atomic_load(self, tmp_path):
+        from hermes_state import CompressionTranscriptRevisionError, SessionDB
+
+        db = SessionDB(db_path=tmp_path / "test.db")
+        session_id = "stale-gateway-rewrite"
+        db.create_session(session_id=session_id, source="telegram")
+        db.append_message(session_id, "user", "snapshot")
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        transcript, revision = store.load_transcript(
+            session_id, with_revision=True
+        )
+        db.append_message(session_id, "assistant", "late append")
+
+        with pytest.raises(CompressionTranscriptRevisionError):
+            store.rewrite_transcript(
+                session_id,
+                transcript,
+                expected_revision=revision,
+            )
+
+        assert [
+            message["content"]
+            for message in db.get_messages_as_conversation(session_id)
+        ] == ["snapshot", "late append"]
 
     def test_reasoning_survives_rewrite(self, tmp_path):
         from hermes_state import SessionDB
@@ -1357,6 +1488,43 @@ class TestGatewaySessionDbRecovery:
         assert [m["content"] for m in db.get_messages_as_conversation("child")] == [
             "summary",
             "routed to child",
+        ]
+        db.close()
+
+    def test_compression_chain_reroutes_to_live_tip_without_retry_queue(self, tmp_path):
+        import threading
+        from types import SimpleNamespace
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("parent", source="telegram")
+        db.end_session("parent", "compression")
+        db.create_session("child-1", source="telegram", parent_session_id="parent")
+        db.end_session("child-1", "compression")
+        db.create_session("child-2", source="telegram", parent_session_id="child-1")
+        db.end_session("child-2", "compression")
+        db.create_session("live-tip", source="telegram", parent_session_id="child-2")
+        db.replace_messages("live-tip", [{"role": "user", "content": "summary"}])
+
+        store = object.__new__(SessionStore)
+        store._db = db
+        store.__dict__["_lock"] = threading.RLock()
+        store.__dict__["_entries"] = {"route": SimpleNamespace(session_id="parent")}
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = False
+
+        store.append_to_transcript(
+            "parent", {"role": "assistant", "content": "routed to live tip"}
+        )
+
+        assert store._entries["route"].session_id == "live-tip"
+        assert "parent" not in store._dirty_transcripts
+        assert [m["content"] for m in db.get_messages_as_conversation("live-tip")] == [
+            "summary",
+            "routed to live tip",
         ]
         db.close()
 

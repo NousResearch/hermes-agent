@@ -3354,7 +3354,13 @@ class SessionStore:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
-    def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> bool:
+    def rewrite_transcript(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        *,
+        expected_revision=None,
+    ) -> bool:
         """Replace the entire transcript for a session with new messages.
 
         Used by /retry, /undo, and /compress to persist modified conversation
@@ -3371,20 +3377,46 @@ class SessionStore:
             return True
         self._clear_dirty_transcript(session_id)
         try:
-            self._db.replace_messages(session_id, messages)
+            if expected_revision is None:
+                # Preserve compatibility with legacy SessionDB-like adapters
+                # whose replace_messages implementation accepts two args.
+                self._db.replace_messages(session_id, messages)
+            else:
+                self._db.replace_messages(
+                    session_id,
+                    messages,
+                    expected_revision=expected_revision,
+                )
             return True
         except Exception as e:
+            from hermes_state import CompressionTranscriptRevisionError
+
+            if isinstance(e, CompressionTranscriptRevisionError):
+                raise
             logger.debug("Failed to rewrite transcript in DB: %s", e)
             return False
 
-    def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
+    def load_transcript(
+        self,
+        session_id: str,
+        *,
+        with_revision: bool = False,
+    ):
         """Load all messages from a session's transcript.
 
         state.db is the canonical store. The legacy JSONL fallback was removed
         in spec 002 — pre-DB sessions on existing disks have already been
         migrated (their DB row holds the full message history).
+
+        ``with_revision=True`` returns ``(messages, revision)`` captured in one
+        read. When the store is unavailable the revision degrades to ``None``
+        rather than raising: an unverifiable projection must fail closed at the
+        agent chokepoint (which re-anchors, or returns
+        ``compression_projection_unverifiable``), not crash the inbound turn.
         """
         if not self._db:
+            if with_revision:
+                return [], None
             return []
         try:
             # repair_alternation: this load feeds LIVE REPLAY. A durable
@@ -3392,10 +3424,14 @@ class SessionStore:
             # would otherwise re-trigger the pre-request repair on every
             # request forever — heal it once at the restore boundary.
             return self._db.get_messages_as_conversation(
-                session_id, repair_alternation=True
+                session_id,
+                repair_alternation=True,
+                with_revision=with_revision,
             )
         except Exception as e:
             logger.debug("Could not load messages from DB: %s", e)
+            if with_revision:
+                return [], None
             return []
 
     def rewind_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
@@ -3415,8 +3451,24 @@ class SessionStore:
         self._clear_dirty_transcript(session_id)
         if n < 1:
             n = 1
+        from hermes_state import CompressionTranscriptRevisionError
+
         try:
-            recents = self._db.list_recent_user_messages(session_id, limit=max(n, 10))
+            # One read pairs the target list with the revision it was taken
+            # from, so a write landing before the rewind is refused instead of
+            # silently truncating a transcript the caller never saw.
+            try:
+                recents, revision = self._db.list_recent_user_messages(
+                    session_id,
+                    limit=max(n, 10),
+                    with_revision=True,
+                )
+            except TypeError:
+                # Legacy SessionDB-like adapter without the atomic contract.
+                recents, revision = (
+                    self._db.list_recent_user_messages(session_id, limit=max(n, 10)),
+                    None,
+                )
         except Exception as e:
             logger.debug("rewind_session: failed to list user messages: %s", e)
             return None
@@ -3425,7 +3477,16 @@ class SessionStore:
         target_idx = min(n - 1, len(recents) - 1)
         target_id = recents[target_idx]["id"]
         try:
-            result = self._db.rewind_to_message(session_id, target_id)
+            if revision is None:
+                result = self._db.rewind_to_message(session_id, target_id)
+            else:
+                result = self._db.rewind_to_message(
+                    session_id,
+                    target_id,
+                    expected_revision=revision,
+                )
+        except CompressionTranscriptRevisionError:
+            raise
         except ValueError as e:
             logger.debug("rewind_session: %s", e)
             return None

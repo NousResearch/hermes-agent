@@ -637,8 +637,10 @@ class TestPrologueMoaAndInPlaceBackfill:
         msg = ctx.messages[ctx.current_turn_user_idx]
         assert msg["content"] == "hello"
         assert msg["api_content"] == "hello\n\nPLUGIN-CTX"
+        # with_revision: the sidecar is model-facing, so the backfill moves the
+        # durable fence and its own writer must adopt the committed revision.
         agent._session_db.set_latest_user_api_content.assert_called_once_with(
-            "sess-1", "hello", "hello\n\nPLUGIN-CTX"
+            "sess-1", "hello", "hello\n\nPLUGIN-CTX", with_revision=True
         )
 
 

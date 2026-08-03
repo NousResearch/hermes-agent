@@ -123,7 +123,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         Boolean(a)
       )
 
-      const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
+      const terminalContextBlocks = terminalContextBlocksFromDraft(rawText)
+        // Skip blocks already present (failed-steer re-queue of an expanded
+        // draft) so drain/submit cannot duplicate fences (#77078).
+        .filter(block => !rawText.includes(block))
+        .join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
 
       // Refs are recomputed after sync (file.attach rewrites @file: refs to

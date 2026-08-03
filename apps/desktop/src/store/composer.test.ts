@@ -50,6 +50,15 @@ describe('terminal selection expansion', () => {
     ])
   })
 
+  it('leaves already-expanded drafts alone (idempotent for steer re-queue)', () => {
+    setComposerTerminalSelection('zsh:23-58', 'line one\nline two')
+
+    const once = expandComposerDraftWithTerminalContext('see @terminal:`zsh:23-58` please')
+    const twice = expandComposerDraftWithTerminalContext(once)
+
+    expect(twice).toBe(once)
+  })
+
   it('drops chips whose selection text is missing from the map', () => {
     expect(expandComposerDraftWithTerminalContext('@terminal:`zsh:1-2`')).toBe('@terminal:`zsh:1-2`')
     expect(missingComposerTerminalSelectionLabels('@terminal:`zsh:1-2`')).toEqual(['zsh:1-2'])

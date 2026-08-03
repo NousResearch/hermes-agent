@@ -26,11 +26,12 @@ import time
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
 )
+from agent.display import get_tool_preview_url
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,6 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
     ),
     re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
 )
-
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -976,6 +976,42 @@ class DiscordAdapter(BasePlatformAdapter):
     # a hard two-minute ceiling.
     PLAYBACK_TIMEOUT = 120
     PLAYBACK_TIMEOUT_PADDING = 30
+
+    def format_tool_preview(
+        self,
+        preview: str,
+        *,
+        full_preview: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        args: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Keep a truncated URL preview clickable in Discord markdown."""
+        if preview.endswith("..."):
+            visible_prefix = preview[:-3]
+        elif preview.endswith(_DISCORD_ELLIPSIS):
+            visible_prefix = preview[:-1]
+        else:
+            return preview
+
+        destination = get_tool_preview_url(
+            tool_name or "",
+            args,
+            fallback=full_preview,
+        )
+        if (
+            not destination
+            or destination == preview
+            or not destination.startswith(visible_prefix)
+        ):
+            return preview
+
+        # Escape the label's link delimiters and URL-encode characters that
+        # can prematurely terminate Discord's markdown destination.
+        label = (
+            preview.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        )
+        href = quote(destination, safe=":/?#[]@!$&'*+,;=%")
+        return f"[{label}]({href})"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)

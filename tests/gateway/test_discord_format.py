@@ -44,3 +44,73 @@ class TestDiscordFormatMessage:
         assert "|---" not in out
 
 
+class TestDiscordToolPreviewFormatting:
+    def test_truncated_url_keeps_full_click_target(self):
+        adapter = _make_discord_adapter()
+        url = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
+        visible = "https://hermes-agent.nousresearch..."
+
+        out = adapter.format_tool_preview(
+            visible,
+            full_preview=url,
+            tool_name="web_extract",
+            args={"urls": [url]},
+        )
+
+        assert out == f"[{visible}]({url})"
+
+    def test_structured_tool_event_uses_clickable_truncated_url(self):
+        from gateway.stream_events import ToolCallChunk
+
+        adapter = _make_discord_adapter()
+        url = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
+        visible = url[:37] + "..."
+
+        out = adapter.format_tool_event(
+            ToolCallChunk("web_extract", preview=url, args={"urls": [url]}),
+            mode="all",
+            preview_max_len=40,
+        )
+
+        assert out is not None
+        assert f"[{visible}]({url})" in out
+
+    def test_url_already_shortened_upstream_uses_full_url_from_args(self):
+        adapter = _make_discord_adapter()
+        url = "https://example.com/a/very/long/path/to/a/page"
+        visible = "https://example.com/a/very..."
+
+        out = adapter.format_tool_preview(
+            visible,
+            full_preview=visible,
+            tool_name="browser_navigate",
+            args={"url": url},
+        )
+
+        assert out == f"[{visible}]({url})"
+
+    def test_untruncated_url_remains_plain(self):
+        adapter = _make_discord_adapter()
+        url = "https://example.com/page"
+
+        out = adapter.format_tool_preview(
+            url,
+            full_preview=url,
+            tool_name="browser_navigate",
+            args={"url": url},
+        )
+
+        assert out == url
+
+    def test_truncated_non_url_remains_plain(self):
+        adapter = _make_discord_adapter()
+        visible = "a long search query that was trunc..."
+
+        out = adapter.format_tool_preview(
+            visible,
+            full_preview="a long search query that was truncated for display",
+            tool_name="web_search",
+            args={"query": "a long search query that was truncated for display"},
+        )
+
+        assert out == visible

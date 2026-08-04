@@ -76,10 +76,17 @@ def tool_result_reference_hint(tool_call_id: str, result: Any) -> str:
         return ""
     if not isinstance(payload, (dict, list)):
         return ""
-    return (
-        "\n\n[Reusable tool result: "
-        f"{{{{tool_result:{tool_call_id}.field}}}}]"
-    )
+    # Reveal a real path so the model can form a working reference. For a
+    # dict whose first value is itself a container (e.g. MCP's {"result":
+    # {...}} wrapper), show the two-level path; otherwise the literal key.
+    if isinstance(payload, dict) and payload:
+        top_key = next(iter(payload))
+        ref = (f"{{{{tool_result:{tool_call_id}.{top_key}.field}}}}"
+               if isinstance(payload[top_key], (dict, list))
+               else f"{{{{tool_result:{tool_call_id}.{top_key}}}}}")
+    else:
+        ref = f"{{{{tool_result:{tool_call_id}.field}}}}"
+    return f"\n\n[Reusable tool result: {ref}]"
 
 
 def _resolve_tool_result_ref(agent, value: Any) -> Any:

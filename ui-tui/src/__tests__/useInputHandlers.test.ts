@@ -5,6 +5,7 @@ import {
   applyVoiceRecordResponse,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  idleHotkeyExitConfirmation,
   shouldAllowIdleHotkeyExit,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -69,6 +70,47 @@ describe('handleIdleHotkeyExit', () => {
     expect(actions.sys).not.toHaveBeenCalled()
   })
 
+  it('requires a second confirmed idle exit hotkey press in normal terminals', () => {
+    const actions = { die: vi.fn(), sys: vi.fn() }
+    const lastPressedAt = { current: 0 }
+
+    handleIdleHotkeyExit(actions, false, undefined, {
+      hotkeyLabel: 'Ctrl+D',
+      lastPressedAt,
+      now: () => 1000,
+      timeoutMs: 2000
+    })
+
+    expect(actions.die).not.toHaveBeenCalled()
+    expect(actions.sys).toHaveBeenCalledWith('press Ctrl+D again to exit')
+    expect(lastPressedAt.current).toBe(1000)
+
+    handleIdleHotkeyExit(actions, false, undefined, {
+      hotkeyLabel: 'Ctrl+D',
+      lastPressedAt,
+      now: () => 2500,
+      timeoutMs: 2000
+    })
+
+    expect(actions.die).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-arms confirmed idle exit hotkeys after the confirmation window expires', () => {
+    const actions = { die: vi.fn(), sys: vi.fn() }
+    const lastPressedAt = { current: 1000 }
+
+    handleIdleHotkeyExit(actions, false, undefined, {
+      hotkeyLabel: 'Ctrl+D',
+      lastPressedAt,
+      now: () => 4001,
+      timeoutMs: 2000
+    })
+
+    expect(actions.die).not.toHaveBeenCalled()
+    expect(actions.sys).toHaveBeenCalledWith('press Ctrl+D again to exit')
+    expect(lastPressedAt.current).toBe(4001)
+  })
+
   it('asks the dashboard for a fresh chat instead of leaving a ghost session', () => {
     const actions = { die: vi.fn(), sys: vi.fn() }
     const requestDashboardNewSession = vi.fn()
@@ -78,6 +120,18 @@ describe('handleIdleHotkeyExit', () => {
     expect(actions.die).not.toHaveBeenCalled()
     expect(requestDashboardNewSession).toHaveBeenCalledTimes(1)
     expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat...')
+  })
+})
+
+describe('idleHotkeyExitConfirmation', () => {
+  it.each(['Ctrl+C', 'Ctrl+D'])('requires confirmation for idle %s by default', hotkeyLabel => {
+    const lastPressedAt = { current: 0 }
+
+    expect(idleHotkeyExitConfirmation(true, hotkeyLabel, lastPressedAt)).toEqual({ hotkeyLabel, lastPressedAt })
+  })
+
+  it('disables confirmation when display.tui_confirm_idle_exit is false', () => {
+    expect(idleHotkeyExitConfirmation(false, 'Ctrl+C', { current: 0 })).toBeUndefined()
   })
 })
 

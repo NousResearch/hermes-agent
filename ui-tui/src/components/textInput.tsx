@@ -208,6 +208,52 @@ function nextPos(s: string, p: number) {
   return s.length
 }
 
+interface CtrlDDeleteState {
+  cursor: number
+  selection: { end: number; start: number } | null
+  value: string
+}
+
+/**
+ * Readline-style bare Ctrl+D: delete the selection or the grapheme under the
+ * cursor. Empty input returns null so the existing global hotkey handling keeps
+ * ownership; an end-of-input no-op is returned as handled so a literal `d`
+ * cannot fall through to insertion.
+ */
+export function applyCtrlDDelete(
+  input: string,
+  key: Pick<Key, 'alt' | 'ctrl' | 'meta' | 'shift' | 'super'>,
+  { cursor, selection, value }: CtrlDDeleteState
+): TextInsertResult | null {
+  const bareCtrlD =
+    input.toLowerCase() === 'd' &&
+    key.ctrl &&
+    !key.alt &&
+    !key.meta &&
+    key.super !== true &&
+    !key.shift
+
+  if (!bareCtrlD || value.length === 0) {
+    return null
+  }
+
+  if (selection) {
+    return {
+      cursor: selection.start,
+      value: value.slice(0, selection.start) + value.slice(selection.end)
+    }
+  }
+
+  if (cursor >= value.length) {
+    return { cursor, value }
+  }
+
+  return {
+    cursor,
+    value: value.slice(0, cursor) + value.slice(nextPos(value, cursor))
+  }
+}
+
 function wordLeft(s: string, p: number) {
   let i = snapPos(s, p) - 1
 
@@ -1100,6 +1146,25 @@ export function TextInput({
       // actually get voice toggled instead of a paste (Copilot round-7
       // follow-up on #19835). The pass-through predicate is a no-op for
       // ordinary typing and plain paste when voice is unbound to 'v'.
+      const ctrlDDelete = isVoiceToggleKey(k, inp, voiceRecordKey)
+        ? null
+        : applyCtrlDDelete(inp, k, {
+            cursor: curRef.current,
+            selection: selRange(),
+            value: vRef.current
+          })
+
+      if (ctrlDDelete) {
+        flushKeyBurst()
+        event.stopImmediatePropagation()
+
+        if (ctrlDDelete.value !== vRef.current || ctrlDDelete.cursor !== curRef.current) {
+          commit(ctrlDDelete.value, ctrlDDelete.cursor)
+        }
+
+        return
+      }
+
       if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
         flushKeyBurst()
 
@@ -1541,12 +1606,16 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
+  isIdleExitHotkey(input, key) ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||
   key.pageDown ||
   key.escape ||
   isVoiceToggleKey(key, input, voiceRecordKey)
+
+export const isIdleExitHotkey = (input: string, key: Key): boolean =>
+  input.toLowerCase() === 'd' && ((key.ctrl && !key.meta && key.super !== true) || isActionMod(key))
 
 export interface TextInputMouseApi {
   dragAt: (row: number, col: number) => void

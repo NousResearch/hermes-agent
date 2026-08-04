@@ -273,6 +273,7 @@ export const applyDisplay = (
     battery: !!d.battery,
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
+    confirmIdleExit: d.tui_confirm_idle_exit === true,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
     focusView: !!d.focus_view,

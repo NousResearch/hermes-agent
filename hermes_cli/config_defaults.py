@@ -1102,6 +1102,11 @@ DEFAULT_CONFIG = {
         # Mirrors `hermes -c` muscle memory.  Default off so existing
         # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
+        # Require a second idle-exit hotkey press within two seconds before the
+        # TUI follows its existing exit handling. Busy Ctrl+C still interrupts
+        # immediately, and Ctrl+C with a draft still clears it immediately. Opt
+        # in with true; omitted or false preserves the legacy single-press behavior.
+        "tui_confirm_idle_exit": False,
         # When true (default), `hermes --tui` drops a one-time hint
         # ("subagents working · /agents to watch live") the first time a turn
         # starts delegating, nudging the user toward the live spawn-tree

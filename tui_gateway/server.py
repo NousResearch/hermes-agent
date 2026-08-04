@@ -9321,13 +9321,24 @@ def _wire_desktop_ui() -> None:
     _desktop_ui_wired = True
 
 
+def _run_notification_poller_in_session_home(
+    stop_event: threading.Event, sid: str, session: dict
+) -> None:
+    """Run the poller against the profile that owns the session's durable state."""
+    home_token = set_hermes_home_override(_session_home(session))
+    try:
+        _notification_poller_loop(stop_event, sid, session)
+    finally:
+        reset_hermes_home_override(home_token)
+
+
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     """Start the background notification poller for a TUI session."""
     _wire_agent_terminal_output()
     _wire_desktop_ui()
     stop = threading.Event()
     t = threading.Thread(
-        target=_notification_poller_loop,
+        target=_run_notification_poller_in_session_home,
         args=(stop, sid, session),
         daemon=True,
     )

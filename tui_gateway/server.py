@@ -4052,6 +4052,9 @@ def _load_tool_progress_mode() -> str:
 
 
 def _load_enabled_toolsets() -> list[str] | None:
+    if os.environ.get("HERMES_NO_TOOLS") == "1":
+        return []
+
     explicit = [
         item.strip()
         for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",")

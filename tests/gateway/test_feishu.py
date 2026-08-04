@@ -43,15 +43,18 @@ except ImportError:
 # returns the empty dict these call sites already pass. No Feishu, gateway,
 # or Hermes setting survives on either platform, so what each test isolates
 # is unchanged.
+# Genuinely OS-owned: Windows cannot synthesize these, and OpenSSL/DLL
+# resolution needs them. Copied from the real environment.
 _WINDOWS_OS_FLOOR_VARS = (
     "SystemRoot",    # OpenSSL context construction + system DLL resolution
     "SystemDrive",
     "windir",
-    "USERPROFILE",   # Path.home()
-    "HOMEDRIVE",
-    "HOMEPATH",
-    "LOCALAPPDATA",  # %LOCALAPPDATA%\hermes — the default Hermes home
 )
+
+# Home/appdata roots are synthesized in _cleared_env() rather than copied:
+# %LOCALAPPDATA%\hermes is the default Hermes home, so copying it would let a
+# developer's real on-disk config reach tests whose whole point is to prove
+# config isolation.
 
 
 def _cleared_env(**overrides: str) -> Dict[str, str]:
@@ -64,6 +67,14 @@ def _cleared_env(**overrides: str) -> Dict[str, str]:
     env: Dict[str, str] = {}
     if sys.platform == "win32":
         env = {name: os.environ[name] for name in _WINDOWS_OS_FLOOR_VARS if name in os.environ}
+        # Deterministic, non-existent home root: satisfies Path.home() without
+        # exposing any real user state. Nothing is written here.
+        fake_home = os.path.join(tempfile.gettempdir(), "hermes-test-home-isolated")
+        drive, tail = os.path.splitdrive(fake_home)
+        env["USERPROFILE"] = fake_home
+        env["LOCALAPPDATA"] = os.path.join(fake_home, "AppData", "Local")
+        env["HOMEDRIVE"] = drive or "C:"
+        env["HOMEPATH"] = tail or fake_home
     env.update(overrides)
     return env
 

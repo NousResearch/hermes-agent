@@ -73,6 +73,16 @@ jobs:
     with:
       slice_count: 12
 
+  # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
+  # the OS-marked tests it collects are skipped there by design (see the
+  # `_OS_MARKS` comment in tests/conftest.py) — this is where they run.
+  # Same `python` lane gate: if no Python changed, neither runs.
+  tests-os:
+    name: OS-specific tests
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    uses: ./.github/workflows/tests-os.yml
+
   lint:
     name: Python lints
     needs: detect
@@ -192,6 +202,7 @@ jobs:
     needs:
       - detect
       - tests
+      - tests-os
       - lint
       - js-tests
       - installer-tests

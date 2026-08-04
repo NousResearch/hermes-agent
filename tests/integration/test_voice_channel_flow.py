@@ -7,6 +7,7 @@ packet processing pipeline end-to-end.
 Requires: PyNaCl>=1.5.0, discord.py[voice] (opus codec)
 """
 
+import math
 import struct
 import time
 import pytest
@@ -134,6 +135,39 @@ def _make_voice_receiver(secret_key, dave_session=None, bot_ssrc=9999,
     return receiver
 
 
+def _opus_tone_payloads(frame_count=30, amplitude=1000, frequency=440.0):
+    """Encode deterministic speech-energy PCM through the real Opus codec."""
+    encoder = discord.opus.Encoder()
+    payloads = []
+    samples_per_frame = discord.opus.Encoder.SAMPLES_PER_FRAME
+    for frame_index in range(frame_count):
+        pcm = bytearray()
+        for sample_offset in range(samples_per_frame):
+            sample_index = frame_index * samples_per_frame + sample_offset
+            sample = round(
+                amplitude
+                * math.sin(2 * math.pi * frequency * sample_index / 48000)
+            )
+            pcm.extend(struct.pack("<hh", sample, sample))
+        payloads.append(encoder.encode(bytes(pcm), samples_per_frame))
+    return payloads
+
+
+def _send_opus_tone(receiver, secret_key, ssrc, frame_count=30, seq_start=1):
+    for seq, opus_payload in enumerate(
+        _opus_tone_payloads(frame_count=frame_count), start=seq_start,
+    ):
+        receiver._on_packet(
+            _build_encrypted_rtp_packet(
+                secret_key,
+                opus_payload,
+                ssrc=ssrc,
+                seq=seq,
+                timestamp=960 * seq,
+            )
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -208,20 +242,157 @@ class TestRealNaClDecrypt:
 class TestRealNaClWithDAVE:
     """NaCl decrypt + DAVE passthrough scenarios with real crypto."""
 
-    def test_dave_unknown_ssrc_passthrough(self):
-        """DAVE enabled but SSRC unknown → skip DAVE, buffer audio."""
+    def test_dave_unknown_ssrc_encrypted_never_decoded(self):
+        """DAVE + unknown SSRC + non-inferable → payload never Opus-decoded.
+
+        Regression for the live first-utterance corruption: with DAVE
+        active, an unmapped SSRC payload is still DAVE-encrypted.  It must
+        never reach the Opus decoder, the PCM buffer, or a completed
+        utterance — regardless of how much energy the ciphertext carries.
+        """
         key = _make_secret_key()
         dave = MagicMock()  # DAVE session present but SSRC not mapped
-        receiver = _make_voice_receiver(key, dave_session=dave)
+        members = [
+            SimpleNamespace(id=9999, name="Bot"),
+            SimpleNamespace(id=42, name="Alice"),
+            SimpleNamespace(id=43, name="Bob"),
+        ]
+        receiver = _make_voice_receiver(key, dave_session=dave, members=members)
 
-        packet = _build_encrypted_rtp_packet(key, b'\xf8\xff\xfe', ssrc=100)
-        receiver._on_packet(packet)
+        # Full utterance worth of frames (real Opus tone payloads standing
+        # in for still-DAVE-encrypted bytes from the receiver's viewpoint).
+        _send_opus_tone(receiver, key, ssrc=100)
 
-        # DAVE decrypt not called (SSRC unknown)
         dave.decrypt.assert_not_called()
-        # Audio still buffered via passthrough
-        assert 100 in receiver._buffers
-        assert len(receiver._buffers[100]) > 0
+        assert 100 not in receiver._decoders
+        assert len(receiver._buffers.get(100, b"")) == 0
+
+        # Even after the silence window, nothing completes.
+        receiver._last_packet_time[100] = time.monotonic() - 3.0
+        assert receiver.check_silence() == []
+
+    def test_dave_late_speaking_replays_passthrough_utterance(self):
+        """DAVE + passthrough + late SPEAKING → the whole utterance survives.
+
+        Upstream supports unencrypted passthrough inside a DAVE session, so
+        an unattributable payload is not necessarily ciphertext.  Frames that
+        arrive before SPEAKING must be held rather than discarded, then
+        replayed in order once the SSRC resolves — otherwise the fix for
+        first-turn garbage trades it for a first turn that is simply missing.
+        """
+        key = _make_secret_key()
+        dave = MagicMock()
+        # Passthrough: DAVE refuses to decrypt, NaCl bytes are already Opus.
+        dave.decrypt.side_effect = Exception(
+            "Failed to decrypt: DecryptionFailed(UnencryptedWhenPassthroughDisabled)"
+        )
+        members = [
+            SimpleNamespace(id=9999, name="Bot"),
+            SimpleNamespace(id=42, name="Alice"),
+            SimpleNamespace(id=43, name="Bob"),  # two humans → no inference
+        ]
+        receiver = _make_voice_receiver(key, dave_session=dave, members=members)
+
+        # Start of the utterance arrives before Discord sends SPEAKING.
+        _send_opus_tone(receiver, key, ssrc=100, frame_count=15, seq_start=1)
+        # Still unattributable, so nothing may have been decoded yet.
+        assert len(receiver._buffers.get(100, b"")) == 0, "decoded before mapping"
+
+        # SPEAKING lands, the rest of the utterance follows.
+        receiver.map_ssrc(100, 42)
+        _send_opus_tone(receiver, key, ssrc=100, frame_count=15, seq_start=16)
+
+        receiver._last_packet_time[100] = time.monotonic() - 3.0
+        completed = receiver.check_silence()
+        assert len(completed) == 1
+        user_id, pcm = completed[0]
+        assert user_id == 42
+        # The whole utterance, not just its tail: the 15 pre-SPEAKING frames
+        # were replayed ahead of the 15 live ones.  Before the hold-and-replay
+        # fix this returned 15 frames — the phrase lost its opening.
+        expected_bytes = 30 * discord.opus.Encoder.SAMPLES_PER_FRAME * 2 * 2
+        assert len(pcm) == expected_bytes
+        has_speech, _ = VoiceReceiver._pcm_speech_activity(pcm)
+        assert has_speech
+
+    def test_dave_pending_ring_is_bounded(self):
+        """An SSRC that never resolves cannot grow the hold ring without end."""
+        key = _make_secret_key()
+        dave = MagicMock()
+        members = [
+            SimpleNamespace(id=9999, name="Bot"),
+            SimpleNamespace(id=42, name="Alice"),
+            SimpleNamespace(id=43, name="Bob"),
+        ]
+        receiver = _make_voice_receiver(key, dave_session=dave, members=members)
+        cap = VoiceReceiver.DAVE_PENDING_MAX_FRAMES
+
+        _send_opus_tone(receiver, key, ssrc=100, frame_count=cap + 50)
+
+        assert len(receiver._dave_pending[100]) == cap
+        # The overflow is counted, content-free, and nothing was decoded.
+        assert receiver._dave_unresolved_drops[100] == 50
+        dave.decrypt.assert_not_called()
+        assert 100 not in receiver._decoders
+
+    def test_dave_pending_ring_expires_when_ssrc_goes_quiet(self):
+        """A phantom SSRC releases its ring instead of holding it until stop()."""
+        key = _make_secret_key()
+        dave = MagicMock()
+        members = [
+            SimpleNamespace(id=9999, name="Bot"),
+            SimpleNamespace(id=42, name="Alice"),
+            SimpleNamespace(id=43, name="Bob"),
+        ]
+        receiver = _make_voice_receiver(key, dave_session=dave, members=members)
+
+        _send_opus_tone(receiver, key, ssrc=100, frame_count=5)
+        assert len(receiver._dave_pending[100]) == 5
+
+        # Age the ring past its TTL, then run the periodic janitor.
+        held_at, payload = receiver._dave_pending[100][-1]
+        receiver._dave_pending[100][-1] = (
+            held_at - VoiceReceiver.DAVE_PENDING_TTL - 1.0, payload,
+        )
+        receiver.check_silence()
+
+        assert 100 not in receiver._dave_pending
+        assert 100 not in receiver._dave_unresolved_drops
+
+    def test_dave_unknown_ssrc_inferred_first_utterance_preserved(self):
+        """DAVE + unknown SSRC + sole allowed member → first utterance kept.
+
+        Identity is inferred at packet time, DAVE decrypt runs with the
+        inferred sender, and the flushed utterance is attributed to that
+        user with its speech energy intact.
+        """
+        key = _make_secret_key()
+        dave = MagicMock()
+        dave.decrypt.side_effect = lambda user_id, media_type, data: data
+        members = [
+            SimpleNamespace(id=9999, name="Bot"),
+            SimpleNamespace(id=42, name="Alice"),
+        ]
+        receiver = _make_voice_receiver(
+            key, dave_session=dave, allowed_user_ids={"42"}, members=members,
+        )
+        # No map_ssrc call — simulating missing SPEAKING event after join.
+
+        _send_opus_tone(receiver, key, ssrc=100)
+
+        assert receiver._ssrc_to_user[100] == 42
+        assert dave.decrypt.call_count > 0
+        assert all(
+            call.args[0] == 42 for call in dave.decrypt.call_args_list
+        )
+
+        receiver._last_packet_time[100] = time.monotonic() - 3.0
+        completed = receiver.check_silence()
+        assert len(completed) == 1
+        assert completed[0][0] == 42
+        # Real tone PCM survived both DAVE and the speech gate.
+        has_speech, _ = VoiceReceiver._pcm_speech_activity(completed[0][1])
+        assert has_speech
 
     def test_dave_unencrypted_error_passthrough(self):
         """DAVE raises 'Unencrypted' → use NaCl-decrypted data as-is."""
@@ -292,13 +463,19 @@ class TestRTPPaddingStrip:
         """Padding stripped before DAVE → passthrough buffers cleanly."""
         key = _make_secret_key()
         opus_silence = b"\xf8\xff\xfe"
-        dave = MagicMock()  # SSRC unmapped → DAVE skipped, passthrough used
+        dave = MagicMock()
+        dave.decrypt.side_effect = Exception(
+            "DecryptionFailed(UnencryptedWhenPassthroughDisabled)"
+        )
         receiver = _make_voice_receiver(key, dave_session=dave)
+        receiver.map_ssrc(100, 42)
 
         packet = _build_padded_rtp_packet(key, opus_silence, pad_len=4, ssrc=100)
         receiver._on_packet(packet)
 
-        dave.decrypt.assert_not_called()
+        # DAVE saw the padding-stripped payload and declared it unencrypted.
+        dave.decrypt.assert_called_once()
+        assert dave.decrypt.call_args[0][2] == opus_silence
         assert 100 in receiver._buffers
         assert len(receiver._buffers[100]) > 0
 
@@ -365,32 +542,26 @@ class TestRTPPaddingStrip:
 class TestFullVoiceFlow:
     """End-to-end: encrypt → receive → buffer → silence detect → complete."""
 
-    def test_single_utterance_flow(self):
-        """Encrypt packets → buffer → silence → check_silence returns utterance."""
+    def test_join_warmup_opus_silence_is_rejected(self):
+        """Real encrypted Opus comfort frames never become an STT utterance."""
         key = _make_secret_key()
         receiver = _make_voice_receiver(key)
         receiver.map_ssrc(100, 42)
 
-        # Send enough packets to exceed MIN_SPEECH_DURATION (0.5s)
-        # At 48kHz stereo 16-bit, each Opus silence frame decodes to ~3840 bytes
-        # Need 96000 bytes = ~25 frames
         for seq in range(1, 30):
             packet = _build_encrypted_rtp_packet(
                 key, b'\xf8\xff\xfe', ssrc=100, seq=seq, timestamp=960 * seq
             )
             receiver._on_packet(packet)
 
-        # Simulate silence by setting last_packet_time in the past
         receiver._last_packet_time[100] = time.monotonic() - 3.0
 
         completed = receiver.check_silence()
-        assert len(completed) == 1
-        user_id, pcm_data = completed[0]
-        assert user_id == 42
-        assert len(pcm_data) > 0
+        assert completed == []
+        assert len(receiver._buffers[100]) == 0
 
     def test_utterance_with_ssrc_automap(self):
-        """No SPEAKING event → auto-map sole allowed user → utterance processed."""
+        """First real Opus utterance survives the gate and SSRC auto-map."""
         key = _make_secret_key()
         members = [
             SimpleNamespace(id=9999, name="Bot"),
@@ -401,9 +572,9 @@ class TestFullVoiceFlow:
         )
         # No map_ssrc call — simulating missing SPEAKING event
 
-        for seq in range(1, 30):
+        for seq, opus_payload in enumerate(_opus_tone_payloads(), start=1):
             packet = _build_encrypted_rtp_packet(
-                key, b'\xf8\xff\xfe', ssrc=100, seq=seq, timestamp=960 * seq
+                key, opus_payload, ssrc=100, seq=seq, timestamp=960 * seq
             )
             receiver._on_packet(packet)
 
@@ -502,11 +673,7 @@ class TestSPEAKINGHook:
         receiver = _make_voice_receiver(key)
         receiver.map_ssrc(100, 42)
 
-        for seq in range(1, 30):
-            packet = _build_encrypted_rtp_packet(
-                key, b'\xf8\xff\xfe', ssrc=100, seq=seq, timestamp=960 * seq
-            )
-            receiver._on_packet(packet)
+        _send_opus_tone(receiver, key, ssrc=100)
 
         receiver._last_packet_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
@@ -529,11 +696,7 @@ class TestAuthFiltering:
         )
         receiver.map_ssrc(100, 42)
 
-        for seq in range(1, 30):
-            packet = _build_encrypted_rtp_packet(
-                key, b'\xf8\xff\xfe', ssrc=100, seq=seq, timestamp=960 * seq
-            )
-            receiver._on_packet(packet)
+        _send_opus_tone(receiver, key, ssrc=100)
 
         receiver._last_packet_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
@@ -553,11 +716,7 @@ class TestAuthFiltering:
         )
         # No map_ssrc — SSRC unknown, auto-map should reject
 
-        for seq in range(1, 30):
-            packet = _build_encrypted_rtp_packet(
-                key, b'\xf8\xff\xfe', ssrc=100, seq=seq, timestamp=960 * seq
-            )
-            receiver._on_packet(packet)
+        _send_opus_tone(receiver, key, ssrc=100)
 
         receiver._last_packet_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
@@ -574,11 +733,7 @@ class TestAuthFiltering:
             key, allowed_user_ids=None, members=members,
         )
 
-        for seq in range(1, 30):
-            packet = _build_encrypted_rtp_packet(
-                key, b'\xf8\xff\xfe', ssrc=100, seq=seq, timestamp=960 * seq
-            )
-            receiver._on_packet(packet)
+        _send_opus_tone(receiver, key, ssrc=100)
 
         receiver._last_packet_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
@@ -621,11 +776,7 @@ class TestRejoinFlow:
         receiver2 = _make_voice_receiver(key)
         receiver2.map_ssrc(200, 42)  # new SSRC after rejoin
 
-        for seq in range(1, 30):
-            packet = _build_encrypted_rtp_packet(
-                key, b'\xf8\xff\xfe', ssrc=200, seq=seq, timestamp=960 * seq
-            )
-            receiver2._on_packet(packet)
+        _send_opus_tone(receiver2, key, ssrc=200)
 
         receiver2._last_packet_time[200] = time.monotonic() - 3.0
         completed = receiver2.check_silence()
@@ -653,11 +804,7 @@ class TestRejoinFlow:
         )
         # No map_ssrc — simulating missing SPEAKING event
 
-        for seq in range(1, 30):
-            packet = _build_encrypted_rtp_packet(
-                new_key, b'\xf8\xff\xfe', ssrc=300, seq=seq, timestamp=960 * seq
-            )
-            receiver2._on_packet(packet)
+        _send_opus_tone(receiver2, new_key, ssrc=300)
 
         receiver2._last_packet_time[300] = time.monotonic() - 3.0
         completed = receiver2.check_silence()
@@ -748,11 +895,7 @@ class TestEchoPreventionFlow:
         assert len(receiver._buffers.get(100, b"")) == 0
 
         receiver.resume()
-        for seq in range(5, 35):
-            packet = _build_encrypted_rtp_packet(
-                key, b'\xf8\xff\xfe', ssrc=100, seq=seq, timestamp=960 * seq
-            )
-            receiver._on_packet(packet)
+        _send_opus_tone(receiver, key, ssrc=100, seq_start=5)
 
         assert len(receiver._buffers[100]) > 0
         receiver._last_packet_time[100] = time.monotonic() - 3.0

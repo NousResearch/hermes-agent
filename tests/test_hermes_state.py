@@ -1068,6 +1068,59 @@ class TestPruneSessionFilters:
 
 
 
+    def test_title_like_underscore_is_literal_not_a_wildcard(self, db):
+        """``_`` is a single-character wildcard in SQL LIKE, so an unescaped
+        filter deletes sessions the operator never selected. The filters are
+        documented (and shown in the CLI confirmation) as substring matches.
+        """
+        self._mk(db, "target", title="user_auth refactor")
+        self._mk(db, "bystander1", title="user-auth review")
+        self._mk(db, "bystander2", title="userXauth notes")
+        self._mk(db, "bystander3", title="user auth meeting")
+
+        rows = db.list_prune_candidates(title_like="user_auth")
+        assert {r["id"] for r in rows} == {"target"}
+
+        pruned = db.prune_sessions(older_than_days=None, title_like="user_auth")
+        assert pruned == 1
+        for survivor in ("bystander1", "bystander2", "bystander3"):
+            assert db.get_session(survivor) is not None
+
+    def test_percent_in_filter_does_not_select_everything(self, db):
+        """``%`` matches any run of characters — a bare one would delete the
+        whole table."""
+        self._mk(db, "a", title="alpha")
+        self._mk(db, "b", title="beta")
+        self._mk(db, "pct", title="100% coverage run")
+
+        # Only the title that really contains a percent sign matches.
+        assert {r["id"] for r in db.list_prune_candidates(title_like="%")} == {"pct"}
+        assert {r["id"] for r in db.list_prune_candidates(title_like="100%")} == {"pct"}
+
+    def test_branch_like_underscore_is_literal(self, db):
+        """Branch names carry underscores routinely."""
+        self._mk_rich(db, "want", git_branch="fix/session_prune")
+        self._mk_rich(db, "other", git_branch="fix/session-prune")
+
+        rows = db.list_prune_candidates(branch_like="session_prune")
+        assert {r["id"] for r in rows} == {"want"}
+
+    def test_model_like_underscore_is_literal(self, db):
+        self._mk_rich(db, "want", model="vendor/model_mini")
+        self._mk_rich(db, "other", model="vendor/model-mini")
+
+        rows = db.list_prune_candidates(model_like="model_mini")
+        assert {r["id"] for r in rows} == {"want"}
+
+    def test_plain_substring_filters_still_match(self, db):
+        """Guard against over-escaping: ordinary filters keep working, and a
+        literal backslash in the needle is matched as itself."""
+        self._mk(db, "smoke", title="Codex Smoke Test")
+        self._mk_rich(db, "winpath", title=r"build C:\tmp artifacts")
+
+        assert {r["id"] for r in db.list_prune_candidates(title_like="smoke")} == {"smoke"}
+        assert {r["id"] for r in db.list_prune_candidates(title_like=r"c:\tmp")} == {"winpath"}
+
     def test_unknown_filter_rejected(self, db):
         import pytest as _pytest
         with _pytest.raises(TypeError):

@@ -176,6 +176,17 @@ def _delegate_from_json(col: str = "model_config") -> str:
 _MODEL_CONFIG_ROW_MISSING = object()
 
 
+def _escape_like(text: str) -> str:
+    """Escape SQL LIKE wildcards so an operator-supplied filter matches
+    literally.  Pair with ``ESCAPE '\\'`` in the clause.
+
+    ``%`` and ``_`` are wildcards to LIKE, and ``_`` in particular is common
+    in the values these filters run against (branch names, session titles).
+    A filter documented as a substring match must not silently widen.
+    """
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
     return "(s.cwd = ? OR s.cwd LIKE ? OR s.cwd LIKE ?)", [prefix, f"{prefix}/%", f"{prefix}\\%"]
@@ -8402,8 +8413,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             clauses.append("s.source = ?")
             params.append(source)
         if title_like:
-            clauses.append("LOWER(COALESCE(s.title, '')) LIKE ?")
-            params.append(f"%{title_like.lower()}%")
+            clauses.append("LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'")
+            params.append(f"%{_escape_like(title_like.lower())}%")
         if end_reason:
             clauses.append("s.end_reason = ?")
             params.append(end_reason)
@@ -8418,8 +8429,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             clauses.append("s.message_count <= ?")
             params.append(max_messages)
         if model_like:
-            clauses.append("LOWER(COALESCE(s.model, '')) LIKE ?")
-            params.append(f"%{model_like.lower()}%")
+            clauses.append("LOWER(COALESCE(s.model, '')) LIKE ? ESCAPE '\\'")
+            params.append(f"%{_escape_like(model_like.lower())}%")
         if provider:
             clauses.append("LOWER(COALESCE(s.billing_provider, '')) = ?")
             params.append(provider.lower())
@@ -8433,8 +8444,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             clauses.append("s.chat_type = ?")
             params.append(chat_type)
         if branch_like:
-            clauses.append("LOWER(COALESCE(s.git_branch, '')) LIKE ?")
-            params.append(f"%{branch_like.lower()}%")
+            clauses.append("LOWER(COALESCE(s.git_branch, '')) LIKE ? ESCAPE '\\'")
+            params.append(f"%{_escape_like(branch_like.lower())}%")
         if min_tokens is not None:
             clauses.append(
                 "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0)) >= ?"

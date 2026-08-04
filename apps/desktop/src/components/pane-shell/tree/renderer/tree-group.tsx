@@ -530,7 +530,7 @@ export function TreeGroup({
                 onPointerDown={e => e.stopPropagation()}
                 type="button"
               >
-                <Codicon name={node.minimized ? 'chevron-down' : 'chevron-up'} size="0.75rem" />
+                <Codicon name={node.minimized ? 'chevron-up' : 'chevron-down'} size="0.75rem" />
               </button>
             )}
             <StripDropCaret groupId={node.id} stripRef={stripRef} />

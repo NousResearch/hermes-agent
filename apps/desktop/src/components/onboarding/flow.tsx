@@ -308,15 +308,14 @@ function ConfirmingModelPanel({
       </div>
 
       {/*
-        ModelPickerDialog defaults to z-130 on its content, which renders
-        UNDER the onboarding overlay (z-1300) and breaks pointer events.
-        Bump it above with z-[1310] so the picker sits on top of the
-        onboarding panel. The dialog's own dim-backdrop layer stays at
-        its default z-120 — the onboarding overlay is already dimming
-        the rest of the screen, so we don't want a second backdrop.
+        ModelPickerDialog's content sits on the modal rung, which is below the
+        onboarding overlay — it would render underneath and swallow pointer
+        events. Lift it to the rung above onboarding. Its own dim-backdrop
+        layer stays on the modal-backdrop rung: onboarding already dims the
+        rest of the screen, so a second backdrop would double up.
       */}
       <ModelPickerDialog
-        contentClassName="z-[1310]"
+        contentClassName="z-(--z-onboarding-popover)"
         currentModel={flow.currentModel}
         currentProvider={flow.providerSlug}
         onOpenChange={setPickerOpen}

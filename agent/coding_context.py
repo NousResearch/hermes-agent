@@ -337,9 +337,9 @@ def _coding_mode(config: Optional[dict[str, Any]]) -> str:
     """Return the normalized ``agent.coding_context`` mode (auto/focus/on/off)."""
     if config is None:
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import load_config_readonly
 
-            config = load_config()
+            config = load_config_readonly()
         except Exception:
             config = {}
     raw = ((config or {}).get("agent", {}) or {}).get("coding_context", "auto")

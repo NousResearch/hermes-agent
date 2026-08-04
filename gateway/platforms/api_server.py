@@ -43,6 +43,7 @@ import asyncio
 import errno
 import hashlib
 import hmac
+import itertools
 import json
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -52,6 +53,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -90,7 +92,32 @@ from gateway.platforms.base import (
     validate_media_delivery_path,
 )
 from agent.redact import redact_sensitive_text
+from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
+
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware credential read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and sends
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
 
 logger = logging.getLogger(__name__)
 
@@ -615,6 +642,108 @@ def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Respons
         _openai_error(message, code=code, param=param),
         status=400,
     )
+
+
+def _reap_disconnected_agent_processes(
+    agent: Any, *, source: str = "api_server_sse_disconnect"
+) -> None:
+    """Reap background processes an abandoned API-server turn created.
+
+    Mirrors the gateway-turn cleanup in ``gateway/run.py`` (#76115) for this
+    API-server surface, which runs its own agent lifecycle via ``_run_agent``
+    and never passes through ``TurnRunner`` — so it needs its own trigger for
+    the same baseline-diff reap. Fire-and-forget on a daemon thread so the
+    SSE handler's own cleanup isn't blocked on process-tree teardown.
+
+    Reaping is epoch-gated: client-provided session IDs are conversation
+    scopes, and multiple concurrent runs can intentionally share one (see
+    ``_handle_runs``). Without the gate, run A disconnecting could kill a
+    process a still-live run B (same task_id) spawned after A's baseline
+    snapshot — the same stale-reaper bug class the gateway path gates via
+    ``run_generation``. The epoch closure skips the reap when a newer run
+    has since claimed the task_id; that newer run's own baseline covers its
+    eventual cleanup.
+    """
+    process_task_id = getattr(agent, "_gateway_turn_process_task_id", "")
+    process_baseline = getattr(agent, "_gateway_turn_process_baseline", None)
+    if not process_task_id or process_baseline is None:
+        return
+    epoch = getattr(agent, "_gateway_turn_process_epoch", None)
+    is_still_current: Optional[Any] = None
+    if epoch is not None:
+        def _epoch_still_current(_task_id=process_task_id, _epoch=epoch):
+            # Skip only when a NEWER run has claimed this task_id. A missing
+            # entry means the abandoned run's own clear pruned it (worker
+            # returned after the interrupt) — no newer claimant exists, so
+            # the reap must still proceed or the leak survives. This matches
+            # the gateway gate's semantics: worker completion does not bump
+            # run_generation either.
+            with _TURN_PROCESS_EPOCH_LOCK:
+                current = _TURN_PROCESS_EPOCHS.get(_task_id)
+            return current is None or current == _epoch
+
+        is_still_current = _epoch_still_current
+
+    from gateway.run import _reap_gateway_turn_processes
+
+    threading.Thread(
+        target=_reap_gateway_turn_processes,
+        args=(process_task_id, process_baseline),
+        kwargs={"source": source, "is_still_current": is_still_current},
+        name=f"api-turn-reaper-{process_task_id[:12]}",
+        daemon=True,
+    ).start()
+
+
+# Per-task-id run epochs for the reap gate above. task_id is a conversation
+# scope shared by concurrent API runs, so each run that claims it bumps the
+# epoch; a reaper holding a stale epoch declines to kill. Epochs come from a
+# single monotonic counter (never reused), so pruning an entry and later
+# re-claiming the task_id can never resurrect a stale reaper's claim.
+# Entries are pruned on clear when still current, bounding the dict to
+# in-flight runs.
+_TURN_PROCESS_EPOCHS: Dict[str, int] = {}
+_TURN_PROCESS_EPOCH_LOCK = threading.Lock()
+_TURN_PROCESS_EPOCH_COUNTER = itertools.count(1)
+
+
+def _publish_turn_process_ownership(agent: Any, task_id: str) -> None:
+    """Snapshot the process baseline and claim the task_id's current epoch.
+
+    Single place all API-server agent lifecycles (chat/responses ``_run_agent``
+    and ``/v1/runs``) record turn ownership, so the marker attribute names and
+    epoch bookkeeping cannot drift between surfaces.
+    """
+    from tools.process_registry import process_registry
+
+    with _TURN_PROCESS_EPOCH_LOCK:
+        epoch = next(_TURN_PROCESS_EPOCH_COUNTER)
+        _TURN_PROCESS_EPOCHS[task_id] = epoch
+    agent._gateway_turn_process_task_id = task_id
+    agent._gateway_turn_process_baseline = process_registry.snapshot_running_ids(
+        task_id
+    )
+    agent._gateway_turn_process_epoch = epoch
+
+
+def _clear_turn_process_ownership(agent: Any) -> None:
+    """Clear turn ownership the moment the turn finishes (success or crash).
+
+    A disconnect/cancel landing after this point must not reap background
+    work the turn deliberately left running — mirrors the same race-window
+    guard in ``gateway/run.py``'s ``_run_sync_with_timeout_lifecycle``.
+    """
+    task_id = getattr(agent, "_gateway_turn_process_task_id", "")
+    epoch = getattr(agent, "_gateway_turn_process_epoch", None)
+    if task_id and epoch is not None:
+        with _TURN_PROCESS_EPOCH_LOCK:
+            # Prune only when this run is still the current claimant; a
+            # newer concurrent run owns the entry otherwise.
+            if _TURN_PROCESS_EPOCHS.get(task_id) == epoch:
+                del _TURN_PROCESS_EPOCHS[task_id]
+    agent._gateway_turn_process_task_id = ""
+    agent._gateway_turn_process_baseline = frozenset()
+    agent._gateway_turn_process_epoch = None
 
 
 def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") -> tuple[Any, Optional["web.Response"]]:
@@ -1196,7 +1325,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if raw_port is None:
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
-        self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -1410,17 +1539,22 @@ class APIServerAdapter(BasePlatformAdapter):
         1. Explicit override (config extra or API_SERVER_MODEL_NAME env var)
         2. Active profile name (so each profile advertises a distinct model)
         3. Fallback: "hermes-agent"
+
+        Delegates the tiered fallthrough to
+        :func:`hermes_cli.model_switch.resolve_effective_model` (the shared
+        override > mid-tier > default precedence owner).
         """
-        if explicit and explicit.strip():
-            return explicit.strip()
+        from hermes_cli.model_switch import resolve_effective_model
+
+        profile_name = ""
         try:
             from hermes_cli.profiles import get_active_profile_name
             profile = get_active_profile_name()
             if profile and profile not in {"default", "custom"}:
-                return profile
+                profile_name = profile
         except Exception:
             pass
-        return "hermes-agent"
+        return resolve_effective_model(explicit, profile_name, "hermes-agent")
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
@@ -1508,6 +1642,30 @@ class APIServerAdapter(BasePlatformAdapter):
     # Auth helper
     # ------------------------------------------------------------------
 
+    def _expected_api_key(self) -> str:
+        """Return the API key authorized for the URL-selected profile."""
+        profile = _api_request_profile.get()
+        if not profile or profile == "default":
+            return self._api_key
+
+        try:
+            from agent.secret_scope import get_secret
+            from hermes_cli.auth import has_usable_secret
+
+            key = get_secret("API_SERVER_KEY", "") or ""
+            if not has_usable_secret(key, min_length=16):
+                return ""
+            return key
+        except Exception as exc:
+            # Fail closed if the profile scope or strength guard cannot resolve
+            # the credential. Do not log the key or exception text.
+            logger.warning(
+                "Failed to resolve a usable profile-scoped API_SERVER_KEY for %r: %s",
+                profile,
+                type(exc).__name__,
+            )
+            return ""
+
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """
         Validate Bearer token from Authorization header.
@@ -1516,8 +1674,31 @@ class APIServerAdapter(BasePlatformAdapter):
         connect() refuses to start the API server without API_SERVER_KEY, so
         the no-key branch only exists for tests or unsupported manual wiring.
         """
-        if not self._api_key:
-            return None
+        profile = _api_request_profile.get()
+        is_named_profile = bool(profile and profile != "default")
+        expected_key = self._expected_api_key()
+        if not expected_key:
+            # Preserve the historical no-key test/manual-wiring behavior only
+            # for the default listener. Named profiles must fail closed rather
+            # than inherit the listener owner's key.
+            if not is_named_profile:
+                return None
+            logger.warning(
+                "API server rejected request for profile %r: no profile-scoped "
+                "API_SERVER_KEY is configured; %s",
+                profile,
+                self._request_audit_log_suffix(request),
+            )
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "Invalid gateway API key (API_SERVER_KEY)",
+                        "type": "gateway_auth_error",
+                        "code": "gateway_auth_failed",
+                    }
+                },
+                status=401,
+            )
 
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
@@ -1528,7 +1709,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # otherwise crash this handler (500) instead of returning a clean
             # 401. Encoding both sides keeps the timing-safe comparison and
             # matches web_server.py's dashboard-token check.
-            if hmac.compare_digest(token.encode(), self._api_key.encode()):
+            if hmac.compare_digest(token.encode(), expected_key.encode()):
                 return None  # Auth OK
 
         logger.warning(
@@ -2440,8 +2621,13 @@ class APIServerAdapter(BasePlatformAdapter):
         session_override = None
         if not confirmed_runtime_lock:
             session_override = self._session_model_override_for(session_key)
+        # Model-string precedence delegates to the shared owner
+        # hermes_cli.model_switch.resolve_effective_model (session /model
+        # override > session-persisted model > global) — the rule 7dd00bb47d
+        # had to re-fix here after it diverged from gateway/run.py.
+        from hermes_cli.model_switch import resolve_effective_model
         if session_override:
-            override_model = _clean_request_string(session_override.get("model")) or model
+            override_model = resolve_effective_model(session_override, None, model)
             session_provider = _clean_request_string(session_override.get("provider"))
             current_provider = _clean_request_string(runtime_kwargs.get("provider"))
             provider_runtime = _resolve_provider_runtime(
@@ -2471,7 +2657,7 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             if provider_runtime:
                 _apply_runtime_agent_overrides(runtime_kwargs, provider_runtime)
-            model = session_row_model
+            model = resolve_effective_model(None, session_row_model, model)
             if request_model or request_provider:
                 logger.debug(
                     "api_server request selection skipped: session-persisted model wins for %s",
@@ -2909,6 +3095,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _get_effective_configurable_toolsets,
                 _get_platform_tools,
                 _toolset_has_keys,
+                get_nous_subscription_features,
             )
             from toolsets import resolve_toolset
 
@@ -2918,6 +3105,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "api_server",
                 include_default_mcp_servers=False,
             )
+            features = get_nous_subscription_features(config)
             data: List[Dict[str, Any]] = []
             for name, label, desc in _get_effective_configurable_toolsets():
                 try:
@@ -2930,7 +3118,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "label": label,
                     "description": desc,
                     "enabled": is_enabled,
-                    "configured": _toolset_has_keys(name, config),
+                    "configured": _toolset_has_keys(name, config, features=features),
                     "tools": tools,
                 })
         except Exception:
@@ -3586,21 +3774,18 @@ class APIServerAdapter(BasePlatformAdapter):
             headers["X-Hermes-Session-Key"] = gateway_session_key
         response = web.StreamResponse(status=200, headers=headers)
         await response.prepare(request)
-        last_write = time.monotonic()
         try:
             while True:
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
                 except asyncio.TimeoutError:
                     await response.write(b": keepalive\n\n")
-                    last_write = time.monotonic()
                     continue
                 if item is None:
                     break
                 name, payload = item
                 data = json.dumps(payload, ensure_ascii=False)
                 await response.write(f"event: {name}\ndata: {data}\n\n".encode("utf-8"))
-                last_write = time.monotonic()
         except (asyncio.CancelledError, ConnectionResetError):
             task.cancel()
             raise
@@ -4177,9 +4362,10 @@ class APIServerAdapter(BasePlatformAdapter):
             agent = agent_ref[0] if agent_ref else None
             if agent is not None:
                 try:
-                    agent.interrupt("SSE client disconnected")
+                    request_hard_interrupt(agent, "SSE client disconnected")
                 except Exception:
                     pass
+                _reap_disconnected_agent_processes(agent)
             if not agent_task.done():
                 agent_task.cancel()
                 try:
@@ -4756,9 +4942,10 @@ class APIServerAdapter(BasePlatformAdapter):
             agent = agent_ref[0] if agent_ref else None
             if agent is not None:
                 try:
-                    agent.interrupt("SSE client disconnected")
+                    request_hard_interrupt(agent, "SSE client disconnected")
                 except Exception:
                     pass
+                _reap_disconnected_agent_processes(agent)
             if not agent_task.done():
                 agent_task.cancel()
                 try:
@@ -4775,9 +4962,16 @@ class APIServerAdapter(BasePlatformAdapter):
             agent = agent_ref[0] if agent_ref else None
             if agent is not None:
                 try:
-                    agent.interrupt("SSE task cancelled")
+                    request_hard_interrupt(agent, "SSE task cancelled")
                 except Exception:
                     pass
+                # Same abandonment as a client disconnect: the run will never
+                # be resumed, so reap the background processes it created
+                # (#76115). Epoch-gated; no-op when the turn already
+                # finished and cleared its markers.
+                _reap_disconnected_agent_processes(
+                    agent, source="api_server_sse_cancelled"
+                )
             if not agent_task.done():
                 agent_task.cancel()
             logger.info("SSE task cancelled; persisted incomplete snapshot for %s", response_id)
@@ -5423,12 +5617,29 @@ class APIServerAdapter(BasePlatformAdapter):
         token = auth[7:].strip() if auth.startswith("Bearer ") else ""
 
         cfg = load_config()
-        claims = get_fire_verifier()(
+        verifier = get_fire_verifier()
+        verify_kwargs = dict(
             token=token,
             expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
             jwks_or_key=cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
             issuer=cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None,
         )
+        try:
+            if asyncio.iscoroutinefunction(verifier):
+                claims = await verifier(**verify_kwargs)
+            else:
+                # The verifier resolves the NAS signing key from a JWKS URL,
+                # which is a synchronous HTTP GET on a cache miss (cold client
+                # or a rotated kid) — keep that blocking I/O off the event loop
+                # so a slow or rate-limited portal can't stall every other
+                # adapter sharing this loop. Same hardening the platform HTTP
+                # event verifier already got.
+                claims = await asyncio.to_thread(verifier, **verify_kwargs)
+        except Exception:
+            # Fail closed: a crashing verifier must never admit a fire — this
+            # is the only inbound that can trigger remote job execution.
+            logger.exception("cron fire: verifier crashed; rejecting token")
+            claims = None
         if claims is None:
             logger.warning(
                 "cron fire: rejected invalid token: %s",
@@ -5698,6 +5909,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_key=session_key,
             session_id=session_id,
             async_delivery=False,
+            cron_session="",
         )
 
     async def _run_agent(
@@ -5761,6 +5973,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "",
                 )
+                agent = None
                 try:
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt,
@@ -5780,6 +5993,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     effective_task_id = session_id or str(uuid.uuid4())
+                    # Baseline for selective background-process reaping on
+                    # SSE client disconnect — mirrors gateway/run.py's
+                    # gateway-turn cleanup (#76115); this API-server surface
+                    # runs its own agent lifecycle and doesn't go through
+                    # TurnRunner, so it needs its own baseline.
+                    _publish_turn_process_ownership(agent, effective_task_id)
                     result = agent.run_conversation(
                         user_message=user_message,
                         conversation_history=conversation_history,
@@ -5902,6 +6121,13 @@ class APIServerAdapter(BasePlatformAdapter):
                         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                     )
                 finally:
+                    # Turn finished (success, auth failure, or crash) — clear
+                    # ownership markers so a disconnect landing after this
+                    # point can't reap background work this turn left
+                    # running on purpose. Mirrors the same race-window guard
+                    # in gateway/run.py's _run_sync_with_timeout_lifecycle.
+                    if agent is not None:
+                        _clear_turn_process_ownership(agent)
                     clear_session_vars(tokens)
 
         self._activate_admitted_request()
@@ -5975,7 +6201,54 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": ts,
                     "text": preview or "",
                 })
-            # _thinking and subagent_progress are intentionally not forwarded
+            elif event_type in {"subagent.start", "subagent.complete"}:
+                event = {
+                    "event": event_type,
+                    "run_id": run_id,
+                    "timestamp": ts,
+                }
+                if preview is not None:
+                    event["preview"] = redact_sensitive_text(
+                        str(preview), force=True
+                    )
+                for key in (
+                    "goal",
+                    "task_count",
+                    "task_index",
+                    "subagent_id",
+                    "child_session_id",
+                    "parent_id",
+                    "depth",
+                    "model",
+                    "tool_count",
+                    "status",
+                    "summary",
+                    "duration_seconds",
+                    "input_tokens",
+                    "output_tokens",
+                    "reasoning_tokens",
+                    "api_calls",
+                    "cost_usd",
+                    "files_read",
+                    "files_written",
+                    "output_tail",
+                ):
+                    value = kwargs.get(key)
+                    if value is None:
+                        continue
+                    # Free-text fields can carry child terminal/tool output —
+                    # force the same secret redaction the API applies to error
+                    # text before it leaves the process on a public stream.
+                    if key in ("goal", "summary", "output_tail") and isinstance(
+                        value, str
+                    ):
+                        value = redact_sensitive_text(value, force=True)
+                    event[key] = value
+                _push(event)
+            # _thinking, subagent.tool, and subagent_progress are intentionally
+            # not forwarded on the /v1/runs stream: they are high-volume UI
+            # noise. Lifecycle boundaries (start/complete) still need to land
+            # so clients can observe delegate_task timeouts and failures.
 
         return _callback
 
@@ -6207,12 +6480,23 @@ class APIServerAdapter(BasePlatformAdapter):
                                 session_id=session_id or "",
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
+                            # /v1/runs runs its own agent lifecycle (no
+                            # TurnRunner, no _run_agent) — record turn process
+                            # ownership so stop/cancel can reap only the
+                            # background processes this run created (#76115).
+                            _publish_turn_process_ownership(agent, effective_task_id)
                             r = agent.run_conversation(
                                 user_message=user_message,
                                 conversation_history=conversation_history,
                                 task_id=effective_task_id,
                             )
                         finally:
+                            # Worker finished (interrupted or complete) —
+                            # clear turn ownership immediately so a later
+                            # stop/cancel can't reap background work this
+                            # run deliberately left running (same race-window
+                            # guard as gateway/run.py and _run_agent above).
+                            _clear_turn_process_ownership(agent)
                             try:
                                 unregister_gateway_notify(approval_session_key)
                             finally:
@@ -6549,9 +6833,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
         if agent is not None:
             try:
-                agent.interrupt("Stop requested via API")
+                request_hard_interrupt(agent, "Stop requested via API")
             except Exception:
                 pass
+            # The stopped run is abandoned — reap only the background
+            # processes it created (#76115). Epoch-gated inside, so a
+            # concurrent run sharing the same session_id keeps its own
+            # processes; no-op if the run already finished and cleared
+            # its ownership markers.
+            _reap_disconnected_agent_processes(
+                agent, source="api_server_run_stop"
+            )
 
         return web.json_response({"run_id": run_id, "status": "stopping"})
 

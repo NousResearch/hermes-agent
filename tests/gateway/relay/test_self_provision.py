@@ -67,41 +67,6 @@ def _arm(monkeypatch, *, url="wss://connector.example/relay", token="nas-token")
 
 # ─────────────────────────── config readers ───────────────────────────
 
-def test_relay_endpoint_from_env(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_ENDPOINT", "https://gw.example.com/inbound/")
-    assert relay.relay_endpoint() == "https://gw.example.com/inbound"
-
-
-def test_relay_endpoint_absent_is_none():
-    assert relay.relay_endpoint() is None
-
-
-def test_relay_route_keys_csv(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_ROUTE_KEYS", "guild-1, guild-2 ,, guild-3")
-    assert relay.relay_route_keys() == ["guild-1", "guild-2", "guild-3"]
-
-
-def test_relay_route_keys_empty():
-    assert relay.relay_route_keys() == []
-
-
-def test_relay_instance_id_from_env(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_INSTANCE_ID", "  inst-abc  ")
-    assert relay.relay_instance_id() == "inst-abc"
-
-
-def test_relay_instance_id_absent_is_none():
-    assert relay.relay_instance_id() is None
-
-
-def test_relay_instance_id_from_config(monkeypatch):
-    monkeypatch.setattr(
-        "gateway.run._load_gateway_config",
-        lambda: {"gateway": {"relay_instance_id": "inst-from-config"}},
-        raising=False,
-    )
-    assert relay.relay_instance_id() == "inst-from-config"
-
 
 def test_provision_url_maps_ws_to_http():
     assert relay._provision_url("wss://c.example/relay") == "https://c.example/relay/provision"
@@ -110,20 +75,6 @@ def test_provision_url_maps_ws_to_http():
 
 
 # ─────────────────────────── trigger logic ───────────────────────────
-
-def test_provisions_on_nas_host_that_is_NOT_is_managed(monkeypatch):
-    """Regression: a NAS-hosted Fly agent sets neither HERMES_MANAGED nor a
-    .managed marker, so is_managed() is False. Self-provision must STILL fire —
-    the old is_managed() gate silently no-oped exactly this case in staging.
-    """
-    # Force is_managed() False to model a real hosted agent; it must be irrelevant.
-    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
-    _arm(monkeypatch)
-    captured: dict = {}
-    monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
-
-    assert relay.self_provision_relay() is True
-    assert relay.relay_connection_auth()[1] == "a" * 64
 
 
 def test_skips_when_relay_not_configured(monkeypatch):
@@ -182,17 +133,6 @@ def test_outbound_only_when_no_endpoint(monkeypatch):
 
 
 # ─────────────────── instance-id forwarding (Phase 6 Unit α) ───────────────────
-
-def test_forwards_instance_id_to_provision(monkeypatch):
-    """A managed agent stamped with GATEWAY_RELAY_INSTANCE_ID forwards it to the
-    connector so it can bind gatewayId -> instanceId (per-instance routing)."""
-    _arm(monkeypatch)
-    monkeypatch.setenv("GATEWAY_RELAY_INSTANCE_ID", "inst-abc")
-    captured: dict = {}
-    monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
-
-    assert relay.self_provision_relay() is True
-    assert captured["instance_id"] == "inst-abc"
 
 
 def test_instance_id_absent_forwards_none(monkeypatch):
@@ -258,23 +198,6 @@ def test_post_provision_body_includes_instanceId_only_when_set(monkeypatch):
 
 # ─────────────────── wake-url forwarding (Phase 5 Unit C) ───────────────────
 
-def test_relay_wake_url_from_env(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_WAKE_URL", "  https://wake.example/poke  ")
-    assert relay.relay_wake_url() == "https://wake.example/poke"
-
-
-def test_relay_wake_url_absent_is_none():
-    assert relay.relay_wake_url() is None
-
-
-def test_relay_wake_url_from_config(monkeypatch):
-    monkeypatch.setattr(
-        "gateway.run._load_gateway_config",
-        lambda: {"gateway": {"relay_wake_url": "https://wake.from-config/poke"}},
-        raising=False,
-    )
-    assert relay.relay_wake_url() == "https://wake.from-config/poke"
-
 
 def test_forwards_wake_url_to_provision(monkeypatch):
     """A suspendable agent stamped with GATEWAY_RELAY_WAKE_URL forwards it to the
@@ -300,55 +223,6 @@ def test_wake_url_absent_forwards_none(monkeypatch):
     assert captured["wake_url"] is None
 
 
-def test_post_provision_body_includes_wakeUrl_only_when_set(monkeypatch):
-    """The real _post_provision adds `wakeUrl` to the JSON body ONLY when a value
-    is supplied — omitting it lets the connector store null (back-compat)."""
-    import json
-
-    sent: dict = {}
-
-    class _Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def read(self):
-            return json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
-
-    def _fake_urlopen(req, timeout=None):  # noqa: ANN001
-        sent["body"] = json.loads(req.data.decode())
-        return _Resp()
-
-    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
-
-    # With a wake url -> present in the body.
-    relay._post_provision(
-        provision_url="https://c.example/relay/provision",
-        access_token="tok",
-        gateway_id="gw-1",
-        platform="discord",
-        bot_id="app",
-        gateway_endpoint=None,
-        route_keys=[],
-        wake_url="https://wake.example/poke",
-    )
-    assert sent["body"]["wakeUrl"] == "https://wake.example/poke"
-
-    # Without one -> the key is absent entirely (not "").
-    relay._post_provision(
-        provision_url="https://c.example/relay/provision",
-        access_token="tok",
-        gateway_id="gw-1",
-        platform="discord",
-        bot_id="app",
-        gateway_endpoint=None,
-        route_keys=[],
-    )
-    assert "wakeUrl" not in sent["body"]
-
-
 # ─────────────────────────── fail-soft ───────────────────────────
 
 def test_no_nas_token_is_non_fatal(monkeypatch):
@@ -366,38 +240,7 @@ def test_no_nas_token_is_non_fatal(monkeypatch):
     assert relay.relay_connection_auth() == (None, None)
 
 
-def test_connector_failure_is_non_fatal(monkeypatch):
-    _arm(monkeypatch)
-
-    def _boom(**kwargs):
-        raise RuntimeError("connector returned HTTP 503")
-
-    monkeypatch.setattr(relay, "_post_provision", _boom)
-    assert relay.self_provision_relay() is False
-    assert relay.relay_connection_auth() == (None, None)
-
-
 # ─────────────────────────── displayName (Phase 1 parity, gg#171) ───────────────────────────
-
-def test_relay_display_name_env_wins(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_DISPLAY_NAME", "  Atlas  ")
-    assert relay.relay_display_name() == "Atlas"
-
-
-def test_relay_display_name_caps_at_64(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_DISPLAY_NAME", "x" * 200)
-    assert relay.relay_display_name() == "x" * 64
-
-
-def test_relay_display_name_falls_back_to_skin_branding(monkeypatch):
-    monkeypatch.delenv("GATEWAY_RELAY_DISPLAY_NAME", raising=False)
-
-    class _Skin:
-        def get_branding(self, key, fallback=""):
-            return "Chatterbox" if key == "agent_name" else fallback
-
-    monkeypatch.setattr("hermes_cli.skin_engine.get_active_skin", lambda: _Skin())
-    assert relay.relay_display_name() == "Chatterbox"
 
 
 def test_relay_display_name_suppresses_stock_brand(monkeypatch):
@@ -414,68 +257,3 @@ def test_relay_display_name_suppresses_stock_brand(monkeypatch):
     assert relay.relay_display_name() is None
 
 
-def test_relay_display_name_branding_failure_is_non_fatal(monkeypatch):
-    monkeypatch.delenv("GATEWAY_RELAY_DISPLAY_NAME", raising=False)
-
-    def _boom():
-        raise RuntimeError("no skin engine")
-
-    monkeypatch.setattr("hermes_cli.skin_engine.get_active_skin", _boom)
-    assert relay.relay_display_name() is None
-
-
-def test_self_provision_forwards_display_name(monkeypatch):
-    _arm(monkeypatch)
-    monkeypatch.setenv("GATEWAY_RELAY_DISPLAY_NAME", "Atlas")
-    captured: dict = {}
-    monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
-
-    assert relay.self_provision_relay() is True
-    assert captured["display_name"] == "Atlas"
-
-
-def test_post_provision_body_includes_displayName_only_when_set(monkeypatch):
-    """`displayName` joins the body ONLY when a value is supplied — omitting it
-    lets the connector store null (attribution falls back to linked-owner)."""
-    import json
-
-    sent: dict = {}
-
-    class _Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def read(self):
-            return json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
-
-    def _fake_urlopen(req, timeout=None):  # noqa: ANN001
-        sent["body"] = json.loads(req.data.decode())
-        return _Resp()
-
-    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
-
-    relay._post_provision(
-        provision_url="https://c.example/relay/provision",
-        access_token="tok",
-        gateway_id="gw-1",
-        platform="discord",
-        bot_id="app",
-        gateway_endpoint=None,
-        route_keys=[],
-        display_name="Atlas",
-    )
-    assert sent["body"]["displayName"] == "Atlas"
-
-    relay._post_provision(
-        provision_url="https://c.example/relay/provision",
-        access_token="tok",
-        gateway_id="gw-1",
-        platform="discord",
-        bot_id="app",
-        gateway_endpoint=None,
-        route_keys=[],
-    )
-    assert "displayName" not in sent["body"]

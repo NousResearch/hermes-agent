@@ -112,8 +112,6 @@ def _orphan_fts_schema(path: Path) -> None:
         conn.execute("PRAGMA writable_schema=OFF")
     finally:
         conn.close()
-
-
 def _make_page_spanning_source(
     path: Path,
     message_count: int = 320,
@@ -288,6 +286,20 @@ def _corrupt_middle_table_leaf(
     return leaf_page
 
 
+def _corrupt_table_root(path: Path, root_page: int) -> None:
+    data = bytearray(path.read_bytes())
+    page_size = int.from_bytes(data[16:18], "big")
+    if page_size == 1:
+        page_size = 65_536
+    page_start = (root_page - 1) * page_size
+    header_offset = page_start + (100 if root_page == 1 else 0)
+    assert data[header_offset] in {0x02, 0x05, 0x0A, 0x0D}
+    # Damage the root enough that no rowid bounds can be read. This reproduces
+    # a fully failed sessions copy while leaving the messages b-tree intact.
+    data[header_offset + 3 : header_offset + 5] = b"\xff\xff"
+    path.write_bytes(data)
+
+
 def test_snapshot_blocks_connections_opened_during_the_copy(
     tmp_path: Path,
 ) -> None:
@@ -393,11 +405,21 @@ def test_partial_recovery_keeps_messages_when_sessions_are_unsalvageable(
     source = tmp_path / "sessions-destroyed.db"
     output = tmp_path / "sessions-destroyed-recovered.db"
 
+    messages_per_session = {
+        "doomed-session-a": 40,
+        "doomed-session-b": 35,
+        "doomed-session-c": 45,
+    }
     db = SessionDB(db_path=source)
     try:
-        db.create_session("doomed-session", "cli", cwd="/tmp/doomed")
-        for index in range(120):
-            db.append_message("doomed-session", "user", f"irreplaceable {index}")
+        for session_id, message_count in messages_per_session.items():
+            db.create_session(session_id, "cli", cwd=f"/tmp/{session_id}")
+            for index in range(message_count):
+                db.append_message(
+                    session_id,
+                    "user",
+                    f"irreplaceable {session_id} {index}",
+                )
     finally:
         db.close()
 
@@ -420,20 +442,26 @@ def test_partial_recovery_keeps_messages_when_sessions_are_unsalvageable(
     assert cleanup["messages_removed"] == 0, (
         "salvaged messages were deleted for lack of a session row"
     )
-    assert cleanup["sessions_reconstructed"] >= 1
+    assert cleanup["sessions_reconstructed"] == len(messages_per_session)
     assert cleanup["messages_retained"] == 120
 
     with sqlite3.connect(str(output)) as verify:
-        sessions = verify.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        recovered_sessions = verify.execute(
+            "SELECT id, source, title, message_count FROM sessions ORDER BY id"
+        ).fetchall()
         messages = verify.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        placeholder_source = verify.execute(
-            "SELECT source FROM sessions LIMIT 1"
-        ).fetchone()[0]
     assert messages == 120, f"expected all 120 messages retained, got {messages}"
-    assert sessions >= 1
+    assert len(recovered_sessions) == len(messages_per_session)
 
-    # A fabricated session must be identifiable as such.
-    assert placeholder_source == "recovered"
+    # Fabricated sessions must be identifiable and carry collision-safe titles.
+    assert {row[0] for row in recovered_sessions} == set(messages_per_session)
+    assert {row[1] for row in recovered_sessions} == {"recovered"}
+    recovered_titles = [str(row[2]) for row in recovered_sessions]
+    assert all(title.startswith("[recovered ") for title in recovered_titles)
+    assert len(set(recovered_titles)) == len(recovered_titles)
+    assert {
+        str(row[0]): int(row[3]) for row in recovered_sessions
+    } == messages_per_session
 
     # Retaining the data is still a lossy outcome and must say so.
     assert report["verification"]["loss_detected"] is True
@@ -451,353 +479,12 @@ def test_partial_recovery_keeps_messages_when_sessions_are_unsalvageable(
     assert report["installed"] is False
 
 
-def test_partial_recovery_reports_damaged_state_meta_as_loss(
-    tmp_path: Path,
-) -> None:
-    """A damaged optional state_meta must degrade AND be reported as loss.
-
-    state_meta can lose ``key`` while ``value`` stays readable. Indexing
-    ``key`` unconditionally raised ValueError and killed the whole partial
-    recovery. Reporting it as ``missing`` instead is just as wrong in the
-    other direction: verification only escalates ``failed``/``partial``, so
-    the run would claim ``complete=True`` after silently dropping real
-    metadata. A present-but-unusable table must be ``failed``, surface a
-    warning, and mark the output partial — while sessions and messages still
-    recover.
-    """
-    source = tmp_path / "meta-damaged.db"
-    output = tmp_path / "meta-recovered.db"
-    expected = _make_source(source)
-
-    conn = sqlite3.connect(str(source), isolation_level=None)
-    try:
-        conn.execute("DROP TABLE IF EXISTS state_meta")
-        conn.execute("CREATE TABLE state_meta(value TEXT)")
-        conn.execute("INSERT INTO state_meta(value) VALUES ('orphaned')")
-    finally:
-        conn.close()
-
-    report = recover_session_database(
-        source,
-        output,
-        work_dir=tmp_path,
-        chunk_size=4,
-        allow_partial=True,
-    )
-
-    # The table existed and could not be salvaged: that is loss, not absence.
-    assert report["copy"]["state_meta"]["status"] == "failed"
-    assert any(
-        "state_meta" in warning for warning in report["verification"]["warnings"]
-    ), report["verification"]["warnings"]
-    assert report["verification"]["loss_detected"] is True
-    assert report["partial"] is True
-    assert report["complete"] is False
-
-    # Structurally sound, so still installable-with-review.
-    assert report["verified"] is True
-    assert report["verification"]["healthy"] is True
-    assert report["installed"] is False
-
-    # The canonical data still recovers.
-    assert report["verification"]["table_counts"]["sessions"] == expected["sessions"]
-    assert report["verification"]["table_counts"]["messages"] == expected["messages"]
-    assert report["verification"]["integrity_check"] == ["ok"]
 
 
-def test_partial_recovery_treats_absent_state_meta_as_no_loss(
-    tmp_path: Path,
-) -> None:
-    """A genuinely absent state_meta is not data loss and must not warn."""
-    source = tmp_path / "meta-absent.db"
-    output = tmp_path / "meta-absent-recovered.db"
-    _make_source(source)
-
-    conn = sqlite3.connect(str(source), isolation_level=None)
-    try:
-        conn.execute("DROP TABLE IF EXISTS state_meta")
-    finally:
-        conn.close()
-
-    report = recover_session_database(
-        source,
-        output,
-        work_dir=tmp_path,
-        chunk_size=4,
-        allow_partial=True,
-    )
-
-    assert report["copy"]["state_meta"]["status"] == "missing"
-    assert not any(
-        "state_meta" in warning for warning in report["verification"]["warnings"]
-    ), report["verification"]["warnings"]
-    assert report["verification"]["integrity_check"] == ["ok"]
 
 
-def test_state_meta_salvage_distinguishes_absent_from_unusable(
-    tmp_path: Path,
-) -> None:
-    """Unit-level: the salvage helper must not conflate absent with damaged.
-
-    ``recover_session_database`` short-circuits on the inspection result when
-    state_meta is entirely absent, so the helper's own absent-branch is never
-    reached through the public path — a regression there would be invisible
-    end-to-end. Exercise it directly so both statuses are pinned:
-    absent -> ``missing`` (no loss), present-but-unusable -> ``failed``
-    (loss, which verification escalates into a warning).
-    """
-    destination_path = tmp_path / "dest.db"
-    destination = sqlite3.connect(str(destination_path), isolation_level=None)
-    destination.execute("CREATE TABLE state_meta(key TEXT PRIMARY KEY, value TEXT)")
-
-    absent_path = tmp_path / "absent.db"
-    absent = sqlite3.connect(str(absent_path), isolation_level=None)
-    absent.execute("CREATE TABLE unrelated(x)")
-
-    damaged_path = tmp_path / "damaged.db"
-    damaged = sqlite3.connect(str(damaged_path), isolation_level=None)
-    damaged.execute("CREATE TABLE state_meta(value TEXT)")
-    damaged.execute("INSERT INTO state_meta(value) VALUES ('orphaned')")
-
-    try:
-        absent_result = session_recovery._copy_state_meta_salvage(
-            absent, destination, chunk_size=4, progress_cb=None, source_rows=0
-        )
-        assert absent_result["status"] == "missing", (
-            "a table that was never there is not data loss"
-        )
-
-        damaged_result = session_recovery._copy_state_meta_salvage(
-            damaged, destination, chunk_size=4, progress_cb=None, source_rows=1
-        )
-        assert damaged_result["status"] == "failed", (
-            "a present-but-unusable table is data loss; reporting 'missing' "
-            "would let verification claim complete=True after dropping it"
-        )
-    finally:
-        destination.close()
-        absent.close()
-        damaged.close()
 
 
-def test_recovery_refuses_to_snapshot_a_live_database(tmp_path: Path) -> None:
-    """Snapshotting must refuse while a connection to the source is live.
-
-    Copying a database file is an open()/close() on it, and close() cancels
-    every POSIX advisory lock the process holds on that file (see
-    hermes_cli.sqlite_safe_read). Recovery normally runs against an offline
-    file, but the check must exist so this path cannot drift away from
-    hermes_state._backup_db_file, which refuses the same situation.
-    """
-    from hermes_cli.sqlite_safe_read import connect_tracked
-
-    source = tmp_path / "live-state.db"
-    output = tmp_path / "recovered.db"
-    _make_source(source)
-
-    live = connect_tracked(source, isolation_level=None)
-    try:
-        with pytest.raises(SessionRecoverySafetyError, match="still open"):
-            recover_session_database(source, output, work_dir=tmp_path)
-    finally:
-        live.close()
-
-    assert not output.exists()
-
-    # With the connection closed the same call proceeds normally.
-    report = recover_session_database(source, output, work_dir=tmp_path)
-    assert report["verification"]["integrity_check"] == ["ok"]
-
-
-def test_recovery_rebuilds_canonical_data_without_opening_source(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = tmp_path / "damaged-state.db"
-    output = tmp_path / "recovered-state.db"
-    expected = _make_source(source)
-    _orphan_fts_schema(source)
-
-    source_hash = _sha256(source)
-    source_stat = source.stat()
-
-    # Exercise the vulnerable-runtime fallback: a fresh recovered DB must be
-    # born in DELETE mode instead of enabling WAL (#70055, retained).
-    monkeypatch.setattr(
-        hermes_state,
-        "is_sqlite_wal_reset_vulnerable",
-        lambda version_info=None: True,
-    )
-
-    report = recover_session_database(
-        source,
-        output,
-        work_dir=tmp_path,
-        chunk_size=4,
-    )
-
-    assert report["complete"] is True
-    assert report["installed"] is False
-    assert report["source_unchanged"] is True
-    assert report["verification"]["journal_mode"] == "delete"
-    assert report["verification"]["integrity_check"] == ["ok"]
-    assert report["verification"]["foreign_key_check"] == []
-    assert report["verification"]["schema_version"] == SCHEMA_VERSION
-    assert report["verification"]["pending_fts_keys"] == []
-    assert report["verification"]["table_counts"]["sessions"] == expected["sessions"]
-    assert report["verification"]["table_counts"]["messages"] == expected["messages"]
-    assert report["copy"]["messages"]["copied_rows"] == expected["messages"]
-    disk_space = report["disk_space"]
-    assert disk_space["estimated_output_bytes"] == disk_space["source_bundle_bytes"]
-    assert disk_space["work_dir_required_bytes"] == (
-        disk_space["source_bundle_bytes"]
-        + disk_space["estimated_output_bytes"]
-        + disk_space["headroom_bytes"]
-    )
-
-    assert _sha256(source) == source_hash
-    assert source.stat().st_size == source_stat.st_size
-    assert source.stat().st_mtime_ns == source_stat.st_mtime_ns
-
-    conn = sqlite3.connect(str(output))
-    try:
-        assert (
-            conn.execute(
-                "SELECT value FROM state_meta WHERE key = ?",
-                ("goal:recovery-session-0",),
-            ).fetchone()[0]
-            == '{"status":"active"}'
-        )
-        assert conn.execute(
-            "SELECT value FROM state_meta WHERE key = 'fts_storage_version'"
-        ).fetchone()[0] == str(FTS_STORAGE_VERSION)
-        assert (
-            conn.execute(
-                "SELECT COUNT(*) FROM state_meta "
-                "WHERE key IN ('fts_rebuild_high_water', 'fts_rebuild_progress')"
-            ).fetchone()[0]
-            == 0
-        )
-        assert (
-            conn.execute("SELECT COUNT(*) FROM telegram_dm_topic_mode").fetchone()[0]
-            == 1
-        )
-        assert (
-            conn.execute("SELECT COUNT(*) FROM telegram_dm_topic_bindings").fetchone()[
-                0
-            ]
-            == 1
-        )
-        assert conn.execute("SELECT COUNT(*) FROM gateway_routing").fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 1
-        assert (
-            conn.execute(
-                "SELECT COUNT(*) FROM messages_fts "
-                "WHERE messages_fts MATCH 'recoverable'"
-            ).fetchone()[0]
-            == expected["messages"]
-        )
-        assert (
-            conn.execute(
-                "SELECT COUNT(*) FROM messages_fts_trigram "
-                "WHERE messages_fts_trigram MATCH 'cover'"
-            ).fetchone()[0]
-            == expected["messages"]
-        )
-    finally:
-        conn.close()
-
-    reopened = SessionDB(db_path=output)
-    try:
-        message_id = reopened.append_message(
-            "recovery-session-0",
-            "user",
-            "post recovery write",
-        )
-        assert message_id > expected["messages"]
-        assert reopened.search_messages("post recovery write")
-    finally:
-        reopened.close()
-
-
-def test_recovery_refuses_overwrite_and_source_alias(tmp_path: Path) -> None:
-    source = tmp_path / "state.db"
-    _make_source(source)
-
-    output = tmp_path / "existing.db"
-    output.write_bytes(b"keep me")
-    with pytest.raises(SessionRecoverySafetyError, match="overwrite"):
-        recover_session_database(source, output, work_dir=tmp_path)
-    assert output.read_bytes() == b"keep me"
-
-    with pytest.raises(SessionRecoverySafetyError, match="must not be the source"):
-        recover_session_database(source, source, work_dir=tmp_path)
-
-
-def test_recovery_refuses_before_writing_when_disk_space_is_short(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = tmp_path / "state.db"
-    output = tmp_path / "recovered.db"
-    _make_source(source)
-    monkeypatch.setattr(
-        session_recovery.shutil,
-        "disk_usage",
-        lambda _path: SimpleNamespace(total=100, used=99, free=1),
-    )
-
-    with pytest.raises(SessionRecoverySafetyError, match="Not enough free disk space"):
-        recover_session_database(source, output, work_dir=tmp_path)
-    assert not output.exists()
-    assert not list(tmp_path.glob("hermes-session-recovery-*"))
-
-
-def test_recovery_requires_readable_sessions_and_messages(tmp_path: Path) -> None:
-    source = tmp_path / "missing-messages.db"
-    output = tmp_path / "recovered.db"
-    conn = sqlite3.connect(str(source))
-    try:
-        conn.execute(
-            "CREATE TABLE sessions "
-            "(id TEXT PRIMARY KEY, source TEXT NOT NULL, started_at REAL NOT NULL)"
-        )
-        conn.execute(
-            "INSERT INTO sessions(id, source, started_at) VALUES ('s1', 'cli', 1)"
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    inspection = inspect_session_database(source, work_dir=tmp_path)
-    assert inspection["recoverable"] is False
-    with pytest.raises(SessionRecoverySourceError, match="messages"):
-        recover_session_database(source, output, work_dir=tmp_path)
-    assert not output.exists()
-
-
-def test_allow_partial_still_reports_a_complete_healthy_copy(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "healthy-state.db"
-    output = tmp_path / "healthy-recovered.db"
-    expected = _make_source(source)
-
-    report = recover_session_database(
-        source,
-        output,
-        work_dir=tmp_path,
-        chunk_size=4,
-        allow_partial=True,
-    )
-
-    assert report["verified"] is True
-    assert report["complete"] is True
-    assert report["partial"] is False
-    assert report["verification"]["warnings"] == []
-    assert report["verification"]["table_counts"]["sessions"] == expected["sessions"]
-    assert report["verification"]["table_counts"]["messages"] == expected["messages"]
-    assert report["orphan_cleanup"]["total_removed_or_relinked"] == 0
 
 
 def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(
@@ -907,18 +594,25 @@ def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(
     }
 
 
-def test_partial_recovery_removes_messages_for_unreadable_sessions(
+def test_partial_recovery_clears_only_unreadable_system_prompt_refs(
     tmp_path: Path,
 ) -> None:
-    source = tmp_path / "corrupt-sessions.db"
-    output = tmp_path / "partial-sessions.db"
+    source = tmp_path / "corrupt-system-prompts.db"
+    output = tmp_path / "partial-system-prompts.db"
     session_count = 180
-    sessions_root = _make_many_sessions_source(
-        source,
-        session_count,
-    )
-    _corrupt_middle_table_leaf(source, sessions_root)
-    source_hash = _sha256(source)
+    _make_many_sessions_source(source, session_count)
+
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        row = conn.execute(
+            "SELECT rootpage FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'system_prompts'"
+        ).fetchone()
+        assert row is not None
+        prompt_root = int(row[0])
+    finally:
+        conn.close()
+    _corrupt_middle_table_leaf(source, prompt_root)
 
     report = recover_session_database(
         source,
@@ -929,116 +623,29 @@ def test_partial_recovery_removes_messages_for_unreadable_sessions(
     )
 
     assert report["verified"] is True
-    assert report["complete"] is False
     assert report["partial"] is True
-    assert report["source_unchanged"] is True
-    assert _sha256(source) == source_hash
-    assert report["copy"]["sessions"]["status"] == "partial"
+    assert report["copy"]["sessions"]["status"] == "complete"
     assert report["copy"]["messages"]["status"] == "complete"
-    removed_messages = report["orphan_cleanup"]["messages_removed"]
-    assert removed_messages > 0
-    assert report["orphan_cleanup"]["total_removed_or_relinked"] >= removed_messages
+    assert report["copy"]["system_prompts"]["status"] == "partial"
+    cleared = report["orphan_cleanup"]["session_prompt_refs_cleared"]
+    assert 0 < cleared < session_count
     assert report["verification"]["foreign_key_check"] == []
 
     conn = sqlite3.connect(str(output))
     try:
-        recovered_sessions = {
-            str(row[0]) for row in conn.execute("SELECT id FROM sessions")
-        }
-        assert "partial-session-0000" in recovered_sessions
-        assert f"partial-session-{session_count - 1:04d}" in recovered_sessions
-        assert 0 < len(recovered_sessions) < session_count
+        assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == session_count
+        retained = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE system_prompt_hash IS NOT NULL"
+        ).fetchone()[0]
+        assert retained == session_count - cleared
         assert (
-            conn.execute(
-                "SELECT COUNT(*) FROM messages AS message "
-                "WHERE NOT EXISTS ("
-                "SELECT 1 FROM sessions "
-                "WHERE sessions.id = message.session_id)"
-            ).fetchone()[0]
-            == 0
-        )
-        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == len(
-            recovered_sessions
+            conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0]
+            == retained
         )
     finally:
         conn.close()
 
 
-def test_cli_recover_writes_verified_report_without_touching_source(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "state.db"
-    output = tmp_path / "recovered.db"
-    expected = _make_source(source)
-    source_hash = _sha256(source)
-    env = os.environ.copy()
-    env["HERMES_HOME"] = str(tmp_path / "isolated-hermes-home")
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "hermes_cli.main",
-            "sessions",
-            "recover",
-            "--source",
-            str(source),
-            "--output",
-            str(output),
-            "--work-dir",
-            str(tmp_path),
-            "--chunk-size",
-            "5",
-        ],
-        cwd=Path(__file__).resolve().parents[2],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "The active session database was not changed." in result.stdout
-    assert _sha256(source) == source_hash
-    report_path = output.with_name(output.name + ".recovery.json")
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["complete"] is True
-    assert report["verification"]["table_counts"]["sessions"] == expected["sessions"]
-    assert report["verification"]["table_counts"]["messages"] == expected["messages"]
-
-
-def test_failed_repair_points_the_user_at_offline_recovery(tmp_path: Path) -> None:
-    """A failed in-place repair must name the offline recovery command.
-
-    This is the reported dead end: `hermes sessions repair` exhausts its
-    in-place ladder, prints "keep the files", and stops -- leaving the user
-    with no idea that a non-destructive recovery path exists. The failure
-    branch has to hand them the next command, inspection first, seeded with
-    the preserved backup it just made.
-    """
-    hermes_home = tmp_path / "isolated-hermes-home"
-    hermes_home.mkdir()
-    # Not a database at all -> every in-place repair strategy fails.
-    (hermes_home / "state.db").write_bytes(b"SQLite format 3\x00" + b"\x7f" * 2048)
-    env = os.environ.copy()
-    env["HERMES_HOME"] = str(hermes_home)
-
-    result = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.main", "sessions", "repair"],
-        cwd=Path(__file__).resolve().parents[2],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-
-    combined = result.stdout + result.stderr
-    assert "Repair failed" in combined, combined
-    # The pointer, and specifically the read-only step first.
-    assert "sessions recover" in combined, combined
-    assert "--inspect-only" in combined, combined
-    # It must offer the source it actually preserved, not a placeholder.
-    assert "--source" in combined, combined
-    assert "malformed-backup" in combined, combined

@@ -31,6 +31,7 @@ from hermes_state import (
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 _CANONICAL_TABLES = (
+    "system_prompts",
     "sessions",
     "messages",
     "session_model_usage",
@@ -861,19 +862,39 @@ def _reconstruct_missing_sessions(
     if not orphaned:
         return result
 
+    title_sequence = 1
     for session_id, first_timestamp, message_count in orphaned:
         started_at = float(first_timestamp) if first_timestamp is not None else 0.0
-        destination.execute(
-            "INSERT OR IGNORE INTO sessions "
+        while True:
+            title = (
+                f"[recovered {title_sequence}] "
+                "session metadata was unreadable"
+            )
+            title_sequence += 1
+            if (
+                destination.execute(
+                    "SELECT 1 FROM sessions WHERE title = ? LIMIT 1",
+                    (title,),
+                ).fetchone()
+                is None
+            ):
+                break
+
+        cursor = destination.execute(
+            "INSERT INTO sessions "
             "(id, source, started_at, title, message_count) "
             "VALUES (?, 'recovered', ?, ?, ?)",
             (
                 session_id,
                 started_at,
-                "[recovered] session metadata was unreadable",
+                title,
                 int(message_count),
             ),
         )
+        if cursor.rowcount != 1:
+            raise sqlite3.IntegrityError(
+                f"failed to reconstruct missing session {session_id!r}"
+            )
         result["sessions_reconstructed"] += 1
         result["messages_retained"] += int(message_count)
     return result
@@ -892,6 +913,8 @@ def _cleanup_partial_orphans(
     """
 
     result: dict[str, Any] = {
+        "session_prompt_refs_cleared": 0,
+        "system_prompts_removed": 0,
         "sessions_parent_cleared": 0,
         "sessions_reconstructed": 0,
         "messages_retained": 0,
@@ -926,6 +949,42 @@ def _cleanup_partial_orphans(
                 "WHERE parent.id = sessions.parent_session_id)"
             )
         result["sessions_parent_cleared"] = parent_count
+
+        prompt_ref_count = int(
+            destination.execute(
+                "SELECT COUNT(*) FROM sessions "
+                "WHERE system_prompt_hash IS NOT NULL "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM system_prompts "
+                "WHERE system_prompts.hash = sessions.system_prompt_hash)"
+            ).fetchone()[0]
+        )
+        if prompt_ref_count:
+            destination.execute(
+                "UPDATE sessions SET system_prompt_hash = NULL "
+                "WHERE system_prompt_hash IS NOT NULL "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM system_prompts "
+                "WHERE system_prompts.hash = sessions.system_prompt_hash)"
+            )
+        result["session_prompt_refs_cleared"] = prompt_ref_count
+
+        unreferenced_prompt_count = int(
+            destination.execute(
+                "SELECT COUNT(*) FROM system_prompts "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM sessions "
+                "WHERE sessions.system_prompt_hash = system_prompts.hash)"
+            ).fetchone()[0]
+        )
+        if unreferenced_prompt_count:
+            destination.execute(
+                "DELETE FROM system_prompts "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM sessions "
+                "WHERE sessions.system_prompt_hash = system_prompts.hash)"
+            )
+        result["system_prompts_removed"] = unreferenced_prompt_count
 
         dependent_tables = (
             ("messages", "messages_removed"),
@@ -963,7 +1022,8 @@ def _cleanup_partial_orphans(
     # reconstruction counters describe data RETAINED, so summing them here
     # would report saving the user's messages as if it were losing them.
     result["total_removed_or_relinked"] = (
-        int(result["sessions_parent_cleared"])
+        int(result["session_prompt_refs_cleared"])
+        + int(result["sessions_parent_cleared"])
         + int(result["messages_removed"])
         + int(result["session_model_usage_removed"])
         + int(result["compression_locks_removed"])
@@ -1074,13 +1134,33 @@ def _verify_recovered_database(
                 else:
                     verification["errors"].append(message)
 
+        cleanup = orphan_cleanup or {}
+        rebuilt_sessions = int(cleanup.get("sessions_reconstructed") or 0)
+        retained_messages = int(cleanup.get("messages_retained") or 0)
+        removed_messages = int(cleanup.get("messages_removed") or 0)
+        # A wholly unreadable sessions b-tree is recoverable when every output
+        # parent was rebuilt from the surviving messages and none were dropped.
+        # This is still data loss, but it is not structural verification failure.
+        sessions_fully_reconstructed = bool(
+            rebuilt_sessions > 0
+            and counts.get("sessions") == rebuilt_sessions
+            and counts.get("messages") == retained_messages
+            and removed_messages == 0
+        )
+
         for table, table_report in copy_report.items():
             status = table_report.get("status")
             if status not in {"failed", "partial"}:
                 continue
             message = f"{table} copy status is {status}"
             if allow_partial and (
-                status == "partial" or table not in {"sessions", "messages"}
+                status == "partial"
+                or table not in {"sessions", "messages"}
+                or (
+                    table == "sessions"
+                    and status == "failed"
+                    and sessions_fully_reconstructed
+                )
             ):
                 verification["warnings"].append(message)
                 verification["loss_detected"] = True

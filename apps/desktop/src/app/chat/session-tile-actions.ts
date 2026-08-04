@@ -29,6 +29,7 @@ import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
+import { setSessionDraftingTool } from '@/store/tool-drafting'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
@@ -168,7 +169,12 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
         }
 
         if (attachment.kind === 'image' || attachment.kind === 'file') {
-          const next = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
+          const next = await uploadComposerAttachment(attachment, {
+            backendCwd: readState()?.cwd,
+            remote,
+            requestGateway,
+            sessionId
+          })
 
           if (options.updateComposerAttachments ?? true) {
             scope.attachments.update(next)
@@ -236,23 +242,6 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     [listTileSession, scope.attachments.$attachments, submitPromptText]
   )
 
-  const appendSystemNote = useCallback(
-    (text: string) => {
-      update(state => ({
-        ...state,
-        messages: [
-          ...state.messages,
-          {
-            id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            role: 'system',
-            parts: [textPart(text)]
-          }
-        ]
-      }))
-    },
-    [update]
-  )
-
   const cancelRun = useCallback(async () => {
     const sessionId = runtimeIdRef.current
 
@@ -270,6 +259,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     clearSessionTodos(sessionId)
     clearSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
+    setSessionDraftingTool(sessionId, '')
     clearAllPrompts(sessionId)
     clearClarifyRequest(undefined, sessionId)
 
@@ -283,30 +273,84 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   const steerPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
       const text = rawText.trim()
+      const sessionId = runtimeIdRef.current
 
-      if (!text) {
+      if (!text || !sessionId) {
         return false
       }
 
+      const messageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+      const mutate = (updater: (state: ClientSessionState) => ClientSessionState) =>
+        sessionTileDelegate()?.updateSession(sessionId, updater)
+
+      // Match the primary composer: insert the correction before the active
+      // reply before awaiting the redirect RPC, whose completion can race us.
+      mutate(state => {
+        const message = {
+          id: messageId,
+          role: 'user' as const,
+          parts: [textPart(text)]
+        }
+
+        const streamIndex = state.streamId ? state.messages.findIndex(candidate => candidate.id === state.streamId) : -1
+
+        const lastAssistantIndex = state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
+        const insertionIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
+
+        const messages =
+          insertionIndex >= 0
+            ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
+            : [...state.messages, message]
+
+        return { ...state, messages }
+      })
+
+      const discardOptimisticMessage = () =>
+        mutate(state => ({
+          ...state,
+          messages: state.messages.filter(message => message.id !== messageId)
+        }))
+
+      const moveOptimisticMessageToEnd = () =>
+        mutate(state => {
+          const message = state.messages.find(candidate => candidate.id === messageId)
+
+          return message
+            ? { ...state, messages: [...state.messages.filter(candidate => candidate.id !== messageId), message] }
+            : state
+        })
+
       try {
-        const result = await requestGateway<{ status?: string }>('session.steer', {
-          session_id: runtimeIdRef.current,
+        const result = await requestGateway<{ status?: string }>('session.redirect', {
+          session_id: sessionId,
           text
         })
 
-        if (result?.status === 'queued') {
+        if (result?.status === 'redirected') {
           triggerHaptic('submit')
-          appendSystemNote(`steer:${text}`)
+
+          return true
+        }
+
+        if (result?.status === 'queued') {
+          moveOptimisticMessageToEnd()
+          triggerHaptic('submit')
 
           return true
         }
       } catch {
+        discardOptimisticMessage()
         // Swallow — the caller queues the text so nothing is lost.
+
+        return false
       }
+
+      discardOptimisticMessage()
 
       return false
     },
-    [appendSystemNote, requestGateway]
+    [requestGateway]
   )
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with

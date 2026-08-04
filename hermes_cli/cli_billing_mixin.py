@@ -15,7 +15,6 @@ Import discipline mirrors ``hermes_cli.cli_commands_mixin``:
 
 from __future__ import annotations
 
-import time
 
 
 class CLIBillingMixin:

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { ArrowUp, iconSize, Pencil, Trash2 } from '@/lib/icons'
+import { CornerDownLeft, iconSize, Pencil, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { QueuedPromptEntry } from '@/store/composer-queue'
 
@@ -22,7 +22,7 @@ interface QueuePanelProps {
 }
 
 const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
-  entry.text.trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
+  (entry.displayText ?? entry.text).trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
 
 export function QueuePanel({
   busy,
@@ -103,7 +103,7 @@ export function QueuePanel({
                     type="button"
                     variant="ghost"
                   >
-                    <ArrowUp className={iconSize.xs} />
+                    <CornerDownLeft className={iconSize.xs} />
                   </Button>
                 </Tip>
                 <Tip label={c.queueDelete}>

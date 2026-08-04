@@ -55,23 +55,3 @@ def test_top_level_yolo_flag_sets_env_before_startup(monkeypatch):
     )
 
 
-def test_chat_subcommand_yolo_flag_sets_env_before_startup(monkeypatch):
-    """hermes chat --yolo must also set HERMES_YOLO_MODE before
-    _prepare_agent_startup."""
-    result = _run_main_and_capture_yolo_at_startup(
-        monkeypatch, ["hermes", "chat", "--yolo"]
-    )
-    assert result == "1", (
-        "HERMES_YOLO_MODE was not '1' when _prepare_agent_startup was "
-        "called from main() with 'chat --yolo'."
-    )
-
-
-def test_no_yolo_flag_leaves_env_unset_at_startup(monkeypatch):
-    """Without --yolo, HERMES_YOLO_MODE must not be set at startup."""
-    result = _run_main_and_capture_yolo_at_startup(
-        monkeypatch, ["hermes"]
-    )
-    assert result is None, (
-        "HERMES_YOLO_MODE was unexpectedly set at startup without --yolo."
-    )

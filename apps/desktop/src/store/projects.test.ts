@@ -1,9 +1,10 @@
 import { atom } from 'nanostores'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
+import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 
 import {
   $activeProjectId,
@@ -25,6 +26,7 @@ import {
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
+  resolveNewSessionCwd,
   scanAndRecordRepos,
   tombstoneSessions
 } from './projects'
@@ -99,14 +101,97 @@ describe('project scope', () => {
     expect($projectScope.get()).toBe(ALL_PROJECTS)
   })
 
-  it('entering the synthetic No-project bucket still scopes (no active pin)', () => {
-    enterProject('__no_project__')
-    expect($projectScope.get()).toBe('__no_project__')
+  it('entering the synthetic Home bucket still scopes (no active pin)', () => {
+    enterProject(NO_PROJECT_ID)
+    expect($projectScope.get()).toBe(NO_PROJECT_ID)
   })
 
   it('persists the scope to localStorage', () => {
     enterProject('p_abc')
     expect(window.localStorage.getItem('hermes.desktop.projectScope')).toBe('p_abc')
+  })
+})
+
+describe('resolveNewSessionCwd', () => {
+  beforeEach(() => {
+    $projectScope.set(ALL_PROJECTS)
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+    $currentCwd.set('')
+    $selectedStoredSessionId.set(null)
+    $sessions.set([])
+    // Reset focused-session projections by clearing the inputs they read.
+    // $focusedStoredSessionId falls back to $selectedStoredSessionId.
+    // $focusedSessionState needs a runtime — leave it empty via no session states.
+  })
+
+  afterEach(() => {
+    applyConfiguredDefaultProjectDir(null)
+    $projectScope.set(ALL_PROJECTS)
+    $currentCwd.set('')
+    $selectedStoredSessionId.set(null)
+    $sessions.set([])
+  })
+
+  it('starts a chat detached inside Home, ignoring the configured default dir', () => {
+    // Attaching the default dir here would move the new chat out of Home the
+    // moment it was created — "no folder" is what the bucket means.
+    enterProject(NO_PROJECT_ID)
+
+    expect(resolveNewSessionCwd()).toBe('')
+  })
+
+  it('still falls back to the configured default outside Home', () => {
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+
+  it('inherits the focused session workspace when not drilled into a project', () => {
+    // Simulate a primary session whose stored row carries a project cwd —
+    // the common case: you're in a chat that has a pwd, hit ⌘N/⌘T, and
+    // expect the new draft to stay in that project without sidebar drill-in.
+    $selectedStoredSessionId.set('sess-a')
+    $sessions.set([
+      {
+        archived: false,
+        cwd: '/Users/me/www/hermes-agent',
+        ended_at: null,
+        id: 'sess-a',
+        input_tokens: 0,
+        is_active: true,
+        last_active: 0,
+        message_count: 1,
+        model: null,
+        output_tokens: 0,
+        started_at: 0,
+        title: 'work'
+      } as never
+    ])
+
+    expect(resolveNewSessionCwd()).toBe('/Users/me/www/hermes-agent')
+  })
+
+  it('does not re-attach a remembered cwd when the focused session is detached', () => {
+    $currentCwd.set('/Users/me/stale-remembered')
+    $selectedStoredSessionId.set('sess-detached')
+    $sessions.set([
+      {
+        archived: false,
+        cwd: null,
+        ended_at: null,
+        id: 'sess-detached',
+        input_tokens: 0,
+        is_active: true,
+        last_active: 0,
+        message_count: 1,
+        model: null,
+        output_tokens: 0,
+        started_at: 0,
+        title: 'loose'
+      } as never
+    ])
+
+    // Focused session has no workspace → fall through to configured default,
+    // not the stale $currentCwd from an earlier chat.
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
   })
 })
 

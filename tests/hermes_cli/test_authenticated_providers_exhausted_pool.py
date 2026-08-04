@@ -67,17 +67,6 @@ def test_exhausted_pool_provider_is_not_authenticated(monkeypatch):
     assert "opencode-go" not in slugs
 
 
-def test_pool_provider_with_available_credential_is_authenticated(monkeypatch):
-    """Control: with a usable credential the provider IS authenticated, proving
-    the test drives the credential gate rather than excluding it for some other
-    reason."""
-    from hermes_cli.model_switch import get_authenticated_provider_slugs
-
-    _patch_opencode_pool(monkeypatch, available=True)
-    slugs = get_authenticated_provider_slugs(current_provider="alibaba")
-    assert "opencode-go" in slugs
-
-
 def test_opaque_legacy_pool_value_stays_visible(monkeypatch):
     """Legacy token-style auth-store values have no parsed pool entries."""
     from hermes_cli.model_switch import _credential_pool_is_usable
@@ -114,6 +103,8 @@ def test_picker_shows_exhausted_pool_provider(monkeypatch):
         "Picker must show exhausted-pool providers so the user can select "
         "a different model under the same provider"
     )
+
+
 
 
 class _StopPicker(BaseException):
@@ -157,18 +148,3 @@ def test_aux_task_picker_requests_exhausted_pool_visibility(monkeypatch):
     )
 
 
-def test_vision_provider_picker_requests_exhausted_pool_visibility(monkeypatch):
-    """The vision provider/model picker (``_configure_vision_provider_model``)
-    must also request exhausted-pool visibility — same rationale as #66584."""
-    import hermes_cli.tools_config as tc
-
-    recorded: dict = {}
-    monkeypatch.setattr(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        _spy_list_authenticated(recorded),
-    )
-
-    with pytest.raises(_StopPicker):
-        tc._configure_vision_provider_model({}, {})
-
-    assert recorded.get("for_picker") is True

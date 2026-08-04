@@ -9,10 +9,11 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState
 } from 'react'
-import { useStickToBottom } from 'use-stick-to-bottom'
+import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -30,23 +31,114 @@ import { MessageRenderBoundary } from '../message-render-boundary'
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
 export type MessageGroup = { id: string; weight: number } & (
-  | { index: number; kind: 'standalone' }
-  | { indices: number[]; kind: 'turn' }
+  { index: number; kind: 'standalone' } | { indices: number[]; kind: 'turn' }
 )
 
-// DOM is bounded by a rendered-PART budget, not a message/turn count: a single
-// assistant message folds every tool call into a part, so heavy sessions are
-// ~40 turns / ~100 messages but ~1000 parts — and parts are what drive node
-// count. "Show earlier" prepends another page; whole turns stay intact so the
-// sticky human bubble never loses its turn. This is the long-session perf lever
-// WITHOUT a virtualizer — pure rendering, never touches scrollTop, so it can't
-// fight use-stick-to-bottom (the single scroll owner).
+// DOM is bounded by a render-cost budget, not a message/turn count. Every part
+// costs one unit, and large strings add another unit per 512 characters. Parts
+// approximate component/node count; characters approximate markdown parsing,
+// text-node allocation, and tool-result formatting. Counting only parts badly
+// underpriced a 51KB tool result as "1", so a handful of huge results let a
+// 600KB transcript through the old 300-part cap and could drive Chromium's renderer
+// into a GC crash.
+//
+// "Show earlier" prepends another page; whole turns stay intact so the sticky
+// human bubble never loses its turn. This is the long-session perf lever WITHOUT
+// a virtualizer — pure rendering, never touches scrollTop, so it can't fight
+// use-stick-to-bottom (the single scroll owner).
 const RENDER_BUDGET = 300
+export const RENDER_WEIGHT_CHARS = 512
+const MAX_MEASURED_MESSAGE_CHARS = RENDER_BUDGET * RENDER_WEIGHT_CHARS
 // On session switch, paint a small budget first (enough for the bottom turn(s)
 // the user actually sees after scroll-to-bottom), then bump to the full budget
 // in a requestAnimationFrame — defers the heavy markdown+syntax-highlight render
 // past the initial commit, so the switch feels instant.
-const FIRST_PAINT_BUDGET = 60
+//
+// 20, down from 60: the first-paint commit is synchronous and uninterruptible,
+// and at 60 cost units it measured 627ms on a real session (LoAF: block=575ms, no
+// attributed script — pure commit). A viewport after scroll-to-bottom shows
+// 1-2 normal turns ≈ 10-20 units; the transition backfill below fills the rest
+// interruptibly, so the only thing a smaller budget changes is how much work
+// blocks the click-to-paint path.
+const FIRST_PAINT_BUDGET = 20
+
+// Browsers may quantize a requested scrollTop to a nearby device-pixel
+// boundary. use-stick-to-bottom otherwise compares the lower actual value to
+// the integer target forever, re-requesting the same instant scroll every
+// frame. Treat a subpixel remainder as achieved; larger gaps still follow new
+// streamed content normally.
+const SCROLL_TARGET_EPSILON_PX = 0.5
+
+export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, { scrollElement }) => {
+  const currentScrollTop = scrollElement.scrollTop
+  const remaining = targetScrollTop - currentScrollTop
+
+  return remaining >= 0 && remaining <= SCROLL_TARGET_EPSILON_PX ? currentScrollTop : targetScrollTop
+}
+
+const contentWeightCache = new WeakMap<object, number>()
+const NON_RENDERED_CONTENT_FIELDS = new Set(['id', 'role', 'toolCallId', 'toolName', 'type'])
+
+/**
+ * Estimate the synchronous renderer cost of one assistant-ui message.
+ *
+ * The traversal is capped once a single message has enough text to consume a
+ * complete render page. Going further cannot affect which whole turn crosses
+ * the budget, and avoiding an unbounded walk matters for deeply nested tool
+ * payloads. A WeakMap keeps settled history O(message count) on later store
+ * updates; assistant-ui publishes a new content array when a streaming message
+ * changes, so the live tail still receives a fresh weight.
+ */
+export function messageRenderWeight(content: unknown): number {
+  if (!Array.isArray(content)) {
+    return 1
+  }
+
+  const cached = contentWeightCache.get(content)
+
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const seen = new WeakSet<object>()
+  const pending: unknown[] = [...content]
+  let characters = 0
+
+  while (pending.length > 0 && characters < MAX_MEASURED_MESSAGE_CHARS) {
+    const value = pending.pop()
+
+    if (typeof value === 'string') {
+      characters += Math.min(value.length, MAX_MEASURED_MESSAGE_CHARS - characters)
+
+      continue
+    }
+
+    if (!value || typeof value !== 'object' || seen.has(value)) {
+      continue
+    }
+
+    seen.add(value)
+
+    if (Array.isArray(value)) {
+      for (const nested of value) {
+        pending.push(nested)
+      }
+
+      continue
+    }
+
+    for (const [key, nested] of Object.entries(value)) {
+      if (!NON_RENDERED_CONTENT_FIELDS.has(key)) {
+        pending.push(nested)
+      }
+    }
+  }
+
+  const weight = Math.max(1, content.length) + Math.ceil(characters / RENDER_WEIGHT_CHARS)
+  contentWeightCache.set(content, weight)
+
+  return weight
+}
 
 interface ThreadMessageListProps {
   clampToComposer: boolean
@@ -95,7 +187,7 @@ export function buildGroups(signature: string): MessageGroup[] {
   return groups
 }
 
-// Walk turns newest-first, summing their part weights until the budget is met;
+// Walk turns newest-first, summing their render weights until the budget is met;
 // everything before the first kept turn is hidden. Returns the index of that
 // first visible group.
 export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: number): number {
@@ -122,16 +214,64 @@ export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: 
 // stick-to-bottom lock drifts and the view creeps up over older turns — the
 // "long session eventually shows old responses" glitch.
 //
-// Keep the newest N turns always-rendered so a turn is only ever virtualized
+// Keep the newest turns always-rendered so a turn is only ever virtualized
 // once its layout has settled at its final size (remembered == real → skipping
 // it changes no height). Off-screen OLDER turns still skip, so the dialog/popover
-// recalc win on long transcripts is preserved (that scales with the hundreds of
-// old turns, not this small live tail).
-export const LIVE_TAIL_GROUPS = 6
+// recalc win on long transcripts is preserved.
+//
+// The tail is budgeted in render-cost units, not turns, because that is what the
+// cost actually scales with — the same currency as RENDER_BUDGET /
+// FIRST_PAINT_BUDGET.
+// A turn-count tail silently defeats itself on agent transcripts: one tool-heavy
+// turn is 50-200 units, so a 6-TURN tail exempted the entire visible transcript
+// and nothing virtualized at all. Measured on a 5-tile window (7/3/5/3/2 groups
+// per tile): zero content-visibility containers were active, and every Radix
+// overlay open paid the full ~610ms whole-document recalc that #66470 fixed.
+//
+// 40 units ≈ the 1-2 turns a viewport shows after scroll-to-bottom (the same
+// reasoning as FIRST_PAINT_BUDGET=20, doubled so a turn that grows mid-stream
+// doesn't fall out of the tail as it settles).
+export const LIVE_TAIL_PARTS = 40
+// Floor: always exempt at least this many turns regardless of weight, so a
+// transcript of very heavy turns still keeps the streaming one unvirtualized.
+export const LIVE_TAIL_MIN_GROUPS = 2
+// Ceiling: never exempt more than this many turns, however light they are. On a
+// long transcript of tiny turns a weight-only budget would walk back further
+// than the old turn-count tail did and virtualize LESS — this keeps the new
+// policy a strict improvement on every shape.
+export const LIVE_TAIL_MAX_GROUPS = 6
 
-/** True when a visible group is old enough to virtualize (outside the live tail). */
-export function isVirtualizedGroup(indexInVisible: number, visibleCount: number, liveTail = LIVE_TAIL_GROUPS): boolean {
-  return indexInVisible < visibleCount - liveTail
+/**
+ * Index of the newest group that still virtualizes — everything at or after it
+ * is the live tail and stays rendered. Walks newest-first accumulating weight,
+ * so the tail covers a viewport's worth of content rather than a fixed number
+ * of turns, clamped to [MIN, MAX] turns. Computed once per render, not per row.
+ */
+export function liveTailStart(
+  groups: readonly MessageGroup[],
+  tailWeight = LIVE_TAIL_PARTS,
+  minGroups = LIVE_TAIL_MIN_GROUPS,
+  maxGroups = LIVE_TAIL_MAX_GROUPS
+): number {
+  let weight = 0
+  let start = groups.length
+
+  for (let i = groups.length - 1; i >= 0; i--) {
+    weight += groups[i]?.weight ?? 1
+    start = i
+
+    if (weight > tailWeight) {
+      break
+    }
+  }
+
+  // Clamp the tail to [minGroups, maxGroups] turns: the floor keeps the live
+  // turn rendered when turns are huge, the ceiling stops a tail of tiny turns
+  // from sprawling past what the old turn-count policy rendered.
+  const floor = Math.max(0, groups.length - minGroups)
+  const ceiling = Math.max(0, groups.length - maxGroups)
+
+  return Math.min(floor, Math.max(ceiling, start))
 }
 
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
@@ -141,14 +281,27 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   loadingIndicator,
   sessionKey
 }) => {
-  const messageSignature = useAuiState(s =>
-    s.thread.messages
-      .map((message, index) => `${index}:${message.id}:${message.role}:${message.content?.length ?? 1}`)
-      .join('\n')
+  // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
+  // changes only when messages are added/removed/swapped — it keys the error
+  // boundaries and the row identity. The WEIGHT one (parts + character cost)
+  // ticks while a streaming turn appends content — it feeds only the render
+  // budget. Folding weights into the structural key handed every boundary a
+  // new resetKey per appended part, which reconciled every turn's subtree on
+  // every tick (measured: 540 wasted Block renders per explain() sample with
+  // two threads streaming).
+  const structuralSignature = useAuiState(s =>
+    s.thread.messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n')
+  )
+
+  const weightSignature = useAuiState(s =>
+    s.thread.messages.map(message => messageRenderWeight(message.content)).join(',')
   )
 
   const { t } = useI18n()
-  const groups = buildGroups(messageSignature)
+  // Row structure is memoized on the STRUCTURAL signature only, so streaming
+  // part-appends can't churn group identity (that would defeat the rows memo
+  // below on every tick). Weights are folded in separately for the budget.
+  const groups = useMemo(() => buildGroups(structuralSignature), [structuralSignature])
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
 
   // use-stick-to-bottom owns scrollTop (single writer): follow while locked,
@@ -158,14 +311,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // settling. Its refs hang off our own DOM so the sticky human bubbles survive.
   const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll } = useStickToBottom({
     initial: 'instant',
-    resize: 'instant'
+    resize: 'instant',
+    targetScrollTop: resolveThreadScrollTarget
   })
 
   const [renderBudget, setRenderBudget] = useState(FIRST_PAINT_BUDGET)
 
   // Cut the budget during RENDER, not in the post-commit layout effect. An
   // effect-time cut is too late: React would first build the whole tree with
-  // the full budget (up to 300 parts of markdown + syntax highlighting),
+  // the full budget (up to 300 cost units of markdown + syntax highlighting),
   // commit it, and only then re-render at the small budget. The render-phase
   // state adjustment restarts this component immediately — before any child
   // renders — so the heavy commit never happens.
@@ -191,6 +345,27 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   }
 
+  // Where to land after a prepend, in distance-from-bottom (survives the
+  // height change). Shared by "Show earlier" and the budget backfill below.
+  const restoreFromBottomRef = useRef<number | null>(null)
+  // False from a session switch until the settle loop below parks the
+  // transcript at its true bottom. While false, scrollTop is a way-point of a
+  // load in progress, not a reading position anyone chose — never anchor to it.
+  const loadSettledRef = useRef(false)
+  // Session the settle loop last armed for, so a re-arm within the same load
+  // is distinguishable from a switch to a different transcript.
+  const settleKeyRef = useRef(sessionKey)
+
+  // Record where the view should land once a prepend has grown the content,
+  // measured from the BOTTOM so the added height doesn't invalidate it. Only a
+  // settled load has an offset the user chose; mid-load the answer is simply
+  // the bottom.
+  const anchorBeforePrepend = useCallback(() => {
+    const el = scrollRef.current
+
+    restoreFromBottomRef.current = el && loadSettledRef.current ? el.scrollHeight - el.scrollTop : 0
+  }, [scrollRef])
+
   // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
   // commit painted — as a TRANSITION, so the heavy markdown + syntax
   // highlight render of the older turns is interruptible instead of one long
@@ -204,6 +379,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     const rafId = requestAnimationFrame(() => {
+      // The backfill PREPENDS older turns, so everything on screen slides down
+      // by their height. Anchor first and let the restore effect below re-apply
+      // it in the same commit the taller tree lands in — otherwise the view is
+      // stranded near the TOP until use-stick-to-bottom's ResizeObserver
+      // catches up a frame or two later (measured: an 11.5k px jump showing
+      // ~160ms of unrelated old turns, on every session load).
+      anchorBeforePrepend()
+
       // Functional max, not a plain set: an urgent "Show earlier" click can
       // land between scheduling and committing this transition, and a plain
       // set would rebase over it and shrink the budget back down.
@@ -211,11 +394,34 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     })
 
     return () => cancelAnimationFrame(rafId)
-  }, [renderBudget])
+  }, [anchorBeforePrepend, renderBudget])
 
-  const hiddenCount = firstVisibleGroupIndex(groups, renderBudget)
+  // Weights (part count + visible character cost) fold into the BUDGET only.
+  // Group identity stays structural, so a streaming append re-runs this cheap
+  // sum — not the row JSX. Settled content hits messageRenderWeight's WeakMap.
+  const weightedGroups = useMemo(() => {
+    const weights = weightSignature.split(',').map(w => Number(w) || 1)
+
+    return groups.map(group => ({
+      ...group,
+      weight:
+        group.kind === 'turn'
+          ? group.indices.reduce((sum, index) => sum + (weights[index] ?? 1), 0)
+          : (weights[group.index] ?? 1)
+    }))
+  }, [groups, weightSignature])
+
+  const hiddenCount = firstVisibleGroupIndex(weightedGroups, renderBudget)
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
-  const restoreFromBottomRef = useRef<number | null>(null)
+
+  // Where the always-rendered live tail begins. Derived from the WEIGHTED
+  // groups (render cost, not turns) so the tail is a viewport's worth of content —
+  // see liveTailStart. Computed once here rather than per row.
+  const tailStart = useMemo(
+    () => liveTailStart(hiddenCount > 0 ? weightedGroups.slice(hiddenCount) : weightedGroups),
+    [weightedGroups, hiddenCount]
+  )
+
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // hide the titlebar tool cluster + session header, but the OS traffic lights
   // still sit in the top-left, so reserve the titlebar gap above the transcript.
@@ -268,6 +474,16 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // follow re-pins every frame to a moving target — visible as ~10 scroll jumps.
   // Instead: quiet it, glue to the true bottom until the height holds steady,
   // then hand back locked. Live streaming afterward uses the normal resize follow.
+  //
+  // `hasGroups` joins sessionKey as a dep because a COLD load changes the key
+  // while the transcript is still empty and publishes messages hundreds of ms
+  // later. Keyed on the switch alone the loop measured an EMPTY viewport, saw
+  // a stable height in two frames, and handed back "settled" before the
+  // transcript existed — so the turns painted at scrollTop 0 and only snapped
+  // down once use-stick-to-bottom's ResizeObserver noticed, a full-viewport
+  // lurch on every cold load. The empty→non-empty flip re-arms for the
+  // transcript that actually arrived; being a boolean, it cannot re-fire on a
+  // streaming append.
   useLayoutEffect(() => {
     const el = scrollRef.current
 
@@ -277,6 +493,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     stopScroll()
     el.scrollTop = el.scrollHeight
+    loadSettledRef.current = false
+
+    // An anchor captured for the OUTGOING transcript must not be applied to
+    // this one — a switch owns the position outright. The empty→non-empty
+    // re-arm is the SAME load, whose in-flight anchor is still correct.
+    if (settleKeyRef.current !== sessionKey) {
+      settleKeyRef.current = sessionKey
+      restoreFromBottomRef.current = null
+    }
 
     let frame = 0
     let stableFrames = 0
@@ -300,6 +525,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // frames to minimize the settle-loop racing markdown paint on every switch.
       if (stableFrames >= 2 || ++frame > 15) {
         void scrollToBottom('instant')
+        loadSettledRef.current = true
 
         return
       }
@@ -310,17 +536,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     let rafId = requestAnimationFrame(settle)
 
     return () => cancelAnimationFrame(rafId)
-  }, [scrollRef, scrollToBottom, sessionKey, stopScroll])
+  }, [hasGroups, scrollRef, scrollToBottom, sessionKey, stopScroll])
 
   // Prepend an older page while preserving the on-screen position. The user is
   // scrolled up (reading history) so the stick-to-bottom lock is escaped and
   // won't fight this manual restore.
   const showEarlier = useCallback(() => {
-    const el = scrollRef.current
-
-    restoreFromBottomRef.current = el ? el.scrollHeight - el.scrollTop : null
+    anchorBeforePrepend()
     setRenderBudget(budget => budget + RENDER_BUDGET)
-  }, [scrollRef])
+  }, [anchorBeforePrepend])
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -330,6 +554,58 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       restoreFromBottomRef.current = null
     }
   }, [scrollRef, renderBudget])
+
+  // The row array is memoized on the inputs the rows actually read. This
+  // component re-renders on every isAtBottom flip — and use-stick-to-bottom
+  // flips it from a ResizeObserver, so a sidebar DRAG re-renders this list per
+  // frame. Without the memo, the inline .map() rebuilt every row's JSX each
+  // time, and rebuilt children re-render their whole subtree even when nothing
+  // changed (measured live: 865 wasted Block renders in one drag, walked to
+  // "MessageRenderBoundary (children only)" by explain()). With it, React
+  // bails out on element identity and a scroll flip re-renders nothing below.
+  const rows = useMemo(
+    () =>
+      visibleGroups.map((group, indexInVisible) => (
+        // content-visibility:auto — off-screen turns skip style recalc,
+        // layout, and paint. On a long transcript this is what keeps
+        // UNRELATED UI fast: any dialog/popover mount (Radix Presence
+        // reads getComputedStyle) forces a whole-document style recalc,
+        // measured ~650-730ms per open on a 1300-message session and
+        // ~100-200ms with this on. contain-intrinsic-size keeps a
+        // placeholder height for never-rendered turns (auto: remembered
+        // real size once rendered), so scrollbar/anchoring stay stable.
+        // Sticky human bubbles are unaffected — their turn is rendered
+        // whenever any part of it intersects the viewport.
+        //
+        // The live tail (newest turns) is exempt: virtualizing a turn
+        // whose final size hasn't been remembered yet snaps it to a stale
+        // height when it scrolls off, drifting stick-to-bottom up over old
+        // turns. See liveTailStart.
+        <div
+          className={cn(
+            'flex min-w-0 flex-col gap-(--conversation-turn-gap) pb-(--conversation-turn-gap)',
+            indexInVisible < tailStart && '[contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]'
+          )}
+          key={group.id}
+        >
+          <MessageRenderBoundary resetKey={structuralSignature}>
+            {group.kind === 'turn' ? (
+              <div
+                className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
+                data-slot="aui_turn-pair"
+              >
+                {group.indices.map(index => (
+                  <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
+                ))}
+              </div>
+            ) : (
+              <ThreadPrimitive.MessageByIndex components={components} index={group.index} />
+            )}
+          </MessageRenderBoundary>
+        </div>
+      )),
+    [visibleGroups, components, structuralSignature, tailStart]
+  )
 
   return (
     <div
@@ -380,46 +656,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
                 {t.assistant.thread.showEarlier}
               </button>
             )}
-            {visibleGroups.map((group, indexInVisible) => (
-              // content-visibility:auto — off-screen turns skip style recalc,
-              // layout, and paint. On a long transcript this is what keeps
-              // UNRELATED UI fast: any dialog/popover mount (Radix Presence
-              // reads getComputedStyle) forces a whole-document style recalc,
-              // measured ~650-730ms per open on a 1300-message session and
-              // ~100-200ms with this on. contain-intrinsic-size keeps a
-              // placeholder height for never-rendered turns (auto: remembered
-              // real size once rendered), so scrollbar/anchoring stay stable.
-              // Sticky human bubbles are unaffected — their turn is rendered
-              // whenever any part of it intersects the viewport.
-              //
-              // The live tail (newest turns) is exempt: virtualizing a turn
-              // whose final size hasn't been remembered yet snaps it to a stale
-              // height when it scrolls off, drifting stick-to-bottom up over old
-              // turns. See isVirtualizedGroup.
-              <div
-                className={cn(
-                  'flex min-w-0 flex-col gap-(--conversation-turn-gap) pb-(--conversation-turn-gap)',
-                  isVirtualizedGroup(indexInVisible, visibleGroups.length) &&
-                    '[contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]'
-                )}
-                key={group.id}
-              >
-                <MessageRenderBoundary resetKey={messageSignature}>
-                  {group.kind === 'turn' ? (
-                    <div
-                      className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
-                      data-slot="aui_turn-pair"
-                    >
-                      {group.indices.map(index => (
-                        <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
-                      ))}
-                    </div>
-                  ) : (
-                    <ThreadPrimitive.MessageByIndex components={components} index={group.index} />
-                  )}
-                </MessageRenderBoundary>
-              </div>
-            ))}
+            {rows}
             {loadingIndicator}
             {clampToComposer && (
               <div

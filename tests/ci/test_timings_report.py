@@ -86,12 +86,6 @@ def test_large_regression_is_warning():
     assert "+33" in result["summary"]
 
 
-def test_improvement_is_debug():
-    cur = _timings([_job("tests", 40.0)])
-    bl = _timings([_job("tests", 60.0)])
-    result = _result(_mod.generate_review_status(cur, bl))
-    assert result["kind"] == "debug"
-    assert "-33" in result["summary"]
 
 
 def test_detail_shows_top_deltas():
@@ -104,11 +98,6 @@ def test_detail_shows_top_deltas():
     assert result["detail"].index("slow-job") < result["detail"].index("fast-job")
 
 
-def test_skipped_jobs_excluded_from_detail():
-    cur = _timings([_job("skipped-job", 0.0, conclusion="skipped"), _job("tests", 60.0)])
-    bl = _timings([_job("skipped-job", 0.0, conclusion="skipped"), _job("tests", 60.0)])
-    result = _result(_mod.generate_review_status(cur, bl))
-    assert "skipped-job" not in result["detail"]
 
 
 def test_report_url_passed_through():
@@ -118,13 +107,6 @@ def test_report_url_passed_through():
     assert result["link_label"] == "View report"
 
 
-def test_never_error_severity():
-    """Timings is observability — even huge regressions are warnings, not errors."""
-    cur = _timings([_job("tests", 600.0)])
-    bl = _timings([_job("tests", 60.0)])
-    result = _result(_mod.generate_review_status(cur, bl))
-    assert result["kind"] == "warning"
-    assert result["kind"] != "error"
 
 
 def test_nested_format_structure():

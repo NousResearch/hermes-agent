@@ -303,29 +303,24 @@ async def handle_ws(ws: Any) -> None:
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
 
-        # The desktop app and dashboard chat reach the agent through this WS
-        # sidecar, NOT through tui_gateway.entry.main() (the stdio TUI path that
-        # spawns the background MCP discovery thread). Without starting it here,
-        # discovery never runs in this process: _make_agent only *waits* on the
-        # thread (wait_for_mcp_discovery), which no-ops when it was never
-        # created, so the agent snapshots an MCP-less tool list and the only way
-        # to surface MCP tools is a manual /reload-mcp. Start it once per
-        # process here (idempotent, config-gated) before gateway.ready so the
-        # first agent build can pick up already-spawning servers. (#38945)
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
-
-        start_background_mcp_discovery(
-            logger=_log,
-            thread_name="tui-ws-mcp-discovery",
-        )
-
+        # resolve_skin() reads config + initializes the skin engine —
+        # synchronous I/O + CPU work that should not block the event loop
+        # during the cold-start window. Run it in the thread pool so the
+        # WS read loop stays free to drain the frontend's initial RPC
+        # burst (setup.status, session.list, ...) without a stall
+        # (#60800). The skin payload is small (a dict of strings/arrays),
+        # so the to_thread overhead is negligible.
+        skin_payload = await asyncio.to_thread(server.resolve_skin)
         ready_ok = await transport.write_async(
             {
                 "jsonrpc": "2.0",
                 "method": "event",
                 "params": {
                     "type": "gateway.ready",
-                    "payload": {"skin": server.resolve_skin()},
+                    # change_events: this backend broadcasts pet.changed /
+                    # cron.changed / sessions.changed, so clients can demote
+                    # their legacy polls to slow backstops.
+                    "payload": {"skin": skin_payload, "change_events": True},
                 },
             }
         )
@@ -437,6 +432,11 @@ async def handle_ws(ws: Any) -> None:
         if transport is not None:
             server.unregister_live_transport(transport)
             transport.close()
+
+            try:
+                await asyncio.to_thread(server._release_wake_for_transport, transport)
+            except Exception:
+                _log.exception("ws wake-word teardown failed peer=%s", peer)
 
             # Reap sessions this transport owned (close_on_disconnect sidecar
             # sessions) or detach the rest to the drop sentinel so later emits

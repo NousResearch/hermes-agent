@@ -22,6 +22,12 @@ param(
     # cloning the full default-branch history) and then `git checkout`s the
     # exact ref.  Precedence: Commit > Tag > Branch.
     [string]$Commit = "",
+    # Apply -Commit even when it would roll an existing install BACKWARDS.
+    # Without this the repository stage skips a pin that is already an ancestor
+    # of HEAD, so a stale baked-in BUILD_PIN_COMMIT can't downgrade a current
+    # checkout. Reproducible/CI installs that genuinely want an older SHA on an
+    # existing tree pass -ForceCommit.
+    [switch]$ForceCommit,
     [string]$Tag = "",
     [string]$HermesHome = $(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }),
     [string]$InstallDir = $(if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }),
@@ -145,6 +151,13 @@ $PythonVersion = "3.11"
 # source of truth shared by Test-Python's fallback and Resolve-AvailablePythonVersion.
 $PythonFallbackVersions = @("3.12", "3.13", "3.10")
 $NodeVersion = "22"
+# The npm range the root package.json pins in `engines.npm`.  A constant rather
+# than a manifest read like the POSIX side does: Test-Node runs BEFORE the repo
+# is cloned, so there is usually no package.json on disk yet (and none at all
+# when install.ps1 is piped straight from the web).  Get-NpmRange prefers the
+# manifest whenever it does exist, so a drifted constant self-corrects on any
+# run against an existing checkout.
+$NpmRange = ">=12.0.0"
 
 # Stage-protocol version.  Bumped only for genuinely breaking changes to the
 # manifest schema, stage-name set semantics, or stdout JSON shape.  Adding a
@@ -519,6 +532,135 @@ function Ensure-NodeExeOnPath {
     if ($pathParts -notcontains $nodeExeDir) {
         $env:Path = "$nodeExeDir;$env:Path"
     }
+    return $true
+}
+
+# Put the Hermes-managed Node dir at the FRONT of the persisted User PATH.
+#
+# Appending is not enough: it leaves a pre-existing system Node ahead of the
+# bundled one in every new shell, so anything launched without a curated
+# environment (a standalone hermes-setup.exe run, a user typing `npm`) silently
+# resolves the wrong Node.  Bundled must win.
+#
+# Move-to-front rather than add-if-missing, because installs made by an older
+# install.ps1 already have this dir in User PATH -- at the tail.  An
+# add-if-missing check sees it present and leaves the broken ordering in place
+# forever, so the very users the ordering bug hurt would never be repaired.
+#
+# Unrelated entries keep their relative order, including empty segments (a
+# trailing ';' is legal and common in a real User PATH; Install-Git's splitting
+# preserves them too, so this must not quietly rewrite them).  Duplicate
+# occurrences of the managed dir collapse into the single leading entry.
+# PowerShell's -ne is case-insensitive for strings, which is the right
+# comparison on Windows.  Persists only when the resulting string differs, so
+# an already-correct PATH costs one registry read and no write.
+function Set-ManagedNodeFirstOnUserPath {
+    param([string]$NodeDir)
+
+    if (-not $NodeDir) { return }
+
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $items = if ($userPath) { @($userPath -split ";") } else { @() }
+
+    $rest = @($items | Where-Object { $_ -ne $NodeDir })
+    $updated = (@($NodeDir) + $rest) -join ";"
+
+    if ($updated -ne $userPath) {
+        [Environment]::SetEnvironmentVariable("Path", $updated, "User")
+    }
+}
+
+# The npm range to install into the managed Node tree.  Prefers the checkout's
+# root package.json so the installer and the manifest cannot drift; falls back
+# to the $NpmRange constant, which is the common case here because Test-Node
+# runs before the repo is cloned.
+function Get-NpmRange {
+    $manifest = Join-Path $InstallDir "package.json"
+    if (Test-Path $manifest) {
+        try {
+            $engines = (Get-Content $manifest -Raw | ConvertFrom-Json).engines
+            if ($engines -and $engines.npm) { return [string]$engines.npm }
+        } catch { }
+    }
+    return $NpmRange
+}
+
+# Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange.
+#
+# The nodejs.org zip ships whatever npm that Node major bundles -- Node 26.5.1
+# bundles npm 11.17.0, one minor below the root package.json's own
+# `engines.npm` floor of >=12.  The repo .npmrc sets `engine-strict=true`, so
+# that is fatal rather than a warning and a brand-new install dies at the first
+# `npm ci` with EBADENGINE.  Provision the right npm here instead of reacting
+# to the failure later.
+#
+# Three details are load-bearing, mirroring _nb_ensure_bundled_npm_range in
+# scripts/lib/node-bootstrap.sh and upgrade_managed_npm in
+# hermes_cli/npm_engine.py:
+#   - a temp cwd, so the checkout's own .npmrc (engine-strict,
+#     min-release-age) does not gate the very upgrade meant to satisfy it;
+#   - npm_config_min_release_age=0, which also neutralises a user ~/.npmrc;
+#   - an explicit --prefix at the managed tree, so the upgrade rewrites the
+#     tree's own npm rather than installing a second copy elsewhere.
+#
+# Best-effort: a failure leaves a working Node with an old npm, which beats no
+# Node at all, and npm_engine.py still covers the EBADENGINE that follows.
+function Update-ManagedNpm {
+    param([string]$NodeDir)
+
+    $npmCmd = Join-Path $NodeDir "npm.cmd"
+    if (-not (Test-Path $npmCmd)) { return $false }
+
+    $range = Get-NpmRange
+
+    # Skip the network round-trip when the bundled npm already satisfies the
+    # range.  Only the ">=N" shape we actually author is parsed; anything more
+    # exotic falls through to letting npm itself decide.
+    if ($range -match '^>=(\d+)') {
+        $want = [int]$Matches[1]
+        try {
+            $have = (& $npmCmd --version 2>$null)
+            if ($have -match '^(\d+)') {
+                if ([int]$Matches[1] -ge $want) { return $true }
+            }
+        } catch { }
+    }
+
+    Write-Info "Upgrading bundled npm to satisfy $range ..."
+
+    $tmpCwd = Join-Path $env:TEMP ("hermes-npm-upgrade-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $tmpCwd | Out-Null
+    $prevAge = $env:npm_config_min_release_age
+    $prevCI = $env:CI
+    $prevEAP = $ErrorActionPreference
+    Push-Location $tmpCwd
+    try {
+        $env:npm_config_min_release_age = "0"
+        $env:CI = "1"
+        # Relax EAP=Stop so npm's stderr lines don't get wrapped as
+        # ErrorRecords and short-circuit before $LASTEXITCODE is checked.
+        # Same pattern as Install-Uv.
+        $ErrorActionPreference = "Continue"
+        & $npmCmd install --global --prefix $NodeDir "npm@$range" `
+            --no-fund --no-audit --progress=false 2>&1 | Out-Null
+        $exit = $LASTEXITCODE
+    } catch {
+        $exit = 1
+    } finally {
+        $ErrorActionPreference = $prevEAP
+        Pop-Location
+        $env:npm_config_min_release_age = $prevAge
+        $env:CI = $prevCI
+        Remove-Item -Recurse -Force $tmpCwd -ErrorAction SilentlyContinue
+    }
+
+    if ($exit -ne 0) {
+        Write-Warn "Could not upgrade bundled npm to $range -- ``npm ci`` may fail with EBADENGINE."
+        Write-Info  "Fix manually: npm install -g --prefix `"$NodeDir`" npm@`"$range`""
+        return $false
+    }
+
+    Write-Success "npm $(& $npmCmd --version 2>$null) installed"
     return $true
 }
 
@@ -1048,11 +1190,11 @@ function Set-GitBashEnvVar {
     Write-Info "If needed, set HERMES_GIT_BASH_PATH manually to your bash.exe path."
 }
 
-# The desktop build runs Vite ^8, which refuses to start on Node outside
-# `^20.19 || >=22.12` -- older Node lacks node:util.styleText, so `vite build`
-# crashes with a SyntaxError that surfaces only as the opaque "Build desktop
-# app ... exit code 1" install failure. Returns $true when a `node --version`
-# string clears that floor.
+# The dependency tree's real Node floor is >=22.22.0, set by react-router 8.3.0
+# (`engines.node`). Keep this in sync with the root package.json: looser lets an
+# install reach a `npm ci` that dies with EBADENGINE, stricter replaces a working
+# user toolchain for nothing. Returns $true when a `node --version` string
+# clears that floor.
 function Test-NodeVersionOk {
     param([string]$Version)
     try {
@@ -1060,9 +1202,8 @@ function Test-NodeVersionOk {
     } catch {
         return $false
     }
-    if ($v.Major -eq 20 -and $v.Minor -ge 19) { return $true }
-    if ($v.Major -ge 22 -and ($v.Major -gt 22 -or $v.Minor -ge 12)) { return $true }
-    return $false
+    if ($v.Major -eq 22) { return ($v.Minor -ge 22) }
+    return ($v.Major -gt 22)
 }
 
 function Test-Node {
@@ -1076,7 +1217,7 @@ function Test-Node {
             $script:HasNode = $true
             return $true
         }
-        Write-Warn "Node.js $version is too old for the desktop build (need ^20.19 or >=22.12)"
+        Write-Warn "Node.js $version is too old (Hermes requires Node >=26)"
     }
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
@@ -1084,7 +1225,12 @@ function Test-Node {
     if ((Test-Path $managedNode) -and (Test-NodeVersionOk (& $managedNode --version))) {
         $version = & $managedNode --version
         $env:Path = "$HermesHome\node;$env:Path"
+        Set-ManagedNodeFirstOnUserPath "$HermesHome\node"
         Write-Success "Node.js $version found (Hermes-managed)"
+        # A tree from an older install still has that Node major's bundled
+        # npm, which is below the current engines.npm floor. No-ops when the
+        # npm is already in range, so reruns cost one --version probe.
+        Update-ManagedNpm "$HermesHome\node" | Out-Null
         $script:HasNode = $true
         return $true
     }
@@ -1126,17 +1272,15 @@ function Test-Node {
 
                 # Persist to User PATH so fresh shells (and future stages
                 # in cross-process driver mode) see it.  Matches the
-                # pattern Install-Git uses for PortableGit.
-                $nodeDir = "$HermesHome\node"
-                $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-                $userPathItems = if ($userPath) { $userPath -split ";" } else { @() }
-                if ($userPathItems -notcontains $nodeDir) {
-                    $userPathItems += $nodeDir
-                    [Environment]::SetEnvironmentVariable("Path", ($userPathItems -join ";"), "User")
-                }
+                # pattern Install-Git uses for PortableGit.  See
+                # Set-ManagedNodeFirstOnUserPath for why this is a
+                # move-to-front and not an add-if-missing.
+                Set-ManagedNodeFirstOnUserPath "$HermesHome\node"
 
                 $version = & "$HermesHome\node\node.exe" --version
                 Write-Success "Node.js $version installed to $HermesHome\node\ (portable, user-scoped)"
+                # The zip's bundled npm is below the repo's engines.npm floor.
+                Update-ManagedNpm "$HermesHome\node" | Out-Null
                 $script:HasNode = $true
 
                 Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
@@ -1170,7 +1314,7 @@ function Test-Node {
             # even after a "successful" install.  The OpenJS manifest does
             # publish an arm64 installer, so this is safe.
             $wingetArgs = @(
-                'install','OpenJS.NodeJS.LTS','--silent',
+                'install','OpenJS.NodeJS','--silent',
                 '--accept-package-agreements','--accept-source-agreements'
             )
             if ((Get-WindowsArch) -eq 'arm64') {
@@ -1505,8 +1649,32 @@ function Install-Repository {
                     # Make sure we have the commit locally (a tag-less commit
                     # SHA isn't always reachable from any one branch fetch).
                     git -c windows.appendAtomically=false fetch origin $Commit
-                    git -c windows.appendAtomically=false checkout --detach $Commit
-                    if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
+                    # A commit pin must never move an existing install
+                    # BACKWARDS. hermes-setup.exe bakes its build-time commit
+                    # into the binary (BUILD_PIN_COMMIT) and passes it as
+                    # -Commit on every install-mode run -- including the retry
+                    # the desktop's "Update didn't finish" screen kicks off. An
+                    # installer built months ago would otherwise rewind a
+                    # current checkout to its build commit, leaving ancient
+                    # code against a current venv (npm workspaces and Python
+                    # deps that no longer match: the #74xxx report). Skip the
+                    # pin when the target is already an ancestor of HEAD; a
+                    # fresh clone has no such ancestry and pins normally.
+                    $skipRollback = $false
+                    if (-not $ForceCommit) {
+                        git -c windows.appendAtomically=false merge-base --is-ancestor $Commit HEAD 2>$null
+                        $isAncestor = ($LASTEXITCODE -eq 0)
+                        $pinnedSha = (& git -c windows.appendAtomically=false rev-parse "$Commit^{commit}" 2>$null)
+                        $headSha = (& git -c windows.appendAtomically=false rev-parse HEAD 2>$null)
+                        $skipRollback = $isAncestor -and ($pinnedSha -ne $headSha)
+                    }
+                    if ($skipRollback) {
+                        Write-Warn "Ignoring -Commit $Commit`: the checkout is already newer."
+                        Write-Warn "Pinning to it would roll this install back. Pass -ForceCommit to override."
+                    } else {
+                        git -c windows.appendAtomically=false checkout --detach $Commit
+                        if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
+                    }
                 } elseif ($Tag) {
                     git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
                     git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
@@ -2813,6 +2981,34 @@ function Try-RestoreElectronDist {
     return Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror
 }
 
+function Install-DesktopVoiceDeps {
+    # Desktop ships with working voice out of the box: eagerly install the
+    # wake-word + local-STT stacks ([wake] + [voice] extras) instead of
+    # leaving them to lazy first-use install. Policy change (Teknium, July
+    # 2026, #70509 testing): the first ear-click used to trigger a
+    # multi-minute onnxruntime pip install that froze the UI and blew RPC
+    # timeouts. Best-effort -- lazy install remains the fallback for anything
+    # this step fails to fetch.
+    if (-not $script:UvCmd) { Resolve-UvCmd }
+    if (-not $script:UvCmd) {
+        Write-Warn "uv unavailable -- voice/wake deps will lazy-install at first use instead"
+        return
+    }
+    $env:VIRTUAL_ENV = "$InstallDir\venv"
+    Write-Info "Installing voice + wake-word dependencies (onnxruntime, faster-whisper -- 1-3min)..."
+    Push-Location $InstallDir
+    try {
+        Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install -e ".[wake,voice]" }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Voice + wake-word dependencies installed"
+        } else {
+            Write-Warn "Voice/wake dependency install failed (exit $LASTEXITCODE) -- they will lazy-install at first use"
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 function Install-Desktop {
     # Build apps/desktop into a launchable Hermes.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
@@ -2833,7 +3029,7 @@ function Install-Desktop {
 
     # Always re-resolve Node here. Stages run in separate PowerShell processes,
     # so $script:HasNode from Stage-Node isn't visible; more importantly Test-Node
-    # enforces the build floor (^20.19 || >=22.12) and prepends the Hermes-managed
+    # enforces the build floor (Node >=26) and prepends the Hermes-managed
     # Node to PATH, so the build never runs on a too-old system Node -- the cause
     # of the opaque "Build desktop app ... exit code 1" failure (Vite crashes on
     # old Node).
@@ -3577,7 +3773,7 @@ function Stage-Repository       { Install-Repository }
 function Stage-Venv             { Resolve-UvCmd; Install-Venv }
 function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
 function Stage-NodeDeps         { Install-NodeDeps }
-function Stage-Desktop          { Install-Desktop }
+function Stage-Desktop          { Install-DesktopVoiceDeps; Install-Desktop }
 function Stage-Path             { Set-PathVariable }
 function Stage-ConfigTemplates  { Copy-ConfigTemplates }
 function Stage-PlatformSdks     { Resolve-UvCmd; Install-PlatformSdks }

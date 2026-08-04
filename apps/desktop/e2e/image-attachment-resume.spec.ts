@@ -93,28 +93,53 @@ function sessionRow(page: Page) {
   return page.locator('[data-slot="sidebar"] button').filter({ hasText: CAPTION }).first()
 }
 
+// Inactive tabs stay mounted under a data-pane-hidden ancestor. Match the
+// renderer's keep-alive visibility policy instead of relying on DOM order.
+const SURFACE = '[data-composer-target]:not([data-pane-hidden] [data-composer-target])'
+
+function activeViewportText(surfaceSelector: string): string {
+  const surfaces = document.querySelectorAll(surfaceSelector)
+
+  return surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? ''
+}
+
 async function openSeededSession(page: Page): Promise<void> {
   const row = sessionRow(page)
   await row.waitFor({ state: 'visible', timeout: 60_000 })
   await row.click()
   await page.waitForFunction(
-    expected => (document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected),
-    CAPTION,
+    ([expected, surfaceSelector]: [string, string]) => {
+      const surfaces = document.querySelectorAll(surfaceSelector)
+      const text = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? ''
+
+      return text.includes(expected)
+    },
+    [CAPTION, SURFACE] as [string, string],
     { timeout: 30_000 },
   )
 }
 
+/**
+ * The sidebar "+" opens a NEW TAB beside the current chat instead of replacing
+ * it, so the seeded session stays mounted in its own surface. Assert the new
+ * surface is empty rather than waiting for the old caption to leave the page.
+ */
 async function openNewSession(page: Page): Promise<void> {
   await page.locator('[data-slot="sidebar"] button[aria-label="New session"]').first().click()
   await page.waitForFunction(
-    expected => !(document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected),
-    CAPTION,
+    ([expected, surfaceSelector]: [string, string]) => {
+      const surfaces = document.querySelectorAll(surfaceSelector)
+      const text = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? ''
+
+      return surfaces.length > 0 && !text.includes(expected)
+    },
+    [CAPTION, SURFACE] as [string, string],
     { timeout: 15_000 },
   )
 }
 
 async function transcriptText(page: Page): Promise<string> {
-  return page.evaluate(() => document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '')
+  return page.evaluate(activeViewportText, SURFACE)
 }
 
 async function assertRendersThumbnail(page: Page, label: string): Promise<void> {

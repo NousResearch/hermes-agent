@@ -12,6 +12,7 @@ Config files are stored in ~/.hermes/ for easy access.
 """
 
 import importlib.util
+import json
 import logging
 import os
 import re
@@ -23,7 +24,6 @@ from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
-from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ _DEFAULT_PROVIDER_MODELS = {
     ],
     "gemini": [
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",
-        "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
+        "gemini-3.6-flash", "gemini-3.1-flash-lite-preview",
     ],
     "vertex": [
         "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview",
@@ -106,6 +106,7 @@ _DEFAULT_PROVIDER_MODELS = {
     "arcee": ["trinity-large-thinking", "trinity-large-preview", "trinity-mini"],
     "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
+    "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
     "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-5", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
     "opencode-go": ["kimi-k3", "kimi-k2.6", "kimi-k2.5", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.7", "minimax-m2.5", "qwen3.7-max", "qwen3.6-plus", "qwen3.5-plus"],
@@ -394,6 +395,25 @@ def _prompt_api_key(var: dict):
 
 def _print_setup_summary(config: dict, hermes_home):
     """Print the setup completion summary."""
+    # Provider readiness — the one thing setup absolutely must produce.
+    # Previously a user could cancel the API-key prompt mid-wizard (Enter →
+    # "Cancelled."), watch the wizard continue through Terminal/Gateway/Tools,
+    # and exit "successfully" with NO working model — believing they were set
+    # up. Say so loudly instead (consumer-onboarding audit finding #7).
+    try:
+        from hermes_cli.auth import resolve_provider
+
+        resolve_provider()
+        _provider_ready = True
+    except Exception:
+        _provider_ready = False
+    if not _provider_ready:
+        print()
+        print_warning("No inference provider is configured — Hermes cannot chat yet.")
+        print_info("  Finish this one step with either of:")
+        print_info("    hermes model            (pick any provider/model)")
+        print_info("    hermes setup --portal   (Nous Portal OAuth, no API key)")
+
     # Tool availability summary
     print()
     print_header("Tool Availability Summary")
@@ -546,6 +566,35 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
+
+    # STT — show configured provider
+    stt_provider = cfg_get(config, "stt", "provider", default="local") or "local"
+    _stt_feature = subscription_features.features.get("stt")
+    if _stt_feature is not None and _stt_feature.managed_by_nous:
+        tool_status.append(("Speech-to-Text (OpenAI via Nous subscription)", True, None))
+    elif stt_provider == "openai" and (
+        get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
+    ):
+        tool_status.append(("Speech-to-Text (OpenAI)", True, None))
+    elif stt_provider == "groq" and get_env_value("GROQ_API_KEY"):
+        tool_status.append(("Speech-to-Text (Groq Whisper)", True, None))
+    elif stt_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
+        tool_status.append(("Speech-to-Text (ElevenLabs Scribe)", True, None))
+    elif stt_provider == "xai":
+        tool_status.append(("Speech-to-Text (xAI)", True, None))
+    elif stt_provider == "deepinfra" and get_env_value("DEEPINFRA_API_KEY"):
+        tool_status.append(("Speech-to-Text (DeepInfra)", True, None))
+    else:
+        try:
+            fw_ok = importlib.util.find_spec("faster_whisper") is not None
+        except Exception:
+            fw_ok = False
+        if fw_ok:
+            tool_status.append(("Speech-to-Text (Local Whisper)", True, None))
+        else:
+            tool_status.append(
+                ("Speech-to-Text (Local Whisper — not installed)", False, "run 'hermes tools' → Speech-to-Text")
+            )
 
     if subscription_features.modal.managed_by_nous:
         tool_status.append(("Modal Execution (Nous subscription)", True, None))
@@ -715,6 +764,102 @@ def _prompt_container_resources(config: dict):
         pass
 
 
+def _prompt_vercel_sandbox_settings(config: dict):
+    """Prompt for Vercel Sandbox settings without exposing unsupported disk sizing."""
+    terminal = config.setdefault("terminal", {})
+
+    print()
+    print_info("Vercel Sandbox settings:")
+    print_info("  Filesystem persistence uses Vercel snapshots.")
+    print_info("  Snapshots restore files only; live processes do not continue after sandbox recreation.")
+
+    from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
+
+    current_runtime = terminal.get("vercel_runtime") or "node24"
+    supported_label = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
+    runtime = prompt(f"  Runtime ({supported_label})", current_runtime).strip() or current_runtime
+    if runtime not in _SUPPORTED_VERCEL_RUNTIMES:
+        print_warning(f"Unsupported Vercel runtime '{runtime}', keeping {current_runtime}.")
+        runtime = current_runtime if current_runtime in _SUPPORTED_VERCEL_RUNTIMES else "node24"
+    terminal["vercel_runtime"] = runtime
+    save_env_value("TERMINAL_VERCEL_RUNTIME", runtime)
+
+    current_persist = terminal.get("container_persistent", True)
+    persist_label = "yes" if current_persist else "no"
+    terminal["container_persistent"] = prompt(
+        "  Persist filesystem with snapshots? (yes/no)", persist_label
+    ).lower() in {"yes", "true", "y", "1"}
+
+    current_cpu = terminal.get("container_cpu", 1)
+    cpu_str = prompt("  CPU cores", str(current_cpu))
+    try:
+        terminal["container_cpu"] = float(cpu_str)
+    except ValueError:
+        pass
+
+    current_mem = terminal.get("container_memory", 5120)
+    mem_str = prompt("  Memory in MB (5120 = 5GB)", str(current_mem))
+    try:
+        terminal["container_memory"] = int(mem_str)
+    except ValueError:
+        pass
+
+    if terminal.get("container_disk", 51200) not in {0, 51200}:
+        print_warning("Vercel Sandbox does not support custom disk sizing; resetting container_disk to 51200.")
+    terminal["container_disk"] = 51200
+
+    print()
+    print_info("Vercel authentication:")
+    print_info("  Use a long-lived Vercel access token plus project/team IDs.")
+    linked_project = _read_nearest_vercel_project()
+    if linked_project:
+        print_info("  Found defaults in nearest .vercel/project.json.")
+
+    remove_env_value("VERCEL_OIDC_TOKEN")
+    token = prompt("    Vercel access token", get_env_value("VERCEL_TOKEN") or "", password=True)
+    project = prompt(
+        "    Vercel project ID",
+        get_env_value("VERCEL_PROJECT_ID") or linked_project.get("projectId", ""),
+    )
+    team = prompt(
+        "    Vercel team ID",
+        get_env_value("VERCEL_TEAM_ID") or linked_project.get("orgId", ""),
+    )
+    if token:
+        save_env_value("VERCEL_TOKEN", token)
+    if project:
+        save_env_value("VERCEL_PROJECT_ID", project)
+    if team:
+        save_env_value("VERCEL_TEAM_ID", team)
+
+
+def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
+    """Read project/team defaults from the nearest Vercel link file."""
+    current = (start or Path.cwd()).resolve()
+    if current.is_file():
+        current = current.parent
+
+    for directory in (current, *current.parents):
+        project_file = directory / ".vercel" / "project.json"
+        if not project_file.exists():
+            continue
+        try:
+            data = json.loads(project_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            key: value
+            for key, value in {
+                "projectId": data.get("projectId"),
+                "orgId": data.get("orgId"),
+            }.items()
+            if isinstance(value, str) and value.strip()
+        }
+    return {}
+
+
 # Tool categories and provider config are now in tools_config.py (shared
 # between `hermes tools` and `hermes setup tools`).
 
@@ -766,17 +911,12 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     config.clear()
     config.update(_refreshed)
 
-    # Derive the selected provider for downstream steps (vision setup).
-    selected_provider = None
-    _m = config.get("model")
-    if isinstance(_m, dict):
-        selected_provider = _m.get("provider")
-
     # Credential rotation, vision-backend selection, and TTS provider are no
     # longer prompted here. They have safe defaults (rotation off, vision
     # auto-detected from the main provider, TTS = Edge) and are configurable
     # on demand via `hermes auth add`, `hermes setup` vision, and
     # `hermes setup tts`. This keeps both quick and full setup thin.
+
 
     # Tool Gateway prompt is already shown by _model_flow_nous() above.
     save_config(config)
@@ -851,8 +991,6 @@ def _install_neutts_deps() -> bool:
 
 def _install_kittentts_deps() -> bool:
     """Install KittenTTS dependencies with user approval. Returns True on success."""
-    import subprocess
-    import sys
 
     wheel_url = (
         "https://github.com/KittenML/KittenTTS/releases/download/"
@@ -896,16 +1034,19 @@ def _xai_oauth_logged_in_for_setup() -> bool:
 def _run_xai_oauth_login_from_setup() -> bool:
     """Run the xAI Grok OAuth device-code login from inside the setup wizard.
 
+    Saves OAuth tokens only. Does **not** switch the active inference
+    provider or rewrite ``model.provider`` — callers (TTS setup, tools
+    config) only need credentials for side tools.
+
     Returns True on success, False on any failure (the caller falls back
     to whatever the user picked next, e.g. Edge TTS).
     """
     try:
         from hermes_cli.auth import (
-            DEFAULT_XAI_OAUTH_BASE_URL,
             _is_remote_session,
             _save_xai_oauth_tokens,
-            _update_config_for_provider,
             _xai_oauth_device_code_login,
+            unsuppress_credential_source,
         )
     except Exception as exc:
         print_warning(f"xAI Grok OAuth helpers unavailable: {exc}")
@@ -922,10 +1063,11 @@ def _run_xai_oauth_login_from_setup() -> bool:
             redirect_uri=creds.get("redirect_uri", ""),
             last_refresh=creds.get("last_refresh"),
             auth_mode="oauth_device_code",
+            set_active=False,
         )
-        _update_config_for_provider(
-            "xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL)
-        )
+        # Mirror model/dashboard re-login: clear device_code suppression so
+        # the pool can seed from the singleton after a prior `auth remove`.
+        unsuppress_credential_source("xai-oauth", "device_code")
         return True
     except Exception as exc:
         print_warning(f"xAI Grok OAuth login failed: {exc}")
@@ -1197,11 +1339,12 @@ def setup_terminal_backend(config: dict):
         "Modal - serverless cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
+        "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
 
-    next_idx = 5
+    next_idx = 6
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1409,6 +1552,46 @@ def setup_terminal_backend(config: dict):
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
 
+    elif selected_backend == "vercel_sandbox":
+        print_success("Terminal backend: Vercel Sandbox")
+        print_info("Cloud microVM sandboxes with snapshot-backed filesystem persistence.")
+        print_info("Requires the optional SDK: pip install 'hermes-agent[vercel]'")
+
+        try:
+            __import__("vercel")
+        except ImportError:
+            print_info("Installing vercel SDK...")
+            import subprocess
+
+            # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare
+            # which() misses the uv Hermes installed. Bootstrapping one is
+            # welcome here — this is the interactive setup wizard, already
+            # mid-install, and the alternative tier is a pip that a `uv venv`
+            # venv may not even have.
+            from hermes_cli.managed_uv import ensure_uv
+
+            uv_bin = ensure_uv()
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, "vercel"],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "vercel"],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("vercel SDK installed")
+            else:
+                print_warning("Install failed — run manually: pip install 'hermes-agent[vercel]'")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        _prompt_vercel_sandbox_settings(config)
+
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")
         print_info("Run commands on a remote machine via SSH.")
@@ -1462,6 +1645,8 @@ def setup_terminal_backend(config: dict):
     save_env_value("TERMINAL_ENV", selected_backend)
     if selected_backend == "modal":
         save_env_value("TERMINAL_MODAL_MODE", config["terminal"].get("modal_mode", "auto"))
+    if selected_backend == "vercel_sandbox":
+        save_env_value("TERMINAL_VERCEL_RUNTIME", config["terminal"].get("vercel_runtime", "node24"))
     save_config(config)
     print()
     print_success(f"Terminal backend set to: {selected_backend}")
@@ -2222,6 +2407,37 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 # =============================================================================
+# Shared Metrics
+# =============================================================================
+
+
+def setup_telemetry(config: dict):
+    """Configure the local, privacy-safe shared-metrics subscriber."""
+    print_header("Shared Metrics")
+    print_info("Shared metrics contain only bounded counters and histograms.")
+    print_info("Packages stay under this Hermes profile and are not uploaded.")
+
+    telemetry = config.get("telemetry")
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+        config["telemetry"] = telemetry
+    shared_metrics = telemetry.get("shared_metrics")
+    if not isinstance(shared_metrics, dict):
+        shared_metrics = {}
+        telemetry["shared_metrics"] = shared_metrics
+
+    current = shared_metrics.get("enabled") is True
+    shared_metrics["enabled"] = prompt_yes_no(
+        "Enable local shared metrics?",
+        default=current,
+    )
+    if shared_metrics["enabled"]:
+        print_success("Local shared metrics enabled.")
+    else:
+        print_info("Local shared metrics disabled.")
+
+
+# =============================================================================
 # Post-Migration Section Skip Logic
 # =============================================================================
 
@@ -2629,6 +2845,7 @@ SETUP_SECTIONS = [
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
+    ("telemetry", "Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
 ]
 
@@ -2727,6 +2944,7 @@ def run_setup_wizard(args):
       hermes setup terminal  — just terminal backend
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
+      hermes setup telemetry — just local shared metrics
       hermes setup agent     — just agent settings
     """
     from hermes_cli.config import is_managed, managed_error
@@ -3111,7 +3329,6 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
 
     Either way nothing is enabled that the user did not explicitly choose.
     """
-    from hermes_cli.config import load_config
 
     print()
     print_header("Blank Slate Setup")

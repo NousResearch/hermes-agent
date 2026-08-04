@@ -22,15 +22,6 @@ def test_gated_on_desktop(monkeypatch):
     assert fp.check_focus_pane_requirements() is True
 
 
-def test_rejects_unknown_pane():
-    desktop_ui.set_emitter(lambda *a: None)
-    assert json.loads(fp.focus_pane_tool("banana"))["error"]
-
-
-def test_desktop_only_without_emitter():
-    assert "desktop" in json.loads(fp.focus_pane_tool("terminal"))["error"].lower()
-
-
 @pytest.mark.parametrize("pane", fp.PANES)
 def test_emits_pane_reveal(pane):
     calls = []

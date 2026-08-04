@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildGroups, firstVisibleGroupIndex, isVirtualizedGroup, LIVE_TAIL_GROUPS, type MessageGroup } from './list'
+import {
+  buildGroups,
+  firstVisibleGroupIndex,
+  LIVE_TAIL_MIN_GROUPS,
+  LIVE_TAIL_PARTS,
+  liveTailStart,
+  type MessageGroup,
+  messageRenderWeight,
+  RENDER_WEIGHT_CHARS,
+  resolveThreadScrollTarget
+} from './list'
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
 // selector in list.tsx).
@@ -53,6 +63,53 @@ describe('buildGroups', () => {
   })
 })
 
+describe('resolveThreadScrollTarget', () => {
+  const context = (scrollElement: Pick<HTMLElement, 'scrollTop'>) => ({
+    contentElement: document.createElement('div'),
+    scrollElement: scrollElement as HTMLElement
+  })
+
+  it('settles when the browser clamps the requested bottom within half a CSS pixel', () => {
+    let actualScrollTop = 0
+    let writes = 0
+
+    const scrollElement = {
+      get scrollTop() {
+        return actualScrollTop
+      },
+      set scrollTop(value: number) {
+        writes += 1
+        actualScrollTop = value - 0.125
+      }
+    }
+
+    const target = 899
+
+    const requested = resolveThreadScrollTarget(target, context(scrollElement))
+    scrollElement.scrollTop = requested
+    const settled = resolveThreadScrollTarget(target, context(scrollElement))
+
+    expect(requested).toBe(target)
+    expect(actualScrollTop).toBe(898.875)
+    expect(settled).toBe(actualScrollTop)
+    expect(actualScrollTop < settled).toBe(false)
+    expect(writes).toBe(1)
+  })
+
+  it('keeps following while more than half a CSS pixel remains', () => {
+    const scrollElement = { scrollTop: 898.25 }
+
+    expect(resolveThreadScrollTarget(899, context(scrollElement))).toBe(899)
+  })
+
+  it('re-arms after streaming content increases the target', () => {
+    const scrollElement = { scrollTop: 898.875 }
+
+    expect(resolveThreadScrollTarget(899, context(scrollElement))).toBe(898.875)
+    expect(resolveThreadScrollTarget(999, context(scrollElement))).toBe(999)
+  })
+})
+
 describe('firstVisibleGroupIndex', () => {
   const group = (id: string, weight: number): MessageGroup => ({ id, index: 0, kind: 'standalone', weight })
 
@@ -81,32 +138,123 @@ describe('firstVisibleGroupIndex', () => {
   })
 })
 
-describe('isVirtualizedGroup', () => {
-  it('never virtualizes the newest turns (the live tail)', () => {
-    const count = 20
+describe('messageRenderWeight', () => {
+  it('charges large text and tool results by character cost, not only part count', () => {
+    const text = [{ type: 'text', text: 'x'.repeat(RENDER_WEIGHT_CHARS * 3) }]
 
-    for (let i = count - LIVE_TAIL_GROUPS; i < count; i++) {
-      expect(isVirtualizedGroup(i, count)).toBe(false)
-    }
+    const tool = [
+      {
+        type: 'tool-call',
+        toolName: 'skill_view',
+        args: { name: 'hermes-agent' },
+        result: { content: 'x'.repeat(RENDER_WEIGHT_CHARS * 100) }
+      }
+    ]
+
+    expect(messageRenderWeight(text)).toBe(4)
+    expect(messageRenderWeight(tool)).toBeGreaterThanOrEqual(101)
   })
 
-  it('virtualizes older turns that sit before the live tail', () => {
-    const count = 20
+  it('makes repeated 51KB tool outputs exceed the normal transcript page', () => {
+    const toolOutput = () => [
+      {
+        type: 'tool-call',
+        toolName: 'skill_view',
+        result: { content: 'x'.repeat(51_236) }
+      }
+    ]
 
-    expect(isVirtualizedGroup(0, count)).toBe(true)
-    expect(isVirtualizedGroup(count - LIVE_TAIL_GROUPS - 1, count)).toBe(true)
+    const groups = Array.from({ length: 5 }, (_, index) => ({
+      id: `tool-${index}`,
+      index,
+      kind: 'standalone' as const,
+      weight: messageRenderWeight(toolOutput())
+    }))
+
+    expect(firstVisibleGroupIndex(groups, 300)).toBeGreaterThan(0)
+  })
+
+  it('handles circular tool payloads without recursing forever', () => {
+    const result: { content: string; self?: unknown } = { content: 'ok' }
+    result.self = result
+
+    expect(messageRenderWeight([{ type: 'tool-call', result }])).toBe(2)
+  })
+})
+
+describe('liveTailStart', () => {
+  const group = (id: string, weight: number): MessageGroup => ({ id, index: 0, kind: 'standalone', weight })
+
+  it('keeps the newest turns rendered until the parts budget is spent', () => {
+    // 10 turns x 10 parts. A 40-part tail covers the newest 4-5 turns.
+    const groups = Array.from({ length: 10 }, (_, i) => group(`g${i}`, 10))
+    const start = liveTailStart(groups)
+
+    expect(start).toBeGreaterThan(0)
+    expect(start).toBeLessThan(groups.length)
+
+    // Everything from `start` onward is the live tail...
+    const tailParts = groups.slice(start).reduce((sum, g) => sum + g.weight, 0)
+    expect(tailParts).toBeGreaterThan(LIVE_TAIL_PARTS)
+
+    // ...and dropping its oldest member puts it back under budget, i.e. the
+    // tail is minimal rather than sprawling.
+    const withoutOldest = groups.slice(start + 1).reduce((sum, g) => sum + g.weight, 0)
+    expect(withoutOldest).toBeLessThanOrEqual(LIVE_TAIL_PARTS)
+  })
+
+  it('virtualizes the old bulk of a long agent transcript', () => {
+    // The regression this guards: heavy tool turns. A turn-count tail (6) left
+    // NOTHING virtualized on transcripts like this, so every Radix overlay open
+    // paid a whole-document style recalc.
+    const groups = Array.from({ length: 40 }, (_, i) => group(`g${i}`, 120))
+
+    // Only the min-group floor stays rendered; the other 38 turns skip.
+    expect(liveTailStart(groups)).toBe(groups.length - LIVE_TAIL_MIN_GROUPS)
+  })
+
+  it('never virtualizes below the min-group floor, however heavy the turns', () => {
+    const groups = Array.from({ length: 5 }, (_, i) => group(`g${i}`, 10_000))
+
+    expect(liveTailStart(groups)).toBe(groups.length - LIVE_TAIL_MIN_GROUPS)
   })
 
   it('keeps every turn rendered when the whole transcript fits in the tail', () => {
-    const count = LIVE_TAIL_GROUPS
+    const groups = [group('a', 5), group('b', 5), group('c', 5)]
 
-    for (let i = 0; i < count; i++) {
-      expect(isVirtualizedGroup(i, count)).toBe(false)
-    }
+    expect(liveTailStart(groups)).toBe(0)
   })
 
-  it('honors a custom tail size', () => {
-    expect(isVirtualizedGroup(5, 10, 3)).toBe(true)
-    expect(isVirtualizedGroup(7, 10, 3)).toBe(false)
+  it('handles an empty transcript', () => {
+    expect(liveTailStart([])).toBe(0)
+  })
+
+  it('honors a custom budget', () => {
+    const groups = Array.from({ length: 10 }, (_, i) => group(`g${i}`, 1))
+
+    // A 3-part budget would keep 4 turns, but the max-groups ceiling is not hit
+    // here, so the parts budget wins.
+    expect(liveTailStart(groups, 3)).toBe(6)
+  })
+
+  it('never renders more than the old turn-count tail did, on any shape', () => {
+    // Guards the one way a parts budget can regress: a long transcript of tiny
+    // turns, where walking back 40 parts reaches further than 6 turns would.
+    const shapes = [
+      Array.from({ length: 40 }, () => 4), // long chat, tiny turns
+      Array.from({ length: 40 }, () => 1), // pathological: 1-part turns
+      Array.from({ length: 12 }, () => 6),
+      [80, 120, 60, 150, 90, 200, 70], // real agent tile
+      [30, 45]
+    ]
+
+    for (const weights of shapes) {
+      const groups = weights.map((weight, i) => group(`g${i}`, weight))
+      const rendered = (start: number) => weights.slice(start).reduce((a, b) => a + b, 0)
+
+      const oldStart = Math.max(0, groups.length - 6)
+
+      expect(rendered(liveTailStart(groups))).toBeLessThanOrEqual(rendered(oldStart))
+    }
   })
 })

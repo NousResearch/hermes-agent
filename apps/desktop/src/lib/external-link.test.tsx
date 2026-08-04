@@ -112,10 +112,23 @@ describe('external link helpers', () => {
     expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
   })
 
-  it('shows a trailing external-link icon', () => {
+  it('hides the trailing external-link icon by default', () => {
     installDesktopBridge()
 
     render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    const link = screen.getByRole('link', { name: 'Example link' })
+    expect(link.querySelector('svg')).toBeNull()
+  })
+
+  it('shows a trailing external-link icon when opted in', () => {
+    installDesktopBridge()
+
+    render(
+      <ExternalLink href="https://example.com/path/to/resource" showExternalIcon>
+        Example link
+      </ExternalLink>
+    )
 
     const link = screen.getByRole('link', { name: 'Example link' })
     expect(link.querySelector('svg')).toBeTruthy()
@@ -234,5 +247,29 @@ describe('external link helpers', () => {
 
     const link = screen.getByRole('link', { name: 'agent.log' })
     expect(link.getAttribute('href')).toBe('https://agent.log')
+  })
+
+  it('prefixes a pretty link to a known host with its brand glyph', () => {
+    installDesktopBridge()
+
+    const url = 'https://github.com/NousResearch/hermes-agent/pull/123'
+
+    render(<PrettyLink fallbackLabel="#123" href={url} />)
+
+    const link = screen.getByTitle(url)
+
+    expect(link.querySelector('svg')).toBeTruthy()
+    // The glyph is decorative — it must not pollute the link's accessible name.
+    expect(link.textContent).toBe('#123')
+  })
+
+  it('renders no brand glyph for an unknown host', () => {
+    installDesktopBridge()
+
+    const url = 'https://example.com/some/page'
+
+    render(<PrettyLink fallbackLabel="Some Page" href={url} />)
+
+    expect(screen.getByTitle(url).querySelector('svg')).toBeNull()
   })
 })

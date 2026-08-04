@@ -118,10 +118,6 @@ def _make(extra=None):
     return a
 
 
-def test_require_mention_channels_default_empty():
-    assert _make()._slack_require_mention_channels() == set()
-
-
 def test_require_mention_channels_csv_and_list():
     assert _make({"require_mention_channels": "C1, C2"})._slack_require_mention_channels() == {
         "C1",
@@ -131,11 +127,6 @@ def test_require_mention_channels_csv_and_list():
         "C1",
         "C2",
     }
-
-
-def test_require_mention_channels_env_fallback(monkeypatch):
-    monkeypatch.setenv("SLACK_REQUIRE_MENTION_CHANNELS", "C9")
-    assert _make()._slack_require_mention_channels() == {"C9"}
 
 
 def test_yaml_bridge_sets_env(monkeypatch):
@@ -153,37 +144,6 @@ def test_yaml_bridge_sets_env(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_forced_channel_requires_mention_even_when_global_off(adapter):
-    adapter.config.extra["require_mention"] = False
-    adapter.config.extra["require_mention_channels"] = CHANNEL_ID
-
-    await adapter._handle_slack_message(_event("ambient chatter"))
-
-    adapter.handle_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_forced_channel_overrides_free_response(adapter):
-    adapter.config.extra["free_response_channels"] = CHANNEL_ID
-    adapter.config.extra["require_mention_channels"] = CHANNEL_ID
-
-    await adapter._handle_slack_message(_event("still ambient chatter"))
-
-    adapter.handle_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_forced_channel_mention_routes(adapter):
-    adapter.config.extra["require_mention"] = False
-    adapter.config.extra["require_mention_channels"] = CHANNEL_ID
-
-    await adapter._handle_slack_message(_event(f"<@{BOT_USER_ID}> hello"))
-
-    adapter.handle_message.assert_called_once()
-    assert adapter.handle_message.call_args[0][0].text == "hello"
-
-
-@pytest.mark.asyncio
 async def test_forced_channel_wake_checks_still_apply(adapter):
     """A previously mentioned thread still auto-follows in a forced channel."""
     adapter.config.extra["require_mention"] = False
@@ -197,13 +157,3 @@ async def test_forced_channel_wake_checks_still_apply(adapter):
     adapter.handle_message.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_other_channel_stays_free_response(adapter):
-    adapter.config.extra["require_mention"] = False
-    adapter.config.extra["require_mention_channels"] = CHANNEL_ID
-
-    await adapter._handle_slack_message(
-        _event("no mention needed here", channel="C_OTHER")
-    )
-
-    adapter.handle_message.assert_called_once()

@@ -122,9 +122,27 @@ export { COMPOSER_AREAS, type ComposerAttachmentProvider, type ComposerMiddlewar
 
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
+/** THE model catalog menu — the same searchable, provider-grouped, family-
+ *  collapsing picker the chat composer uses, including the per-row
+ *  thinking/effort/fast submenu. Drive it with a `ModelMenuController`: the
+ *  menu renders and navigates, your controller decides what a selection MEANS
+ *  (write to a session, hold a per-task override, …). Never fork it — a copy
+ *  drifts from the composer the first time either side changes. */
+export {
+  ModelCatalogMenu,
+  type ModelChoice,
+  ModelMenuCloseContext,
+  type ModelMenuController
+} from '@/app/shell/model-catalog-menu'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
+/** Pane placement roles. `'floating'` is the one NON-tiling value: the pane is
+ *  excluded from the layout tree and rendered as a fixed, draggable card above
+ *  it — it takes no width from any zone, has no tab, and can't be docked.
+ *  Pair it with `anchor` (spawn corner, default `'top-right'`) plus
+ *  `width`/`height`. */
+export type { FloatingAnchor } from '@/components/pane-shell/tree/renderer/floating-rect'
 export { StatusDot, type StatusTone } from '@/components/status-dot'
 export { Badge } from '@/components/ui/badge'
 export { Button } from '@/components/ui/button'
@@ -158,6 +176,7 @@ export {
 } from '@/components/ui/dropdown-menu'
 export { EmptyState } from '@/components/ui/empty-state'
 export { ErrorState } from '@/components/ui/error-state'
+export { FadeScroll } from '@/components/ui/fade-scroll'
 export { GlyphSpinner } from '@/components/ui/glyph-spinner'
 export { Input } from '@/components/ui/input'
 export { Kbd, KbdGroup } from '@/components/ui/kbd'
@@ -194,6 +213,9 @@ export type {
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 export type { Contribution } from '@/contrib/types'
+/** Grab-to-pan for overflow containers (boards, timelines, wide tables) —
+ *  the shared scrub primitive; don't hand-roll drag-to-scroll. */
+export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
 /** Localized copy. `useI18n` reuses the app's strings; `usePluginI18n(id)` +
  *  `ctx.i18n.register` let a plugin ship its OWN locale bundles, scoped like
  *  `ctx.storage` and resolved against the app's active locale — no core edit. */
@@ -207,6 +229,9 @@ export {
   useI18n,
   usePluginI18n
 } from '@/i18n'
+/** THE compact-number formatter — every user-facing count/token figure goes
+ *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
+export { compactNumber } from '@/lib/format'
 export { triggerHaptic as haptic } from '@/lib/haptics'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */
 export * as icons from '@/lib/icons'
@@ -221,6 +246,15 @@ export { profileColor, profileColorSoft } from '@/lib/profile-color'
 export { queryClient } from '@/lib/query-client'
 
 export const PANES_AREA = 'panes'
+/** Hermes' reasoning levels + their compact labels, so a plugin surfacing a
+ *  thinking depth uses the same scale and spelling as the rest of the app. */
+export {
+  DEFAULT_REASONING_EFFORT,
+  REASONING_EFFORT_VALUES,
+  REASONING_EFFORTS,
+  type ReasoningEffort,
+  reasoningEffortLabel
+} from '@/lib/reasoning-effort'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
@@ -228,8 +262,6 @@ export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left'
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-/** Canonical time formatting — every timestamp/age string in the app comes
- *  from these (localized `Intl` under the hood). Don't hand-roll "Xm ago". */
 export { coarseElapsed, fmtDateTime, fmtDayTime, relativeTime } from '@/lib/time'
 export { cn } from '@/lib/utils'
 export { THEMES_AREA } from '@/themes/user-themes'

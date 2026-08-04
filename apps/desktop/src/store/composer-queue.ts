@@ -5,6 +5,10 @@ import type { ComposerAttachment } from './composer'
 export interface QueuedPromptEntry {
   id: string
   text: string
+  /** What the queue panel and the sent bubble show, when it differs from the
+   *  text the agent receives. A queued `/skill` invocation carries the whole
+   *  expanded skill body as `text` — the UI shows the invocation instead. */
+  displayText?: string
   attachments: ComposerAttachment[]
   queuedAt: number
 }
@@ -110,7 +114,7 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[] }
+  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -121,6 +125,7 @@ export const enqueueQueuedPrompt = (
   const entry: QueuedPromptEntry = {
     id: nextId(),
     text: payload.text,
+    ...(payload.displayText ? { displayText: payload.displayText } : {}),
     attachments: cloneAttachments(payload.attachments),
     queuedAt: Date.now()
   }
@@ -218,7 +223,12 @@ export const updateQueuedPrompt = (
 
     changed = true
 
-    return { ...entry, text: update.text, attachments }
+    // The user rewrote the text, so any display projection it carried (a
+    // `/skill` invocation standing in for the expanded body) no longer
+    // describes it — what they typed is now what sends.
+    const { displayText: _dropped, ...rest } = entry
+
+    return { ...rest, text: update.text, attachments }
   })
 
   if (!changed) {

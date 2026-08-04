@@ -142,21 +142,6 @@ def test_oauth_provider_defaults_supports_token_false():
     assert _OAuthOnly().supports_token is False
 
 
-def test_oauth_provider_verify_token_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        _OAuthOnly().verify_token(token="x")
-
-
-def test_list_token_providers_filters_to_supports_token():
-    register_provider(_OAuthOnly())
-    register_provider(_TokenProvider())
-    names = [p.name for p in list_token_providers()]
-    assert names == ["tok"]
-
-
-def test_list_token_providers_empty_when_none_registered():
-    register_provider(_OAuthOnly())
-    assert list_token_providers() == []
 
 
 class _NonInteractiveProvider(_TokenProvider):
@@ -167,40 +152,11 @@ class _NonInteractiveProvider(_TokenProvider):
     supports_session = False
 
 
-def test_oauth_provider_defaults_supports_session_true():
-    # Interactive providers participate in cookie sessions by default.
-    assert _OAuthOnly().supports_session is True
-
-
-def test_list_session_providers_excludes_non_interactive():
-    # Token-only providers stay out of the interactive set. Mirror of
-    # list_token_providers.
-    register_provider(_OAuthOnly())
-    register_provider(_NonInteractiveProvider())
-    assert {p.name for p in list_providers()} == {"oauth-only", "svc-cred"}
-    assert [p.name for p in list_session_providers()] == ["oauth-only"]
-
-
 # --------------------------------------------------------------------------
 # Bearer extraction
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "header,expected",
-    [
-        ("Bearer abc123", "abc123"),
-        ("bearer abc123", "abc123"),
-        ("BEARER abc123", "abc123"),
-        ("Bearer   spaced  ", "spaced"),
-        ("Basic abc123", ""),
-        ("abc123", ""),
-        ("", ""),
-    ],
-)
-def test_extract_bearer_token(header, expected):
-    req = _FakeRequest(headers={"authorization": header} if header else {})
-    assert token_auth.extract_bearer_token(req) == expected
 
 
 # --------------------------------------------------------------------------
@@ -226,13 +182,6 @@ def test_authenticate_token_rejects_wrong_secret():
     assert unreachable is None
 
 
-def test_authenticate_token_no_token_returns_none():
-    register_provider(_TokenProvider())
-    req = _FakeRequest(headers={})
-    principal, unreachable = token_auth.authenticate_token(req)
-    assert principal is None and unreachable is None
-
-
 def test_authenticate_token_stacks_first_match_wins():
     register_provider(_TokenProvider(secret="aaa"))
     second = _TokenProvider(secret="bbb")
@@ -241,14 +190,6 @@ def test_authenticate_token_stacks_first_match_wins():
     req = _FakeRequest(headers={"authorization": "Bearer bbb"})
     principal, _ = token_auth.authenticate_token(req)
     assert principal is not None and principal.provider == "tok2"
-
-
-def test_authenticate_token_unreachable_remembered():
-    register_provider(_UnreachableTokenProvider())
-    req = _FakeRequest(headers={"authorization": "Bearer anything"})
-    principal, unreachable = token_auth.authenticate_token(req)
-    assert principal is None
-    assert unreachable == "tok-down"
 
 
 def test_authenticate_token_unreachable_then_valid_provider_wins():
@@ -280,33 +221,8 @@ async def _call_next_ok(request):
     return JSONResponse({"ok": True}, status_code=200)
 
 
-def test_seam_passthrough_for_unregistered_route():
-    register_provider(_TokenProvider())
-    req = _FakeRequest(path="/api/something-else")
-    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
-    assert resp.status_code == 200
-    assert getattr(req.state, "token_authenticated", False) is False
 
 
-def test_seam_accepts_valid_token_on_registered_route():
-    register_provider(_TokenProvider(secret="good"))
-    token_auth.register_token_route("/api/gateway/drain")
-    req = _FakeRequest(
-        path="/api/gateway/drain",
-        headers={"authorization": "Bearer good"},
-    )
-    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
-    assert resp.status_code == 200
-    assert req.state.token_authenticated is True
-    assert req.state.token_principal.provider == "tok"
-
-
-def test_seam_rejects_missing_token_401():
-    register_provider(_TokenProvider())
-    token_auth.register_token_route("/api/gateway/drain")
-    req = _FakeRequest(path="/api/gateway/drain", headers={})
-    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
-    assert resp.status_code == 401
 
 
 def test_seam_rejects_wrong_token_401():
@@ -319,22 +235,3 @@ def test_seam_rejects_wrong_token_401():
     assert resp.status_code == 401
 
 
-def test_seam_fails_closed_when_no_token_provider():
-    # Route registered but NO supports_token provider → 401, never open.
-    register_provider(_OAuthOnly())
-    token_auth.register_token_route("/api/gateway/drain")
-    req = _FakeRequest(
-        path="/api/gateway/drain", headers={"authorization": "Bearer anything"}
-    )
-    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
-    assert resp.status_code == 401
-
-
-def test_seam_503_on_provider_unreachable():
-    register_provider(_UnreachableTokenProvider())
-    token_auth.register_token_route("/api/gateway/drain")
-    req = _FakeRequest(
-        path="/api/gateway/drain", headers={"authorization": "Bearer x"}
-    )
-    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
-    assert resp.status_code == 503

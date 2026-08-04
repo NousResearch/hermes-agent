@@ -19,7 +19,6 @@ import asyncio
 import inspect
 import logging
 import queue
-import re
 import threading
 import time
 from dataclasses import dataclass
@@ -262,6 +261,19 @@ class GatewayStreamConsumer:
         # streaming, even if the final edit (cursor removal etc.)
         # subsequently failed.
         self._final_content_delivered = False
+        # Exact cleaned payload of the turn-final delivery that set the flags
+        # above.  The gateway compares this against the completed
+        # ``final_response`` before trusting the flags: a *successful* finalize
+        # edit that carried only a stale preview snapshot must not suppress the
+        # complete send (#71643).  ``None`` means "no record" — legacy trust,
+        # so paths that predate the record keep their behavior.
+        self._delivered_final_text: Optional[str] = None
+        # True when the current turn's answer was delivered across multiple
+        # sealed messages (overflow split / adapter continuation adoption).
+        # Payload-equality against a single recorded string is meaningless in
+        # that shape, so delivered_final_matches() falls back to legacy trust
+        # rather than risking a duplicate re-send of a multi-message reply.
+        self._turn_split_delivery = False
         self._delivered_commentary_texts: list[str] = []
         # Retains the finalized visible text of each streaming segment so
         # ``has_delivered_text`` can still match after ``_reset_segment_state``
@@ -393,6 +405,57 @@ class GatewayStreamConsumer:
                 pass
         return await self.adapter.edit_message(**kwargs)
 
+    def _record_turn_final_payload(self, text: str) -> None:
+        """Record the exact cleaned payload of a turn-final delivery.
+
+        Normalized the same way ``_send_or_edit`` normalizes outgoing text
+        (media-directive strip + fence closing) so the gateway can compare it
+        against the completed ``final_response`` (#71643). No-op when the turn
+        was delivered across multiple sealed messages — payload equality is
+        undefined there and ``delivered_final_matches`` returns ``None``.
+        """
+        if self._turn_split_delivery:
+            self._delivered_final_text = None
+            return
+        self._delivered_final_text = ensure_closed_code_fences(
+            self._clean_for_display(text or "")
+        ).strip()
+
+    def delivered_final_matches(self, final_text: str) -> Optional[bool]:
+        """Reconcile the recorded turn-final payload against ``final_text``.
+
+        Returns a tri-state verdict for the gateway's suppression decision
+        (#71643 — a *successful* finalize edit can still carry only a stale
+        preview snapshot, so call success alone must not confirm delivery):
+
+        - ``True``  — the recorded turn-final payload (or a previously
+          delivered segment/commentary) matches ``final_text``; suppressing
+          the normal final send is safe.
+        - ``False`` — a turn-final delivery was recorded but its payload
+          demonstrably differs from ``final_text``; the user has NOT seen the
+          complete response and the normal final send must run.
+        - ``None``  — no payload comparison is possible (multi-message split
+          delivery, or a legacy/uncertain path that recorded nothing). The
+          caller keeps the pre-existing flag-trusting behavior so overflow
+          splits and ambiguous-timeout dedup are not regressed.
+        """
+        if self._turn_split_delivery:
+            return None
+        if self._delivered_final_text is None:
+            return None
+        target = ensure_closed_code_fences(
+            self._clean_for_display(final_text or "")
+        ).strip()
+        if not target:
+            return None
+        if self._delivered_final_text.strip() == target:
+            return True
+        # A segment break / commentary may have delivered the final text
+        # earlier in the turn under a different record.
+        if self.has_delivered_text(final_text):
+            return True
+        return False
+
     def has_delivered_text(self, text: str) -> bool:
         """Return True if *text* was already delivered as visible chat content."""
         target = self._clean_for_display(text or "").strip()
@@ -489,6 +552,8 @@ class GatewayStreamConsumer:
         # run.py reads these only after the consumer task exits.
         self._final_response_sent = False
         self._final_content_delivered = False
+        self._delivered_final_text = None
+        self._turn_split_delivery = False
         # Native draft streaming: bump the draft_id so the next text segment
         # animates as a fresh preview below the tool-progress bubbles, not
         # over the prior segment's already-finalized draft.  This is how
@@ -675,10 +740,13 @@ class GatewayStreamConsumer:
         # Platform message length limit — leave room for cursor + formatting.
         # Use the adapter's length function (e.g. utf16_len for Telegram) so
         # overflow detection matches what the platform actually enforces.
+        # Both resolve PER-CHAT (max_message_length_for_chat): a relay adapter
+        # fronting N platforms has different caps per chat (Discord 2000 vs
+        # Telegram 4096); native adapters return their scalar unchanged.
         # Gate on isinstance(BasePlatformAdapter) so test MagicMocks (whose
         # auto-attributes return mock objects, not callables) fall back to len.
         _len_fn: "Callable[[str], int]" = (
-            self.adapter.message_len_fn
+            self.adapter.message_len_fn_for_chat(self.chat_id)
             if isinstance(self.adapter, _BasePlatformAdapter)
             else len
         )
@@ -871,6 +939,11 @@ class GatewayStreamConsumer:
                             self._final_response_sent = chunks_delivered and tail_delivered
                             if self._final_response_sent:
                                 self._final_content_delivered = True
+                                # Multi-message split delivery — payload
+                                # equality against a single record is
+                                # undefined (#71643).
+                                self._turn_split_delivery = True
+                                self._delivered_final_text = None
                             return
                         if got_segment_break:
                             self._message_id = None
@@ -924,6 +997,9 @@ class GatewayStreamConsumer:
                         self._accumulated = self._accumulated[split_at:].lstrip("\n")
                         self._message_id = None
                         self._last_sent_text = ""
+                        # Sealed head chunk delivered — this turn is now a
+                        # multi-message delivery (#71643 record semantics).
+                        self._turn_split_delivery = True
 
                     display_text = self._accumulated
                     if not got_done and not got_segment_break and commentary_text is None:
@@ -962,6 +1038,7 @@ class GatewayStreamConsumer:
                             # edit here would duplicate the message / re-delete,
                             # so just record delivery and stop.
                             self._final_content_delivered = True
+                            self._record_turn_final_payload(self._accumulated)
                         elif (
                             current_update_visible
                             and (
@@ -981,6 +1058,7 @@ class GatewayStreamConsumer:
                             # on screen.
                             self._final_response_sent = True
                             self._final_content_delivered = True
+                            self._record_turn_final_payload(self._accumulated)
                         elif self._message_id:
                             # Either the mid-stream edit didn't run (no
                             # visible update this tick) OR the adapter needs
@@ -990,6 +1068,7 @@ class GatewayStreamConsumer:
                             )
                             if self._final_response_sent:
                                 self._final_content_delivered = True
+                                self._record_turn_final_payload(self._accumulated)
                             elif self._fallback_final_send:
                                 # The final edit attempt itself may be the one
                                 # that exhausts flood-control strikes and
@@ -1003,6 +1082,7 @@ class GatewayStreamConsumer:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                             if self._final_response_sent:
                                 self._final_content_delivered = True
+                                self._record_turn_final_payload(self._accumulated)
                     return
 
                 if commentary_text is not None:
@@ -1080,6 +1160,7 @@ class GatewayStreamConsumer:
             if _best_effort_ok and not self._final_response_sent:
                 self._final_response_sent = True
                 self._final_content_delivered = True
+                self._record_turn_final_payload(self._accumulated)
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
         finally:
@@ -1179,40 +1260,13 @@ class GatewayStreamConsumer:
     def _balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
         """Close orphaned ``` fences at each chunk boundary and reopen on the next.
 
-        When a split lands inside a triple-backtick code block, the head chunk
-        would render everything after the orphaned fence as code, and the tail
-        chunk's content would lose its code formatting.  Mirror
-        ``BasePlatformAdapter.truncate_message``'s contract: close the fence at
-        the end of the chunk and reopen it (with the original language tag) at
-        the start of the next one, so EVERY delivered chunk is fence-balanced
-        on its own.
+        Thin delegate to the shared fence-chunker core in
+        :mod:`gateway.platforms.helpers` (``balance_fences_across_chunks``);
+        kept as a method for the existing call sites and tests.
         """
-        if len(chunks) <= 1:
-            return chunks
-        out: "list[str]" = []
-        carry_lang: "Optional[str]" = None
-        for chunk in chunks:
-            prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
-            in_code = carry_lang is not None
-            lang = carry_lang or ""
-            for line in chunk.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("```"):
-                    if in_code:
-                        in_code = False
-                        lang = ""
-                    else:
-                        in_code = True
-                        tag = stripped[3:].strip()
-                        lang = tag.split()[0] if tag else ""
-            body = prefix + chunk
-            if in_code:
-                body += "\n```"
-                carry_lang = lang
-            else:
-                carry_lang = None
-            out.append(body)
-        return out
+        from gateway.platforms.helpers import balance_fences_across_chunks
+
+        return balance_fences_across_chunks(chunks)
 
     @staticmethod
     def _split_text_chunks(
@@ -1225,26 +1279,20 @@ class GatewayStreamConsumer:
         Chunks are fence-balanced: a split inside a ``` code block closes the
         fence on the head chunk and reopens it on the tail, so no chunk leaves
         the rest of a message rendering as one giant code block.
+
+        Delegates to the shared fence-chunker core
+        (:func:`gateway.platforms.helpers.split_text_fence_aware`) with this
+        consumer's knobs: newline-preferred splitting + fence balancing.
         """
-        if len_fn(text) <= limit:
-            return [text]
-        # Reserve headroom for the close/reopen fence markers the balancing
-        # pass may add, so balanced chunks stay within the platform limit.
-        split_limit = limit
-        if "```" in text:
-            split_limit = max(limit - 16, limit // 2, 1)
-        chunks: list[str] = []
-        remaining = text
-        while len_fn(remaining) > split_limit:
-            _cp_budget = _custom_unit_to_cp(remaining, split_limit, len_fn)
-            split_at = remaining.rfind("\n", 0, _cp_budget)
-            if split_at < _cp_budget // 2:
-                split_at = _cp_budget
-            chunks.append(remaining[:split_at])
-            remaining = remaining[split_at:].lstrip("\n")
-        if remaining:
-            chunks.append(remaining)
-        return GatewayStreamConsumer._balance_fences_across_chunks(chunks)
+        from gateway.platforms.helpers import split_text_fence_aware
+
+        return split_text_fence_aware(
+            text,
+            limit,
+            len_fn,
+            prefer_paragraphs=False,
+            balance_fences=True,
+        )
 
     def _truncate_for_stream(
         self,
@@ -1351,6 +1399,8 @@ class GatewayStreamConsumer:
                 self._already_sent = True
                 self._final_response_sent = True
                 self._final_content_delivered = True
+                # The visible partial equals the complete final text (#71643).
+                self._delivered_final_text = final_text.strip()
                 return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
@@ -1359,6 +1409,15 @@ class GatewayStreamConsumer:
             if isinstance(self.adapter, _BasePlatformAdapter)
             else len
         )
+        # Per-chat resolution (relay adapter fronting N platforms): the cap and
+        # length unit follow the chat's underlying platform, not the adapter
+        # scalar. Native adapters return their scalar/property unchanged.
+        if isinstance(self.adapter, _BasePlatformAdapter):
+            try:
+                raw_limit = self.adapter.max_message_length_for_chat(self.chat_id)
+                _len_fn = self.adapter.message_len_fn_for_chat(self.chat_id)
+            except Exception as e:
+                logger.debug("per-chat limit resolution failed: %s", e)
         safe_limit = max(500, raw_limit - 100)
         chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
 
@@ -1444,6 +1503,10 @@ class GatewayStreamConsumer:
         self._already_sent = True
         self._final_response_sent = True
         self._final_content_delivered = True
+        # The fallback delivered the complete ``final_text`` (as one message
+        # or prefix + continuation chunks that union to it), so record it as
+        # the turn-final payload for the gateway's reconciliation (#71643).
+        self._delivered_final_text = final_text.strip()
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
@@ -1514,6 +1577,8 @@ class GatewayStreamConsumer:
         self._already_sent = True
         self._final_response_sent = True
         self._final_content_delivered = True
+        # Fresh commit of the complete answer after a failed finalize (#71643).
+        self._delivered_final_text = final_text.strip()
         self._last_sent_text = final_text
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
@@ -1744,8 +1809,11 @@ class GatewayStreamConsumer:
         """Per-message length budget (in the adapter's ``message_len_fn`` units)
         before the consumer splits an overflowing reply.
 
-        Adapters with a richer send/draft path (e.g. Telegram rich messages)
-        can raise this above ``MAX_MESSAGE_LENGTH`` via
+        Resolved PER-CHAT via ``max_message_length_for_chat`` — a relay adapter
+        fronting N platforms has a different cap per chat (Discord 2000 vs
+        Telegram 4096 vs Slack 39000); native adapters return their scalar
+        ``MAX_MESSAGE_LENGTH`` unchanged. Adapters with a richer send/draft
+        path (e.g. Telegram rich messages) can raise this above the base via
         ``streaming_overflow_limit`` so a reply that fits one rich message isn't
         fragmented at the legacy edit limit.  Falls back to
         ``MAX_MESSAGE_LENGTH`` (4096 default) for everyone else.
@@ -1754,6 +1822,10 @@ class GatewayStreamConsumer:
         # isinstance gate: MagicMock adapters return mock objects (truthy, not
         # ints) for arbitrary attribute access — keep them on the base limit.
         if isinstance(self.adapter, _BasePlatformAdapter):
+            try:
+                base = self.adapter.max_message_length_for_chat(self.chat_id)
+            except Exception as e:
+                logger.debug("max_message_length_for_chat failed: %s", e)
             try:
                 cap = self.adapter.streaming_overflow_limit()
             except Exception as e:
@@ -1919,6 +1991,8 @@ class GatewayStreamConsumer:
         self._already_sent = False
         self._final_response_sent = False
         self._final_content_delivered = False
+        self._delivered_final_text = None
+        self._turn_split_delivery = False
         logger.info(
             "Suppressed streamed intentional-silence marker (chat=%s)",
             self.chat_id,
@@ -2097,6 +2171,9 @@ class GatewayStreamConsumer:
                             and result.message_id != self._message_id
                         ):
                             self._last_edit_overflowed = True
+                            # Adapter adopted continuation messages — this
+                            # turn is a multi-message delivery (#71643).
+                            self._turn_split_delivery = True
                             self._message_id = str(result.message_id)
                             self._message_created_ts = time.monotonic()
                             self._last_sent_text = ""
@@ -2124,6 +2201,11 @@ class GatewayStreamConsumer:
                             # when Telegram/Discord rate-limit this cosmetic
                             # final edit (#36965, #25349).
                             self._final_content_delivered = True
+                            # ``text`` is already cleaned/fence-closed here and
+                            # equals the visible prefix — the on-screen content
+                            # IS this finalize payload (#71643).
+                            if not self._turn_split_delivery:
+                                self._delivered_final_text = text.strip()
                         raw_response = getattr(result, "raw_response", None)
                         if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
                             # Telegram edited/sent one or more overflow chunks,

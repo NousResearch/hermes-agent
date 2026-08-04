@@ -10,7 +10,11 @@ s6-log crash-loops on mkdir: Permission denied.
 """
 from __future__ import annotations
 
-from tests.docker.conftest import docker_exec_sh, start_container
+from tests.docker.conftest import (
+    docker_exec_sh,
+    restart_container,
+    start_container,
+)
 
 
 def test_logs_gateways_seeded_and_hermes_owned(
@@ -45,3 +49,5 @@ def test_logs_gateways_seeded_and_hermes_owned(
     assert "gateways=hermes" in r.stdout, (
         f"logs/gateways/ not owned by hermes: {r.stdout}"
     )
+
+

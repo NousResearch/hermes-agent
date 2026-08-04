@@ -6,6 +6,7 @@ import {
   attachmentDisplayText,
   attachmentId,
   coerceThinkingText,
+  messageCreatedAt,
   optimisticAttachmentRef,
   parseCommandDispatch,
   parseSlashCommand
@@ -176,5 +177,26 @@ describe('attachmentId', () => {
 
   it('keeps distinct urls distinct', () => {
     expect(attachmentId('url', 'https://example.com/a')).not.toBe(attachmentId('url', 'https://example.com/b'))
+  })
+})
+
+describe('messageCreatedAt', () => {
+  const NOW = Date.UTC(2026, 6, 28, 18, 0, 0)
+
+  it('reads the authoritative Unix-seconds timestamp (not ms)', () => {
+    // 1785282262s → July 2026, not the 1970 epoch a *1000-less read would give.
+    expect(messageCreatedAt({ timestamp: 1785282262 }, NOW).getFullYear()).toBe(2026)
+  })
+
+  it('falls back to now — never digs digits out of the id → "20663d ago" (1970)', () => {
+    // The old fallback did `new Date(Number(id.match(/\d+/)))`, so a session-style
+    // id like 20260728_184420_05e697 parsed to 20260728 *ms* = Jan 1970, showing
+    // as an absurd 20663-day age. A timestamp-less message is freshly created.
+    expect(messageCreatedAt({ timestamp: undefined }, NOW).getTime()).toBe(NOW)
+  })
+
+  it('treats a zero / non-finite timestamp as absent', () => {
+    expect(messageCreatedAt({ timestamp: 0 }, NOW).getTime()).toBe(NOW)
+    expect(messageCreatedAt({ timestamp: Number.NaN }, NOW).getTime()).toBe(NOW)
   })
 })

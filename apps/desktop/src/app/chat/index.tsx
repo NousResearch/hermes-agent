@@ -3,8 +3,8 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { memo, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
@@ -39,7 +39,8 @@ import {
   $sessions,
   resolveComposerSessionKey,
   sessionMatchesStoredId,
-  sessionPinId
+  sessionPinId,
+  shouldMigrateComposerScope
 } from '@/store/session'
 import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -71,7 +72,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onCancel: () => Promise<void> | void
   onAddContextRef: (refText: string, label?: string, detail?: string) => void
   onAddUrl: (url: string) => void
-  onBranchInNewChat: (messageId: string) => void
+  onBranchInNewChat?: (messageId: string) => void
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
@@ -239,7 +240,10 @@ function ChatRuntimeBoundary({
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
 }
 
-export function ChatView({
+// Memoized: the tile caller (session-tile.tsx) and the contrib surface re-render
+// on idle ticks unrelated to the chat; with stable callback props (hoisted to
+// useCallback at the call sites) memo() lets the whole chat shell skip those.
+export const ChatView = memo(function ChatView({
   className,
   gateway,
   modelMenuContent,
@@ -326,14 +330,19 @@ export function ChatView({
 
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.
+  //
+  // ONLY same-conversation rekeys (tip → root). The route-driven queueSessionKey
+  // can flip to Session B a frame before the store selection leaves Session A;
+  // migrating on bare inequality would re-home A's queued prompts onto B and
+  // auto-drain them into the wrong chat.
   useEffect(() => {
-    if (!selectedSessionId || !queueSessionKey || selectedSessionId === queueSessionKey) {
+    if (!shouldMigrateComposerScope(selectedSessionId, queueSessionKey, sessions)) {
       return
     }
 
     migrateSessionDraft(selectedSessionId, queueSessionKey)
     migrateQueuedPrompts(selectedSessionId, queueSessionKey)
-  }, [queueSessionKey, selectedSessionId])
+  }, [queueSessionKey, selectedSessionId, sessions])
 
   // Transcript-side stops (the streaming message's hover Stop, the runtime's
   // cancel) are explicit halts, same as the composer's Stop button: park any
@@ -470,6 +479,7 @@ export function ChatView({
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
         className
       )}
+      data-chat-surface=""
       data-composer-target={composerScope.target}
       data-session-anchor={sessionAnchor}
     >
@@ -541,7 +551,7 @@ export function ChatView({
               config={COMPOSER_HEART_CONFIG}
               style={{
                 top: 0,
-                bottom: 'calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 0.25rem)'
+                bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
               }}
             />
           )}
@@ -589,4 +599,4 @@ export function ChatView({
       </ChatRuntimeBoundary>
     </div>
   )
-}
+})

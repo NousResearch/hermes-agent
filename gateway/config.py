@@ -1550,6 +1550,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["cron_continuable_surface"] = platform_cfg["cron_continuable_surface"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
+                if "send_read_receipts" in platform_cfg:
+                    bridged["send_read_receipts"] = platform_cfg["send_read_receipts"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]
                 if plat == Platform.TELEGRAM and "group_allowed_chats" in platform_cfg:
@@ -2126,7 +2128,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # API Server
-    api_server_enabled = is_truthy_value(getenv("API_SERVER_ENABLED", ""))
     api_server_key = getenv("API_SERVER_KEY", "")
     api_server_cors_origins = getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = getenv("API_SERVER_PORT")
@@ -2321,7 +2322,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "agent_id": getenv("WECOM_CALLBACK_AGENT_ID", ""),
             "token": getenv("WECOM_CALLBACK_TOKEN", ""),
             "encoding_aes_key": getenv("WECOM_CALLBACK_ENCODING_AES_KEY", ""),
-            "host": getenv("WECOM_CALLBACK_HOST", "0.0.0.0"),
+            # No default here: an unset WECOM_CALLBACK_HOST leaves extra.host
+            # falsy so the adapter's dual-stack DEFAULT_HOST=None applies
+            # (binds IPv4 + IPv6; "0.0.0.0" was IPv4-only, NS-603).
+            "host": getenv("WECOM_CALLBACK_HOST", ""),
             "port": getenv_int("WECOM_CALLBACK_PORT", 8645),
         })
 

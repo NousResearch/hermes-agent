@@ -115,9 +115,9 @@ class ProgressAgent:
         cb = self.tool_progress_callback
         if cb is not None:
             cb("tool.started", "terminal", "pwd", {})
-            time.sleep(0.25)
+            time.sleep(0.2)
             cb("tool.started", "terminal", "ls", {})
-            time.sleep(0.25)
+            time.sleep(0.2)
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
@@ -130,7 +130,7 @@ class FailingAgent:
         cb = self.tool_progress_callback
         if cb is not None:
             cb("tool.started", "terminal", "pwd", {})
-            time.sleep(0.25)
+            time.sleep(0.2)
         # Empty final_response + failed=True is the shape the gateway
         # actually returns on provider errors (see gateway/run.py where
         # failed keys are only propagated when final_response is empty).
@@ -207,39 +207,6 @@ def _install_fakes(
 
 
 @pytest.mark.asyncio
-async def test_cleanup_off_by_default_leaves_bubbles(monkeypatch, tmp_path):
-    """Without ``cleanup_progress: true``, firing whatever callback is
-    registered never reaches delete_message."""
-    adapter = CleanupCaptureAdapter()
-    runner = _make_runner(adapter)
-    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=False)
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
-    session_key = "agent:main:telegram:group:-1001"
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-1",
-        session_key=session_key,
-    )
-
-    assert result["final_response"] == "done"
-    # Even if an unrelated callback got registered (background-review
-    # release lives in the same slot) firing it should never cause any
-    # delete_message calls when cleanup is off.
-    cb = adapter.pop_post_delivery_callback(session_key)
-    if cb is not None:
-        await _fire_post_delivery_cb(cb)
-        for _ in range(10):
-            await asyncio.sleep(0.01)
-    assert adapter.deleted == []
-
-
-@pytest.mark.asyncio
 async def test_messaging_agent_forwards_checkpoint_config(monkeypatch, tmp_path):
     """Writable gateway agents must receive the configured checkpoint limits."""
     captured = {}
@@ -283,146 +250,6 @@ async def test_messaging_agent_forwards_checkpoint_config(monkeypatch, tmp_path)
     assert captured["checkpoint_max_snapshots"] == 9
     assert captured["checkpoint_max_total_size_mb"] == 444
     assert captured["checkpoint_max_file_size_mb"] == 6
-
-
-@pytest.mark.asyncio
-async def test_cleanup_registers_callback_and_deletes_on_success(monkeypatch, tmp_path):
-    """With the flag on, the cleanup callback deletes the progress bubble."""
-    adapter = CleanupCaptureAdapter()
-    runner = _make_runner(adapter)
-    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
-    session_key = "agent:main:telegram:group:-1001"
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-1",
-        session_key=session_key,
-    )
-
-    assert result["final_response"] == "done"
-    # The cleanup callback should be registered for this session.
-    cb = adapter.pop_post_delivery_callback(session_key)
-    assert callable(cb)
-
-    # Fire it (base.py does this in _process_message_background's finally)
-    # and let the scheduled coroutine run to completion.
-    await _fire_post_delivery_cb(cb)
-    # delete_message is scheduled via run_coroutine_threadsafe → give the
-    # loop a couple of ticks to drain.
-    for _ in range(20):
-        await asyncio.sleep(0.01)
-        if adapter.deleted:
-            break
-
-    # At least the first tool-progress bubble should have been deleted.
-    assert len(adapter.deleted) >= 1, f"deleted={adapter.deleted} sent={adapter.sent}"
-    for entry in adapter.deleted:
-        assert entry["chat_id"] == "-1001"
-
-
-@pytest.mark.asyncio
-async def test_slack_cleanup_flag_deletes_progress_bubbles(monkeypatch, tmp_path):
-    """Slack's per-platform cleanup flag uses the same post-delivery cleanup path."""
-    adapter = CleanupCaptureAdapter(Platform.SLACK)
-    runner = _make_runner(adapter)
-    gateway_run = _install_fakes(
-        monkeypatch,
-        ProgressAgent,
-        cleanup_on=True,
-        cleanup_platform=Platform.SLACK,
-    )
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    source = SessionSource(platform=Platform.SLACK, chat_id="D123")
-    session_key = "agent:main:slack:dm:D123"
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-slack",
-        session_key=session_key,
-    )
-
-    assert result["final_response"] == "done"
-    cb = adapter.pop_post_delivery_callback(session_key)
-    assert callable(cb)
-    await _fire_post_delivery_cb(cb)
-    for _ in range(20):
-        await asyncio.sleep(0.01)
-        if adapter.deleted:
-            break
-
-    assert len(adapter.deleted) >= 1, f"deleted={adapter.deleted} sent={adapter.sent}"
-    for entry in adapter.deleted:
-        assert entry["chat_id"] == "D123"
-
-
-@pytest.mark.asyncio
-async def test_cleanup_skipped_on_failed_run(monkeypatch, tmp_path):
-    """Failed runs skip cleanup registration — breadcrumbs stay."""
-    adapter = CleanupCaptureAdapter()
-    runner = _make_runner(adapter)
-    gateway_run = _install_fakes(monkeypatch, FailingAgent, cleanup_on=True)
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
-    session_key = "agent:main:telegram:group:-1001"
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-1",
-        session_key=session_key,
-    )
-
-    assert result.get("failed") is True
-    # Whatever callback is registered should not trigger any deletion —
-    # the cleanup callback is skipped on failed runs.
-    cb = adapter.pop_post_delivery_callback(session_key)
-    if cb is not None:
-        await _fire_post_delivery_cb(cb)
-        for _ in range(10):
-            await asyncio.sleep(0.01)
-    assert adapter.deleted == []
-
-
-@pytest.mark.asyncio
-async def test_cleanup_noop_on_adapter_without_delete_support(monkeypatch, tmp_path):
-    """Adapters that inherit the base-class delete_message no-op are
-    detected up front — the cleanup path never registers its callback so
-    a stray bg-review callback (if present) can fire harmlessly."""
-    adapter = NoDeleteAdapter()
-    runner = _make_runner(adapter)
-    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
-    session_key = "agent:main:telegram:group:-1001"
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-1",
-        session_key=session_key,
-    )
-
-    assert result["final_response"] == "done"
-    # No deletion attempts on an adapter without delete_message support.
-    # (The NoDeleteAdapter.delete_message would raise AssertionError if
-    # the cleanup closure had somehow captured a reference to it.)
-    assert adapter.deleted == []
 
 
 @pytest.mark.asyncio

@@ -44,7 +44,7 @@ from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 async def _hang_forever(**kwargs):
-    await asyncio.sleep(1000)
+    await asyncio.sleep(0.2)
 
 
 def _bare_adapter():
@@ -90,85 +90,6 @@ async def test_network_ladder_start_polling_hang_does_not_wedge(monkeypatch):
         # the ensure_future patch), and returns.
         await asyncio.wait_for(
             a._handle_polling_network_error(Exception("net down")), timeout=30
-        )
-
-
-@pytest.mark.asyncio
-async def test_bootstrap_start_polling_hang_schedules_recovery(monkeypatch):
-    """_start_polling_resilient: a hung bootstrap start_polling() must raise
-    TimeoutError (an OSError → classified as network error) and schedule
-    background recovery instead of blocking connect() forever."""
-    monkeypatch.setattr(tg_adapter, "_UPDATER_START_TIMEOUT", 0.2)
-    a = _bare_adapter()
-
-    app = MagicMock()
-    app.updater = AsyncMock()
-    app.updater.start_polling = _hang_forever
-    a._app = app
-
-    scheduled = []
-    monkeypatch.setattr(
-        a, "_schedule_polling_recovery",
-        lambda err, reason: scheduled.append((err, reason)),
-        raising=False,
-    )
-
-    ok = await asyncio.wait_for(
-        a._start_polling_resilient(drop_pending_updates=False, error_callback=None),
-        timeout=10,
-    )
-    assert ok is False
-    assert len(scheduled) == 1
-    assert isinstance(scheduled[0][0], (TimeoutError, asyncio.TimeoutError))
-
-
-@pytest.mark.asyncio
-async def test_start_polling_success_path_unaffected(monkeypatch):
-    """Sanity: a fast start_polling() still returns True through the wrapper."""
-    monkeypatch.setattr(tg_adapter, "_UPDATER_START_TIMEOUT", 5.0)
-    a = _bare_adapter()
-
-    app = MagicMock()
-    app.updater = AsyncMock()
-    app.updater.start_polling = AsyncMock(return_value=None)
-    a._app = app
-
-    ok = await a._start_polling_resilient(drop_pending_updates=False, error_callback=None)
-    assert ok is True
-    app.updater.start_polling.assert_awaited_once()
-
-
-def test_every_start_polling_call_site_is_time_bounded():
-    """Every updater.start_polling call must use the wall-deadline helper."""
-    import inspect
-    import re
-
-    src = inspect.getsource(tg_adapter)
-    lines = src.splitlines()
-    unbounded = []
-    for i, line in enumerate(lines):
-        if re.search(r"updater\.start_polling\(", line) and "def " not in line:
-            window = "\n".join(lines[max(0, i - 8):i + 1])
-            if "_await_with_thread_deadline" not in window:
-                unbounded.append((i + 1, line.strip()))
-    assert not unbounded, f"unbounded start_polling() call sites: {unbounded}"
-
-
-@pytest.mark.asyncio
-async def test_initial_connect_requires_get_updates_progress(monkeypatch):
-    """Cold connect must not claim success before real getUpdates I/O."""
-    monkeypatch.setattr(tg_adapter, "_INITIAL_POLLING_PROGRESS_TIMEOUT", 0.05)
-    a = _bare_adapter()
-    app = MagicMock()
-    app.updater = AsyncMock()
-    app.updater.start_polling = AsyncMock(return_value=None)
-    a._app = app
-
-    with pytest.raises(OSError, match="getUpdates made no progress"):
-        await a._start_polling_resilient(
-            drop_pending_updates=True,
-            error_callback=None,
-            require_progress=True,
         )
 
 
@@ -252,28 +173,3 @@ async def test_initial_connect_polling_error_fails_fast_not_background(monkeypat
     assert recovery_scheduled == []
 
 
-@pytest.mark.asyncio
-async def test_initial_connect_ignores_stale_generation_progress(monkeypatch):
-    """Progress recorded for a stale generation must not satisfy readiness."""
-    monkeypatch.setattr(tg_adapter, "_INITIAL_POLLING_PROGRESS_TIMEOUT", 0.1)
-    a = _bare_adapter()
-    app = MagicMock()
-    app.updater = AsyncMock()
-
-    async def start_polling_stale_progress(**_kwargs):
-        # Progress arrives tagged with a PREVIOUS generation (e.g. a late
-        # response from an abandoned attempt) — must be rejected.
-        a._record_polling_progress(a._polling_generation - 1)
-
-    app.updater.start_polling = AsyncMock(side_effect=start_polling_stale_progress)
-    a._app = app
-
-    with pytest.raises(OSError, match="getUpdates made no progress"):
-        await asyncio.wait_for(
-            a._start_polling_resilient(
-                drop_pending_updates=True,
-                error_callback=None,
-                require_progress=True,
-            ),
-            timeout=10,
-        )

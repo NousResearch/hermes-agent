@@ -39,9 +39,12 @@ import os
 import queue
 import sys
 import threading
+import time
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+
+from agent.secret_scope import get_secret
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -66,7 +69,7 @@ _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.6-flash",
     "groq": "openai/gpt-oss-120b",
     "openrouter": "qwen/qwen3.5-9b",
     "minimax": "MiniMax-M2.7",
@@ -131,10 +134,19 @@ def _check_local_runtime() -> tuple[bool, str | None]:
     error from NumPy before the daemon starts. Treat that as "unavailable"
     so Hermes can degrade gracefully instead of repeatedly trying to start
     a broken local memory backend.
+
+    The embedded daemon computes embeddings via ``sentence_transformers``
+    (transformers + huggingface-hub). Importing ``hindsight`` /
+    ``hindsight_embed`` alone succeeds even when that stack is broken, so
+    without importing it here the probe would falsely report the backend
+    healthy and ``hermes memory status`` would stay green while the daemon
+    aborts at startup on every retain/recall. Import it too so the probe (and
+    status) reports the real ImportError.
     """
     try:
         importlib.import_module("hindsight")
         importlib.import_module("hindsight_embed.daemon_embed_manager")
+        importlib.import_module("sentence_transformers")
         return True, None
     except Exception as exc:
         return False, str(exc)
@@ -374,7 +386,7 @@ def _load_config() -> dict:
 
     return {
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
-        "apiKey": os.environ.get("HINDSIGHT_API_KEY", ""),
+        "apiKey": get_secret("HINDSIGHT_API_KEY", ""),
         "timeout": _parse_int_setting(os.environ.get("HINDSIGHT_TIMEOUT"), _DEFAULT_TIMEOUT),
         "idle_timeout": _parse_int_setting(os.environ.get("HINDSIGHT_IDLE_TIMEOUT"), _DEFAULT_IDLE_TIMEOUT),
         "retain_tags": os.environ.get("HINDSIGHT_RETAIN_TAGS", ""),
@@ -513,7 +525,7 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         current_key = (
             config.get("llmApiKey")
             or config.get("llm_api_key")
-            or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+            or get_secret("HINDSIGHT_LLM_API_KEY", "")
         )
 
     current_provider = config.get("llm_provider", "")
@@ -550,15 +562,61 @@ def _embedded_profile_env_path(config: dict[str, Any]):
     return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
 
 
+def _secure_write_profile_env(profile_env, content: str) -> None:
+    """Create/overwrite *profile_env* with owner-only (0600) permissions.
+
+    The file carries the embedded daemon's plaintext LLM API key
+    (``HINDSIGHT_API_LLM_API_KEY``), so it must never be created with the
+    default umask-derived mode. A pre-existing file is tightened *before*
+    the new secret bytes are written.
+    """
+    if profile_env.exists():
+        try:
+            os.chmod(profile_env, 0o600)
+        except OSError:
+            pass
+    fd = os.open(str(profile_env), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(content)
+
+
+def _validate_profile_env_permissions(profile_env) -> None:
+    """Post-write validation: the secret file must be owner-only on POSIX."""
+    if os.name != "posix":
+        # POSIX mode bits do not model Windows ACLs.
+        return
+    import stat
+
+    mode = stat.S_IMODE(profile_env.stat().st_mode)
+    if mode != 0o600:
+        try:
+            os.chmod(profile_env, 0o600)
+        except OSError:
+            pass
+        mode = stat.S_IMODE(profile_env.stat().st_mode)
+        if mode != 0o600:
+            raise PermissionError(
+                f"Embedded Hindsight profile environment is not owner-only: {profile_env}"
+            )
+
+
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
     """Write the profile-scoped env file that standalone hindsight-embed uses."""
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
-    profile_env.write_text(
-        "".join(f"{key}={value}\n" for key, value in env_values.items()),
-        encoding="utf-8",
-    )
+    content = "".join(f"{key}={value}\n" for key, value in env_values.items())
+    try:
+        _secure_write_profile_env(profile_env, content)
+        _validate_profile_env_permissions(profile_env)
+    except BaseException:
+        # Never leave a plaintext API key behind in a file whose permissions
+        # could not be verified.
+        try:
+            profile_env.unlink()
+        except OSError:
+            pass
+        raise
     return profile_env
 
 def _sanitize_bank_segment(value: str) -> str:
@@ -671,6 +729,21 @@ class HindsightMemoryProvider(MemoryProvider):
         self._writer_thread: threading.Thread | None = None
         self._shutting_down = threading.Event()
         self._atexit_registered = False
+        # Server-side async retain operations still in flight. With
+        # retain_async=True, aretain_batch returns as soon as the write is
+        # *accepted*, not when it's durable/recall-visible, so the returned
+        # operation_id(s) stay "pending" until the server finishes. The
+        # background prefetch gates on these via get_operation_status so recall
+        # observes the just-completed turn (draining the local queue alone is
+        # not a read-after-write signal for async retains).
+        self._pending_retain_ops: set[str] = set()
+        self._pending_retain_ops_lock = threading.Lock()
+        self._retain_ops_bank_id = ""
+        # Seconds between get_operation_status polls while waiting for server-
+        # side retain completion. Each poll is a server round trip, so this is
+        # deliberately coarser than the 0.05s local queue-drain poll: ~20 calls
+        # max over the default 10s budget instead of ~200.
+        self._RETAIN_OP_POLL_INTERVAL_S = 0.5
         # Legacy alias — older tests/callers reference _sync_thread directly.
         # Points at _writer_thread once the writer is running.
         self._sync_thread = None
@@ -687,6 +760,17 @@ class HindsightMemoryProvider(MemoryProvider):
         self._auto_retain = True
         self._retain_every_n_turns = 1
         self._retain_async = True
+        # Async retain never blocks the reply (writes drain on the single
+        # writer thread). But the next turn's warm prefetch runs on its own
+        # thread and could read BEFORE the just-completed retain is
+        # recall-visible on the server, dropping the latest turn from recall.
+        # When True, the background prefetch first waits (bounded) for the
+        # local writer queue to drain AND for the server-side async retain
+        # operation(s) to report completion, an explicit read-after-write
+        # signal — closing that race without putting any write on the reply
+        # path.
+        self._prefetch_waits_for_retain = True
+        self._prefetch_retain_drain_timeout = 10.0
         self._retain_context = "conversation between Hermes Agent and the User"
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
@@ -731,7 +815,7 @@ class HindsightMemoryProvider(MemoryProvider):
             has_key = bool(
                 cfg.get("apiKey")
                 or cfg.get("api_key")
-                or os.environ.get("HINDSIGHT_API_KEY", "")
+                or get_secret("HINDSIGHT_API_KEY", "")
             )
             has_url = bool(cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", ""))
             return has_key or has_url
@@ -824,26 +908,23 @@ class HindsightMemoryProvider(MemoryProvider):
             provider_config["llm_provider"] = llm_provider
 
         print("\n  Checking dependencies...")
-        uv_path = shutil.which("uv")
-        if not uv_path:
-            print("  ⚠ uv not found — install it: curl -LsSf https://astral.sh/uv/install.sh | sh")
-            print(f"  Then run manually: uv pip install --python {sys.executable} {' '.join(deps_to_install)}")
+        # Environment-aware install: sealed hosted venvs redirect to the durable
+        # data-volume target instead of writing to /opt/hermes (NS-605).
+        from tools.lazy_deps import install_specs
+
+        outcome = install_specs(deps_to_install, timeout=120)
+        if outcome.ok:
+            print("  ✓ Dependencies up to date")
+        elif outcome.blocked:
+            print(f"  ⚠ Cannot install dependencies: {outcome.reason}")
         else:
-            try:
-                subprocess.run(
-                    [uv_path, "pip", "install", "--python", sys.executable, "--quiet", "--upgrade"] + deps_to_install,
-                    check=True, timeout=120, capture_output=True,
-                    stdin=subprocess.DEVNULL,
-                )
-                print("  ✓ Dependencies up to date")
-            except Exception as e:
-                print(f"  ⚠ Install failed: {e}")
-                print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(deps_to_install)}")
+            print(f"  ⚠ Install failed:\n{(outcome.stderr or '').strip()}")
+            print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(deps_to_install)}")
 
         # Step 3: Mode-specific config
         if mode == "cloud":
             print("\n  Get your API key at https://ui.hindsight.vectorize.io\n")
-            existing_key = os.environ.get("HINDSIGHT_API_KEY", "")
+            existing_key = get_secret("HINDSIGHT_API_KEY", "") or ""
             if existing_key:
                 masked = f"...{existing_key[-4:]}" if len(existing_key) > 4 else "set"
                 sys.stdout.write(f"  API key (current: {masked}, blank to keep): ")
@@ -1006,6 +1087,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
+            {"key": "prefetch_waits_for_retain", "description": "Have the background next-turn prefetch wait for the just-completed retain to become recall-visible on the server (local queue drain + async operation completion) before recalling, so recall includes the just-completed turn (runs off the reply path, adds no response latency)", "default": True},
+            {"key": "prefetch_retain_drain_timeout", "description": "Max seconds the background prefetch waits for the retain to become recall-visible (queue drain + server-side completion) before recalling anyway", "default": 10.0},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
@@ -1042,7 +1125,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 kwargs = dict(
                     profile=self._config.get("profile", "hermes"),
                     llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
+                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or get_secret("HINDSIGHT_LLM_API_KEY", ""),
                     llm_model=self._config.get("llm_model", ""),
                 )
                 if self._llm_base_url:
@@ -1109,6 +1192,169 @@ class HindsightMemoryProvider(MemoryProvider):
         # external code that joins _sync_thread keeps working.
         self._sync_thread = thread
         thread.start()
+
+    def _track_retain_ops(self, retain_response, bank_id: str) -> None:
+        """Record server-side async operation id(s) from an aretain_batch reply.
+
+        Async retains return ``operation_id`` / ``operation_ids`` that stay
+        ``pending`` on the server until the write is durable and recall-visible.
+        The bank_id is captured alongside so completion can be polled with the
+        same bank the write targeted.
+        """
+        ids: list[str] = []
+        single = getattr(retain_response, "operation_id", None)
+        if single:
+            ids.append(str(single))
+        multiple = getattr(retain_response, "operation_ids", None)
+        if multiple:
+            ids.extend(str(op) for op in multiple if op)
+        if not ids:
+            # Server didn't hand back an op id (older API, or it completed
+            # synchronously). Nothing to poll — local queue drain is the only
+            # available signal in that case.
+            return
+        self._retain_ops_bank_id = bank_id
+        with self._pending_retain_ops_lock:
+            self._pending_retain_ops.update(ids)
+
+    def _is_retain_op_complete(self, bank_id: str, op_id: str) -> bool:
+        """Return True when a server-side async retain op is done (or gone).
+
+        ``get_operation_status`` returns ``completed``/``failed`` for a known
+        op; completed ops are evicted server-side, so a NotFound (404) also
+        means "no longer pending" and is treated as done. Transient errors
+        return False so the caller keeps waiting until its deadline.
+        """
+        from hindsight_client_api.exceptions import NotFoundException
+
+        try:
+            resp = self._run_hindsight_operation(
+                lambda client: client.operations.get_operation_status(
+                    bank_id=bank_id, operation_id=op_id
+                )
+            )
+        except NotFoundException:
+            return True
+        except Exception as exc:
+            logger.debug("Prefetch: operation status check failed for %s: %s", op_id, exc)
+            return False
+        status = str(getattr(resp, "status", "") or "").lower()
+        return status in {"completed", "failed"}
+
+    def _wait_for_retains_drained(self, timeout: float) -> bool:
+        """Block up to *timeout* seconds for the just-completed turn's retain to
+        become recall-visible on the server.
+
+        Used by the background prefetch so the next turn's recall observes the
+        just-completed turn's write instead of racing ahead of it. Runs only on
+        the background prefetch thread — never on the reply path.
+
+        Two ordered barriers, both bounded by the shared *timeout* budget:
+
+        1. Local writer queue drains (the retain call has been *dispatched* to
+           the server). Polls ``unfinished_tasks`` rather than ``queue.join()``
+           so a wedged write can't hang the prefetch.
+        2. Server-side async operations complete. With ``retain_async=True`` the
+           dispatched call returns on *acceptance*, not durability, so draining
+           the local queue alone is NOT a read-after-write signal. We poll
+           ``get_operation_status`` for the tracked op id(s) until the server
+           reports completion (an explicit read-after-write condition).
+
+        Returns True if both barriers cleared within the budget, False on
+        timeout/shutdown.
+        """
+        deadline = None if timeout <= 0 else time.monotonic() + timeout
+
+        def _expired() -> bool:
+            return deadline is not None and time.monotonic() >= deadline
+
+        # Barrier 1: local queue drain (retain dispatched to the server).
+        while self._retain_queue.unfinished_tasks > 0:
+            if self._shutting_down.is_set():
+                return False
+            if _expired():
+                logger.debug(
+                    "Prefetch: retain drain timed out after %.1fs (%d pending)",
+                    timeout, self._retain_queue.unfinished_tasks,
+                )
+                return False
+            time.sleep(0.05)
+
+        # Barrier 2: server-side async retain completion (read-after-write).
+        return self._wait_for_server_retain_ops(deadline, timeout)
+
+    def _wait_for_server_retain_ops(self, deadline: float | None, timeout: float) -> bool:
+        """Poll tracked async retain ops until complete or the deadline passes.
+
+        *deadline* is a ``time.monotonic()`` value (None = no bound). Completed
+        ops are removed from the pending set as they finish so a later prefetch
+        doesn't re-poll them.
+
+        Ops still pending when the deadline expires are DROPPED, not retained:
+        keeping them would make a permanently failing status endpoint (auth
+        error, endless 500s, server that loses ops without a 404) grow the
+        pending set forever and burn the full timeout on EVERY subsequent
+        prefetch — turning "bounded wait per prefetch" into unbounded
+        session-wide degradation (and, via prefetch()'s bounded join on the
+        reply path, a per-turn reply-latency penalty). Dropping trades a
+        possibly-stale recall NOW (identical to prefetch_waits_for_retain=False
+        behavior) for guaranteed liveness; the drop is logged at WARNING once
+        per prefetch so persistent server trouble is visible.
+
+        Status polls are spaced by _RETAIN_OP_POLL_INTERVAL_S (0.5s) — server
+        round trips per op are bounded (~20 over a 10s budget), unlike the
+        cheap 0.05s local queue-drain poll in _wait_for_retains_drained.
+        """
+        while True:
+            with self._pending_retain_ops_lock:
+                bank_id = getattr(self, "_retain_ops_bank_id", "") or self._bank_id
+                pending = list(self._pending_retain_ops)
+            if not pending:
+                return True
+            if self._shutting_down.is_set():
+                return False
+
+            done: set[str] = set()
+            expired = False
+            for op_id in pending:
+                if self._shutting_down.is_set():
+                    return False
+                if deadline is not None and time.monotonic() >= deadline:
+                    expired = True
+                    break
+                if self._is_retain_op_complete(bank_id, op_id):
+                    done.add(op_id)
+
+            if expired:
+                with self._pending_retain_ops_lock:
+                    self._pending_retain_ops.difference_update(done)
+                    dropped = len(self._pending_retain_ops)
+                    self._pending_retain_ops.clear()
+                logger.warning(
+                    "Prefetch: server retain visibility timed out after %.1fs; "
+                    "dropping %d unresolved op(s) so later prefetches stay "
+                    "bounded (recall may miss the just-completed turn)",
+                    timeout, dropped,
+                )
+                return False
+
+            with self._pending_retain_ops_lock:
+                self._pending_retain_ops.difference_update(done)
+                still_pending = bool(self._pending_retain_ops)
+            if not still_pending:
+                return True
+            if deadline is not None and time.monotonic() >= deadline:
+                with self._pending_retain_ops_lock:
+                    dropped = len(self._pending_retain_ops)
+                    self._pending_retain_ops.clear()
+                logger.warning(
+                    "Prefetch: server retain visibility timed out after %.1fs; "
+                    "dropping %d unresolved op(s) so later prefetches stay "
+                    "bounded (recall may miss the just-completed turn)",
+                    timeout, dropped,
+                )
+                return False
+            time.sleep(self._RETAIN_OP_POLL_INTERVAL_S)
 
     def _writer_loop(self) -> None:
         """Drain the retain queue serially. Exits on sentinel.
@@ -1225,24 +1471,18 @@ class HindsightMemoryProvider(MemoryProvider):
             if Version(installed) < Version(_MIN_CLIENT_VERSION):
                 logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
                                installed, _MIN_CLIENT_VERSION)
-                import shutil
-                import subprocess
-                import sys
-                uv_path = shutil.which("uv")
-                if uv_path:
-                    try:
-                        subprocess.run(
-                            [uv_path, "pip", "install", "--python", sys.executable,
-                             "--quiet", "--upgrade", f"hindsight-client>={_MIN_CLIENT_VERSION}"],
-                            check=True, timeout=120, capture_output=True,
-                            stdin=subprocess.DEVNULL,
-                        )
-                        logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
-                    except Exception as e:
-                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
-                                       e, _MIN_CLIENT_VERSION)
+                # Environment-aware install: sealed hosted venvs redirect to the
+                # durable data-volume target instead of /opt/hermes (NS-605).
+                from tools.lazy_deps import install_specs
+                outcome = install_specs([f"hindsight-client>={_MIN_CLIENT_VERSION}"], timeout=120)
+                if outcome.ok:
+                    logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
+                elif outcome.blocked:
+                    logger.warning("Auto-upgrade unavailable: %s. Run: uv pip install 'hindsight-client>=%s'",
+                                   outcome.reason, _MIN_CLIENT_VERSION)
                 else:
-                    logger.warning("uv not found. Run: pip install 'hindsight-client>=%s'", _MIN_CLIENT_VERSION)
+                    logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
+                                   (outcome.stderr or "").strip() or "install error", _MIN_CLIENT_VERSION)
         except Exception:
             pass  # packaging not available or other issue — proceed anyway
 
@@ -1284,7 +1524,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 )
                 self._mode = "disabled"
                 return
-        self._api_key = self._config.get("apiKey") or self._config.get("api_key") or os.environ.get("HINDSIGHT_API_KEY", "")
+        self._api_key = self._config.get("apiKey") or self._config.get("api_key") or get_secret("HINDSIGHT_API_KEY", "")
         default_url = _DEFAULT_LOCAL_URL if self._mode in {"local_embedded", "local_external"} else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
@@ -1358,6 +1598,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
         self._retain_async = self._config.get("retain_async", True)
+        self._prefetch_waits_for_retain = self._config.get("prefetch_waits_for_retain", True)
+        self._prefetch_retain_drain_timeout = float(
+            self._config.get("prefetch_retain_drain_timeout", 10.0)
+        )
 
         _client_version = "unknown"
         try:
@@ -1502,6 +1746,15 @@ class HindsightMemoryProvider(MemoryProvider):
             query = query[:self._recall_max_input_chars]
 
         def _run():
+            # Ensure the just-completed turn's retain is recall-visible on the
+            # server before we recall, so the warmed context for the next turn
+            # includes it. This waits for the local writer queue to drain AND
+            # for the server-side async retain op(s) to complete (an explicit
+            # read-after-write signal), because async retain returns on
+            # acceptance rather than durability. Runs on the background prefetch
+            # thread, never the reply path, so it adds no response latency.
+            if self._prefetch_waits_for_retain:
+                self._wait_for_retains_drained(self._prefetch_retain_drain_timeout)
             try:
                 if self._prefetch_method == "reflect":
                     logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
@@ -1683,7 +1936,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 item["update_mode"] = update_mode
             logger.debug("Hindsight retain: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
                          bank_id, document_id, update_mode, retain_async_flag, len(content), num_turns)
-            self._run_hindsight_operation(
+            resp = self._run_hindsight_operation(
                 lambda client: client.aretain_batch(
                     bank_id=bank_id,
                     items=[item],
@@ -1691,6 +1944,11 @@ class HindsightMemoryProvider(MemoryProvider):
                     retain_async=retain_async_flag,
                 )
             )
+            # For async retains the write is only *accepted* here; track the
+            # returned operation id(s) so the next-turn prefetch can wait for
+            # true server-side completion (read-after-write) before recalling.
+            if retain_async_flag:
+                self._track_retain_ops(resp, bank_id)
             logger.debug("Hindsight retain succeeded")
 
         self._ensure_writer()

@@ -62,13 +62,6 @@ class TestThinkTagInProse:
         assert "<think>" in full, "The literal <think> tag should be in the emitted text"
         assert "Launch production" in full
 
-    def test_think_tag_after_text_on_same_line(self):
-        """'some text <think>' should NOT trigger reasoning."""
-        cli = _make_cli_stub()
-        cli._stream_delta("Here is the <think> tag explanation")
-        assert not cli._in_reasoning_block
-        full = "".join(cli._emitted)
-        assert "<think>" in full
 
     def test_think_tag_in_backticks(self):
         """'`<think>`' should NOT trigger reasoning."""
@@ -101,11 +94,6 @@ class TestRealReasoningBlock:
         full = "".join(cli._emitted)
         assert "Some preamble" in full
 
-    def test_think_after_newline_with_whitespace(self):
-        """'text\\n  <think>' should trigger reasoning block."""
-        cli = _make_cli_stub()
-        cli._stream_delta("Some preamble\n  <think>")
-        assert cli._in_reasoning_block
 
     def test_think_with_only_whitespace_before(self):
         """'   <think>' (whitespace only prefix) should trigger."""

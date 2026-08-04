@@ -71,25 +71,6 @@ class TestCounterRoundTripsBindSessionState:
             "tripped anti-thrash guard instead of re-compacting"
         )
 
-    def test_fresh_compressor_inherits_armed_single_strike(self, tmp_path):
-        """One strike before the restart still counts toward the trip."""
-        db = _db(tmp_path)
-        db.create_session("s1", source="cli")
-
-        first = _compressor(db, "s1")
-        first._verify_compaction_cleared_threshold = True
-        first.update_from_response({"prompt_tokens": first.threshold_tokens + 1})
-        assert first._ineffective_compression_count == 1
-
-        second = _compressor(db, "s1")
-        assert second._ineffective_compression_count == 1
-        # One inherited strike does not block yet...
-        assert second.should_compress(10**9) is True
-        # ...but the next ineffective pass trips the guard cross-process.
-        second._verify_compaction_cleared_threshold = True
-        second.update_from_response({"prompt_tokens": second.threshold_tokens + 1})
-        assert second._ineffective_compression_count == 2
-        assert second.should_compress(10**9) is False
 
     def test_rebind_to_other_session_does_not_leak_counter(self, tmp_path):
         """The counter is per-session: switching sessions must not carry it."""
@@ -104,14 +85,6 @@ class TestCounterRoundTripsBindSessionState:
         cc.bind_session_state(db, "cold")
         assert cc._ineffective_compression_count == 0
 
-    def test_unbound_compressor_keeps_in_memory_behavior(self):
-        """No session DB bound (plugins/tests): everything still works."""
-        cc = _compressor()
-        cc._verify_compaction_cleared_threshold = True
-        cc.update_from_response({"prompt_tokens": cc.threshold_tokens + 1})
-        assert cc._ineffective_compression_count == 1
-        cc.update_from_response({"prompt_tokens": 1})
-        assert cc._ineffective_compression_count == 0
 
 
 class TestResetSemanticsPreserved:

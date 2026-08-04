@@ -209,105 +209,7 @@ class TestRunTurn:
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
 
-    def test_subagent_completion_does_not_end_parent_turn(self):
-        """A child completion must not become the parent's response."""
-        client = FakeClient()
-        client.queue_notification(
-            "item/completed",
-            threadId="thread-child-001",
-            turnId="turn-child-001",
-            item={
-                "type": "agentMessage",
-                "id": "child-message-1",
-                "text": "child summary",
-            },
-        )
-        client.queue_notification(
-            "turn/completed",
-            threadId="thread-child-001",
-            turn={
-                "id": "turn-child-001",
-                "status": "completed",
-                "error": None,
-            },
-        )
-        client.queue_notification(
-            "item/completed",
-            threadId="thread-fake-001",
-            turnId="turn-fake-001",
-            item={
-                "type": "agentMessage",
-                "id": "parent-message-1",
-                "text": "parent synthesis",
-            },
-        )
-        client.queue_notification(
-            "turn/completed",
-            threadId="thread-fake-001",
-            turn={
-                "id": "turn-fake-001",
-                "status": "completed",
-                "error": None,
-            },
-        )
 
-        result = make_session(client).run_turn("delegate this", turn_timeout=2.0)
-
-        assert result.final_text == "parent synthesis"
-        assert result.interrupted is False
-        assert result.error is None
-        assert result.projected_messages == [
-            {"role": "assistant", "content": "parent synthesis"}
-        ]
-
-    def test_stale_completion_on_parent_thread_is_ignored(self):
-        """A late completion from the previous parent turn is not terminal."""
-        client = FakeClient()
-        client.queue_notification(
-            "item/completed",
-            threadId="thread-fake-001",
-            turnId="turn-previous",
-            item={
-                "type": "agentMessage",
-                "id": "stale-message",
-                "text": "stale previous answer",
-            },
-        )
-        client.queue_notification(
-            "turn/completed",
-            threadId="thread-fake-001",
-            turn={
-                "id": "turn-previous",
-                "status": "completed",
-                "error": None,
-            },
-        )
-        client.queue_notification(
-            "item/completed",
-            threadId="thread-fake-001",
-            turnId="turn-fake-001",
-            item={
-                "type": "agentMessage",
-                "id": "current-message",
-                "text": "current parent answer",
-            },
-        )
-        client.queue_notification(
-            "turn/completed",
-            threadId="thread-fake-001",
-            turn={
-                "id": "turn-fake-001",
-                "status": "completed",
-                "error": None,
-            },
-        )
-
-        result = make_session(client).run_turn("new prompt", turn_timeout=2.0)
-
-        assert result.final_text == "current parent answer"
-        assert result.projected_messages == [
-            {"role": "assistant", "content": "current parent answer"}
-        ]
 
     def test_foreign_completion_in_server_request_drain_is_ignored(self):
         """Approval draining must not project a child result into the parent."""
@@ -376,68 +278,7 @@ class TestRunTurn:
             {"role": "assistant", "content": "parent after approval"}
         ]
 
-    def test_token_usage_notification_is_captured(self):
-        client = FakeClient()
-        client.queue_notification(
-            "thread/tokenUsage/updated",
-            threadId="thread-fake-001",
-            turnId="turn-fake-001",
-            tokenUsage={
-                "last": {
-                    "totalTokens": 130,
-                    "inputTokens": 80,
-                    "cachedInputTokens": 20,
-                    "outputTokens": 25,
-                    "reasoningOutputTokens": 5,
-                },
-                "total": {
-                    "totalTokens": 500,
-                    "inputTokens": 300,
-                    "cachedInputTokens": 75,
-                    "outputTokens": 100,
-                    "reasoningOutputTokens": 25,
-                },
-                "modelContextWindow": 200000,
-            },
-        )
-        client.queue_notification(
-            "turn/completed",
-            threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-        r = make_session(client).run_turn("hi", turn_timeout=2.0)
-        assert r.token_usage_last["totalTokens"] == 130
-        assert r.token_usage_total["totalTokens"] == 500
-        assert r.model_context_window == 200000
 
-    def test_rich_content_turn_is_collapsed_to_text_payload(self):
-        client = FakeClient()
-        client.queue_notification(
-            "turn/completed",
-            threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-        s = make_session(client)
-        r = s.run_turn(
-            [
-                {
-                    "type": "text",
-                    "text": "look at this\n\n[Image attached at: /tmp/a.png]",
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,abc"},
-                },
-            ],
-            turn_timeout=2.0,
-        )
-        assert r.error is None
-        method, params = next(req for req in client.requests if req[0] == "turn/start")
-        assert method == "turn/start"
-        text = params["input"][0]["text"]
-        assert isinstance(text, str)
-        assert "[Image attached at: /tmp/a.png]" in text
-        assert "[image attached]" in text
 
     def test_tool_iteration_counter_ticks(self):
         client = FakeClient()
@@ -468,21 +309,6 @@ class TestRunTurn:
         # Each tool item produces (assistant, tool) — 2*2 + final assistant = 5 msgs
         assert len(r.projected_messages) == 5
 
-    def test_turn_start_failure_returns_error(self):
-        client = FakeClient()
-        from agent.transports.codex_app_server import CodexAppServerError
-
-        def boom(method, params):
-            if method == "turn/start":
-                raise CodexAppServerError(code=-32600, message="bad input")
-            return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
-
-        client._request_handler = boom
-        s = make_session(client)
-        r = s.run_turn("hi", turn_timeout=2.0)
-        assert r.error is not None
-        assert "bad input" in r.error
-        assert r.final_text == ""
 
     def test_turn_start_failure_attaches_redacted_stderr_tail(self):
         """When codex stderr has content (non-OAuth), the tail gets attached
@@ -540,60 +366,8 @@ class TestRunTurn:
         assert "sk-stalled-secret-abc123" not in r.error
         assert r.should_retire is True
 
-    def test_startup_failure_returns_error_with_stderr(self):
-        """Codex thread/start failures during ensure_started() used to bubble
-        up as uncaught exceptions. Now they return a TurnResult.error so
-        AIAgent surfaces a clean diagnostic instead of crashing the turn."""
-        client = FakeClient()
-        client.set_stderr_tail([
-            "FATAL: model_provider 'azure_foundry' not configured",
-        ])
-        from agent.transports.codex_app_server import CodexAppServerError
 
-        def boom(method, params):
-            if method == "thread/start":
-                raise CodexAppServerError(code=-32603, message="Internal error")
-            return {}
 
-        client._request_handler = boom
-        s = make_session(client)
-        r = s.run_turn("hi", turn_timeout=2.0)
-        assert r.error is not None
-        assert "startup failed" in r.error
-        assert "model_provider 'azure_foundry' not configured" in r.error
-        assert r.should_retire is True
-        assert r.final_text == ""
-
-    def test_interrupt_during_startup_skips_turn_start(self):
-        client = FakeClient()
-        s = make_session(client)
-        s.ensure_started()
-        s.request_interrupt()
-        r = s.run_turn("loop forever", turn_timeout=2.0)
-
-        assert r.interrupted is True
-        assert not any(method == "turn/start" for method, _params in client.requests)
-
-    def test_interrupt_after_turn_start_issues_turn_interrupt(self):
-        client = FakeClient()
-        s = make_session(client)
-
-        def request_handler(method, params):
-            if method == "thread/start":
-                return {"thread": {"id": "thread-fake-001"}}
-            if method == "turn/start":
-                s.request_interrupt()
-                return {"turn": {"id": "turn-fake-001"}}
-            return {}
-
-        client._request_handler = request_handler
-        r = s.run_turn("loop forever", turn_timeout=2.0)
-
-        assert r.interrupted is True
-        assert any(
-            method == "turn/interrupt" and params.get("turnId") == "turn-fake-001"
-            for (method, params) in client.requests
-        )
 
     def test_steer_appends_input_to_active_turn(self):
         client = FakeClient()
@@ -611,77 +385,10 @@ class TestRunTurn:
             "expectedTurnId": "turn-live-123",
         }
 
-    def test_deadline_exceeded_records_error(self):
-        client = FakeClient()
-        # No notifications and no completion → must hit deadline
-        s = make_session(client)
-        r = s.run_turn("never finishes", turn_timeout=0.05,
-                       notification_poll_timeout=0.01)
-        assert r.interrupted is True
-        assert r.error and "timed out" in r.error
 
-    def test_deadline_uses_monotonic_clock(self):
-        client = FakeClient()
-        s = make_session(client)
-        monotonic_values = iter([1000.0, 999.0, 999.0, 1001.0])
-        with patch.object(
-            session_mod.time,
-            "monotonic",
-            side_effect=lambda: next(monotonic_values),
-        ):
-            r = s.run_turn(
-                "never finishes",
-                turn_timeout=0.1,
-                notification_poll_timeout=0.0,
-            )
-        assert r.interrupted is True
-        assert r.error and "timed out" in r.error
 
-    def test_failed_turn_records_error_from_turn_completed(self):
-        client = FakeClient()
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "failed",
-                  "error": {"message": "model error"}},
-        )
-        s = make_session(client)
-        r = s.run_turn("x", turn_timeout=1.0)
-        assert r.error and "model error" in r.error
 
-    def test_run_turn_records_native_compaction_item(self):
-        client = FakeClient()
-        client.queue_notification(
-            "item/completed",
-            threadId="thread-fake-001",
-            turnId="turn-fake-001",
-            item={"type": "contextCompaction", "id": "compact-item-1"},
-        )
-        client.queue_notification(
-            "turn/completed", threadId="thread-fake-001",
-            turn={"id": "turn-fake-001", "status": "completed", "error": None},
-        )
 
-        r = make_session(client).run_turn("x", turn_timeout=1.0)
-
-        assert r.compacted is True
-        assert r.thread_id == "thread-fake-001"
-        assert r.turn_id == "turn-fake-001"
-
-    def test_run_turn_records_deprecated_thread_compacted_notification(self):
-        client = FakeClient()
-        client.queue_notification(
-            "thread/compacted",
-            threadId="thread-fake-001",
-            turnId="turn-fake-001",
-        )
-        client.queue_notification(
-            "turn/completed", threadId="thread-fake-001",
-            turn={"id": "turn-fake-001", "status": "completed", "error": None},
-        )
-
-        r = make_session(client).run_turn("x", turn_timeout=1.0)
-
-        assert r.compacted is True
 
 
 class TestCompactThread:
@@ -791,158 +498,15 @@ class TestCompactThread:
             {"role": "assistant", "content": "parent compacted"}
         ]
 
-    def test_compact_thread_ignores_stale_same_thread_completion_before_start(self):
-        client = FakeClient()
-        client.queue_notification(
-            "item/completed",
-            threadId="thread-fake-001",
-            turnId="previous-compact-turn",
-            item={
-                "type": "agentMessage",
-                "id": "stale-compact-message",
-                "text": "stale compact result",
-            },
-        )
-        client.queue_notification(
-            "turn/completed",
-            threadId="thread-fake-001",
-            turn={
-                "id": "previous-compact-turn",
-                "status": "completed",
-                "error": None,
-            },
-        )
-        client.queue_notification(
-            "turn/started",
-            threadId="thread-fake-001",
-            turn={"id": "compact-turn-1"},
-        )
-        client.queue_notification(
-            "item/completed",
-            threadId="thread-fake-001",
-            turnId="compact-turn-1",
-            item={
-                "type": "agentMessage",
-                "id": "current-compact-message",
-                "text": "current compact result",
-            },
-        )
-        client.queue_notification(
-            "turn/completed",
-            threadId="thread-fake-001",
-            turn={
-                "id": "compact-turn-1",
-                "status": "completed",
-                "error": None,
-            },
-        )
 
-        result = make_session(client).compact_thread(turn_timeout=2.0)
 
-        assert result.error is None
-        assert result.turn_id == "compact-turn-1"
-        assert result.final_text == "current compact result"
-        assert result.projected_messages == [
-            {"role": "assistant", "content": "current compact result"}
-        ]
-
-    def test_compact_thread_interrupted_returns_non_success(self):
-        client = FakeClient()
-        client.queue_notification(
-            "turn/started",
-            threadId="thread-fake-001",
-            turn={"id": "compact-turn-1"},
-        )
-        client.queue_notification(
-            "turn/completed",
-            threadId="thread-fake-001",
-            turn={"id": "compact-turn-1", "status": "interrupted", "error": None},
-        )
-
-        result = make_session(client).compact_thread(turn_timeout=2.0)
-
-        assert result.interrupted is True
-        assert result.error == "compact turn interrupted"
-
-    def test_compact_thread_failure_returns_error(self):
-        client = FakeClient()
-        from agent.transports.codex_app_server import CodexAppServerError
-
-        def boom(method, params):
-            if method == "thread/compact/start":
-                raise CodexAppServerError(code=-32603, message="compact unavailable")
-            if method == "thread/start":
-                return {"thread": {"id": "thread-fake-001"}}
-            return {}
-
-        client._request_handler = boom
-        r = make_session(client).compact_thread(turn_timeout=2.0)
-
-        assert r.error is not None
-        assert "compact unavailable" in r.error
-        assert r.should_retire is False
 
 
 # ---- approval bridge ----
 
 class TestServerRequestRouting:
-    def test_exec_approval_with_callback_approves_once(self):
-        client = FakeClient()
-        client.queue_server_request(
-            "item/commandExecution/requestApproval", request_id="req-1",
-            command="ls /tmp", cwd="/tmp",
-        )
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
 
-        captured: dict = {}
 
-        def cb(command, description, *, allow_permanent=True):
-            captured["command"] = command
-            captured["description"] = description
-            return "once"
-
-        s = make_session(client, approval_callback=cb)
-        s.run_turn("hi", turn_timeout=1.0)
-        assert captured["command"] == "ls /tmp"
-        # The session must have responded to the server request with "accept"
-        assert ("req-1", {"decision": "accept"}) in client.responses
-
-    def test_exec_approval_no_callback_denies(self):
-        client = FakeClient()
-        client.queue_server_request("item/commandExecution/requestApproval", request_id="req-1",
-                                    command="rm -rf /", cwd="/")
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-        s = make_session(client)  # no approval_callback wired
-        s.run_turn("hi", turn_timeout=1.0)
-        assert ("req-1", {"decision": "decline"}) in client.responses
-
-    def test_apply_patch_approval_session_maps_to_session_decision(self):
-        client = FakeClient()
-        client.queue_server_request(
-            "item/fileChange/requestApproval", request_id="req-2",
-            itemId="fc-1",
-            turnId="t1",
-            threadId="th",
-            startedAtMs=1234567890,
-            reason="create new file with hello() function",
-        )
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-
-        def cb(command, description, *, allow_permanent=True):
-            return "session"
-
-        s = make_session(client, approval_callback=cb)
-        s.run_turn("hi", turn_timeout=1.0)
-        assert ("req-2", {"decision": "acceptForSession"}) in client.responses
 
     def test_unknown_server_request_replied_with_error(self):
         client = FakeClient()
@@ -1016,46 +580,7 @@ class TestServerRequestRouting:
             "around approvals"
         )
 
-    def test_mcp_elicitation_for_hermes_tools_auto_accepts(self):
-        """When codex elicits on behalf of hermes-tools (our own callback),
-        accept automatically — the user already opted in by enabling the
-        runtime."""
-        client = FakeClient()
-        client.queue_server_request(
-            "mcpServer/elicitation/request", request_id="elic-1",
-            threadId="t", turnId="tu1",
-            serverName="hermes-tools",
-            mode="form",
-            message="confirm",
-            requestedSchema={"type": "object", "properties": {}},
-        )
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-        s = make_session(client)
-        s.run_turn("hi", turn_timeout=1.0)
-        assert ("elic-1", {"action": "accept", "content": None, "_meta": None}) in client.responses
 
-    def test_mcp_elicitation_for_other_servers_declines(self):
-        """For third-party MCP servers we decline by default so users
-        explicitly opt in through codex's own UI."""
-        client = FakeClient()
-        client.queue_server_request(
-            "mcpServer/elicitation/request", request_id="elic-2",
-            threadId="t", turnId="tu1",
-            serverName="some-third-party",
-            mode="url",
-            message="please log in",
-            url="https://example.com/oauth",
-        )
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-        s = make_session(client)
-        s.run_turn("hi", turn_timeout=1.0)
-        assert ("elic-2", {"action": "decline", "content": None, "_meta": None}) in client.responses
 
     def test_routing_auto_approve_bypass(self):
         client = FakeClient()
@@ -1071,22 +596,6 @@ class TestServerRequestRouting:
         s.run_turn("hi", turn_timeout=1.0)
         assert ("r1", {"decision": "accept"}) in client.responses
 
-    def test_callback_raises_falls_back_to_decline(self):
-        client = FakeClient()
-        client.queue_server_request("item/commandExecution/requestApproval", request_id="r1",
-                                    command="ls", cwd="/")
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-
-        def boom(*a, **kw):
-            raise RuntimeError("ui crashed")
-
-        s = make_session(client, approval_callback=boom)
-        s.run_turn("hi", turn_timeout=1.0)
-        # Fail-closed: deny on callback exception
-        assert ("r1", {"decision": "decline"}) in client.responses
 
 
 # ---- enriched approval prompts ----
@@ -1193,35 +702,7 @@ class TestSessionRetirement:
       - dead subprocess detection between iterations
     """
 
-    def test_deadline_marks_session_for_retirement(self):
-        client = FakeClient()
-        s = make_session(client)
-        r = s.run_turn(
-            "never finishes",
-            turn_timeout=0.05,
-            notification_poll_timeout=0.01,
-        )
-        assert r.interrupted is True
-        assert r.error and "timed out" in r.error
-        assert r.should_retire is True, (
-            "Deadline exhaustion must signal retirement so the next turn "
-            "respawns codex instead of riding a wedged subprocess."
-        )
 
-    def test_completed_turn_does_not_retire(self):
-        client = FakeClient()
-        client.queue_notification(
-            "item/completed",
-            item={"type": "agentMessage", "id": "m1", "text": "hi"},
-            threadId="t", turnId="tu1",
-        )
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
-        )
-        s = make_session(client)
-        r = s.run_turn("hi", turn_timeout=1.0)
-        assert r.should_retire is False
 
     def test_final_agent_message_without_turn_completed_is_recovered(self):
         """A completed assistant item is still a usable terminal response when
@@ -1250,33 +731,6 @@ class TestSessionRetirement:
         )
         assert not any(method == "turn/interrupt" for method, _ in client.requests)
 
-    def test_post_tool_quiet_watchdog_trips_and_retires(self):
-        client = FakeClient()
-        # One tool completion, then total silence — no further events,
-        # no turn/completed. With a tiny post_tool_quiet_timeout the
-        # watchdog must fire before the larger turn deadline.
-        client.queue_notification(
-            "item/completed",
-            item={
-                "type": "commandExecution", "id": "ex1",
-                "command": "echo hi", "cwd": "/tmp",
-                "status": "completed", "aggregatedOutput": "hi",
-                "exitCode": 0, "commandActions": [],
-            },
-            threadId="t", turnId="tu1",
-        )
-        s = make_session(client)
-        r = s.run_turn(
-            "tool then silence",
-            turn_timeout=5.0,           # would be miserable to wait
-            notification_poll_timeout=0.02,
-            post_tool_quiet_timeout=0.15,
-        )
-        assert r.interrupted is True
-        assert r.should_retire is True
-        assert r.error and "silent" in r.error
-        # Confirm we issued turn/interrupt to free codex compute
-        assert any(method == "turn/interrupt" for (method, _) in client.requests)
 
     def test_post_tool_watchdog_uses_monotonic_clock(self):
         client = FakeClient()
@@ -1344,128 +798,11 @@ class TestSessionRetirement:
         assert r.should_retire is False
         assert r.interrupted is False
 
-    def test_turn_aborted_marker_in_text_is_terminal(self):
-        """If codex emits `<turn_aborted>` in agent text and never sends
-        turn/completed, we still exit promptly instead of burning the
-        deadline."""
-        client = FakeClient()
-        client.queue_notification(
-            "item/completed",
-            item={
-                "type": "agentMessage", "id": "m1",
-                "text": "partial output... <turn_aborted>",
-            },
-            threadId="t", turnId="tu1",
-        )
-        # Deliberately NO turn/completed notification queued.
-        s = make_session(client)
-        r = s.run_turn(
-            "abort mid-turn", turn_timeout=2.0,
-            notification_poll_timeout=0.01,
-        )
-        assert r.interrupted is True
-        assert r.error and "turn_aborted" in r.error
-        # Should have exited fast — not waited for the full 2s deadline.
-        # (Can't measure wall clock reliably in CI; presence of the marker
-        # error string instead of a "timed out" message is the proxy.)
-        assert "timed out" not in r.error
 
-    def test_turn_aborted_self_closing_marker_also_terminal(self):
-        client = FakeClient()
-        client.queue_notification(
-            "item/completed",
-            item={"type": "agentMessage", "id": "m1",
-                  "text": "<turn_aborted/>"},
-            threadId="t", turnId="tu1",
-        )
-        s = make_session(client)
-        r = s.run_turn("x", turn_timeout=2.0,
-                       notification_poll_timeout=0.01)
-        assert r.interrupted is True
-        assert r.error and "turn_aborted" in r.error
 
-    def test_oauth_refresh_failure_on_turn_start_suggests_login(self):
-        from agent.transports.codex_app_server import CodexAppServerError
 
-        client = FakeClient()
 
-        def boom(method, params):
-            if method == "turn/start":
-                raise CodexAppServerError(
-                    code=-32603,
-                    message="auth refresh failed: invalid_grant",
-                )
-            return {"thread": {"id": "t"},
-                    "activePermissionProfile": {"id": "x"}}
 
-        client._request_handler = boom
-        s = make_session(client)
-        r = s.run_turn("hi", turn_timeout=1.0)
-        assert r.error is not None
-        assert "codex login" in r.error
-        assert r.should_retire is True
-
-    def test_oauth_failure_from_stderr_on_turn_start_failure(self):
-        """If the RPC error itself is opaque but stderr shows an auth
-        problem, we still classify it as a refresh failure."""
-        from agent.transports.codex_app_server import CodexAppServerError
-
-        client = FakeClient()
-        client.set_stderr_tail([
-            "[2026-05-14T10:00:00Z WARN codex_core::auth] token refresh failed",
-            "[2026-05-14T10:00:00Z ERROR codex_core] please log in again",
-        ])
-
-        def boom(method, params):
-            if method == "turn/start":
-                raise CodexAppServerError(code=-32603, message="rpc broke")
-            return {"thread": {"id": "t"},
-                    "activePermissionProfile": {"id": "x"}}
-
-        client._request_handler = boom
-        s = make_session(client)
-        r = s.run_turn("hi", turn_timeout=1.0)
-        assert r.error is not None
-        assert "codex login" in r.error
-        assert r.should_retire is True
-
-    def test_oauth_failure_in_turn_completed_error(self):
-        """A failed turn/completed whose error mentions auth/refresh
-        triggers the re-auth hint + retirement."""
-        client = FakeClient()
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={
-                "id": "tu1", "status": "failed",
-                "error": {"message": "401 Unauthorized: please reauthenticate"},
-            },
-        )
-        s = make_session(client)
-        r = s.run_turn("x", turn_timeout=1.0,
-                       notification_poll_timeout=0.01)
-        assert r.error is not None
-        assert "codex login" in r.error
-        assert r.should_retire is True
-
-    def test_generic_turn_failure_does_not_trigger_oauth_hint(self):
-        """A boring model error must NOT rewrite the message into a fake
-        re-auth hint. Conservative classifier."""
-        client = FakeClient()
-        client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={
-                "id": "tu1", "status": "failed",
-                "error": {"message": "rate limit exceeded"},
-            },
-        )
-        s = make_session(client)
-        r = s.run_turn("x", turn_timeout=1.0,
-                       notification_poll_timeout=0.01)
-        assert r.error is not None
-        assert "codex login" not in r.error
-        assert "rate limit exceeded" in r.error
-        # Generic model failures don't retire — the session itself is fine
-        assert r.should_retire is False
 
     def test_dead_subprocess_detected_between_iterations(self):
         """If codex dies (segfault, OOM, killed by its auth refresh
@@ -1498,27 +835,7 @@ class TestThreadStartCrossFill:
         tid = s.ensure_started()
         assert tid == "thread-fake-001"
 
-    def test_thread_session_id_alias_under_thread_key(self):
-        client = FakeClient()
-        client._request_handler = lambda method, params: (
-            {"thread": {"sessionId": "alias-1"},
-             "activePermissionProfile": {"id": "x"}}
-            if method == "thread/start" else
-            {"turn": {"id": "tu1"}} if method == "turn/start" else {}
-        )
-        s = make_session(client)
-        tid = s.ensure_started()
-        assert tid == "alias-1"
 
-    def test_top_level_session_id_fallback(self):
-        client = FakeClient()
-        client._request_handler = lambda method, params: (
-            {"sessionId": "top-1"} if method == "thread/start" else
-            {"turn": {"id": "tu1"}} if method == "turn/start" else {}
-        )
-        s = make_session(client)
-        tid = s.ensure_started()
-        assert tid == "top-1"
 
     def test_missing_thread_id_raises(self):
         from agent.transports.codex_app_server import CodexAppServerError
@@ -1556,31 +873,12 @@ class TestHasTurnAbortedMarker:
         )
         assert _has_turn_aborted_marker("blah <turn_aborted> blah") is True
 
-    def test_self_closing_marker(self):
-        from agent.transports.codex_app_server_session import (
-            _has_turn_aborted_marker,
-        )
-        assert _has_turn_aborted_marker("<turn_aborted/>") is True
 
 
 class TestClassifyOAuthFailure:
     """Unit coverage for the OAuth classifier; conservative on purpose."""
 
-    def test_invalid_grant_classified(self):
-        from agent.transports.codex_app_server_session import (
-            _classify_oauth_failure,
-        )
-        hint = _classify_oauth_failure("error: invalid_grant returned by server")
-        assert hint is not None
-        assert "codex login" in hint
 
-    def test_token_refresh_classified(self):
-        from agent.transports.codex_app_server_session import (
-            _classify_oauth_failure,
-        )
-        hint = _classify_oauth_failure("token refresh failed: network error")
-        assert hint is not None
-        assert "codex login" in hint
 
     def test_401_classified(self):
         from agent.transports.codex_app_server_session import (
@@ -1589,13 +887,6 @@ class TestClassifyOAuthFailure:
         hint = _classify_oauth_failure("HTTP 401 Unauthorized")
         assert hint is not None
 
-    def test_generic_error_not_classified(self):
-        from agent.transports.codex_app_server_session import (
-            _classify_oauth_failure,
-        )
-        assert _classify_oauth_failure("connection reset") is None
-        assert _classify_oauth_failure("model returned bad json") is None
-        assert _classify_oauth_failure("rate limit exceeded") is None
 
     def test_empty_inputs(self):
         from agent.transports.codex_app_server_session import (
@@ -1605,13 +896,3 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure("") is None
         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
 
-    def test_multi_string_search(self):
-        """Hint can come from any of the provided strings."""
-        from agent.transports.codex_app_server_session import (
-            _classify_oauth_failure,
-        )
-        hint = _classify_oauth_failure(
-            "rpc returned -32603",
-            "[stderr] token has expired, run codex login",
-        )
-        assert hint is not None

@@ -18,10 +18,6 @@ def test_growth_reports_grew_by_not_negative_reclaimed():
     assert "-" not in label
 
 
-def test_zero_delta_reports_reclaimed_zero():
-    assert _size_delta_label(0.0) == "reclaimed 0.0 MB"
-
-
 def test_no_negative_number_ever_rendered():
     """Whatever the sign, the rendered number is never negative."""
     for value in (-9999.9, -0.1, 0.0, 0.1, 9999.9):

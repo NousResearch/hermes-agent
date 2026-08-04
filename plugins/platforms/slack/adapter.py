@@ -3936,10 +3936,13 @@ class SlackAdapter(BasePlatformAdapter):
             return ""
         return (
             f"You are connected to this Slack workspace as the bot "
-            f'"@{name}". In messages, each line is prefixed with the sender\'s '
-            f"name, and mentions are shown as @DisplayName. Only treat a "
-            f'message as directed at you when it mentions "@{name}" '
-            f"specifically; a mention of any other participant is not a "
+            f'"@{name}". The adapter already applied mention and channel '
+            f"routing; treat every delivered turn as intentionally routed to "
+            f'you. Your routing mention "@{name}" may have been stripped from '
+            f'the visible text — do not reject or ignore a message solely '
+            f'because "@{name}" is absent. In messages, each line is prefixed '
+            f"with the sender's name, and visible mentions are shown as "
+            f"@DisplayName; a mention of any other participant is not a "
             f"mention of you, even if their name is similar."
         )
 
@@ -8606,7 +8609,10 @@ async def _standalone_send(
     ``chat.postMessage``.
     """
     del force_document  # signature parity with other standalone senders
-    raw_token = getattr(pconfig, "token", None) or os.getenv("SLACK_BOT_TOKEN", "")
+    # Profile-scoped read: under multiplex os.environ may hold ANOTHER
+    # profile's bot token (first-writer-wins env bridges), so honor the
+    # secret scope's verdict instead of reading the process env directly.
+    raw_token = getattr(pconfig, "token", None) or get_secret("SLACK_BOT_TOKEN", "")
 
     # ``SLACK_BOT_TOKEN`` can be a comma-separated list in multi-workspace
     # gateways, and OAuth installs persist per-workspace tokens in

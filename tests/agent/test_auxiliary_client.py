@@ -2790,7 +2790,7 @@ class TestCodexAdapterReasoningTranslation:
     """
 
     @staticmethod
-    def _build_adapter():
+    def _build_adapter(base_url="https://chatgpt.com/backend-api/codex"):
         """Build a _CodexCompletionsAdapter with a mocked responses.create()."""
         from agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
@@ -2829,11 +2829,105 @@ class TestCodexAdapterReasoningTranslation:
             return _FakeCreateStream()
 
         real_client = MagicMock()
+        real_client.base_url = base_url
         real_client.responses.create = _create
         adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
         return adapter, captured_kwargs
 
 
+
+    def test_gpt_56_reasoning_effort_ultra_clamped_to_max(self):
+        """GPT-5.6 Codex rejects Hermes' Ultra label; emit its wire maximum."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "ultra"}},
+        )
+        assert captured.get("reasoning") == {"effort": "max", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_xai_reasoning_effort_ultra_clamped_to_high(self):
+        """xAI Responses rejects generic Ultra; emit the endpoint ceiling."""
+        adapter, captured = self._build_adapter(base_url="https://api.x.ai/v1")
+        adapter.create(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "ultra"}},
+        )
+        assert captured.get("reasoning") == {"effort": "high", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_xai_reasoning_effort_xhigh_and_max_clamped_to_high(self):
+        """xAI Responses also clamps sibling above-high labels to high."""
+        for label in ("xhigh", "max"):
+            adapter, captured = self._build_adapter(base_url="https://api.x.ai/v1")
+            adapter.create(
+                model="grok-4.5",
+                messages=[{"role": "user", "content": "hi"}],
+                extra_body={"reasoning": {"effort": label}},
+            )
+            assert captured.get("reasoning") == {
+                "effort": "high",
+                "summary": "auto",
+            }, label
+
+    def test_xai_auxiliary_drops_codex_issued_encrypted_reasoning(self):
+        """A GPT fallback must not poison the next MoA/xAI aggregator turn."""
+        adapter, captured = self._build_adapter(base_url="https://api.x.ai/v1")
+        adapter.create(
+            model="grok-4.5",
+            messages=[
+                {"role": "user", "content": "first"},
+                {
+                    "role": "assistant",
+                    "content": "fallback answer",
+                    "codex_reasoning_items": [
+                        {
+                            "type": "reasoning",
+                            "encrypted_content": "codex-sealed-blob",
+                            "summary": [],
+                            "_issuer_kind": "codex_backend",
+                        }
+                    ],
+                },
+                {"role": "user", "content": "next"},
+            ],
+        )
+        assert not [
+            item for item in captured["input"]
+            if item.get("type") == "reasoning"
+        ]
+
+    def test_xai_auxiliary_keeps_xai_issued_encrypted_reasoning(self):
+        """The foreign-issuer guard must preserve normal xAI continuity."""
+        adapter, captured = self._build_adapter(base_url="https://api.x.ai/v1")
+        adapter.create(
+            model="grok-4.5",
+            messages=[
+                {"role": "user", "content": "first"},
+                {
+                    "role": "assistant",
+                    "content": "grok answer",
+                    "codex_reasoning_items": [
+                        {
+                            "type": "reasoning",
+                            "encrypted_content": "xai-sealed-blob",
+                            "summary": [],
+                            "_issuer_kind": "xai_responses",
+                        }
+                    ],
+                },
+                {"role": "user", "content": "next"},
+            ],
+        )
+        reasoning = [
+            item for item in captured["input"]
+            if item.get("type") == "reasoning"
+        ]
+        assert len(reasoning) == 1
+        assert reasoning[0]["encrypted_content"] == "xai-sealed-blob"
+        assert "_issuer_kind" not in reasoning[0]
 
     def test_reasoning_effort_low_passed_through(self):
         adapter, captured = self._build_adapter()

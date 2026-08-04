@@ -560,6 +560,52 @@ class TestPythonpathSelectiveStrip:
         assert real_repo_root not in entries
         assert "/home/user/my-lib" in entries
 
+    def test_repo_root_direct_child_stripped(self):
+        """A direct child of the repo root (depth=1) is stripped.
+
+        Check 3's depth rule is ``depth <= 1``: the repo root itself is
+        depth=0 (covered above), and a top-level package directory like
+        ``<repo>/tools`` is depth=1.  Both are stripped because Electron
+        prepends exactly these shallow paths so ``import tools`` works in
+        the backend, and they shadow user packages of the same name.
+        """
+        from tools.environments.local import _strip_mismatched_site_packages
+
+        local_file = Path(__import__("tools.environments.local", fromlist=["__file__"]).__file__).resolve()
+        real_repo_root = local_file.parents[2]
+        direct_child = str(real_repo_root / "tools")
+
+        env = {
+            "PYTHONPATH": os.pathsep.join([direct_child, "/home/user/my-lib"]),
+        }
+        _strip_mismatched_site_packages(env)
+        pp = env.get("PYTHONPATH", "")
+        entries = pp.split(os.pathsep) if pp else []
+        assert direct_child not in entries
+        assert "/home/user/my-lib" in entries
+
+    def test_deep_path_under_repo_root_preserved(self):
+        """A deeper path under the repo root (depth=2) is preserved.
+
+        ``<repo>/tools/environments`` is depth=2, past the ``depth <= 1``
+        cutoff.  Such a path is not something Electron injects and may be
+        a legitimate user library path, so it must survive Check 3.
+        """
+        from tools.environments.local import _strip_mismatched_site_packages
+
+        local_file = Path(__import__("tools.environments.local", fromlist=["__file__"]).__file__).resolve()
+        real_repo_root = local_file.parents[2]
+        deep_path = str(real_repo_root / "tools" / "environments")
+
+        env = {
+            "PYTHONPATH": os.pathsep.join([deep_path, "/home/user/my-lib"]),
+        }
+        _strip_mismatched_site_packages(env)
+        pp = env.get("PYTHONPATH", "")
+        entries = pp.split(os.pathsep) if pp else []
+        assert deep_path in entries
+        assert "/home/user/my-lib" in entries
+
 
 class TestProfileScopedPassthrough:
     def test_make_run_env_uses_active_profile_for_passthrough(self, monkeypatch):

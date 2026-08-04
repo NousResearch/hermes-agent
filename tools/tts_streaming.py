@@ -61,13 +61,21 @@ def take_speech_interrupted() -> bool:
     at, _interrupted_at = _interrupted_at, None
     return at is not None and time.monotonic() - at < _INTERRUPT_TTL_S
 
-# Sentence boundary: after .!? followed by whitespace, a run of CJK
+# Sentence boundary: after .!? followed by whitespace, after a run of CJK
 # terminators (。！？… — which come with NO trailing space, so the English
 # "terminator + whitespace" rule never fires on Chinese/Japanese, #78477),
-# or a blank line. Matching the CJK run itself (rather than a zero-width
-# lookbehind) keeps the boundary at least one char wide so the chunker loop
-# always advances.
-SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|[。！？…]+|(?:\n\n)")
+# or a blank line. The CJK alternative is a zero-width lookbehind rather than
+# a consuming match so the terminator stays attached in *both* consumers:
+# SentenceChunker.feed() (search + head slice) and web_server's
+# _split_text_for_speak_stream() (re.split) — a consuming match would drop
+# 。！？ from the split() output, synthesizing sentences without their
+# terminator. The negative lookahead makes a run (……/！！) a single boundary
+# (fire only after the last terminator), avoiding a lone-punctuation piece.
+# Zero-width means feed() must walk boundaries with finditer (below) so the
+# search position always advances.
+SENTENCE_BOUNDARY_RE = re.compile(
+    r"(?<=[.!?])(?:\s|\n)|(?<=[。！？…])(?![。！？…])|(?:\n\n)"
+)
 # Reasoning tags come from the one canonical list (agent.think_scrubber), matched case-insensitively,
 # so feed() and flush() strip/cut exactly the tags every other reasoning-hiding surface does.
 _THINK_NAMES = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
@@ -100,15 +108,20 @@ class SentenceChunker:
         if _THINK_OPEN_RE.search(self.buf):
             return []  # open think tag — the closing tag may arrive next delta
         out: List[str] = []
-        start = 0  # skip boundaries that would leave the head too short
-        while m := SENTENCE_BOUNDARY_RE.search(self.buf, start):
-            head = self.buf[: m.end()]
-            if len(head.strip()) < self.min_len:
-                start = m.end()
-                continue
-            out.append(head)
-            self.buf = self.buf[m.end():]
-            start = 0
+        # Walk boundaries with finditer so zero-width CJK lookbehinds always
+        # advance the search cursor; a boundary whose head is shorter than
+        # min_len is skipped so the fragment merges into the next sentence.
+        cut = True
+        while cut:
+            cut = False
+            for m in SENTENCE_BOUNDARY_RE.finditer(self.buf):
+                head = self.buf[: m.end()]
+                if len(head.strip()) < self.min_len:
+                    continue
+                out.append(head)
+                self.buf = self.buf[m.end():]
+                cut = True
+                break  # restart finditer on the shortened buffer
         return out
 
     def flush(self) -> List[str]:

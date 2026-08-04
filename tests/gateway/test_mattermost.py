@@ -404,6 +404,40 @@ class TestMattermostFileUpload:
         self.adapter._session = MagicMock()
 
     @pytest.mark.asyncio
+    async def test_upload_preserves_unicode_filename(self):
+        """Mattermost should receive readable Unicode multipart filenames."""
+        filename = "高质供应商回签文件乙方重点审查意见.docx"
+        captured = {}
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 201
+        mock_resp.json = AsyncMock(return_value={
+            "file_infos": [{"id": "file_unicode"}]
+        })
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        def capture_upload(*args, **kwargs):
+            payload = kwargs["data"]()
+            file_part = payload._parts[1][0]
+            captured["content_disposition"] = file_part.headers["Content-Disposition"]
+            return mock_resp
+
+        self.adapter._session.post = MagicMock(side_effect=capture_upload)
+
+        file_id = await self.adapter._upload_file(
+            "channel_1",
+            b"document-data",
+            filename,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+        assert file_id == "file_unicode"
+        assert f'filename="{filename}"' in captured["content_disposition"]
+        assert "%E9" not in captured["content_disposition"]
+
+    @pytest.mark.asyncio
     @patch("tools.url_safety.is_safe_url", return_value=True)
     async def test_send_image_downloads_and_uploads(self, _mock_safe):
         """send_image should download the URL, upload via /api/v4/files, then post."""

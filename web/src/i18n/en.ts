@@ -97,6 +97,8 @@ export const en: Translations = {
     currentProfileOption: "this dashboard ({name})",
     managingProfileBanner:
       "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
+    dashboardOffline: "Dashboard backend is unreachable.",
+    dashboardRetrying: "Retrying automatically…",
   },
 
   status: {

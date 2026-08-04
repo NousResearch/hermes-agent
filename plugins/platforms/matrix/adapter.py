@@ -2926,6 +2926,11 @@ class MatrixAdapter(BasePlatformAdapter):
             return str(value or "").upper()
 
         def _is_permanent_sync_auth_error(error: Any) -> bool:
+            # Parsed /sync responses are dicts. Their timeline payload may quote
+            # HTTP auth failures, but that text must never classify a successful
+            # response as terminal and stop the sync loop.
+            if isinstance(error, dict):
+                return False
             status = _sync_error_status(error)
             errcode = _sync_error_code(error)
             if status == 401:
@@ -2943,6 +2948,10 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
 
         def _is_forbidden_sync_error(error: Any) -> bool:
+            # See _is_permanent_sync_auth_error: successful /sync dictionaries
+            # are data, not error objects, even if a timeline body quotes 403.
+            if isinstance(error, dict):
+                return False
             status = _sync_error_status(error)
             errcode = _sync_error_code(error)
             return status == 403 or errcode == "M_FORBIDDEN"

@@ -12,6 +12,7 @@ G03 content gate: every draft must pass content_gate.gate_publish() before it
 is allowed into Postiz. This is the code-level chokepoint that prevents
 auto-delivery of unapproved content.
 """
+import argparse
 import os
 import sys
 import sqlite3
@@ -20,13 +21,13 @@ from datetime import datetime, timezone, timedelta
 
 # Set up paths
 CE_DIR = Path(__file__).resolve().parent
-DB_PATH = CE_DIR / "db" / "content_engine.db"
+DB_PATH = Path(os.environ.get("CONTENT_ENGINE_DB_PATH", CE_DIR / "db" / "content_engine.db")).resolve()
 ARTICLE_OUTPUT = CE_DIR / "output" / "articles"
 
 # Add CE dir to path for imports
 sys.path.insert(0, str(CE_DIR))
 
-from postiz_bridge import queue_post
+from postiz_bridge import check_publisher_readiness, queue_post
 from database import mark_published, get_draft, claim_for_enqueue, release_enqueue_claim
 from content_gate import gate_publish
 
@@ -82,31 +83,50 @@ def find_draft_image(draft: dict) -> str | None:
     return None
 
 
-def publish_approved_drafts() -> int:
+def preflight() -> None:
+    """Validate both databases without creating or changing either one."""
+    if not DB_PATH.is_file():
+        raise RuntimeError(f"content engine database missing: {DB_PATH}")
+    with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as conn:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='drafts'"
+        ).fetchone()
+        if table is None:
+            raise RuntimeError(f"content engine drafts table missing: {DB_PATH}")
+    check_publisher_readiness()
+
+
+def _approved_rows() -> list[sqlite3.Row]:
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        return conn.execute(
+            """SELECT id, brand, platform, body_text, title, content_type,
+                      ai_image_path, visual_path, approved_at, pillar
+               FROM drafts
+               WHERE brand IN (?, ?)
+                 AND status = 'approved'
+                 AND postiz_id IS NULL
+                 AND (enqueue_state IS NULL OR enqueue_state = 'pending')
+               ORDER BY approved_at ASC""",
+            tuple(ACTIVE_BRANDS),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def publish_approved_drafts(*, dry_run: bool = False) -> int:
     """Find approved personal drafts and queue them into Postiz.
 
     Returns the number of drafts published.
     """
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
-    # Find approved personal drafts that haven't been published to Postiz yet
-    c.execute(
-        """SELECT id, brand, platform, body_text, title, content_type,
-                  ai_image_path, visual_path, approved_at, pillar
-           FROM drafts
-           WHERE brand IN (?, ?)
-             AND status = 'approved'
-             AND postiz_id IS NULL
-             AND (enqueue_state IS NULL OR enqueue_state = 'pending')
-           ORDER BY approved_at ASC""",
-        tuple(ACTIVE_BRANDS),
-    )
-    rows = c.fetchall()
+    rows = _approved_rows()
 
     if not rows:
-        conn.close()
+        return 0
+
+    if dry_run:
+        print(f"dry-run: {len(rows)} eligible draft(s); no claims or publications performed")
         return 0
 
     published = 0
@@ -184,14 +204,34 @@ def publish_approved_drafts() -> int:
             release_enqueue_claim(draft_id)
             print(f"  Error publishing {draft_id}: {e}")
 
-    conn.close()
     return published
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--preflight", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        preflight()
+    except Exception as exc:
+        print(f"publisher-unavailable: {exc}", file=sys.stderr)
+        return 2
+    if args.preflight:
+        print("ready-idle: content database and Postiz publisher are ready")
+        return 0
+    rows = _approved_rows()
+    if not rows:
+        print("no-work: publisher ready; no eligible approved drafts")
+        return 0
+    if args.dry_run:
+        print(f"dry-run: {len(rows)} eligible draft(s); no claims or publications performed")
+        return 0
     count = publish_approved_drafts()
-    if count == 0:
-        # Silent when nothing to publish
-        pass
-    else:
+    if count:
         print(f"Published {count} draft(s) to Postiz.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

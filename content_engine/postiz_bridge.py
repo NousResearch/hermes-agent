@@ -54,6 +54,32 @@ def _conn():
     )
 
 
+def check_publisher_readiness() -> None:
+    """Read-only proof that Postiz can accept personal-account posts."""
+    conn = _conn()
+    try:
+        conn.set_session(readonly=True, autocommit=True)
+        cur = conn.cursor()
+        required = [
+            INTEGRATION_MAP["sahil_twitter_twitter"],
+            INTEGRATION_MAP["sahil_linkedin_linkedin"],
+        ]
+        cur.execute(
+            """SELECT to_regclass('public.\"Post\"'), COUNT(*)
+               FROM \"Integration\"
+               WHERE id = ANY(%s) AND \"deletedAt\" IS NULL AND disabled = false""",
+            (required,),
+        )
+        post_table, integration_count = cur.fetchone()
+        cur.close()
+        if post_table is None:
+            raise RuntimeError("Postiz Post table is missing")
+        if integration_count < len(required):
+            raise RuntimeError("required personal Postiz integrations are unavailable")
+    finally:
+        conn.close()
+
+
 def refresh_integration_map() -> dict[str, Optional[str]]:
     """Query the Postiz DB and rebuild INTEGRATION_MAP from live data."""
     try:

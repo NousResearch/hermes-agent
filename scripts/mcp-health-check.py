@@ -17,7 +17,7 @@ import json
 import time
 from pathlib import Path
 
-HERMES = Path(os.environ.get("HERMES_HOME", "/home/kensei/.hermes"))
+HERMES = Path(_os.environ.get("HERMES_HOME", "/home/kensei/.hermes"))
 
 # MCP servers to check (name, pgrep -f pattern matching real process cmdline)
 # v2 - fix 03/06/26: previous patterns ("outlook-mcp-server",

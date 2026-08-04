@@ -98,8 +98,11 @@ def assemble(illustrated_body: str, draft: dict, out_root: Path, dry_run: bool) 
 
 
 def persist_article_draft(**kwargs) -> str:
-    """Insert a row into the drafts table with content_type='article'."""
+    """Persist the article and its separate durable approval record."""
     draft_id = kwargs.get("id") or f"art_{abs(hash(kwargs.get('title',''))) % 10**8:08d}"
+    bundle_path = kwargs.get("bundle_path")
+    if bundle_path is None:
+        raise ValueError("bundle_path is required for long-form article approval")
     db.insert_draft(
         draft_id=draft_id,
         brand=kwargs.get("brand", "sahil_twitter"),
@@ -112,6 +115,11 @@ def persist_article_draft(**kwargs) -> str:
         visual_description=kwargs.get("visual_description", ""),
         slop_score=kwargs.get("slop_score", 0),
         slop_issues=kwargs.get("slop_issues", ""),
+    )
+    db.register_article_approval(
+        article_id=draft_id, bundle_path=bundle_path,
+        brand=kwargs.get("brand", "sahil_twitter"),
+        platform=kwargs.get("platform", "twitter"),
     )
     return draft_id
 
@@ -193,6 +201,7 @@ def _run_for_brand(plan: dict, brand: str, out_root: Path,
     persist_article_draft(
         brand=brand, platform=platform, pillar=draft.get("pillar", "general"),
         title=draft.get("title", "Article"), body_md=bundle.article_md,
+        bundle_path=bundle.dir,
         slop_issues="; ".join(issues) if issues else "",
     )
 

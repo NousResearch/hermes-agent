@@ -2,17 +2,18 @@
 # Publish approved personal drafts to Postiz for scheduling and posting.
 # Runs as no_agent cron. Silent when nothing to publish.
 #
-# Env overrides (P13 isolation / local disposable runs):
-#   POSTIZ_DRY_RUN=1 — print the would-publish line, do not invoke the
-#                     Python publisher
+# HERMES_AGENT_ROOT is supplied by the cron scheduler from the job workdir.
+# POSTIZ_DRY_RUN=1 performs read-only checks but never claims or publishes.
 set -euo pipefail
 
-if [[ "${POSTIZ_DRY_RUN:-0}" == "1" ]]; then
-    echo "dry-run: would publish to Postiz"
-    exit 0
-fi
-
-CE="/home/kensei/repos/KenseiAgent/content_engine"
+RUNTIME_ROOT="${HERMES_AGENT_ROOT:-$PWD}"
+CE="$RUNTIME_ROOT/content_engine"
+[[ -d "$CE" ]] || { echo "ERROR: content engine not found under runtime root: $RUNTIME_ROOT" >&2; exit 1; }
+PYTHON="$RUNTIME_ROOT/.venv/bin/python"
+[[ -x "$PYTHON" ]] || { echo "ERROR: runtime Python not executable: $PYTHON" >&2; exit 1; }
+export CONTENT_ENGINE_ROOT="$CE"
+export CONTENT_ENGINE_DB_PATH="${CONTENT_ENGINE_DB_PATH:-$CE/db/content_engine.db}"
+[[ -f "$CONTENT_ENGINE_DB_PATH" ]] || { echo "ERROR: content engine database missing: $CONTENT_ENGINE_DB_PATH" >&2; exit 1; }
 cd "$CE"
 
 # Source env for DB credentials
@@ -22,5 +23,6 @@ set +a
 
 export PYTHONPATH="${CE}:${PYTHONPATH:-}"
 
-# Use the venv python (has psycopg2-binary installed)
-timeout 60 /home/kensei/repos/KenseiAgent/.venv/bin/python publish_to_postiz.py
+args=()
+[[ "${POSTIZ_DRY_RUN:-0}" == "1" ]] && args+=(--dry-run)
+timeout 60 "$PYTHON" publish_to_postiz.py "${args[@]}"

@@ -27,6 +27,7 @@ from pathlib import Path
 # Reused low-level helpers (import only — do not modify the source modules).
 from blog.preview import md_to_html, _image_to_data_uri, parse_frontmatter, _read_mdx
 from scripts.build_xarticle_previews import embed_image_resized
+import database
 
 ENGINE = Path(__file__).resolve().parent.parent
 TRACKER = ENGINE / "blog_topics" / "pending_approvals.jsonl"
@@ -47,7 +48,7 @@ COMPRESSION_LEVELS = [(800, 80), (680, 72), (560, 64), (460, 55)]
 
 BLOG_GROUP = "SAHILSBLOG"
 X_GROUP = "X/TWITTER"
-LINKEDIN_GROUP = "LINKEDIN (soon)"
+LINKEDIN_GROUP = "LINKEDIN"
 
 
 # ── Design: the approved validation-*.html palette + minimal layout CSS ──────
@@ -322,18 +323,47 @@ def _render_blog_pane(entry: dict, max_width: int = 800, quality: int = 80) -> d
     return {"slug": slug, "title": title, "pane": pane, "group": BLOG_GROUP}
 
 
-def _x_items(max_width: int = 800, quality: int = 80) -> list[dict]:
-    """Render a pane per X/Twitter article bundle in output/articles/."""
-    items = []
-    for bundle in sorted(X_BUNDLES.glob("2*")):
-        if not (bundle / "article.md").exists():
+def _article_items(records: list[dict], max_width: int = 800, quality: int = 80) -> tuple[dict[str, list[dict]], list[str]]:
+    """Render recorded pending articles and diagnose broken durable pointers."""
+    groups = {X_GROUP: [], LINKEDIN_GROUP: []}
+    diagnostics: list[str] = []
+    for record in records:
+        bundle = Path(record["bundle_path"])
+        article_path = bundle / "article.md"
+        if not article_path.is_file():
+            diagnostics.append(f"missing bundle for article {record['article_id']}: {bundle}")
             continue
-        items.append(_render_x_pane(bundle, max_width, quality))
-    return items
+        platform = str(record.get("platform", "")).lower()
+        if platform in {"twitter", "x"}:
+            group = X_GROUP
+        elif platform == "linkedin":
+            group = LINKEDIN_GROUP
+        else:
+            diagnostics.append(f"unsupported platform for article {record['article_id']}: {platform or 'unknown'}")
+            continue
+        groups[group].append(_render_article_pane(record, bundle, group, max_width, quality))
+    return groups, diagnostics
 
 
-def _render_x_pane(bundle: Path, max_width: int = 800, quality: int = 80) -> dict:
-    slug = bundle.name
+def _pending_article_items(max_width: int = 800, quality: int = 80) -> tuple[dict[str, list[dict]], list[str]]:
+    database.init_db()
+    migration = database.migrate_article_approvals(X_BUNDLES)
+    groups, diagnostics = _article_items(
+        database.list_article_approvals(status="pending"), max_width, quality
+    )
+    diagnostics.extend(
+        f"article draft has no matching bundle: {article_id}"
+        for article_id in migration["missing_bundles"]
+    )
+    diagnostics.extend(
+        f"article bundle has no matching DB record: {bundle_path}"
+        for bundle_path in migration["orphan_bundles"]
+    )
+    return groups, diagnostics
+
+
+def _render_article_pane(record: dict, bundle: Path, group: str, max_width: int = 800, quality: int = 80) -> dict:
+    slug = record["article_id"]
     md = (bundle / "article.md").read_text(encoding="utf-8", errors="replace")
     first_line = md.split("\n", 1)[0]
     title = first_line.replace("# ", "").strip() or slug
@@ -344,13 +374,13 @@ def _render_x_pane(bundle: Path, max_width: int = 800, quality: int = 80) -> dic
 
     m = re.match(r"(\d{4}-\d{2}-\d{2})", slug)
     pub_date = m.group(1) if m else ""
-    meta_dl = _meta_dl(Stream="X/TWITTER", Date=pub_date, Slug=slug)
+    meta_dl = _meta_dl(Platform=group, Brand=record.get("brand", ""), Date=pub_date, ID=slug)
 
     pane = (
         f"<h1>{_esc(title)}</h1>{meta_dl}{_actions(slug)}"
         f'<div class="body">{body_html}</div>'
     )
-    return {"slug": slug, "title": title, "pane": pane, "group": X_GROUP}
+    return {"slug": slug, "title": title, "pane": pane, "group": group}
 
 
 # ── Shell assembly ───────────────────────────────────────────────────────────
@@ -360,11 +390,12 @@ def _summary_pane(sections: list[tuple[str, list[dict]]], indexed: list[tuple[in
     counts = {label: len(items) for label, items in sections}
     nblog = counts.get(BLOG_GROUP, 0)
     nx = counts.get(X_GROUP, 0)
-    total = nblog + nx
+    nlinkedin = counts.get(LINKEDIN_GROUP, 0)
+    total = nblog + nx + nlinkedin
 
     rows = []
     for idx, it in indexed:
-        group = "Blog" if it["group"] == BLOG_GROUP else "X/Twitter"
+        group = {BLOG_GROUP: "Blog", X_GROUP: "X/Twitter", LINKEDIN_GROUP: "LinkedIn"}[it["group"]]
         rows.append(
             f"<tr><td class='num'>{idx}</td>"
             f"<td><a class='rowtitle' onclick='show({idx})'>{_esc(it['title'])}</a>"
@@ -378,9 +409,9 @@ def _summary_pane(sections: list[tuple[str, list[dict]]], indexed: list[tuple[in
     )
     return (
         f"<h1>Pending Review</h1>"
-        f'<p class="deck">{today} · {nblog} blog posts + {nx} X/Twitter articles awaiting review '
+        f'<p class="deck">{today} · {nblog} blog posts + {nx} X/Twitter articles + {nlinkedin} LinkedIn articles awaiting review '
         f"(total {total})</p>"
-        f"{_meta_dl(Blog=nblog, **{'X/Twitter': nx}, Total=total)}"
+        f"{_meta_dl(Blog=nblog, **{'X/Twitter': nx, 'LinkedIn': nlinkedin}, Total=total)}"
         f"{table}"
         f'<p class="source">Approve: <code>!approve &lt;slug&gt;</code> · '
         f"Reject: <code>!reject &lt;slug&gt;</code> · Batch: <code>!approve all</code></p>"
@@ -402,7 +433,7 @@ def render(sections: list[tuple[str, list[dict]]], doc_title: str) -> str:
     counter = 0
     for label, items in sections:
         muted = " muted" if not items else ""
-        hint = "<span class='hint'>Wired in a later update.</span>" if (label == LINKEDIN_GROUP) else ""
+        hint = ""
         nav.append(f'<div class="group{muted}">{_esc(label)}{hint}</div>')
         for it in items:
             counter += 1
@@ -466,17 +497,23 @@ def build() -> list[str]:
     ddmmyy = date.today().strftime("%d-%m-%y")
 
     blog0 = _blog_items(*COMPRESSION_LEVELS[0])
-    x0 = _x_items(*COMPRESSION_LEVELS[0])
-    if not blog0 and not x0:
+    article_groups0, diagnostics = _pending_article_items(*COMPRESSION_LEVELS[0])
+    x0, linkedin0 = article_groups0[X_GROUP], article_groups0[LINKEDIN_GROUP]
+    if diagnostics:
+        raise RuntimeError("article approval state mismatch: " + "; ".join(diagnostics))
+    if not blog0 and not x0 and not linkedin0:
         return []
 
-    last_blog, last_x = blog0, x0
+    last_blog, last_x, last_linkedin = blog0, x0, linkedin0
     for i, (width, quality) in enumerate(COMPRESSION_LEVELS):
         blog = blog0 if i == 0 else _blog_items(width, quality)
-        x = x0 if i == 0 else _x_items(width, quality)
-        last_blog, last_x = blog, x
+        article_groups, diagnostics = (article_groups0, diagnostics) if i == 0 else _pending_article_items(width, quality)
+        if diagnostics:
+            raise RuntimeError("article approval state mismatch: " + "; ".join(diagnostics))
+        x, linkedin = article_groups[X_GROUP], article_groups[LINKEDIN_GROUP]
+        last_blog, last_x, last_linkedin = blog, x, linkedin
         combined = render(
-            [(BLOG_GROUP, blog), (X_GROUP, x), (LINKEDIN_GROUP, [])],
+            [(BLOG_GROUP, blog), (X_GROUP, x), (LINKEDIN_GROUP, linkedin)],
             "Pending Review",
         )
         if len(combined.encode("utf-8")) <= SIZE_CAP:
@@ -485,7 +522,7 @@ def build() -> list[str]:
     # Even the most aggressive level overflows — split per platform, then chunk
     # any platform still too big so no single file exceeds the cap.
     outputs = []
-    for group, slug, items in ((BLOG_GROUP, "blog", last_blog), (X_GROUP, "x", last_x)):
+    for group, slug, items in ((BLOG_GROUP, "blog", last_blog), (X_GROUP, "x", last_x), (LINKEDIN_GROUP, "linkedin", last_linkedin)):
         if not items:
             continue
         chunks = _chunk_by_size(items)
@@ -500,14 +537,16 @@ def build() -> list[str]:
 
 def main() -> None:
     blog_n = len([e for e in _read_jsonl(TRACKER) if e.get("status") == "pending"])
-    x_n = len([b for b in X_BUNDLES.glob("2*") if (b / "article.md").exists()])
     outputs = build()
+    pending_articles = database.list_article_approvals(status="pending")
+    x_n = sum(str(row.get("platform", "")).lower() in {"x", "twitter"} for row in pending_articles)
+    linkedin_n = sum(str(row.get("platform", "")).lower() == "linkedin" for row in pending_articles)
     if not outputs:
         print("[SILENT]")
         return
     print(
-        f"{blog_n} blog posts + {x_n} X/Twitter articles awaiting review "
-        f"(total {blog_n + x_n})"
+        f"{blog_n} blog posts + {x_n} X/Twitter articles + {linkedin_n} LinkedIn articles awaiting review "
+        f"(total {blog_n + x_n + linkedin_n})"
     )
     for path in outputs:
         print(f"MEDIA:{path}")

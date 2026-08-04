@@ -45,6 +45,19 @@ CREATE INDEX IF NOT EXISTS idx_status ON drafts(status);
 CREATE INDEX IF NOT EXISTS idx_created ON drafts(created_at);
 CREATE INDEX IF NOT EXISTS idx_content_type ON drafts(content_type);
 
+CREATE TABLE IF NOT EXISTS article_approvals (
+    article_id  TEXT PRIMARY KEY,
+    bundle_path TEXT NOT NULL,
+    brand       TEXT NOT NULL,
+    platform    TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    created_at  TEXT NOT NULL,
+    approved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_approval_status
+    ON article_approvals(status, created_at);
+
 CREATE TABLE IF NOT EXISTS topic_usage_log (
     topic_id      TEXT PRIMARY KEY,
     brand         TEXT NOT NULL,
@@ -129,6 +142,88 @@ def insert_draft(
     )
     conn.commit()
     conn.close()
+
+
+def register_article_approval(
+    *, article_id: str, bundle_path: Path | str, brand: str, platform: str,
+    status: str = "pending", created_at: Optional[str] = None,
+    approved_at: Optional[str] = None,
+) -> None:
+    """Register long-form approval state separately from short-form drafts."""
+    if status not in {"pending", "approved", "rejected"}:
+        raise ValueError(f"unsupported article approval status: {status}")
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.execute(
+            """
+            INSERT INTO article_approvals
+                (article_id, bundle_path, brand, platform, status, created_at, approved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(article_id) DO UPDATE SET
+                bundle_path=excluded.bundle_path,
+                brand=excluded.brand,
+                platform=excluded.platform
+            """,
+            (article_id, str(bundle_path), brand, platform, status,
+             created_at or datetime.now(UTC).isoformat(), approved_at),
+        )
+
+
+def list_article_approvals(status: Optional[str] = None) -> List[dict]:
+    """Return durable long-form approvals, optionally filtered by status."""
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        if status is None:
+            rows = conn.execute(
+                "SELECT * FROM article_approvals ORDER BY created_at, article_id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM article_approvals WHERE status = ? ORDER BY created_at, article_id",
+                (status,),
+            ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def migrate_article_approvals(bundle_root: Path | str) -> dict:
+    """Idempotently derive long-form approvals from legacy drafts and bundles."""
+    root = Path(bundle_root)
+    bundles: dict[str, Path] = {}
+    if root.exists():
+        for article_path in sorted(root.glob("*/article.md")):
+            try:
+                body = article_path.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+            bundles[body] = article_path.parent
+
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        drafts = conn.execute(
+            "SELECT id, brand, platform, body_text, status, created_at, approved_at "
+            "FROM drafts WHERE content_type = 'article' ORDER BY created_at, id"
+        ).fetchall()
+
+    existing = {row["article_id"] for row in list_article_approvals()}
+    created = 0
+    matched_paths: set[Path] = set()
+    missing: list[str] = []
+    for draft in drafts:
+        bundle = bundles.get(str(draft["body_text"] or "").strip())
+        if bundle is None:
+            missing.append(draft["id"])
+            continue
+        matched_paths.add(bundle)
+        mapped_status = draft["status"] if draft["status"] in {"approved", "rejected"} else "pending"
+        register_article_approval(
+            article_id=draft["id"], bundle_path=bundle, brand=draft["brand"],
+            platform=draft["platform"], status=mapped_status,
+            created_at=draft["created_at"], approved_at=draft["approved_at"],
+        )
+        if draft["id"] not in existing:
+            created += 1
+
+    orphan = sorted(str(path) for path in set(bundles.values()) - matched_paths)
+    return {"created": created, "missing_bundles": missing, "orphan_bundles": orphan}
 
 # ── Topic usage tracking ──
 
@@ -238,9 +333,14 @@ def list_recent_drafts(minutes: int = 60, status: str = "draft") -> List[dict]:
 
 def approve_draft(draft_id: str) -> None:
     conn = sqlite3.connect(str(DB_PATH))
+    approved_at = datetime.now(UTC).isoformat()
     conn.execute(
         "UPDATE drafts SET status = 'approved', approved_at = ? WHERE id = ?",
-        (datetime.now(UTC).isoformat(), draft_id),
+        (approved_at, draft_id),
+    )
+    conn.execute(
+        "UPDATE article_approvals SET status = 'approved', approved_at = ? WHERE article_id = ?",
+        (approved_at, draft_id),
     )
     conn.commit()
     conn.close()
@@ -250,6 +350,10 @@ def reject_draft(draft_id: str) -> None:
     conn.execute(
         "UPDATE drafts SET status = 'rejected', rejected_at = ? WHERE id = ?",
         (datetime.now(UTC).isoformat(), draft_id),
+    )
+    conn.execute(
+        "UPDATE article_approvals SET status = 'rejected', approved_at = NULL WHERE article_id = ?",
+        (draft_id,),
     )
     conn.commit()
     conn.close()

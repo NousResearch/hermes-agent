@@ -329,3 +329,16 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+def test_run_job_script_exports_authoritative_runtime_root(hermes_env, tmp_path):
+    from cron.scheduler import _run_job_script
+
+    runtime = tmp_path / "candidate"
+    runtime.mkdir()
+    script_path = hermes_env / "scripts" / "root.sh"
+    script_path.write_text('printf "%s" "$HERMES_AGENT_ROOT"\n')
+
+    ok, output = _run_job_script("root.sh", workdir=str(runtime))
+    assert ok is True
+    assert output == str(runtime)

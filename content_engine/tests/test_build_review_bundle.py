@@ -12,6 +12,8 @@ from scripts.build_review_bundle import (
     LINKEDIN_GROUP,
     X_GROUP,
     _chunk_by_size,
+    _article_items,
+    _pending_article_items,
     _img_card,
     build,
     main,
@@ -33,7 +35,7 @@ def test_render_lists_every_item_and_counts():
     for t in ("Alpha", "Beta", "Gamma"):
         assert t in doc
     # summary counts reflect what was passed in
-    assert "2 blog posts + 1 X/Twitter articles" in doc
+    assert "2 blog posts + 1 X/Twitter articles + 0 LinkedIn articles" in doc
     # switcher wiring present
     assert "function show" in doc
     assert 'data-pane="0"' in doc  # SUMMARY link
@@ -41,6 +43,56 @@ def test_render_lists_every_item_and_counts():
     assert doc.count('class="pane') == 4
     # LinkedIn placeholder group rendered but muted
     assert "LINKEDIN" in doc and "group muted" in doc
+
+
+def test_article_items_render_x_and_linkedin_under_real_platform_groups(tmp_path):
+    x = tmp_path / "x"
+    linkedin = tmp_path / "linkedin"
+    for bundle, title in ((x, "X Article"), (linkedin, "LinkedIn Article")):
+        bundle.mkdir()
+        (bundle / "article.md").write_text(f"# {title}\n\nBody")
+    rows = [
+        {"article_id": "x1", "bundle_path": str(x), "brand": "sahil_twitter", "platform": "twitter"},
+        {"article_id": "li1", "bundle_path": str(linkedin), "brand": "sahil_linkedin", "platform": "linkedin"},
+    ]
+
+    groups, diagnostics = _article_items(rows)
+
+    assert diagnostics == []
+    assert [item["slug"] for item in groups[X_GROUP]] == ["x1"]
+    assert [item["slug"] for item in groups[LINKEDIN_GROUP]] == ["li1"]
+    doc = render([(X_GROUP, groups[X_GROUP]), (LINKEDIN_GROUP, groups[LINKEDIN_GROUP])], "T")
+    assert "1 X/Twitter articles + 1 LinkedIn articles" in doc
+    assert "X Article" in doc and "LinkedIn Article" in doc
+
+
+def test_pending_article_items_migrates_legacy_state_and_queries_only_pending_records(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(brb.database, "init_db", lambda: seen.append("init"))
+    monkeypatch.setattr(
+        brb.database, "migrate_article_approvals",
+        lambda root: seen.append(("migrate", root)) or {"created": 0, "missing_bundles": [], "orphan_bundles": []},
+    )
+    monkeypatch.setattr(brb.database, "list_article_approvals", lambda status: seen.append(("list", status)) or [])
+    monkeypatch.setattr(brb, "X_BUNDLES", tmp_path / "articles")
+
+    groups, diagnostics = _pending_article_items()
+
+    assert seen == ["init", ("migrate", tmp_path / "articles"), ("list", "pending")]
+    assert groups == {X_GROUP: [], LINKEDIN_GROUP: []}
+    assert diagnostics == []
+
+
+def test_article_items_report_missing_bundle_instead_of_silently_dropping(tmp_path):
+    rows = [{
+        "article_id": "missing-li", "bundle_path": str(tmp_path / "gone"),
+        "brand": "sahil_linkedin", "platform": "linkedin",
+    }]
+
+    groups, diagnostics = _article_items(rows)
+
+    assert groups[LINKEDIN_GROUP] == []
+    assert diagnostics == [f"missing bundle for article missing-li: {tmp_path / 'gone'}"]
 
 
 def test_render_uses_the_approved_validation_palette():
@@ -68,7 +120,7 @@ def test_chunk_by_size_splits_when_over_budget(monkeypatch):
 def test_build_single_file_when_small(monkeypatch, tmp_path):
     monkeypatch.setattr(brb, "PREVIEW_DIR", tmp_path)
     monkeypatch.setattr(brb, "_blog_items", lambda *a, **k: [_item("a", "Alpha", BLOG_GROUP)])
-    monkeypatch.setattr(brb, "_x_items", lambda *a, **k: [])
+    monkeypatch.setattr(brb, "_pending_article_items", lambda *a, **k: ({X_GROUP: [], LINKEDIN_GROUP: []}, []))
     out = build()
     assert len(out) == 1
     name = Path(out[0]).name
@@ -80,7 +132,10 @@ def test_build_splits_per_platform_and_chunks_over_cap(monkeypatch, tmp_path):
     monkeypatch.setattr(brb, "PREVIEW_DIR", tmp_path)
     monkeypatch.setattr(brb, "SIZE_CAP", 80_000)  # budget = 40_000
     monkeypatch.setattr(brb, "_blog_items", lambda *a, **k: [_item("a", "Alpha", BLOG_GROUP, pane_bytes=20_000)])
-    monkeypatch.setattr(brb, "_x_items", lambda *a, **k: [_item(f"x{i}", f"X{i}", X_GROUP, pane_bytes=20_000) for i in range(6)])
+    monkeypatch.setattr(brb, "_pending_article_items", lambda *a, **k: ({
+        X_GROUP: [_item(f"x{i}", f"X{i}", X_GROUP, pane_bytes=20_000) for i in range(6)],
+        LINKEDIN_GROUP: [],
+    }, []))
     out = build()
 
     # blog fits one file; X (120KB) must chunk into several
@@ -95,7 +150,7 @@ def test_build_splits_per_platform_and_chunks_over_cap(monkeypatch, tmp_path):
 def test_build_empty_returns_nothing(monkeypatch, tmp_path):
     monkeypatch.setattr(brb, "PREVIEW_DIR", tmp_path)
     monkeypatch.setattr(brb, "_blog_items", lambda *a, **k: [])
-    monkeypatch.setattr(brb, "_x_items", lambda *a, **k: [])
+    monkeypatch.setattr(brb, "_pending_article_items", lambda *a, **k: ({X_GROUP: [], LINKEDIN_GROUP: []}, []))
     assert build() == []
 
 
@@ -103,8 +158,9 @@ def test_main_prints_silent_when_nothing_pending(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(brb, "PREVIEW_DIR", tmp_path)
     monkeypatch.setattr(brb, "TRACKER", tmp_path / "missing.jsonl")
     monkeypatch.setattr(brb, "X_BUNDLES", tmp_path / "missing")
+    monkeypatch.setattr(brb.database, "list_article_approvals", lambda status: [])
     monkeypatch.setattr(brb, "_blog_items", lambda *a, **k: [])
-    monkeypatch.setattr(brb, "_x_items", lambda *a, **k: [])
+    monkeypatch.setattr(brb, "_pending_article_items", lambda *a, **k: ({X_GROUP: [], LINKEDIN_GROUP: []}, []))
     main()
     assert capsys.readouterr().out.strip() == "[SILENT]"
 
@@ -113,8 +169,9 @@ def test_main_prints_summary_and_media_lines(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(brb, "PREVIEW_DIR", tmp_path)
     monkeypatch.setattr(brb, "TRACKER", tmp_path / "missing.jsonl")
     monkeypatch.setattr(brb, "X_BUNDLES", tmp_path / "missing")
+    monkeypatch.setattr(brb.database, "list_article_approvals", lambda status: [])
     monkeypatch.setattr(brb, "_blog_items", lambda *a, **k: [_item("a", "Alpha", BLOG_GROUP)])
-    monkeypatch.setattr(brb, "_x_items", lambda *a, **k: [])
+    monkeypatch.setattr(brb, "_pending_article_items", lambda *a, **k: ({X_GROUP: [], LINKEDIN_GROUP: []}, []))
     main()
     out = capsys.readouterr().out
     assert "awaiting review" in out

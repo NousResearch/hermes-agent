@@ -2520,6 +2520,10 @@ def _run_job_script(
             }
         env = _sanitize_subprocess_env(os.environ.copy())
         env.update(env_overlay)
+        # Give wrappers a stable runtime-root contract.  This avoids embedding
+        # checkout paths in scripts while preserving portable standalone use.
+        if workdir:
+            env.setdefault("HERMES_AGENT_ROOT", workdir)
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).
         # NEVER mutate the Python process cwd — that would leak into

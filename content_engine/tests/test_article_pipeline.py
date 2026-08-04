@@ -112,16 +112,25 @@ def test_pipeline_secret_scan_blocks_persist_and_send(monkeypatch, tmp_path):
     assert "***REDACTED***" in sent_body
 
 
-def test_persist_article_draft_inserts_with_article_content_type(monkeypatch, tmp_path):
-    """persist_article_draft must pass content_type='article' to db.insert_draft."""
-    captured = []
-    def fake_insert_draft(**kwargs):
-        captured.append(kwargs)
-    monkeypatch.setattr(ap.db, "insert_draft", fake_insert_draft)
-    ap.persist_article_draft(brand="sahil_twitter", pillar="h", title="T",
-                              body_md="body", slop_issues="")
-    assert captured, "expected db.insert_draft to be called"
-    assert captured[0]["content_type"] == "article"
+def test_persist_article_draft_registers_separate_longform_approval(monkeypatch, tmp_path):
+    """Article persistence writes both the legacy draft and durable approval row."""
+    drafts = []
+    approvals = []
+    monkeypatch.setattr(ap.db, "insert_draft", lambda **kwargs: drafts.append(kwargs))
+    monkeypatch.setattr(ap.db, "register_article_approval", lambda **kwargs: approvals.append(kwargs))
+    bundle = tmp_path / "bundle"
+
+    article_id = ap.persist_article_draft(
+        id="article-1", brand="sahil_linkedin", platform="linkedin", pillar="h",
+        title="T", body_md="body", bundle_path=bundle, slop_issues="",
+    )
+
+    assert article_id == "article-1"
+    assert drafts[0]["content_type"] == "article"
+    assert approvals == [{
+        "article_id": "article-1", "bundle_path": bundle,
+        "brand": "sahil_linkedin", "platform": "linkedin",
+    }]
 
 
 # ── Cross-run topic dedup ──

@@ -1261,7 +1261,7 @@
       "paused_at": null,
       "paused_reason": null,
       "profile": null,
-      "prompt": "Weekly LLM benchmark. Run a simple benchmark comparing response quality/speed of available models (deepseek-v4-flash, kimi-k2.6, nemotron-3-super, glm-5.1) on 3 standard prompts. Report response times, character counts, and subjective quality comparison. If models are unavailable, note which failed and continue. Output [SILENT] if no models are accessible.",
+      "prompt": "Weekly LLM benchmark. First run scripts/llm_benchmark_weekly.py to produce deterministic preflight JSON from the effective root/profile configs, active cron routes, local catalogue timestamp (availability evidence only), hardware facts, source retrieval outcomes/dates, and previous snapshot. Read sanitised credentialed measurements produced separately by the bounded no-agent scripts/llm_benchmark_measurements.py collector; never request, read, print, or include credentials. Derive current fleet facts only from the preflight; do not use hardcoded assignments. Preserve the current report HTML, CSS, layout, sections, and heading/table structure exactly. Every ranking row must include source provenance and source date. Require at least two current independent successful benchmark sources; otherwise leave each ranking section in place and render exactly 'Insufficient current evidence' instead of synthesising rankings from stale, failed, secondary-only, prior-report, or local-catalogue evidence. Label expected and measured performance distinctly. Include configuration drift, source status, catalogue freshness, hardware, and week-over-week diagnostics from the preflight.",
       "provider": null,
       "repeat": {
         "completed": 2,

@@ -16,6 +16,7 @@ import {
 import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
 import { useI18n } from '@/i18n'
+import { messageRenderWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
   onScrollToBottomRequest,
@@ -27,6 +28,8 @@ import {
 import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
+
+import { resolveShowEarlierAction, useTranscriptWindow } from './transcript-window'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -47,8 +50,6 @@ export type MessageGroup = { id: string; weight: number } & (
 // a virtualizer — pure rendering, never touches scrollTop, so it can't fight
 // use-stick-to-bottom (the single scroll owner).
 const RENDER_BUDGET = 300
-export const RENDER_WEIGHT_CHARS = 512
-const MAX_MEASURED_MESSAGE_CHARS = RENDER_BUDGET * RENDER_WEIGHT_CHARS
 // On session switch, paint a small budget first (enough for the bottom turn(s)
 // the user actually sees after scroll-to-bottom), then bump to the full budget
 // in a requestAnimationFrame — defers the heavy markdown+syntax-highlight render
@@ -74,70 +75,6 @@ export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, {
   const remaining = targetScrollTop - currentScrollTop
 
   return remaining >= 0 && remaining <= SCROLL_TARGET_EPSILON_PX ? currentScrollTop : targetScrollTop
-}
-
-const contentWeightCache = new WeakMap<object, number>()
-const NON_RENDERED_CONTENT_FIELDS = new Set(['id', 'role', 'toolCallId', 'toolName', 'type'])
-
-/**
- * Estimate the synchronous renderer cost of one assistant-ui message.
- *
- * The traversal is capped once a single message has enough text to consume a
- * complete render page. Going further cannot affect which whole turn crosses
- * the budget, and avoiding an unbounded walk matters for deeply nested tool
- * payloads. A WeakMap keeps settled history O(message count) on later store
- * updates; assistant-ui publishes a new content array when a streaming message
- * changes, so the live tail still receives a fresh weight.
- */
-export function messageRenderWeight(content: unknown): number {
-  if (!Array.isArray(content)) {
-    return 1
-  }
-
-  const cached = contentWeightCache.get(content)
-
-  if (cached !== undefined) {
-    return cached
-  }
-
-  const seen = new WeakSet<object>()
-  const pending: unknown[] = [...content]
-  let characters = 0
-
-  while (pending.length > 0 && characters < MAX_MEASURED_MESSAGE_CHARS) {
-    const value = pending.pop()
-
-    if (typeof value === 'string') {
-      characters += Math.min(value.length, MAX_MEASURED_MESSAGE_CHARS - characters)
-
-      continue
-    }
-
-    if (!value || typeof value !== 'object' || seen.has(value)) {
-      continue
-    }
-
-    seen.add(value)
-
-    if (Array.isArray(value)) {
-      for (const nested of value) {
-        pending.push(nested)
-      }
-
-      continue
-    }
-
-    for (const [key, nested] of Object.entries(value)) {
-      if (!NON_RENDERED_CONTENT_FIELDS.has(key)) {
-        pending.push(nested)
-      }
-    }
-  }
-
-  const weight = Math.max(1, content.length) + Math.ceil(characters / RENDER_WEIGHT_CHARS)
-  contentWeightCache.set(content, weight)
-
-  return weight
 }
 
 interface ThreadMessageListProps {
@@ -314,6 +251,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     resize: 'instant',
     targetScrollTop: resolveThreadScrollTarget
   })
+
+  const { olderAvailable, expandWindow } = useTranscriptWindow()
 
   const [renderBudget, setRenderBudget] = useState(FIRST_PAINT_BUDGET)
 
@@ -540,11 +479,26 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   // Prepend an older page while preserving the on-screen position. The user is
   // scrolled up (reading history) so the stick-to-bottom lock is escaped and
-  // won't fight this manual restore.
+  // won't fight this manual restore. Spend the already-materialized DOM page
+  // first; only when that is exhausted pull more messages out of the session
+  // store (#55191).
   const showEarlier = useCallback(() => {
+    const action = resolveShowEarlierAction(hiddenCount, olderAvailable)
+
+    if (!action) {
+      return
+    }
+
     anchorBeforePrepend()
-    setRenderBudget(budget => budget + RENDER_BUDGET)
-  }, [anchorBeforePrepend])
+
+    if (action === 'dom') {
+      setRenderBudget(budget => budget + RENDER_BUDGET)
+
+      return
+    }
+
+    expandWindow()
+  }, [anchorBeforePrepend, expandWindow, hiddenCount, olderAvailable])
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -553,7 +507,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.scrollTop = el.scrollHeight - restoreFromBottomRef.current
       restoreFromBottomRef.current = null
     }
-  }, [scrollRef, renderBudget])
+    // renderBudget covers DOM pages; groups.length covers store-window expands.
+  }, [scrollRef, renderBudget, groups.length])
 
   // The row array is memoized on the inputs the rows actually read. This
   // component re-renders on every isAtBottom flip — and use-stick-to-bottom
@@ -647,7 +602,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             data-slot="aui_thread-content"
             ref={contentRef as React.RefCallback<HTMLDivElement>}
           >
-            {hiddenCount > 0 && (
+            {(hiddenCount > 0 || olderAvailable) && (
               <button
                 className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
                 onClick={showEarlier}

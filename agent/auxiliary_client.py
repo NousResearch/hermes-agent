@@ -1799,6 +1799,10 @@ class _AnthropicCompletionsAdapter:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                cache_read_input_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                cache_creation_input_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
             )
 
         choice = SimpleNamespace(
@@ -2895,12 +2899,15 @@ def _set_relay_auxiliary_route(
     provider: str | None,
     model: str | None,
     api_mode: str | None,
+    base_url: str | None = None,
 ) -> None:
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is None:
         return
     context["provider"] = str(provider or "auxiliary")
     context["model"] = str(model or "unknown")
+    if base_url is not None:
+        context["base_url"] = str(base_url)
     context["response_model"] = None
     context["api_mode"] = str(api_mode or "chat_completions")
 
@@ -5513,6 +5520,10 @@ def _resolve_auto(
                 api_mode=runtime_api_mode or None,
             )
             if client is not None:
+                try:
+                    client._resolved_provider = resolved_provider
+                except Exception:
+                    pass
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
                             main_provider, resolved or main_model)
                 return client, resolved or main_model
@@ -5523,13 +5534,21 @@ def _resolve_auto(
     # hardcoded provider discovery chain below is only the convenience default
     # for users who have not declared a fallback policy.
     if task:
-        fb_client, fb_model, _fb_label = _try_configured_fallback_chain(
+        fb_client, fb_model, fb_label = _try_configured_fallback_chain(
             task, main_provider or "auto", reason="main provider unavailable")
         if fb_client is not None:
+            try:
+                fb_client._resolved_provider = fb_label
+            except Exception:
+                pass
             return fb_client, fb_model
-    fb_client, fb_model, _fb_label = _try_main_fallback_chain(
+    fb_client, fb_model, fb_label = _try_main_fallback_chain(
         task, main_provider or "auto", reason="main provider unavailable")
     if fb_client is not None:
+        try:
+            fb_client._resolved_provider = fb_label
+        except Exception:
+            pass
         return fb_client, fb_model
 
     # ── Step 3: aggregator / fallback chain ──────────────────────────────
@@ -5541,6 +5560,10 @@ def _resolve_auto(
             continue
         client, model = try_fn()
         if client is not None:
+            try:
+                client._resolved_provider = label
+            except Exception:
+                pass
             if tried:
                 logger.info("Auxiliary auto-detect: using %s (%s) — skipped: %s",
                             label, model or "default", ", ".join(tried))
@@ -5576,23 +5599,32 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """
     from openai import AsyncOpenAI
 
+    def _ret(client_obj):
+        resolved_provider = getattr(sync_client, "_resolved_provider", None)
+        if resolved_provider:
+            try:
+                client_obj._resolved_provider = resolved_provider
+            except Exception:
+                pass
+        return client_obj, model
+
     if isinstance(sync_client, CodexAuxiliaryClient):
-        return AsyncCodexAuxiliaryClient(sync_client), model
+        return _ret(AsyncCodexAuxiliaryClient(sync_client))
     if isinstance(sync_client, AnthropicAuxiliaryClient):
-        return AsyncAnthropicAuxiliaryClient(sync_client), model
+        return _ret(AsyncAnthropicAuxiliaryClient(sync_client))
     if isinstance(sync_client, BedrockAuxiliaryClient):
-        return AsyncBedrockAuxiliaryClient(sync_client), model
+        return _ret(AsyncBedrockAuxiliaryClient(sync_client))
     try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
         if isinstance(sync_client, GeminiNativeClient):
-            return AsyncGeminiNativeClient(sync_client), model
+            return _ret(AsyncGeminiNativeClient(sync_client))
     except ImportError:
         pass
     try:
         from agent.copilot_acp_client import CopilotACPClient
         if isinstance(sync_client, CopilotACPClient):
-            return sync_client, model
+            return _ret(sync_client)
     except ImportError:
         pass
 
@@ -5641,7 +5673,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     # See _create_openai_client: disable SDK-internal retries so Hermes owns
     # the auxiliary retry/timeout budget (issue #54465).
     async_kwargs.setdefault("max_retries", 0)
-    return AsyncOpenAI(**async_kwargs), model
+    return _ret(AsyncOpenAI(**async_kwargs))
 
 
 def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:
@@ -7251,6 +7283,11 @@ def _get_cached_client(
         task=task,
     )
     if client is not None:
+        if not getattr(client, "_resolved_provider", None):
+            try:
+                client._resolved_provider = provider
+            except Exception:
+                pass
         # For async clients, remember which loop they were created on so we
         # can detect stale entries later.
         bound_loop = current_loop
@@ -8062,6 +8099,12 @@ def _validate_llm_response(
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is not None:
+        if not provider or provider == "auto":
+            provider = context.get("provider")
+        if not base_url:
+            base_url = context.get("base_url")
     from agent.aux_accounting import record_aux_usage
     record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
@@ -8737,17 +8780,19 @@ def _call_llm_impl(
                 f"Run: hermes setup")
 
     effective_timeout = _effective_aux_timeout(task, timeout)
+    _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
+    client_provider = getattr(client, "_resolved_provider", None) or resolved_provider
     _set_relay_auxiliary_route(
-        resolved_provider,
+        client_provider,
         final_model,
         resolved_api_mode,
+        base_url=_base_info,
     )
 
     # Log what we're about to do — makes auxiliary operations visible
-    _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
-                     task, resolved_provider or "auto", final_model or "default",
+                     task, client_provider or "auto", final_model or "default",
                      f" at {_base_info}" if _base_info and "openrouter" not in _base_info else "")
 
     # Pass the client's actual base_url (not just resolved_base_url) so

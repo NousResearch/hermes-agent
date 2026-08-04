@@ -1123,6 +1123,66 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["session_id"] == "cyc-b"
 
+    def test_latest_descendant_skips_delegate_subagent_children(self):
+        """A delegate_task subagent session (tagged ``_delegate_from`` in
+        model_config) is a short-lived parallel worker, NOT a continuation
+        target. Clicking the parent session in the dashboard must resolve back
+        to the parent itself, not hijack into the newest subagent session."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="par-a", source="cli")
+            # /model-style child: a genuine fork the user chose to continue.
+            db.create_session(
+                session_id="child-model", source="cli", parent_session_id="par-a"
+            )
+            # delegate subagent child: tagged with _delegate_from → must be skipped.
+            db.create_session(
+                session_id="child-del", source="cli", parent_session_id="par-a"
+            )
+            db._conn.execute(
+                "UPDATE sessions SET model_config='{\"_delegate_from\": \"par-a\"}' "
+                "WHERE id='child-del'"
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        # The /model child is newer than the parent, so a parent with only a
+        # delegate child resolves back to itself; with a /model child present
+        # the newest NON-delegate child wins.
+        resp = self.client.get("/api/sessions/par-a/latest-descendant")
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "child-model"
+
+    def test_latest_descendant_parent_with_only_delegate_children_resolves_to_self(self):
+        """A parent whose only children are delegate subagents must resolve
+        back to itself — otherwise clicking it in the dashboard silently opens
+        an unrelated subagent session."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="par-only-del", source="cli")
+            db.create_session(
+                session_id="del-1", source="cli", parent_session_id="par-only-del"
+            )
+            db.create_session(
+                session_id="del-2", source="cli", parent_session_id="par-only-del"
+            )
+            db._conn.execute(
+                "UPDATE sessions SET model_config='{\"_delegate_from\": \"par-only-del\"}' "
+                "WHERE id IN ('del-1','del-2')"
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/par-only-del/latest-descendant")
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "par-only-del"
+
 
 
 

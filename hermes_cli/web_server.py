@@ -11901,6 +11901,14 @@ def _session_latest_descendant(session_id: str, db):
 
     /model may create child sessions. Dashboard refresh should continue the
     newest child instead of reopening the old parent.
+
+    Delegate subagent sessions (created via the delegate_task tool, tagged in
+    ``model_config._delegate_from``) are NOT continuation targets: they are
+    short-lived parallel workers spawned *by* the parent, not forks the user
+    chose to continue. Including them hijacks the resume — clicking the parent
+    session in the dashboard silently opens the newest subagent session
+    instead. The recursion skips them, so a parent with only delegate children
+    resolves back to itself.
     """
     def row_get(row, key, index):
         if isinstance(row, dict):
@@ -11928,18 +11936,25 @@ def _session_latest_descendant(session_id: str, db):
     if conn is not None:
         raw_rows = conn.execute(
             """
-            WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
-                SELECT id, parent_session_id, started_at FROM sessions WHERE id = ?
+            WITH RECURSIVE descendants(id, parent_session_id, started_at, model_config) AS (
+                SELECT id, parent_session_id, started_at, model_config FROM sessions WHERE id = ?
                 UNION
-                SELECT s.id, s.parent_session_id, s.started_at
+                SELECT s.id, s.parent_session_id, s.started_at, s.model_config
                 FROM sessions s
                 JOIN descendants d ON s.parent_session_id = d.id
             )
-            SELECT id, parent_session_id, started_at FROM descendants
+            SELECT id, parent_session_id, started_at, model_config FROM descendants
             """,
             (sid,),
         ).fetchall()
         for row in raw_rows:
+            # Skip delegate subagent sessions: they are not continuation
+            # targets (see docstring). The tag lives in model_config as
+            # "_delegate_from": "<parent session id>", written by
+            # delegate_tool when spawning the child.
+            model_config = row_get(row, "model_config", 3) or ""
+            if "_delegate_from" in model_config:
+                continue
             rows.append({
                 "id": row_get(row, "id", 0),
                 "parent_session_id": row_get(row, "parent_session_id", 1),
@@ -11947,6 +11962,10 @@ def _session_latest_descendant(session_id: str, db):
             })
     else:
         rows = db.list_sessions_rich(limit=10000, offset=0, compact_rows=True)
+        rows = [
+            r for r in rows
+            if "_delegate_from" not in (r.get("model_config") or "")
+        ]
 
     children = {}
     for row in rows:

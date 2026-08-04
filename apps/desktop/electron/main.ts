@@ -14273,6 +14273,12 @@ registerChatOnboardingWindow({
 // pushes pet state over IPC (hermes:pet-overlay:state); the overlay just renders
 // it. Control flows back (pop-in, composer submit) via hermes:pet-overlay:control.
 let petOverlayWindow = null
+// Set while a close is in flight: Electron's close() is async and can be
+// aborted on macOS, so the window may still be alive after closePetOverlay().
+// openPetOverlay must never reuse (or leave) a closing window — otherwise two
+// overlays can coexist and the orphaned one, rendering nothing, becomes an
+// invisible mouse-enabled transparent region that eats desktop clicks.
+let petOverlayClosing = false
 
 function petOverlayUrl() {
   if (DEV_SERVER) {
@@ -14335,6 +14341,17 @@ function spawnPetOverlayWindow(bounds) {
   win.setAlwaysOnTop(true, IS_MAC ? 'floating' : 'screen-saver')
   win.setHiddenInMissionControl?.(true)
 
+  // The overlay is a transparent rectangle; only the sprite pixels should be
+  // interactive. The renderer toggles click-through as the cursor enters/
+  // leaves the sprite (hermes:pet-overlay:ignore-mouse), but the window MUST
+  // start click-through from the main process: if the overlay page is slow to
+  // load, blank, or its renderer has died, a mouse-enabled transparent window
+  // sits over the desktop eating clicks (the invisible "dead zone" bug). The
+  // wake indicator already uses this spawn-time ignore pattern. forward:true
+  // keeps mousemove flowing to the page so the renderer can re-arm
+  // interactivity the moment the cursor touches a solid sprite pixel.
+  win.setIgnoreMouseEvents(true, { forward: true })
+
   try {
     // Electron docs: macOS may transform process type on each
     // setVisibleOnAllWorkspaces() call unless skipTransformProcessType=true,
@@ -14360,6 +14377,8 @@ function spawnPetOverlayWindow(bounds) {
   installWindowRendererLifecycle(win, { kind: 'overlay', callbacks: { log: rememberLog } })
 
   win.on('closed', () => {
+    petOverlayClosing = false
+
     if (petOverlayWindow === win) {
       petOverlayWindow = null
     }
@@ -14379,7 +14398,7 @@ function spawnPetOverlayWindow(bounds) {
 }
 
 function openPetOverlay(bounds) {
-  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
+  if (petOverlayWindow && !petOverlayWindow.isDestroyed() && !petOverlayClosing) {
     if (bounds) {
       petOverlayWindow.setBounds({
         x: Math.round(bounds.x),
@@ -14394,6 +14413,14 @@ function openPetOverlay(bounds) {
     return petOverlayWindow
   }
 
+  // A previous close was requested but never finished (close() can be aborted
+  // on macOS) — force the stale window down before spawning a replacement so
+  // two overlays can never coexist.
+  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
+    petOverlayWindow.destroy()
+  }
+
+  petOverlayClosing = false
   petOverlayWindow = spawnPetOverlayWindow(bounds)
 
   return petOverlayWindow
@@ -14401,10 +14428,13 @@ function openPetOverlay(bounds) {
 
 function closePetOverlay() {
   if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
+    petOverlayClosing = true
     petOverlayWindow.close()
   }
 
-  petOverlayWindow = null
+  // The 'closed' handler nulls petOverlayWindow and clears the flag — do NOT
+  // null here: an open() racing a slow/aborted close would otherwise spawn a
+  // second overlay while the first is still on screen (see petOverlayClosing).
 }
 
 // Re-home the popped-out pet after a display change: if the overlay still sits
@@ -14413,7 +14443,7 @@ function closePetOverlay() {
 // back to the renderer via the existing 'bounds' control channel, which it
 // persists for the next pop-out/restart.
 function rehomePetOverlay() {
-  if (!petOverlayWindow || petOverlayWindow.isDestroyed()) {
+  if (!petOverlayWindow || petOverlayWindow.isDestroyed() || petOverlayClosing) {
     return
   }
 
@@ -14444,6 +14474,10 @@ function rehomePetOverlay() {
   }
 
   petOverlayWindow.setBounds(resolved)
+  // Re-assert click-through after a display-driven move so a re-home can never
+  // leave a mouse-enabled transparent region behind (same bug class as the
+  // spawn-time default above).
+  petOverlayWindow.setIgnoreMouseEvents(true, { forward: true })
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'bounds', bounds: resolved })

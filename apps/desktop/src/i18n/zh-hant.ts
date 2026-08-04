@@ -263,6 +263,10 @@ export const zhHant = defineLocale({
         credits: {
           label: '額度提醒',
           description: '額度存取被暫停或恢復。'
+        },
+        plugin: {
+          label: '外掛通知',
+          description: 'Hermes 在背景時，桌面外掛傳送了通知。'
         }
       },
       test: '傳送測試通知',

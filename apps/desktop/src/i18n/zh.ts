@@ -387,6 +387,10 @@ export const zh: Translations = {
         credits: {
           label: '额度提醒',
           description: '额度访问被暂停或恢复。'
+        },
+        plugin: {
+          label: '插件通知',
+          description: 'Hermes 在后台时，桌面插件发送了通知。'
         }
       },
       test: '发送测试通知',

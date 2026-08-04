@@ -608,3 +608,107 @@ class TestHandleFunction:
                 self._ctx(session_id=same_session),
             )
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_history_recorded_for_classified_message(
+        self, _isolate_meta_file
+    ):
+        """Each classified message is recorded for future classifier context."""
+        meta_path: Path = _isolate_meta_file
+        meta_path.write_text(
+            "current_role: code-worker\n"
+            "sessions:\n"
+            "  code-worker: sess-current\n",
+            encoding="utf-8",
+        )
+        with (
+            self._patch_config({}),
+            patch.object(
+                multi_role_router_handler,
+                "_classify_message",
+                return_value="code-worker",
+            ),
+        ):
+            await handle(
+                "message:pre_route",
+                self._ctx(
+                    message="refactor the auth module", session_id="sess-current"
+                ),
+            )
+        saved = yaml.safe_load(meta_path.read_text(encoding="utf-8"))
+        history = saved.get("history", [])
+        assert len(history) == 1
+        assert history[0]["user"] == "refactor the auth module"
+        assert history[0]["role"] == "code-worker"
+
+    @pytest.mark.asyncio
+    async def test_history_trimmed_to_window(self, _isolate_meta_file):
+        """History never grows past HISTORY_WINDOW * 2 entries."""
+        meta_path: Path = _isolate_meta_file
+        window = multi_role_router_handler.HISTORY_WINDOW
+        existing = [
+            {"role": "code-worker", "user": f"old message {i}", "assistant": ""}
+            for i in range(window * 2)
+        ]
+        meta_path.write_text(
+            yaml.safe_dump(
+                {
+                    "current_role": "code-worker",
+                    "sessions": {"code-worker": "sess-current"},
+                    "history": existing,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with (
+            self._patch_config({}),
+            patch.object(
+                multi_role_router_handler,
+                "_classify_message",
+                return_value="code-worker",
+            ),
+        ):
+            await handle(
+                "message:pre_route",
+                self._ctx(message="one more message", session_id="sess-current"),
+            )
+        saved = yaml.safe_load(meta_path.read_text(encoding="utf-8"))
+        history = saved["history"]
+        assert len(history) == window * 2
+        assert history[-1]["user"] == "one more message"
+        assert history[0]["user"] == "old message 1"  # oldest was dropped
+
+    @pytest.mark.asyncio
+    async def test_switch_does_not_clobber_target_session_mapping(
+        self, _isolate_meta_file
+    ):
+        """Regression: recording the exchange must not overwrite the target
+        role's session mapping with the inbound session id (the turn is about
+        to be delivered to the TARGET session, so that mapping must survive)."""
+        meta_path: Path = _isolate_meta_file
+        meta_path.write_text(
+            "current_role: default\n"
+            "sessions:\n"
+            "  default: sess-inbound\n"
+            "  ml-worker: sess-ml\n",
+            encoding="utf-8",
+        )
+        with (
+            self._patch_config({}),
+            patch.object(
+                multi_role_router_handler,
+                "_classify_message",
+                return_value="ml-worker",
+            ),
+        ):
+            result = await handle(
+                "message:pre_route",
+                self._ctx(
+                    message="train the model overnight", session_id="sess-inbound"
+                ),
+            )
+        assert result == {"decision": "switch_session", "session_id": "sess-ml"}
+        saved = yaml.safe_load(meta_path.read_text(encoding="utf-8"))
+        assert saved["sessions"]["ml-worker"] == "sess-ml"
+        assert saved["sessions"]["default"] == "sess-inbound"
+        assert saved["current_role"] == "ml-worker"

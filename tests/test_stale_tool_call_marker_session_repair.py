@@ -188,6 +188,9 @@ class TestPurgeStaleToolCallMarkers:
                 report = db.purge_stale_tool_call_markers(dry_run=False)
                 assert report["dry_run"] is False
                 assert report["rows_affected"] == 1
+                # Backup defaults to on for a destructive, irreversible write.
+                assert report["backup_path"] is not None
+                assert Path(report["backup_path"]).exists()
 
                 row = db._conn.execute(
                     "SELECT content, tool_calls FROM messages WHERE role = 'assistant' "
@@ -200,6 +203,43 @@ class TestPurgeStaleToolCallMarkers:
                 # Running again finds nothing left to clean — idempotent.
                 second = db.purge_stale_tool_call_markers(dry_run=False)
                 assert second["rows_affected"] == 0
+                assert second["backup_path"] is None  # nothing to change, nothing to back up
+            finally:
+                db.close()
+
+    def test_no_backup_when_flag_false(self):
+        import tempfile
+        from pathlib import Path
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            try:
+                self._seed_polluted_db(db)
+
+                report = db.purge_stale_tool_call_markers(dry_run=False, backup=False)
+                assert report["rows_affected"] == 1
+                assert report["backup_path"] is None
+                # No extra file created beside the DB.
+                siblings = list(Path(tmp).glob("t.db.*backup*"))
+                assert siblings == []
+            finally:
+                db.close()
+
+    def test_dry_run_never_backs_up(self):
+        import tempfile
+        from pathlib import Path
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            try:
+                self._seed_polluted_db(db)
+
+                report = db.purge_stale_tool_call_markers(dry_run=True)
+                assert report["backup_path"] is None
+                siblings = list(Path(tmp).glob("t.db.*backup*"))
+                assert siblings == []
             finally:
                 db.close()
 

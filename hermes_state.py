@@ -8443,7 +8443,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._remove_session_files(sessions_dir, sid)
         return count
 
-    def purge_stale_tool_call_markers(self, *, dry_run: bool = False) -> Dict[str, Any]:
+    def purge_stale_tool_call_markers(
+        self, *, dry_run: bool = False, backup: bool = True
+    ) -> Dict[str, Any]:
         """Permanently clear bare tool-call marker content (e.g. "[memory]")
         left in the ``messages`` table by sessions persisted before the
         #78148 fix in ``agent.conversation_loop``.
@@ -8460,10 +8462,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         and every other column on the row are left exactly as they are, so
         provider tool_call/tool_result pairing is unaffected.
 
-        With ``dry_run=True``, reports the affected row count/ids without
-        writing (read-only, no write lock taken).
+        Unlike the in-memory repair, this UPDATE is permanent and can't be
+        undone from within the DB. Since ``backup`` defaults to True, a
+        timestamped full snapshot is taken via ``VACUUM INTO`` (safe against
+        a live connection, unlike the raw-copy ``_backup_db_file`` used for
+        malformed-schema repair) before any row is touched — mirroring
+        ``repair_state_db_schema``'s backup-by-default convention for
+        destructive state.db operations. No snapshot is taken when there is
+        nothing to change.
 
-        Returns ``{"dry_run": bool, "rows_affected": int, "row_ids": [...]}``.
+        With ``dry_run=True``, reports the affected row count/ids without
+        writing or backing up (read-only, no write lock taken).
+
+        Returns ``{"dry_run": bool, "rows_affected": int, "row_ids": [...],
+        "backup_path": str|None}``.
         """
 
         def _find_affected(conn) -> List[int]:
@@ -8478,20 +8490,47 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     affected.append(row["id"])
             return affected
 
+        with self._read_ctx() as conn:
+            affected_ids = _find_affected(conn)
+
         if dry_run:
-            with self._read_ctx() as conn:
-                affected_ids = _find_affected(conn)
-            return {"dry_run": True, "rows_affected": len(affected_ids), "row_ids": affected_ids}
+            return {
+                "dry_run": True,
+                "rows_affected": len(affected_ids),
+                "row_ids": affected_ids,
+                "backup_path": None,
+            }
+
+        if not affected_ids:
+            return {
+                "dry_run": False,
+                "rows_affected": 0,
+                "row_ids": [],
+                "backup_path": None,
+            }
+
+        backup_path: Optional[str] = None
+        if backup:
+            import datetime
+
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            dest = self.db_path.with_name(
+                f"{self.db_path.name}.pre-clean-markers-backup-{stamp}"
+            )
+            with self._lock:
+                self._conn.execute("VACUUM INTO ?", (str(dest),))
+            backup_path = str(dest)
+            logger.info("Backed up state.db to %s before clean-markers write", backup_path)
 
         def _do(conn):
-            affected_ids = _find_affected(conn)
-            if affected_ids:
-                placeholders = ",".join("?" * len(affected_ids))
+            ids = _find_affected(conn)
+            if ids:
+                placeholders = ",".join("?" * len(ids))
                 conn.execute(
                     f"UPDATE messages SET content = '' WHERE id IN ({placeholders})",
-                    affected_ids,
+                    ids,
                 )
-            return affected_ids
+            return ids
 
         affected_ids = self._execute_write(_do)
         if affected_ids:
@@ -8499,7 +8538,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "Permanently cleared %d stale tool-call marker row(s) in state.db (#78148)",
                 len(affected_ids),
             )
-        return {"dry_run": False, "rows_affected": len(affected_ids), "row_ids": affected_ids}
+        return {
+            "dry_run": False,
+            "rows_affected": len(affected_ids),
+            "row_ids": affected_ids,
+            "backup_path": backup_path,
+        }
 
     # ── Meta key/value (for scheduler bookkeeping) ──
 

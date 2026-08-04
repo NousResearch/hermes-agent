@@ -12179,6 +12179,12 @@ def main():
         default=False,
         help="Report the affected row count without writing",
     )
+    sessions_clean_markers.add_argument(
+        "--no-backup",
+        action="store_true",
+        default=False,
+        help="Skip the timestamped state.db backup taken before writing (not recommended)",
+    )
 
     sessions_optimize_storage = sessions_subparsers.add_parser(
         "optimize-storage",

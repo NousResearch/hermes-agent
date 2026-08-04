@@ -1044,7 +1044,9 @@ def cmd_sessions(args, sessions_parser=None):
             print("Dry run — scanning for stale tool-call marker rows (#78148)…")
         else:
             print("Scanning for stale tool-call marker rows (#78148)…")
-        report = db.purge_stale_tool_call_markers(dry_run=args.dry_run)
+        report = db.purge_stale_tool_call_markers(
+            dry_run=args.dry_run, backup=not args.no_backup
+        )
         if report["rows_affected"] == 0:
             print("✓ No affected rows found — nothing to clean.")
         elif args.dry_run:
@@ -1053,6 +1055,8 @@ def cmd_sessions(args, sessions_parser=None):
                 f"ids {report['row_ids']}"
             )
         else:
+            if report["backup_path"]:
+                print(f"  backup: {report['backup_path']}")
             print(f"✓ Cleared {report['rows_affected']} row(s).")
 
     elif action == "optimize-storage":

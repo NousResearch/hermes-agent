@@ -119,15 +119,13 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
   let baseline: ReturnType<typeof $messages.get> | null = null
   let activeHandle: SyntheticDriverHandle | null = null
 
-  let rightPaneBaseline:
-    | null
-    | {
-        activeTerminalId: null | string
-        cwd: string
-        repoStatusByCwd: ReturnType<typeof $repoStatusByCwd.get>
-        takeover: boolean
-        terminals: readonly TerminalEntry[]
-      } = null
+  let rightPaneBaseline: null | {
+    activeTerminalId: null | string
+    cwd: string
+    repoStatusByCwd: ReturnType<typeof $repoStatusByCwd.get>
+    takeover: boolean
+    terminals: readonly TerminalEntry[]
+  } = null
 
   const stop = () => {
     activeHandle = null

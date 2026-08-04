@@ -145,6 +145,7 @@ describe('GlyphSpinner', () => {
     expect(vi.getTimerCount()).toBe(1)
 
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+
     try {
       act(() => document.dispatchEvent(new Event('visibilitychange')))
       expect(vi.getTimerCount()).toBe(0)

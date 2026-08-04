@@ -733,6 +733,7 @@ describe('preserveLocalPendingTurnMessages', () => {
     'does not duplicate the optimistic %s turn when the persisted turn carries its directive',
     kind => {
       const ref = `@${kind}:X`
+
       const previous = [
         msg('1-user', 'user', 'first'),
         msg('2-assistant', 'assistant', 'first answer'),
@@ -771,6 +772,7 @@ describe('preserveLocalPendingTurnMessages', () => {
 
   it('does not duplicate a turn with multiple CRLF directives and Unicode payloads', () => {
     const refs = ['@file:`資料/über notes.md`', '@url:`https://example.com/café?q=✓`']
+
     const previous = [
       msg('1-user', 'user', 'first'),
       msg('2-assistant', 'assistant', 'first answer'),
@@ -1153,9 +1155,9 @@ describe('appendLiveSessionProjection', () => {
     expect(assistants[0].parts.some(part => part.type === 'reasoning')).toBe(true)
     expect(assistants[0].parts.some(part => part.type === 'tool-call')).toBe(true)
     // Answer text stays the structured row's text, not the dump.
-    expect(assistants[0].parts.filter(part => part.type === 'text').map(part => ('text' in part ? part.text : ''))).toEqual([
-      'partial'
-    ])
+    expect(
+      assistants[0].parts.filter(part => part.type === 'text').map(part => ('text' in part ? part.text : ''))
+    ).toEqual(['partial'])
   })
 
   it('still projects inflight when only a completed historical tool reply has structure', () => {

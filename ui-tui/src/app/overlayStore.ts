@@ -120,11 +120,11 @@ export const $isBlocked = computed(
 export const hasFloatingPanel = (overlay: OverlayState): boolean =>
   Boolean(
     overlay.modelPicker ||
-      overlay.pager ||
-      overlay.petPicker ||
-      overlay.pluginsHub ||
-      overlay.sessions ||
-      overlay.skillsHub
+    overlay.pager ||
+    overlay.petPicker ||
+    overlay.pluginsHub ||
+    overlay.sessions ||
+    overlay.skillsHub
   )
 
 export const $isStatusRuleOccluded = computed([$overlayState, $uiState], (overlay, ui) =>

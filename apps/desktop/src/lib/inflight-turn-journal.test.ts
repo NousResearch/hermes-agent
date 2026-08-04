@@ -210,10 +210,7 @@ describe('recoverInFlightTurnJournal', () => {
   })
 
   it('keeps journal answer text when a longer flat dump is not a strict extension (#76444)', () => {
-    journalEntry([
-      user('u1', 'do the thing'),
-      assistantWithTool('assistant-stream-old', 'partial', { pending: true })
-    ])
+    journalEntry([user('u1', 'do the thing'), assistantWithTool('assistant-stream-old', 'partial', { pending: true })])
 
     const base = [
       user('db-u1', 'do the thing'),

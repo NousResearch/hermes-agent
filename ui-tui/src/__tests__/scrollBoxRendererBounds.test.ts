@@ -383,8 +383,7 @@ describe('ScrollBox renderer bounds', () => {
       expect(nestedTextWrapper?.yogaNode).toBeDefined()
 
       const nestedText = nestedTextWrapper!.childNodes.find(child => child.nodeName === 'ink-text') as
-        | DOMElement
-        | undefined
+        DOMElement | undefined
 
       const nestedTextChild = nestedText?.childNodes[0]
 

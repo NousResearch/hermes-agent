@@ -549,26 +549,29 @@ function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
 /** ⌘1…⌘9: activate the Nth *visible* tab of the target zone — the first of
  *  hovered / focused / workspace that is a real tab strip (≥2 shown panes).
  *  Pointing at the sidebar (or nothing) therefore still switches main's tabs
- *  instead of dead-ending. Returns false so the caller falls back to its
+ *  instead of dead-ending. Returns the activated pane id — the caller needs to
+ *  know when the slot landed on the workspace tab (a full page covering it
+ *  must also route back to the chat) — or null so it falls back to its
  *  default (profile switch) when no zone qualifies. */
-export function activateTreeTabSlot(slot: number): boolean {
+export function activateTreeTabSlot(slot: number): null | string {
   const group = tabTargetGroup(candidate => shownPanesInGroup(candidate).length >= 2)
   const panes = group ? shownPanesInGroup(group) : []
 
   if (!group || slot < 1 || slot > panes.length) {
-    return false
+    return null
   }
 
   activateTreePane(group.id, panes[slot - 1])
 
-  return true
+  return panes[slot - 1]
 }
 
 /** ⌃Tab / ⌃⇧Tab: cycle the target zone's *visible* tabs (wrapping) — the first
  *  of hovered / focused / workspace that is a chat strip with ≥2 shown tabs.
- *  Returns false so the caller falls back to the recent-session switcher when
- *  no zone qualifies. */
-export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
+ *  Returns the activated pane id (see `activateTreeTabSlot` — landing on the
+ *  workspace under a full page must route back to the chat), or null so the
+ *  caller falls back to the recent-session switcher when no zone qualifies. */
+export function cycleTreeTabInFocusedZone(direction: 1 | -1): null | string {
   const group = tabTargetGroup(candidate => {
     const shown = shownPanesInGroup(candidate)
 
@@ -576,7 +579,7 @@ export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
   })
 
   if (!group) {
-    return false
+    return null
   }
 
   const panes = shownPanesInGroup(group)
@@ -595,7 +598,7 @@ export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
     setTreeGroupHeaderHidden(group.id, false)
   }
 
-  return true
+  return nextId
 }
 
 /** Remove a pane from the tree WITHOUT a dismissal record — for surfaces

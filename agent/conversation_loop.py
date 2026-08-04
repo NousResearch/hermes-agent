@@ -4242,6 +4242,28 @@ def run_conversation(
                         f"      Check which providers support tools: https://openrouter.ai/models/{_model}"
                     )
 
+                # Actionable hint for a bare 404 on a provider whose catalogue
+                # uses ``vendor/model`` ids.  A model id that lost its prefix
+                # (e.g. ``nemotron-…`` instead of ``nvidia/nemotron-…``) gets
+                # a content-free "404 page not found" from the provider that
+                # never names the model, so it reads like an outage or an auth
+                # failure.  Name the real cause and the exact id to use (#78796).
+                if getattr(api_error, "status_code", None) == 404:
+                    try:
+                        from hermes_cli.model_normalize import suggest_prefixed_model_id
+
+                        _suggestion = suggest_prefixed_model_id(_provider, _model)
+                    except Exception:
+                        _suggestion = None
+                    if _suggestion:
+                        agent._buffer_vprint(
+                            f"   💡 Model '{_model}' is not a valid id for provider {_provider} — "
+                            f"it is missing its vendor prefix."
+                        )
+                        agent._buffer_vprint(
+                            f"      Did you mean '{_suggestion}'?  Re-pick it with `hermes model`."
+                        )
+
                 # Check for interrupt before deciding to retry
                 if agent._interrupt_requested:
                     # Preserve a pending redirect (mid-stream correction): the

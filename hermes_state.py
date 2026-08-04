@@ -3649,7 +3649,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return False
 
     def update_session_cwd(
-        self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
+        self,
+        session_id: str,
+        cwd: str,
+        git_branch: str = None,
+        git_repo_root: str = None,
+        replace_git_meta: bool = False,
     ) -> None:
         """Persist the session working directory when a frontend knows it.
 
@@ -3664,6 +3669,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         every surface reads the same membership instead of re-probing git in the
         GUI over a partial page. Each field is only written when non-empty so a
         probe failure never clobbers a previously-captured value.
+
+        ``replace_git_meta`` inverts that non-empty rule: a deliberate workspace
+        MOVE (re-homing a session into another project) must overwrite the old
+        repo identity even when the new cwd resolves to none — keeping the stale
+        root would leave the session grouped under the project it just left.
         """
         if not session_id or not cwd:
             return
@@ -3673,12 +3683,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         sets = ["cwd = ?"]
         params: List[Any] = [cwd]
-        if branch:
+        if branch or replace_git_meta:
             sets.append("git_branch = ?")
-            params.append(branch)
-        if repo_root:
+            params.append(branch or None)
+        if repo_root or replace_git_meta:
             sets.append("git_repo_root = ?")
-            params.append(repo_root)
+            params.append(repo_root or None)
         params.append(session_id)
 
         def _do(conn):
@@ -5478,6 +5488,80 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
+    def set_session_read(self, session_id: str, read: bool = True) -> bool:
+        """Mark a session read or unread (and its whole compression lineage).
+
+        Read state is a watermark, not a flag: ``last_read_at`` records when
+        the conversation was last read, and it counts as unread when activity
+        postdates that watermark (the derived ``unread`` key on
+        :meth:`list_sessions_rich` rows). New messages therefore flip a read
+        conversation back to unread without any write on the message path.
+        Three states:
+
+        * NULL — never tracked (every pre-feature row): treated as read, so
+          shipping the column doesn't badge a user's entire history at once.
+        * 0 — explicitly marked unread: any activity postdates it.
+        * timestamp — read up to that moment.
+
+        Like :meth:`set_session_archived` / :meth:`set_session_pinned`, the
+        whole compression chain is stamped as a unit, so reading the surfaced
+        tip clears the root (and vice-versa) no matter which id the caller
+        holds. Returns True when at least one row changed.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                WITH RECURSIVE
+                  ancestors(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT parent.id
+                    FROM ancestors a
+                    JOIN sessions child ON child.id = a.id
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE parent.end_reason = 'compression'
+                  ),
+                  descendants(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT child.id
+                    FROM descendants d
+                    JOIN sessions parent ON parent.id = d.id
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                  ),
+                  lineage(id) AS (
+                    SELECT id FROM ancestors
+                    UNION
+                    SELECT id FROM descendants
+                  )
+                UPDATE sessions
+                SET last_read_at = ?
+                WHERE id IN (SELECT id FROM lineage)
+                """,
+                (session_id, session_id, time.time() if read else 0.0),
+            )
+            rowcount = cursor.rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
+    @staticmethod
+    def session_unread(session_row: Dict[str, Any]) -> bool:
+        """Derive unread from a session row's watermark and activity.
+
+        Shared by ``list_sessions_rich`` and any future surface that holds a
+        row (or projected row) with ``last_read_at`` and ``last_active``.
+        NULL watermark = never tracked = read.
+        """
+        last_read = session_row.get("last_read_at")
+        if last_read is None:
+            return False
+        last_active = session_row.get("last_active") or session_row.get("started_at")
+        return float(last_active or 0) > float(last_read)
+
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
         with self._read_ctx() as conn:
@@ -5993,6 +6077,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 merged["_lineage_root_id"] = s["id"]
                 projected.append(merged)
             sessions = projected
+
+        # Derive read state per surfaced conversation. ``last_read_at`` is
+        # lineage-stamped by set_session_read, so a projected row's root
+        # watermark and its tip's are the same value — comparing it against
+        # the tip's last_active is correct either way.
+        for s in sessions:
+            s["unread"] = self.session_unread(s)
 
         return sessions
 

@@ -22,7 +22,14 @@ vi.mock('@/i18n', () => ({
     t: {
       common: { cancel: 'Cancel', close: 'Close', delete: 'Delete', save: 'Save' },
       sidebar: {
-        projects: { menuAppearance: 'Appearance', noColor: 'No color' },
+        projects: {
+          menuAppearance: 'Appearance',
+          moveFailed: 'Could not move session',
+          moveNoProjects: 'No other projects',
+          movedTo: (name: string) => `Moved to ${name}`,
+          moveToProject: 'Move to project',
+          noColor: 'No color'
+        },
         row: {
           archive: 'Archive',
           branchFrom: 'Branch from here',
@@ -50,6 +57,12 @@ vi.mock('@/lib/profile-color', () => ({ PROFILE_SWATCHES: [] }))
 vi.mock('@/lib/session-export', () => ({ exportSession: vi.fn() }))
 vi.mock('@/store/gateway', () => ({ activeGateway: vi.fn(() => null) }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
+vi.mock('@/store/projects', () => ({
+  $projectTree: atom<unknown[]>([]),
+  moveSessionToProject: vi.fn(),
+  projectIdForCwd: vi.fn(() => null),
+  projectRootCwd: vi.fn(() => '')
+}))
 vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
   $selectedStoredSessionId: atom<null | string>(null),

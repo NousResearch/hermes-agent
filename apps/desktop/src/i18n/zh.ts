@@ -1757,6 +1757,12 @@ export const zh: Translations = {
     search: '搜索配置档案…',
     loading: '正在加载配置档案…',
     newProfile: '新建配置档案',
+    importProfile: '导入配置档案…',
+    exportProfile: '导出配置档案…',
+    imported: '配置档案已导入',
+    exported: '配置档案已导出',
+    failedImport: '导入配置档案失败',
+    failedExport: '导出配置档案失败',
     allProfiles: '全部配置档案',
     showAllProfiles: '显示全部配置档案',
     switchToProfile: name => `切换到 ${name}`,
@@ -2070,6 +2076,11 @@ export const zh: Translations = {
       menuAddFolder: '添加文件夹',
       menuSetActive: '设为活动',
       menuDelete: '删除',
+      moveToProject: '移动到项目',
+      movedTo: name => `已移动到 ${name}`,
+      moveFailed: '无法移动会话',
+      moveNoFolder: '该项目没有可移入的文件夹',
+      moveNoProjects: '没有其他项目',
       reveal: '在文件夹中显示',
       copyPath: '复制路径',
       removeFromSidebar: '从侧边栏移除',
@@ -2875,7 +2886,8 @@ export const zh: Translations = {
     layoutNamePlaceholder: fallback => `布局名称（${fallback}）`,
     saveApply: '保存并应用',
     notExpressible: '此排列互相咬合（风车形）——暂无法表示为嵌套拆分',
-    zoneCount: count => `${count} 个区域`
+    zoneCount: count => `${count} 个区域`,
+    tabCount: count => `${count} 个标签页`
   },
 
   assistant: {

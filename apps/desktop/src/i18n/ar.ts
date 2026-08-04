@@ -1293,6 +1293,12 @@ export const ar = defineLocale({
     count: count => `${count} ملف شخصي`,
     loading: 'جار التحميل...',
     newProfile: 'ملف شخصي جديد',
+    importProfile: 'استيراد ملف شخصي…',
+    exportProfile: 'تصدير ملف شخصي…',
+    imported: 'تم استيراد الملف الشخصي',
+    exported: 'تم تصدير الملف الشخصي',
+    failedImport: 'فشل استيراد الملف الشخصي',
+    failedExport: 'فشل تصدير الملف الشخصي',
     allProfiles: 'كل الملفات الشخصية',
     showAllProfiles: 'إظهار كل الملفات الشخصية',
     switchToProfile: name => `التبديل إلى ${name}`,
@@ -2265,7 +2271,8 @@ export const ar = defineLocale({
     layoutNamePlaceholder: fallback => `اسم التخطيط (${fallback})`,
     saveApply: 'حفظ وتطبيق',
     notExpressible: 'هذا الترتيب متشابك — لا يمكن تمثيله كتقسيمات متداخلة بعد',
-    zoneCount: count => `${count} مناطق`
+    zoneCount: count => `${count} مناطق`,
+    tabCount: count => `${count} تبويبات`
   },
   assistant: {
     thread: {

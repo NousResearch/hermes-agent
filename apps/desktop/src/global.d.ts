@@ -129,6 +129,12 @@ declare global {
       }
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
+      /** Native save dialog; returns the chosen path or null on cancel. */
+      selectSavePath?: (options?: {
+        defaultPath?: string
+        filters?: Array<{ extensions: string[]; name: string }>
+        title?: string
+      }) => Promise<null | string>
       writeClipboard: (text: string) => Promise<boolean>
       readClipboard: () => Promise<string>
       saveImageFromUrl: (url: string) => Promise<boolean>

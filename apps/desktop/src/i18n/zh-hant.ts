@@ -1349,6 +1349,12 @@ export const zhHant = defineLocale({
     search: '搜尋設定檔…',
     loading: '正在載入設定檔…',
     newProfile: '新增設定檔',
+    importProfile: '匯入設定檔…',
+    exportProfile: '匯出設定檔…',
+    imported: '設定檔已匯入',
+    exported: '設定檔已匯出',
+    failedImport: '匯入設定檔失敗',
+    failedExport: '匯出設定檔失敗',
     allProfiles: '全部設定檔',
     showAllProfiles: '顯示全部設定檔',
     switchToProfile: name => `切換至 ${name}`,
@@ -2443,7 +2449,8 @@ export const zhHant = defineLocale({
     layoutNamePlaceholder: fallback => `版面名稱（${fallback}）`,
     saveApply: '儲存並套用',
     notExpressible: '此排列互相咬合（風車形）——暫時無法表示為巢狀分割',
-    zoneCount: count => `${count} 個區域`
+    zoneCount: count => `${count} 個區域`,
+    tabCount: count => `${count} 個分頁`
   },
 
   assistant: {

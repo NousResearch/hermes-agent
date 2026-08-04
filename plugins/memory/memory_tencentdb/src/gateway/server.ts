@@ -110,7 +110,7 @@ import type { PipelineLogger } from "../utils/pipeline-factory.js";
 import { parsePipelineTimerMember } from "../core/state/timer-member.js";
 
 const TAG = "[tdai-gateway]";
-const VERSION = "0.1.0";
+const VERSION = "2.0.0-beta.1";
 
 // ============================
 // Console logger (for standalone gateway — no OpenClaw logger available)

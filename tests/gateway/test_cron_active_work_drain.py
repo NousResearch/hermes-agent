@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.gateway.restart_test_helpers import make_restart_runner
+from tests.gateway.restart_test_helpers import attach_real_stop, make_restart_runner
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +84,7 @@ class TestKillToolSubprocessesMarksCronInterrupted:
         import tools.browser_tool as _bt
 
         runner, adapter = make_restart_runner()
+        attach_real_stop(runner)
         runner._restart_drain_timeout = 0.01  # force the timeout path
         adapter.disconnect = _make_async_noop()
 

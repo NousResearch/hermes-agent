@@ -67,10 +67,16 @@ Hermes turn, API, and tool hooks
 
 Hermes sends an empty `LLMRequest` into the metrics-owned lifecycle. This does
 not describe the separate managed-execution call through the native runtime
-documented above. The terminal metrics event contains only bounded model
-family, provider family, locality, call role, and outcome values. Prompts,
-responses, exact model IDs, endpoints, errors, session IDs, task IDs, and
-request IDs are not included in the metrics event or package.
+documented above. The terminal metrics event contains the model identifier and
+provider route that Hermes used for the logical call, such as
+`nvidia/nemotron-3-ultra` through `openrouter`. These identifiers are
+lowercased and structurally bounded, but they are not normalized through a
+checked-in model catalog. Pricing and model-family classification belong to
+the metrics backend. Prompts, responses, endpoints, errors, session IDs, task
+IDs, and request IDs are not included in the metrics event or package.
+New calls use `hermes.model_route.count`. The previous
+`hermes.model_call.count` contract remains readable only so pending local
+counters created by older builds can be exported without losing data.
 
 Each task run is a Relay `Function` scope named `hermes.task_run`, parented to
 the owning Hermes session. The start counter contains only bounded execution
@@ -96,6 +102,9 @@ files are immutable delta documents that conform to a closed JSON schema and
 are written with atomic replacement. Fully packaged aggregate rows and
 successfully exported package rows and files are retained locally for 30 days.
 Pending package rows and counters with unexported deltas are never pruned.
+Package schema v1 remains unchanged for existing outbox files. New packages
+use v2, which accepts both the retired model-call contract and the current
+model-route contract so upgrades can drain pending counters safely.
 
 Each package contains an `install_id` generated as a random UUID. Despite the
 schema field name, its current scope is one `HERMES_HOME`, so it is more
@@ -123,5 +132,5 @@ The script uses the installed `nemo-relay` dependency by default. Pass
 binding.
 
 The smoke verifies the model request reached the local server, model and task
-counters were stored, one package was exported, and prompt, response, and
-exact-model canaries are absent from the package.
+counters were stored with the expected model and provider, one package was
+exported, and prompt and response canaries are absent from the package.

@@ -2851,6 +2851,7 @@ def _relay_auxiliary_call(callback):
             "attempt_count": 0,
             "provider": "",
             "model": "",
+            "response_model": None,
             "api_mode": "chat_completions",
         })
         try:
@@ -2876,6 +2877,7 @@ def _relay_auxiliary_call_async(callback):
             "attempt_count": 0,
             "provider": "",
             "model": "",
+            "response_model": None,
             "api_mode": "chat_completions",
         })
         try:
@@ -2899,6 +2901,7 @@ def _set_relay_auxiliary_route(
         return
     context["provider"] = str(provider or "auxiliary")
     context["model"] = str(model or "unknown")
+    context["response_model"] = None
     context["api_mode"] = str(api_mode or "chat_completions")
 
 
@@ -8070,6 +8073,7 @@ def _validate_llm_response(
     except (AttributeError, TypeError, IndexError) as exc:
         recovered = _recover_aux_response_message(response)
         if recovered is not None:
+            _record_relay_auxiliary_response_model(response)
             _complete_relay_auxiliary_call()
             return recovered
         response_type = type(response).__name__
@@ -8080,6 +8084,7 @@ def _validate_llm_response(
             f"Expected object with .choices[0].message — check provider "
             f"adapter or custom endpoint compatibility."
         ) from exc
+    _record_relay_auxiliary_response_model(response)
     _complete_relay_auxiliary_call()
     return response
 
@@ -8094,7 +8099,23 @@ def _complete_relay_auxiliary_call(*, outcome: str = "success") -> None:
     relay_llm.complete_logical_call(
         str(context.get("request_id") or ""),
         outcome=outcome,
+        model_name=str(context.get("model") or "unknown"),
+        provider_name=str(context.get("provider") or "auxiliary"),
+        response_model_name=context.get("response_model"),
     )
+
+
+def _record_relay_auxiliary_response_model(response: Any) -> None:
+    """Retain the provider-reported model for terminal route attribution."""
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None:
+        return
+    if isinstance(response, dict):
+        model = response.get("model")
+    else:
+        model = getattr(response, "model", None)
+    if isinstance(model, str) and model.strip():
+        context["response_model"] = model
 
 
 def _fail_relay_auxiliary_call() -> None:

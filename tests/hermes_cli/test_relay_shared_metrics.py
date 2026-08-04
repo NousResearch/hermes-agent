@@ -18,17 +18,20 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from agent import relay_runtime
 from hermes_cli.observability import shared_metrics as shared_metrics_module
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_contract import (
     COUNT_BUCKETS,
     DURATION_BUCKETS,
     EXECUTION_SURFACES,
-    MODEL_FAMILIES,
-    MODEL_LOCALITIES,
-    MODEL_OUTCOMES,
-    PRIMARY_MODEL_CALL_ROLE,
-    PROVIDER_FAMILIES,
+    LEGACY_MODEL_CALL_METRIC,
+    MODEL_CALL_PROFILE_MODEL,
+    MODEL_IDENTIFIER_MAX_LENGTH,
+    MODEL_ROUTE_METRIC,
+    PROVIDER_IDENTIFIER_MAX_LENGTH,
+    SCHEMA_KEY,
+    SCHEMA_VERSION,
     TASK_END_REASONS,
     TASK_ENTRYPOINTS,
     TASK_OUTCOMES,
@@ -36,11 +39,8 @@ from hermes_cli.observability.shared_metrics_contract import (
     count_bucket,
     duration_bucket,
     execution_surface,
-    model_call_outcome,
     model_call_dimensions,
-    model_family,
-    model_locality,
-    provider_family,
+    model_call_fields,
     task_counter,
     task_start_fields,
     task_terminal_fields,
@@ -53,13 +53,14 @@ SCHEMA_PATH = (
     / "hermes_cli"
     / "observability"
     / "schemas"
-    / "hermes.shared_metrics.v1.schema.json"
+    / "hermes.shared_metrics.v2.schema.json"
 )
+LEGACY_SCHEMA_PATH = SCHEMA_PATH.with_name("hermes.shared_metrics.v1.schema.json")
 
 
-def _schema_validator():
+def _schema_validator(path: Path = SCHEMA_PATH):
     jsonschema = pytest.importorskip("jsonschema")
-    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    schema = json.loads(path.read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator.check_schema(schema)
     return jsonschema.Draft202012Validator(
         schema,
@@ -69,7 +70,7 @@ def _schema_validator():
 
 def _package_dimension_schema() -> dict[str, object]:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-    return schema["$defs"]["model_call_counter"]["properties"]["dimensions"]
+    return schema["$defs"]["model_route_counter"]["properties"]["dimensions"]
 
 
 def _task_dimension_schema(kind: str) -> dict[str, object]:
@@ -79,7 +80,14 @@ def _task_dimension_schema(kind: str) -> dict[str, object]:
 
 def _dimensions() -> dict[str, str]:
     return {
-        "call_role": PRIMARY_MODEL_CALL_ROLE,
+        "model": "anthropic/claude-sonnet-4.6",
+        "provider": "openrouter",
+    }
+
+
+def _legacy_dimensions() -> dict[str, str]:
+    return {
+        "call_role": "primary",
         "locality": "remote",
         "model_family": "claude",
         "outcome": "success",
@@ -114,11 +122,11 @@ def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_pat
     _schema_validator().validate(first_package)
     uuid.UUID(first_package["package_id"])
     uuid.UUID(first_package["install_id"])
-    assert first_package["schema_version"] == "hermes.shared_metrics.v1"
+    assert first_package["schema_version"] == "hermes.shared_metrics.v2"
     assert first_package["resource"] == {"hermes_version": "test-version"}
     assert first_package["metrics"] == [
         {
-            "name": "hermes.model_call.count",
+            "name": MODEL_ROUTE_METRIC,
             "type": "counter",
             "dimensions": _dimensions(),
             "value": 2,
@@ -143,6 +151,120 @@ def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_pat
     assert restarted.counter_snapshot()[0]["packaged_value"] == 3
 
 
+def test_v2_package_preserves_pending_v1_model_counters(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    period_start = shared_metrics_module._utc_now().date().isoformat()
+    legacy_dimensions_json = json.dumps(
+        _legacy_dimensions(),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO counter_aggregates(
+                period_start,
+                metric_name,
+                hermes_version,
+                dimensions_json,
+                value,
+                packaged_value
+            ) VALUES (?, ?, ?, ?, 3, 0)
+            """,
+            (
+                period_start,
+                LEGACY_MODEL_CALL_METRIC,
+                "test-version",
+                legacy_dimensions_json,
+            ),
+        )
+    store.record_model_call(_dimensions(), "test-version")
+
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    _schema_validator().validate(package)
+
+    assert package["schema_version"] == "hermes.shared_metrics.v2"
+    assert package["metrics"] == [
+        {
+            "name": LEGACY_MODEL_CALL_METRIC,
+            "type": "counter",
+            "dimensions": _legacy_dimensions(),
+            "value": 3,
+        },
+        {
+            "name": MODEL_ROUTE_METRIC,
+            "type": "counter",
+            "dimensions": _dimensions(),
+            "value": 1,
+        },
+    ]
+    assert all(
+        row["value"] == row["packaged_value"] for row in store.counter_snapshot()
+    )
+
+
+def test_v1_outbox_package_exports_unchanged_after_upgrade(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    package_id = str(uuid.uuid4())
+    payload = {
+        "schema_version": "hermes.shared_metrics.v1",
+        "package_id": package_id,
+        "install_id": str(uuid.uuid4()),
+        "period_start": "2026-07-28T00:00:00Z",
+        "period_end": "2026-07-29T00:00:00Z",
+        "generated_at": "2026-07-29T01:00:00Z",
+        "resource": {"hermes_version": "legacy-version"},
+        "metrics": [
+            {
+                "name": LEGACY_MODEL_CALL_METRIC,
+                "type": "counter",
+                "dimensions": _legacy_dimensions(),
+                "value": 2,
+            }
+        ],
+    }
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    _schema_validator(LEGACY_SCHEMA_PATH).validate(payload)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO package_outbox(
+                package_id,
+                period_start,
+                period_end,
+                payload_json,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                package_id,
+                payload["period_start"],
+                payload["period_end"],
+                payload_json,
+                payload["generated_at"],
+            ),
+        )
+
+    assert store.create_and_export_package() == [
+        outbox_directory / f"{package_id}.json"
+    ]
+    exported = json.loads(
+        (outbox_directory / f"{package_id}.json").read_text(encoding="utf-8")
+    )
+    assert exported == payload
+    with sqlite3.connect(database_path) as connection:
+        [persisted_payload_json] = connection.execute(
+            "SELECT payload_json FROM package_outbox WHERE package_id = ?",
+            (package_id,),
+        ).fetchone()
+    assert persisted_payload_json == payload_json
+
+
 def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
     tmp_path, monkeypatch
 ):
@@ -160,7 +282,7 @@ def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
     assert len(list((tmp_path / "outbox").glob("*.json"))) == 1
     assert store.counter_snapshot()[0] == {
         "period_start": "2026-07-28",
-        "metric_name": "hermes.model_call.count",
+        "metric_name": MODEL_ROUTE_METRIC,
         "hermes_version": "test-version",
         "dimensions": _dimensions(),
         "value": 2,
@@ -181,13 +303,139 @@ def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
 
 
 def test_package_schema_matches_the_model_call_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     properties = _package_dimension_schema()["properties"]
 
-    assert properties["call_role"] == {"const": PRIMARY_MODEL_CALL_ROLE}
-    assert set(properties["locality"]["enum"]) == MODEL_LOCALITIES
-    assert set(properties["model_family"]["enum"]) == MODEL_FAMILIES
-    assert set(properties["outcome"]["enum"]) == MODEL_OUTCOMES
-    assert set(properties["provider_family"]["enum"]) == PROVIDER_FAMILIES
+    assert schema["properties"]["schema_version"]["const"] == "hermes.shared_metrics.v2"
+    assert set(properties) == {"model", "provider"}
+    assert properties["model"]["maxLength"] == MODEL_IDENTIFIER_MAX_LENGTH
+    assert properties["provider"]["maxLength"] == PROVIDER_IDENTIFIER_MAX_LENGTH
+    assert "enum" not in properties["model"]
+    assert "enum" not in properties["provider"]
+
+
+def test_v1_package_schema_retains_the_legacy_model_contract():
+    schema = json.loads(LEGACY_SCHEMA_PATH.read_text(encoding="utf-8"))
+    model_counter = schema["$defs"]["model_call_counter"]
+
+    assert schema["properties"]["schema_version"]["const"] == "hermes.shared_metrics.v1"
+    assert model_counter["properties"]["name"]["const"] == LEGACY_MODEL_CALL_METRIC
+    assert set(model_counter["properties"]["dimensions"]["properties"]) == {
+        "call_role",
+        "locality",
+        "model_family",
+        "outcome",
+        "provider_family",
+    }
+
+
+def test_model_call_fields_report_terminal_model_and_provider_without_a_catalog():
+    assert model_call_fields({
+        "model": "fallback/model",
+        "response_model": "NVIDIA/Nemotron-3-Ultra",
+        "provider": "OpenRouter",
+        "base_url": "https://private-endpoint.example/v1",
+    }) == {
+        "model": "nvidia/nemotron-3-ultra",
+        "provider": "openrouter",
+    }
+    assert model_call_fields({
+        "model": "ZAI/GLM-5.2",
+        "provider": "Brev",
+    }) == {
+        "model": "zai/glm-5.2",
+        "provider": "brev",
+    }
+
+
+def test_auxiliary_logical_scope_projects_one_normalized_terminal_route():
+    event = SimpleNamespace(
+        kind="scope",
+        category="function",
+        name=relay_runtime.LOGICAL_LLM_SCOPE,
+        scope_category="end",
+        category_profile=None,
+        data={
+            "model": "Accepted/Model",
+            "outcome": "success",
+            "provider": "OpenRouter",
+        },
+        metadata={
+            relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
+            relay_runtime.RUNTIME_INSTANCE_KEY: "runtime-1",
+            "hermes.call_role": "auxiliary:compression",
+        },
+    )
+
+    assert model_call_dimensions(event) == {
+        "model": "accepted/model",
+        "provider": "openrouter",
+    }
+
+    event.data.update({
+        "model": "configured/model",
+        "response_model": "malformed response model",
+    })
+    assert model_call_dimensions(event) == {
+        "model": "configured/model",
+        "provider": "openrouter",
+    }
+
+    event.metadata["hermes.call_role"] = "primary"
+    assert model_call_dimensions(event) is None
+
+
+@pytest.mark.parametrize(
+    "response_model",
+    [
+        "contains a space",
+        "x" * (MODEL_IDENTIFIER_MAX_LENGTH + 1),
+    ],
+)
+def test_model_call_fields_fall_back_when_response_model_is_invalid(response_model):
+    assert model_call_fields({
+        "model": "nvidia/nemotron-3-ultra",
+        "response_model": response_model,
+        "provider": "openrouter",
+    }) == {
+        "model": "nvidia/nemotron-3-ultra",
+        "provider": "openrouter",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("model", ""),
+        ("model", "contains a space"),
+        ("model", "contains\ncontrol"),
+        ("model", "_" + "private"),
+        ("model", "x" * (MODEL_IDENTIFIER_MAX_LENGTH + 1)),
+        ("model", object()),
+        ("provider", ""),
+        ("provider", "private provider"),
+        ("provider", "x" * (PROVIDER_IDENTIFIER_MAX_LENGTH + 1)),
+        ("provider", object()),
+    ],
+)
+def test_model_call_fields_collapse_malformed_identifiers(field, value):
+    event = {"model": "nvidia/nemotron-3-ultra", "provider": "openrouter"}
+    event[field] = value
+
+    assert model_call_fields(event)[field] == "unknown"
+
+
+def test_store_does_not_record_the_retired_model_metric(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+
+    with pytest.raises(ValueError, match="Unsupported shared metric"):
+        store.record_counter(
+            LEGACY_MODEL_CALL_METRIC,
+            _legacy_dimensions(),
+            "test-version",
+        )
+
+    assert store.counter_snapshot() == []
 
 
 

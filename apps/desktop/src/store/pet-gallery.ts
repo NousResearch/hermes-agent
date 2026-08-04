@@ -147,7 +147,6 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
         $petGalleryError.set(null)
         localOk = true
       }
-
     } catch (e) {
       if (isMissingMethod(e)) {
         $petGalleryStatus.set('stale')
@@ -216,6 +215,7 @@ async function syncInfo(request: GatewayRequest): Promise<void> {
 
     if (hasPetSpriteForMeta(current, meta)) {
       const merged = mergePetInfoMeta(current, meta)
+
       if (merged !== current) {
         setPetInfo(merged)
       }

@@ -257,6 +257,96 @@ async def test_equal_text_control_still_suppresses_duplicate_send(
     assert len(full_sends) <= 1, f"duplicate final delivery: {full_sends!r}"
 
 
+class _PayloadLessSplitConsumer(GatewayStreamConsumer):
+    """Force the #78541 shape after a normal stream drain.
+
+    Claims final delivery via the multi-message split path but leaves no
+    recorded payload — the pre-fix gateway treated matcher ``None`` as
+    legacy trust and swallowed the complete ``final_response``.
+    """
+
+    async def run(self):
+        await super().run()
+        self._final_response_sent = True
+        self._final_content_delivered = True
+        self._turn_split_delivery = True
+        self._delivered_final_text = None
+        self._stream_ledger = ""
+
+
+@pytest.mark.asyncio
+async def test_payload_less_split_does_not_suppress_complete_response(
+    monkeypatch, tmp_path
+):
+    """#78541 — payload-less split-delivery flags must not swallow the reply."""
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump(
+            {
+                "display": {"tool_progress": "off", "interim_assistant_messages": False},
+                "streaming": {
+                    "enabled": True,
+                    "edit_interval": 0.01,
+                    "buffer_threshold": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = StalePrefixAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    stream_consumer_mod = importlib.import_module("gateway.stream_consumer")
+    # run.py imports GatewayStreamConsumer locally inside _run_agent — patch
+    # the defining module so the local import picks up the sabotage subclass.
+    monkeypatch.setattr(
+        stream_consumer_mod, "GatewayStreamConsumer", _PayloadLessSplitConsumer
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    adapter = FinalizeCaptureAdapter()
+    runner = _make_runner(adapter)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1004492624436",
+        chat_type="group",
+        thread_id="1",
+    )
+    result = await runner._run_agent(
+        message="describe this photo",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-78541-payload-less-split",
+        session_key="agent:main:telegram:group:-1004492624436:1",
+    )
+
+    assert result["final_response"] == FULL_RESPONSE
+    all_payloads = [c["content"] for c in adapter.sent] + [
+        e["content"] for e in adapter.edits
+    ]
+    assert any(FULL_RESPONSE in payload for payload in all_payloads), (
+        f"complete response never reached the platform; payloads: {all_payloads!r}"
+    )
+    # Must not silently claim delivery without putting the complete text on
+    # the wire (the production ghost: already_sent with no full payload).
+    if result.get("already_sent"):
+        assert any(
+            FULL_RESPONSE in payload for payload in all_payloads
+        ), "already_sent=True but complete response never reached the platform"
+
+
 # ---------------------------------------------------------------------------
 # Consumer unit coverage: delivered_final_matches tri-state
 # ---------------------------------------------------------------------------
@@ -284,11 +374,27 @@ class TestDeliveredFinalMatches:
         consumer._record_turn_final_payload(STREAMED_PREFIX)
         assert consumer.delivered_final_matches(FULL_RESPONSE) is False
 
-    def test_split_delivery_returns_none(self):
+    def test_payload_less_split_delivery_returns_false(self):
+        """#78541 — payload-less split must not inherit legacy trust."""
         consumer = _consumer()
         consumer._turn_split_delivery = True
+        consumer._delivered_final_text = None
+        assert consumer.delivered_final_matches(FULL_RESPONSE) is False
+
+    def test_split_delivery_with_matching_ledger_returns_true(self):
+        """Complete overflow split that recorded its ledger still suppresses."""
+        consumer = _consumer()
+        consumer._turn_split_delivery = True
+        consumer._stream_ledger = FULL_RESPONSE
+        consumer._record_turn_final_payload(STREAMED_PREFIX)  # tail only; ledger wins
+        assert consumer.delivered_final_matches(FULL_RESPONSE) is True
+
+    def test_split_delivery_with_stale_ledger_returns_false(self):
+        consumer = _consumer()
+        consumer._turn_split_delivery = True
+        consumer._stream_ledger = STREAMED_PREFIX
         consumer._record_turn_final_payload(STREAMED_PREFIX)
-        assert consumer.delivered_final_matches(FULL_RESPONSE) is None
+        assert consumer.delivered_final_matches(FULL_RESPONSE) is False
 
     def test_empty_final_text_returns_none(self):
         consumer = _consumer()
@@ -308,3 +414,4 @@ class TestDeliveredFinalMatches:
         consumer._reset_segment_state()
         assert consumer._delivered_final_text is None
         assert consumer._turn_split_delivery is False
+        assert consumer._stream_ledger == ""

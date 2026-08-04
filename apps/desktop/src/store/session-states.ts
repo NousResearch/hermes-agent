@@ -34,8 +34,11 @@ import { readJson, writeJson } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import {
   $activeSessionId,
+  $lastReadAtBySessionId,
   $selectedStoredSessionId,
+  $sessions,
   $unreadFinishedSessionIds,
+  sessionReadFamilyId,
   setActiveSessionStoredIdRotation
 } from './session'
 import { isSecondaryWindow } from './windows'
@@ -173,10 +176,25 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     markSettled(storedId)
 
     if (storedId !== $selectedStoredSessionId.get()) {
-      const cur = $unreadFinishedSessionIds.get()
+      const lastReadMap = $lastReadAtBySessionId.get()
+      const session = $sessions.get().find(s => s.id === storedId)
+      const familyIds = new Set<string>([storedId, session ? sessionReadFamilyId(session) : storedId])
 
-      if (!cur.includes(storedId)) {
-        $unreadFinishedSessionIds.set([...cur, storedId])
+      if (session?.parent_session_id) {
+        familyIds.add(session.parent_session_id)
+      }
+
+      const settledAt = Date.now()
+      const lastReadAt = Math.max(0, ...Array.from(familyIds, id => lastReadMap[id] ?? 0))
+
+      if (settledAt < lastReadAt) {
+        // Already viewed since this completion settled — don't re-light it.
+      } else {
+        const cur = $unreadFinishedSessionIds.get()
+
+        if (!cur.includes(storedId)) {
+          $unreadFinishedSessionIds.set([...cur, storedId])
+        }
       }
     }
   }

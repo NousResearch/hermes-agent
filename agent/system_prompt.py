@@ -661,16 +661,25 @@ def stored_identity_is_stale(agent: Any, stored_prompt: str) -> bool:
     assembly.
 
     Fails open to reuse: ``checkable=False`` (SOUL.md exists but is
-    temporarily unreadable, or HERMES_HOME itself is absent/unmounted) or a
-    resolver crash is no basis to call the stored identity stale —
-    rebuilding then would persist a DEFAULT_AGENT_IDENTITY downgrade over a
-    healthy custom identity.
+    temporarily unreadable, or HERMES_HOME itself is absent/unmounted), a
+    resolver crash, or ``stored_prompt`` never carrying the help-guidance
+    anchor anywhere at all, is no basis to call the stored identity stale.
+    That last case is a stored prompt that was never built through the
+    normal stable-tier layout (a legacy shape, or a hand-built value in a
+    test fixture) — the detector's contract is to report True only when it
+    can confidently say slot #1 changed, and it cannot locate slot #1 at
+    all here, so this is undetermined rather than a confirmed mismatch.
+    Rebuilding on either kind of fail-open would persist a
+    DEFAULT_AGENT_IDENTITY downgrade over a healthy custom identity.
     """
     try:
         identity = resolve_identity_block(agent)
         if not (identity["checkable"] and identity["text"]):
             return False
-        anchored = identity["text"].strip() + "\n\n" + HERMES_AGENT_HELP_GUIDANCE.strip()
+        help_anchor = HERMES_AGENT_HELP_GUIDANCE.strip()
+        if help_anchor not in stored_prompt:
+            return False
+        anchored = identity["text"].strip() + "\n\n" + help_anchor
         return not stored_prompt.startswith(anchored)
     except Exception:
         logger.debug("identity staleness check failed", exc_info=True)

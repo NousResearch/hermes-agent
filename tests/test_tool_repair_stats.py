@@ -9,6 +9,7 @@ from agent.tool_repair_stats import (
     ToolRepairStats,
     get_stats,
     record_repair,
+    set_current_model,
 )
 
 
@@ -181,6 +182,61 @@ class TestFailureResilience:
     def test_import_failure_noop(self):
         """record_repair should work with string patterns too."""
         record_repair("string_pattern", "test")  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Ambient model context (set_current_model / ContextVar fallback)
+# ---------------------------------------------------------------------------
+
+class TestCurrentModelContext:
+    """record_repair must attribute events to the model bound per turn."""
+
+    def test_uses_bound_model(self):
+        get_stats().reset()
+        set_current_model("deepseek-v4-pro")
+        record_repair(RepairPattern.BARE_STRING_WRAP, "terminal")
+        assert get_stats().by_model("deepseek-v4-pro").get("bare_string_wrap", 0) == 1
+        assert "unknown" not in get_stats().all_models()
+        get_stats().reset()
+
+    def test_falls_back_to_unknown_without_binding(self):
+        get_stats().reset()
+        set_current_model("")
+        record_repair(RepairPattern.BARE_OBJECT_WRAP, "terminal")
+        assert get_stats().by_model("unknown").get("bare_object_wrap", 0) == 1
+        get_stats().reset()
+
+    def test_explicit_model_wins_over_context(self):
+        get_stats().reset()
+        set_current_model("bound-model")
+        record_repair(RepairPattern.EMPTY_ARGS, "terminal", model_name="explicit-model")
+        assert get_stats().by_model("explicit-model").get("empty_args", 0) == 1
+        assert get_stats().by_model("bound-model") == {}
+        get_stats().reset()
+
+    def test_context_is_task_local(self):
+        """A per-turn binding must not leak across threads."""
+        import threading
+
+        get_stats().reset()
+        set_current_model("main-model")
+
+        def worker() -> None:
+            # Worker thread starts with its own default context.
+            set_current_model("worker-model")
+            record_repair(RepairPattern.CONTROL_CHAR_ESCAPE, "worker-tool")
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        record_repair(RepairPattern.CONTROL_CHAR_ESCAPE, "main-tool")
+
+        # Main thread's binding still applies after the worker ran...
+        assert get_stats().by_model("main-model").get("control_char_escape", 0) == 1
+        # ...and the worker's events were attributed to the worker's model.
+        assert get_stats().by_model("worker-model").get("control_char_escape", 0) == 1
+        get_stats().reset()
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,12 @@ try:
     from agent.tool_repair_stats import record_repair as _record_repair
     from agent.tool_repair_stats import RepairPattern as _RP
 except ImportError:
+    # Expected: stats module absent (minimal/stripped install) — observability is optional.
+    _record_repair = None  # type: ignore[assignment]
+    _RP = None  # type: ignore[assignment]
+except Exception:
+    # Unexpected: module present but broken — degrade to no-op, NEVER break repair.
+    logger.warning("tool_repair_stats import failed; repair stats disabled", exc_info=True)
     _record_repair = None  # type: ignore[assignment]
     _RP = None  # type: ignore[assignment]
 

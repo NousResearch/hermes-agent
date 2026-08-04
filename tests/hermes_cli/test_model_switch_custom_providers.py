@@ -897,3 +897,74 @@ def test_excluded_providers_hides_builtin_row(monkeypatch):
     )
 
 
+def test_custom_provider_context_length_models_dict_still_probes(monkeypatch):
+    """Dict-shaped ``models:`` from ``_save_custom_provider`` is metadata.
+
+    ``hermes model`` writes ``models: {default: {context_length: N}}`` for
+    local Ollama. That must not suppress live /v1/models discovery — otherwise
+    Desktop/Telegram only show the saved default and Refresh does nothing.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    calls = []
+
+    def fetch(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["qwen3.6:35b-mlx", "gemma4:31b", "llama3"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:local-ollama",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local Ollama",
+                "base_url": "http://localhost:11434/v1",
+                "model": "qwen3.6:35b-mlx",
+                "models": {"qwen3.6:35b-mlx": {"context_length": 32768}},
+            }
+        ],
+        # GUI picker path: probe current custom provider only.
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+        current_base_url="http://localhost:11434/v1",
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] == ""
+    assert calls[0][1] == "http://localhost:11434/v1"
+    row = next(p for p in providers if p["name"] == "Local Ollama")
+    assert row["models"] == ["qwen3.6:35b-mlx", "gemma4:31b", "llama3"]
+    assert row["total_models"] == 3
+
+
+def test_custom_provider_dict_models_pin_requires_discover_false(monkeypatch):
+    """Dict-shaped catalogs pin only when ``discover_models: false``."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    calls = []
+
+    def fetch(*args, **kwargs):
+        calls.append((args, kwargs))
+        return ["unexpected-live-model"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:local-ollama",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local Ollama",
+                "base_url": "http://localhost:11434/v1",
+                "model": "llama3",
+                "models": {"llama3": {}},
+                "discover_models": False,
+            }
+        ],
+    )
+
+    row = next(p for p in providers if p["name"] == "Local Ollama")
+    assert calls == []
+    assert row["models"] == ["llama3"]

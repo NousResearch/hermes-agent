@@ -12,6 +12,7 @@ unsubscribe) and ``_format_kanban_event_text``.
 """
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from hermes_cli import kanban_db as kb
 from tui_gateway.server import (
@@ -53,6 +54,17 @@ def _sub_rows(tid: str) -> list:
 
 
 class TestCollectKanbanNotifications:
+    def test_zero_sub_board_is_never_opened_writable(self):
+        conn = kb.connect()
+        conn.close()
+        kb.create_board("second-board")
+
+        with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
+            texts = _collect_kanban_notifications(_session())
+
+        assert texts == []
+        spy_connect.assert_not_called()
+
     def test_delivers_completed_event_and_unsubscribes(self):
         tid = _create_subscribed_task()
         _complete(tid, summary="shipped the fix")
@@ -66,45 +78,74 @@ class TestCollectKanbanNotifications:
         # Task is at a final status -> subscription removed.
         assert _sub_rows(tid) == []
 
-    def test_claim_advances_cursor_so_second_poll_is_empty(self):
+    def test_matching_tui_sub_delivers_and_advances_cursor(self):
         tid = _create_subscribed_task()
+        pre_cursor = _sub_rows(tid)[0]["last_event_id"]
         conn = kb.connect()
         try:
             kb.block_task(conn, tid, reason="waiting on review")
         finally:
             conn.close()
 
-        first = _collect_kanban_notifications(_session())
-        second = _collect_kanban_notifications(_session())
+        with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
+            first = _collect_kanban_notifications(_session())
+            second = _collect_kanban_notifications(_session())
 
         assert len(first) == 1
         assert "blocked" in first[0]
         assert "waiting on review" in first[0]
         assert second == []
+        assert spy_connect.called
         # Blocked is not a final status -> subscription stays alive so a
         # respawned task's next terminal event still reaches the user.
-        assert len(_sub_rows(tid)) == 1
+        rows = _sub_rows(tid)
+        assert len(rows) == 1
+        assert rows[0]["last_event_id"] > pre_cursor
 
-    def test_ignores_other_sessions_and_platforms(self):
-        tid_other_session = _create_subscribed_task(chat_id="some-other-session")
-        tid_gateway = _create_subscribed_task(platform="telegram", chat_id="chat-1")
+    def test_non_tui_subscription_does_not_open_board_writable(self):
+        tid = _create_subscribed_task(platform="telegram", chat_id="chat-1")
         # New subs start caught up at creation time (issue #29905); record the
         # pre-completion cursors so we can assert they were never claimed.
-        pre_cursors = {
-            tid: _sub_rows(tid)[0]["last_event_id"]
-            for tid in (tid_other_session, tid_gateway)
-        }
-        _complete(tid_other_session)
-        _complete(tid_gateway)
+        pre_cursor = _sub_rows(tid)[0]["last_event_id"]
+        _complete(tid)
 
-        texts = _collect_kanban_notifications(_session())
+        with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
+            texts = _collect_kanban_notifications(_session())
 
         assert texts == []
-        # Foreign subscriptions untouched: cursors unclaimed, rows still there.
-        for tid in (tid_other_session, tid_gateway):
-            rows = _sub_rows(tid)
-            assert len(rows) == 1
-            assert rows[0]["last_event_id"] == pre_cursors[tid]
+        spy_connect.assert_not_called()
+        rows = _sub_rows(tid)
+        assert len(rows) == 1
+        assert rows[0]["last_event_id"] == pre_cursor
+
+    def test_other_tui_session_does_not_open_board_writable(self):
+        tid = _create_subscribed_task(chat_id="some-other-session")
+        pre_cursor = _sub_rows(tid)[0]["last_event_id"]
+        _complete(tid)
+
+        with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
+            texts = _collect_kanban_notifications(_session())
+
+        assert texts == []
+        spy_connect.assert_not_called()
+        rows = _sub_rows(tid)
+        assert len(rows) == 1
+        assert rows[0]["last_event_id"] == pre_cursor
+
+    def test_probe_error_falls_back_to_writable_delivery(self, monkeypatch):
+        tid = _create_subscribed_task()
+        _complete(tid, summary="fallback delivery")
+
+        def fail_probe(*args, **kwargs):
+            raise OSError("probe unavailable")
+
+        monkeypatch.setattr(kb, "count_notify_subs", fail_probe)
+        with patch.object(kb, "connect", wraps=kb.connect) as spy_connect:
+            texts = _collect_kanban_notifications(_session())
+
+        assert len(texts) == 1
+        assert tid in texts[0]
+        spy_connect.assert_called_once()
 
     def test_no_session_key_is_a_noop(self):
         tid = _create_subscribed_task()

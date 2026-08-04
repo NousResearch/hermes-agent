@@ -13,7 +13,7 @@ import {
   useRef,
   useState
 } from 'react'
-import { useStickToBottom } from 'use-stick-to-bottom'
+import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -61,6 +61,20 @@ const MAX_MEASURED_MESSAGE_CHARS = RENDER_BUDGET * RENDER_WEIGHT_CHARS
 // interruptibly, so the only thing a smaller budget changes is how much work
 // blocks the click-to-paint path.
 const FIRST_PAINT_BUDGET = 20
+
+// Browsers may quantize a requested scrollTop to a nearby device-pixel
+// boundary. use-stick-to-bottom otherwise compares the lower actual value to
+// the integer target forever, re-requesting the same instant scroll every
+// frame. Treat a subpixel remainder as achieved; larger gaps still follow new
+// streamed content normally.
+const SCROLL_TARGET_EPSILON_PX = 0.5
+
+export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, { scrollElement }) => {
+  const currentScrollTop = scrollElement.scrollTop
+  const remaining = targetScrollTop - currentScrollTop
+
+  return remaining >= 0 && remaining <= SCROLL_TARGET_EPSILON_PX ? currentScrollTop : targetScrollTop
+}
 
 const contentWeightCache = new WeakMap<object, number>()
 const NON_RENDERED_CONTENT_FIELDS = new Set(['id', 'role', 'toolCallId', 'toolName', 'type'])
@@ -297,7 +311,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // settling. Its refs hang off our own DOM so the sticky human bubbles survive.
   const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll } = useStickToBottom({
     initial: 'instant',
-    resize: 'instant'
+    resize: 'instant',
+    targetScrollTop: resolveThreadScrollTarget
   })
 
   const [renderBudget, setRenderBudget] = useState(FIRST_PAINT_BUDGET)

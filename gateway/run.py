@@ -2278,9 +2278,11 @@ from gateway.shutdown_watchdog import (
     start_loop_liveness_watchdog,
 )
 from gateway.restart import (
+    DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    parse_restart_after_turn_timeout,
     parse_restart_drain_timeout,
 )
 
@@ -3775,13 +3777,22 @@ class TurnRunner:
             from agent.display import (
                 get_tool_preview_max_len,
                 get_tool_verb,
+                prepare_tool_preview,
                 tool_verb_connector,
                 verb_drops_preview,
             )
             _pl = get_tool_preview_max_len()
             _cap = _pl if _pl > 0 else 40
-            if len(preview) > _cap:
-                preview = preview[:_cap - 3] + "..."
+            _prepared_preview = prepare_tool_preview(
+                tool_name,
+                args,
+                fallback=preview,
+                max_len=_cap,
+            )
+            if _progress_adapter is not None:
+                preview = _progress_adapter.format_tool_preview(_prepared_preview)
+            else:
+                preview = _prepared_preview.text
             # Friendly labels: render a human-phrased line for built-in
             # tools ("🔍 Searching the web for ...") by prefixing the verb
             # onto the preview the callback already computed (so the
@@ -4436,6 +4447,17 @@ class TurnRunner:
 
         turn_route = self._runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
 
+        # Per-platform skip_context_files — messaging platforms can opt out
+        # of filesystem-heavy context-file discovery (SOUL.md, AGENTS.md,
+        # .cursorrules) to cut AIAgent construction latency. Especially
+        # impactful on Windows, where stat() + directory walks are 10-100x
+        # slower than Linux. Off by default; soul identity is preserved so
+        # the persona survives even with minimal context.
+        _platforms_gw_cfg = (ctx.user_config.get("gateway") or {}).get("platforms") or {}
+        _plat_gw_cfg = _platforms_gw_cfg.get(platform_key) or {}
+        _skip_context = _plat_gw_cfg.get("skip_context_files")
+        skip_context_files = bool(_skip_context) if _skip_context is not None else False
+
         # Check agent cache — reuse the AIAgent from the previous message
         # in this session to preserve the frozen system prompt and tool
         # schemas for prompt cache hits.
@@ -4447,6 +4469,7 @@ class TurnRunner:
             cache_keys=self._runner._extract_cache_busting_config(ctx.user_config),
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
+            skip_context_files=skip_context_files,
         )
         agent = None
         reused_cached_agent = False
@@ -4682,6 +4705,10 @@ class TurnRunner:
                 session_db=getattr(self._runner._session_db, "_db", self._runner._session_db),
                 # Reload from disk — do not reuse the startup snapshot (#60955).
                 fallback_model=self._runner._refresh_fallback_model(),
+                skip_context_files=skip_context_files,
+                # Keep the persona even with minimal context: soul identity is
+                # a single small file, not part of the expensive walk.
+                load_soul_identity=True,
             )
             if _cache_lock and _cache is not None:
                 with _cache_lock:
@@ -4954,7 +4981,7 @@ class TurnRunner:
         agent_history, observed_group_context = _build_gateway_agent_history(
             ctx.history,
             channel_prompt=ctx.channel_prompt,
-            inject_timestamps=_message_timestamps_enabled(_load_gateway_config()),
+            inject_timestamps=_message_timestamps_enabled(ctx.user_config),
         )
 
         # FTS write-corruption guard (#50502): when message persistence
@@ -5623,6 +5650,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _busy_input_mode: str = "interrupt"
     _busy_text_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    _restart_after_turn_timeout: float = DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
     _external_drain_active: bool = False
@@ -5759,6 +5787,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
+        self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
 
@@ -8183,6 +8212,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return value
 
     @staticmethod
+    def _load_restart_after_turn_timeout() -> float:
+        """Load in-band restart wait-for-idle timeout in seconds (#77184)."""
+        env_raw = os.getenv("HERMES_RESTART_AFTER_TURN_TIMEOUT")
+        if env_raw is not None and str(env_raw).strip() != "":
+            raw: object = env_raw
+        else:
+            cfg = _load_gateway_runtime_config()
+            raw = cfg_get(cfg, "agent", "restart_after_turn_timeout", default=None)
+        value = parse_restart_after_turn_timeout(raw)
+        # Warn only when the user supplied a non-empty value that failed to
+        # parse (parser falls back to the default). ``0`` is valid.
+        if raw is not None and str(raw).strip() != "":
+            try:
+                float(raw)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid restart_after_turn_timeout '%s', using default %.0fs",
+                    raw,
+                    DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
+                )
+        return value
+
+    @staticmethod
     def _load_background_notifications_mode() -> str:
         """Load background process notification mode from config or env var.
 
@@ -9903,6 +9955,78 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.debug("Failed to launch systemd planned-restart helper: %s", e)
 
+    async def _await_active_work_before_restart(self) -> bool:
+        """Wait for in-flight work to finish before entering ``stop()``.
+
+        In-band restart used to call ``stop()`` immediately, which folded the
+        requesting turn into the drain wait set and force-interrupted it at
+        ``restart_drain_timeout`` (#77184). Instead we refuse new turns and
+        wait here for active agents/cron/api work to reach zero, then let
+        ``stop()`` run against an idle gateway (drain is instant).
+
+        Returns True when work drained to zero, False when the safety cap
+        elapsed with work still active (caller proceeds to ``stop()``, which
+        may then interrupt remaining runs under ``restart_drain_timeout``).
+        """
+        active = self._active_work_count()
+        if active <= 0:
+            return True
+
+        timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
+        if timeout <= 0:
+            logger.info(
+                "Restart requested with %d active work unit(s); "
+                "restart_after_turn_timeout=0 — entering stop()/drain immediately",
+                active,
+            )
+            return False
+
+        logger.info(
+            "Restart requested with %d active work unit(s); "
+            "deferring stop() until they finish (cap=%.0fs) so in-flight "
+            "turns are not amputated (#77184)",
+            active,
+            timeout,
+        )
+        try:
+            self._update_runtime_status("draining")
+        except Exception:
+            pass
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        last_status_at = 0.0
+        while self._active_work_count() > 0:
+            now = loop.time()
+            if now >= deadline:
+                logger.warning(
+                    "Restart after-turn wait timed out after %.0fs with %d "
+                    "still active; proceeding to stop()/drain which may "
+                    "interrupt remaining work (#77184)",
+                    timeout,
+                    self._active_work_count(),
+                )
+                return False
+            if (now - last_status_at) >= 30.0:
+                logger.info(
+                    "Restart deferred: waiting on %d active work unit(s) "
+                    "(%.0fs remaining before force drain)",
+                    self._active_work_count(),
+                    deadline - now,
+                )
+                try:
+                    self._update_runtime_status("draining")
+                except Exception:
+                    pass
+                last_status_at = now
+            await asyncio.sleep(0.1)
+
+        logger.info(
+            "Restart deferred wait complete — active work drained; "
+            "proceeding to stop()"
+        )
+        return True
+
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
         if self._restart_task_started:
             return False
@@ -9910,8 +10034,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_detached = detached
         self._restart_via_service = via_service
         self._restart_task_started = True
+        # Refuse new turns immediately while in-flight work finishes.
+        # Keep ``_running`` True so adapters stay connected and the active
+        # turn can still deliver its final response (#77184).
+        self._draining = True
 
         async def _run_restart() -> None:
+            await self._await_active_work_before_restart()
+            # Launch the detached helper only AFTER the after-turn wait.
+            # Its deadline is drain_timeout+5 and covers stop() teardown —
+            # launching earlier would fire `hermes gateway restart` while
+            # the requesting turn was still running.
             if detached:
                 try:
                     await self._launch_detached_restart_command()
@@ -10114,7 +10247,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 sweep_recoverable,
             )
 
-            if not ledger_enabled():
+            if not await asyncio.to_thread(ledger_enabled):
                 return 0
             # Only claim rows we can actually send this boot: self.adapters
             # holds a platform only after its connect() succeeded, and each
@@ -10166,7 +10299,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = None
             try:
                 if result is not None and getattr(result, "success", False):
-                    mark_delivered(row["obligation_id"])
+                    await asyncio.to_thread(mark_delivered, row["obligation_id"])
                     redelivered += 1
                     logger.info(
                         "Redelivered recovered final response to %s:%s "
@@ -10175,7 +10308,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         row["obligation_id"], row["attempts"],
                     )
                 else:
-                    mark_failed(
+                    await asyncio.to_thread(
+                        mark_failed,
                         row["obligation_id"],
                         str(getattr(result, "error", "") or "send failed"),
                     )
@@ -17247,6 +17381,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # below; a /new or another lifecycle transition may move
             # session_entry.session_id while the old run is still unwinding.
             _run_start_session_id = session_entry.session_id
+            _turn_started_monotonic = time.monotonic()
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
@@ -17262,6 +17397,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 message_type=event.message_type,
             )
+            _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # Stop persistent typing indicator now that the agent is done.
             # Slack AI status is scoped to a thread/workspace, so preserve the
@@ -17477,6 +17613,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    turn_seconds=_turn_seconds,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -22220,6 +22357,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cache_keys: dict | None = None,
         user_id: str | None = None,
         user_id_alt: str | None = None,
+        skip_context_files: bool = False,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -22274,6 +22412,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _cache_keys_sorted,
                 str(user_id or ""),
                 str(user_id_alt or ""),
+                # skip_context_files changes the agent's frozen system prompt
+                # (context files in vs out) — a toggled config edit must
+                # rebuild the cached agent, not silently reuse it.
+                bool(skip_context_files),
             ],
             sort_keys=True,
             default=str,
@@ -24214,6 +24356,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source.platform, source.thread_id, event_message_id,
             reply_in_thread=_progress_reply_in_thread,
         )
+        # Relay Discord auto-thread lane: a channel-initiating message has no
+        # thread_id at ingest (the thread is born on the connector's FIRST
+        # send). The connector stamps prospective_thread_id (the anchor message
+        # id, == the id of the thread it will create) and auto-threads any
+        # outbound carrying that anchor as reply_to. Without it, the progress /
+        # tool-status bubble is sent flat (no thread, no anchor) and lands in
+        # the PARENT channel while the final reply threads — the search-status
+        # updates leaked outside the thread (staging repro 2026-08-02). Carry
+        # the anchor on the progress send so it routes into the SAME auto-thread.
+        _relay_prospective_thread_id = (
+            str(getattr(source, "prospective_thread_id", None))
+            if source.platform == Platform.DISCORD
+            and getattr(source, "delivered_via_upstream_relay", False)
+            and getattr(source, "prospective_thread_id", None)
+            and not source.thread_id
+            else None
+        )
         _progress_metadata = (
             self._thread_metadata_for_source(source, event_message_id)
             if _progress_thread_id == source.thread_id
@@ -24225,10 +24384,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_message_id=event_message_id,
             )
         ) if _progress_thread_id else None
+        if _progress_metadata is None and _relay_prospective_thread_id:
+            # No real thread yet, but the connector will auto-thread on the
+            # reply anchor; carry it so progress joins that thread.
+            _progress_metadata = {"reply_to_message_id": event_message_id}
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
         _progress_reply_to = (
             event_message_id
-            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
+            if (
+                source.platform in (Platform.FEISHU, Platform.MATTERMOST)
+                and source.thread_id
+                and event_message_id
+            )
+            or _relay_prospective_thread_id
             else None
         )
 
@@ -24349,6 +24517,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     reply_to_message_id=event_message_id,
                 )
             ) if _progress_thread_id else None
+            if _status_thread_metadata is None and _relay_prospective_thread_id:
+                # Relay Discord auto-thread lane (see _progress_metadata above):
+                # carry the reply anchor so status/interim bubbles route into
+                # the same connector-created thread as the final reply.
+                _status_thread_metadata = {
+                    "reply_to_message_id": event_message_id
+                }
 
         # Bridge extracted to TurnRunner._status_callback_sync; publish the
         # status wiring computed above onto the shared TurnContext at the

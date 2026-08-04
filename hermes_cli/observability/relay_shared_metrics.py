@@ -1082,6 +1082,8 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
     """Project one Hermes lifecycle event into the core Relay integration."""
     if not handles_hook(hook_name):
         return
+    if not relay_runtime.relay_instrumentation_enabled():
+        return
     runtime = _get_runtime()
     if runtime is None:
         return

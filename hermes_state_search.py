@@ -14,7 +14,7 @@ import os
 import re
 import sqlite3
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
@@ -34,6 +34,36 @@ logger = logging.getLogger("hermes_state")
 
 class SessionSearchMixin:
     """See module docstring — mixin for SessionDB (Search cluster)."""
+
+    _SEARCH_MESSAGE_RESULT_FIELDS = (
+        "id",
+        "session_id",
+        "role",
+        "snippet",
+        "timestamp",
+        "tool_name",
+        "source",
+        "model",
+        "session_started",
+        "context",
+    )
+
+    @classmethod
+    def _search_message_fields(
+        cls, fields: Optional[Collection[str]]
+    ) -> Optional[Tuple[str, ...]]:
+        """Validate and canonically order an optional result projection."""
+        if fields is None:
+            return None
+        if isinstance(fields, str):
+            raise TypeError("search fields must be a collection of field names, not a string")
+        requested = set(fields)
+        unknown = requested.difference(cls._SEARCH_MESSAGE_RESULT_FIELDS)
+        if unknown:
+            raise ValueError(f"unknown search result field(s): {', '.join(sorted(unknown))}")
+        return tuple(
+            field for field in cls._SEARCH_MESSAGE_RESULT_FIELDS if field in requested
+        )
 
     def _try_incremental_merge_fts(self) -> None:
         """Run one bounded FTS5 merge pass without failing the completed write."""
@@ -85,7 +115,16 @@ class SessionSearchMixin:
         trigger activation): re-index any row near the boundary that the
         index is missing. docsize has one row per indexed doc, so the
         anti-join is exact and runs on a narrow id range.
+
+        The trigram half of the sweep is gated on ``self._trigram_available``
+        for the same reason ``fts_rebuild_step()`` gates its backfill INSERT:
+        when the SQLite build has no trigram tokenizer (or the table was
+        never created), an unconditional INSERT raises ``no such table``
+        and aborts the whole rebuild — taking ``optimize_fts_storage()``
+        down with it.
         """
+        include_trigram = self._trigram_available
+
         def _do(conn):
             hw_row = conn.execute(
                 "SELECT value FROM state_meta WHERE key = 'fts_rebuild_high_water'"
@@ -102,14 +141,15 @@ class SessionSearchMixin:
                     "AND NOT EXISTS (SELECT 1 FROM messages_fts_docsize d WHERE d.id = m.id)",
                     (lo, hi),
                 )
-                conn.execute(
-                    "INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls) "
-                    "SELECT m.id, m.content, m.tool_name, m.tool_calls "
-                    "FROM messages m "
-                    "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
-                    "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
-                    (lo, hi),
-                )
+                if include_trigram:
+                    conn.execute(
+                        "INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls) "
+                        "SELECT m.id, m.content, m.tool_name, m.tool_calls "
+                        "FROM messages m "
+                        "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
+                        "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
+                        (lo, hi),
+                    )
             conn.execute(
                 "DELETE FROM state_meta WHERE key IN "
                 "('fts_rebuild_high_water', 'fts_rebuild_progress')"
@@ -1274,6 +1314,7 @@ class SessionSearchMixin:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        fields: Optional[Collection[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Instrumented wrapper around :meth:`_search_messages_impl`.
 
@@ -1295,6 +1336,7 @@ class SessionSearchMixin:
                 offset=offset,
                 sort=sort,
                 include_inactive=include_inactive,
+                fields=fields,
             )
             return rows
         finally:
@@ -1344,6 +1386,7 @@ class SessionSearchMixin:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        fields: Optional[Collection[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -1356,6 +1399,9 @@ class SessionSearchMixin:
 
         Returns matching messages with session metadata, content snippet,
         and surrounding context (1 message before and after the match).
+        ``fields`` selects a result projection; omitting it preserves the
+        complete legacy result. Context is only loaded when that projection
+        consumes it.
 
         ``sort`` controls temporal ordering:
           - ``None`` (default): FTS5 BM25 relevance only. Time-neutral.
@@ -1373,6 +1419,8 @@ class SessionSearchMixin:
         pre-compaction transcript stays discoverable after in-place compaction
         (#38763). Pass ``include_inactive=True`` to search every row regardless.
         """
+        result_fields = self._search_message_fields(fields)
+
         if not self._fts_enabled:
             return []
 
@@ -1458,6 +1506,7 @@ class SessionSearchMixin:
         # (indexed substring matching with ranking and snippets).  For shorter
         # CJK queries (1-2 chars), trigram can't match (it needs ≥9 UTF-8
         # bytes = 3 CJK chars), so we fall back to LIKE.
+        matches: List[Dict[str, Any]] = []
         is_cjk = self._contains_cjk(query)
         if is_cjk:
             raw_query = query.strip('"').strip()
@@ -1821,10 +1870,14 @@ class SessionSearchMixin:
                 if tri_matches:
                     matches = tri_matches
 
-        # Add surrounding context (1 message before + after each match).
-        # Each query takes its own fresh read transaction via _read_ctx, so
-        # we never hold a lock across N sequential queries.
-        for match in matches:
+        # Add surrounding context (1 message before + after each match) only
+        # when the selected result projection consumes it. Each query takes
+        # its own fresh read transaction via _read_ctx, so we never hold a
+        # lock across N sequential queries.
+        context_matches = (
+            matches if result_fields is None or "context" in result_fields else ()
+        )
+        for match in context_matches:
             try:
                 with self._read_ctx() as conn:
                     ctx_cursor = conn.execute(
@@ -1887,6 +1940,12 @@ class SessionSearchMixin:
         # Remove full content from result (snippet is enough, saves tokens)
         for match in matches:
             match.pop("content", None)
+
+        if result_fields is not None:
+            matches = [
+                {field: match[field] for field in result_fields if field in match}
+                for match in matches
+            ]
 
         return matches
 

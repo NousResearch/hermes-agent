@@ -363,6 +363,80 @@ class CLICommandsMixin:
             print(f"  Unknown subcommand: {subcmd}")
             print("  Usage: /snapshot [list|create [label]|restore <id>|prune [N]]")
 
+    def _handle_export_command(self, command: str):
+        """Handle /export — export a profile to a shareable .tar.gz archive.
+
+        Syntax:
+            /export                       — export the active profile
+            /export <profile>             — export a named profile
+            /export [profile] -o <path>   — choose the output path
+        """
+        from hermes_cli.profiles import export_profile, get_active_profile_name
+
+        parts = command.split()[1:]
+        output = None
+        if "-o" in parts:
+            idx = parts.index("-o")
+            if idx + 1 >= len(parts):
+                print("  Usage: /export [profile] [-o output.tar.gz]")
+                return
+            output = parts[idx + 1]
+            parts = parts[:idx] + parts[idx + 2:]
+
+        name = parts[0] if parts else (get_active_profile_name() or "default")
+        if not output:
+            output = f"{name}.tar.gz"
+
+        try:
+            result = export_profile(name, output)
+            print(f"  ✓ Exported '{name}' to {result}")
+            print("  Share it: the other user runs /import or `hermes profile import <archive>`.")
+        except (ValueError, FileNotFoundError) as e:
+            print(f"  Error: {e}")
+
+    def _handle_import_command(self, command: str):
+        """Handle /import — import a shared profile archive as a new profile.
+
+        Syntax:
+            /import <archive.tar.gz> [--name <name>]
+        """
+        from hermes_cli.profiles import (
+            check_alias_collision, create_wrapper_script, import_profile,
+        )
+
+        parts = command.split()[1:]
+        name = None
+        if "--name" in parts:
+            idx = parts.index("--name")
+            if idx + 1 >= len(parts):
+                print("  Usage: /import <archive.tar.gz> [--name <name>]")
+                return
+            name = parts[idx + 1]
+            parts = parts[:idx] + parts[idx + 2:]
+
+        if not parts:
+            print("  Usage: /import <archive.tar.gz> [--name <name>]")
+            return
+
+        archive = " ".join(parts)  # paths may contain spaces
+
+        try:
+            profile_dir = import_profile(archive, name=name)
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            print(f"  Error: {e}")
+            return
+
+        imported = profile_dir.name
+        print(f"  ✓ Imported profile '{imported}' at {profile_dir}")
+        try:
+            if not check_alias_collision(imported):
+                wrapper_path = create_wrapper_script(imported)
+                if wrapper_path:
+                    print(f"  Wrapper created: {wrapper_path}")
+        except Exception:
+            pass
+        print(f"  Use it: hermes -p {imported}")
+
     def _handle_stop_command(self):
         """Handle /stop — kill all running background processes and
         background (async) delegations.

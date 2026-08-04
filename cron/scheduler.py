@@ -357,6 +357,27 @@ def get_running_job_ids() -> "frozenset[str]":
         return frozenset(_running_job_ids)
 
 
+def _interrupted_job_output_doc(job_id: str, reason: str) -> str:
+    """Build the minimal cron output artifact for a shutdown-interrupted job."""
+    return f"""# Cron Job Interrupted
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Status:** interrupted
+
+## Reason
+
+{reason}
+
+## Audit note
+
+The gateway shutdown path wrote this artifact after force-killing tool
+subprocesses for an in-flight cron job. The job's normal final response may be
+missing or truncated, so this file is the durable audit marker for the
+interrupted run.
+"""
+
+
 def mark_running_jobs_interrupted(reason: str) -> list:
     """Best-effort: mark every currently in-flight cron job interrupted.
 
@@ -379,6 +400,10 @@ def mark_running_jobs_interrupted(reason: str) -> list:
     every entry in ``_running_agents`` on a drain timeout without
     per-agent correlation either.
 
+    Also writes a minimal cron output artifact before updating ``last_status``.
+    That preserves an auditable output file even when shutdown interrupts the
+    worker before ``run_one_job`` reaches its normal ``save_job_output`` step.
+
     Returns the list of job IDs marked, for the caller to log.
     """
     with _running_lock:
@@ -386,6 +411,10 @@ def mark_running_jobs_interrupted(reason: str) -> list:
         _interrupted_job_ids.update(job_ids)
     marked = []
     for job_id in job_ids:
+        try:
+            save_job_output(job_id, _interrupted_job_output_doc(job_id, reason))
+        except Exception as e:
+            logger.warning("Failed to save interrupted output for job %s: %s", job_id, e)
         try:
             mark_job_run(job_id, False, reason)
             marked.append(job_id)

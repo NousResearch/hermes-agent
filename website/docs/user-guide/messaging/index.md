@@ -191,6 +191,7 @@ platform network disconnect as an event-loop failure.
 | Command | Description |
 |---------|-------------|
 | `/new` or `/reset` | Start a fresh conversation |
+| `/refresh` | Reload the system prompt from current sources (pinned files, memory, `SOUL.md`, config) without starting a new session — conversation history is kept |
 | `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
 | `/personality [name]` | Set a personality (`none` to reset) |
 | `/retry` | Retry the last message |

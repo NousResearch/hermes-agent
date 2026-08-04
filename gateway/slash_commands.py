@@ -2559,6 +2559,83 @@ class GatewaySlashCommandsMixin:
         available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
         return t("gateway.personality.unknown", name=args, available=available)
 
+    async def _handle_refresh_command(self, event: MessageEvent) -> str:
+        """Handle /refresh — rebuild the system prompt without losing the conversation.
+
+        The gateway caches a session's system prompt so the upstream prefix
+        cache stays warm, which is correct and worth keeping. The cost is that
+        editing a prompt source — a pinned file, SOUL.md, MEMORY.md, USER.md, a
+        memory-provider block, config — does not reach a session that is already
+        running. Until now the only way to pick those edits up was ``/new``,
+        which throws the conversation away; ``/restart`` and ``/compress`` both
+        reuse the cached prompt (#74622).
+
+        There are TWO caches, and clearing only the first is a no-op. Dropping
+        ``AIAgent._cached_system_prompt`` makes the next turn take a cache miss,
+        but that miss routes through ``restore_or_build_system_prompt``, which
+        restores the session row's persisted ``system_prompt`` snapshot verbatim
+        (``agent/conversation_loop.py``). So the stored snapshot is nulled too —
+        the same mechanism a ``/model`` switch already uses to force a rebuild.
+
+        With both cleared the next turn rebuilds from current sources with the
+        history intact. It deliberately does NOT summarize, reset the session ID,
+        or touch the transcript.
+
+        The rebuilt prompt necessarily differs from the cached one, so the next
+        turn is a prefix-cache miss — that is the point of the command, not a
+        side effect, and it is a one-turn cost.
+        """
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        # Normalize first (Telegram DM topic recovery) so the key matches the
+        # one the next message turn reads — same reason /model and /reasoning do.
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        session_key = self._session_key_for_source(source)
+
+        # Null the persisted snapshot FIRST. This is the half that actually
+        # makes the command work: without it the next turn's cache miss simply
+        # restores the stored prompt and the edit is never picked up. Doing it
+        # before the live invalidation also means a turn starting concurrently
+        # cannot re-persist the stale prompt in between.
+        persisted_cleared = False
+        if self._session_db is not None:
+            try:
+                session_entry = await self.async_session_store.get_or_create_session(source)
+                await self._session_db.clear_system_prompt(session_entry.session_id)
+                persisted_cleared = True
+            except Exception as exc:
+                logger.warning("/refresh could not clear the stored prompt: %s", exc)
+                return (
+                    "⚠️ Could not clear the stored system prompt, so the next turn "
+                    "would reuse it. Nothing was changed."
+                )
+
+        # Prefer the cached agent; fall back to a mid-turn one. Mirrors the
+        # lookup in _session_expiry_watcher, including the legacy entry shapes.
+        agent = None
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        if cache_lock is not None:
+            with cache_lock:
+                cached = (getattr(self, "_agent_cache", None) or {}).get(session_key)
+                agent = cached[0] if isinstance(cached, tuple) else cached or None
+        if agent is None or agent is _AGENT_PENDING_SENTINEL:
+            state = self._peek_session_state(session_key)
+            agent = state.turn.agent if state else None
+
+        # A live agent may be absent (nothing built yet, or the gateway builds a
+        # fresh AIAgent per turn). The persisted clear above is what carries the
+        # refresh in that case, so this is not an error.
+        if agent is not None and agent is not _AGENT_PENDING_SENTINEL:
+            if hasattr(agent, "_invalidate_system_prompt"):
+                agent._invalidate_system_prompt()
+            elif not persisted_cleared:
+                return "⚠️ This session's agent does not support prompt refresh."
+
+        return (
+            "🔄 System prompt refreshed — pinned files, memory and config are re-read "
+            "on your next message. Conversation history is unchanged."
+        )
+
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
         source = event.source

@@ -116,6 +116,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
+    CommandDef("refresh", "Reload system prompt sources (pinned files, memory, config) without starting a new session", "Session",
+               gateway_only=True, busy_policy="dispatch"),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
     CommandDef("prompt", "Compose your next prompt in $EDITOR (markdown), then send it", "Session",
                cli_only=True, args_hint="[initial text]", aliases=("compose",)),
@@ -1257,7 +1259,12 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     /hermes update on Slack. Demoted to free the native slot /approvals now
 #     claims — without this entry /approvals tips the registry past the 50-cap
 #     and silently clamps /update off, breaking Telegram parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update"})
+#   - refresh: reached via /hermes refresh on Slack. It fires only after a user
+#     edits a prompt source (a pinned file, SOUL.md, MEMORY.md, config), which
+#     is a rare, deliberate act rather than a conversational one. Without this
+#     entry /refresh tips the registry past the 50-cap and silently clamps
+#     /platform off the native list, breaking Telegram parity.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "refresh"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

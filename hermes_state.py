@@ -4302,6 +4302,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
+    def clear_system_prompt(self, session_id: str) -> None:
+        """Drop the persisted system-prompt snapshot so the next turn rebuilds it.
+
+        Clearing ``AIAgent._cached_system_prompt`` alone is not enough to pick up
+        edited prompt sources: the next turn takes the cache miss, calls
+        ``restore_or_build_system_prompt``, and restores this row's still-populated
+        snapshot verbatim (``agent/conversation_loop.py``). Nulling the column is
+        what actually forces a rebuild — the same mechanism
+        ``update_session_model`` and ``update_session_runtime_lock`` already rely
+        on after a switch, isolated here for callers that only want the rebuild.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET system_prompt = NULL WHERE id = ?",
+                (session_id,),
+            )
+        self._execute_write(_do)
+
     def update_session_model(self, session_id: str, model: str) -> None:
         """Update the model for a session after a mid-session switch.
 

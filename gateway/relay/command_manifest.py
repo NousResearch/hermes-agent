@@ -114,6 +114,7 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
         },
         {"name": "voice", "description": "Toggle voice reply mode"},
         {"name": "update", "description": "Update Hermes Agent to the latest version"},
+        {"name": "refresh", "description": "Reload system prompt sources without a new session"},
         {"name": "restart", "description": "Gracefully restart the Hermes gateway"},
         {
             "name": "approve",

@@ -1838,39 +1838,6 @@ EOF
     chmod +x "$command_link_dir/hermes-acp"
     log_success "Installed hermes-acp launcher → $command_link_display_dir/hermes-acp"
 
-    # Expose the direct agent runner declared in pyproject.toml as
-    # `hermes-agent` too. The editable install creates the console script under
-    # venv/bin, but that directory is intentionally not part of the user's login
-    # shell PATH; external hosts that invoke the declared command name need the
-    # same stable command-link treatment as `hermes` and `hermes-acp`.
-    rm -f "$command_link_dir/hermes-agent"
-    if [ "$USE_VENV" = true ]; then
-        cat > "$command_link_dir/hermes-agent" <<EOF
-#!/usr/bin/env bash
-unset PYTHONPATH
-unset PYTHONHOME
-exec "$HERMES_BIN" "$INSTALL_DIR/run_agent.py" "\$@"
-EOF
-    else
-        HERMES_AGENT_BIN="$(which hermes-agent 2>/dev/null || echo "")"
-        if [ -n "$HERMES_AGENT_BIN" ]; then
-            cat > "$command_link_dir/hermes-agent" <<EOF
-#!/usr/bin/env bash
-unset PYTHONPATH
-unset PYTHONHOME
-exec "$HERMES_AGENT_BIN" "\$@"
-EOF
-            chmod +x "$command_link_dir/hermes-agent"
-            log_success "Installed hermes-agent launcher → $command_link_display_dir/hermes-agent"
-        else
-            log_warn "hermes-agent not found on PATH after install"
-        fi
-    fi
-    if [ "$USE_VENV" = true ]; then
-        chmod +x "$command_link_dir/hermes-agent"
-        log_success "Installed hermes-agent launcher → $command_link_display_dir/hermes-agent"
-    fi
-
     if [ "$DISTRO" = "termux" ]; then
         export PATH="$command_link_dir:$PATH"
         log_info "$command_link_display_dir is the native Termux command path"

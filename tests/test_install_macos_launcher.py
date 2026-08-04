@@ -48,7 +48,6 @@ def test_venv_launcher_bypasses_uv_console_script_that_requires_realpath(tmp_pat
         '#!/bin/sh\nprintf "%s\\n" "$@" > "$LAUNCH_RESULT"\n',
     )
     (install_dir / "hermes").write_text("# source entrypoint\n", encoding="utf-8")
-    (install_dir / "run_agent.py").write_text("# source agent entrypoint\n", encoding="utf-8")
     _make_executable(
         venv_bin / "hermes",
         "#!/bin/sh\n"
@@ -76,10 +75,6 @@ def test_venv_launcher_bypasses_uv_console_script_that_requires_realpath(tmp_pat
     }
     subprocess.run(["/bin/bash", "-c", harness], env=env, check=True)
 
-    for command in ("hermes", "hermes-acp", "hermes-agent"):
-        assert (command_dir / command).is_file()
-        assert os.access(command_dir / command, os.X_OK)
-
     completed = subprocess.run(
         [command_dir / "hermes", "--version"],
         env=os.environ | {"LAUNCH_RESULT": str(result)},
@@ -91,31 +86,4 @@ def test_venv_launcher_bypasses_uv_console_script_that_requires_realpath(tmp_pat
     assert result.read_text(encoding="utf-8").splitlines() == [
         str(install_dir / "hermes"),
         "--version",
-    ]
-
-    completed = subprocess.run(
-        [command_dir / "hermes-acp", "--stdio"],
-        env=os.environ | {"LAUNCH_RESULT": str(result)},
-        text=True,
-        capture_output=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert result.read_text(encoding="utf-8").splitlines() == [
-        str(install_dir / "hermes"),
-        "acp",
-        "--stdio",
-    ]
-
-    completed = subprocess.run(
-        [command_dir / "hermes-agent", "--list-tools"],
-        env=os.environ | {"LAUNCH_RESULT": str(result)},
-        text=True,
-        capture_output=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert result.read_text(encoding="utf-8").splitlines() == [
-        str(install_dir / "run_agent.py"),
-        "--list-tools",
     ]

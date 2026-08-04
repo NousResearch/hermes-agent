@@ -95,4 +95,72 @@ describe('GlyphSpinner', () => {
     act(() => vi.advanceTimersByTime(80))
     expect(status.textContent).not.toBe(frozen)
   })
+
+  it('suspends animation while the Electron window is minimized or hidden, then resumes on restore', () => {
+    let windowStateCallback: ((payload: { isMinimized?: boolean; isVisible?: boolean }) => void) | null = null
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        onWindowStateChanged: vi.fn((callback: typeof windowStateCallback) => {
+          windowStateCallback = callback
+
+          return () => {
+            if (windowStateCallback === callback) {
+              windowStateCallback = null
+            }
+          }
+        })
+      }
+    })
+
+    try {
+      render(<GlyphSpinner spinner="braille" />)
+
+      const status = screen.getByRole('status', { name: 'Loading' })
+      expect(windowStateCallback).not.toBeNull()
+      expect(vi.getTimerCount()).toBe(1)
+
+      act(() => windowStateCallback?.({ isMinimized: true, isVisible: false }))
+      expect(vi.getTimerCount()).toBe(0)
+
+      const frozen = status.textContent
+      act(() => vi.advanceTimersByTime(800))
+      expect(status.textContent).toBe(frozen)
+
+      act(() => windowStateCallback?.({ isMinimized: false, isVisible: true }))
+      expect(vi.getTimerCount()).toBe(1)
+
+      act(() => vi.advanceTimersByTime(80))
+      expect(status.textContent).not.toBe(frozen)
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
+  it('suspends animation while the document is hidden', () => {
+    render(<GlyphSpinner spinner="braille" />)
+
+    const status = screen.getByRole('status', { name: 'Loading' })
+    expect(vi.getTimerCount()).toBe(1)
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    try {
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      expect(vi.getTimerCount()).toBe(0)
+
+      const frozen = status.textContent
+      act(() => vi.advanceTimersByTime(800))
+      expect(status.textContent).toBe(frozen)
+
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      expect(vi.getTimerCount()).toBe(1)
+
+      act(() => vi.advanceTimersByTime(80))
+      expect(status.textContent).not.toBe(frozen)
+    } finally {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    }
+  })
 })

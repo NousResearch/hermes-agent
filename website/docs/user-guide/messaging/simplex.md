@@ -119,6 +119,42 @@ Agent replies can also embed `MEDIA:/path/to/file` tags in plain text —
 the adapter strips the tag from the body and sends the file as either a
 voice note (audio extensions) or a document.
 
+## Exec approval
+
+When the agent wants to run a potentially dangerous command it asks first.
+The prompt shows the command, the reason, and the choices — and the bot
+pre-places the decision emoji on its own message so you can answer with a
+long-press and a tap instead of typing:
+
+- ✅ approve once
+- 🚀 approve for this session
+- ❤️ approve always (adds the pattern to the permanent allowlist)
+- 👎 deny
+
+Typing still works and is always offered in the prompt: `/approve`,
+`/approve session`, `/approve always`, `/deny`. Only the emoji above are
+recognised — the simplex-chat daemon accepts a fixed set of reaction emoji,
+so the tiers use what SimpleX actually allows rather than the icons other
+Hermes platforms use.
+
+Who may answer:
+
+- **Direct chats** — the contact whose conversation raised the approval.
+  Nobody else can react in a DM, so no extra allowlist entry is needed and
+  DM pairing works as-is.
+- **Group chats** — the reacting member must appear in
+  `SIMPLEX_ALLOWED_USERS` (by member id or display name). With no allowlist
+  configured, group reactions are ignored and `/approve` is the way in.
+
+A prompt stays tappable for 5 minutes, matching the agent-side approval
+timeout. After that a tap gets an "expired" reply rather than silently
+doing nothing, and a tap that lands after the command was already answered
+is told the command did not run.
+
+If your daemon is too old to accept reactions, the first attempt fails, the
+bot says so once, and every later prompt is plain text with the typed
+commands only — approvals keep working either way.
+
 ## Using SimpleX with cron jobs
 
 ```python

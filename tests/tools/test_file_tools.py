@@ -458,6 +458,40 @@ class TestSearchHandler:
         mock_get.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
+    def test_search_negative_cache_skipped_when_resolution_fails(self, mock_get):
+        """RuntimeError during path resolution must not make the
+        negative-result cache key off the raw *unresolved* path -- a
+        stale/unrelated "not found" hit there would return early and skip
+        the device-block check entirely. Resolution failure instead falls
+        through to the device-guard fallback layer (see
+        test_search_device_guard_falls_back_to_raw_path above), with the
+        cache lookup skipped outright rather than substituted with the raw
+        path."""
+        from tools import file_tools
+
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"matches": []}
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        with (
+            patch.object(file_tools, "_resolve_path_for_task", side_effect=RuntimeError("resolve failed")),
+            patch.object(file_tools, "get_read_block_error", return_value=None),
+            patch.object(file_tools, "_check_not_found_cache") as mock_cache,
+            patch.object(file_tools, "_is_blocked_device", return_value=False),
+        ):
+            result = json.loads(file_tools.search_tool(
+                pattern="x",
+                path="unresolvable-path",
+                task_id="cache_skip",
+            ))
+
+        mock_cache.assert_not_called()
+        assert "matches" in result
+        mock_get.assert_called_once()
+
+    @patch("tools.file_tools._get_file_ops")
     def test_search_calls_file_ops(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()

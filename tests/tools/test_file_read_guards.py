@@ -127,6 +127,17 @@ class TestDevicePathBlocking(unittest.TestCase):
         ):
             self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
 
+    def test_proc_exe_blocked(self):
+        """/proc/<pid>/exe is a symlink to the process's own executable --
+        same hang/leak surface as the other /proc suffix family, so it
+        shares the same block semantics (including the per-thread form)."""
+        for path in (
+            "/proc/self/exe",
+            "/proc/12345/exe",
+            "/proc/self/task/1234/exe",
+        ):
+            self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
+
     def test_proc_legitimate_files_not_blocked(self):
         """Top-level /proc files like cpuinfo and meminfo must remain accessible."""
         for path in ("/proc/cpuinfo", "/proc/meminfo", "/proc/uptime", "/proc/version"):

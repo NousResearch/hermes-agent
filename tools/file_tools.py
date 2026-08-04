@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 import sys
 import threading
 from pathlib import Path, PurePosixPath
@@ -164,6 +165,11 @@ _BLOCKED_PROC_PATH_SUFFIXES = (
     "/mem",
     "/auxv",
     "/pagemap",
+    # /proc/<pid>/exe is a symlink to the process's own executable. Reading
+    # through it shares the same hang/leak surface as the rest of this
+    # family, so it is blocked outright rather than needing cwd-style
+    # resolution (endswith also covers /proc/<pid>/task/<tid>/exe).
+    "/exe",
 )
 
 
@@ -611,6 +617,81 @@ def _is_blocked_container_device_path(path: str) -> bool:
     normalized = "/" + "/".join(stack)
 
     return normalized in _BLOCKED_DEVICE_PATHS or _is_blocked_proc_path(normalized)
+
+
+# Matches /proc/<self|thread-self|pid>/cwd and its per-thread
+# /proc/<...>/task/<tid>/cwd form, at the start of the path, with either a
+# trailing "/" (more segments follow) or end-of-string (bare alias). Applied
+# to a lexically pre-normalized string (see
+# ``_normalize_slashes_and_dots_only``), so "/proc/./self/cwd" and
+# "/proc//self/cwd" match too -- otherwise those spellings would silently
+# skip alias handling and fall through to the literal-path walker, which
+# doesn't know "cwd" is a symlink at all.
+# [0-9]+ only matches ASCII digits, so non-ASCII "digit" pid/tid segments
+# (e.g. Arabic-indic) correctly fail the match, mirroring the ``isascii()``
+# guard the /root walk above uses for the same reason.
+_PROC_CWD_ALIAS_RE = re.compile(
+    r"^/proc/(?P<pid>self|thread-self|[0-9]+)(?:/task/[0-9]+)?/cwd(?:/|$)"
+)
+
+# Sentinel: the path names a /proc/.../cwd alias, but a numeric pid/tid means
+# it may refer to a DIFFERENT process's cwd, which this task cannot verify
+# (there is no task-registry lookup here from pid to the process that
+# actually owns it). Fail closed rather than approximate.
+_UNVERIFIABLE_CWD_ALIAS = object()
+
+
+def _normalize_slashes_and_dots_only(path: str) -> str:
+    """Collapse duplicate "/" and literal "." segments -- lexical noise only.
+
+    Deliberately does NOT touch ".." segments. ".." may need to cross a
+    /proc/.../cwd symlink boundary, and only the resolver (after the alias
+    prefix has been substituted for the real cwd) can account for that
+    correctly. Collapsing ".." here, before substitution, would silently
+    walk it against the wrong base.
+    """
+    segments = [s for s in path.split("/") if s and s != "."]
+    prefix = "/" if path.startswith("/") else ""
+    return prefix + "/".join(segments)
+
+
+def _resolve_container_cwd_alias(path: str, task_id: str = "default"):
+    """Classify a /proc/.../cwd alias prefix, resolving it against the task's
+    own cwd when -- and only when -- the target is unambiguously this task's
+    own process.
+
+    /proc/<pid>/cwd (plain or the per-thread /task/<tid>/cwd form) is a
+    symlink to a process's current working directory -- unlike
+    /proc/.../root, which always collapses to the container root, a cwd
+    alias's target depends on where the named process's cwd actually is. So
+    it can't be canonicalized by string-walking alone.
+
+    Only ``self``/``thread-self`` are resolved: those are unambiguously this
+    task's own process, so its own cwd is authoritative. A numeric pid/tid
+    might name a different process entirely; approximating it as this task's
+    own cwd could bypass the guard (if the real target is deeper than this
+    task's cwd) as easily as it could over-block, so it fails closed instead
+    of guessing -- see ``_UNVERIFIABLE_CWD_ALIAS``.
+
+    Returns:
+      - ``None`` if ``path`` doesn't match a /proc/.../cwd alias at all (the
+        caller should fall through to its normal literal-path handling).
+      - ``_UNVERIFIABLE_CWD_ALIAS`` if it matches but names a target this
+        task cannot verify (numeric pid/tid, or resolution itself failed).
+      - the resolved absolute path (str) otherwise.
+    """
+    normalized = _normalize_slashes_and_dots_only(path)
+    match = _PROC_CWD_ALIAS_RE.match(normalized)
+    if not match:
+        return None
+    if match.group("pid") not in ("self", "thread-self"):
+        return _UNVERIFIABLE_CWD_ALIAS
+    suffix = normalized[match.end():].lstrip("/") or "."
+    try:
+        resolved = _resolve_path_for_task(suffix, task_id)
+    except (OSError, ValueError, RuntimeError):
+        return _UNVERIFIABLE_CWD_ALIAS
+    return str(resolved)
 
 
 def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
@@ -2154,27 +2235,36 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if block_error:
             return tool_error(block_error)
 
-        # ── Negative-result cache ─────────────────────────────────────
-        # Search returns "Path not found: <path>" when the search root
-        # doesn't exist. The error path also lists the parent directory
-        # (file_operations.py:1402) — expensive to repeat. Cache so the
-        # next call to a known-missing root skips both shells.
-        try:
-            resolved_search_path = str(_resolve_path_for_task(path, task_id))
-        except (OSError, ValueError):
-            resolved_search_path = path
-        cached_search_nf = _check_not_found_cache("search", resolved_search_path, task_id)
-        if cached_search_nf is not None:
-            return cached_search_nf
-
+        # ── Device / container-cwd-alias guard ──────────────────────────
+        # Must run BEFORE the negative-result cache lookup below. The cache
+        # is a raw "not found" memoization keyed by resolved path; if it ran
+        # first, a stale hit for that same resolved path could short-circuit
+        # the request and return before this enforcement ever executes --
+        # normalization, cwd-alias resolution, and the device/proc-suffix
+        # walk all have to happen first so a blocked path can never slip
+        # through via a cache hit (rv-20260804-175517-r69403rr).
+        #
         # read_file_tool has the same host-symlink behavior on upstream/main; scope this PR's no-host-dereference correction to search.
         if _uses_container_paths(task_id):
-            device_path = str(resolved_path) if resolved_path else path
-            blocked_device = _is_blocked_container_device_path(device_path)
-            if not blocked_device and path.startswith("/"):
-                # The resolver normalizes `..` away before we see it, and for an absolute
-                # container path the walk below is authoritative about `..` itself.
-                blocked_device = _is_blocked_container_device_path(path)
+            cwd_alias = _resolve_container_cwd_alias(path, task_id)
+            if cwd_alias is _UNVERIFIABLE_CWD_ALIAS:
+                # Numeric pid/tid cwd alias: cannot verify the real target
+                # (no task-registry lookup from pid to owning task exists
+                # here), so fail closed rather than approximate.
+                blocked_device = True
+            elif cwd_alias is not None:
+                # self/thread-self alias already resolved against the task's
+                # actual cwd above -- that resolved path is authoritative,
+                # so skip the literal-path recheck below (the raw alias text
+                # itself never matches a blocked suffix/device).
+                blocked_device = _is_blocked_container_device_path(cwd_alias)
+            else:
+                device_path = str(resolved_path) if resolved_path else path
+                blocked_device = _is_blocked_container_device_path(device_path)
+                if not blocked_device and path.startswith("/"):
+                    # The resolver normalizes `..` away before we see it, and for an absolute
+                    # container path the walk below is authoritative about `..` itself.
+                    blocked_device = _is_blocked_container_device_path(path)
         else:
             device_path = str(resolved_path) if resolved_path else path
             device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
@@ -2187,6 +2277,30 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                     "block or produce infinite output."
                 ),
             }, ensure_ascii=False)
+
+        # ── Negative-result cache ─────────────────────────────────────
+        # Search returns "Path not found: <path>" when the search root
+        # doesn't exist. The error path also lists the parent directory
+        # (file_operations.py:1402) — expensive to repeat. Cache so the
+        # next call to a known-missing root skips both shells.
+        #
+        # Only reached once the path has cleared the device/cwd-alias guard
+        # above, and reuses `resolved_path` from the top of this function
+        # instead of resolving a second time -- an independent second call
+        # here previously let RuntimeError escape uncaught (only
+        # OSError/ValueError were caught), crashing the whole request before
+        # the guard above ever ran. Swallowing RuntimeError locally to keep
+        # going was also wrong: it would key the cache off the raw
+        # *unresolved* path. So the cache -- both lookup and record below --
+        # is skipped outright whenever resolution failed; the device-guard
+        # fallback above (test_search_device_guard_falls_back_to_raw_path)
+        # is what's responsible for still blocking against the raw path in
+        # that case.
+        resolved_search_path = str(resolved_path) if resolved_path is not None else None
+        if resolved_search_path is not None:
+            cached_search_nf = _check_not_found_cache("search", resolved_search_path, task_id)
+            if cached_search_nf is not None:
+                return cached_search_nf
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
@@ -2210,7 +2324,11 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         # return — same rationale as the read path: error results keep
         # flowing through the consecutive-search bookkeeping below.
         _search_err = result_dict.get("error") or ""
-        if isinstance(_search_err, str) and _search_err.startswith("Path not found:"):
+        if (
+            isinstance(_search_err, str)
+            and _search_err.startswith("Path not found:")
+            and resolved_search_path is not None
+        ):
             _search_nf_json = json.dumps(result_dict, ensure_ascii=False)
             _record_not_found("search", resolved_search_path, task_id, _search_nf_json)
 

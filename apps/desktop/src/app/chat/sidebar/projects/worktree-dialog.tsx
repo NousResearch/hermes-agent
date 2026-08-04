@@ -35,11 +35,16 @@ interface BranchActionCopy {
   branchCreateWorktree: string
   branchOpenExisting: string
   branchSwitchHome: string
+  branchTrackRemote: string
 }
 
 const branchActionLabel = (branch: HermesGitBranch, copy: BranchActionCopy) => {
   if (branch.checkedOut) {
     return copy.branchOpenExisting
+  }
+
+  if (branch.isRemote) {
+    return copy.branchTrackRemote
   }
 
   return branch.isDefault ? copy.branchSwitchHome : copy.branchCreateWorktree
@@ -274,7 +279,11 @@ export function WorktreeDialog() {
                     onSelect={() => void convert(branch)}
                     value={branch.name}
                   >
-                    <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="git-branch" size="0.8rem" />
+                    <Codicon
+                      className="shrink-0 text-(--ui-text-tertiary)"
+                      name={branch.isRemote ? 'repo' : 'git-branch'}
+                      size="0.8rem"
+                    />
                     <span className="truncate">{branch.name}</span>
                     <span className="ml-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">
                       {branchActionLabel(branch, p)}

@@ -1913,6 +1913,7 @@ export const en: Translations = {
       branchOpenExisting: 'open',
       branchSwitchHome: 'switch home',
       branchCreateWorktree: 'new worktree',
+      branchTrackRemote: 'track remote',
       branchesLoading: 'Loading branches…',
       noBranches: 'No branches found',
       removeWorktree: 'Remove worktree',

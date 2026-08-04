@@ -1086,8 +1086,11 @@ export async function startWorkInRepo(
   return { branch: result.branch, path: result.path }
 }
 
-// Local branches for the composer's "convert a branch into a worktree" picker.
-// Empty on a remote backend / non-repo (the Electron probe can't run).
+// Branches for the composer's "convert a branch into a worktree" picker: the
+// local heads, plus the remote-tracking refs that have no local branch yet. A
+// teammate's branch is therefore reachable, and the user does not check it out
+// by hand first.
+// Empty on a remote backend or a non-repo, where the Electron probe cannot run.
 export async function listRepoBranches(repoPath: string): Promise<HermesGitBranch[]> {
   const git = desktopGit()
 

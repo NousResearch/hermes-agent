@@ -504,6 +504,19 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         """Return True when direct Firecrawl OR managed-gateway path is configured."""
         return check_firecrawl_api_key()
 
+    def is_keyless_available(self) -> bool:
+        """Firecrawl serves keyless cloud requests when explicitly selected.
+
+        Mirrors :func:`_is_explicit_firecrawl_selection` — keyless cloud
+        mode is opt-in by selection, never part of the automatic
+        zero-config fallback. Keeps doctor/readiness gates (#78412) from
+        flagging a working selected-keyless Firecrawl setup as unconfigured.
+        """
+        try:
+            return _is_explicit_firecrawl_selection()
+        except Exception:  # noqa: BLE001 — config layer optional
+            return False
+
     def supports_search(self) -> bool:
         return True
 

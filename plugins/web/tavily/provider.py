@@ -159,6 +159,26 @@ class TavilyWebSearchProvider(WebSearchProvider):
 
         return bool(get_provider_env("TAVILY_API_KEY"))
 
+    def is_keyless_available(self) -> bool:
+        """Tavily serves keyless requests when explicitly selected.
+
+        Keyless mode is opt-in by selection (X-Tavily-Access-Mode header),
+        not part of the automatic zero-config fallback — so this only
+        reports True when config actually routes a capability to Tavily.
+        Keeps doctor/readiness gates (#78412) from flagging a working
+        selected-keyless Tavily setup as unconfigured.
+        """
+        import tools.web_tools as _wt
+
+        try:
+            cfg = _wt._load_web_config()
+        except Exception:  # noqa: BLE001 — config layer optional
+            return False
+        return any(
+            (cfg.get(key) or "").lower().strip() == "tavily"
+            for key in ("backend", "search_backend", "extract_backend")
+        )
+
     def supports_search(self) -> bool:
         return True
 

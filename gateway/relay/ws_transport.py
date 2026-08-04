@@ -670,9 +670,11 @@ class WebSocketRelayTransport:
         # flip us back to a fast reconnect.
         self._dormant = True
         try:
-            await self._ws.close()
-        except Exception:  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
-            logger.debug("relay go_dormant: ws.close() raised", exc_info=True)
+            await asyncio.wait_for(
+                self._ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S
+            )
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
+            logger.debug("relay go_dormant: ws.close() raised or timed out", exc_info=True)
         return acked
 
     async def _send_inbound_ack(self, buffer_id: str) -> None:

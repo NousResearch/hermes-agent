@@ -423,7 +423,11 @@ class TestThreadSafeAsyncQueueCrossThreadBoundary:
 
             def worker():
                 time.sleep(0.05)
-                q.put_threadsafe("from-worker", loop=loop)
+                # No ``loop=`` kwarg on purpose: production callers
+                # (_on_delta / _on_tool_*) never pass one, so the queue
+                # must resolve its own ``_loop_ref``. Passing loop= here
+                # would make a broken _loop_ref pass this test.
+                q.put_threadsafe("from-worker")
 
             thread = threading.Thread(target=worker, daemon=True)
             thread.start()
@@ -454,7 +458,9 @@ class TestThreadSafeAsyncQueueCrossThreadBoundary:
 
             def worker(idx):
                 time.sleep(0.01 + idx * 0.002)
-                q.put_threadsafe(f"item-{idx}", loop=loop)
+                # No ``loop=`` kwarg — exercise the production
+                # ``_loop_ref`` resolution path (see the note above).
+                q.put_threadsafe(f"item-{idx}")
 
             threads = [
                 threading.Thread(target=worker, args=(i,), daemon=True)

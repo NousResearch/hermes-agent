@@ -219,6 +219,10 @@ class GatewayStreamConsumer:
         self._initial_reply_to_id = initial_reply_to_id
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
+        # Full segment text mirror of ``_accumulated`` that is NOT truncated
+        # when overflow splits seal head chunks.  Used to record a reconciliable
+        # turn-final payload for multi-message deliveries (#78541).
+        self._stream_ledger = ""
         self._message_id: Optional[str] = None
         # Wall-clock timestamp (time.monotonic) when ``_message_id`` was
         # first assigned from a successful first-send.  Used by the
@@ -270,9 +274,11 @@ class GatewayStreamConsumer:
         self._delivered_final_text: Optional[str] = None
         # True when the current turn's answer was delivered across multiple
         # sealed messages (overflow split / adapter continuation adoption).
-        # Payload-equality against a single recorded string is meaningless in
-        # that shape, so delivered_final_matches() falls back to legacy trust
-        # rather than risking a duplicate re-send of a multi-message reply.
+        # When a payload was recorded (via ``_stream_ledger`` /
+        # ``_record_turn_final_payload``), ``delivered_final_matches`` can still
+        # reconcile.  Payload-less split delivery must NOT inherit legacy trust
+        # (#78541) — that combination was swallowing complete Telegram group
+        # replies after an early/partial multi-message delivery.
         self._turn_split_delivery = False
         self._delivered_commentary_texts: list[str] = []
         # Retains the finalized visible text of each streaming segment so
@@ -405,20 +411,30 @@ class GatewayStreamConsumer:
                 pass
         return await self.adapter.edit_message(**kwargs)
 
+    def _append_accumulated(self, text: str) -> None:
+        """Append to the live buffer and the split-stable stream ledger."""
+        if not text:
+            return
+        self._accumulated += text
+        self._stream_ledger += text
+
     def _record_turn_final_payload(self, text: str) -> None:
         """Record the exact cleaned payload of a turn-final delivery.
 
         Normalized the same way ``_send_or_edit`` normalizes outgoing text
         (media-directive strip + fence closing) so the gateway can compare it
-        against the completed ``final_response`` (#71643). No-op when the turn
-        was delivered across multiple sealed messages — payload equality is
-        undefined there and ``delivered_final_matches`` returns ``None``.
+        against the completed ``final_response`` (#71643).
+
+        For multi-message split delivery, prefer ``_stream_ledger`` (the
+        unsplit segment text) so reconciliation still works (#78541).  Older
+        code cleared the record on split and forced legacy trust; that let a
+        payload-less stale flag suppress later complete replies.
         """
-        if self._turn_split_delivery:
-            self._delivered_final_text = None
-            return
+        source = text or ""
+        if self._turn_split_delivery and self._stream_ledger:
+            source = self._stream_ledger
         self._delivered_final_text = ensure_closed_code_fences(
-            self._clean_for_display(text or "")
+            self._clean_for_display(source)
         ).strip()
 
     def delivered_final_matches(self, final_text: str) -> Optional[bool]:
@@ -432,21 +448,23 @@ class GatewayStreamConsumer:
           delivered segment/commentary) matches ``final_text``; suppressing
           the normal final send is safe.
         - ``False`` — a turn-final delivery was recorded but its payload
-          demonstrably differs from ``final_text``; the user has NOT seen the
-          complete response and the normal final send must run.
-        - ``None``  — no payload comparison is possible (multi-message split
-          delivery, or a legacy/uncertain path that recorded nothing). The
-          caller keeps the pre-existing flag-trusting behavior so overflow
-          splits and ambiguous-timeout dedup are not regressed.
+          demonstrably differs from ``final_text``, OR this was a
+          payload-less multi-message split delivery (#78541) whose flag
+          alone must not suppress the normal final send.
+        - ``None``  — no payload comparison is possible on a non-split
+          legacy/uncertain path that recorded nothing. The caller keeps
+          the pre-existing flag-trusting behavior so ambiguous-timeout
+          dedup is not regressed.
         """
-        if self._turn_split_delivery:
-            return None
-        if self._delivered_final_text is None:
-            return None
         target = ensure_closed_code_fences(
             self._clean_for_display(final_text or "")
         ).strip()
         if not target:
+            return None
+        if self._delivered_final_text is None:
+            if self._turn_split_delivery:
+                # #78541: refuse legacy trust for payload-less split delivery.
+                return False
             return None
         if self._delivered_final_text.strip() == target:
             return True
@@ -541,6 +559,7 @@ class GatewayStreamConsumer:
         self._message_id = None
         self._message_created_ts = None
         self._accumulated = ""
+        self._stream_ledger = ""
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
@@ -666,7 +685,7 @@ class GatewayStreamConsumer:
 
                 if best_len:
                     # Emit text before the tag, enter think block
-                    self._accumulated += buf[:best_idx]
+                    self._append_accumulated(buf[:best_idx])
                     self._in_think_block = True
                     buf = buf[best_idx + best_len:]
                 else:
@@ -678,7 +697,7 @@ class GatewayStreamConsumer:
                             if lower_buf.endswith(tag_lower[:i]) and i > held_back:
                                 held_back = i
                     if held_back:
-                        self._accumulated += buf[:-held_back]
+                        self._append_accumulated(buf[:-held_back])
                         self._think_buffer = buf[-held_back:]
                     else:
                         # No (partial) open tag — but the model may have
@@ -687,7 +706,7 @@ class GatewayStreamConsumer:
                         # matched open, or when upstream stripping is
                         # incomplete). Strip those before accumulating so
                         # they never reach the user.
-                        self._accumulated += self._strip_orphan_close_tags(buf)
+                        self._append_accumulated(self._strip_orphan_close_tags(buf))
                     return
 
     @classmethod
@@ -732,7 +751,7 @@ class GatewayStreamConsumer:
         if self._think_buffer and not self._in_think_block:
             # Strip any orphan close tags that may have been held back —
             # see _filter_and_accumulate for context.
-            self._accumulated += self._strip_orphan_close_tags(self._think_buffer)
+            self._append_accumulated(self._strip_orphan_close_tags(self._think_buffer))
             self._think_buffer = ""
 
     async def run(self) -> None:
@@ -939,11 +958,14 @@ class GatewayStreamConsumer:
                             self._final_response_sent = chunks_delivered and tail_delivered
                             if self._final_response_sent:
                                 self._final_content_delivered = True
-                                # Multi-message split delivery — payload
-                                # equality against a single record is
-                                # undefined (#71643).
+                                # Multi-message split delivery — record the
+                                # unsplit ledger payload so the gateway can
+                                # still reconcile against final_response
+                                # (#71643, #78541).
                                 self._turn_split_delivery = True
-                                self._delivered_final_text = None
+                                self._record_turn_final_payload(
+                                    self._stream_ledger or "".join(chunks)
+                                )
                             return
                         if got_segment_break:
                             self._message_id = None
@@ -1987,6 +2009,7 @@ class GatewayStreamConsumer:
         self._preview_message_ids = set()
         self._message_id = None
         self._accumulated = ""
+        self._stream_ledger = ""
         self._last_sent_text = ""
         self._already_sent = False
         self._final_response_sent = False

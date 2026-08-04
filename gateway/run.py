@@ -24828,9 +24828,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # stream completion never reached any API call (#71643).
                 # Reconcile the recorded turn-final payload against the
                 # completed response; only a demonstrable mismatch (False)
-                # overrides the flag — None (no record / multi-message split
-                # delivery) keeps the legacy trust so overflow splits are not
-                # re-sent.
+                # overrides the flag — including payload-less multi-message
+                # split delivery (#78541). None (no record on a non-split
+                # legacy path) keeps the legacy trust so ambiguous-timeout
+                # dedup is not regressed.
                 matcher = getattr(consumer, "delivered_final_matches", None)
                 if callable(matcher):
                     try:
@@ -25621,8 +25622,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Reconcile the consumer's recorded turn-final payload against the
             # completed response: on a demonstrable mismatch (False) neither
             # final_response_sent nor final_content_delivered may suppress the
-            # normal final send. None (no record / multi-message split
-            # delivery) keeps legacy trust; the failed-finalize family
+            # normal final send. False also covers payload-less multi-message
+            # split delivery (#78541). None (no record on a non-split legacy
+            # path) keeps legacy trust; the failed-finalize family
             # (#51828 / #33793) is unaffected because those paths leave the
             # flags False or record the complete fallback payload.
             _stale_finalized = False

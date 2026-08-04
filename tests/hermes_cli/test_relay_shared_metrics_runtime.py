@@ -647,6 +647,75 @@ def test_core_task_instrumentation_preserves_prompt_history_and_tool_schema(
     assert json.dumps(agent.tools, ensure_ascii=False, sort_keys=True) == tools_before
 
 
+def test_skipped_turn_does_not_finish_another_sessions_matching_task(
+    direct_runtime,
+    monkeypatch,
+):
+    """A skipped turn must not use shared-metrics' task-id fallback on finish."""
+    from run_agent import AIAgent
+
+    owner_session = "instrumented-session"
+    shared_task_id = "caller-supplied-task-id"
+    relay_shared_metrics.start_task_run(
+        session_id=owner_session,
+        task_id=shared_task_id,
+        platform="cli",
+    )
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    assert (owner_session, shared_task_id) in runtime._task_sessions
+
+    agent = object.__new__(AIAgent)
+    agent.session_id = "skipped-session"
+    agent.platform = "cli"
+    agent._parent_session_id = None
+    agent._session_db = None
+    agent._cached_system_prompt = "stable"
+    agent.tools = []
+
+    skipped_turn = SimpleNamespace(relay_enabled=False)
+    monkeypatch.setattr(
+        relay_runtime.SESSION_COORDINATOR,
+        "begin_turn",
+        lambda *_args, **_kwargs: skipped_turn,
+    )
+    monkeypatch.setattr(
+        relay_runtime.SESSION_COORDINATOR,
+        "finish_logical_calls",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        relay_runtime.SESSION_COORDINATOR,
+        "end_turn",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "agent.conversation_loop.run_conversation",
+        lambda *_args, **_kwargs: {"final_response": "ok", "completed": True},
+    )
+
+    result = AIAgent.run_conversation(
+        agent,
+        "hello",
+        conversation_history=[],
+        task_id=shared_task_id,
+    )
+
+    assert result["completed"] is True
+    assert (owner_session, shared_task_id) in runtime._task_sessions
+    assert not [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == relay_shared_metrics.TASK_SCOPE
+    ]
+    relay_shared_metrics.finish_task_run(
+        session_id=owner_session,
+        task_id=shared_task_id,
+        platform="cli",
+        result={"completed": True},
+    )
+
+
 
 
 
@@ -1147,5 +1216,4 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
     assert metrics["hermes.task_run.finished"]["value"] == 2
     assert flush_attempts == 2
     assert "Hermes shared-metrics task flush failed" in caplog.text
-
 

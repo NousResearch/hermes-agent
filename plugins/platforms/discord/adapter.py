@@ -23,16 +23,38 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
 )
+from agent.display import ToolPreview
 
 logger = logging.getLogger(__name__)
+
+_DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
+_DISCORD_URL_LABEL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _format_discord_markdown_link(label: str, url: str) -> str:
+    """Return a Discord Markdown link whose label is not itself a URL.
+
+    Discord gives URL-shaped link labels their own link behavior. A truncated
+    URL label can therefore win over the Markdown destination and remain a
+    broken link. Dropping only the scheme keeps the preview recognizable while
+    leaving one unambiguous click target.
+
+    The destination is wrapped in angle brackets (``<url>``) so Discord does
+    not unfurl an OG-preview embed under every tool progress bubble.
+    """
+    label = _DISCORD_URL_LABEL_SCHEME_RE.sub("", label, count=1)
+    escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
+    escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
+    return f"[{escaped_label}](<{escaped_url}>)"
 
 
 class _Snowflake:
@@ -97,7 +119,6 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
     ),
     re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
 )
-
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -121,7 +142,11 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
+from gateway.platforms.helpers import (
+    MessageDeduplicator,
+    ThreadParticipationTracker,
+    convert_table_to_bullets,
+)
 from utils import atomic_json_write, env_float, env_int
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -977,6 +1002,13 @@ class DiscordAdapter(BasePlatformAdapter):
     PLAYBACK_TIMEOUT = 120
     PLAYBACK_TIMEOUT_PADDING = 30
 
+    def format_tool_preview(self, preview: ToolPreview) -> str:
+        """Keep a truncated URL preview clickable in Discord markdown."""
+        if not preview.url:
+            return preview.text
+
+        return _format_discord_markdown_link(preview.text, preview.url)
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
@@ -1742,6 +1774,19 @@ class DiscordAdapter(BasePlatformAdapter):
         # Cancel the liveness probe first so it can't fire a spurious fatal
         # error / reconnect while we're intentionally tearing the adapter down.
         await self._cancel_liveness_task()
+        # Clean up all active voice connections *before* cancelling the bot task.
+        # leave_voice_channel() ends in `await vc.disconnect()`, and discord.py's
+        # VoiceClient.disconnect() sends a voice state update over the main
+        # gateway websocket and then waits for the voice socket to close.  The
+        # bot task is the loop running that gateway connection, so cancelling it
+        # first leaves the handshake with no transport: it can never complete and
+        # blocks until the caller's shutdown timeout fires.
+        for guild_id in list(self._voice_clients.keys()):
+            try:
+                await self.leave_voice_channel(guild_id)
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
+
         # Cancel the bot task before closing the client.  If connect() timed out
         # and returned False, the background client.start() task may still be
         # running; calling client.close() alone is not enough to stop it because
@@ -1749,12 +1794,6 @@ class DiscordAdapter(BasePlatformAdapter):
         # WebSocket handshake is in flight.  Explicitly cancelling the task here
         # ensures the zombie client cannot receive or dispatch any further events.
         await self._cancel_bot_task()
-        # Clean up all active voice connections before closing the client
-        for guild_id in list(self._voice_clients.keys()):
-            try:
-                await self.leave_voice_channel(guild_id)
-            except Exception as e:  # pragma: no cover - defensive logging
-                logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
 
         if self._client:
             try:
@@ -3002,6 +3041,29 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
+        if not (content or "").strip():
+            logger.warning(
+                "[%s] Dropped empty message to chat=%s (caller bug). Call site:\n%s",
+                self.name,
+                chat_id,
+                "".join(traceback.format_stack(limit=12)[:-1]),
+            )
+            result = SendResult(
+                success=False,
+                error="Refusing to send empty message",
+            )
+            # Mirror the exception path's recovery bookkeeping. Missed-message
+            # backfill decides what to replay from this table, so a dropped
+            # final reply must be recorded as failed — otherwise the reply is
+            # both never sent and never retried.
+            await asyncio.to_thread(
+                self._record_discord_response,
+                reply_to=reply_to,
+                result=result,
+                content=content,
+                final=bool(metadata and metadata.get("notify")),
+            )
+            return result
 
         try:
             # Determine target channel: thread_id in metadata takes precedence.

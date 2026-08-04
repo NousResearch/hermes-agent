@@ -847,6 +847,35 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     if unsupported:
         raise FeatureUnavailable(feature, missing, unsupported)
 
+    # Package-manager installs (NixOS, and any other distro that ships Hermes
+    # from a read-only store) cannot receive lazy pip installs: the venv's
+    # site-packages lives in the store, so the uv -> pip -> ensurepip ladder
+    # below burns ~15s bootstrapping ensurepip only to fail on a read-only
+    # target. Fail fast with an actionable message instead.
+    #
+    # Skipped when a durable install target is configured: the container
+    # deployment sets HERMES_MANAGED=true *and* HERMES_LAZY_INSTALL_TARGET
+    # (a writable volume), where lazy installs legitimately work.
+    #
+    # The reason string starts with "unsupported " on purpose:
+    # refresh_active_features classifies FeatureUnavailable by that prefix and
+    # reports anything else as a hard failure rather than a skip.
+    if _lazy_install_target() is None:
+        try:
+            from hermes_cli.config import get_managed_system
+
+            managed_by = get_managed_system()
+        except Exception:
+            managed_by = ""  # config unreadable — proceed with the install
+        if managed_by:
+            raise FeatureUnavailable(
+                feature, missing,
+                f"unsupported on {managed_by}-managed installs: this build's "
+                f"packages come from {managed_by}, so Hermes cannot install "
+                f"them at runtime. Add the dependencies for {feature!r} via "
+                f"{managed_by} (or run a pip/uv install of Hermes instead)."
+            )
+
     # Validate every spec against the allowlist + safety regex. Belt and
     # braces — the keys-in-LAZY_DEPS check above already constrains this.
     for spec in missing:

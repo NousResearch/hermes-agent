@@ -32,12 +32,15 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
 from gateway.restart import (
+    DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     is_gateway_supervisor_process,
+    parse_restart_after_turn_timeout,
     parse_restart_drain_timeout,
+    resolve_restart_exit_wait_budget,
 )
 from hermes_cli.config import (
     get_env_value,
@@ -252,10 +255,12 @@ def _request_gateway_self_restart(pid: int) -> bool:
 def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     """Send SIGUSR1 to a gateway PID and wait for it to exit gracefully.
 
-    SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``
-    which drains in-flight agent runs (up to ``agent.restart_drain_timeout``
-    seconds), then exits.  Both systemd (``Restart=always``) and launchd
-    (unconditional ``<key>KeepAlive</key><true/>``) restart on any exit.
+    SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``,
+    which refuses new turns, waits for in-flight work up to
+    ``agent.restart_after_turn_timeout``, then runs ``stop()`` (force-interrupt
+    budget ``agent.restart_drain_timeout``) and exits.  Both systemd
+    (``Restart=always``) and launchd (unconditional KeepAlive) restart on
+    any exit.
 
     This is the drain-aware alternative to ``systemctl restart`` / ``SIGTERM``,
     which SIGKILL in-flight agents after a short timeout.
@@ -264,9 +269,9 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
         pid: Gateway process PID (systemd MainPID, launchd PID, or bare
             process PID).
         drain_timeout: Seconds to wait for the process to exit after sending
-            SIGUSR1.  Should be slightly larger than the gateway's
-            ``agent.restart_drain_timeout`` to allow the drain loop to
-            finish cleanly.
+            SIGUSR1.  Must cover the after-turn wait plus the stop()/drain
+            phase (#77184); callers should pass
+            ``resolve_restart_exit_wait_budget(...)``.
 
     Returns:
         True if the PID was signalled and exited within the timeout.
@@ -3276,6 +3281,26 @@ def _get_restart_drain_timeout() -> float:
     return parse_restart_drain_timeout(raw)
 
 
+def _get_restart_after_turn_timeout() -> float:
+    """Return the in-band restart wait-for-idle timeout in seconds (#77184)."""
+    env_raw = os.getenv("HERMES_RESTART_AFTER_TURN_TIMEOUT")
+    if env_raw is not None and str(env_raw).strip() != "":
+        return parse_restart_after_turn_timeout(env_raw)
+    cfg = read_raw_config()
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+    if isinstance(agent_cfg, dict) and "restart_after_turn_timeout" in agent_cfg:
+        return parse_restart_after_turn_timeout(agent_cfg.get("restart_after_turn_timeout"))
+    return parse_restart_after_turn_timeout(None)
+
+
+def _get_restart_exit_wait_budget() -> float:
+    """CLI wait for gateway exit after SIGUSR1 / self-restart (#77184)."""
+    return resolve_restart_exit_wait_budget(
+        _get_restart_drain_timeout(),
+        _get_restart_after_turn_timeout(),
+    )
+
+
 def systemd_install(
     force: bool = False,
     system: bool = False,
@@ -3456,10 +3481,12 @@ def systemd_restart(system: bool = False):
     if pid is not None:
         scope_label = _service_scope_label(system).capitalize()
         svc = get_service_name()
-        drain_timeout = _get_restart_drain_timeout()
-
-        print(f"⏳ {scope_label} service restarting gracefully (PID {pid})...")
-        if _graceful_restart_via_sigusr1(pid, drain_timeout + 5):
+        wait_budget = _get_restart_exit_wait_budget()
+        print(
+            f"⏳ {scope_label} service restarting gracefully (PID {pid}) — "
+            f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
+        )
+        if _graceful_restart_via_sigusr1(pid, wait_budget):
             # The gateway exits with code 75 for a planned service restart.
             # RestartSec can otherwise delay the relaunch even though the
             # operator asked for an immediate restart, so kick the unit once
@@ -3482,7 +3509,7 @@ def systemd_restart(system: bool = False):
                 return
 
         print(
-            f"⚠ Graceful restart did not complete within {int(drain_timeout + 5)}s; "
+            f"⚠ Graceful restart did not complete within {int(wait_budget)}s; "
             "forcing a service restart..."
         )
         _run_systemctl(

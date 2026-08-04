@@ -33,6 +33,7 @@ import {
   $newSessionTabAction,
   $panesWithCloser,
   $treeDragging,
+  $treePaneEpochs,
   activateTreePane,
   closeAllTreeTabs,
   closeOtherTreeTabs,
@@ -42,12 +43,21 @@ import {
   isCollapsePane,
   isSessionStripPane,
   noteActiveTreeGroup,
+  reloadTreePane,
   restoreTreePane,
   SESSION_TILE_DRAG,
   setTreeGroupHeaderHidden,
   setTreeGroupMinimized,
   treeTabCloseTargets
 } from '../store'
+import {
+  $tabSelection,
+  clearTabSelection,
+  isToggleSelectClick,
+  selectionFor,
+  selectTabRange,
+  toggleTabSelected
+} from '../tab-selection'
 
 import { type DoubleTapContext, startPaneDrag } from './drag-session'
 import { forceLoneHeaderForPanes } from './lone-header'
@@ -96,6 +106,12 @@ function ZoneMenu({
 
     return (
       <>
+        {renderActionItem(kit, {
+          icon: 'refresh',
+          label: t.zones.reload,
+          onSelect: () => reloadTreePane(targetPane())
+        })}
+        <kit.Separator />
         {paneId !== undefined &&
           renderActionItem(kit, {
             icon: 'close',
@@ -178,6 +194,12 @@ export function TreeGroup({
   const narrow = useStore($narrowViewport)
   const newSessionTabAction = useStore($newSessionTabAction)
   const panesWithCloser = useStore($panesWithCloser)
+  // Multi-tab selection (⌥/Ctrl-click, Shift-click) — null for every zone but
+  // the one holding it, so this subscription is quiet during normal use.
+  const tabSelection = useStore($tabSelection)
+  // Reload epochs: only an explicit tab-menu Reload writes here, so this
+  // subscription costs nothing on a normal render.
+  const paneEpochs = useStore($treePaneEpochs)
 
   const paneFor = (id: string) => panes.find(p => p.id === id)
 
@@ -424,6 +446,7 @@ export function TreeGroup({
                 const chrome = paneChrome(paneFor(paneId))
                 const closeable = closeableTab(paneId)
                 const title = paneFor(paneId)?.title ?? paneId
+                const isSelected = tabSelection?.groupId === node.id && tabSelection.ids.has(paneId)
 
                 const tab = (
                   <PaneTab
@@ -433,11 +456,36 @@ export function TreeGroup({
                     key={paneId}
                     onClose={closeable ? () => closeTab(paneId) : undefined}
                     onPointerDown={e => {
+                      // Chrome's tab-selection grammar, ahead of activate/drag:
+                      // Shift-click ranges from the anchor, ⌥-click (Ctrl-click
+                      // off-Mac) toggles. Neither activates nor starts a drag —
+                      // the press IS the selection edit. ⌘-click stays close
+                      // (PaneTab claims it first) and ⌃-click stays the macOS
+                      // context menu.
+                      if (e.button === 0 && e.shiftKey) {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        selectTabRange(node.id, shown, paneId, activeId)
+
+                        return
+                      }
+
+                      if (isToggleSelectClick(e)) {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        toggleTabSelected(node.id, paneId, activeId)
+
+                        return
+                      }
+
                       // Tabs ACTIVATE (restoring a collapsed group). Minimize
                       // lives on the chevron / single-pane label — overloading
                       // the active tab made double-click a minimize/restore/hide
-                      // lottery.
+                      // lottery. A plain click also collapses any multi-tab
+                      // selection back to the one tab (Chrome semantics).
                       const onTap = () => {
+                        clearTabSelection()
+
                         if (node.minimized) {
                           restoreTreePane(paneId)
                         }
@@ -452,6 +500,26 @@ export function TreeGroup({
                       if (e.button === 0) {
                         e.preventDefault()
                         e.stopPropagation()
+                      }
+
+                      // Dragging a SELECTED tab carries the whole selection as
+                      // one block through the generic pane move — a multi-tab
+                      // drag outranks the pane's own tab drag (the session drop
+                      // language is single-session).
+                      const dragSelection = selectionFor(node.id, shown, paneId)
+
+                      if (dragSelection) {
+                        startPaneDrag(
+                          paneId,
+                          e,
+                          onTap,
+                          stripRef.current ? { groupId: node.id, strip: stripRef.current } : undefined,
+                          hideHeaderDoubleTap,
+                          t.zones.tabCount(dragSelection.length),
+                          dragSelection
+                        )
+
+                        return
                       }
 
                       // A pane may own its tab drag (a session tab speaks the
@@ -470,6 +538,7 @@ export function TreeGroup({
                       }
                     }}
                     role="tab"
+                    selected={isSelected}
                     style={{ cursor: 'grab' }}
                   >
                     {chrome.tabLead ? (
@@ -557,9 +626,14 @@ export function TreeGroup({
                     // can gate its hot (per-token) subscriptions while hidden;
                     // the group id identifies the ZONE it lives in, for state
                     // that is per-zone rather than per-tab (composer pop-out).
+                    // The reload epoch keys the CONTENT, not this layer: a
+                    // Reload remounts the contribution (effects re-run, state
+                    // resets) while the layer — and every other tab — stays.
                     <PaneGroupContext.Provider value={node.id}>
                       <PaneVisibleContext.Provider value={isActive}>
-                        <ContribBoundary id={pane.id}>{pane.render()}</ContribBoundary>
+                        <ContribBoundary id={pane.id} key={paneEpochs[paneId] ?? 0}>
+                          {pane.render()}
+                        </ContribBoundary>
                       </PaneVisibleContext.Provider>
                     </PaneGroupContext.Provider>
                   ) : (

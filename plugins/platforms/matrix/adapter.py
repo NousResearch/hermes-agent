@@ -978,20 +978,61 @@ class _CryptoStateStore:
     ``get_encryption_info``, and ``find_shared_rooms``.  The basic
     ``MemoryStateStore`` from ``mautrix.client`` doesn't implement these,
     so we provide simple implementations that consult the client's room
-    state.
+    state, falling back to a direct homeserver state event query when
+    the in-memory store has no encryption info for a room.
     """
 
-    def __init__(self, client_state_store: Any, joined_rooms: set):
+    def __init__(self, client_state_store: Any, joined_rooms: set, client=None):
         self._ss = client_state_store
         self._joined_rooms = joined_rooms
+        self._client = client
+        # Cache encryption info queried from the homeserver so we don't
+        # make a network round-trip on every is_encrypted() call.
+        # MemoryStateStore doesn't implement set_encryption_info, so the
+        # cache-back in get_encryption_info is a no-op without this.
+        self._enc_info_cache: dict = {}
 
     async def is_encrypted(self, room_id: str) -> bool:
         return (await self.get_encryption_info(room_id)) is not None
 
     async def get_encryption_info(self, room_id: str):
+        info = None
         if hasattr(self._ss, "get_encryption_info"):
-            return await self._ss.get_encryption_info(room_id)
-        return None
+            info = await self._ss.get_encryption_info(room_id)
+        if info is not None:
+            return info
+        # Check local cache before hitting the homeserver.
+        if room_id in self._enc_info_cache:
+            return self._enc_info_cache[room_id]
+        client = self._client
+        if client is None:
+            return None
+        try:
+            from mautrix.types import (
+                EventType as _ET,
+                RoomEncryptionStateEventContent as _Enc,
+                RoomID as _RID,
+            )
+            raw = await client.get_state_event(_RID(room_id), _ET.ROOM_ENCRYPTION)
+        except Exception as exc:
+            logger.debug(
+                "Matrix: homeserver encryption-info query failed for %s: %s",
+                room_id,
+                exc,
+            )
+            return None
+        if not raw:
+            return None
+        content = raw if isinstance(raw, _Enc) else _Enc.deserialize(
+            raw.serialize() if hasattr(raw, "serialize") else raw
+        )
+        if hasattr(self._ss, "set_encryption_info"):
+            try:
+                await self._ss.set_encryption_info(_RID(room_id), content)
+            except Exception:
+                pass
+        self._enc_info_cache[room_id] = content
+        return content
 
     async def find_shared_rooms(self, user_id: str) -> list:
         # Return all joined rooms — simple but correct for a single-user bot.
@@ -1303,6 +1344,158 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
         return True
 
+    async def _reset_crypto_store_if_device_changed(
+        self, crypto_store: Any, device_id: str
+    ) -> bool:
+        """Reset the local Olm account when the access token's device changed.
+
+        The crypto store is keyed by user ID, so a new access token (= new
+        device ID) would otherwise inherit the previous device's Olm account.
+        Its identity keys can never be published under the new device ID
+        (and the pickle key embeds the old device ID anyway), which leads to
+        stale-key mismatches and cross-signing signatures that the
+        homeserver refuses to replace. Returns True if the store was reset.
+        """
+        if not device_id:
+            return False
+        try:
+            stored_device_id = await crypto_store.get_device_id()
+        except Exception as exc:
+            logger.warning("Matrix: could not read stored device ID: %s", exc)
+            return False
+        if not stored_device_id or stored_device_id == device_id:
+            return False
+        logger.warning(
+            "Matrix: access token belongs to a new device (%s -> %s) — "
+            "resetting local Olm account so fresh identity keys are "
+            "generated for this device",
+            stored_device_id,
+            device_id,
+        )
+        await crypto_store.delete()
+        return True
+
+    async def _migrate_legacy_crypto_pickle(
+        self, crypto_store: Any, crypto_db: Any, acct_id: str, pickle_key: str
+    ) -> bool:
+        """Re-pickle the Olm account when the pickle key changed.
+
+        The pickle key embeds the *configured* device ID. If the account was
+        created before MATRIX_DEVICE_ID was set (e.g. first password login,
+        where the device ID is only known after connecting), the store was
+        pickled under ``<acct>:default``; setting MATRIX_DEVICE_ID afterwards
+        changes the key and unpickling fails with BAD_ACCOUNT_KEY — which in
+        optional-E2EE mode silently disables encryption. Try known legacy
+        keys and re-pickle under the current one. Returns False only when an
+        account exists but no key can unpickle it.
+        """
+        try:
+            await crypto_store.get_account()
+            return True
+        except Exception:
+            pass
+
+        from mautrix.crypto.store.asyncpg import PgCryptoStore
+
+        for legacy_key in (f"{acct_id}:default", acct_id):
+            if legacy_key == pickle_key:
+                continue
+            legacy_store = PgCryptoStore(
+                account_id=acct_id, pickle_key=legacy_key, db=crypto_db
+            )
+            try:
+                account = await legacy_store.get_account()
+            except Exception:
+                continue
+            if account is None:
+                continue
+            # Sessions first, account last. The account is the migration's
+            # commit marker: once it reads under the current key, the fast
+            # path above short-circuits every later startup. Writing it
+            # before the sweep means an interrupted sweep is never retried
+            # and the remaining legacy-key sessions are stranded for good.
+            try:
+                await self._repickle_crypto_sessions(
+                    crypto_db, acct_id, legacy_key, pickle_key
+                )
+            except Exception as exc:
+                logger.error(
+                    "Matrix: pickle key migration failed while re-pickling "
+                    "sessions (%s) — leaving the account under the legacy "
+                    "key so the migration is retried on the next start.",
+                    exc,
+                )
+                return False
+            await crypto_store.put_account(account)
+            logger.info(
+                "Matrix: re-pickled crypto store account and sessions under "
+                "the current pickle key (device ID was configured after the "
+                "account was created)"
+            )
+            return True
+
+        logger.error(
+            "Matrix: crypto store account exists but cannot be unpickled "
+            "with the current or any legacy pickle key. If MATRIX_DEVICE_ID "
+            "was changed manually, restore its previous value."
+        )
+        return False
+
+    async def _repickle_crypto_sessions(
+        self, crypto_db: Any, acct_id: str, legacy_key: str, pickle_key: str
+    ) -> None:
+        """Re-pickle olm/megolm session blobs alongside the account.
+
+        The account and every stored session share the pickle key; migrating
+        only the account leaves sessions unreadable (BAD_ACCOUNT_KEY on the
+        next olm decrypt), which breaks key sharing with peers.
+        """
+        import olm as olm_lib
+
+        tables = {
+            "crypto_olm_session": olm_lib.Session,
+            "crypto_megolm_inbound_session": olm_lib.InboundGroupSession,
+            "crypto_megolm_outbound_session": olm_lib.OutboundGroupSession,
+        }
+        for table, session_cls in tables.items():
+            rows = await crypto_db.fetch(
+                f"SELECT session_id, session FROM {table} WHERE account_id=$1",
+                acct_id,
+            )
+            for row in rows:
+                blob = row["session"]
+                if blob is None:
+                    continue
+                pickled = bytes(blob)
+                try:
+                    session_cls.from_pickle(pickled, pickle_key)
+                    continue  # already readable with the current key
+                except Exception:
+                    pass
+                try:
+                    session = session_cls.from_pickle(pickled, legacy_key)
+                except Exception as exc:
+                    # Readable under neither key. The row is left untouched
+                    # rather than deleted — it is already unusable, and
+                    # removing crypto material is not worth doing on a
+                    # guess. It stays inert.
+                    logger.warning(
+                        "Matrix: %s row %s cannot be unpickled with the "
+                        "current or legacy key; leaving it in place, its "
+                        "sessions are unrecoverable: %s",
+                        table,
+                        row["session_id"],
+                        exc,
+                    )
+                    continue
+                await crypto_db.execute(
+                    f"UPDATE {table} SET session=$1 "
+                    "WHERE account_id=$2 AND session_id=$3",
+                    session.pickle(pickle_key),
+                    acct_id,
+                    row["session_id"],
+                )
+
     async def _verify_device_keys_on_server(self, client: Any, olm: Any) -> bool:
         """Verify our device keys are on the homeserver after loading crypto state.
 
@@ -1436,13 +1629,38 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 resp = await client.whoami()
                 resolved_user_id = getattr(resp, "user_id", "") or self._user_id
-                resolved_device_id = getattr(resp, "device_id", "")
+                resolved_device_id = str(getattr(resp, "device_id", "") or "")
                 if resolved_user_id:
                     self._user_id = str(resolved_user_id)
                     client.mxid = UserID(self._user_id)
 
-                # Prefer user-configured device_id for stable E2EE identity.
-                effective_device_id = self._device_id or resolved_device_id
+                # Normally the user-configured device_id wins, giving a stable
+                # E2EE identity when whoami() reports no device.
+                #
+                # But an access token is bound to exactly one device, and the
+                # homeserver only accepts key uploads for that device. If
+                # MATRIX_DEVICE_ID names a different one, honouring it means
+                # claiming an identity this token cannot publish — which is
+                # the stale-key failure mode this reset exists to clear. The
+                # live whoami() device therefore wins on conflict, loudly.
+                if (
+                    resolved_device_id
+                    and self._device_id
+                    and resolved_device_id != self._device_id
+                ):
+                    logger.error(
+                        "Matrix: MATRIX_DEVICE_ID=%s does not match the device "
+                        "this access token belongs to (%s). A token can only "
+                        "upload keys for its own device, so the configured "
+                        "value is being ignored. Unset MATRIX_DEVICE_ID, or "
+                        "use a token issued for %s.",
+                        self._device_id,
+                        resolved_device_id,
+                        self._device_id,
+                    )
+                    effective_device_id = resolved_device_id
+                else:
+                    effective_device_id = self._device_id or resolved_device_id
                 if effective_device_id:
                     client.device_id = effective_device_id
 
@@ -1573,7 +1791,13 @@ class MatrixAdapter(BasePlatformAdapter):
                     self._crypto_db = crypto_db
 
                     _acct_id = self._user_id or "hermes"
-                    _pickle_key = f"{_acct_id}:{self._device_id or 'default'}"
+                    # Use the resolved client.device_id (from whoami or password
+                    # login), not self._device_id (the configured value), because
+                    # #71543 makes the token's real device win over a stale
+                    # MATRIX_DEVICE_ID.  The pickle key must match the device the
+                    # token actually belongs to, or the Olm account is stored
+                    # under a key that can never be looked up again.
+                    _pickle_key = f"{_acct_id}:{client.device_id or self._device_id or 'default'}"
                     crypto_store = PgCryptoStore(
                         account_id=_acct_id,
                         pickle_key=_pickle_key,
@@ -1582,9 +1806,25 @@ class MatrixAdapter(BasePlatformAdapter):
                     await crypto_store.open()
 
                     if client.device_id:
+                        _store_was_reset = await self._reset_crypto_store_if_device_changed(
+                            crypto_store, client.device_id
+                        )
                         await crypto_store.put_device_id(client.device_id)
+                    else:
+                        _store_was_reset = False
 
-                    crypto_state = _CryptoStateStore(state_store, self._joined_rooms)
+                    # Skip the pickle-key migration when the store was just
+                    # deleted — there is no account to migrate.
+                    if not _store_was_reset:
+                        if not await self._migrate_legacy_crypto_pickle(
+                            crypto_store, crypto_db, _acct_id, _pickle_key
+                        ):
+                            logger.warning(
+                                "Matrix: crypto pickle migration failed — "
+                                "E2EE may not work correctly"
+                            )
+
+                    crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
                     olm = OlmMachine(client, crypto_store, crypto_state)
                     olm.share_keys_min_trust = TrustState.UNVERIFIED
                     olm.send_keys_min_trust = TrustState.UNVERIFIED

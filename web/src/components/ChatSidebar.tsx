@@ -32,6 +32,7 @@ import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, buildWsUrl } from "@/lib/api";
+import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
@@ -258,6 +259,9 @@ export function ChatSidebar({
       ws.addEventListener("error", () => surface(DISCONNECTED));
 
       ws.addEventListener("close", (ev) => {
+        if (maybeReloadForLoopbackWsAuthFailure(ev.code)) {
+          return;
+        }
         if (ev.code === 4401 || ev.code === 4403) {
           surface(`events feed rejected (${ev.code}) — reload the page`);
         } else if (ev.code !== 1000) {

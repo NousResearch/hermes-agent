@@ -609,11 +609,11 @@ def main() -> int:
         _write_config(home, server.server_port)
         env = os.environ.copy()
         env["HERMES_HOME"] = str(home)
+        python_paths = [str(hermes_repo)]
         if relay_python is not None:
-            env["PYTHONPATH"] = os.pathsep.join([
-                str(relay_python),
-                env.get("PYTHONPATH", ""),
-            ]).rstrip(os.pathsep)
+            python_paths.append(str(relay_python))
+        python_paths.append(env.get("PYTHONPATH", ""))
+        env["PYTHONPATH"] = os.pathsep.join(python_paths).rstrip(os.pathsep)
         result = subprocess.run(
             [
                 str(hermes),
@@ -666,7 +666,7 @@ def main() -> int:
 
     skill_result = subprocess.run(
         [
-            str(hermes.parent / "python"),
+            sys.executable,
             "-c",
             "\n".join([
                 "from hermes_cli.observability import relay_shared_metrics",

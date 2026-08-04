@@ -36,7 +36,7 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
-from agent.credential_pool import STATUS_EXHAUSTED
+from agent.credential_pool import STATUS_EXHAUSTED, credential_pool_matches_provider
 from agent.error_classifier import FailoverReason
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
@@ -50,6 +50,45 @@ logger = logging.getLogger(__name__)
 # even when the upstream keeps rejecting it, so without this cap the retry loop
 # spins forever and never reaches ``_try_activate_fallback``. See #26080.
 _MAX_AUTH_REFRESH_ATTEMPTS = 2
+
+
+_REASONING_TAG_NAMES = ("think", "thinking", "reasoning", "REASONING_SCRATCHPAD", "thought")
+_TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
+
+_REASONING_BLOCK_PATTERNS = tuple(
+    re.compile(rf"<{name}>.*?</{name}>", re.DOTALL | re.IGNORECASE)
+    for name in _REASONING_TAG_NAMES
+)
+
+_TOOL_CALL_BLOCK_PATTERNS = tuple(
+    re.compile(rf"<{name}\b[^>]*>.*?</{name}>", re.DOTALL | re.IGNORECASE)
+    for name in _TOOL_CALL_TAG_NAMES
+)
+
+# Named <function name=...> blocks — see strip_think_blocks step 1c for the
+# full rationale (sentence-boundary lookbehind + tempered-dot body so a plain
+# prose mention of "function" is never eaten).
+_NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
+    r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
+    r'<function\b[^>]*\bname\s*=[^>]*>'
+    r'(?:(?:(?!</function>).)*)</function>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+_UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
+    rf'(?:^|\n)[ \t]*<(?:{"|".join(_REASONING_TAG_NAMES)})\b[^>]*>.*$',
+    re.DOTALL | re.IGNORECASE,
+)
+
+_ORPHAN_REASONING_TAG_PATTERN = re.compile(
+    rf'</?(?:{"|".join(_REASONING_TAG_NAMES)})>\s*',
+    re.IGNORECASE,
+)
+
+_STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
+    rf'</(?:{"|".join(_TOOL_CALL_TAG_NAMES)}|function)>\s*',
+    re.IGNORECASE,
+)
 
 
 def _ra():
@@ -826,62 +865,31 @@ def strip_think_blocks(agent, content: str) -> str:
     # 1. Closed tag pairs — case-insensitive for all variants so
     #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
     #    the unterminated-tag pass and take trailing content with them.
-    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    for _pattern in _REASONING_BLOCK_PATTERNS:
+        content = _pattern.sub('', content)
     # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
     #     generic tag names first — they have no attribute gating since
     #     a literal <tool_call> in prose is already vanishingly rare.
-    for _tc_name in ("tool_call", "tool_calls", "tool_result",
-                      "function_call", "function_calls"):
-        content = re.sub(
-            rf'<{_tc_name}\b[^>]*>.*?</{_tc_name}>',
-            '',
-            content,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
+    for _pattern in _TOOL_CALL_BLOCK_PATTERNS:
+        content = _pattern.sub('', content)
     # 1c. <function name="...">...</function> — Gemma-style standalone
     #     tool call. Only strip when the tag sits at a block boundary
     #     (start of text, after a newline, or after sentence-ending
     #     punctuation) AND carries a name="..." attribute. This keeps
     #     prose mentions like "Use <function> to declare" safe.
-    content = re.sub(
-        r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
-        r'<function\b[^>]*\bname\s*=[^>]*>'
-        r'(?:(?:(?!</function>).)*)</function>',
-        '',
-        content,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
+    content = _NAMED_FUNCTION_BLOCK_PATTERN.sub('', content)
     # 2. Unterminated reasoning block — open tag at a block boundary
     #    (start of text, or after a newline) with no matching close.
     #    Strip from the tag to end of string.  Fixes #8878 / #9568
     #    (MiniMax M2.7 leaking raw reasoning into assistant content).
-    content = re.sub(
-        r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$',
-        '',
-        content,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
+    content = _UNTERMINATED_REASONING_BLOCK_PATTERN.sub('', content)
     # 3. Stray orphan open/close tags that slipped through.
-    content = re.sub(
-        r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
-        '',
-        content,
-        flags=re.IGNORECASE,
-    )
+    content = _ORPHAN_REASONING_TAG_PATTERN.sub('', content)
     # 3b. Stray tool-call closers. (We do NOT strip bare <function> or
     #     unterminated <function name="..."> because a truncated tail
     #     during streaming may still be valuable to the user; matches
     #     OpenClaw's intentional asymmetry.)
-    content = re.sub(
-        r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
-        '',
-        content,
-        flags=re.IGNORECASE,
-    )
+    content = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', content)
     return content
 
 
@@ -1012,6 +1020,13 @@ def recover_with_credential_pool(
         }
         if _credential_id:
             kwargs["credential_id"] = _credential_id
+        # Hand the pool the classified semantics, not just the status. A
+        # billing 403 (OpenRouter "key limit exceeded", xAI spending limit)
+        # and an edge-throttle 403 are the same number but need opposite
+        # cooldowns — the pool can only tell them apart if we say which.
+        # ``effective_reason`` is resolved below; this closure runs after.
+        if effective_reason is not None:
+            kwargs["failure_reason"] = effective_reason.value
         return pool.mark_exhausted_and_rotate(**kwargs)
 
     effective_reason = classified_reason
@@ -1456,6 +1471,64 @@ def restore_primary_runtime(agent) -> bool:
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
 
+    # ── Reset-aware gate ──
+    # The 60s ``_rate_limited_until`` cooldown covers transient rate limits,
+    # but subscription-style providers (Claude Pro/Max 5-hour windows, ChatGPT
+    # weekly limits) report reset times hours or days away.  The credential
+    # pool already stores those timestamps (``last_error_reset_at``); until
+    # the earliest one elapses, every restore attempt is a *guaranteed*
+    # failure that costs two prompt-cache invalidations per turn (switch to
+    # primary, fail, switch back to fallback) and re-marshals the full
+    # context each way.  Skip the restore while the pool says nobody can
+    # serve, and come back the moment the reset time passes.
+    #
+    # Fail-open by design: any error (unreadable auth store, legacy pool
+    # adapter without ``next_available_at``) falls through to the existing
+    # every-turn retry.  A pool with no reset info returns ``None`` and also
+    # falls through — this gate only ever *adds* skips for provably
+    # limited windows, so recovery can never be later than it is today.
+    #
+    # When the attached pool belongs to the fallback provider (cross-provider
+    # fallback rebinds it), the primary pool is loaded here and handed to the
+    # pool-rebind block below via ``prefetched_primary_pool`` so the load
+    # happens at most once per restore.
+    prefetched_primary_pool = None
+    try:
+        primary_provider = str(
+            (agent._primary_runtime or {}).get("provider") or ""
+        ).strip().lower()
+        pool = getattr(agent, "_credential_pool", None)
+        if not credential_pool_matches_provider(
+            pool,
+            primary_provider,
+            base_url=str((agent._primary_runtime or {}).get("base_url") or ""),
+        ):
+            from agent.credential_pool import load_pool
+
+            prefetched_primary_pool = (
+                load_pool(primary_provider) if primary_provider else None
+            )
+            pool = prefetched_primary_pool
+        next_at = getattr(pool, "next_available_at", lambda: None)()
+        if next_at is not None and next_at > time.time():
+            if not getattr(agent, "_restore_wait_logged", False):
+                agent._restore_wait_logged = True
+                logger.info(
+                    "Primary %s rate-limited until %s; staying on fallback "
+                    "%s/%s until the reset elapses",
+                    primary_provider or "?",
+                    datetime.fromtimestamp(next_at).isoformat(timespec="seconds"),
+                    agent.provider,
+                    agent.model,
+                )
+            return False
+    except Exception:
+        logger.debug(
+            "Reset-aware restore gate failed; falling back to per-turn retry",
+            exc_info=True,
+        )
+    agent._restore_wait_logged = False
+
     rt = agent._primary_runtime
     try:
         # ── Core runtime state ──
@@ -1549,9 +1622,14 @@ def restore_primary_runtime(agent) -> bool:
             agent._credential_pool = None
             agent._credential_pool_entry_id = None
             try:
-                from agent.credential_pool import load_pool
+                if prefetched_primary_pool is not None:
+                    # Reuse the pool the reset-aware gate already loaded for
+                    # this restore — avoids a second disk read of auth.json.
+                    agent._credential_pool = prefetched_primary_pool
+                else:
+                    from agent.credential_pool import load_pool
 
-                agent._credential_pool = load_pool(primary_provider)
+                    agent._credential_pool = load_pool(primary_provider)
             except Exception as exc:
                 logger.warning(
                     "Restore could not reload primary credential pool for %s: %s",
@@ -1631,6 +1709,7 @@ def restore_primary_runtime(agent) -> bool:
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
+        agent._rate_limit_backoff_count = 0  # reset exponential backoff counter
 
         # Reset the stale-call circuit breaker (#58962): the streak measured
         # the FALLBACK provider we're leaving; the restored primary deserves
@@ -2003,12 +2082,12 @@ def anthropic_prompt_cache_policy(
     gateway implements the Anthropic cache_control contract
     (MiniMax, Zhipu GLM, LiteLLM's Anthropic proxy mode all do).
 
-    Qwen models on OpenCode and direct Alibaba (DashScope), plus DeepSeek
-    models on OpenCode, also honour Anthropic-style ``cache_control`` markers
-    on OpenAI-wire chat completions. Upstream pi-mono #3392 / pi #3393
-    documented this for opencode-go Qwen; #24617 reports the same gateway
-    contract for DeepSeek. Without markers these providers serve zero cache
-    hits, re-billing the full prompt on every turn.
+    Qwen / Alibaba-family models on OpenCode, OpenCode Go, and direct
+    Alibaba (DashScope) also honour Anthropic-style ``cache_control``
+    markers on OpenAI-wire chat completions. Upstream pi-mono #3392 /
+    pi #3393 documented this for opencode-go Qwen. Without markers
+    these providers serve zero cache hits, re-billing the full prompt
+    on every turn.
 
     If the operator has set ``prompt_caching.cache_ttl`` to a falsy value
     (``false``, ``null``, ``"off"``, etc.) in config.yaml, prompt caching
@@ -2135,22 +2214,21 @@ def anthropic_prompt_cache_policy(
         if is_minimax_provider or is_minimax_host:
             return True, True
 
-    # Qwen on OpenCode (Zen/Go) and native DashScope, plus DeepSeek on
-    # OpenCode only: OpenAI-wire transports that accept Anthropic-style
-    # cache_control markers and reward them with real cache hits. Keep direct
-    # Alibaba specific to Qwen; its catalog does not establish the same
-    # contract for DeepSeek.
+    # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
+    # transport that accepts Anthropic-style cache_control markers and
+    # rewards them with real cache hits.  Without this branch
+    # qwen3.6-plus on opencode-go reports 0% cached tokens and burns
+    # through the subscription on every turn.
+    #
+    # NOTE: DeepSeek models on OpenCode are intentionally excluded.
+    # OpenCode Zen's relay rejects the Anthropic-style content block
+    # format that cache markers produce (content becomes a block array
+    # instead of a plain string), causing HTTP 400 (#77217).
     model_is_qwen = "qwen" in model_lower
-    model_is_deepseek = "deepseek" in model_lower
-    provider_is_opencode = provider_lower in {
-        "opencode", "opencode-zen", "opencode-go",
-    }
     provider_is_alibaba_family = provider_lower in {
         "opencode", "opencode-zen", "opencode-go", "alibaba",
     }
-    if (provider_is_alibaba_family and model_is_qwen) or (
-        provider_is_opencode and model_is_deepseek
-    ):
+    if provider_is_alibaba_family and model_is_qwen:
         # Envelope layout (native_anthropic=False): markers on inner
         # content parts, not top-level tool messages.  Matches
         # pi-mono's "alibaba" cacheControlFormat.

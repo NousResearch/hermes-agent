@@ -446,18 +446,12 @@ export function ChatBar({
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
-    if (imageBlobs.length > 0) {
-      event.preventDefault()
+    if (imageBlobs.length > 0 && onAttachImageBlob) {
+      triggerHaptic('selection')
 
-      if (onAttachImageBlob) {
-        triggerHaptic('selection')
-
-        for (const blob of imageBlobs) {
-          void onAttachImageBlob(blob)
-        }
+      for (const blob of imageBlobs) {
+        void onAttachImageBlob(blob)
       }
-
-      return
     }
 
     // Trim surrounding whitespace so a copy that dragged along leading/trailing
@@ -468,6 +462,10 @@ export function ChatBar({
 
     if (!pastedText) {
       event.preventDefault()
+
+      if (imageBlobs.length > 0) {
+        return
+      }
 
       // Under WSL2/WSLg the Windows host clipboard doesn't bridge *images* to
       // the Linux clipboard the DOM paste event reads, so a host screenshot

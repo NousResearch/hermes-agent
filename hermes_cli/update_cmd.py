@@ -2089,7 +2089,7 @@ def _update_node_dependencies() -> list[str]:
         print("    deps). Fix npm and re-run `hermes update`.")
         return list(labels)
 
-    extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+    extra_args = ["--no-fund", "--no-audit", "--prefer-offline", "--progress=false"]
 
     from hermes_constants import with_hermes_node_path
 
@@ -4863,37 +4863,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _manage_cmd_cache[scope_] = cmd
                 return cmd
 
-            # Drain budget for graceful SIGUSR1 restarts.  The gateway drains
-            # for up to ``agent.restart_drain_timeout`` (default 60s) before
-            # exiting with code 75; we wait slightly longer so the drain
-            # completes before we fall back to a hard restart.  On older
-            # systemd units without SIGUSR1 wiring this wait just times out
-            # and we fall back to ``systemctl restart`` (the old behaviour).
+            # Wait budget for graceful SIGUSR1 restarts.  In-band restart
+            # may defer stop() until active turns finish
+            # (``restart_after_turn_timeout``, #77184) and then spend up to
+            # ``restart_drain_timeout`` inside stop(). Cover both phases so
+            # we don't fall back to a hard kill while the gateway is still
+            # patiently waiting for the requesting turn. On older systemd
+            # units without SIGUSR1 wiring this wait just times out and we
+            # fall back to ``systemctl restart`` (the old behaviour).
             try:
-                from hermes_constants import (
-                    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT as _DEFAULT_DRAIN,
-                )
-            except Exception:
-                _DEFAULT_DRAIN = 60.0
-            _cfg_drain = None
-            try:
-                from hermes_cli.config import load_config
+                from hermes_cli.gateway import _get_restart_exit_wait_budget
 
-                _cfg_agent = load_config().get("agent") or {}
-                _cfg_drain = _cfg_agent.get("restart_drain_timeout")
+                _drain_budget = max(float(_get_restart_exit_wait_budget()), 45.0)
             except Exception:
-                pass
-            try:
-                _drain_budget = (
-                    float(_cfg_drain)
-                    if _cfg_drain is not None
-                    else float(_DEFAULT_DRAIN)
-                )
-            except (TypeError, ValueError):
-                _drain_budget = float(_DEFAULT_DRAIN)
-            # Add a 15s margin so the drain loop + final exit finish before
-            # we escalate to ``systemctl restart`` / SIGTERM.
-            _drain_budget = max(_drain_budget, 30.0) + 15.0
+                _drain_budget = 45.0
 
             restarted_services = []
             failed_or_stale_units = []

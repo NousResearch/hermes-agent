@@ -35,21 +35,23 @@ DEFAULT_CONFIG = {
         # tools or receiving API responses.  Only fires when the agent has
         # been completely idle for this duration.  0 = unlimited.
         "gateway_timeout": 1800,
-        # Graceful drain timeout for gateway stop/restart (seconds).
-        # The gateway stops accepting new work, waits for running agents
-        # to finish, then interrupts any remaining runs after the timeout.
-        # 0 = no drain, interrupt immediately (the default).
+        # Force-interrupt budget once gateway stop()/drain has begun
+        # (seconds). Applies to SIGTERM/external stop and to the final
+        # phase of in-band restart after any after-turn wait. 0 = interrupt
+        # immediately (the default).
         #
-        # Contract: if you restart the gateway, in-flight work stops. We do
-        # not hold the restart open for a grace window — a drain timeout
-        # large enough to "save" a long agent turn would have to outlast an
-        # unbounded task (some runs take days), which is impossible, and a
-        # drain timeout shorter than systemd's TimeoutStopSec invites a
-        # SIGKILL-mid-cleanup race that leaves a stale lock and crash-loops
-        # the service. 0 sidesteps both: interrupt now, clean up, exit fast.
-        # Set a positive value in config.yaml only if you explicitly want a
-        # grace window on /restart (and keep it well under TimeoutStopSec).
+        # Keep this short and under systemd TimeoutStopSec — a long value
+        # here invites SIGKILL-mid-cleanup. For in-band restart
+        # (/restart, SIGUSR1), prefer restart_after_turn_timeout below so
+        # active turns finish *before* stop() begins (#77184).
         "restart_drain_timeout": 0,
+        # In-band restart wait for active turns to finish before stop()
+        # (seconds). /restart and SIGUSR1 refuse new work, then wait up to
+        # this cap for in-flight agents/cron/api runs to complete naturally
+        # so the requesting turn is not amputated by restart_drain_timeout.
+        # 0 = legacy behaviour (enter stop()/drain immediately). Default
+        # 6h is a safety valve for wedged agents, not a target latency.
+        "restart_after_turn_timeout": 21600,
         # Upper bound (seconds) a submitted prompt waits for the deferred
         # agent build (MCP discovery, model metadata, skills scan) before
         # failing with a visible error (#63078). The gateway's wait is
@@ -2368,7 +2370,7 @@ DEFAULT_CONFIG = {
             "listing": "auto",
             # Absolute cap on the embedded listing in tokens (chars/4
             # estimate), regardless of context size. Range 200..60000.
-            "listing_max_tokens": 20000,
+            "listing_max_tokens": 4000,
         },
     },
 

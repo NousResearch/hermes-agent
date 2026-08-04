@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { messageRenderWeight, RENDER_WEIGHT_CHARS } from '@/lib/render-weight'
+
 import {
   buildGroups,
   firstVisibleGroupIndex,
@@ -7,8 +9,7 @@ import {
   LIVE_TAIL_PARTS,
   liveTailStart,
   type MessageGroup,
-  messageRenderWeight,
-  RENDER_WEIGHT_CHARS
+  resolveThreadScrollTarget
 } from './list'
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
@@ -59,6 +60,53 @@ describe('buildGroups', () => {
     const groups = buildGroups('0:a:assistant:0')
 
     expect(groups).toEqual([{ id: 'a', index: 0, kind: 'standalone', weight: 1 }])
+  })
+})
+
+describe('resolveThreadScrollTarget', () => {
+  const context = (scrollElement: Pick<HTMLElement, 'scrollTop'>) => ({
+    contentElement: document.createElement('div'),
+    scrollElement: scrollElement as HTMLElement
+  })
+
+  it('settles when the browser clamps the requested bottom within half a CSS pixel', () => {
+    let actualScrollTop = 0
+    let writes = 0
+
+    const scrollElement = {
+      get scrollTop() {
+        return actualScrollTop
+      },
+      set scrollTop(value: number) {
+        writes += 1
+        actualScrollTop = value - 0.125
+      }
+    }
+
+    const target = 899
+
+    const requested = resolveThreadScrollTarget(target, context(scrollElement))
+    scrollElement.scrollTop = requested
+    const settled = resolveThreadScrollTarget(target, context(scrollElement))
+
+    expect(requested).toBe(target)
+    expect(actualScrollTop).toBe(898.875)
+    expect(settled).toBe(actualScrollTop)
+    expect(actualScrollTop < settled).toBe(false)
+    expect(writes).toBe(1)
+  })
+
+  it('keeps following while more than half a CSS pixel remains', () => {
+    const scrollElement = { scrollTop: 898.25 }
+
+    expect(resolveThreadScrollTarget(899, context(scrollElement))).toBe(899)
+  })
+
+  it('re-arms after streaming content increases the target', () => {
+    const scrollElement = { scrollTop: 898.875 }
+
+    expect(resolveThreadScrollTarget(899, context(scrollElement))).toBe(898.875)
+    expect(resolveThreadScrollTarget(999, context(scrollElement))).toBe(999)
   })
 })
 

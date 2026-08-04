@@ -129,6 +129,27 @@ def test_usage_updated_callback_runs_after_each_tool_loop_response(monkeypatch):
     assert observed == [(400, 400, 1), (600, 1000, 2)]
 
 
+def test_usage_updated_callback_failure_does_not_abort_turn(monkeypatch):
+    calls = []
+    agent = _make_agent(
+        monkeypatch,
+        "anthropic_messages",
+        "anthropic",
+        lambda: _anthropic_resp(400, 20),
+    )
+
+    def on_usage_updated():
+        calls.append(agent.session_api_calls)
+        raise RuntimeError("repaint failed")
+
+    agent._usage_updated_callback = on_usage_updated
+
+    result = agent.run_conversation("hi")
+
+    assert calls == [1]
+    assert result["final_response"] == "ok"
+
+
 def test_anthropic_no_cache_fields(monkeypatch):
     agent = _make_agent(monkeypatch, "anthropic_messages", "anthropic",
                         lambda: _anthropic_resp(500, 20))

@@ -1217,7 +1217,16 @@ def _env_line_safe(value: Any) -> str:
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     remove_set = set(remove_keys) - set(env_writes)
-    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    # Read exactly like the canonical .env reader in hermes_cli/config.py
+    # (save_env_value). A Windows editor can leave a UTF-8 BOM, which fails
+    # the key match on the first line so that key gets duplicated on write,
+    # or save the file as cp1252, which makes a strict utf-8 read raise and
+    # abort setup. Copying existing lines through must never do either.
+    existing_lines = (
+        env_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        if env_path.exists()
+        else []
+    )
     updated_keys = set()
     new_lines = []
     for line in existing_lines:

@@ -28,9 +28,10 @@ import {
   mergeZonesWithPane as mergeZonesWithPaneOp,
   mirrorTreeHorizontal,
   movePane as movePaneOp,
+  movePanes as movePanesOp,
   normalize,
   removePane,
-  reorderPaneInGroup as reorderPaneInGroupOp,
+  reorderPanesInGroup as reorderPanesInGroupOp,
   setActivePane as setActivePaneOp,
   setGroupHeaderHidden as setGroupHeaderHiddenOp,
   setGroupMinimized,
@@ -1244,25 +1245,61 @@ export function applyTree(tree: LayoutNode, presetId: string) {
 }
 
 /**
- * Shift-drag span: merge the highlighted zones into one holding `paneId`. Falls
- * back to a single-zone move at `fallbackGroupId` when the set can't merge
- * (non-rectangular selection).
+ * Move a multi-tab SELECTION in one commit (drag any selected tab): the lead
+ * pane takes the drop geometry, the rest stack in behind it in strip order,
+ * and `activeId` (the pressed tab) fronts in the landing group.
  */
-export function mergeTreeZones(groupIds: string[], paneId: string, fallbackGroupId: string | null) {
+export function moveTreePanes(
+  paneIds: readonly string[],
+  target: { groupId: string; pos: DropPosition; before?: null | string },
+  activeId?: string
+) {
   const tree = $layoutTree.get()
 
   if (!tree) {
     return
   }
 
+  const next = movePanesOp(tree, paneIds, target, activeId)
+
+  if (next !== tree) {
+    commit(next)
+    markActivePreset('custom')
+
+    for (const paneId of paneIds) {
+      markPaneUserPlaced(paneId)
+    }
+  }
+}
+
+/**
+ * Shift-drag span: merge the highlighted zones into one holding `paneId`. Falls
+ * back to a single-zone move at `fallbackGroupId` when the set can't merge
+ * (non-rectangular selection).
+ */
+export function mergeTreeZones(
+  groupIds: string[],
+  paneId: string | readonly string[],
+  fallbackGroupId: null | string
+) {
+  const tree = $layoutTree.get()
+
+  if (!tree) {
+    return
+  }
+
+  const paneIds = typeof paneId === 'string' ? [paneId] : paneId
   const merged = mergeZonesWithPaneOp(tree, groupIds, paneId)
 
   if (merged) {
     commit(merged)
     markActivePreset('custom')
-    markPaneUserPlaced(paneId)
+
+    for (const id of paneIds) {
+      markPaneUserPlaced(id)
+    }
   } else if (fallbackGroupId) {
-    moveTreePane(paneId, { groupId: fallbackGroupId, pos: 'center' })
+    moveTreePanes(paneIds, { groupId: fallbackGroupId, pos: 'center' })
   }
 }
 
@@ -1274,11 +1311,13 @@ export function activateTreePane(groupId: string, paneId: string) {
   }
 }
 
-export function reorderTreePane(groupId: string, paneId: string, toIndex: number) {
+/** Reorder a tab block (multi-tab selection, or a single tab) within its
+ *  group's strip — the block keeps its own order. */
+export function reorderTreePanes(groupId: string, paneIds: readonly string[], toIndex: number) {
   const tree = $layoutTree.get()
 
   if (tree) {
-    commit(reorderPaneInGroupOp(tree, groupId, paneId, toIndex))
+    commit(reorderPanesInGroupOp(tree, groupId, paneIds, toIndex))
     markActivePreset('custom')
   }
 }

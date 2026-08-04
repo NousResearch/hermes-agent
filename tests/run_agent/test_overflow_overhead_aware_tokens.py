@@ -402,3 +402,29 @@ class TestLongContextTierOverheadAwareTokens:
             "during long-context-tier recovery. All calls: "
             + str([c["tools"] for c in estimate_calls])
         )
+
+    def test_long_context_tier_refreshes_an_opted_in_engine_budget(self, agent):
+        """A 1M-to-200K tier downgrade re-hands the calibrated host budget."""
+        err = self._make_long_context_tier_error()
+        ok_resp = _mock_response(content="Recovered", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err, ok_resp]
+        budget_hook = MagicMock(return_value=True)
+        agent.context_compressor.set_compression_budget = budget_hook
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "compressed"}],
+                "compressed prompt",
+            )
+            agent.run_conversation("hello", conversation_history=_prefill())
+
+        # 200K is below the small-window cutoff, so the built-in 75% floor
+        # produces a 150K trigger when no output reservation is configured.
+        budget_hook.assert_called_once_with(
+            200_000, 150_000, reason="long_context_tier"
+        )

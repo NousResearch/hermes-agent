@@ -147,7 +147,7 @@ def _hermes_version() -> str:
 
 
 # Default settings
-DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
@@ -1758,6 +1758,15 @@ class APIServerAdapter(BasePlatformAdapter):
             # 401. Encoding both sides keeps the timing-safe comparison and
             # matches web_server.py's dashboard-token check.
             if hmac.compare_digest(token.encode(), expected_key.encode()):
+                return None  # Auth OK
+
+        # Fall back to query parameter for OpenAI-compatible clients
+        # (e.g., OpenWebUI sends OPENAI_API_KEY as a query param).
+        _query = getattr(request, "query", None) or {}
+        query_key = _query.get("api_key") or _query.get("OPENAI_API_KEY") or ""
+        if query_key:
+            query_key = str(query_key).strip()
+            if hmac.compare_digest(query_key.encode(), expected_key.encode()):
                 return None  # Auth OK
 
         logger.warning(
@@ -3838,6 +3847,7 @@ class APIServerAdapter(BasePlatformAdapter):
             raise
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
+        await response.write_eof()
         return response
 
     async def _handle_session_model_lock(self, request: "web.Request") -> "web.Response":
@@ -4400,6 +4410,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
+            await response.write_eof()
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             # Client disconnected mid-stream.  Interrupt the agent so it
             # stops making LLM API calls at the next loop iteration, then
@@ -4432,6 +4443,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
                 await response.write(_sse_frame(error_chunk))
                 await response.write(b"data: [DONE]\n\n")
+                await response.write_eof()
             except Exception:
                 pass
 
@@ -5042,6 +5054,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 pass
             logger.error("Agent crashed mid-stream for %s: %s", response_id, str(agent_error)[:300])
 
+        await response.write_eof()
         return response
 
     @_admit_api_agent_request

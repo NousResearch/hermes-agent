@@ -55,9 +55,9 @@ dependency does not change the collection or privacy policy.
 
 ## Current Slices
 
-The current vertical slices record anonymous install activity, logical model
-calls, top-level task runs, tool and approval outcomes, and skill lifecycle and
-reuse:
+The current vertical slices record pseudonymous profile activity, logical
+model calls, top-level task runs, tool and approval outcomes, and skill
+lifecycle and reuse:
 
 ```text
 Hermes turn, API, tool, and approval hooks
@@ -82,7 +82,7 @@ counters created by older builds can be exported without losing data.
 
 The first consented session start emits an empty `hermes.client.active` Relay
 mark. The profile-scoped subscriber creates a random UUID install identity and
-uses a transactional compare-and-set to record at most one active-install
+uses a transactional compare-and-set to record at most one client-active
 counter in any rolling 24-hour window. The metric has no dimensions; Hermes
 version, OS family, architecture, and install method remain bounded package
 resources. Concurrent Hermes processes share the SQLite latch, so simultaneous
@@ -183,6 +183,6 @@ The smoke has the local model request a real `read_file` tool call before its
 final response, then drives create, load, reuse, patch, edit, stale, archive,
 restore, and install skill transitions through the installed Relay binding. It
 verifies model, provider, task, tool, and skill counters in SQLite, validates
-all exported delta packages against the closed schema, verifies the anonymous
-active-install counter, and checks that prompt, response, tool-call ID,
-tool-result, and skill-name canaries are absent from the packages.
+all exported delta packages against the closed schema, verifies the
+pseudonymous client-active counter, and checks that prompt, response, tool-call
+ID, tool-result, and skill-name canaries are absent from the packages.

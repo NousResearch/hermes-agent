@@ -1,9 +1,7 @@
 #!/bin/bash
 # pr-to-blog-daily.sh — PR-to-blog generation (P13: dry-run + no background detach).
-# Hermes no-agent crons have a 300s timeout. The old script detached a background
-# child via `&`; P13 removes the detach and runs synchronously under the cron
-# agent so failures surface. BLOG_DAILY_DRY_RUN=1 short-circuits before any
-# Python invocation.
+# Runs synchronously under the cron agent.
+# BLOG_DAILY_DRY_RUN=1 short-circuits before any Python invocation.
 set -euo pipefail
 
 HERMES_HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
@@ -33,7 +31,9 @@ fi
   rc=$?
   echo "[$(date -Is)] finished PR-to-blog daily rc=$rc"
   exit "$rc"
-) >>"$LOG" 2>&1
+) >>"$LOG" 2>&1 || true
 
 # Synchronous — silent on success (no Discord delivery)
+# NOTE: || true prevents set -e from propagating the subshell's exit code.
+# The subshell's rc is already captured and logged inside the block.
 exit 0

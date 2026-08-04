@@ -509,12 +509,44 @@ export function preserveLocalPendingTurnMessages(
   }
 
   const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
+
+  // Compression rewrites the transcript below the current turn, so a settled
+  // `assistant-stream-*` row is a live tail only when it sits AFTER the newest
+  // local user row. Neither the stream-id prefix nor `pending` alone is
+  // sufficient liveness evidence across compression.
+  let newestLocalUserIndex = -1
+
+  for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
+    if (previousMessages[index].role === 'user' && !isGatewaySystemMarker(previousMessages[index])) {
+      newestLocalUserIndex = index
+      break
+    }
+  }
+
+  const newestLocalUser = newestLocalUserIndex >= 0 ? previousMessages[newestLocalUserIndex] : undefined
+
+  // Already-polluted convergence: once the old implementation has appended the
+  // stale settled stream rows, they sit AFTER the newest local user and the
+  // positional exclusion above can no longer see them. They are leftovers of
+  // an earlier reconciliation whenever the newest local user is already the
+  // current authoritative turn and the authoritative transcript already
+  // carries an assistant after it — not the unique-copy sibling.
+  const latestNonMarkerAuthoritativeUser = [...nextMessages]
+    .reverse()
+    .find(message => message.role === 'user' && !isGatewaySystemMarker(message))
+
+  const hasAuthoritativeAssistantAfterLatestUser =
+    latestNonMarkerAuthoritativeUser !== undefined &&
+    nextMessages
+      .slice(nextMessages.lastIndexOf(latestNonMarkerAuthoritativeUser) + 1)
+      .some(message => message.role === 'assistant')
+
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
   const replacements = new Map<string, ChatMessage>()
 
-  for (const message of previousMessages) {
+  for (const [index, message] of previousMessages.entries()) {
     if (isGatewaySystemMarker(message)) {
       continue
     }
@@ -578,6 +610,13 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
+    // A settled stream row before the newest local user — or with no local
+    // user anchor at all — is compressed-away history, not an uncommitted
+    // reply, and must not be appended after the authoritative transcript.
+    if (isPendingAssistant && message.pending !== true && (newestLocalUserIndex < 0 || index <= newestLocalUserIndex)) {
+      continue
+    }
+
     if (authoritative) {
       if (isPendingAssistant) {
         // Keep the local pending row when it is the same reply further along
@@ -598,6 +637,25 @@ export function preserveLocalPendingTurnMessages(
       ) {
         continue
       }
+    }
+
+    // Final convergence gate, AFTER the same-ordinal/same-id richer-local
+    // replacement paths above so they still win: when the newest local user is
+    // already the current authoritative turn (same visible text) and the
+    // authoritative transcript already carries an assistant after it, an
+    // unmatched settled stream row was appended by an earlier polluted
+    // reconciliation, not by an uncommitted gateway turn, and must not be
+    // appended again.
+    if (
+      isPendingAssistant &&
+      message.pending !== true &&
+      newestLocalUser !== undefined &&
+      latestNonMarkerAuthoritativeUser !== undefined &&
+      textWithoutReferenceLines(chatMessageText(newestLocalUser)) ===
+        textWithoutReferenceLines(chatMessageText(latestNonMarkerAuthoritativeUser)) &&
+      hasAuthoritativeAssistantAfterLatestUser
+    ) {
+      continue
     }
 
     preserved.push(message)

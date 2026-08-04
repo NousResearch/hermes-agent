@@ -587,6 +587,68 @@ describe('preserveLocalPendingTurnMessages', () => {
     )
   })
 
+  // Compression rewrites history, so the warm cache's settled `assistant-stream-*`
+  // rows with no local user anchor are stale and must not be re-appended after
+  // the authoritative rows. Neither the stream-id prefix nor `pending: false`
+  // alone establishes liveness once role ordinals stop aligning after compression.
+  it('does not append settled assistant-stream rows from a warm cache after compression', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: false }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: false }),
+      msg('assistant-stream-stale-3', 'assistant', 'compressed-away reply three', { pending: false })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, pollutedWarmCache)).toEqual(authoritative)
+  })
+
+  // Observed-order companion to the no-anchor case above: the warm cache holds
+  // the finished streamed rows BEFORE the newest local user (compression
+  // rewrote the transcript below the current turn). The authoritative
+  // transcript carries that same newest user and its committed reply, so only
+  // rows AFTER the newest local user can be a live tail — this pre-user stream
+  // history must not be re-appended after the authoritative rows.
+  it('does not append settled assistant-stream history that precedes the newest local user after compression', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: false }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: false }),
+      msg('user-inflight', 'user', 'the current prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, pollutedWarmCache)).toEqual(authoritative)
+  })
+
+  // The old implementation has already appended the stale settled stream rows
+  // after the authoritative rows, so the warm cache is permanently polluted.
+  // Re-running reconciliation must converge: when the newest local user is
+  // already the current authoritative turn and the authoritative transcript
+  // carries an assistant after it, these unmatched settled rows are leftovers
+  // of that earlier reconciliation, not the unique-copy sibling, and must not
+  // be re-appended.
+  it('does not re-append stale settled streams when the current turn is already authoritative', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const alreadyPolluted = [
+      ...authoritative,
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: false }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: false })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, alreadyPolluted)).toBe(authoritative)
+  })
+
   it('drops the live tail once the latest authoritative user has persisted it after compression', () => {
     const compressedAuthority = [
       msg('stored-user', 'user', 'the one genuinely in-flight prompt'),

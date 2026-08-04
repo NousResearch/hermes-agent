@@ -4226,6 +4226,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        no_session: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -4569,35 +4570,44 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
         self._session_db_unavailable = False
-        try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
-        except Exception as e:
-            # #41386: a failed session store means the transcript is NOT
-            # persisted to state.db — the live chat looks healthy but resume
-            # later shows a truncated/empty session. A buried log line is not
-            # enough; surface it prominently so the user knows persistence is
-            # off for this run and can fix the store before relying on resume.
-            self._session_db_unavailable = True
-            logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
+        # Ephemeral mode. Two entry points converge here:
+        #   --no-session  -> ephemeral from process start (one-shot only)
+        #   /temp         -> ephemeral from mid-session onward (interactive)
+        # Both mean "leave no trace", so both open no session store at all. Not
+        # opening it is what makes the guarantee crash-proof: there is no row to
+        # purge later, so a SIGKILL cannot strand a transcript on disk.
+        self._ephemeral: bool = bool(no_session)
+        self.no_session = bool(no_session)
+        if not self._ephemeral:
             try:
-                # Console is imported at module scope; do NOT re-import it here.
-                # A function-local `import` would make `Console` a local name for
-                # the whole __init__ body and break the earlier `self.console =
-                # Console()` with UnboundLocalError.
-                Console(stderr=True).print(
-                    "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
-                    "this conversation will [bold]NOT be saved[/bold] to disk and "
-                    "cannot be resumed later. Searching past sessions is also disabled.\n"
-                    f"  Reason: {e}\n"
-                    "  Fix the state.db store (e.g. `hermes update` to rebuild the venv) to restore persistence."
-                )
-            except Exception:
-                # Never let the warning path itself break startup.
-                print(
-                    "WARNING: Session store unavailable — this conversation will NOT be "
-                    f"saved to disk and cannot be resumed later. Reason: {e}"
-                )
+                from hermes_state import SessionDB
+                self._session_db = SessionDB()
+            except Exception as e:
+                # #41386: a failed session store means the transcript is NOT
+                # persisted to state.db — the live chat looks healthy but resume
+                # later shows a truncated/empty session. A buried log line is not
+                # enough; surface it prominently so the user knows persistence is
+                # off for this run and can fix the store before relying on resume.
+                self._session_db_unavailable = True
+                logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
+                try:
+                    # Console is imported at module scope; do NOT re-import it here.
+                    # A function-local `import` would make `Console` a local name for
+                    # the whole __init__ body and break the earlier `self.console =
+                    # Console()` with UnboundLocalError.
+                    Console(stderr=True).print(
+                        "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
+                        "this conversation will [bold]NOT be saved[/bold] to disk and "
+                        "cannot be resumed later. Searching past sessions is also disabled.\n"
+                        f"  Reason: {e}\n"
+                        "  Fix the state.db store (e.g. `hermes update` to rebuild the venv) to restore persistence."
+                    )
+                except Exception:
+                    # Never let the warning path itself break startup.
+                    print(
+                        "WARNING: Session store unavailable — this conversation will NOT be "
+                        f"saved to disk and cannot be resumed later. Reason: {e}"
+                    )
 
         # Opportunistic state.db maintenance — runs at most once per
         # min_interval_hours, tracked via state_meta in state.db itself so
@@ -10042,6 +10052,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ) is None:
                 return True  # confirmation cancelled — command handled, keep REPL alive
             self.new_session(title=title)
+        elif canonical == "temp":
+            self._handle_temp_command(cmd_original)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
         elif canonical == "sessions":
@@ -14330,6 +14342,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         response,
                         self.conversation_history,
                         failure_callback=_title_failure_cb,
+                        # NB: the attribute is `_ephemeral` (underscore). A
+                        # getattr for "ephemeral" silently defaults to False and
+                        # the guard never fires -- the exact class of bug this
+                        # flag exists to prevent.
+                        ephemeral=bool(getattr(self, "_ephemeral", False)),
                         main_runtime={
                             "model": self.model,
                             "provider": self.provider,
@@ -14755,7 +14772,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     pass
 
-            print("Resume this session with:")
+            # A temporary run persisted nothing, so there is nothing to resume.
+            # Printing the hint anyway hands the user a command that cannot
+            # work and implies the transcript is on disk -- the opposite of
+            # what --no_session promises. The run stats below are still true
+            # and still useful, so only the resume promise is suppressed.
+            if getattr(self, "_ephemeral", False):
+                print("Temporary session — nothing was saved, so it can't be resumed.")
+            else:
+                print("Resume this session with:")
             # Session IDs are profile-constrained, so the resume hint must
             # include `-p <profile>` for non-default profiles. Without this,
             # copying the hint from a non-default profile fails to find the
@@ -14769,9 +14794,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             profile_flag = (
                 "" if _active_profile in ("default", "custom") else f" -p {_active_profile}"
             )
-            print(f"  hermes --resume {self.session_id}{profile_flag}")
-            if session_title:
-                print(f"  hermes -c \"{session_title}\"{profile_flag}")
+            if not getattr(self, "_ephemeral", False):
+                print(f"  hermes --resume {self.session_id}{profile_flag}")
+                if session_title:
+                    print(f"  hermes -c \"{session_title}\"{profile_flag}")
             print()
             print(f"Session:        {self.session_id}")
             if session_title:
@@ -14875,6 +14901,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return _state_fragment("class:prompt-working", "⚕")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
+        # Temporary chat: replace the idle prompt symbol outright rather than
+        # decorating it. A transient "/temp started" line scrolls away after a
+        # few turns — the question "is this being saved?" has to be answerable
+        # from the prompt the user is about to type at, on every single turn.
+        if getattr(self, "_ephemeral", False):
+            # 🕵 (incognito), not 🔒. A padlock promises "encrypted/secure",
+            # which is a different and misleading claim -- a temporary chat is
+            # not safer in transit, it is simply not written down. This matches
+            # the desktop badge, which uses the spy glyph for the same reason.
+            return [("class:ephemeral-prompt", "🕵 temp "), ("class:prompt", symbol)]
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:
@@ -17271,6 +17307,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'voice-processing': '#FFA500 italic',
             'voice-status': 'bg:#1a1a2e #87CEEB',
             'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
+            # Temporary ("/temp") chat — amber, matching the desktop badge.
+            # Amber not red: private mode is a valid state, not an error.
+            'ephemeral-prompt': '#FFB300 bold',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
 
@@ -18082,6 +18121,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    no_session: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -18170,6 +18210,29 @@ def main(
     
     # Handle query shorthand
     query = query or q
+
+    # --no-session is one-shot-only. Interactive mode has its own ephemeral
+    # entry point (/temp), which is strictly better there: it can be toggled
+    # when the user decides a conversation should be private, and it keeps
+    # /new and /branch coherent. Allowing --no-session interactively would
+    # also expose those two commands, which create session rows directly and
+    # bypass the agent-level guard. Resuming a persisted session into an
+    # ephemeral run is likewise incoherent.
+    #
+    # There is deliberately NO environment-variable form: AGENTS.md rejects new
+    # user-facing non-secret HERMES_* env vars, and flag-only keeps this check
+    # the single unbypassable gate into ephemeral CLI mode.
+    if no_session:
+        if resume:
+            raise ValueError(
+                "--no-session cannot be combined with --resume. "
+                "Use /temp inside an interactive session instead."
+            )
+        if not query:
+            raise ValueError(
+                "--no-session requires a one-shot invocation (-q/--query). "
+                "For an interactive temporary chat, start normally and run /temp."
+            )
     
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools
@@ -18219,6 +18282,7 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        no_session=no_session,
     )
 
     if parsed_skills:

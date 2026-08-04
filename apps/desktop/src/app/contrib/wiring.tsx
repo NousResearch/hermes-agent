@@ -827,6 +827,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   useKeybinds({
     openNewSessionTab,
     startFreshSession: startFreshSessionDraft,
+    // Same call the sidebar's "New temporary session" makes, so the shortcut
+    // and the button cannot drift apart.
+    startFreshTemporarySession: () => startFreshSessionDraft({ ephemeral: true }),
     toggleCommandCenter,
     toggleSelectedPin
   })

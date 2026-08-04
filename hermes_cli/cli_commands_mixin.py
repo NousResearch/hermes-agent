@@ -947,6 +947,104 @@ class CLICommandsMixin:
         _cprint("  Your CLI session is intact.")
         return True
 
+    def _handle_temp_command(self, cmd_original: str) -> None:
+        """Handle /temp [off|status] — toggle a temporary (ephemeral) chat.
+
+        A temporary chat leaves no trace: no session-store row, no JSON
+        snapshot, no memory extraction, and write-side tools are blocked.
+
+        Entering and leaving BOTH rotate to a fresh session. That is the whole
+        privacy contract: the temporary conversation must not be flushed into
+        the persistent session that follows it, and the persistent
+        conversation that preceded it must not be visible to the temporary
+        one. ``new_session()`` performs the rotation; the flag is flipped
+        around it so each half lands under the correct persistence regime.
+        """
+        from cli import _cprint
+
+        parts = cmd_original.split(None, 1)
+        arg = (parts[1].strip().lower() if len(parts) > 1 else "")
+        currently = bool(getattr(self, "_ephemeral", False))
+
+        if arg in ("status", "?"):
+            if currently:
+                _cprint("  Temporary chat is ON — nothing from this conversation is saved.")
+                _cprint("  Run /temp off to return to a normal, saved session.")
+            else:
+                _cprint("  Temporary chat is OFF — this session is being saved normally.")
+                _cprint("  Run /temp to start a temporary chat.")
+            return
+
+        if arg in ("off", "no", "0", "false", "stop"):
+            if not currently:
+                _cprint("  Not in a temporary chat. This session is already being saved.")
+                return
+            # Leave ephemeral mode. Rotate FIRST while still ephemeral so the
+            # temporary transcript is discarded rather than flushed, then turn
+            # persistence back on for the fresh session. No confirmation is
+            # needed: nothing durable is being destroyed, because nothing
+            # durable was ever written.
+            self.new_session(silent=True)
+            self._ephemeral = False
+            self.no_session = False
+            # Re-open the session store that ephemeral mode deliberately left
+            # closed, then rebuild the agent so it picks up the live store and
+            # a system prompt without the ephemeral notice.
+            if self._session_db is None:
+                try:
+                    from hermes_state import SessionDB
+                    self._session_db = SessionDB()
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Could not reopen session store after /temp off: %s", e
+                    )
+                    _cprint("  ⚠ Session store unavailable — this session still won't be saved.")
+            self._rebuild_agent_for_ephemeral_change()
+            _cprint("  Temporary chat ended. New saved session started.")
+            _cprint("  The temporary conversation was not saved and cannot be recovered.")
+            return
+
+        if currently:
+            _cprint("  Already in a temporary chat. Run /temp off to return to a saved session.")
+            return
+
+        # Enter ephemeral mode. Rotate FIRST while persistence is still on, so
+        # the preceding real conversation is flushed and closed properly, then
+        # go ephemeral for the fresh session.
+        self.new_session(silent=True)
+        self._ephemeral = True
+        self.no_session = True
+        # Drop the session store handle so nothing can write through it. The
+        # lazy re-open in _init_agent is guarded on _ephemeral.
+        self._session_db = None
+        self._rebuild_agent_for_ephemeral_change()
+        _cprint("  🕵 Temporary chat started — nothing here is saved.")
+        _cprint("     No session record, no memory extraction, no resume later.")
+        _cprint("     Memory/skill/cron writes are blocked. Run /temp off to end it.")
+
+    def _rebuild_agent_for_ephemeral_change(self) -> None:
+        """Re-init the agent so an ephemeral toggle takes effect.
+
+        The ephemeral flag is read at construction (it gates the tool guard and
+        the system-prompt notice), so flipping it on a live agent requires a
+        rebuild. Rebuilding is also what makes the prompt-cache story correct:
+        the system prompt stays byte-stable for the life of each agent, and the
+        toggle starts a new conversation anyway.
+        """
+        from cli import _cprint
+
+        self.agent = None
+        try:
+            if not self._init_agent():
+                _cprint("  ⚠ Agent rebuild failed — restart the CLI to be safe.")
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Agent rebuild after /temp toggle failed: %s", e, exc_info=True
+            )
+            _cprint(f"  ⚠ Agent rebuild failed ({e}) — restart the CLI to be safe.")
+
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         from cli import _cprint, _sync_process_session_id

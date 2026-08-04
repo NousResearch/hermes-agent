@@ -1722,6 +1722,10 @@ export interface Translations {
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string
+    temporarySessionBadge: string
+    temporaryHeroTitle: string
+    temporaryHeroBody: string
+    temporarySessionHint: string
     queueEdit: string
     queueSendNext: string
     queueSend: string

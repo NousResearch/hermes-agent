@@ -338,6 +338,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped:               "⚡ Stoptha. Is féidir leat leanúint leis an seisiún seo."
     no_active:             "Níl aon tasc gníomhach le stopadh."
 
+  temp:
+    usage:                 "Úsáid: /temp [off|status]\nSampla: /temp\n\nTosaíonn comhrá sealadach nach sábháiltear aon rud uaidh. Bain úsáid as /temp off chun filleadh ar ghnáthsheisiún."
+    started:               "🕵️ Comhrá sealadach tosaithe.\nNí shábháiltear aon rud anseo: ní thaispeánfar an comhrá seo i do stair, ní chuimhneofar air, agus ní féidir é a atosú tar éis duit é a dhúnadh.\nBain úsáid as /temp off chun filleadh ar ghnáthsheisiún."
+    already_on:            "🕵️ Tá tú i gcomhrá sealadach cheana féin.\nBain úsáid as /temp off chun filleadh ar ghnáthsheisiún."
+    ended:                 "Comhrá sealadach críochnaithe. Seisiún sábháilte nua tosaithe.\nNíor sábháladh an comhrá sealadach agus ní féidir é a aisghabháil."
+    not_active:            "Níl aon chomhrá sealadach gníomhach.\nBain úsáid as /temp chun ceann a thosú."
+    status_on:             "🕵️ Comhrá sealadach: ann\nNí shábháiltear aon rud ón gcomhrá seo. Bain úsáid as /temp off chun é a chríochnú."
+    status_off:            "Comhrá sealadach: as\nSábháiltear an seisiún seo mar is gnách. Bain úsáid as /temp chun comhrá sealadach a thosú."
   title:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
     warn_prefix:           "⚠️ {error}"

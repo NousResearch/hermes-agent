@@ -12378,6 +12378,9 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
     rows = {row["id"]: row for row in session_rows}
     assert rows["sid-a"] == {
         "current": False,
+        # Live rows carry the temporary flag so the sidebar can filter them
+        # out; it never reaches the database, so this is the only signal.
+        "ephemeral": False,
         "id": "sid-a",
         "last_active": 20.0,
         "message_count": 1,

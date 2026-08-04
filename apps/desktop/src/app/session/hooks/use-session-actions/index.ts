@@ -28,7 +28,9 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $currentSessionEphemeral,
   $messages,
+  $newChatEphemeral,
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
@@ -178,6 +180,10 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
     source: 'desktop',
     ...(cwd && { cwd }),
     ...(profile ? { profile } : {}),
+    // Private chat: the backend never writes a DB row for this session and
+    // blocks write-side tools. Sent at creation only — privacy is decided when
+    // the session is born, never toggled onto a half-persisted conversation.
+    ...($newChatEphemeral.get() ? { ephemeral: true } : {}),
     ...(selection.model
       ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
       : {}),
@@ -187,6 +193,8 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
 }
 
 interface FreshSessionDraftOptions {
+  /** Start the draft as a private (temporary) chat — nothing is persisted. */
+  ephemeral?: boolean
   preserveRoute?: boolean
   replaceRoute?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
@@ -298,6 +306,12 @@ export function useSessionActions({
       setAwaitingResponse(false)
       clearNotifications()
       setIntroSeed(seed => seed + 1)
+      // Privacy is a per-draft decision, never sticky: an explicit `false` here
+      // means a plain "New session" click always clears a previous private
+      // draft. Leaving it set is how a user ends up in a private chat they
+      // didn't ask for — or worse, believes they are private when they aren't.
+      $newChatEphemeral.set(draftOptions.ephemeral ?? false)
+      $currentSessionEphemeral.set(draftOptions.ephemeral ?? false)
       // A fresh chat takes the screen. Front the workspace — and ONLY that:
       // `$terminalTakeover` is the terminal's open/closed state in every
       // layout, not a Focus-only overlay flag, so clearing it here would close
@@ -468,6 +482,12 @@ export function useSessionActions({
 
   const selectSidebarItem = useCallback(
     (item: SidebarNavItem) => {
+      if (item.action === 'new-temporary-session') {
+        startFreshSessionDraft({ ephemeral: true })
+
+        return
+      }
+
       if (item.action === 'new-session') {
         startFreshSessionDraft()
 
@@ -584,6 +604,14 @@ export function useSessionActions({
       setFreshDraftReady(false)
       clearNotifications()
       resetViewSync()
+      // Clear the temporary flags in the SAME synchronous block that paints the
+      // click. Doing it after `await resumePromise` (as this first did) leaves
+      // the badge and hero from the previous temporary chat on screen for the
+      // whole resolve/gateway-swap round trip -- which is exactly the "hints
+      // persist when I click another session" bug. A resumed session came off
+      // disk, so it is never temporary; session.info re-confirms it later.
+      $currentSessionEphemeral.set(false)
+      $newChatEphemeral.set(false)
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
 

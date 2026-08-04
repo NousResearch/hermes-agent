@@ -1,6 +1,7 @@
 import { KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
+import { IconSpy } from '@tabler/icons-react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
@@ -142,13 +143,22 @@ import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 const NON_SESSION_INITIAL_ROWS = 3
 const NON_SESSION_LOAD_STEP = 10
 
-const SIDEBAR_NAV: SidebarNavItem[] = [
+export const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
     label: '',
     icon: props => <Codicon name="robot" {...props} />,
     action: 'new-session',
     keybindActionId: 'session.new'
+  },
+  {
+    // Sits directly under "New session" so the temporary option is discoverable
+    // at the moment the user is already deciding to start a chat — a privacy
+    // affordance buried in a menu is one people don't find when they need it.
+    id: 'new-temporary-session',
+    label: '',
+    icon: props => <IconSpy {...props} />,
+    action: 'new-temporary-session'
   },
   {
     id: 'skills',
@@ -383,7 +393,19 @@ export function ChatSidebar({
   // profile in, grouped by profile below. Single-profile users land here with
   // scope === their only profile, so nothing is filtered out.
   const visibleSessions = useMemo(
-    () => (showAllProfiles ? sessions : sessions.filter(s => normalizeProfileKey(s.profile) === profileScope)),
+    () => {
+      const scoped = showAllProfiles
+        ? sessions
+        : sessions.filter(s => normalizeProfileKey(s.profile) === profileScope)
+
+      // Temporary chats never appear in the sidebar. They persist nothing, so
+      // a row here is a promise the app cannot keep: clicking it resumes
+      // nothing, and the row itself (with its generated title) is exactly the
+      // "someone can see what I was doing" trace the mode exists to prevent.
+      // Filtered at this single funnel rather than per-list -- Recents, the
+      // project tree overlay and the lane previews all derive from here.
+      return scoped.filter(s => !s.ephemeral)
+    },
     [sessions, showAllProfiles, profileScope]
   )
 

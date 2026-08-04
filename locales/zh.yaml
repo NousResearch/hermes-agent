@@ -334,6 +334,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped:               "⚡ 已停止。你可以继续此会话。"
     no_active:             "没有可停止的活跃任务。"
 
+  temp:
+    usage:                 "用法: /temp [off|status]\n示例: /temp\n\n开始一个临时对话，不保存任何内容。使用 /temp off 返回普通会话。"
+    started:               "🕵️ 临时对话已开始。\n此对话不会被保存：不会出现在历史记录中，不会被记住，关闭后也无法恢复。\n使用 /temp off 返回普通会话。"
+    already_on:            "🕵️ 你已经在临时对话中。\n使用 /temp off 返回普通会话。"
+    ended:                 "临时对话已结束。已开始新的保存会话。\n临时对话的内容未被保存，无法恢复。"
+    not_active:            "当前没有进行中的临时对话。\n使用 /temp 开始一个。"
+    status_on:             "🕵️ 临时对话：已开启\n此对话的内容不会被保存。使用 /temp off 结束。"
+    status_off:            "临时对话：已关闭\n此会话会正常保存。使用 /temp 开始临时对话。"
   title:
     db_unavailable:        "会话数据库不可用。"
     warn_prefix:           "⚠️ {error}"

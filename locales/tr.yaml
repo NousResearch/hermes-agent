@@ -334,6 +334,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped:               "⚡ Durduruldu. Bu oturuma devam edebilirsin."
     no_active:             "Durdurulacak aktif görev yok."
 
+  temp:
+    usage:                 "Kullanım: /temp [off|status]\nÖrnek: /temp\n\nHiçbir şeyin kaydedilmediği geçici bir sohbet başlatır. Normal oturuma dönmek için /temp off kullanın."
+    started:               "🕵️ Geçici sohbet başlatıldı.\nBurada hiçbir şey kaydedilmez: bu sohbet geçmişinizde görünmez, hatırlanmaz ve kapattıktan sonra sürdürülemez.\nNormal oturuma dönmek için /temp off kullanın."
+    already_on:            "🕵️ Zaten geçici bir sohbettesiniz.\nNormal oturuma dönmek için /temp off kullanın."
+    ended:                 "Geçici sohbet sona erdi. Yeni bir kaydedilen oturum başlatıldı.\nGeçici konuşma kaydedilmedi ve kurtarılamaz."
+    not_active:            "Etkin bir geçici sohbet yok.\nBaşlatmak için /temp kullanın."
+    status_on:             "🕵️ Geçici sohbet: açık\nBu sohbetten hiçbir şey kaydedilmiyor. Sonlandırmak için /temp off kullanın."
+    status_off:            "Geçici sohbet: kapalı\nBu oturum normal şekilde kaydedilir. Geçici sohbet başlatmak için /temp kullanın."
   title:
     db_unavailable:        "Oturum veritabanı kullanılamıyor."
     warn_prefix:           "⚠️ {error}"

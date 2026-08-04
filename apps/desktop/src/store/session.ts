@@ -529,6 +529,22 @@ export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $workspaceCwdOwner = atom<null | string>(null)
 export const $newChatWorkspaceTarget = atom<NewChatWorkspaceTarget>(undefined)
 export const $newChatWorkspaceTargetGeneration = atom(0)
+
+// Is the NEXT new chat private (temporary)? Consumed by session.create and
+// cleared once that session exists. Deliberately NOT persisted to localStorage:
+// "private" must never be a sticky mode the user forgets they left on, and a
+// stale true after a restart would silently stop saving normal chats.
+export const $newChatEphemeral = atom(false)
+
+// Is the CURRENTLY ACTIVE session private? Mirrored from the gateway's
+// session.info so the UI chrome (banner, composer, tab badge) can't disagree
+// with the backend about whether anything is being saved.
+export const $currentSessionEphemeral = atom(false)
+
+// Does the ACTIVE session have zero messages? Mirrored from the session view so
+// chrome outside the thread (the temporary-chat hero vs. its compact bar) can
+// switch on "has the user said anything yet" without reaching into the runtime.
+export const $currentThreadEmpty = atom(true)
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
   calls: 0,

@@ -2729,6 +2729,7 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
         "compact": getattr(args, "compact", False),
+        "no_session": getattr(args, "no_session", False),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -10919,6 +10920,19 @@ def _try_termux_fast_cli_launch() -> bool:
         _print_version_info(check_updates=False)
         return True
 
+    # --no-session is one-shot-only. Without this gate a bare
+    # `hermes --no-session` parses fine, matches no one-shot branch, and drops
+    # into a NORMAL interactive session that is saved — the exact opposite of
+    # what was asked for, with no error. Fail loudly and point at /temp, which
+    # is the interactive equivalent. (cli.main() carries the same check for the
+    # -q/--query path; this covers -z/--oneshot.)
+    if getattr(args, "no_session", False) and not getattr(args, "oneshot", None) \
+            and not getattr(args, "query", None) and not getattr(args, "q", None):
+        parser.error(
+            "--no-session requires a one-shot invocation (-z/--oneshot or -q/--query). "
+            "For an interactive temporary chat, start hermes normally and run /temp."
+        )
+
     if getattr(args, "oneshot", None):
         _prepare_agent_startup(args)
         _run_and_exit_oneshot(
@@ -10927,6 +10941,7 @@ def _try_termux_fast_cli_launch() -> bool:
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             usage_file=getattr(args, "usage_file", None),
+            no_session=getattr(args, "no_session", False),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -12568,6 +12583,7 @@ def main():
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             usage_file=getattr(args, "usage_file", None),
+            no_session=getattr(args, "no_session", False),
         )
 
     # Handle top-level --resume / --continue as shortcut to chat

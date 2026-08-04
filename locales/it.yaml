@@ -334,6 +334,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped:               "⚡ Fermato. Puoi continuare questa sessione."
     no_active:             "Nessuna attività attiva da fermare."
 
+  temp:
+    usage:                 "Uso: /temp [off|status]\nEsempio: /temp\n\nAvvia una chat temporanea di cui non viene salvato nulla. Usa /temp off per tornare a una sessione normale."
+    started:               "🕵️ Chat temporanea avviata.\nQui non viene salvato nulla: questa chat non comparirà nella cronologia, non verrà ricordata e non potrà essere ripresa dopo la chiusura.\nUsa /temp off per tornare a una sessione normale."
+    already_on:            "🕵️ Sei già in una chat temporanea.\nUsa /temp off per tornare a una sessione normale."
+    ended:                 "Chat temporanea terminata. Avviata una nuova sessione salvata.\nLa conversazione temporanea non è stata salvata e non può essere recuperata."
+    not_active:            "Nessuna chat temporanea attiva.\nUsa /temp per avviarne una."
+    status_on:             "🕵️ Chat temporanea: attiva\nNulla di questa chat viene salvato. Usa /temp off per terminarla."
+    status_off:            "Chat temporanea: disattivata\nQuesta sessione viene salvata normalmente. Usa /temp per avviare una chat temporanea."
   title:
     db_unavailable:        "Database delle sessioni non disponibile."
     warn_prefix:           "⚠️ {error}"

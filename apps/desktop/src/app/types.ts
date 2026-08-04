@@ -158,7 +158,8 @@ export type CommandDispatchResponse =
   | SendCommandDispatchResponse
   | PrefillCommandDispatchResponse
 
-export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
+export type SidebarNavId =
+  'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'new-temporary-session' | 'settings' | 'skills'
 
 export interface SidebarNavItem {
   /** Built-in view id, or a contributed row's namespaced contribution id. */
@@ -166,7 +167,7 @@ export interface SidebarNavItem {
   label: string
   icon: React.ComponentType<{ className?: string }>
   route?: string
-  action?: 'new-session'
+  action?: 'new-session' | 'new-temporary-session'
   /** Keybind action id — when set, the tooltip shows the keybind hint. */
   keybindActionId?: string
 }

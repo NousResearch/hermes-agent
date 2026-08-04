@@ -245,6 +245,13 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--no-session",
+        action="store_true",
+        default=False,
+        help="Ephemeral one-shot: leave no trace (no session row, no JSON snapshot, no memory extraction). Requires -q/--query. For an interactive temporary chat, use /temp",
+    )
+    _inherited_flag(
+        parser,
         "--safe-mode",
         action="store_true",
         default=False,
@@ -434,6 +441,13 @@ def build_top_level_parser():
         action="store_true",
         default=argparse.SUPPRESS,
         help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--no-session",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Ephemeral one-shot: leave no trace (no session row, no JSON snapshot, no memory extraction). Requires -q/--query. Useful for batch-testing prompts without flooding the session list. For an interactive temporary chat, use /temp.",
     )
     _inherited_flag(
         chat_parser,

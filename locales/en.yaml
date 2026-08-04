@@ -347,6 +347,15 @@ gateway:
     stopped:               "⚡ Stopped. You can continue this session."
     no_active:             "No active task to stop."
 
+  temp:
+    usage:                 "Usage: /temp [off|status]\nExample: /temp\n\nStarts a temporary chat. Nothing is saved — no transcript, no session record, no memory. Send /temp off when you're done."
+    started:               "🕵️ *Temporary chat started — nothing here is saved.*\n\n• No transcript, no session record, no resume later\n• Nothing is written to memory\n• Memory, skill and cron writes are blocked\n\nSend `/temp off` when you're done."
+    already_on:            "Already in a temporary chat 🕵️\nSend `/temp off` to return to a saved session."
+    ended:                 "✅ *Temporary chat ended.* A new saved session has started.\nThe temporary conversation was not saved and can't be recovered."
+    not_active:            "Not in a temporary chat — this session is already being saved.\nSend `/temp` to start one."
+    status_on:             "🕵️ *Temporary chat is ON.*\nNothing in this conversation is being saved.\nSend `/temp off` to go back to a normal, saved session."
+    status_off:            "Temporary chat is *off* — this session is being saved normally.\nSend `/temp` to start a temporary chat."
+
   title:
     db_unavailable:        "Session database not available."
     warn_prefix:           "⚠️ {error}"

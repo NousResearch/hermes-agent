@@ -173,6 +173,7 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
+    no_session: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -187,6 +188,10 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        no_session: When True, run ephemerally — no session row, no JSON
+            snapshot, no end-of-session memory extraction. Recall degrades to
+            unavailable rather than reading other sessions' history into a
+            throwaway invocation.
 
     Returns the exit code.  The caller owns process termination.
     """
@@ -248,6 +253,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    no_session=no_session,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -316,6 +322,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    no_session: bool = False,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -409,7 +416,10 @@ def _run_agent(
         single_query=True,
     )
 
-    session_db = _create_session_db_for_oneshot()
+    # Ephemeral runs never open the canonical store. `ephemeral=True` would
+    # hard-stop writes anyway, but not opening it at all also keeps recall from
+    # surfacing other sessions' history inside a throwaway invocation.
+    session_db = None if no_session else _create_session_db_for_oneshot()
     # The try spans agent construction (not just ``chat``) so the SQLite store
     # opened above is always closed — including when ``AIAgent(...)`` itself
     # raises on a provider/config error. The one-shot exit path hard-exits via
@@ -432,6 +442,7 @@ def _run_agent(
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
+            ephemeral=no_session,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
             # Interactive callbacks are intentionally NOT wired beyond this

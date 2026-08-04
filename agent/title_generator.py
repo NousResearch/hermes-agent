@@ -363,14 +363,30 @@ def maybe_auto_title(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    ephemeral: bool = False,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
     Only generates a title when:
     - This appears to be the first user→assistant exchange
     - No title is already set
+    - The session is not ephemeral
+
+    ``ephemeral`` sessions ("temporary chat") persist no message rows, but the
+    session row itself still exists — and a generated title is *derived from
+    the message content*, so titling one would write a durable, human-readable
+    summary of a conversation the user was promised leaves no trace. The guard
+    lives here rather than in each caller because there are four call sites
+    (cli, gateway, acp_adapter, tui_gateway) and a missed one leaks silently.
     """
     if not session_db or not session_id or not user_message or not assistant_response:
+        return
+
+    # Temporary chat: never derive a durable title from content the user was
+    # told is not retained. Checked before the history/config work below so it
+    # short-circuits regardless of how the caller was wired up.
+    if ephemeral:
+        logger.debug("Auto-title skipped: ephemeral (temporary) session")
         return
 
     # Count user messages in history to detect first exchange.

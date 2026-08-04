@@ -2043,7 +2043,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             # npm `omit=dev` config would silently skip them and the TUI
             # build would fail. See _run_npm_install_deterministic.
             "--include=dev",
-            "--silent",
+            # No --silent: engine-strict EBADENGINE must reach stderr so the
+            # repair below (and the failure preview) can see it. Quietness
+            # comes from capture_output + CI=1; --silent used to exit 1 with
+            # empty stdout/stderr and skip managed-Node auto-repair (#78826).
             "--no-fund",
             "--no-audit",
             "--progress=false",

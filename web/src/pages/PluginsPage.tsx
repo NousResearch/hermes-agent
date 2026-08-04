@@ -985,7 +985,7 @@ function PluginRowCard(props: PluginRowCardProps) {
                     const res = await api.disableAgentPlugin(row.name);
                     showToast(
                       res.restart_required
-                        ? t.pluginsPage.toggleTakesEffectNextSession
+                        ? t.pluginsPage.toggleTakesEffectAfterRestart
                         : t.pluginsPage.disableRuntime,
                       "success",
                     );
@@ -1004,7 +1004,7 @@ function PluginRowCard(props: PluginRowCardProps) {
                     const res = await api.enableAgentPlugin(row.name);
                     showToast(
                       res.restart_required
-                        ? t.pluginsPage.toggleTakesEffectNextSession
+                        ? t.pluginsPage.toggleTakesEffectAfterRestart
                         : t.pluginsPage.enableRuntime,
                       "success",
                     );

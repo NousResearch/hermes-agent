@@ -325,8 +325,8 @@ export const es: Translations = {
     disableRuntime: "Deshabilitar",
     enableAfterInstall: "Habilitar tras instalar",
     enableRuntime: "Habilitar",
-    toggleTakesEffectNextSession:
-      "Guardado: surte efecto en nuevas sesiones. Reinicia el gateway para aplicarlo en todas partes.",
+    toggleTakesEffectAfterRestart:
+      "Guardado: reinicia el gateway para aplicar el cambio.",
     forceReinstall: "Forzar reinstalación (eliminar carpeta existente primero)",
     headline:
       "Descubre, instala, habilita y actualiza complementos de Hermes (equivalente a `hermes plugins`).",

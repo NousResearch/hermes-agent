@@ -325,8 +325,8 @@ export const uk: Translations = {
     disableRuntime: "Вимкнути",
     enableAfterInstall: "Увімкнути після встановлення",
     enableRuntime: "Увімкнути",
-    toggleTakesEffectNextSession:
-      "Збережено — набуде чинності для нових сесій. Перезапустіть шлюз, щоб застосувати всюди.",
+    toggleTakesEffectAfterRestart:
+      "Збережено — перезапустіть шлюз, щоб застосувати зміну.",
     forceReinstall: "Примусово перевстановити (спершу видалити наявну теку)",
     headline:
       "Знаходьте, встановлюйте, вмикайте та оновлюйте плагіни Hermes (паритет з `hermes plugins`).",

@@ -2039,6 +2039,15 @@ export const zh: Translations = {
     noWorkspace: '无工作区',
     projectEmpty: '暂无会话',
     noSessions: '暂无会话',
+    deleteAll: {
+      action: '删除所有会话',
+      title: '删除所有会话？',
+      body: count =>
+        `永久删除此配置文件中的${count === 1 ? '此会话' : `全部 ${count} 个会话`}？置顶会话也会一并删除；已归档的会话将保留。此操作无法撤销。`,
+      confirm: '全部删除',
+      busy: '正在删除…',
+      done: '已删除'
+    },
     projects: {
       sectionLabel: '项目',
       home: '主页',

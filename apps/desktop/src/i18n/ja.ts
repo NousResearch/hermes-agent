@@ -1686,6 +1686,15 @@ export const ja = defineLocale({
     noWorkspace: 'ワークスペースなし',
     projectEmpty: 'セッションはまだありません',
     noSessions: 'セッションはまだありません',
+    deleteAll: {
+      action: 'すべてのセッションを削除',
+      title: 'すべてのセッションを削除しますか？',
+      body: count =>
+        `このプロファイルの${count === 1 ? 'セッションを' : `${count}件のセッションすべてを`}完全に削除しますか？ピン留めしたセッションも含まれます。アーカイブ済みのセッションは保持されます。この操作は取り消せません。`,
+      confirm: 'すべて削除',
+      busy: '削除中…',
+      done: '削除しました'
+    },
     projects: {
       sectionLabel: 'プロジェクト',
       home: 'ホーム',

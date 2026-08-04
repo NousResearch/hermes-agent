@@ -1631,6 +1631,15 @@ export const zhHant = defineLocale({
     noWorkspace: '無工作區',
     projectEmpty: '尚無工作階段',
     noSessions: '尚無工作階段',
+    deleteAll: {
+      action: '刪除所有工作階段',
+      title: '刪除所有工作階段？',
+      body: count =>
+        `永久刪除此設定檔中的${count === 1 ? '此工作階段' : `全部 ${count} 個工作階段`}？已釘選的工作階段也會一併刪除；已封存的工作階段會保留。此操作無法復原。`,
+      confirm: '全部刪除',
+      busy: '正在刪除…',
+      done: '已刪除'
+    },
     projects: {
       sectionLabel: '專案',
       home: '主頁',

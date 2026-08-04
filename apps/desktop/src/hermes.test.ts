@@ -7,6 +7,7 @@ import {
   AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
   audioSpeakRequestTimeoutMs,
   audioTranscribeRequestTimeoutMs,
+  bulkDeleteSessions,
   getCronJobs,
   getGlobalModelInfo,
   getGlobalModelOptions,
@@ -320,6 +321,31 @@ describe('Hermes REST helpers', () => {
     const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
     expect(call.path).toBe('/api/status')
     expect(call.timeoutMs).toBeUndefined()
+  })
+
+  it('posts ids to the bulk-delete endpoint and routes by profile', async () => {
+    api.mockResolvedValue({ deleted: 2, ok: true })
+
+    await bulkDeleteSessions(['s1', 's2'], 'xiaoxuxu')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/bulk-delete',
+      method: 'POST',
+      body: { ids: ['s1', 's2'], profile: 'xiaoxuxu' },
+      profile: 'xiaoxuxu'
+    })
+  })
+
+  it('omits the profile field for the default profile on bulk delete', async () => {
+    api.mockResolvedValue({ deleted: 1, ok: true })
+
+    await bulkDeleteSessions(['s1'])
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/bulk-delete',
+      method: 'POST',
+      body: { ids: ['s1'] }
+    })
   })
 
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {

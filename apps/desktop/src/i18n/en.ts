@@ -1845,6 +1845,15 @@ export const en: Translations = {
     noWorkspace: 'No workspace',
     projectEmpty: 'No sessions yet',
     noSessions: 'No sessions yet',
+    deleteAll: {
+      action: 'Delete all chats',
+      title: 'Delete all chats?',
+      body: count =>
+        `Permanently delete ${count === 1 ? 'this chat' : `all ${count} chats`} in this profile? Pinned chats are included; archived chats are kept. This can't be undone.`,
+      confirm: 'Delete all',
+      busy: 'Deleting…',
+      done: 'Deleted'
+    },
     projects: {
       sectionLabel: 'Projects',
       home: 'Home',

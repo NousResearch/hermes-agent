@@ -1546,6 +1546,14 @@ export interface Translations {
     noWorkspace: string
     projectEmpty: string
     noSessions: string
+    deleteAll: {
+      action: string
+      title: string
+      body: (count: number) => string
+      confirm: string
+      busy: string
+      done: string
+    }
     projects: {
       sectionLabel: string
       home: string

@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
+import { $pinnedSessionIds } from '@/store/layout'
 import {
   $cronSessions,
   $messagingSessions,
@@ -10,7 +11,8 @@ import {
   setCronSessions,
   setMessagingSessions,
   setSessions,
-  setSessionsLoading
+  setSessionsLoading,
+  setSessionsTotal
 } from '@/store/session'
 
 import { useSessionListActions } from './use-session-list-actions'
@@ -54,9 +56,11 @@ const sidebar = (
 
 const listSidebarSessions = vi.fn()
 const listAllProfileSessions = vi.fn()
+const bulkDeleteSessions = vi.fn()
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
+  bulkDeleteSessions: (...args: unknown[]) => bulkDeleteSessions(...args),
   getCronJobs: vi.fn(async () => []),
   listAllProfileSessions: (...args: unknown[]) => listAllProfileSessions(...args),
   listSidebarSessions: (...args: unknown[]) => listSidebarSessions(...args)
@@ -73,11 +77,14 @@ vi.mock('@/store/projects', () => ({
 beforeEach(() => {
   listSidebarSessions.mockReset()
   listAllProfileSessions.mockReset()
+  bulkDeleteSessions.mockReset()
   removed.ids = new Set()
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
   setSessionsLoading(false)
+  setSessionsTotal(0)
+  $pinnedSessionIds.set([])
 })
 
 afterEach(() => {
@@ -85,6 +92,8 @@ afterEach(() => {
   setCronSessions([])
   setMessagingSessions([])
   setSessionsLoading(false)
+  setSessionsTotal(0)
+  $pinnedSessionIds.set([])
 })
 
 describe('refreshSessions identity + loading hygiene', () => {
@@ -247,5 +256,116 @@ describe('refreshSessions batches slices into one request', () => {
     })
 
     expect(getCronJobs).toHaveBeenLastCalledWith('all')
+  })
+})
+
+describe('clearAllSessions', () => {
+  // The clear loop pages the recents scope in BULK_DELETE_MAX_IDS-row chunks
+  // via listAllProfileSessions; the closing (finally) refresh goes through the
+  // batched sidebar endpoint. Keep the latter empty unless a test needs
+  // survivors to reconcile against.
+  const emptyPage = { limit: 0, offset: 0, sessions: [] as SessionInfo[], total: 0 }
+
+  beforeEach(() => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [], total: 0, profile_totals: {} }))
+  })
+
+  it('pages the scope, bulk-deletes every chat, and clears the list + pins', async () => {
+    const rows = [row('s1'), row('s2')]
+    setSessions(rows)
+    setSessionsTotal(2)
+    $pinnedSessionIds.set(['s2'])
+
+    listAllProfileSessions
+      .mockResolvedValueOnce({ limit: 500, offset: 0, sessions: rows, total: 2 })
+      .mockResolvedValue(emptyPage)
+    bulkDeleteSessions.mockImplementation((ids: string[]) => Promise.resolve({ deleted: ids.length, ok: true }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    let removedCount = 0
+
+    await act(async () => {
+      removedCount = await result.current.clearAllSessions()
+    })
+
+    expect(removedCount).toBe(2)
+    // One page at the bulk cap, scoped like the recents list (cron/messaging/
+    // subagent excluded), then the empty follow-up that ends the loop.
+    expect(listAllProfileSessions).toHaveBeenCalledWith(
+      500,
+      1,
+      'exclude',
+      'recent',
+      'default',
+      expect.objectContaining({ excludeSources: expect.arrayContaining(['cron', 'subagent', 'tool']) })
+    )
+    expect(bulkDeleteSessions).toHaveBeenCalledTimes(1)
+    expect(bulkDeleteSessions).toHaveBeenCalledWith(['s1', 's2'], 'default')
+    expect($sessions.get()).toHaveLength(0)
+    expect($pinnedSessionIds.get()).toEqual([])
+  })
+
+  it('groups ids by owning profile so each profile is deleted against its own db', async () => {
+    const rows = [row('a1'), row('b1', { profile: 'work' }), row('a2')]
+
+    listAllProfileSessions
+      .mockResolvedValueOnce({ limit: 500, offset: 0, sessions: rows, total: rows.length })
+      .mockResolvedValue(emptyPage)
+    bulkDeleteSessions.mockImplementation((ids: string[]) => Promise.resolve({ deleted: ids.length, ok: true }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: '__all__' }))
+
+    await act(async () => {
+      await result.current.clearAllSessions()
+    })
+
+    expect(bulkDeleteSessions).toHaveBeenCalledWith(['a1', 'a2'], 'default')
+    expect(bulkDeleteSessions).toHaveBeenCalledWith(['b1'], 'work')
+  })
+
+  it('is a no-op (no delete calls) when the scope is already empty', async () => {
+    listAllProfileSessions.mockResolvedValue(emptyPage)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    let removedCount = -1
+
+    await act(async () => {
+      removedCount = await result.current.clearAllSessions()
+    })
+
+    expect(removedCount).toBe(0)
+    expect(bulkDeleteSessions).not.toHaveBeenCalled()
+  })
+
+  it('still reconciles the list when a later batch rejects after earlier deletes succeeded', async () => {
+    const first = row('s1')
+    const second = row('s2')
+    setSessions([first, second])
+    setSessionsTotal(2)
+
+    // Page 1 deletes fine; page 2's bulk call rejects mid-clear.
+    listAllProfileSessions
+      .mockResolvedValueOnce({ limit: 500, offset: 0, sessions: [first], total: 2 })
+      .mockResolvedValueOnce({ limit: 500, offset: 0, sessions: [second], total: 1 })
+    bulkDeleteSessions
+      .mockResolvedValueOnce({ deleted: 1, ok: true })
+      .mockRejectedValueOnce(new Error('backend down'))
+    // The authoritative refresh reports what actually survived: s2.
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [second], total: 1, profile_totals: {} }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await expect(result.current.clearAllSessions()).rejects.toThrow('backend down')
+    })
+
+    // The failure propagates to the caller (the confirm dialog surfaces it),
+    // but the finally-refresh still ran, reconciling the earlier optimistic
+    // removals with the authoritative list instead of stranding them.
+    expect(bulkDeleteSessions).toHaveBeenCalledTimes(2)
+    expect(listSidebarSessions).toHaveBeenCalled()
+    expect($sessions.get().map(s => s.id)).toEqual(['s2'])
   })
 })

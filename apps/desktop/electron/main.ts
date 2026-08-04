@@ -10017,6 +10017,7 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
 //   GET    /api/sessions/{id}[/messages] → read from remote
 //   DELETE /api/sessions/{id}            → delete on remote
 //   PATCH  /api/sessions/{id}            → rename/archive on remote
+//   POST   /api/sessions/bulk-delete     → bulk delete on remote
 async function interceptSessionRequestForRemote(request) {
   if (typeof request?.path !== 'string') {
     return undefined
@@ -10113,6 +10114,45 @@ async function interceptSessionRequestForRemote(request) {
       },
       errors: []
     }
+  }
+
+  // Bulk delete ("Delete all chats"): the same remote-profile split as the
+  // single-session mutations below, declared explicitly rather than trusting
+  // the {id}-segment regex to keep matching the literal 'bulk-delete' path.
+  // The scoping profile rides request.profile (and, for the local/global-remote
+  // backend, body.profile - the endpoint opens the state.db named there):
+  //  - per-profile override: that profile's remote serves its own state.db
+  //    natively, so strip the body scope and post the bare id list to it.
+  //  - global remote mode: ONE backend serves every profile, so KEEP the
+  //    profile scoping (body + query) so it opens the right state.db.
+  //  - local: fall through to generic routing (the local primary honors
+  //    body.profile the same way).
+  if (method === 'POST' && pathname === '/api/sessions/bulk-delete') {
+    const bodyProfile = typeof request.body?.profile === 'string' ? request.body.profile : ''
+    const profile = (request.profile || bodyProfile || '').trim()
+
+    if (!profile) {
+      return undefined
+    }
+
+    if (profileHasRemoteOverride(profile)) {
+      const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
+
+      if (body) {
+        delete body.profile
+      }
+
+      return requestJsonForProfile(profile, pathname, method, body)
+    }
+
+    if (globalRemoteActive()) {
+      const path = `${pathname}?profile=${encodeURIComponent(profile)}`
+      const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
+
+      return requestJsonForProfile(null, path, method, body)
+    }
+
+    return undefined
   }
 
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile

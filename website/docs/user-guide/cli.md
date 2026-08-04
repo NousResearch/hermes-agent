@@ -424,6 +424,14 @@ While the agent is working, you can send a correction without starting a new tur
 - Completed tool work and reasoning already shown stay in context
 - A running tool reaches its safe boundary before the correction is applied
 
+By default, the TUI's existing idle-exit hotkeys retain their legacy
+single-press behavior. To require a second press within two seconds:
+
+```yaml
+display:
+  tui_confirm_idle_exit: true
+```
+
 ### Busy Input Mode
 
 The `display.busy_input_mode` config key controls what happens when you press Enter while the agent is working:

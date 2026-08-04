@@ -36,6 +36,20 @@ import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
+const IDLE_EXIT_CONFIRM_MS = 2000
+
+interface IdleHotkeyExitConfirmation {
+  hotkeyLabel?: string
+  lastPressedAt: { current: number }
+  now?: () => number
+  timeoutMs?: number
+}
+
+export const idleHotkeyExitConfirmation = (
+  enabled: boolean,
+  hotkeyLabel: string,
+  lastPressedAt: { current: number }
+): IdleHotkeyExitConfirmation | undefined => (enabled ? { hotkeyLabel, lastPressedAt } : undefined)
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
@@ -59,12 +73,24 @@ export function handleInputSelectionClipboard(
 export function handleIdleHotkeyExit(
   actions: Pick<InputHandlerActions, 'die' | 'sys'>,
   dashboardTuiMode = DASHBOARD_TUI_MODE,
-  requestDashboardNewSession?: () => void
+  requestDashboardNewSession?: () => void,
+  confirmation?: IdleHotkeyExitConfirmation
 ) {
   if (!shouldAllowIdleHotkeyExit(dashboardTuiMode)) {
     requestDashboardNewSession?.()
 
     return actions.sys(t('session.input.dashboardNewSession'))
+  }
+
+  if (confirmation) {
+    const now = confirmation.now?.() ?? Date.now()
+    const timeoutMs = confirmation.timeoutMs ?? IDLE_EXIT_CONFIRM_MS
+
+    if (!confirmation.lastPressedAt.current || now - confirmation.lastPressedAt.current > timeoutMs) {
+      confirmation.lastPressedAt.current = now
+
+      return actions.sys(`press ${confirmation.hotkeyLabel ?? 'the exit hotkey'} again to exit`)
+    }
   }
 
   return actions.die()
@@ -219,6 +245,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const isBlocked = useStore($isBlocked)
   const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
   const scrollIdleTimer = useRef<null | ReturnType<typeof setTimeout>>(null)
+  const idleCtrlCConfirmAtRef = useRef(0)
+  const idleCtrlDConfirmAtRef = useRef(0)
 
   // Wheel accel ported from claude-code: inter-event timing drives step size,
   // direction flips reset. wheelStep (WHEEL_SCROLL_STEP) is the base; final
@@ -786,25 +814,35 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         })
       }
 
-      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
-        gateway.gw.publishLocalEvent({
-          payload: { reason: 'idle_exit_hotkey' },
-          session_id: live.sid ?? undefined,
-          type: 'dashboard.new_session_requested'
-        })
-      })
+      return handleIdleHotkeyExit(
+        actions,
+        DASHBOARD_TUI_MODE,
+        () => {
+          gateway.gw.publishLocalEvent({
+            payload: { reason: 'idle_exit_hotkey' },
+            session_id: live.sid ?? undefined,
+            type: 'dashboard.new_session_requested'
+          })
+        },
+        idleHotkeyExitConfirmation(live.confirmIdleExit, 'Ctrl+C', idleCtrlCConfirmAtRef)
+      )
     }
 
     // Ctrl+D is the terminal EOF convention: exit only from an empty composer, on every
     // platform (macOS's action modifier is Cmd, which Ghostty consumes for split panes).
     if ((isAction(key, ch, 'd') || isMacActionFallback(key, ch, 'd')) && !composerHasDraft(cState)) {
-      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
-        gateway.gw.publishLocalEvent({
-          payload: { reason: 'idle_exit_hotkey' },
-          session_id: live.sid ?? undefined,
-          type: 'dashboard.new_session_requested'
-        })
-      })
+      return handleIdleHotkeyExit(
+        actions,
+        DASHBOARD_TUI_MODE,
+        () => {
+          gateway.gw.publishLocalEvent({
+            payload: { reason: 'idle_exit_hotkey' },
+            session_id: live.sid ?? undefined,
+            type: 'dashboard.new_session_requested'
+          })
+        },
+        idleHotkeyExitConfirmation(live.confirmIdleExit, isMac ? 'Cmd+D' : 'Ctrl+D', idleCtrlDConfirmAtRef)
+      )
     }
 
     if (isAction(key, ch, 'l')) {

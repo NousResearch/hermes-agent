@@ -861,6 +861,11 @@ DEFAULT_CONFIG = {
         "tui_auto_resume_recent": False,
         # Desktop reopens the last chat/page on cold start (also in Settings → Appearance).
         "resume_last_session": True,
+        # Require a second idle-exit hotkey press within two seconds before the
+        # TUI follows its existing exit handling. Busy Ctrl+C still interrupts
+        # immediately, and Ctrl+C with a draft still clears it immediately. Opt
+        # in with true; omitted or false preserves the legacy single-press behavior.
+        "tui_confirm_idle_exit": False,
         # One-time TUI hint ("subagents working · /agents to watch live") on first delegation.
         "tui_agents_nudge": True,
         "bell_on_complete": False,

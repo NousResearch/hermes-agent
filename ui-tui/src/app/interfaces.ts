@@ -341,6 +341,7 @@ export interface UiState {
   // `compact`, which is the /compact layout-density flag.
   compacting: boolean
   destructiveSlashConfirm: boolean
+  confirmIdleExit: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   // Focus view (/focus) — display-only reduced-output mode. Drives the

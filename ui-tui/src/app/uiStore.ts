@@ -17,6 +17,7 @@ const buildUiState = (): UiState => ({
   compact: false,
   compacting: false,
   destructiveSlashConfirm: true,
+  confirmIdleExit: false,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
   focusView: false,

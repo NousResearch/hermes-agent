@@ -320,6 +320,7 @@ export const applyDisplay = (
     // config RPC failure (cfg=null) preserves the last known policy instead
     // of silently changing approval behavior until the next successful poll.
     ...(cfg ? { destructiveSlashConfirm: approvals?.destructive_slash_confirm !== false } : {}),
+    confirmIdleExit: d.tui_confirm_idle_exit === true,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
     focusView: !!d.focus_view,

@@ -1005,7 +1005,7 @@ def _set_nested(config, dotted_key: str, value):
     """
     parts = dotted_key.split(".")
     current = config
-    for part in parts[:-1]:
+    for i, part in enumerate(parts[:-1]):
         if isinstance(current, list):
             try:
                 idx = int(part)
@@ -1014,11 +1014,37 @@ def _set_nested(config, dotted_key: str, value):
                     f"Cannot navigate into list at key {dotted_key!r}: "
                     f"segment {part!r} is not a numeric index"
                 )
-            current = current[idx]
+            try:
+                current = current[idx]
+            except IndexError:
+                raise TypeError(
+                    f"Cannot set {dotted_key!r}: list index {idx} is out of "
+                    f"range (the referenced entry must already exist — "
+                    f"indexes are never created implicitly)"
+                )
         elif isinstance(current, dict):
             existing = current.get(part)
             # Preserve dicts and lists; replace missing/scalar with a fresh dict.
             if part not in current or not isinstance(existing, (dict, list)):
+                # Guard (#78370): a numeric NEXT segment means the caller is
+                # addressing a list index (this function's documented
+                # semantics) — materializing a fresh dict here would create
+                # e.g. custom_providers: {'0': {...}}, which every runtime
+                # consumer rejects by isinstance(list) check. The write would
+                # report success while the value silently never exists at
+                # runtime. Indexes are never created implicitly, so refuse
+                # loudly instead. Existing dicts with numeric keys (e.g.
+                # channel_overrides chat ids) are untouched — this fires only
+                # when the parent is being created from nothing / a scalar.
+                if parts[i + 1].isdigit():
+                    raise TypeError(
+                        f"Cannot set {dotted_key!r}: "
+                        f"{'.'.join(parts[:i + 1])!r} is not an existing "
+                        f"list, and numeric index {parts[i + 1]!r} would "
+                        f"silently create a mapping instead of a list entry. "
+                        f"Create the list in config.yaml first (indexes are "
+                        f"never created implicitly)."
+                    )
                 current[part] = {}
             current = current[part]
         else:
@@ -1027,7 +1053,21 @@ def _set_nested(config, dotted_key: str, value):
             )
     last = parts[-1]
     if isinstance(current, list):
-        current[int(last)] = value
+        try:
+            idx = int(last)
+        except (TypeError, ValueError):
+            raise TypeError(
+                f"Cannot set {dotted_key!r}: {last!r} is not a numeric list "
+                f"index"
+            )
+        try:
+            current[idx] = value
+        except IndexError:
+            raise TypeError(
+                f"Cannot set {dotted_key!r}: list index {idx} is out of range "
+                f"(the referenced entry must already exist — indexes are "
+                f"never created implicitly)"
+            )
     else:
         current[last] = value
 
@@ -4945,7 +4985,15 @@ def set_config_value(key: str, value: str, force: bool = False):
                     file=sys.stderr,
                 )
                 sys.exit(1)
-    _set_nested(user_config, key, value)
+    try:
+        _set_nested(user_config, key, value)
+    except TypeError as exc:
+        # Structural refusal (#78370): numeric index on a missing/out-of-range
+        # list, or a non-numeric segment on a list. Surface it as a clean
+        # command error — previously these escaped as raw tracebacks with
+        # exit code 0, or silently materialized a dict the runtime ignores.
+        print(f"✗ {exc}", file=sys.stderr)
+        sys.exit(1)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical
     # key the runtime resolver actually reads, instead of being silently

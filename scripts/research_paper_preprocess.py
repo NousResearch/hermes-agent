@@ -22,11 +22,16 @@ if _os.environ.get("DRY_RUN") == "1":
 
 import json
 import os
+import shlex
+import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from uuid import uuid4
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -39,6 +44,26 @@ OUTPUT_PATH = os.environ.get("PAPER_OUTPUT", "")
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE_DIR = SCRIPT_DIR / ".paper_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+MEMORY_GATE_ENABLED = os.environ.get("PAPER_MEMORY_GATE_ENABLED", "0") == "1"
+MEMORY_GATE_MODE = os.environ.get("PAPER_MEMORY_GATE_MODE", "observe").lower()
+MEMORY_GATE_TIMEOUT_MS = int(os.environ.get("PAPER_MEMORY_GATE_TIMEOUT_MS", "2500"))
+WIKI_PATH = Path(os.environ.get("WIKI_PATH", str(Path.home() / "wiki")))
+TELEMETRY_PATH = Path(os.environ.get(
+    "PAPER_MEMORY_GATE_TELEMETRY_PATH",
+    str(Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+        / "governance/telemetry/research-paper-memory-gate.jsonl"),
+))
+
+POLICY_VERSION = "1.0.0"
+THRESHOLDS = {"relevance": .85, "coverage": .95, "freshness": .80,
+              "confidence": .85, "overall": .88, "extraction": .90}
+REASON_PRECEDENCE = (
+    "RETRIEVAL_UNAVAILABLE", "RETRIEVAL_TIMEOUT", "REQUEST_AMBIGUOUS",
+    "INTRINSIC_RESEARCH", "NO_EVIDENCE", "CONFLICTING_EVIDENCE",
+    "STALE_EVIDENCE", "LOW_COVERAGE", "LOW_RELEVANCE", "LOW_CONFIDENCE",
+    "BELOW_OVERALL_THRESHOLD", "SUFFICIENT",
+)
 
 # ── arXiv Category Queries ──────────────────────────────────────────────────
 ARXIV_QUERIES = {
@@ -150,6 +175,310 @@ def tight_score(title: str, summary: str) -> int:
             return 3
 
     return 1
+
+
+# ── Memory-first research gate ──────────────────────────────────────────────
+
+def _overall(scores: dict) -> float:
+    if any(scores.get(key, 0) <= 0 for key in ("relevance", "coverage", "freshness", "confidence")):
+        return 0.0
+    return 1 / (0.30 / scores["relevance"] + 0.35 / scores["coverage"]
+                + 0.15 / scores["freshness"] + 0.20 / scores["confidence"])
+
+
+def decide_memory_sufficiency(packet: dict) -> dict:
+    """Apply the conservative policy to a normalised decision packet.
+
+    This pure seam also accepts the frozen policy fixtures, keeping reason
+    precedence independently testable from retrieval adapters.
+    """
+    retrieval = packet.get("retrieval", {})
+    statuses = set(retrieval.values())
+    scores = dict(packet.get("scores") or {})
+    requirements = packet.get("requirements", [])
+    conflicts = packet.get("conflicts", [])
+    request_class = packet.get("request_class", "")
+    extraction = packet.get("requirement_extraction_confidence", 1.0)
+
+    if statuses & {"unavailable", "error", "malformed", "unauthorized"}:
+        reason = "RETRIEVAL_UNAVAILABLE"
+    elif "timeout" in statuses:
+        reason = "RETRIEVAL_TIMEOUT"
+    elif extraction < THRESHOLDS["extraction"] or "ambiguous" in request_class:
+        reason = "REQUEST_AMBIGUOUS"
+    elif any(token in request_class for token in ("landscape", "recommendation", "literature_review", "discovery")):
+        reason = "INTRINSIC_RESEARCH"
+    elif statuses and statuses <= {"valid_empty"}:
+        reason = "NO_EVIDENCE"
+    elif any(not conflict.get("resolved", False) for conflict in conflicts):
+        reason = "CONFLICTING_EVIDENCE"
+    elif scores.get("freshness", 1.0) < THRESHOLDS["freshness"]:
+        reason = "STALE_EVIDENCE"
+    elif (any(req.get("critical") and req.get("support", 0) < 1.0 for req in requirements)
+          or scores.get("coverage", 1.0) < THRESHOLDS["coverage"]):
+        reason = "LOW_COVERAGE"
+    elif scores.get("relevance", 1.0) < THRESHOLDS["relevance"]:
+        reason = "LOW_RELEVANCE"
+    elif scores.get("confidence", 1.0) < THRESHOLDS["confidence"]:
+        reason = "LOW_CONFIDENCE"
+    elif scores.get("overall", _overall(scores)) < THRESHOLDS["overall"]:
+        reason = "BELOW_OVERALL_THRESHOLD"
+    else:
+        reason = "SUFFICIENT"
+
+    return {
+        "action": "SKIP_DEEP_RESEARCH" if reason == "SUFFICIENT" else "ESCALATE",
+        "reason_code": reason,
+        "scores": scores or None,
+    }
+
+
+def _normalise_response(source: str, response) -> dict:
+    if not isinstance(response, dict):
+        return {"status": "malformed", "evidence": []}
+    status = response.get("status", "ok")
+    raw = response.get("evidence", response.get("results", response.get("memories", [])))
+    if status not in {"ok", "valid_empty"} or not isinstance(raw, list):
+        return {"status": status if status in {"timeout", "unavailable"} else "malformed", "evidence": []}
+    evidence = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        normalised = dict(item)
+        normalised.setdefault("id", f"{source}:{index}")
+        normalised["source_store"] = source
+        normalised.setdefault("requirement_ids", ["paper_synthesis"])
+        for key in ("relevance", "support", "freshness", "confidence"):
+            try:
+                normalised[key] = max(0.0, min(1.0, float(normalised.get(key, 0))))
+            except (TypeError, ValueError):
+                normalised[key] = 0.0
+        if not normalised.get("provenance"):
+            normalised["confidence"] = 0.0
+        evidence.append(normalised)
+    return {"status": "ok" if evidence else "valid_empty", "evidence": evidence}
+
+
+def lookup_mnemosyne(request: dict) -> dict:
+    """Query a supported Mnemosyne adapter command using JSON over stdin/stdout."""
+    command = os.environ.get("PAPER_MNEMOSYNE_COMMAND", "").strip()
+    if not command:
+        return {"status": "unavailable", "evidence": []}
+    try:
+        result = subprocess.run(
+            shlex.split(command), input=json.dumps({"query": request["text"], "limit": 12}),
+            text=True, capture_output=True, timeout=MEMORY_GATE_TIMEOUT_MS / 1000,
+            check=False,
+        )
+        if result.returncode != 0:
+            return {"status": "unavailable", "evidence": []}
+        return json.loads(result.stdout)
+    except subprocess.TimeoutExpired:
+        return {"status": "timeout", "evidence": []}
+    except (OSError, json.JSONDecodeError):
+        return {"status": "malformed", "evidence": []}
+
+
+def lookup_wiki(request: dict, *, wiki_path: Path = WIKI_PATH) -> dict:
+    """Bounded deterministic paper-level lookup with provenance retention."""
+    if not wiki_path.is_dir():
+        return {"status": "unavailable", "evidence": []}
+    arxiv_id = request.get("arxiv_id", "")
+    if not arxiv_id:
+        return {"status": "valid_empty", "evidence": []}
+    hits = []
+    try:
+        for path in sorted(wiki_path.rglob("*.md"))[:2000]:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            lowered = text.lower()
+            if arxiv_id not in text or not any(marker in lowered for marker in ("synthesi", "core insight", "what it proposes")):
+                continue
+            provenance = ""
+            for line in text.splitlines()[:30]:
+                if line.strip().startswith("sources:"):
+                    provenance = line.split(":", 1)[1].strip().strip("[]").split(",")[0].strip()
+                    break
+            hits.append({
+                "id": f"wiki:{path.relative_to(wiki_path)}", "source_store": "wiki",
+                "requirement_ids": ["paper_synthesis"], "relevance": .96,
+                "support": 1.0, "freshness": .95, "confidence": .90 if provenance else 0.0,
+                "claim": "paper-level synthesis exists", "canonical_key": f"paper:{arxiv_id}:synthesis",
+                "provenance": provenance, "path": str(path.relative_to(wiki_path)),
+            })
+            if len(hits) >= 8:
+                break
+    except OSError:
+        return {"status": "unavailable", "evidence": []}
+    return {"status": "ok" if hits else "valid_empty", "evidence": hits}
+
+
+def memory_sufficient(request: dict, *, mnemosyne_lookup=lookup_mnemosyne,
+                      wiki_lookup=lookup_wiki, now=None, deadline_ms=2500) -> dict:
+    """Query both stores in parallel and fail open on every uncertain state."""
+    started = time.monotonic()
+    responses = {}
+    latencies = {}
+
+    def run(source, lookup):
+        source_started = time.monotonic()
+        try:
+            response = _normalise_response(source, lookup(request))
+        except Exception:  # adapters are an isolation boundary; never leak their payloads
+            response = {"status": "unavailable", "evidence": []}
+        latencies[source] = round((time.monotonic() - source_started) * 1000, 3)
+        return response
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    futures = {source: executor.submit(run, source, lookup) for source, lookup in
+               (("mnemosyne", mnemosyne_lookup), ("wiki", wiki_lookup))}
+    deadline = started + deadline_ms / 1000
+    try:
+        for source, future in futures.items():
+            remaining = max(0, deadline - time.monotonic())
+            try:
+                responses[source] = future.result(timeout=remaining)
+            except FuturesTimeout:
+                responses[source] = {"status": "timeout", "evidence": []}
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    evidence = [item for source in ("mnemosyne", "wiki")
+                for item in responses.get(source, {}).get("evidence", [])]
+    evidence.sort(key=lambda item: (-item.get("relevance", 0), item.get("canonical_key", ""), item["id"]))
+    requirements = request.get("requirements", [])
+    weights = {req["id"]: req.get("weight", 0) for req in requirements}
+    scores = {}
+    for dimension in ("relevance", "support", "freshness", "confidence"):
+        total = 0.0
+        for requirement_id, weight in weights.items():
+            values = [item[dimension] for item in evidence if requirement_id in item["requirement_ids"]]
+            total += weight * (max(values) if values else 0.0)
+        scores["coverage" if dimension == "support" else dimension] = total
+    scores["overall"] = _overall(scores)
+    conflicts = []
+    by_key = {}
+    for item in evidence:
+        key = item.get("canonical_key")
+        if key:
+            by_key.setdefault(key, set()).add(str(item.get("claim", "")).strip().lower())
+    for key, claims in by_key.items():
+        if len(claims) > 1:
+            conflicts.append({"requirement": key, "resolved": False})
+
+    packet = {
+        "retrieval": {source: response["status"] for source, response in responses.items()},
+        "request_class": request.get("request_class", "bounded_internal_fact"),
+        "requirement_extraction_confidence": request.get("requirement_extraction_confidence", 0.0),
+        "requirements": [{**req, "support": max(
+            [item["support"] for item in evidence if req["id"] in item["requirement_ids"]] or [0.0]
+        )} for req in requirements],
+        "conflicts": conflicts, "scores": scores,
+    }
+    decision = decide_memory_sufficiency(packet)
+    decision.update({
+        "requirements": packet["requirements"], "evidence_ids": [item["id"] for item in evidence],
+        "evidence": evidence, "conflicts": conflicts,
+        "retrieval_receipt": {
+            "policy_version": POLICY_VERSION,
+            "statuses": packet["retrieval"], "source_coverage": {
+                source: len(response["evidence"]) for source, response in responses.items()
+            }, "latency_ms_by_source": latencies,
+            "latency_ms_total": round((time.monotonic() - started) * 1000, 3),
+        },
+    })
+    return decision
+
+
+def _safe_evidence(evidence: list[dict]) -> list[dict]:
+    allowed = ("id", "source_store", "provenance", "path", "updated_at")
+    return [{key: item[key] for key in allowed if item.get(key)} for item in evidence]
+
+
+def _emit_gate_event(path: Path, event: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def apply_memory_gate(candidates: list[dict], *, enabled=MEMORY_GATE_ENABLED,
+                      mode=MEMORY_GATE_MODE, mnemosyne_lookup=lookup_mnemosyne,
+                      wiki_lookup=lookup_wiki, telemetry_path=TELEMETRY_PATH,
+                      deadline_ms=MEMORY_GATE_TIMEOUT_MS) -> tuple[list[dict], dict]:
+    """Apply the optional gate after truncation; preserve candidates on failure."""
+    if not enabled:
+        return candidates, {"enabled": False, "mode": "disabled", "eligible": 0,
+                            "would_suppress": 0, "suppressed": 0}
+    mode = mode if mode in {"observe", "enforce"} else "observe"
+    run_id = str(uuid4())
+    kept, supporting = [], {}
+    decisions, fallbacks = Counter(), Counter()
+    source_hits = Counter()
+    latencies = []
+    eligible = 0
+    for paper in candidates:
+        if paper.get("action") not in {"write_now", "ask_first"}:
+            kept.append(paper)
+            continue
+        eligible += 1
+        request = {
+            "text": f"Has arXiv:{paper['arxiv_id']} already received a complete paper synthesis?",
+            "arxiv_id": paper["arxiv_id"], "request_class": "bounded_source_summary",
+            "requirements": [{"id": "paper_synthesis", "weight": 1.0, "critical": True}],
+            "requirement_extraction_confidence": 1.0,
+        }
+        decision = memory_sufficient(
+            request, mnemosyne_lookup=mnemosyne_lookup, wiki_lookup=wiki_lookup,
+            deadline_ms=deadline_ms,
+        )
+        sufficient = decision["action"] == "SKIP_DEEP_RESEARCH"
+        gate_decision = "suppress" if sufficient and mode == "enforce" else (
+            "would_suppress" if sufficient else "fallback"
+        )
+        decisions[gate_decision] += 1
+        if not sufficient:
+            fallbacks[decision["reason_code"]] += 1
+        if not (sufficient and mode == "enforce"):
+            kept.append(paper)
+        else:
+            supporting[paper["arxiv_id"]] = _safe_evidence(decision["evidence"])
+        receipt = decision["retrieval_receipt"]
+        source_hits.update(receipt["source_coverage"])
+        latencies.append(receipt["latency_ms_total"])
+        _emit_gate_event(Path(telemetry_path), {
+            "schema_version": 1, "event_type": "paper_memory_gate.candidate",
+            "event_id": str(uuid4()), "ts": datetime.now(timezone.utc).isoformat(),
+            "run_id": run_id, "cron_job_id": "463058f2566d", "candidate_id": paper["arxiv_id"],
+            "candidate_action": paper["action"], "eligible": True, "gate_enabled": True,
+            "gate_mode": mode, "decision": gate_decision, "decision_reason": decision["reason_code"],
+            "sources_attempted": ["mnemosyne", "wiki"], "source_hits": receipt["source_coverage"],
+            "latency_ms_total": receipt["latency_ms_total"],
+            "latency_ms_by_source": receipt["latency_ms_by_source"],
+            "fallback_reason": None if sufficient else decision["reason_code"],
+            "estimated_avoided_deep_research_executions": int(sufficient and mode == "enforce"),
+            "estimated_avoided_candidates": int(sufficient and mode == "enforce"),
+        })
+    summary = {
+        "enabled": True, "mode": mode, "eligible": eligible,
+        "would_suppress": decisions["would_suppress"] + decisions["suppress"],
+        "suppressed": decisions["suppress"], "source_hits": dict(source_hits),
+        "fallbacks": dict(fallbacks), "latency_ms": round(sum(latencies), 3),
+        "supporting_evidence": supporting,
+    }
+    _emit_gate_event(Path(telemetry_path), {
+        "schema_version": 1, "event_type": "paper_memory_gate.batch",
+        "event_id": str(uuid4()), "ts": datetime.now(timezone.utc).isoformat(),
+        "run_id": run_id, "cron_job_id": "463058f2566d",
+        "candidate_count_before": len(candidates), "candidate_count_after": len(kept),
+        "eligible_requests": eligible, "decisions": dict(decisions),
+        "source_hits": dict(source_hits), "fallback_reasons": dict(fallbacks),
+        "latency_ms_total": summary["latency_ms"],
+        "estimated_avoided_deep_research_executions": summary["suppressed"],
+        "estimated_avoided_candidates": summary["suppressed"],
+    })
+    return kept, summary
 
 
 # ── Phase 1A: Fetch arXiv ───────────────────────────────────────────────────
@@ -382,6 +711,9 @@ def main():
     candidates = [p for p in papers if p["action"] != "skip"]
     candidates = candidates[:MAX_CANDIDATES]
 
+    # Optional memory-first gate: after truncation, before synthesis output.
+    candidates, memory_gate = apply_memory_gate(candidates)
+
     # Summary
     actions = {}
     for p in candidates:
@@ -403,6 +735,8 @@ def main():
             "file": actions.get("file", 0),
         },
     }
+    if memory_gate["enabled"]:
+        output["memory_gate"] = memory_gate
 
     json.dump(output, sys.stdout, indent=2, ensure_ascii=False)
 

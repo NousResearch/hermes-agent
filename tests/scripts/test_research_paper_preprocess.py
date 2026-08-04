@@ -5,6 +5,8 @@ Uses fixture JSON for network-heavy paths; no real API calls in tests.
 """
 import json
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -158,3 +160,150 @@ class TestMainOffline:
         assert all(c["action"] != "skip" for c in payload["candidates"])
         # file written
         assert (tmp_path / "out.json").exists()
+
+
+def _evidence(source, *, evidence_id, requirement_id="paper_synthesis", relevance=.96,
+              support=1.0, freshness=.95, confidence=.95, claim="already synthesised",
+              provenance="primary", canonical_key="paper-status", updated_at="2026-08-04T00:00:00+00:00"):
+    return {
+        "id": evidence_id,
+        "source_store": source,
+        "requirement_ids": [requirement_id],
+        "relevance": relevance,
+        "support": support,
+        "freshness": freshness,
+        "confidence": confidence,
+        "claim": claim,
+        "canonical_key": canonical_key,
+        "provenance": provenance,
+        "updated_at": updated_at,
+    }
+
+
+class TestMemorySufficiencyPolicy:
+    @pytest.mark.parametrize("fixture", json.loads(
+        (REPO_ROOT / "tests/fixtures/memory_sufficiency_policy.json").read_text()
+    )["fixtures"], ids=lambda fixture: fixture["id"])
+    def test_supplied_policy_fixtures(self, fixture):
+        decision = rpp.decide_memory_sufficiency(fixture)
+        assert decision["action"] == fixture["expected"]["action"]
+        assert decision["reason_code"] == fixture["expected"]["reason_code"]
+
+    def test_queries_both_stores_and_returns_supporting_evidence(self):
+        calls = []
+
+        def lookup(source):
+            def inner(_request):
+                calls.append(source)
+                if source == "mnemosyne":
+                    return {"status": "valid_empty", "evidence": []}
+                return {"status": "ok", "evidence": [_evidence(source, evidence_id="wiki:2608.01285")]}
+            return inner
+
+        decision = rpp.memory_sufficient(
+            {"text": "Has arXiv:2608.01285 already been synthesised?", "requirements": [
+                {"id": "paper_synthesis", "weight": 1.0, "critical": True}
+            ], "requirement_extraction_confidence": 1.0},
+            mnemosyne_lookup=lookup("mnemosyne"),
+            wiki_lookup=lookup("wiki"),
+            now=datetime(2026, 8, 4, tzinfo=timezone.utc),
+        )
+        assert set(calls) == {"mnemosyne", "wiki"}
+        assert decision["action"] == "SKIP_DEEP_RESEARCH"
+        assert decision["evidence_ids"] == ["wiki:2608.01285"]
+        assert decision["evidence"][0]["provenance"] == "primary"
+
+    def test_conflicting_source_distinct_evidence_escalates(self):
+        request = {"text": "Has paper X been synthesised?", "requirements": [
+            {"id": "paper_synthesis", "weight": 1.0, "critical": True}
+        ], "requirement_extraction_confidence": 1.0}
+        mnemosyne = lambda _request: {"status": "ok", "evidence": [
+            _evidence("mnemosyne", evidence_id="m1", claim="yes")
+        ]}
+        wiki = lambda _request: {"status": "ok", "evidence": [
+            _evidence("wiki", evidence_id="w1", claim="no")
+        ]}
+        decision = rpp.memory_sufficient(request, mnemosyne_lookup=mnemosyne, wiki_lookup=wiki)
+        assert decision["reason_code"] == "CONFLICTING_EVIDENCE"
+        assert {item["id"] for item in decision["evidence"]} == {"m1", "w1"}
+
+    def test_dependency_error_and_timeout_fail_open(self):
+        request = {"text": "bounded", "requirements": [
+            {"id": "paper_synthesis", "weight": 1.0, "critical": True}
+        ], "requirement_extraction_confidence": 1.0}
+
+        def broken(_request):
+            raise RuntimeError("secret body must not be logged")
+
+        ok = lambda _request: {"status": "valid_empty", "evidence": []}
+        unavailable = rpp.memory_sufficient(request, mnemosyne_lookup=broken, wiki_lookup=ok)
+        assert unavailable["action"] == "ESCALATE"
+        assert unavailable["reason_code"] == "RETRIEVAL_UNAVAILABLE"
+
+        def slow(_request):
+            time.sleep(.05)
+            return {"status": "valid_empty", "evidence": []}
+
+        timed_out = rpp.memory_sufficient(
+            request, mnemosyne_lookup=slow, wiki_lookup=ok, deadline_ms=5
+        )
+        assert timed_out["action"] == "ESCALATE"
+        assert timed_out["reason_code"] == "RETRIEVAL_TIMEOUT"
+
+
+class TestKnowledgeGateIntegration:
+    def test_disabled_flag_preserves_candidate_identity_and_has_inert_summary(self):
+        candidates = [_paper(score=5)]
+        rpp.apply_final_score(candidates[0])
+        kept, summary = rpp.apply_memory_gate(candidates, enabled=False)
+        assert kept == candidates
+        assert summary == {"enabled": False, "mode": "disabled", "eligible": 0,
+                           "would_suppress": 0, "suppressed": 0}
+
+    def test_enforce_skip_reuses_evidence_in_output(self, tmp_path):
+        paper = _paper(score=5)
+        rpp.apply_final_score(paper)
+        evidence = _evidence("wiki", evidence_id="wiki:paper")
+        lookup = lambda _request: {"status": "ok", "evidence": [evidence]}
+        kept, summary = rpp.apply_memory_gate(
+            [paper], enabled=True, mode="enforce",
+            mnemosyne_lookup=lambda _request: {"status": "valid_empty", "evidence": []},
+            wiki_lookup=lookup, telemetry_path=tmp_path / "events.jsonl",
+        )
+        assert kept == []
+        assert summary["suppressed"] == 1
+        assert summary["supporting_evidence"][paper["arxiv_id"]][0]["id"] == "wiki:paper"
+        events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+        assert events[0]["decision"] == "suppress"
+        assert "claim" not in events[0]
+        assert "title" not in events[0]
+
+    def test_observe_and_dependency_failure_keep_candidates(self, tmp_path):
+        paper = _paper(score=5)
+        rpp.apply_final_score(paper)
+        lookup = lambda _request: {"status": "ok", "evidence": [
+            _evidence("wiki", evidence_id="wiki:paper")
+        ]}
+        observed, observed_summary = rpp.apply_memory_gate(
+            [paper], enabled=True, mode="observe",
+            mnemosyne_lookup=lambda _request: {"status": "valid_empty", "evidence": []},
+            wiki_lookup=lookup, telemetry_path=tmp_path / "observe.jsonl",
+        )
+        assert observed == [paper]
+        assert observed_summary["would_suppress"] == 1
+
+        failed, failed_summary = rpp.apply_memory_gate(
+            [paper], enabled=True, mode="enforce",
+            mnemosyne_lookup=lambda _request: (_ for _ in ()).throw(RuntimeError("private")),
+            wiki_lookup=lookup, telemetry_path=tmp_path / "failed.jsonl",
+        )
+        assert failed == [paper]
+        assert failed_summary["fallbacks"] == {"RETRIEVAL_UNAVAILABLE": 1}
+
+    def test_temporary_wiki_lookup_normalises_provenance(self, tmp_path):
+        page = tmp_path / "concepts" / "memory.md"
+        page.parent.mkdir()
+        page.write_text("---\nsources: [papers/2608.01285.md]\nupdated: 2026-08-04\n---\n# Stop when memory suffices\narXiv:2608.01285 has already been synthesised.\n")
+        result = rpp.lookup_wiki({"text": "arXiv:2608.01285", "arxiv_id": "2608.01285"}, wiki_path=tmp_path)
+        assert result["status"] == "ok"
+        assert result["evidence"][0]["provenance"] == "papers/2608.01285.md"

@@ -1,0 +1,140 @@
+{
+  "policy_version": "1.0.0",
+  "score_formula": "1/(0.30/R + 0.35/C + 0.15/F + 0.20/K)",
+  "thresholds": {
+    "relevance": 0.85,
+    "coverage": 0.95,
+    "freshness": 0.80,
+    "confidence": 0.85,
+    "overall": 0.88,
+    "requirement_extraction_confidence": 0.90
+  },
+  "fixtures": [
+    {
+      "id": "skip-canonical-decision",
+      "request": "Which local auxiliary-routing option did Sahil approve?",
+      "request_class": "bounded_internal_fact",
+      "retrieval": {"mnemosyne": "ok", "wiki": "valid_empty"},
+      "requirements": [{"id": "approved_option", "weight": 1.0, "critical": true, "support": 1.0}],
+      "evidence_summary": "Unexpired direct Sahil decision with provenance; wiki has no matching page.",
+      "scores": {"relevance": 0.96, "coverage": 1.0, "freshness": 0.94, "confidence": 0.98, "overall": 0.974511},
+      "expected": {"action": "SKIP_DEEP_RESEARCH", "reason_code": "SUFFICIENT"}
+    },
+    {
+      "id": "skip-immutable-primary",
+      "request": "What execution pattern does arXiv:2608.01285 propose?",
+      "request_class": "bounded_source_summary",
+      "retrieval": {"mnemosyne": "valid_empty", "wiki": "ok"},
+      "requirements": [{"id": "pattern", "weight": 1.0, "critical": true, "support": 1.0}],
+      "evidence_summary": "Wiki concept cites an immutable primary paper and directly states the pattern.",
+      "scores": {"relevance": 0.92, "coverage": 1.0, "freshness": 1.0, "confidence": 0.90, "overall": 0.953917},
+      "expected": {"action": "SKIP_DEEP_RESEARCH", "reason_code": "SUFFICIENT"}
+    },
+    {
+      "id": "escalate-timeout",
+      "request": "Summarise our current memory architecture.",
+      "request_class": "bounded_internal_summary",
+      "retrieval": {"mnemosyne": "timeout", "wiki": "ok"},
+      "requirements": [],
+      "evidence_summary": "One mandatory store exceeded 2,500 ms.",
+      "scores": null,
+      "expected": {"action": "ESCALATE", "reason_code": "RETRIEVAL_TIMEOUT"}
+    },
+    {
+      "id": "escalate-unavailable",
+      "request": "What did we decide about provider fallback?",
+      "request_class": "bounded_internal_fact",
+      "retrieval": {"mnemosyne": "unavailable", "wiki": "valid_empty"},
+      "requirements": [],
+      "evidence_summary": "The likely authoritative store is unavailable; empty wiki is not proof.",
+      "scores": null,
+      "expected": {"action": "ESCALATE", "reason_code": "RETRIEVAL_UNAVAILABLE"}
+    },
+    {
+      "id": "escalate-ambiguous",
+      "request": "Is the memory migration done?",
+      "request_class": "ambiguous_internal_status",
+      "retrieval": {"mnemosyne": "ok", "wiki": "ok"},
+      "requirement_extraction_confidence": 0.72,
+      "evidence_summary": "The request does not identify the programme, host, milestone, or meaning of done.",
+      "scores": null,
+      "expected": {"action": "ESCALATE", "reason_code": "REQUEST_AMBIGUOUS"}
+    },
+    {
+      "id": "escalate-intrinsic-research",
+      "request": "Find the best agent-memory systems available this week and recommend one.",
+      "request_class": "live_landscape_and_recommendation",
+      "retrieval": {"mnemosyne": "ok", "wiki": "ok"},
+      "evidence_summary": "Open-ended, current landscape discovery plus novel recommendation.",
+      "scores": {"relevance": 0.94, "coverage": 0.96, "freshness": 0.91, "confidence": 0.90, "overall": 0.933890},
+      "expected": {"action": "ESCALATE", "reason_code": "INTRINSIC_RESEARCH"}
+    },
+    {
+      "id": "escalate-no-evidence",
+      "request": "What was the outcome of Project Alder?",
+      "request_class": "bounded_internal_fact",
+      "retrieval": {"mnemosyne": "valid_empty", "wiki": "valid_empty"},
+      "requirements": [{"id": "outcome", "weight": 1.0, "critical": true, "support": 0.0}],
+      "evidence_summary": "Both stores completed successfully with no eligible evidence.",
+      "scores": {"relevance": 0.0, "coverage": 0.0, "freshness": 0.0, "confidence": 0.0, "overall": 0.0},
+      "expected": {"action": "ESCALATE", "reason_code": "NO_EVIDENCE"}
+    },
+    {
+      "id": "escalate-conflict",
+      "request": "Which database is the canonical writer for the memory stack?",
+      "request_class": "bounded_internal_fact",
+      "retrieval": {"mnemosyne": "ok", "wiki": "ok"},
+      "evidence_summary": "Two current-looking, source-distinct records name different writers; neither has explicit supersession authority.",
+      "conflicts": [{"requirement": "canonical_writer", "resolved": false}],
+      "scores": {"relevance": 0.95, "coverage": 1.0, "freshness": 0.90, "confidence": 0.62, "overall": 0.865773},
+      "expected": {"action": "ESCALATE", "reason_code": "CONFLICTING_EVIDENCE"}
+    },
+    {
+      "id": "escalate-stale",
+      "request": "Which model endpoint is live now?",
+      "request_class": "live_operational_fact",
+      "retrieval": {"mnemosyne": "ok", "wiki": "ok"},
+      "requirements": [{"id": "live_endpoint", "weight": 1.0, "critical": true, "support": 1.0}],
+      "evidence_summary": "Relevant configuration evidence is older than the one-day live-state TTL.",
+      "scores": {"relevance": 0.90, "coverage": 1.0, "freshness": 0.22, "confidence": 0.92, "overall": 0.631894},
+      "expected": {"action": "ESCALATE", "reason_code": "STALE_EVIDENCE"}
+    },
+    {
+      "id": "escalate-low-coverage",
+      "request": "Compare the two proposed memory routes on cost, latency, and privacy.",
+      "request_class": "bounded_comparison",
+      "retrieval": {"mnemosyne": "ok", "wiki": "ok"},
+      "requirements": [
+        {"id": "cost", "weight": 0.30, "critical": true, "support": 1.0},
+        {"id": "latency", "weight": 0.30, "critical": true, "support": 1.0},
+        {"id": "privacy", "weight": 0.40, "critical": true, "support": 0.5}
+      ],
+      "evidence_summary": "Privacy is only inferred, leaving weighted coverage at 0.80.",
+      "scores": {"relevance": 0.91, "coverage": 0.80, "freshness": 0.95, "confidence": 0.90, "overall": 0.871621},
+      "expected": {"action": "ESCALATE", "reason_code": "LOW_COVERAGE"}
+    },
+    {
+      "id": "escalate-low-confidence",
+      "request": "What benchmark improvement did the system achieve?",
+      "request_class": "bounded_external_fact",
+      "retrieval": {"mnemosyne": "ok", "wiki": "ok"},
+      "requirements": [{"id": "benchmark_delta", "weight": 1.0, "critical": true, "support": 1.0}],
+      "evidence_summary": "Both hits repeat the same uncited secondary summary; duplication is not corroboration.",
+      "scores": {"relevance": 0.92, "coverage": 1.0, "freshness": 0.91, "confidence": 0.70, "overall": 0.887598},
+      "expected": {"action": "ESCALATE", "reason_code": "LOW_CONFIDENCE"}
+    },
+    {
+      "id": "escalate-below-overall",
+      "request": "State the bounded internal policy and its effective date.",
+      "request_class": "bounded_internal_fact",
+      "retrieval": {"mnemosyne": "ok", "wiki": "ok"},
+      "requirements": [
+        {"id": "policy", "weight": 0.90, "critical": true, "support": 1.0},
+        {"id": "effective_date", "weight": 0.10, "critical": false, "support": 0.5}
+      ],
+      "evidence_summary": "All component minima are exactly met, but the harmonic overall score remains below 0.88.",
+      "scores": {"relevance": 0.85, "coverage": 0.95, "freshness": 0.80, "confidence": 0.85, "overall": 0.874006},
+      "expected": {"action": "ESCALATE", "reason_code": "BELOW_OVERALL_THRESHOLD"}
+    }
+  ]
+}

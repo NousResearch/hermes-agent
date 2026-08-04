@@ -1534,3 +1534,62 @@ class TestReaderLoopOrphanedPipe:
             except (ProcessLookupError, PermissionError):
                 pass
 
+
+
+class TestPtyPostSpawnFailure:
+    def test_post_spawn_failure_kills_pty_and_does_not_double_spawn(self, registry):
+        """A failure AFTER the PTY process exists (reader/registry/checkpoint)
+        must terminate that process and propagate — not fall through to the
+        pipe path, which would leave the PTY process running untracked and
+        spawn the same command a second time under the same session id."""
+        mock_pty_proc = MagicMock()
+        mock_pty_proc.pid = 5556
+
+        mock_pty_module = MagicMock()
+        mock_pty_module.PtyProcess.spawn = MagicMock(return_value=mock_pty_proc)
+
+        fake_thread = MagicMock()
+        fake_thread.daemon = False
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("tools.process_registry._IS_WINDOWS", False), \
+             patch.dict("sys.modules", {"ptyprocess": mock_pty_module}), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint",
+                          side_effect=OSError("disk full")), \
+             patch("subprocess.Popen") as mock_popen:
+            with pytest.raises(OSError, match="disk full"):
+                registry.spawn_local("echo hello", cwd="/tmp", use_pty=True)
+
+        mock_pty_proc.terminate.assert_called_once_with(force=True)
+        assert not mock_popen.called, \
+            "pipe fallback must not double-spawn after the PTY process exists"
+        assert registry._running == {}, \
+            "half-registered session must not stay in _running"
+
+    def test_pre_spawn_failure_still_falls_back_to_pipe(self, registry):
+        """A failure BEFORE the PTY process exists keeps the documented
+        fallback: the command runs once, via the pipe path."""
+        mock_pty_module = MagicMock()
+        mock_pty_module.PtyProcess.spawn = MagicMock(
+            side_effect=OSError("openpty failed")
+        )
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 4321
+        fake_proc.stdout = iter([])
+        fake_proc.poll.return_value = None
+
+        fake_thread = MagicMock()
+        fake_thread.daemon = False
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("tools.process_registry._IS_WINDOWS", False), \
+             patch.dict("sys.modules", {"ptyprocess": mock_pty_module}), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"), \
+             patch("subprocess.Popen", return_value=fake_proc) as mock_popen:
+            session = registry.spawn_local("echo hello", cwd="/tmp", use_pty=True)
+
+        assert mock_popen.called, "pipe fallback should run for pre-spawn failures"
+        assert session.pid == 4321

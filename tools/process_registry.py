@@ -726,6 +726,7 @@ class ProcessRegistry:
 
         if use_pty:
             # Try PTY mode for interactive CLI tools
+            _pty_live = False
             try:
                 if _IS_WINDOWS:
                     from winpty import PtyProcess as _PtyProcessCls
@@ -740,6 +741,11 @@ class ProcessRegistry:
                     env=pty_env,
                     dimensions=(30, 120),
                 )
+                # The OS process exists from here on: a later failure in this
+                # block must NOT fall through to the pipe path — that would
+                # leave pty_proc running untracked AND spawn the same command
+                # a second time under the same session id.
+                _pty_live = True
                 session.pid = pty_proc.pid
                 session.host_start_time = self._safe_host_start_time(session.pid)
                 # Store the pty handle on the session for read/write
@@ -765,6 +771,17 @@ class ProcessRegistry:
             except ImportError:
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
+                if _pty_live:
+                    # Post-spawn failure (reader/registry/checkpoint): kill the
+                    # live PTY process and drop the half-registered session,
+                    # then propagate — never double-spawn via the pipe path.
+                    try:
+                        pty_proc.terminate(force=True)
+                    except Exception:
+                        pass
+                    with self._lock:
+                        self._running.pop(session.id, None)
+                    raise
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 
         # Standard Popen path (non-PTY or PTY fallback)

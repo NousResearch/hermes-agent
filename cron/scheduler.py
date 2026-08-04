@@ -92,6 +92,28 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
+# ── Failure-notification dedup (2026-08-03) ─────────────────────────────
+# A failing job that auto-retries (e.g. provider timeouts) would deliver a
+# separate "⚠️ Cron failed" message to the chat on every failed tick,
+# flooding the operator.  Keep at most one failure notification per job per
+# window; later failures within the window stay silent (output + run status
+# are still recorded).  Process-local cache: a gateway restart clears it,
+# which is fine — the first failure after restart is always notified.
+_FAILURE_NOTIFY_CACHE: dict[str, float] = {}
+FAILURE_NOTIFY_WINDOW_SECONDS = 2 * 3600  # 2h
+
+
+def _failure_notify_dedup(job_id: str) -> bool:
+    """True when a failure notification for this job was already delivered
+    within the window — caller should suppress the duplicate delivery."""
+    now = time.time()
+    last = _FAILURE_NOTIFY_CACHE.get(job_id)
+    if last is not None and (now - last) < FAILURE_NOTIFY_WINDOW_SECONDS:
+        return True
+    _FAILURE_NOTIFY_CACHE[job_id] = now
+    return False
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -3999,8 +4021,21 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
             # Deliver the final response to the origin/target chat.
             # If the agent responded with [SILENT], skip delivery (but
-            # output is already saved above).  Failed jobs always deliver.
-            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            # output is already saved above).  Failed jobs always deliver —
+            # but at most once per failure-notify window per job, so a
+            # retrying job can't flood the chat with duplicate errors.
+            if not success:
+                if _failure_notify_dedup(job["id"]):
+                    logger.info(
+                        "Job '%s' failed again within %ds — suppressing duplicate "
+                        "failure notification (dedup window)",
+                        job["id"], FAILURE_NOTIFY_WINDOW_SECONDS,
+                    )
+                    deliver_content = ""
+                else:
+                    deliver_content = _summarize_cron_failure_for_delivery(job, error)
+            else:
+                deliver_content = final_response
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.

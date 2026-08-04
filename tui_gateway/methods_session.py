@@ -316,6 +316,10 @@ def _(rid, params: dict) -> dict:
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    # Desktop hydrates persisted transcripts through the authenticated REST
+    # route in parallel. Suppress the duplicate WebSocket transcript only when
+    # the caller explicitly requests it; other clients keep upstream behavior.
+    omit_messages = is_truthy_value(params.get("omit_messages", False))
 
     # In a profile scope, the agent OWNS a long-lived db handle bound to that
     # profile (do NOT auto-close it here). Otherwise reuse the shared launch db.
@@ -380,6 +384,7 @@ def _(rid, params: dict) -> dict:
             cols=cols,
             touch=True,
             transport=current_transport() or _stdio_transport,
+            omit_messages=omit_messages,
         )
         payload["resumed"] = target
         # A lazy watch session never owns a run loop, so its payload's running
@@ -450,14 +455,15 @@ def _(rid, params: dict) -> dict:
         except Exception:
             logger.debug("child-watch display projection read failed", exc_info=True)
             display_history = history
-        messages = _history_to_messages(display_history)
+        messages = [] if omit_messages else _history_to_messages(display_history)
         return _ok(
             rid,
             {
                 "session_id": sid,
                 "resumed": target,
-                "message_count": len(messages),
+                "message_count": len(display_history) if omit_messages else len(messages),
                 "messages": messages,
+                "messages_omitted": omit_messages,
                 "info": _lazy_resume_info(cwd, profile=profile),
                 "inflight": None,
                 "running": child_running,
@@ -494,7 +500,13 @@ def _(rid, params: dict) -> dict:
             # (raw_history → sanitize_replay_history → the resumed session's
             # working conversation) and the display copy stays verbatim —
             # inspection/export must show what is actually stored.
-            raw_history, display_history = db.get_resume_conversations(target)
+            if omit_messages:
+                raw_history = db.get_messages_as_conversation(
+                    target, repair_alternation=True
+                )
+                display_history = []
+            else:
+                raw_history, display_history = db.get_resume_conversations(target)
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -502,7 +514,7 @@ def _(rid, params: dict) -> dict:
         # Display keeps the full transcript; the model-fed history drops a
         # dangling/interrupted tool-call tail so a session killed mid-loop does
         # not replay the unanswered call forever (#29086).
-        prefix = db.get_ancestor_display_prefix(target)
+        prefix = [] if omit_messages else db.get_ancestor_display_prefix(target)
         history = sanitize_replay_history(raw_history)
         # Restore the model/provider/reasoning/tier this chat last used so the
         # deferred build (and the info below) match the eager path — without them
@@ -530,12 +542,13 @@ def _(rid, params: dict) -> dict:
         _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
         auto_continue = _maybe_schedule_auto_continue(sid, record, target)
 
-        messages = _history_to_messages(display_history)
+        messages = [] if omit_messages else _history_to_messages(display_history)
         payload = {
             "session_id": sid,
             "resumed": target,
-            "message_count": len(messages),
+            "message_count": len(raw_history) if omit_messages else len(messages),
             "messages": messages,
+            "messages_omitted": omit_messages,
             "info": _lazy_resume_info(
                 cwd,
                 model=model_override.get("model") or "",
@@ -573,7 +586,13 @@ def _(rid, params: dict) -> dict:
         # One lineage SELECT feeds both projections (see the interactive resume
         # above): the model-fed copy is alternation-repaired for LIVE REPLAY, the
         # display copy stays verbatim.
-        raw_history, display_history = db.get_resume_conversations(target)
+        if omit_messages:
+            raw_history = db.get_messages_as_conversation(
+                target, repair_alternation=True
+            )
+            display_history = []
+        else:
+            raw_history, display_history = db.get_resume_conversations(target)
         # The display transcript keeps every row so the user still sees their
         # full history.  The model-fed history is sanitized: a session whose
         # last turn died mid-tool-loop persists a dangling assistant(tool_calls)
@@ -581,9 +600,11 @@ def _(rid, params: dict) -> dict:
         # re-issue the unanswered call forever — the permanent-"thinking" stuck
         # session in #29086.  The messaging gateway already strips this; this is
         # the WebUI/TUI resume path picking up the same cleanup.
-        display_history_prefix = db.get_ancestor_display_prefix(target)
+        display_history_prefix = (
+            [] if omit_messages else db.get_ancestor_display_prefix(target)
+        )
         history = sanitize_replay_history(raw_history)
-        messages = _history_to_messages(display_history)
+        messages = [] if omit_messages else _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
             # Pass the profile's db so the agent persists turns to the right
@@ -632,6 +653,7 @@ def _(rid, params: dict) -> dict:
                 cols=cols,
                 touch=True,
                 transport=current_transport() or _stdio_transport,
+                omit_messages=omit_messages,
             )
             payload["resumed"] = target
             return _ok(rid, payload)
@@ -685,8 +707,9 @@ def _(rid, params: dict) -> dict:
     payload = {
         "session_id": sid,
         "resumed": target,
-        "message_count": len(messages),
+        "message_count": len(raw_history) if omit_messages else len(messages),
         "messages": messages,
+        "messages_omitted": omit_messages,
         "info": _session_info(agent, session),
         "inflight": None,
         "running": False,
@@ -782,6 +805,7 @@ def _(rid, params: dict) -> dict:
             session,
             touch=True,
             transport=current_transport() or _stdio_transport,
+            omit_messages=is_truthy_value(params.get("omit_messages", False)),
         ),
     )
 
@@ -2625,15 +2649,23 @@ def _(rid, params: dict) -> dict:
                     else None
                 ),
             )
-            for msg in history:
-                db.append_message(
-                    session_id=new_key,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    # Preserve the parent's original message timestamps —
-                    # branch copies are history, not new activity (9d73006ad).
-                    timestamp=msg.get("timestamp"),
-                )
+            # Copy the whole parent history in bounded-chunk transactions —
+            # a branch seed can be hundreds of rows, and per-row transactions
+            # were the write-amplification pattern removed in #23254.
+            db.append_messages_batch(
+                new_key,
+                [
+                    {
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content"),
+                        # Preserve the parent's original message timestamps —
+                        # branch copies are history, not new activity (9d73006ad).
+                        "timestamp": msg.get("timestamp"),
+                    }
+                    for msg in history
+                ],
+                chunk_rows=500,
+            )
             db.set_session_title(new_key, title)
         except Exception as e:
             if lease is not None:

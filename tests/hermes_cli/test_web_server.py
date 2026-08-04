@@ -142,7 +142,7 @@ class TestReloadEnv:
     def test_adds_new_vars(self, tmp_path):
         """reload_env() adds vars from .env that are not in os.environ."""
         env_file = tmp_path / ".env"
-        env_file.write_text("TEST_RELOAD_VAR=hello123\n")
+        env_file.write_text("TEST_RELOAD_VAR=hello123\n", encoding="utf-8")
         with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
             os.environ.pop("TEST_RELOAD_VAR", None)
             count = reload_env()
@@ -522,6 +522,79 @@ class TestWebServerEndpoints:
     @staticmethod
     def _provider_field_map(payload):
         return {field["key"]: field for field in payload["fields"]}
+
+    def test_openviking_recall_fields_are_numeric_dashboard_controls(self):
+        resp = self.client.get("/api/memory/providers/openviking/config")
+
+        assert resp.status_code == 200
+        fields = self._provider_field_map(resp.json())
+        assert fields["recall_limit"]["kind"] == "integer"
+        assert fields["recall_limit"]["minimum"] == 1
+        assert fields["recall_limit"]["maximum"] == 100
+        assert fields["recall_score_threshold"]["kind"] == "number"
+        assert fields["recall_score_threshold"]["step"] == 0.01
+        assert fields["recall_resources"]["kind"] == "boolean"
+
+    def test_openviking_dashboard_persists_typed_recall_values(self):
+        from hermes_cli.config import load_config
+
+        resp = self.client.put(
+            "/api/memory/providers/openviking/config",
+            json={
+                "values": {
+                    "endpoint": "http://127.0.0.1:1933",
+                    "recall_limit": "12",
+                    "recall_score_threshold": "0.42",
+                    "recall_max_injected_chars": "8000",
+                    "profile_token_budget": "7000",
+                    "recall_timeout_seconds": "2.5",
+                    "recall_request_timeout_seconds": "1.5",
+                    "recall_full_read_limit": "5",
+                    "recall_prefer_abstract": True,
+                    "recall_resources": False,
+                }
+            },
+        )
+
+        assert resp.status_code == 200
+        config = load_config()["memory"]["openviking"]
+        assert config["recall_limit"] == 12
+        assert config["recall_score_threshold"] == 0.42
+        assert config["profile_token_budget"] == 7000
+        assert config["recall_prefer_abstract"] is True
+        assert config["recall_resources"] is False
+
+    def test_openviking_dashboard_rejects_out_of_range_recall_value(self):
+        resp = self.client.put(
+            "/api/memory/providers/openviking/config",
+            json={
+                "values": {
+                    "endpoint": "http://127.0.0.1:1933",
+                    "recall_limit": 101,
+                }
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "must be at most 100" in resp.json()["detail"]
+
+    def test_openviking_dashboard_rejects_blocked_endpoint_before_saving(self):
+        from hermes_cli.config import load_config
+
+        resp = self.client.put(
+            "/api/memory/providers/openviking/config",
+            json={
+                "values": {
+                    "endpoint": "http://169.254.169.254/latest/meta-data/credential",
+                }
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "blocked metadata address" in resp.json()["detail"]
+        assert "credential" not in resp.json()["detail"]
+        memory_config = load_config().get("memory", {})
+        assert "openviking" not in memory_config
 
 
 
@@ -1948,6 +2021,36 @@ class TestNewEndpoints:
             config["platform_toolsets"]["discord"]
         )
 
+    def test_toolsets_resolve_subscription_features_once(self, monkeypatch):
+        import hermes_cli.tools_config as tools_config
+        from hermes_cli.nous_subscription import NousSubscriptionFeatures
+
+        calls = 0
+        features = NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={},
+            account_info=None,
+        )
+
+        def resolve_features(config, *, force_fresh=False):
+            nonlocal calls
+            calls += 1
+            return features
+
+        monkeypatch.setattr(
+            tools_config,
+            "get_nous_subscription_features",
+            resolve_features,
+        )
+
+        resp = self.client.get("/api/tools/toolsets")
+
+        assert resp.status_code == 200
+        assert resp.json()
+        assert calls == 1
+
 
     def test_get_toolset_config_returns_provider_matrix(self):
         """GET .../config returns provider rows with structured env_vars."""
@@ -2192,6 +2295,38 @@ class TestNewEndpoints:
         assert top_skill["total_count"] == 1
         assert top_skill["last_used_at"] is not None
 
+    def test_analytics_usage_skips_full_insights_generate(self):
+        """get_usage_analytics must call get_usage_breakdown, not generate()."""
+        from unittest.mock import patch
+        from agent.insights import InsightsEngine
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="usage-tools-test",
+                source="cli",
+                model="anthropic/claude-sonnet-4",
+            )
+            db.update_token_counts(
+                "usage-tools-test",
+                input_tokens=10,
+                output_tokens=5,
+            )
+            db.append_message(
+                "usage-tools-test",
+                role="tool",
+                content="read output",
+                tool_name="read_file",
+            )
+        finally:
+            db.close()
+
+        with patch.object(InsightsEngine, "generate") as mock_generate:
+            resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+        mock_generate.assert_not_called()
+        assert any(tool["tool"] == "read_file" for tool in resp.json()["tools"])
 
 # ---------------------------------------------------------------------------
 # Model context length: normalize/denormalize + /api/model/info
@@ -2702,7 +2837,7 @@ class TestDiscoverUserThemes:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         themes_dir = tmp_path / "dashboard-themes"
         themes_dir.mkdir()
-        (themes_dir / "mine.yaml").write_text("name: mine\n")
+        (themes_dir / "mine.yaml").write_text("name: mine\n", encoding="utf-8")
 
         other = tmp_path / "other-profile"
         other.mkdir()
@@ -3245,7 +3380,7 @@ class TestDashboardPluginManifestExtensions:
         import json
         plug_dir = tmp_path / "plugins" / name / "dashboard"
         plug_dir.mkdir(parents=True)
-        (plug_dir / "manifest.json").write_text(json.dumps(manifest))
+        (plug_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         return plug_dir
 
     def test_override_and_hidden_carried_through(self, tmp_path, monkeypatch):
@@ -3598,10 +3733,9 @@ class TestDashboardPluginStaticAssetAllowlist:
         assert resp.status_code in (403, 404)
 
 
-def _fake_httpx_client(*, status: int | None = None, raise_exc: bool = False):
-    """Build a drop-in for httpx.Client whose .get() returns a canned status
-    (or raises a transport error). Patched in for the credential-validate probe
-    so tests never touch the network."""
+def _fake_httpx_async_client(*, status: int | None = None, raise_exc: bool = False):
+    """Build a drop-in for httpx.AsyncClient with a canned GET response."""
+
     class _Resp:
         def __init__(self, code):
             self.status_code = code
@@ -3614,13 +3748,13 @@ def _fake_httpx_client(*, status: int | None = None, raise_exc: bool = False):
         def __init__(self, *a, **k):
             pass
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *a):
+        async def __aexit__(self, *a):
             return False
 
-        def get(self, *a, **k):
+        async def get(self, *a, **k):
             if raise_exc:
                 raise RuntimeError("connection refused")
             return _Resp(status)
@@ -3643,13 +3777,38 @@ class TestValidateProviderCredential:
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
+        class _BlockingClient:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError(
+                    "async validation route used blocking httpx.Client"
+                )
+
+        monkeypatch.setattr("httpx.Client", _BlockingClient)
+
     def _post(self, key, value):
-        return self.client.post("/api/providers/validate", json={"key": key, "value": value})
+        return self.client.post(
+            "/api/providers/validate", json={"key": key, "value": value}
+        )
 
+    def test_rejected_key_blocks(self, monkeypatch):
+        monkeypatch.setattr("httpx.AsyncClient", _fake_httpx_async_client(status=401))
+        data = self._post("OPENROUTER_API_KEY", "sk-bogus").json()
+        assert data["ok"] is False and data["reachable"] is True
 
+    def test_valid_key_passes(self, monkeypatch):
+        monkeypatch.setattr("httpx.AsyncClient", _fake_httpx_async_client(status=200))
+        data = self._post("OPENAI_API_KEY", "sk-real").json()
+        assert data["ok"] is True and data["reachable"] is True
+
+    def test_rate_limited_counts_as_valid(self, monkeypatch):
+        monkeypatch.setattr("httpx.AsyncClient", _fake_httpx_async_client(status=429))
+        data = self._post("XAI_API_KEY", "xai-real").json()
+        assert data["ok"] is True
 
     def test_network_error_is_unreachable_not_blocking(self, monkeypatch):
-        monkeypatch.setattr("httpx.Client", _fake_httpx_client(raise_exc=True))
+        monkeypatch.setattr(
+            "httpx.AsyncClient", _fake_httpx_async_client(raise_exc=True)
+        )
         data = self._post("OPENROUTER_API_KEY", "sk-real").json()
         assert data["ok"] is False and data["reachable"] is False
 
@@ -3672,18 +3831,18 @@ class TestValidateProviderCredential:
             def __init__(self, *a, **k):
                 pass
 
-            def __enter__(self):
+            async def __aenter__(self):
                 return self
 
-            def __exit__(self, *a):
+            async def __aexit__(self, *a):
                 return False
 
-            def get(self, url, *a, headers=None, **k):
+            async def get(self, url, *a, headers=None, **k):
                 captured["url"] = url
                 captured["headers"] = headers
                 return _Resp()
 
-        monkeypatch.setattr("httpx.Client", _Client)
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
 
         resp = self.client.post(
             "/api/providers/validate",
@@ -3698,6 +3857,91 @@ class TestValidateProviderCredential:
         assert data["models"] == ["gpt-oss-120b"]
         assert captured["url"] == "https://text.example.com/v1/models"
         assert captured["headers"] == {"Authorization": "Bearer sk-secret"}
+
+    def test_local_endpoint_without_key_sends_no_auth_header(self, monkeypatch):
+        """No key → no Authorization header (keyless local servers unaffected)."""
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": []}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, *a, headers=None, **k):
+                captured["headers"] = headers
+                return _Resp()
+
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+        self.client.post(
+            "/api/providers/validate",
+            json={"key": "OPENAI_BASE_URL", "value": "http://127.0.0.1:8000/v1"},
+        )
+        assert captured["headers"] is None
+
+    def test_named_custom_endpoint_probe_is_async(self, monkeypatch):
+        """Custom endpoint validation must not block the dashboard event loop."""
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [{"id": "local-model"}]}
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, *args, headers=None, **kwargs):
+                captured["url"] = url
+                captured["headers"] = headers
+                return _Resp()
+
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+        response = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={
+                "name": "Local",
+                "base_url": "http://localhost:8000/v1",
+                "model": "local-model",
+                "api_key": "local-secret",
+            },
+        )
+
+        assert response.json() == {
+            "ok": True,
+            "reachable": True,
+            "message": "",
+            "models": ["local-model"],
+        }
+        assert captured == {
+            "url": "http://localhost:8000/v1/models",
+            "headers": {
+                "Accept": "application/json",
+                "Authorization": "Bearer local-secret",
+            },
+        }
 
 
 class TestDesktopCronTicker:
@@ -3775,6 +4019,81 @@ class TestServeIndexMissingIndex:
         resp = client.get("/chat")
         assert resp.status_code == 200
         assert "SPA-rebuilt" in resp.text
+
+
+class TestHashedAssetCacheHeaders:
+    """Hashed /assets/* responses must be immutable-cacheable; index.html
+    must stay no-store so it always references the current hashes
+    (salvaged from PR #28543)."""
+
+    _IMMUTABLE = "public, max-age=31536000, immutable"
+
+    @staticmethod
+    def _client(tmp_path, monkeypatch):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<html><head></head><body>SPA</body></html>", encoding="utf-8"
+        )
+        (dist / "assets" / "index-abc123.js").write_text(
+            "console.log('bundle');", encoding="utf-8"
+        )
+        (dist / "assets" / "index-abc123.css").write_text(
+            "body{background:url(/ds-assets/bg.png);"
+            "font-family:url(/fonts-terminal/x.woff2)}",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+        spa_app = FastAPI()
+        ws.mount_spa(spa_app)
+        return TestClient(spa_app)
+
+    def test_hashed_js_asset_is_immutable(self, tmp_path, monkeypatch):
+        client = self._client(tmp_path, monkeypatch)
+        resp = client.get("/assets/index-abc123.js")
+        assert resp.status_code == 200
+        assert resp.headers["cache-control"] == self._IMMUTABLE
+
+    def test_serve_css_is_immutable_and_keeps_prefix_rewrites(
+        self, tmp_path, monkeypatch
+    ):
+        client = self._client(tmp_path, monkeypatch)
+        resp = client.get("/assets/index-abc123.css")
+        assert resp.status_code == 200
+        assert resp.headers["cache-control"] == self._IMMUTABLE
+
+        # The proxy-prefix rewrite path (main's ds-assets/fonts-terminal
+        # handling) must survive the header change.
+        prefixed = client.get(
+            "/assets/index-abc123.css",
+            headers={"X-Forwarded-Prefix": "/hermes"},
+        )
+        assert prefixed.status_code == 200
+        assert prefixed.headers["cache-control"] == self._IMMUTABLE
+        assert "url(/hermes/ds-assets/bg.png)" in prefixed.text
+        assert "url(/hermes/fonts-terminal/x.woff2)" in prefixed.text
+
+    def test_index_html_stays_no_store(self, tmp_path, monkeypatch):
+        client = self._client(tmp_path, monkeypatch)
+        for route in ("/", "/chat"):
+            resp = client.get(route)
+            assert resp.status_code == 200
+            cache_control = resp.headers["cache-control"]
+            assert "no-store" in cache_control
+            assert "immutable" not in cache_control
+
+    def test_missing_asset_is_not_marked_immutable(self, tmp_path, monkeypatch):
+        """A 404 must never be cached for a year — a later rebuild can
+        legitimately create the file."""
+        client = self._client(tmp_path, monkeypatch)
+        resp = client.get("/assets/nope-000000.js")
+        assert resp.status_code == 404
+        assert "immutable" not in resp.headers.get("cache-control", "")
 
 
 class TestDashboardComponentHealth:

@@ -33,6 +33,7 @@ class _Relay:
         self._tool_starts: dict[Any, dict[str, Any]] = {}
         self._scope_starts: dict[Any, dict[str, Any]] = {}
         self._scope = contextvars.ContextVar("relay_scope", default=None)
+        self._scope_stack = contextvars.ContextVar("relay_scope_stack", default=None)
         self._scope_serial = 0
         self.ScopeType = SimpleNamespace(
             Agent="agent", Function="function", Tool="tool"
@@ -55,6 +56,11 @@ class _Relay:
     def _scope_push(self, name: str, scope_type: Any, **kwargs: Any) -> Any:
         self._scope_serial += 1
         handle = ("scope", name, self._scope_serial)
+        stack = self._scope_stack.get()
+        if stack is None:
+            stack = []
+            self._scope_stack.set(stack)
+        stack.append(handle)
         self._scope.set(handle)
         self.events.append(("scope.push", name, scope_type, kwargs))
         if scope_type == self.ScopeType.Function:
@@ -73,6 +79,13 @@ class _Relay:
         return handle
 
     def _scope_pop(self, handle: Any, **kwargs: Any) -> None:
+        stack = self._scope_stack.get()
+        if not stack or stack[-1] != handle:
+            current = stack[-1] if stack else None
+            self.events.append(("scope.pop.rejected", handle, current))
+            raise RuntimeError("scope handle is not at the top of the stack")
+        stack.pop()
+        self._scope.set(stack[-1] if stack else None)
         self.events.append(("scope.pop", handle, kwargs))
         start = self._scope_starts.pop(handle, None)
         if start is not None:
@@ -106,7 +119,9 @@ class _Relay:
             callback(event)
 
     def _get_scope_stack(self) -> Any:
-        current = self._scope.get()
+        stack = self._scope_stack.get()
+        current = stack[-1] if stack else None
+        self._scope.set(current)
         self.events.append(("scope.sync", current))
         return current
 
@@ -1005,6 +1020,75 @@ def test_core_task_instrumentation_preserves_prompt_history_and_tool_schema(
     assert json.dumps(agent.tools, ensure_ascii=False, sort_keys=True) == tools_before
 
 
+def test_skipped_turn_does_not_finish_another_sessions_matching_task(
+    direct_runtime,
+    monkeypatch,
+):
+    """A skipped turn must not use shared-metrics' task-id fallback on finish."""
+    from run_agent import AIAgent
+
+    owner_session = "instrumented-session"
+    shared_task_id = "caller-supplied-task-id"
+    relay_shared_metrics.start_task_run(
+        session_id=owner_session,
+        task_id=shared_task_id,
+        platform="cli",
+    )
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    assert (owner_session, shared_task_id) in runtime._task_sessions
+
+    agent = object.__new__(AIAgent)
+    agent.session_id = "skipped-session"
+    agent.platform = "cli"
+    agent._parent_session_id = None
+    agent._session_db = None
+    agent._cached_system_prompt = "stable"
+    agent.tools = []
+
+    skipped_turn = SimpleNamespace(relay_enabled=False)
+    monkeypatch.setattr(
+        relay_runtime.SESSION_COORDINATOR,
+        "begin_turn",
+        lambda *_args, **_kwargs: skipped_turn,
+    )
+    monkeypatch.setattr(
+        relay_runtime.SESSION_COORDINATOR,
+        "finish_logical_calls",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        relay_runtime.SESSION_COORDINATOR,
+        "end_turn",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "agent.conversation_loop.run_conversation",
+        lambda *_args, **_kwargs: {"final_response": "ok", "completed": True},
+    )
+
+    result = AIAgent.run_conversation(
+        agent,
+        "hello",
+        conversation_history=[],
+        task_id=shared_task_id,
+    )
+
+    assert result["completed"] is True
+    assert (owner_session, shared_task_id) in runtime._task_sessions
+    assert not [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == relay_shared_metrics.TASK_SCOPE
+    ]
+    relay_shared_metrics.finish_task_run(
+        session_id=owner_session,
+        task_id=shared_task_id,
+        platform="cli",
+        result={"completed": True},
+    )
+
+
 
 
 
@@ -1168,6 +1252,171 @@ def test_sync_session_runner_releases_lock_before_callback(direct_runtime):
 
     assert result == session.handle
     assert contender.is_alive() is False
+
+
+def test_direct_runtime_fake_enforces_lifo_scope_contract(direct_runtime):
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "lifo-contract"})
+    assert session is not None
+
+    first = runtime.run_in_session(
+        session,
+        direct_runtime.scope.push,
+        "first",
+        direct_runtime.ScopeType.Function,
+    )
+    second = runtime.run_in_session(
+        session,
+        direct_runtime.scope.push,
+        "second",
+        direct_runtime.ScopeType.Function,
+    )
+
+    with pytest.raises(RuntimeError, match="not at the top"):
+        runtime.run_in_session(session, direct_runtime.scope.pop, first)
+
+    runtime.run_in_session(session, direct_runtime.scope.pop, second)
+    runtime.run_in_session(session, direct_runtime.scope.pop, first)
+
+
+def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(
+    direct_runtime,
+):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="shared-session",
+        platform="cli",
+    )
+    first = coordinator.begin_turn(lease, turn_id="first", task_id="first-task")
+    second = coordinator.begin_turn(
+        lease,
+        turn_id="second",
+        task_id="second-task",
+    )
+
+    assert first.relay_enabled is True
+    assert first.handle is not None
+    assert second.relay_enabled is False
+    assert second.handle is None
+    assert relay_runtime.resolve_execution_context("shared-session") == (
+        None,
+        None,
+        None,
+    )
+
+    coordinator.end_turn(first, outcome="success")
+    coordinator.end_turn(second, outcome="success")
+    coordinator.release_conversation(lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="shared-session",
+    )
+
+    turn_closes = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] == first.handle
+    ]
+    assert len(turn_closes) == 1
+    assert not [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop.rejected"
+    ]
+
+
+def test_concurrent_turn_skips_shared_metrics_scope_creation(direct_runtime):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="shared-session",
+        platform="cli",
+    )
+    first = coordinator.begin_turn(lease, turn_id="first", task_id="first-task")
+    second = coordinator.begin_turn(lease, turn_id="second", task_id="second-task")
+
+    relay_shared_metrics.observe_lifecycle(
+        "pre_llm_call",
+        session_id="shared-session",
+        task_id="second-task",
+        platform="cli",
+    )
+    relay_shared_metrics.observe_lifecycle(
+        "pre_api_request",
+        session_id="shared-session",
+        task_id="second-task",
+        api_request_id="second-request",
+        platform="cli",
+    )
+
+    assert second.relay_enabled is False
+    assert not [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.push" and event[1] == relay_shared_metrics.TASK_SCOPE
+    ]
+
+    coordinator.end_turn(first, outcome="success")
+    coordinator.end_turn(second, outcome="success")
+    coordinator.release_conversation(lease)
+
+
+def test_skipped_turn_stays_gated_after_instrumented_turn_ends(direct_runtime):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="shared-session",
+        platform="cli",
+    )
+    first = coordinator.begin_turn(lease, turn_id="first", task_id="first-task")
+    second = coordinator.begin_turn(lease, turn_id="second", task_id="second-task")
+    inherited = contextvars.copy_context()
+
+    coordinator.end_turn(first, outcome="success")
+
+    assert relay_runtime.current_turn() is second
+    assert inherited.run(relay_runtime.current_turn) is second
+    assert not relay_runtime.relay_instrumentation_enabled()
+    assert not inherited.run(relay_runtime.relay_instrumentation_enabled)
+    assert relay_runtime.resolve_execution_context("shared-session") == (
+        None,
+        None,
+        None,
+    )
+
+    relay_shared_metrics.observe_lifecycle(
+        "pre_llm_call",
+        session_id="shared-session",
+        task_id="second-task",
+        platform="cli",
+    )
+    inherited.run(
+        relay_shared_metrics.observe_lifecycle,
+        "pre_api_request",
+        session_id="shared-session",
+        task_id="second-task",
+        api_request_id="second-request",
+        platform="cli",
+    )
+
+    assert not [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.push"
+        and event[1]
+        in {relay_shared_metrics.TASK_SCOPE, relay_shared_metrics.MODEL_CALL_SCOPE}
+    ]
+
+    coordinator.end_turn(second, outcome="success")
+    assert relay_runtime.current_turn() is None
+    assert inherited.run(relay_runtime.current_turn) is second
+    assert not inherited.run(relay_runtime.relay_instrumentation_enabled)
+    coordinator.release_conversation(lease)
 
 
 
@@ -2043,3 +2292,4 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
     assert metrics["hermes.task_run.finished"]["value"] == 2
     assert flush_attempts == 2
     assert "Hermes shared-metrics task flush failed" in caplog.text
+

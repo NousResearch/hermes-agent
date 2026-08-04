@@ -1449,3 +1449,22 @@ def _isolate_computer_use_approval_state():
             _cu_tool._session_auto_approve.clear()
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _moa_caches_isolated():
+    """Clear module-level MoA cold-start caches before each test.
+
+    ``agent.moa_loop`` caches the resolved preset and each slot's provider
+    runtime at module level (keyed on config mtime / provider+model) so the
+    tool loop doesn't re-resolve them serially on every iteration. Tests
+    monkeypatch resolvers and config paths, so a cache entry leaked from one
+    test would poison the next. Clear both around every test.
+    """
+    import agent.moa_loop as moa
+
+    moa._preset_cache.clear()
+    moa._runtime_cache.clear()
+    yield
+    moa._preset_cache.clear()
+    moa._runtime_cache.clear()

@@ -562,7 +562,103 @@ class TestHasAnyProviderConfigured:
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
 
+    @staticmethod
+    def _clear_provider_env(monkeypatch):
+        """Clear every provider env var so early checks can't short-circuit."""
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        _all_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
+        for pconfig in PROVIDER_REGISTRY.values():
+            if pconfig.auth_type == "api_key":
+                _all_vars.update(pconfig.api_key_env_vars)
+        for var in _all_vars:
+            monkeypatch.delenv(var, raising=False)
 
+    def _setup_home(self, monkeypatch, tmp_path):
+        from hermes_cli import config as config_module
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._clear_provider_env(monkeypatch)
+        return hermes_home
+
+    def test_config_provider_skips_registry_sweep(self, monkeypatch, tmp_path):
+        """model.provider in config.yaml must short-circuit BEFORE the slow
+        provider-registry sweep (gh subprocess etc.) is ever invoked.
+
+        Regression test for the auth-first ordering: get_auth_status is
+        booby-trapped to fail loudly if the sweep runs. The sweep wraps its
+        loop in ``except Exception``, so we also record every call — any
+        recorded call proves the sweep ran even if the raise was swallowed.
+        """
+        import yaml
+        hermes_home = self._setup_home(monkeypatch, tmp_path)
+        (hermes_home / "config.yaml").write_text(yaml.dump({
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"},
+        }))
+        sweep_calls = []
+
+        def _trap(provider_id):
+            sweep_calls.append(provider_id)
+            raise AssertionError("sweep must be skipped")
+
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", _trap)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+        assert sweep_calls == [], (
+            f"provider registry sweep ran before config short-circuit: {sweep_calls}"
+        )
+
+    def test_config_base_url_api_key_skips_registry_sweep(self, monkeypatch, tmp_path):
+        """Custom endpoint (base_url/api_key in config, no provider) must also
+        short-circuit before the registry sweep."""
+        import yaml
+        hermes_home = self._setup_home(monkeypatch, tmp_path)
+        (hermes_home / "config.yaml").write_text(yaml.dump({
+            "model": {
+                "default": "local/custom-model",
+                "base_url": "http://localhost:8000/v1",
+                "api_key": "sk-local-test",
+            },
+        }))
+        sweep_calls = []
+
+        def _trap(provider_id):
+            sweep_calls.append(provider_id)
+            raise AssertionError("sweep must be skipped")
+
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", _trap)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+        assert sweep_calls == [], (
+            f"provider registry sweep ran before config short-circuit: {sweep_calls}"
+        )
+
+    def test_auth_json_skips_registry_sweep(self, monkeypatch, tmp_path):
+        """auth.json with a logged-in active provider must short-circuit before
+        the registry sweep. get_auth_status may be called ONLY for the active
+        provider from auth.json — any other provider id means the sweep ran.
+        """
+        import json
+        hermes_home = self._setup_home(monkeypatch, tmp_path)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "active_provider": "nous",
+        }))
+        calls = []
+
+        def _guarded_status(provider_id):
+            calls.append(provider_id)
+            assert provider_id == "nous", "sweep must be skipped"
+            return {"logged_in": True}
+
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", _guarded_status)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+        assert calls == ["nous"], (
+            f"provider registry sweep ran before auth.json short-circuit: {calls}"
+        )
 
 
 # =============================================================================
@@ -641,6 +737,98 @@ class TestZaiEndpointAutoDetect:
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == ""
+
+
+class TestZaiParallelProbe:
+    """detect_zai_endpoint probes endpoints in parallel workers.
+
+    Contract under test: (1) each endpoint worker preserves the per-endpoint
+    candidate-model fallback loop, (2) when several endpoints succeed the
+    winner is chosen by ZAI_ENDPOINTS priority order (not completion order).
+    """
+
+    def _mock_post(self, ok):
+        """Return an httpx.post replacement; `ok` maps (base_url, model) -> bool."""
+        import httpx as _httpx
+
+        def _post(url, headers=None, json=None, timeout=None):
+            base = url.rsplit("/chat/completions", 1)[0]
+            code = 200 if ok.get((base, json["model"])) else 401
+            request = _httpx.Request("POST", url)
+            return _httpx.Response(code, request=request, json={})
+
+        return _post
+
+    def test_candidate_model_fallback_within_endpoint(self, monkeypatch):
+        """A worker must try its endpoint's later candidate models when the
+        first ones fail — the fallback the scalar-model version dropped."""
+        from hermes_cli.auth import ZAI_ENDPOINTS, detect_zai_endpoint
+
+        coding_global = next(ep for ep in ZAI_ENDPOINTS if ep[0] == "coding-global")
+        base = coding_global[1]
+        last_model = coding_global[2][-1]
+        # Only the LAST candidate model of coding-global succeeds.
+        monkeypatch.setattr(
+            "hermes_cli.auth.httpx.post",
+            self._mock_post({(base, last_model): True}),
+        )
+        result = detect_zai_endpoint("test-key", timeout=1.0)
+        assert result is not None
+        assert result["id"] == "coding-global"
+        assert result["model"] == last_model
+
+    def test_priority_order_wins_over_completion_order(self, monkeypatch):
+        """When multiple endpoints accept the key, the FIRST in
+        ZAI_ENDPOINTS order must win, even if another finishes earlier."""
+        import time as _time
+
+        from hermes_cli.auth import ZAI_ENDPOINTS, detect_zai_endpoint
+
+        first = ZAI_ENDPOINTS[0]
+        last = ZAI_ENDPOINTS[-1]
+        ok = {
+            (first[1], first[2][0]): True,
+            (last[1], last[2][0]): True,
+        }
+        inner = self._mock_post(ok)
+
+        def _slow_first(url, headers=None, json=None, timeout=None):
+            if url.startswith(first[1]):
+                _time.sleep(0.15)  # first-priority endpoint finishes LAST
+            return inner(url, headers=headers, json=json, timeout=timeout)
+
+        monkeypatch.setattr("hermes_cli.auth.httpx.post", _slow_first)
+        result = detect_zai_endpoint("test-key", timeout=1.0)
+        assert result is not None
+        assert result["id"] == first[0]
+
+    def test_all_fail_returns_none(self, monkeypatch):
+        from hermes_cli.auth import detect_zai_endpoint
+
+        monkeypatch.setattr("hermes_cli.auth.httpx.post", self._mock_post({}))
+        assert detect_zai_endpoint("bad-key", timeout=1.0) is None
+
+    def test_early_exit_does_not_wait_for_slow_losers(self, monkeypatch):
+        """When the highest-priority endpoint succeeds fast, the caller must
+        return without waiting for slow lower-priority probes to finish."""
+        import time as _time
+
+        from hermes_cli.auth import ZAI_ENDPOINTS, detect_zai_endpoint
+
+        first = ZAI_ENDPOINTS[0]
+        inner = self._mock_post({(first[1], first[2][0]): True})
+
+        def _slow_losers(url, headers=None, json=None, timeout=None):
+            if not url.startswith(first[1]):
+                _time.sleep(2.0)  # slow lower-priority endpoints
+            return inner(url, headers=headers, json=json, timeout=timeout)
+
+        monkeypatch.setattr("hermes_cli.auth.httpx.post", _slow_losers)
+        t0 = _time.perf_counter()
+        result = detect_zai_endpoint("test-key", timeout=5.0)
+        elapsed = _time.perf_counter() - t0
+        assert result is not None and result["id"] == first[0]
+        assert elapsed < 1.5, f"early exit failed: waited {elapsed:.2f}s for losers"
 
 
 # =============================================================================

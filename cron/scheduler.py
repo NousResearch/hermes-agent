@@ -4158,8 +4158,20 @@ def tick(
 
         due_jobs = get_due_jobs()
 
-        if verbose and not due_jobs:
-            logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+        if not due_jobs:
+            # Idle tick: skip config load + pool partitioning entirely
+            # (#33612 — the gateway ticker calls tick(verbose=False) every
+            # 60s, so idle ticks previously fell through to load_config()).
+            # Still run the post-tick MCP orphan sweep: main intentionally
+            # sweeps on idle ticks so orphaned stdio children from crashed
+            # jobs are reaped even when nothing is due.
+            if verbose:
+                logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+            try:
+                from tools.mcp_tool import _kill_orphaned_mcp_children
+                _kill_orphaned_mcp_children()
+            except Exception as _e:
+                logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
             return 0
 
         if verbose:

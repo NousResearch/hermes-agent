@@ -6268,6 +6268,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_via_service: bool = False
     _detached_restart_helper_started: bool = False
     _restart_command_source: Optional[SessionSource] = None
+    # Finite monotonic deadline (loop.time()) during which a claimed
+    # restart whose outcome could not be confirmed is NOT retried.
+    # 0.0 = no block. Unlike _restart_requested/_draining, this never
+    # wedges the gateway: it expires and the gateway accepts messages and
+    # later restarts normally.
+    _restart_retry_blocked_until: float = 0.0
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
@@ -10581,6 +10587,240 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as exc:
             logger.debug("Failed to clean up restart files during rollback: %s", exc)
 
+    async def _finalize_claimed_pre_launch(
+        self,
+        transaction: Any,
+        *,
+        notify_msg: str,
+    ) -> None:
+        """Idempotent terminal finalization for a claimed transaction that
+        failed BEFORE the launcher was attempted (drain error / cancellation
+        / drain→launch boundary exception).
+
+        Because no launcher side-effect can have occurred, this is a SAFE
+        abort: it atomically terminates as ABORTED, CAS-rolls back the
+        notify/dedup markers, resets the runner's runtime flags (the gateway
+        accepts new messages and a later restart again), clears the live
+        transaction pointer (identity-checked), and sends a best-effort
+        failure notification to the originating chat. CancelledError is
+        re-raised by the caller after this returns.
+        """
+        # Atomic terminal transition first (idempotent: if the transaction
+        # is already terminal, complete_not_started returns ALREADY_COMPLETE
+        # or LOST_RACE and no state is rewritten).
+        if transaction is not None:
+            try:
+                await transaction.complete_not_started()
+            except Exception as exc:
+                logger.warning(
+                    "Restart pre-launch finalize: complete_not_started failed "
+                    "(%s) (request_id=%s).",
+                    exc,
+                    getattr(transaction, "request_id", "?"),
+                )
+
+            # CAS-safe marker rollback (restores prior files / removes this
+            # request's marker only if it still belongs to this request).
+            if transaction.backup is not None:
+                try:
+                    transaction.backup.rollback(self)
+                except Exception as exc:
+                    logger.warning(
+                        "Restart pre-launch finalize: marker rollback failed "
+                        "(%s) (request_id=%s).",
+                        exc,
+                        getattr(transaction, "request_id", "?"),
+                    )
+
+            # Reset runtime flags so the gateway is fully usable again.
+            self._restart_requested = False
+            self._restart_task_started = False
+            self._detached_restart_helper_started = False
+            self._draining = False
+            if transaction.backup is not None:
+                self._restart_command_source = transaction.backup.original_source
+
+            # Clear the live transaction pointer only if it still points at
+            # this transaction (never clobber a successor request's state).
+            if self._restart_transaction is transaction:
+                self._restart_transaction = None
+
+            # Best-effort failure notification. Notification failures only
+            # log — they never break the state machine.
+            await self._send_restart_outcome_notification(notify_msg)
+
+    async def _finalize_claimed_launch_unknown(
+        self,
+        transaction: Any,
+        *,
+        notify_msg: str,
+    ) -> None:
+        """Idempotent terminal finalization for a claimed transaction whose
+        launcher was ATTEMPTED but whose outcome cannot be confirmed
+        (mid-launch CancelledError / KeyboardInterrupt / SystemExit, or a
+        generic launcher exception that may have forked a watcher).
+
+        The launcher MAY have produced an external side-effect, so this is
+        NOT a safe abort: the transaction is atomically terminated as
+        OUTCOME_UNKNOWN and the marker is NOT rolled back. Instead:
+          * the runtime flags are reset so the gateway does NOT wedge
+            (no permanent _draining / _restart_task_started);
+          * a FINITE retry block (`_restart_retry_blocked_until`,
+            loop.time() + 30s) prevents an immediate re-trigger without a
+            permanent flag;
+          * the notify marker is CAS-rewritten to an explicit
+            `outcome=unknown` state so a later boot sends an
+            uncertain/incomplete notification, NEVER a "restarted
+            successfully" one;
+          * the live transaction pointer is cleared (identity-checked);
+          * a best-effort failure notification is sent.
+        """
+        if transaction is not None:
+            try:
+                await transaction.complete_unknown()
+            except Exception as exc:
+                logger.warning(
+                    "Restart launch-unknown finalize: complete_unknown failed "
+                    "(%s) (request_id=%s).",
+                    exc,
+                    getattr(transaction, "request_id", "?"),
+                )
+
+            # Reset runtime flags (no wedge). Do NOT rollback the marker.
+            self._restart_requested = False
+            self._restart_task_started = False
+            self._detached_restart_helper_started = False
+            self._draining = False
+            if transaction.backup is not None:
+                self._restart_command_source = transaction.backup.original_source
+
+            # Finite retry block (monotonic deadline), not a permanent flag.
+            try:
+                self._restart_retry_blocked_until = (
+                    asyncio.get_running_loop().time() + 30.0
+                )
+            except Exception:
+                self._restart_retry_blocked_until = 0.0
+
+            # CAS-rewrite the notify marker to an explicit unknown state so
+            # the next boot can never interpret it as a successful restart.
+            self._mark_restart_notify_unknown(transaction)
+
+            if self._restart_transaction is transaction:
+                self._restart_transaction = None
+
+            await self._send_restart_outcome_notification(notify_msg)
+
+    def _mark_restart_notify_unknown(self, transaction: Any) -> None:
+        """CAS-safe rewrite of .restart_notify.json to outcome=unknown.
+
+        Only touches the marker if it still belongs to this request; if a
+        successor request already replaced it, the successor's marker is
+        left intact.
+        """
+        try:
+            from gateway.run import _hermes_home
+
+            notify_path = _hermes_home / ".restart_notify.json"
+            if not notify_path.exists():
+                return
+            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            if data.get("request_id") != getattr(transaction, "request_id", None):
+                return
+            data["outcome"] = "unknown"
+            data["outcome_message"] = (
+                "restart result could not be confirmed; gateway may still be online"
+            )
+            notify_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:
+            logger.warning(
+                "Failed to mark restart notify outcome=unknown (%s) "
+                "(request_id=%s).",
+                exc,
+                getattr(transaction, "request_id", "?"),
+            )
+
+    async def _send_restart_outcome_notification(self, message: str) -> None:
+        """Best-effort failure/uncertain notification to the originating chat.
+
+        Reads the target info from .restart_notify.json (same mechanism as
+        _send_restart_notification) and sends `message`. Unlike the success
+        path, this does NOT unlink the notify marker — the caller owns the
+        marker lifecycle (pre-launch abort rollback removes it; launch-unknown
+        rewrites it to outcome=unknown for the next boot). Send failures are
+        logged only and never break the state machine.
+        """
+        try:
+            from gateway.run import _hermes_home
+
+            notify_path = _hermes_home / ".restart_notify.json"
+            if not notify_path.exists():
+                return
+            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            platform_str = data.get("platform")
+            chat_id = data.get("chat_id")
+            chat_type = data.get("chat_type")
+            thread_id = data.get("thread_id")
+            message_id = data.get("message_id")
+
+            if not platform_str or not chat_id:
+                return
+
+            platform = Platform(platform_str)
+            transport = resolve_delivery_transport(platform, self.config, self.adapters)
+            if transport is None:
+                logger.debug(
+                    "Restart outcome notification skipped: no live transport for %s",
+                    platform_str,
+                )
+                return
+
+            platform_cfg = self.config.platforms.get(platform)
+            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                logger.info(
+                    "Restart outcome notification suppressed: %s has "
+                    "gateway_restart_notification=false",
+                    platform_str,
+                )
+                return
+
+            metadata = self._thread_metadata_for_target(
+                platform,
+                chat_id,
+                thread_id,
+                chat_type=chat_type,
+                reply_to_message_id=message_id,
+                adapter=transport.adapter,
+            )
+            if data.get("delivered_via_upstream_relay") is True:
+                metadata = dict(metadata or {})
+                if data.get("user_id"):
+                    metadata["user_id"] = str(data["user_id"])
+                if data.get("scope_id"):
+                    metadata["scope_id"] = str(data["scope_id"])
+
+            result = await transport.send(
+                platform,
+                str(chat_id),
+                message,
+                metadata=_non_conversational_metadata(metadata, platform=platform),
+            )
+            if result is not None and getattr(result, "success", True) is False:
+                logger.warning(
+                    "Restart outcome notification to %s:%s was not delivered: %s",
+                    platform_str,
+                    chat_id,
+                    getattr(result, "error", "send returned success=False"),
+                )
+                return
+            logger.info(
+                "Sent restart outcome notification to %s:%s",
+                platform_str,
+                chat_id,
+            )
+        except Exception as exc:
+            logger.warning("Restart outcome notification failed: %s", exc)
+
     async def _launch_detached_restart_command(self) -> bool:
         import shutil
         import subprocess
@@ -11027,11 +11267,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # external side-effect has occurred.
                 transaction.try_write_ack(_RestartAckOutcome.ACCEPTED)
 
-            # Drain in-flight work AFTER the handoff was claimed: the
-            # requesting turn is now free to finish, so the drain will
-            # actually converge. The launch / stop path still runs only
-            # after active work reaches zero (upstream #77184).
-            await self._await_active_work_before_restart()
+            # ------------------------------------------------------------------
+            # PHASE A: drain in-flight work AFTER the handoff was claimed.
+            #
+            # The requesting turn is now free to finish, so the drain will
+            # actually converge (P1 #71876). The launch / stop path still
+            # runs only after active work reaches zero (upstream #77184).
+            #
+            # If the helper is cancelled or an exception escapes the drain
+            # (or the drain→launch boundary) BEFORE the launcher was
+            # attempted, we can PROVE no launcher side-effect happened:
+            # finalize as ABORTED, CAS-rollback the marker, reset the
+            # runtime flags, clear the transaction pointer, send a
+            # best-effort failure notification, then re-raise (lifecycle
+            # remediation, PR #71876).
+            launcher_attempted = False
+            try:
+                await self._await_active_work_before_restart()
+            except asyncio.CancelledError:
+                if transaction is not None:
+                    await self._finalize_claimed_pre_launch(
+                        transaction,
+                        notify_msg=(
+                            "Restart did not begin: the gateway was cancelled "
+                            "while waiting for active work to finish. "
+                            "Gateway remains active."
+                        ),
+                    )
+                raise
+            except BaseException:
+                if transaction is not None:
+                    await self._finalize_claimed_pre_launch(
+                        transaction,
+                        notify_msg=(
+                            "Restart did not begin: an error occurred while "
+                            "waiting for active work to finish. "
+                            "Gateway remains active."
+                        ),
+                    )
+                raise
 
             if transaction is not None:
 
@@ -11044,6 +11318,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 launcher_result = _LauncherResult.UNKNOWN
                 launched = False
                 if detached:
+                    launcher_attempted = True
                     try:
                         launched = await self._launch_detached_restart_command()
                         launcher_result = (
@@ -11052,11 +11327,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     except asyncio.CancelledError:
                         # Helper was cancelled mid-launch while IN_FLIGHT.
-                        # Complete unknown, re-raise.
-                        await transaction.complete_unknown()
+                        # The launcher MAY have spawned a watcher (Popen can
+                        # fork before the cancel lands), so the outcome is
+                        # UNKNOWN — NOT_STARTED cannot be proven. Finalize
+                        # with outcome_unknown (no rollback, finite retry
+                        # block, failure notification) then re-raise.
+                        await self._finalize_claimed_launch_unknown(
+                            transaction,
+                            notify_msg=(
+                                "Restart result could not be confirmed: the "
+                                "launch was cancelled mid-flight. Gateway "
+                                "remains online; please check and retry shortly."
+                            ),
+                        )
                         raise
                     except (KeyboardInterrupt, SystemExit):
-                        await transaction.complete_unknown()
+                        await self._finalize_claimed_launch_unknown(
+                            transaction,
+                            notify_msg=(
+                                "Restart result could not be confirmed: the "
+                                "launch was interrupted. Gateway remains "
+                                "online; please check and retry shortly."
+                            ),
+                        )
                         raise
                     except Exception:
                         # Popen raised after potentially forking; or any
@@ -11133,6 +11426,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # no side-effect (Popen never ran). Safe to rollback.
                     # Rollback BEFORE complete_* so it happens even if the
                     # transaction is already in a terminal state (LOST_RACE).
+                    #
+                    # Send the best-effort failure notification FIRST while
+                    # the notify marker still exists (the rollback below
+                    # removes/restores it — the notification reads the
+                    # originating chat from the marker).
+                    await self._send_restart_outcome_notification(
+                        "Restart did not begin: the detached restart helper "
+                        "could not be started. Gateway remains active."
+                    )
                     if transaction.backup is not None:
                         try:
                             transaction.backup.rollback(self)
@@ -11145,11 +11447,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         self._restart_transaction = None
                     return
                 else:  # UNKNOWN
-                    tr = await transaction.complete_unknown()
-                    if tr is _TransitionResult.LOST_RACE:
-                        return
-                    if self._restart_transaction is transaction:
-                        self._restart_transaction = None
+                    # Launcher raised a generic exception. The launcher may
+                    # have spawned a watcher before the failure, so the
+                    # marker must NOT be rolled back. Finalize with
+                    # outcome_unknown: terminal stage + event, reset the
+                    # runtime flags (no wedge), install a FINITE retry
+                    # block, rewrite the notify marker to an explicit
+                    # unknown state, clear the transaction pointer, and
+                    # send a best-effort failure notification.
+                    await self._finalize_claimed_launch_unknown(
+                        transaction,
+                        notify_msg=(
+                            "Restart result could not be confirmed: the "
+                            "detached restart helper launch failed with an "
+                            "unknown outcome. Gateway remains online; "
+                            "please check and retry shortly."
+                        ),
+                    )
                     return
 
                 # ----- POST-LAUNCH (helper may be cancelled here) ------
@@ -23125,10 +23439,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata["user_id"] = str(data["user_id"])
                 if data.get("scope_id"):
                     metadata["scope_id"] = str(data["scope_id"])
+
+            # P1 #71876 lifecycle remediation: a marker rewritten to
+            # outcome=unknown (launch attempted, result unconfirmed) must
+            # NEVER surface as a fake "restarted successfully" — send an
+            # explicit uncertain/incomplete notification instead.
+            if data.get("outcome") == "unknown":
+                message = (
+                    "⚠ Gateway restart result could not be confirmed. "
+                    "The gateway is currently online; please verify and "
+                    "retry if needed."
+                )
+                logger.info(
+                    "Restart notification: outcome=unknown marker -> uncertain "
+                    "message to %s:%s",
+                    platform_str,
+                    chat_id,
+                )
+            else:
+                message = "♻ Gateway restarted successfully. Your session continues."
+
             result = await transport.send(
                 platform,
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                message,
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")

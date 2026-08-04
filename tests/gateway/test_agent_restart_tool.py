@@ -94,11 +94,11 @@ async def test_slash_and_tool_share_restart_coordinator(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_handoff_failure_returns_false_and_preserves_marker(
+async def test_handoff_launcher_failure_claimed_success_background_unknown(
     monkeypatch, tmp_path
 ):
     """The detached launcher raising OSError maps to launcher_result=UNKNOWN
-    → the background helper records OUTCOME_UNKNOWN (marker preserved).
+    — the background helper records OUTCOME_UNKNOWN (marker preserved).
 
     P1 #71876 semantic: the accepted ack is published immediately after
     claim_handoff, so dispatch returns success=True ("transaction claimed;
@@ -1189,3 +1189,318 @@ async def test_no_real_popen_when_mock_intact():
         "make_restart_runner must default to AsyncMock for stop() to "
         "prevent the real shutdown from running."
     )
+
+
+# ---------------------------------------------------------------------------
+# P1 #71876 lifecycle remediation: claimed-ack failures must finalize safely
+# ---------------------------------------------------------------------------
+
+
+async def _drain_gate(runner):
+    """Install a gateable drain that raises/cancels deterministically."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    state = {"mode": "ok"}
+
+    async def gated_drain():
+        started.set()
+        await release.wait()
+        if state["mode"] == "raise":
+            raise RuntimeError("simulated drain exception")
+        if state["mode"] == "cancel":
+            raise asyncio.CancelledError()
+        return True
+
+    runner._await_active_work_before_restart = gated_drain  # type: ignore[method-assign]
+    return started, release, state
+
+
+@pytest.mark.asyncio
+async def test_claimed_ack_drain_exception_finalizes_aborted(monkeypatch, tmp_path):
+    """P1 #71876: after the claimed ack, a plain Exception escaping the drain
+    must finalize as ABORTED (no launcher side-effect possible): terminal
+    stage + event set, CAS marker rollback, runtime flags reset, live
+    transaction pointer cleared, and the gateway accepts a later restart
+    (no permanent wedge).
+    """
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    runner, _ = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner.stop = AsyncMock()
+    runner._launch_detached_restart_command = AsyncMock(return_value=True)
+    runner._restart_after_turn_timeout = 3600.0
+
+    started, release, state = await _drain_gate(runner)
+    state["mode"] = "raise"
+
+    source = make_restart_source(chat_id="drain-exc")
+    with patch("gateway.run._hermes_home", tmp_path):
+        success, msg = await runner.dispatch_gateway_restart(
+            source=source, reason="test", origin="agent_tool"
+        )
+        await asyncio.wait_for(started.wait(), timeout=3.0)
+        assert success is True  # claimed ack -> dispatch returns
+
+        txn = runner._restart_transaction
+        assert txn is not None
+        release.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(txn.restart_task), timeout=3.0)
+        except (RuntimeError, asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+
+    from gateway.slash_commands import _RestartFinalOutcome, _RestartStage
+
+    assert txn.stage is _RestartStage.ABORTED
+    assert txn.final_outcome is _RestartFinalOutcome.ABORTED
+    assert txn.final_outcome_event.is_set()
+    assert runner._restart_transaction is None
+    assert runner._restart_requested is False
+    assert runner._restart_task_started is False
+    assert runner._draining is False
+    runner.stop.assert_not_called()
+    # Marker was rolled back (pre-launch abort removes this request's marker).
+    assert not (tmp_path / ".restart_notify.json").exists()
+    # Gateway is usable again: a later restart is accepted.
+    runner._launch_detached_restart_command = AsyncMock(return_value=True)
+    runner._await_active_work_before_restart = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    runner._running_agents.pop("telegram:drain-exc", None)
+    s2, _ = await runner.dispatch_gateway_restart(
+        source=make_restart_source(chat_id="drain-exc-r"),
+        reason="retry",
+        origin="agent_tool",
+    )
+    assert s2 is True
+
+
+@pytest.mark.asyncio
+async def test_claimed_ack_drain_cancelled_finalizes_aborted(monkeypatch, tmp_path):
+    """P1 #71876: after the claimed ack, CancelledError during the drain must
+    finalize as ABORTED (no launcher side-effect) and be re-raised, leaving
+    the gateway fully usable.
+    """
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    runner, _ = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner.stop = AsyncMock()
+    runner._launch_detached_restart_command = AsyncMock(return_value=True)
+    runner._restart_after_turn_timeout = 3600.0
+
+    started, release, state = await _drain_gate(runner)
+    state["mode"] = "cancel"
+
+    source = make_restart_source(chat_id="drain-cancel")
+    with patch("gateway.run._hermes_home", tmp_path):
+        success, msg = await runner.dispatch_gateway_restart(
+            source=source, reason="test", origin="agent_tool"
+        )
+        await asyncio.wait_for(started.wait(), timeout=3.0)
+        assert success is True
+
+        txn = runner._restart_transaction
+        assert txn is not None
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(txn.restart_task), timeout=3.0)
+
+    from gateway.slash_commands import _RestartFinalOutcome, _RestartStage
+
+    assert txn.stage is _RestartStage.ABORTED
+    assert txn.final_outcome is _RestartFinalOutcome.ABORTED
+    assert txn.final_outcome_event.is_set()
+    assert runner._restart_transaction is None
+    assert runner._restart_requested is False
+    assert runner._restart_task_started is False
+    assert runner._draining is False
+    runner.stop.assert_not_called()
+    assert not (tmp_path / ".restart_notify.json").exists()
+    # Gateway usable again.
+    runner._launch_detached_restart_command = AsyncMock(return_value=True)
+    runner._await_active_work_before_restart = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    runner._running_agents.pop("telegram:drain-cancel", None)
+    s2, _ = await runner.dispatch_gateway_restart(
+        source=make_restart_source(chat_id="drain-cancel-r"),
+        reason="retry",
+        origin="agent_tool",
+    )
+    assert s2 is True
+
+
+@pytest.mark.asyncio
+async def test_claimed_ack_launcher_cancelled_finalizes_unknown(monkeypatch, tmp_path):
+    """P1 #71876: after the claimed ack, CancelledError mid-launch must
+    finalize as OUTCOME_UNKNOWN (launcher MAY have side-effects — NOT a safe
+    abort): terminal stage + event, runtime flags reset (no wedge), FINITE
+    retry block (immediate re-trigger rejected, later allowed), notify marker
+    rewritten to outcome=unknown, live pointer cleared.
+    """
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    runner, _ = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 3600.0
+
+    launcher_entered = asyncio.Event()
+
+    async def racy_launch():
+        launcher_entered.set()
+        await asyncio.sleep(3600)  # hang until cancelled
+        return True
+
+    runner._launch_detached_restart_command = racy_launch  # type: ignore[method-assign]
+
+    source = make_restart_source(chat_id="launch-cancel")
+    with patch("gateway.run._hermes_home", tmp_path):
+        dt = asyncio.create_task(
+            runner.dispatch_gateway_restart(
+                source=source, reason="test", origin="agent_tool"
+            )
+        )
+        success, msg = await dt
+        assert success is True
+        await asyncio.wait_for(launcher_entered.wait(), timeout=3.0)
+
+        txn = runner._restart_transaction
+        assert txn is not None
+        txn.restart_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(txn.restart_task), timeout=3.0)
+
+    from gateway.slash_commands import _RestartFinalOutcome, _RestartStage
+
+    assert txn.stage is _RestartStage.OUTCOME_UNKNOWN
+    assert txn.final_outcome is _RestartFinalOutcome.UNKNOWN
+    assert txn.final_outcome_event.is_set()
+    assert runner._restart_transaction is None
+    assert runner._restart_requested is False
+    assert runner._restart_task_started is False
+    assert runner._draining is False
+    runner.stop.assert_not_called()
+    # Finite retry block: immediate re-trigger is rejected...
+    runner._await_active_work_before_restart = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    s2, m2 = await runner.dispatch_gateway_restart(
+        source=make_restart_source(chat_id="launch-cancel-r"),
+        reason="retry",
+        origin="agent_tool",
+    )
+    assert s2 is False
+    assert "retrying" in m2
+    # ...and it is NOT a permanent flag: expire the window and retry works.
+    runner._restart_retry_blocked_until = 0.0
+    runner._launch_detached_restart_command = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    s3, _ = await runner.dispatch_gateway_restart(
+        source=make_restart_source(chat_id="launch-cancel-r2"),
+        reason="retry",
+        origin="agent_tool",
+    )
+    assert s3 is True
+    # Marker was rewritten to an explicit unknown state (not a success marker).
+    notify = tmp_path / ".restart_notify.json"
+    assert notify.exists()
+    data = json.loads(notify.read_text(encoding="utf-8"))
+    assert data.get("outcome") == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_unknown_marker_next_boot_not_success_notification(monkeypatch, tmp_path):
+    """P1 #71876: when a later boot reads a marker that was rewritten to
+    outcome=unknown, the gateway must send an uncertain/incomplete
+    notification — NEVER a fake \"restarted successfully\".
+    """
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    runner, _ = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(
+        json.dumps(
+            {
+                "request_id": "req-unknown",
+                "platform": "telegram",
+                "chat_id": "chat-unk",
+                "chat_type": "dm",
+                "message_id": "m-unk",
+                "outcome": "unknown",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sent = []
+
+    class FakeTransport:
+        adapter = MagicMock()
+
+        async def send(self, platform, chat_id, message, **kwargs):
+            sent.append((str(platform), str(chat_id), message))
+            return MagicMock(success=True)
+
+    with patch(
+        "gateway.run.resolve_delivery_transport",
+        return_value=FakeTransport(),
+    ), patch("gateway.run._hermes_home", tmp_path):
+        result = await runner._send_restart_notification()
+
+    assert result is not None
+    assert len(sent) == 1
+    assert "could not be confirmed" in sent[0][2]
+    assert "restarted successfully" not in sent[0][2]
+    # Marker consumed (unlinked) after notification.
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_claimed_ack_pre_launch_not_started_sends_failure_notification(
+    monkeypatch, tmp_path
+):
+    """P1 #71876: a claimed restart that finalizes NOT_STARTED (launcher
+    returned False cleanly, no side-effect) must send a best-effort failure
+    notification to the originating chat after rollback.
+    """
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    runner, _ = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 3600.0
+
+    captured_txn: list = []
+
+    async def fake_launch_fail():
+        captured_txn.append(runner._restart_transaction)
+        return False  # NOT_STARTED
+
+    runner._launch_detached_restart_command = fake_launch_fail  # type: ignore[method-assign]
+
+    sent = []
+
+    class FakeTransport:
+        adapter = MagicMock()
+
+        async def send(self, platform, chat_id, message, **kwargs):
+            sent.append((str(platform), str(chat_id), message))
+            return MagicMock(success=True)
+
+    source = make_restart_source(chat_id="not-started-notify")
+    with patch("gateway.run._hermes_home", tmp_path), patch(
+        "gateway.run.resolve_delivery_transport",
+        return_value=FakeTransport(),
+    ):
+        success, msg = await runner.dispatch_gateway_restart(
+            source=source, reason="test", origin="agent_tool"
+        )
+        assert success is True
+        txn = captured_txn[0]
+        assert txn is not None
+        if txn.restart_task is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(txn.restart_task), timeout=3.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+
+    from gateway.slash_commands import _RestartFinalOutcome, _RestartStage
+
+    assert txn.stage is _RestartStage.ABORTED
+    assert txn.final_outcome is _RestartFinalOutcome.ABORTED
+    assert runner._draining is False
+    assert len(sent) == 1
+    assert "did not begin" in sent[0][2]

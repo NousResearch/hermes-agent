@@ -2085,6 +2085,28 @@ class GatewaySlashCommandsMixin:
                 return False, t("gateway.draining", count=count)
             return False, t("gateway.restart.in_progress")
 
+        # P1 #71876 lifecycle remediation: after a claimed restart whose
+        # launch outcome could not be confirmed, an explicit FINITE retry
+        # block prevents an immediate re-trigger. It is a monotonic
+        # deadline, NOT a permanent flag: once it expires the gateway
+        # accepts a new restart normally.
+        retry_blocked_until = getattr(self, "_restart_retry_blocked_until", 0.0)
+        if retry_blocked_until:
+            try:
+                loop_now = asyncio.get_running_loop().time()
+            except RuntimeError:
+                loop_now = 0.0
+            if loop_now < retry_blocked_until:
+                remaining = int(retry_blocked_until - loop_now) + 1
+                return (
+                    False,
+                    "Restart outcome could not be confirmed earlier. "
+                    f"Please wait ~{remaining}s before retrying.",
+                )
+            # Window expired: clear the block so later dispatches are
+            # unambiguous.
+            self._restart_retry_blocked_until = 0.0
+
         request_id = f"req-{uuid.uuid4().hex[:8]}"
         notify_path = _hermes_home / ".restart_notify.json"
         dedup_path = _hermes_home / ".restart_last_processed.json"

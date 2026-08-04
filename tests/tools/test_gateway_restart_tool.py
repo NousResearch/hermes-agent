@@ -144,7 +144,7 @@ def test_handler_error_when_runner_missing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tool_returns_failure_json_when_handoff_fails(monkeypatch, tmp_path):
+async def test_tool_claimed_success_when_launcher_fails(monkeypatch, tmp_path):
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
     from tools.gateway_restart_tool import _handle_request_gateway_restart

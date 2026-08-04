@@ -612,7 +612,9 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
 
 def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
-                                     start_succeeds: bool = True):
+                                     start_succeeds: bool = True,
+                                     exec_alive: bool = True,
+                                     exec_error: str = ""):
     """Reuse-aware subprocess.run mock.
 
     ``ps_state`` controls what ``docker ps -a --filter ...`` returns:
@@ -621,6 +623,11 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
         path picks it up. ``"running"`` skips ``docker start``; other states
         trigger ``docker start`` (which can be forced to fail via
         ``start_succeeds=False``).
+
+    ``exec_alive`` controls the rootfs liveness probe (``docker exec <cid>
+    true``, issue #77301): ``True`` → rc 0 (healthy, reuse proceeds);
+    ``False`` → rc 125 with ``exec_error`` (dead mount → container removed and
+    recreated).
 
     Returns the captured call list so the test can verify which docker
     commands actually ran.
@@ -650,6 +657,17 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
                     # mirror that so the production code's except clause fires.
                     raise subprocess.CalledProcessError(1, cmd, output="", stderr="no such container")
                 return subprocess.CompletedProcess(cmd, 0, stdout="reused-cid\n", stderr="")
+            if sub == "exec":
+                # Rootfs liveness probe (docker exec <cid> true, issue #77301).
+                if not exec_alive:
+                    return subprocess.CompletedProcess(
+                        cmd, 125, stdout="",
+                        stderr=exec_error or (
+                            "Error: lstat .../overlay/<hash>/merged//etc/passwd: "
+                            "transport endpoint is not connected"
+                        ),
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if sub == "run":
                 return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -682,6 +700,67 @@ def test_reuse_attaches_to_running_container_without_docker_run(monkeypatch):
     start_invocations = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "start"]
     assert not start_invocations, (
         f"docker start should be skipped when container already running, got: {start_invocations}"
+    )
+
+
+def test_reuse_probes_running_container(monkeypatch):
+    """The reuse path must liveness-probe a ``running`` container with
+    ``docker exec true`` before attaching. A container whose main process is
+    alive can still have a dead rootfs mount (fuse-overlayfs daemon killed by a
+    gateway restart) — ``docker ps`` state alone cannot detect that (#77301)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(monkeypatch, ps_state="running")
+
+    env = _make_dummy_env(task_id="reuse-probe")
+
+    exec_invocations = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "exec"
+    ]
+    assert exec_invocations, "reuse must probe the container's rootfs liveness"
+    assert "true" in exec_invocations[0][0], (
+        f"probe must run `docker exec <cid> true`, got: {exec_invocations[0][0]}"
+    )
+    assert env._container_id == "reused-cid"
+
+
+def test_reuse_detects_dead_rootfs_and_recreates(monkeypatch):
+    """A container that reports ``running`` but whose rootfs is dead must NOT
+    be reused — Hermes must remove it and start a fresh container, or every
+    tool call fails with ``transport endpoint is not connected`` for the whole
+    session (#77301)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(
+        monkeypatch,
+        ps_state="running",
+        exec_alive=False,
+        exec_error=(
+            "Error: lstat /home/x/.local/share/containers/storage/overlay/"
+            "abc123/merged//etc/passwd: transport endpoint is not connected"
+        ),
+    )
+
+    env = _make_dummy_env(task_id="reuse-dead")
+
+    # The dead container must be removed...
+    rm_invocations = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"
+    ]
+    assert rm_invocations, "the dead container must be removed"
+    assert "reused-cid" in rm_invocations[0][0], (
+        f"rm must target the dead container, got: {rm_invocations[0][0]}"
+    )
+    # ...and a fresh container created in its place.
+    run_invocations = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
+    assert run_invocations, "a fresh docker run must replace the dead container"
+    assert env._container_id == "fresh-cid", (
+        f"expected the fresh container id, got {env._container_id!r}"
     )
 
 
@@ -1418,6 +1497,89 @@ def test_execute_does_not_recover_on_ordinary_failure(monkeypatch):
     result = env.execute("badcmd")
     assert result.get("returncode") == 127
     assert "command not found" in result.get("output", "")
+
+
+def test_execute_recovers_from_enotconn_dead_rootfs(monkeypatch):
+    """An exec failing with ``transport endpoint is not connected`` means the
+    container's rootfs mount is dead (fuse-overlayfs daemon killed by its
+    cgroup teardown). The container still exists, so Hermes must ``rm -f`` it
+    before recreating — label-based recreation alone would reuse the same
+    corpse — then retry the command once (#77301)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    subprocess_calls = _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        persist_across_processes=True,
+    )
+    env._container_id = "dead-cid"
+
+    exec_calls = []
+
+    def _fake_super_execute(self, command, cwd="", **kwargs):
+        exec_calls.append(command)
+        if len(exec_calls) == 1:
+            return {
+                "output": (
+                    "Error: lstat /home/x/.local/share/containers/storage/"
+                    "overlay/abc123/merged//etc/passwd: transport endpoint "
+                    "is not connected"
+                ),
+                "returncode": 125,
+            }
+        return {"output": "hello\n", "returncode": 0}
+
+    def _fake_recreate(self):
+        self._container_id = "fresh-cid"
+        self._snapshot_ready = True
+        return True
+
+    monkeypatch.setattr(docker_env.BaseEnvironment, "execute", _fake_super_execute)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment, "_recreate_container", _fake_recreate
+    )
+
+    result = env.execute("echo hi")
+
+    assert result.get("returncode") == 0
+    assert result.get("output") == "hello\n"
+    assert len(exec_calls) == 2, "the command must be retried once after recreation"
+    rm_invocations = [
+        c for c in subprocess_calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"
+    ]
+    assert rm_invocations, "the dead container must be removed before recreation"
+    assert "dead-cid" in rm_invocations[0][0], (
+        f"rm must target the dead container, got: {rm_invocations[0][0]}"
+    )
+
+
+def test_execute_does_not_recover_from_enotconn_when_not_persistent(monkeypatch):
+    """Dead-rootfs recovery is only meaningful for the persistent, cross-process
+    container — a non-persistent session must pass the ENOTCONN error through
+    unchanged (#77301)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        persist_across_processes=False,
+    )
+    env._container_id = "dead-cid"
+
+    def _fake_super_execute(self, command, cwd="", **kwargs):
+        return {"output": "transport endpoint is not connected", "returncode": 125}
+
+    def _fail_recreate(self):
+        pytest.fail("recreation must not run when persist_across_processes is False")
+
+    monkeypatch.setattr(docker_env.BaseEnvironment, "execute", _fake_super_execute)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment, "_recreate_container", _fail_recreate
+    )
+
+    result = env.execute("echo hi")
+    assert result.get("returncode") == 125, (
+        "the original ENOTCONN error must pass through unchanged"
+    )
 
 
 # ── /dev/shm size tests (ported from nanocoai/nanoclaw#2748) ─────────────────

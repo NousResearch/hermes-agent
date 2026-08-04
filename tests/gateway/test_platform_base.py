@@ -1252,3 +1252,77 @@ class TestMediaFallbackDoesNotLeakHostPath:
         sent_text = adapter.sent[0]["content"]
         assert "Here's the daily summary." in sent_text
         assert self.SENSITIVE_PATH not in sent_text
+
+
+class TestMediaDeliveryWindowsSystemPaths:
+    r"""The non-strict denylist must actually cover something on Windows.
+
+    ``_MEDIA_DELIVERY_DENIED_PREFIXES`` is POSIX-only, and the entries do not
+    degrade gracefully: ``Path("/etc").resolve()`` becomes ``C:\etc`` on the
+    current drive, which does not exist. Every entry is therefore inert on
+    Windows, leaving the default-mode denylist effectively empty -- so
+    ``C:\Windows\win.ini`` was deliverable as a gateway attachment.
+    """
+
+    def _denied_str(self):
+        import gateway.platforms.base as base
+
+        return [str(p) for p in base._media_delivery_denied_paths()]
+
+    def _is_covered(self, probe):
+        rp = os.path.normcase(os.path.abspath(probe))
+        for d in self._denied_str():
+            nd = os.path.normcase(os.path.abspath(d))
+            if rp == nd or rp.startswith(nd + os.sep):
+                return True
+        return False
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows-only denylist entries")
+    @pytest.mark.parametrize("env_name", ["SystemRoot", "ProgramData"])
+    def test_windows_system_roots_are_denied(self, env_name):
+        root = os.environ.get(env_name)
+        if not root:
+            pytest.skip(f"%{env_name}% not set on this host")
+        assert self._is_covered(root), (
+            f"%{env_name}% ({root}) must be on the media-delivery denylist"
+        )
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows-only denylist entries")
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            r"AppData\Roaming\Microsoft\Credentials",
+            r"AppData\Local\Microsoft\Credentials",
+            r"AppData\Roaming\Microsoft\Protect",
+        ],
+    )
+    def test_windows_credential_stores_are_denied(self, rel):
+        probe = os.path.join(os.path.expanduser("~"), rel)
+        assert self._is_covered(probe), f"{rel} must be denied"
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows-only denylist entries")
+    @pytest.mark.parametrize("rel", [r"AppData\Local\Temp", "Pictures", "Downloads"])
+    def test_ordinary_user_dirs_are_not_denied(self, rel):
+        r"""AppData must NOT be denied wholesale.
+
+        %LOCALAPPDATA%\Temp is a normal home for generated artifacts; a blanket
+        AppData rule would break legitimate media delivery.
+        """
+        probe = os.path.join(os.path.expanduser("~"), rel)
+        assert not self._is_covered(probe), (
+            f"{rel} is an ordinary directory and must stay deliverable"
+        )
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows-only denylist entries")
+    def test_system_file_is_refused_end_to_end(self, monkeypatch):
+        """The guard itself, not just the denylist, must refuse a system file."""
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", ()
+        )
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+        import gateway.platforms.base as base
+
+        probe = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "win.ini")
+        if not os.path.exists(probe):
+            pytest.skip("win.ini not present on this host")
+        assert base.validate_media_delivery_path(probe) is None

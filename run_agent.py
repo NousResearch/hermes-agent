@@ -148,6 +148,7 @@ from tools.browser_tool import cleanup_browser
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import sanitize_context
+from agent.memory_provider import is_trivial_prompt
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.message_content import flatten_message_text
@@ -630,11 +631,24 @@ class AIAgent:
                     _profile_for_session = None
             except Exception:
                 _profile_for_session = None
+            # Carry the live YOLO bypass into the creation-time model_config so
+            # a session whose /yolo was toggled BEFORE the row existed (the row
+            # is created lazily on the first turn) still persists the flag for
+            # `hermes --resume`. set_session_yolo() no-ops on a missing row, so
+            # this is the only chance to record a pre-first-turn toggle.
+            _init_model_config = self._session_init_model_config
+            try:
+                from tools.approval import is_session_yolo_enabled
+                if is_session_yolo_enabled(self.session_id):
+                    _init_model_config = dict(_init_model_config or {})
+                    _init_model_config["yolo_mode"] = True
+            except Exception:
+                pass
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
                 model=self.model,
-                model_config=self._session_init_model_config,
+                model_config=_init_model_config,
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
@@ -2082,6 +2096,10 @@ class AIAgent:
                 ):
                     _scan_start += 1
 
+            # Collect this flush's new rows and write them in ONE transaction
+            # at the end of the scan (see append_messages_batch).
+            _batch_rows: List[Dict[str, Any]] = []
+            _batch_msgs: List[Dict] = []
             for _msg_idx in range(_scan_start, len(messages)):
                 msg = messages[_msg_idx]
                 if not isinstance(msg, dict):
@@ -2200,33 +2218,48 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
-                self._session_db.append_message(
-                    session_id=self.session_id,
-                    role=role,
-                    content=content,
-                    tool_name=msg.get("tool_name"),
-                    tool_calls=tool_calls_data,
-                    tool_call_id=msg.get("tool_call_id"),
-                    finish_reason=msg.get("finish_reason"),
-                    reasoning=msg.get("reasoning") if role == "assistant" else None,
-                    reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
-                    reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
-                    codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
-                    codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
-                    timestamp=_row_timestamp,
-                    api_content=_row_api_content,
-                    display_kind=(
+                _batch_rows.append({
+                    "role": role,
+                    "content": content,
+                    "tool_name": msg.get("tool_name"),
+                    "tool_calls": tool_calls_data,
+                    "tool_call_id": msg.get("tool_call_id"),
+                    "finish_reason": msg.get("finish_reason"),
+                    # Reasoning/codex fields are role-gated (assistant-only)
+                    # inside _insert_message_rows — pass through untouched.
+                    "reasoning": msg.get("reasoning"),
+                    "reasoning_content": msg.get("reasoning_content"),
+                    "reasoning_details": msg.get("reasoning_details"),
+                    "codex_reasoning_items": msg.get("codex_reasoning_items"),
+                    "codex_message_items": msg.get("codex_message_items"),
+                    "timestamp": _row_timestamp,
+                    "api_content": _row_api_content,
+                    "display_kind": (
                         "hidden"
                         if msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
                         and not msg.get("_compressed_summary_has_user_turn")
                         else msg.get("display_kind")
                     ),
-                    display_metadata=msg.get("display_metadata"),
+                    "display_metadata": msg.get("display_metadata"),
+                })
+                _batch_msgs.append(msg)
+            # One transaction for the whole turn's new rows (typically 3-8
+            # messages): one BEGIN IMMEDIATE / commit — and, off WAL, one
+            # fsync — instead of one per row. All-or-nothing pairs exactly
+            # with the marker stamping below: on failure NO rows landed and
+            # NO markers were stamped, so the next flush re-scans and
+            # re-writes the whole tail (same recovery contract as before,
+            # minus the partial-prefix case that could double-pay counters).
+            if _batch_rows:
+                self._session_db.append_messages_batch(
+                    session_id=self.session_id,
+                    messages=_batch_rows,
                     compression_lock_holder=getattr(
                         self, "_active_compression_lock_holder", None
                     ),
                 )
-                msg[_DB_PERSISTED_MARKER] = True
+                for _written in _batch_msgs:
+                    _written[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the
             # one-shot seed so no id() outlives this flush to alias a message
             # allocated next turn at a recycled address.
@@ -4093,10 +4126,15 @@ class AIAgent:
                 response_text,
                 **sync_kwargs,
             )
-            self._memory_manager.queue_prefetch_all(
-                user_text,
-                session_id=self.session_id or "",
-            )
+            # Sibling of the build_turn_context() prefetch gate: warming the
+            # next turn's recall with a trivial prompt ("hi", "thanks") keys
+            # provider searches on zero-signal text — skip it. The sync above
+            # still runs so the turn itself is persisted.
+            if not is_trivial_prompt(user_text):
+                self._memory_manager.queue_prefetch_all(
+                    user_text,
+                    session_id=self.session_id or "",
+                )
         except Exception:
             pass
 
@@ -4233,6 +4271,21 @@ class AIAgent:
         # sequential LLM calls; see _create_request_openai_client).
         try:
             self._close_cached_request_openai_client(reason="agent_close")
+        except Exception:
+            pass
+
+        # 6c. Close the Codex app-server session. The runtime already drops
+        # it on turn crash / retirement (agent/codex_runtime.py), but hard
+        # teardown had no owner — a /new, /reset, or session expiry left the
+        # app-server child process running until interpreter exit. Clear the
+        # attribute BEFORE close() so a concurrent reader can't grab a
+        # half-closed session, and so a raising close() can't strand a stale
+        # reference behind.
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                self._codex_session = None
+                codex_session.close()
         except Exception:
             pass
 
@@ -7586,11 +7639,14 @@ class AIAgent:
                 turn_id=relay_turn_id,
                 task_id=effective_task_id,
             )
-            start_task_run(
-                **task_context,
-                parent_session_id=getattr(self, "_parent_session_id", None) or "",
-            )
-            task_started = True
+            # Keep existing tests and external relay-runtime shims that return
+            # a minimal turn object compatible with the new opt-out flag.
+            if getattr(relay_turn, "relay_enabled", True):
+                start_task_run(
+                    **task_context,
+                    parent_session_id=getattr(self, "_parent_session_id", None) or "",
+                )
+                task_started = True
             # Publish the conversation id for ambient Nous Portal tagging. Every
             # LLM call made inside this turn — main loop, compression, vision,
             # web_extract, session_search, MoA slots, background-review forks
@@ -7636,8 +7692,9 @@ class AIAgent:
                 relay_turn,
                 outcome=relay_outcome,
             )
-            task_finished = True
-            finish_task_run(**task_context, result=result)
+            if task_started:
+                task_finished = True
+                finish_task_run(**task_context, result=result)
             return result
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (

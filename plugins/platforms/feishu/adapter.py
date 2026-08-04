@@ -85,45 +85,35 @@ try:
 except ImportError:
     websockets = None  # type: ignore[assignment]
 
-try:
-    import lark_oapi as lark
-    from lark_oapi.api.application.v6 import GetApplicationRequest
-    from lark_oapi.api.im.v1 import (
-        CreateFileRequest,
-        CreateFileRequestBody,
-        CreateImageRequest,
-        CreateImageRequestBody,
-        CreateMessageRequest,
-        CreateMessageRequestBody,
-        GetChatRequest,
-        GetMessageRequest,
-        GetMessageResourceRequest,
-        P2ImMessageMessageReadV1,
-        ReplyMessageRequest,
-        ReplyMessageRequestBody,
-        UpdateMessageRequest,
-        UpdateMessageRequestBody,
-    )
-    from lark_oapi.core import AccessTokenType, HttpMethod
-    from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
-    from lark_oapi.core.model import BaseRequest
-    from lark_oapi.event.callback.model.p2_card_action_trigger import (
-        CallBackCard,
-        P2CardActionTriggerResponse,
-    )
-    from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
-    from lark_oapi.ws import Client as FeishuWSClient
-
-    FEISHU_AVAILABLE = True
-except ImportError:
-    FEISHU_AVAILABLE = False
-    lark = None  # type: ignore[assignment]
-    CallBackCard = None  # type: ignore[assignment]
-    P2CardActionTriggerResponse = None  # type: ignore[assignment]
-    EventDispatcherHandler = None  # type: ignore[assignment]
-    FeishuWSClient = None  # type: ignore[assignment]
-    FEISHU_DOMAIN = None  # type: ignore[assignment]
-    LARK_DOMAIN = None  # type: ignore[assignment]
+# lark_oapi takes a noticeable amount of time to import.  Keep the gateway
+# configuration path responsive by importing it only when Feishu connects.
+lark = None  # type: ignore[assignment]
+GetApplicationRequest = None  # type: ignore[assignment]
+CreateFileRequest = None  # type: ignore[assignment]
+CreateFileRequestBody = None  # type: ignore[assignment]
+CreateImageRequest = None  # type: ignore[assignment]
+CreateImageRequestBody = None  # type: ignore[assignment]
+CreateMessageRequest = None  # type: ignore[assignment]
+CreateMessageRequestBody = None  # type: ignore[assignment]
+GetChatRequest = None  # type: ignore[assignment]
+GetMessageRequest = None  # type: ignore[assignment]
+GetMessageResourceRequest = None  # type: ignore[assignment]
+P2ImMessageMessageReadV1 = None  # type: ignore[assignment]
+ReplyMessageRequest = None  # type: ignore[assignment]
+ReplyMessageRequestBody = None  # type: ignore[assignment]
+UpdateMessageRequest = None  # type: ignore[assignment]
+UpdateMessageRequestBody = None  # type: ignore[assignment]
+AccessTokenType = None  # type: ignore[assignment]
+HttpMethod = None  # type: ignore[assignment]
+FEISHU_DOMAIN = None  # type: ignore[assignment]
+LARK_DOMAIN = None  # type: ignore[assignment]
+BaseRequest = None  # type: ignore[assignment]
+CallBackCard = None  # type: ignore[assignment]
+P2CardActionTriggerResponse = None  # type: ignore[assignment]
+EventDispatcherHandler = None  # type: ignore[assignment]
+FeishuWSClient = None  # type: ignore[assignment]
+FEISHU_AVAILABLE = False
+_lark_import_lock = threading.Lock()
 
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
@@ -1395,36 +1385,38 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         adapter._ws_thread_loop = None
 
 
-def check_feishu_requirements() -> bool:
-    """Check if Feishu/Lark dependencies are available.
-
-    Lazy-installs lark-oapi via ``tools.lazy_deps.ensure("platform.feishu")``
-    on first call if not present. Rebinds all module-level globals on success.
-    """
+def _load_lark_oapi() -> bool:
+    """Import and bind the Feishu SDK after an explicit connection request."""
     if FEISHU_AVAILABLE:
         return True
 
-    def _import():
-        import lark_oapi as lark
-        from lark_oapi.api.application.v6 import GetApplicationRequest
-        from lark_oapi.api.im.v1 import (
-            CreateFileRequest, CreateFileRequestBody,
-            CreateImageRequest, CreateImageRequestBody,
-            CreateMessageRequest, CreateMessageRequestBody,
-            GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
-            P2ImMessageMessageReadV1,
-            ReplyMessageRequest, ReplyMessageRequestBody,
-            UpdateMessageRequest, UpdateMessageRequestBody,
-        )
-        from lark_oapi.core import AccessTokenType, HttpMethod
-        from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
-        from lark_oapi.core.model import BaseRequest
-        from lark_oapi.event.callback.model.p2_card_action_trigger import (
-            CallBackCard, P2CardActionTriggerResponse,
-        )
-        from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
-        from lark_oapi.ws import Client as FeishuWSClient
-        return {
+    with _lark_import_lock:
+        if FEISHU_AVAILABLE:
+            return True
+        try:
+            import lark_oapi as lark
+            from lark_oapi.api.application.v6 import GetApplicationRequest
+            from lark_oapi.api.im.v1 import (
+                CreateFileRequest, CreateFileRequestBody,
+                CreateImageRequest, CreateImageRequestBody,
+                CreateMessageRequest, CreateMessageRequestBody,
+                GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
+                P2ImMessageMessageReadV1,
+                ReplyMessageRequest, ReplyMessageRequestBody,
+                UpdateMessageRequest, UpdateMessageRequestBody,
+            )
+            from lark_oapi.core import AccessTokenType, HttpMethod
+            from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
+            from lark_oapi.core.model import BaseRequest
+            from lark_oapi.event.callback.model.p2_card_action_trigger import (
+                CallBackCard, P2CardActionTriggerResponse,
+            )
+            from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
+            from lark_oapi.ws import Client as FeishuWSClient
+        except ImportError:
+            return False
+
+        globals().update({
             "lark": lark,
             "GetApplicationRequest": GetApplicationRequest,
             "CreateFileRequest": CreateFileRequest,
@@ -1451,10 +1443,22 @@ def check_feishu_requirements() -> bool:
             "EventDispatcherHandler": EventDispatcherHandler,
             "FeishuWSClient": FeishuWSClient,
             "FEISHU_AVAILABLE": True,
-        }
+        })
+        return True
 
-    from tools.lazy_deps import ensure_and_bind
-    return ensure_and_bind("platform.feishu", _import, globals(), prompt=False)
+
+def check_feishu_requirements() -> bool:
+    """Ensure Feishu dependencies are installed without importing the SDK."""
+    if FEISHU_AVAILABLE:
+        return True
+
+    from tools.lazy_deps import ensure
+
+    try:
+        ensure("platform.feishu", prompt=False)
+        return True
+    except Exception:
+        return False
 
 
 class FeishuAdapter(BasePlatformAdapter):
@@ -1752,9 +1756,6 @@ class FeishuAdapter(BasePlatformAdapter):
         # A fresh connect (or reconnect) re-arms the SDK executor after a prior
         # disconnect set the closing flag.
         self._sdk_executor_closing = False
-        if not FEISHU_AVAILABLE:
-            logger.error("[Feishu] lark-oapi not installed")
-            return False
         if not self._app_id or not self._app_secret:
             logger.error("[Feishu] FEISHU_APP_ID or FEISHU_APP_SECRET not set")
             return False
@@ -1768,6 +1769,9 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error(
                 "[Feishu] Webhook mode requires FEISHU_VERIFICATION_TOKEN or FEISHU_ENCRYPT_KEY."
             )
+            return False
+        if not await asyncio.to_thread(_load_lark_oapi):
+            logger.error("[Feishu] lark-oapi not installed")
             return False
 
         try:
@@ -5047,19 +5051,19 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_get_chat_request(chat_id: str) -> Any:
-        if "GetChatRequest" in globals():
+        if GetChatRequest is not None:
             return GetChatRequest.builder().chat_id(chat_id).build()
         return SimpleNamespace(chat_id=chat_id)
 
     @staticmethod
     def _build_get_message_request(message_id: str) -> Any:
-        if "GetMessageRequest" in globals():
+        if GetMessageRequest is not None:
             return GetMessageRequest.builder().message_id(message_id).build()
         return SimpleNamespace(message_id=message_id)
 
     @staticmethod
     def _build_message_resource_request(*, message_id: str, file_key: str, resource_type: str) -> Any:
-        if "GetMessageResourceRequest" in globals():
+        if GetMessageResourceRequest is not None:
             return (
                 GetMessageResourceRequest.builder()
                 .message_id(message_id)
@@ -5071,7 +5075,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_get_application_request(*, app_id: str, lang: str) -> Any:
-        if "GetApplicationRequest" in globals():
+        if GetApplicationRequest is not None:
             return (
                 GetApplicationRequest.builder()
                 .app_id(app_id)
@@ -5082,7 +5086,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_reply_message_body(*, content: str, msg_type: str, reply_in_thread: bool, uuid_value: str) -> Any:
-        if "ReplyMessageRequestBody" in globals():
+        if ReplyMessageRequestBody is not None:
             return (
                 ReplyMessageRequestBody.builder()
                 .content(content)
@@ -5100,7 +5104,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_reply_message_request(message_id: str, request_body: Any) -> Any:
-        if "ReplyMessageRequest" in globals():
+        if ReplyMessageRequest is not None:
             return (
                 ReplyMessageRequest.builder()
                 .message_id(message_id)
@@ -5111,7 +5115,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_update_message_body(*, msg_type: str, content: str) -> Any:
-        if "UpdateMessageRequestBody" in globals():
+        if UpdateMessageRequestBody is not None:
             return (
                 UpdateMessageRequestBody.builder()
                 .msg_type(msg_type)
@@ -5122,7 +5126,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_update_message_request(message_id: str, request_body: Any) -> Any:
-        if "UpdateMessageRequest" in globals():
+        if UpdateMessageRequest is not None:
             return (
                 UpdateMessageRequest.builder()
                 .message_id(message_id)
@@ -5133,7 +5137,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str) -> Any:
-        if "CreateMessageRequestBody" in globals():
+        if CreateMessageRequestBody is not None:
             return (
                 CreateMessageRequestBody.builder()
                 .receive_id(receive_id)
@@ -5151,7 +5155,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_create_message_request(receive_id_type: str, request_body: Any) -> Any:
-        if "CreateMessageRequest" in globals():
+        if CreateMessageRequest is not None:
             return (
                 CreateMessageRequest.builder()
                 .receive_id_type(receive_id_type)
@@ -5162,7 +5166,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_image_upload_body(*, image_type: str, image: Any) -> Any:
-        if "CreateImageRequestBody" in globals():
+        if CreateImageRequestBody is not None:
             return (
                 CreateImageRequestBody.builder()
                 .image_type(image_type)
@@ -5173,13 +5177,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_image_upload_request(request_body: Any) -> Any:
-        if "CreateImageRequest" in globals():
+        if CreateImageRequest is not None:
             return CreateImageRequest.builder().request_body(request_body).build()
         return SimpleNamespace(request_body=request_body)
 
     @staticmethod
     def _build_file_upload_body(*, file_type: str, file_name: str, file: Any, duration: int = 0) -> Any:
-        if "CreateFileRequestBody" in globals():
+        if CreateFileRequestBody is not None:
             builder = (
                 CreateFileRequestBody.builder()
                 .file_type(file_type)
@@ -5193,7 +5197,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_file_upload_request(request_body: Any) -> Any:
-        if "CreateFileRequest" in globals():
+        if CreateFileRequest is not None:
             return CreateFileRequest.builder().request_body(request_body).build()
         return SimpleNamespace(request_body=request_body)
 
@@ -5410,7 +5414,10 @@ def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
     Note: ``bot_open_id`` here is the bot's app-scoped open_id — the same ID
     that Feishu puts in @mention payloads.  It is NOT the app_id.
     """
-    if FEISHU_AVAILABLE:
+    # The SDK import is deferred until connect(); onboarding runs before any
+    # connect, so load it here to keep the SDK probe path reachable rather
+    # than silently degrading every setup run to the HTTP fallback.
+    if _load_lark_oapi():
         return _probe_bot_sdk(app_id, app_secret, domain)
     return _probe_bot_http(app_id, app_secret, domain)
 
@@ -5598,7 +5605,7 @@ async def _standalone_send(
     FeishuAdapter, hydrates its lark client, and sends text + native media
     (images, video, voice, documents). Replaces the legacy _send_feishu helper.
     """
-    if not FEISHU_AVAILABLE:
+    if not await asyncio.to_thread(_load_lark_oapi):
         return {"error": "Feishu dependencies not installed. Run `hermes setup` to install Feishu support."}
 
     media_files = media_files or []

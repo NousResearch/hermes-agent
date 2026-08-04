@@ -41,6 +41,28 @@ class TestBuildLocalTranscribeKwargs:
         )
 
 
+    def test_confidence_thresholds_default_to_faster_whisper_values(self):
+        kwargs = build_local_transcribe_kwargs({})
+        assert kwargs["no_speech_threshold"] == _NO_SPEECH_PROB_THRESHOLD_DEFAULT
+        assert kwargs["log_prob_threshold"] == _LOGPROB_THRESHOLD_DEFAULT
+
+    def test_confidence_thresholds_configurable_reach_model_gate(self):
+        # The same stt.local knobs the post-filter reads must also be threaded
+        # into faster-whisper's internal gate, or non-English speech is dropped
+        # before it ever reaches our segment filter.
+        kwargs = build_local_transcribe_kwargs(
+            {"local": {"no_speech_prob_threshold": 0.9, "logprob_threshold": -2.0}}
+        )
+        assert kwargs["no_speech_threshold"] == 0.9
+        assert kwargs["log_prob_threshold"] == -2.0
+
+    def test_confidence_thresholds_garbage_falls_back(self):
+        kwargs = build_local_transcribe_kwargs(
+            {"local": {"no_speech_prob_threshold": "nope", "logprob_threshold": None}}
+        )
+        assert kwargs["no_speech_threshold"] == _NO_SPEECH_PROB_THRESHOLD_DEFAULT
+        assert kwargs["log_prob_threshold"] == _LOGPROB_THRESHOLD_DEFAULT
+
     def test_language_and_prompt_resolved(self, monkeypatch):
         monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
         cfg = {"language": "en", "local": {"initial_prompt": "Hermes glossary"}}
@@ -99,6 +121,8 @@ class TestTranscribeLocalWiring:
         assert captured["vad_filter"] is True
         assert captured["vad_parameters"] == {"min_silence_duration_ms": 500}
         assert captured["condition_on_previous_text"] is False
+        assert captured["no_speech_threshold"] == _NO_SPEECH_PROB_THRESHOLD_DEFAULT
+        assert captured["log_prob_threshold"] == _LOGPROB_THRESHOLD_DEFAULT
 
 
     def test_hallucinated_segments_filtered_from_transcript(self, monkeypatch):

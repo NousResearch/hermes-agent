@@ -219,8 +219,14 @@ def _iter_referenced_shell_scripts(
                 yield _resolve_terminal_script_path(arguments[arg_index], cwd)
             continue
 
-        if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
-            yield _resolve_terminal_script_path(executable, cwd)
+        # A bare "/" token is pathlib's division operator in Python sources
+        # (e.g. `Path.home() / ".hermes"`), not an executable reference.
+        # Resolving it walks to the filesystem root and fails the
+        # regular-file check below, hard-blocking innocent .py scripts
+        # (#77131). Skip pure-separator tokens.
+        if executable.strip("/"):
+            if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
+                yield _resolve_terminal_script_path(executable, cwd)
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
@@ -258,13 +264,22 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             return None, True
-        if metadata.st_size > _MAX_REFERENCED_SCRIPT_BYTES:
-            return None, True
+        # Read a bounded chunk first — even for oversized files, the first
+        # chunk tells us if this is a binary (NUL bytes) that should be
+        # skipped as "nothing to scan" rather than failing closed (#76762).
         data = os.read(descriptor, _MAX_REFERENCED_SCRIPT_BYTES + 1)
     except OSError:
         return None, False
     finally:
         os.close(descriptor)
+    # A NUL byte in the first chunk means this is a binary (ELF/Mach-O/
+    # PE), not a shell script — scanning its decoded contents would
+    # tokenize machine code and feed junk paths into the recursion
+    # (including a `ValueError: embedded null byte` from Path.resolve,
+    # #76762). Treat it as "nothing to scan" rather than unsafe: a binary
+    # executed by the user is not a referenced *shell script*.
+    if b"\x00" in data:
+        return None, False
     if len(data) > _MAX_REFERENCED_SCRIPT_BYTES:
         return None, True
     return data.decode("utf-8", errors="replace"), False
@@ -298,7 +313,10 @@ def _contains_unsafe_gateway_action(
     for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
         try:
             resolved = script_path.resolve(strict=False)
-        except OSError:
+        except (OSError, ValueError):
+            # OSError: unreadable/long paths. ValueError: embedded NUL byte
+            # from a binary's decoded contents tokenized as a path — a
+            # guarded path must never crash the guard (#76762).
             resolved = script_path
         if resolved in visited:
             continue
@@ -392,16 +410,31 @@ def check_gateway_lifecycle(
     surfaces this as a tool error; the CLI prints it in red and exits 1).
     """
     combined = prompt or ""
+    python_script = False
     if script:
+        python_script = _resolve_script_path(script).suffix == ".py"
         script_text = _read_script_for_scanning(script)
         if script_text:
             combined = f"{combined}\n{script_text}"
 
-    script_dir = _resolve_script_directory(script) if script else None
-    if contains_gateway_lifecycle_command_or_referenced_script(
-        combined,
-        cwd=script_dir,
-    ):
+    if python_script:
+        # Python is executed by the interpreter, never through a POSIX
+        # shell: the shell-script reference walk is a false-positive
+        # generator on Python sources (pathlib's "/" operator resolves to
+        # the filesystem root and trips the regular-file check, blocking
+        # every innocent .py cron script, #77131). The direct command
+        # regex below still scans the full text, so a literal
+        # `hermes gateway restart` embedded in a .py script is still
+        # blocked. Non-regular/oversized script files still fail closed
+        # via the lifecycle-shaped sentinel in _read_script_for_scanning.
+        unsafe = contains_gateway_lifecycle_command(combined)
+    else:
+        script_dir = _resolve_script_directory(script) if script else None
+        unsafe = contains_gateway_lifecycle_command_or_referenced_script(
+            combined,
+            cwd=script_dir,
+        )
+    if unsafe:
         raise GatewayLifecycleBlocked(
             "Blocked: cron job contains a gateway lifecycle command or persistent "
             "launchctl submit operation. This is blocked to prevent agent-driven "

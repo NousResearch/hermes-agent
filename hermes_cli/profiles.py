@@ -30,7 +30,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
@@ -237,6 +237,9 @@ _DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
     # Configuration / persona
     "config.yaml", "SOUL.md", "MEMORY.md", "USER.md", "todo.json",
     "system_prompt.md", "AGENTS.md", "CLAUDE.md", ".cursorrules",
+    # Desktop appearance/interface overlay (written by the desktop app's
+    # profile export; applied by its import — see desktop.json handling).
+    "desktop.json",
     # User-facing skill, cron, and session artifacts
     "skills", "cron", "scripts", "sessions",
     # Plugin / memory surfaces (per-profile overrides live here)
@@ -1898,9 +1901,29 @@ def _default_export_ignore(root_dir: Path):
     return _ignore
 
 
-def export_profile(name: str, output_path: str) -> Path:
+def _make_profile_archive(base: str, root_dir: str, base_dir: str) -> str:
+    """Create ``<base>.tar.gz`` of ``root_dir/base_dir`` — GNU tar format.
+
+    Not :func:`shutil.make_archive`: that writes PAX (Python's tarfile default
+    since 3.8), whose fractional-mtime records macOS Archive Utility rejects —
+    double-clicking an exported profile threw "Error 94 - Bad message." GNU
+    format keeps long paths working (longlink extensions) and stays integer-
+    mtime, so Finder, bsdtar, and gnutar all extract it.
+    """
+    import tarfile
+
+    archive_path = f"{base}.tar.gz"
+    with tarfile.open(archive_path, "w:gz", format=tarfile.GNU_FORMAT) as tf:
+        tf.add(str(Path(root_dir) / base_dir), arcname=base_dir)
+    return archive_path
+
+
+def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, str]] = None) -> Path:
     """Export a profile to a tar.gz archive.
 
+    ``extra_files`` maps root-relative filenames (e.g. ``desktop.json``) to
+    text content staged into the archive alongside the profile's own files —
+    the desktop app uses it to bundle its appearance/interface overlay.
     Returns the output file path.
     """
     import tempfile
@@ -1912,8 +1935,15 @@ def export_profile(name: str, output_path: str) -> Path:
         raise FileNotFoundError(f"Profile '{canon}' does not exist.")
 
     output = Path(output_path)
-    # shutil.make_archive wants the base name without extension
+    # Archive base name without extension (.tar.gz appended by the writer).
     base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
+
+    def _stage_extras(staged: Path) -> None:
+        for rel, content in (extra_files or {}).items():
+            parts = _normalize_profile_archive_parts(rel)
+            target = staged.joinpath(*parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
 
     if canon == "default":
         # The default profile IS ~/.hermes itself — its parent is ~/ and its
@@ -1927,7 +1957,8 @@ def export_profile(name: str, output_path: str) -> Path:
                 symlinks=True,
                 ignore=_default_export_ignore(profile_dir),
             )
-            result = shutil.make_archive(base, "gztar", tmpdir, "default")
+            _stage_extras(staged)
+            result = _make_profile_archive(base, tmpdir, "default")
             return Path(result)
 
     # Named profiles — stage a filtered copy to exclude credentials
@@ -1940,7 +1971,8 @@ def export_profile(name: str, output_path: str) -> Path:
             symlinks=True,
             ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
         )
-        result = shutil.make_archive(base, "gztar", tmpdir, canon)
+        _stage_extras(staged)
+        result = _make_profile_archive(base, tmpdir, canon)
         return Path(result)
 
 

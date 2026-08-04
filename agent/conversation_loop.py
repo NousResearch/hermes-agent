@@ -1291,6 +1291,14 @@ def run_conversation(
     agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
 
+    # Adopt any ~/.hermes/.env credential/base-url edits made since the last
+    # turn — a Settings save updates .env but not this worker's client, which
+    # was built at agent init (#67821). No-op when .env is unchanged.
+    try:
+        agent._try_refresh_env_client_credentials()
+    except Exception:
+        logger.debug("per-turn env credential refresh failed", exc_info=True)
+
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-
@@ -4233,6 +4241,28 @@ def run_conversation(
                     agent._buffer_vprint(
                         f"      Check which providers support tools: https://openrouter.ai/models/{_model}"
                     )
+
+                # Actionable hint for a bare 404 on a provider whose catalogue
+                # uses ``vendor/model`` ids.  A model id that lost its prefix
+                # (e.g. ``nemotron-…`` instead of ``nvidia/nemotron-…``) gets
+                # a content-free "404 page not found" from the provider that
+                # never names the model, so it reads like an outage or an auth
+                # failure.  Name the real cause and the exact id to use (#78796).
+                if getattr(api_error, "status_code", None) == 404:
+                    try:
+                        from hermes_cli.model_normalize import suggest_prefixed_model_id
+
+                        _suggestion = suggest_prefixed_model_id(_provider, _model)
+                    except Exception:
+                        _suggestion = None
+                    if _suggestion:
+                        agent._buffer_vprint(
+                            f"   💡 Model '{_model}' is not a valid id for provider {_provider} — "
+                            f"it is missing its vendor prefix."
+                        )
+                        agent._buffer_vprint(
+                            f"      Did you mean '{_suggestion}'?  Re-pick it with `hermes model`."
+                        )
 
                 # Check for interrupt before deciding to retry
                 if agent._interrupt_requested:

@@ -39,7 +39,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { FileText, LayoutDashboard, PanelBottom, Terminal, Zap } from '@/lib/icons'
+import { Download, FileText, LayoutDashboard, PanelBottom, Terminal, Upload, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { pruneComposerPopoutZones } from '@/store/composer-popout'
@@ -56,6 +56,7 @@ import {
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
 import { $previewOpenRequest, $previewTabs, closeRightRail } from '@/store/preview'
+import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import { $reviewOpen, closeReview, openReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
@@ -313,6 +314,31 @@ registry.registerMany([
       label: 'Keyboard shortcuts',
       keywords: ['keybinds', 'shortcuts', 'hotkeys', 'keyboard'],
       run: () => window.dispatchEvent(new CustomEvent('hermes:open-keybinds'))
+    } satisfies PaletteContribution
+  },
+  // Profile sharing: bundle the active profile (config, skills, theme, layout)
+  // into a portable archive, or adopt someone else's. Both open native dialogs,
+  // so the palette closing on select is correct.
+  {
+    id: 'profile.export',
+    area: PALETTE_AREA,
+    data: {
+      id: 'profile.export',
+      label: 'Export profile…',
+      icon: Upload,
+      keywords: ['profile', 'export', 'share', 'bundle', 'theme', 'settings', 'backup'],
+      run: () => void runExportProfileFlow()
+    } satisfies PaletteContribution
+  },
+  {
+    id: 'profile.import',
+    area: PALETTE_AREA,
+    data: {
+      id: 'profile.import',
+      label: 'Import profile…',
+      icon: Download,
+      keywords: ['profile', 'import', 'share', 'bundle', 'archive', 'restore'],
+      run: () => void runImportProfileFlow()
     } satisfies PaletteContribution
   }
 ])

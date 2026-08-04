@@ -10333,7 +10333,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   // kind+session can arrive here twice. Collapse it at this single choke point.
   // Return true (not false): a notification for the event IS being shown by the
   // first caller, so the settings "send test" success probe stays honest.
-  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? ''}`)) {
+  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? payload?.tag ?? ''}`)) {
     return true
   }
 
@@ -10508,6 +10508,22 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   clipboard.writeText(String(text || ''))
 
   return true
+})
+
+// Native save-location picker (profile export etc.) — the write itself happens
+// elsewhere (the backend, for profile archives); this only picks the path.
+ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: options?.title || 'Save',
+    defaultPath: options?.defaultPath ? String(options.defaultPath) : undefined,
+    filters: Array.isArray(options?.filters) ? options.filters : undefined
+  })
+
+  if (result.canceled || !result.filePath) {
+    return null
+  }
+
+  return result.filePath
 })
 
 // Paired reader for the GUI terminal's paste chord: the renderer's

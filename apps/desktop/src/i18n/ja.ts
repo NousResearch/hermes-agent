@@ -269,6 +269,10 @@ export const ja = defineLocale({
         credits: {
           label: 'クレジット通知',
           description: 'クレジットの利用が停止または復旧しました。'
+        },
+        plugin: {
+          label: 'プラグイン通知',
+          description: 'Hermes がバックグラウンドの間に、デスクトッププラグインが通知を送信しました。'
         }
       },
       test: 'テスト通知を送信',
@@ -1396,6 +1400,12 @@ export const ja = defineLocale({
     search: 'プロファイルを検索...',
     loading: 'プロファイルを読み込み中...',
     newProfile: '新しいプロファイル',
+    importProfile: 'プロファイルをインポート…',
+    exportProfile: 'プロファイルをエクスポート…',
+    imported: 'プロファイルをインポートしました',
+    exported: 'プロファイルをエクスポートしました',
+    failedImport: 'プロファイルのインポートに失敗しました',
+    failedExport: 'プロファイルのエクスポートに失敗しました',
     allProfiles: 'すべてのプロファイル',
     showAllProfiles: 'すべてのプロファイルを表示',
     switchToProfile: name => `${name} に切り替え`,
@@ -2519,7 +2529,8 @@ export const ja = defineLocale({
     layoutNamePlaceholder: fallback => `レイアウト名（${fallback}）`,
     saveApply: '保存して適用',
     notExpressible: 'この配置は互いに噛み合っています（風車型）— 入れ子の分割では表現できません',
-    zoneCount: count => `${count} ゾーン`
+    zoneCount: count => `${count} ゾーン`,
+    tabCount: count => `${count} 個のタブ`
   },
 
   assistant: {

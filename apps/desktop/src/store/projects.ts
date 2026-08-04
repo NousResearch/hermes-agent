@@ -22,6 +22,7 @@ import {
   $sessions,
   idsShareLineage,
   sessionMatchesStoredId,
+  setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
 import { $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
@@ -173,7 +174,7 @@ export function exitProjectScope(): void {
 // one. Empty for the path-less Home bucket. (The sidebar's `projectTreeCwd` is
 // the same rule over the same tree — this is the store-side copy so the store
 // doesn't reach into the sidebar's React module.)
-const projectRootCwd = (project: SidebarProjectTree | undefined): string =>
+export const projectRootCwd = (project: SidebarProjectTree | undefined): string =>
   (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
 
 // ⌘K "go to project": flip the sidebar into grouped mode and enter the project
@@ -518,6 +519,45 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
   } catch {
     return null
   }
+}
+
+interface WorkspaceMovePayload {
+  branch?: null | string
+  cwd?: string
+  git_repo_root?: null | string
+}
+
+// Re-home a stored session into another project's root folder — the fix for a
+// chat created in the wrong directory. The backend replaces cwd + git identity
+// (so the tree's grouping follows) and re-anchors any live agent bound to the
+// row; here we mirror the move into the `$sessions` cache so both the flat list
+// and the grouped tree reflect it before the next authoritative refresh.
+export async function moveSessionToProject(
+  sessionId: string,
+  projectId: string,
+  profile?: null | string
+): Promise<void> {
+  const cwd = projectRootCwd($projectTree.get().find(node => node.id === projectId))
+
+  if (!cwd) {
+    throw new Error(translateNow('sidebar.projects.moveNoFolder'))
+  }
+
+  const res = await gatewayRequest<WorkspaceMovePayload>('session.workspace.move', {
+    cwd,
+    session_key: sessionId,
+    ...(profile ? { profile } : {})
+  })
+
+  const moved = res.cwd || cwd
+  setSessions(prev =>
+    prev.map(s =>
+      sessionMatchesStoredId(s, sessionId)
+        ? { ...s, cwd: moved, git_branch: res.branch ?? null, git_repo_root: res.git_repo_root ?? null }
+        : s
+    )
+  )
+  void refreshProjectTree()
 }
 
 export interface RepoDiscoveryPolicy {

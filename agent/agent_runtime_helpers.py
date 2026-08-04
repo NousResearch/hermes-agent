@@ -664,13 +664,16 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             # blocks — fall back to keeping the existing content.
             prev_content = prev.get("content")
             new_content = msg.get("content")
+            content_rewritten = False
             if isinstance(prev_content, str) and isinstance(new_content, str):
                 joined = "\n".join(
                     p for p in (prev_content.strip(), new_content.strip()) if p
                 )
                 prev["content"] = joined
+                content_rewritten = True
             elif not prev_content and new_content is not None:
                 prev["content"] = new_content
+                content_rewritten = True
             # Carry reasoning_content from the later turn only if the
             # earlier turn lacks it (strict thinking providers require a
             # reasoning_content on the merged tool-call turn; the first
@@ -682,13 +685,20 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             # see ``_flush_messages_to_session_db``) from BEFORE this merge.
             # The sidecar takes priority over ``content`` at API-build time
             # (``conversation_loop``'s ``api_messages`` build substitutes it
-            # back in for role ``assistant``), so leaving it in place would
-            # silently replay the pre-merge bytes and discard everything this
-            # merge just concatenated onto ``prev["content"]`` — the same
-            # stale-field-survives-the-merge shape as the ``tool_calls`` gap
-            # above, just for a different field. Drop it so the freshly
-            # merged content is what actually reaches the wire.
-            drop_stale_api_content(prev)
+            # back in for role ``assistant``), so leaving it in place while
+            # ``prev["content"]`` changes would silently replay the pre-merge
+            # bytes and discard everything this merge just concatenated on —
+            # the same stale-field-survives-the-merge shape as the
+            # ``tool_calls`` gap above, just for a different field. Only drop
+            # it when a branch above actually rewrote ``content`` (e.g. the
+            # later turn's content is ``None``, or either side is
+            # multimodal/list — both branches skip the reassignment and
+            # ``prev["content"]`` is untouched): in that case the sidecar is
+            # still the exact bytes previously sent for the UNCHANGED
+            # content, and dropping it would break the prompt-cache replay
+            # invariant for no reason (#78063 review).
+            if content_rewritten:
+                drop_stale_api_content(prev)
             repairs += 1
             continue
         collapsed.append(msg)

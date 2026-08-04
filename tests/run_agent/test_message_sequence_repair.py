@@ -251,6 +251,51 @@ def test_repair_merge_drops_stale_api_content_sidecar_on_surviving_turn():
     assert messages[1]["content"] == "first reply\nsecond reply"
 
 
+def test_repair_merge_preserves_api_content_sidecar_when_content_unchanged():
+    """Negative control (#78063 review): ``api_content`` must NOT be dropped
+    when the merge does not actually rewrite ``prev["content"]``.
+
+    When the later assistant turn's content is ``None``, neither the
+    both-str branch nor the ``not prev_content`` branch fires (``prev_content``
+    is a truthy string, so ``not prev_content`` is False) -- ``prev["content"]``
+    is left completely untouched. The sidecar is still the exact bytes
+    previously sent for that UNCHANGED content, so dropping it here would
+    diverge replay bytes and break the prompt-cache invariant for no reason.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "clean", "api_content": "wire bytes"},
+        {"role": "assistant", "content": None},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    assert messages[1]["content"] == "clean"
+    assert messages[1]["api_content"] == "wire bytes"
+
+
+def test_repair_merge_preserves_api_content_sidecar_with_multimodal_content():
+    """Same negative control, multimodal (list) content on the later turn --
+    the merge intentionally leaves list content alone (see the merge's
+    docstring), so ``prev["content"]`` is untouched and the sidecar must
+    survive."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "clean", "api_content": "wire bytes"},
+        {"role": "assistant", "content": [{"type": "text", "text": "img context"}]},
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    assert len(messages) == 2
+    assert messages[1]["content"] == "clean"
+    assert messages[1]["api_content"] == "wire bytes"
+
+
 def test_repair_merge_unions_tool_calls_from_later_turn():
     """Regression guard: when the LATER turn carries the real tool_calls
     (and the earlier one has none), the union still lands on the surviving

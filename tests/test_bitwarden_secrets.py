@@ -668,6 +668,118 @@ def test_legacy_plaintext_removed_when_encryption_disabled(
     assert not enc_path.exists()
 
 
+def test_legacy_unlink_failure_blocks_migration(monkeypatch, tmp_path):
+    """When the legacy plaintext file cannot be removed, the encrypted write
+    must NOT report success and migration must NOT serve the legacy value —
+    the plaintext copy is still at rest (P2: unlink-error probe)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    bw._reset_cache_for_tests(home)
+
+    # Seed a fresh legacy plaintext cache.
+    legacy_key = (bw._token_fingerprint("0.t"), "proj-1", "")
+    bw._DISK_CACHE.write(
+        legacy_key,
+        bw._CachedFetch(secrets={"K1": "legacy"}, fetched_at=time.time()),
+        300,
+        home,
+    )
+    assert bw._disk_cache_path(home).exists()
+
+    # The legacy file refuses to be unlinked (permissions, AV lock, ...).
+    def _refuse_unlink(*a, **kw):
+        raise OSError(13, "Permission denied")
+    monkeypatch.setattr(
+        bw, "_disk_cache_path",
+        lambda home_path=None: mock.Mock(unlink=_refuse_unlink),
+    )
+
+    ok = bw._write_encrypted_disk_cache(
+        cache_key=legacy_key,
+        access_token="0.t",
+        entry=bw._CachedFetch(secrets={"K1": "legacy"}, fetched_at=time.time()),
+        home_path=home,
+    )
+    assert ok is False
+
+    # Migration must not serve the legacy value while the plaintext file
+    # may still be on disk.
+    migrated = bw._migrate_legacy_plaintext_cache(
+        cache_key=legacy_key,
+        access_token="0.t",
+        max_age_seconds=300,
+        home_path=home,
+    )
+    assert migrated is None
+
+
+@pytest.mark.parametrize(
+    "fetch_kwargs",
+    [
+        {"cache_ttl_seconds": 0},
+        {"use_cache": False},
+    ],
+)
+def test_legacy_plaintext_removed_after_successful_fetch_without_disk_cache(
+    monkeypatch, tmp_path, fetch_kwargs
+):
+    """A successful live fetch must remove a pre-upgrade plaintext cache even
+    when the disk cache is disabled (zero TTL) or bypassed (use_cache=False)
+    with encryption disabled — cleanup is independent of cache settings
+    (P2: zero-TTL / use-cache bypass probes)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+    payload = _fake_bws_payload([{"key": "K1", "value": "live-value"}])
+
+    bw._reset_cache_for_tests(home)
+    _seed_stale_disk_cache(home, secrets={"K1": "legacy"}, age_seconds=100)
+    assert bw._disk_cache_path(home).exists()
+
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        encrypted_cache_enabled=False, home_path=home, **fetch_kwargs,
+    )
+    assert secrets == {"K1": "live-value"}
+    assert warnings == []
+    assert not bw._disk_cache_path(home).exists()
+
+
+def test_legacy_plaintext_removed_when_fetch_fails_and_cache_bypassed(
+    monkeypatch, tmp_path
+):
+    """Even when the live fetch fails, a pre-upgrade plaintext cache must be
+    removed when disk persistence is disabled — the cleanup runs regardless
+    of use_cache, not only in the transport-error cache branch."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+    bw._reset_cache_for_tests(home)
+
+    _seed_stale_disk_cache(home, secrets={"K1": "legacy"}, age_seconds=100)
+    assert bw._disk_cache_path(home).exists()
+
+    def fail_run(*a, **kw):
+        return mock.Mock(returncode=1, stdout="",
+                         stderr="Error: network is unreachable")
+    monkeypatch.setattr(bw.subprocess, "run", fail_run)
+
+    with pytest.raises(RuntimeError):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            use_cache=False, encrypted_cache_enabled=False,
+            home_path=home,
+        )
+    assert not bw._disk_cache_path(home).exists()
+
+
 # ---------------------------------------------------------------------------
 # Stale disk cache fallback when live bws fetch fails
 # ---------------------------------------------------------------------------

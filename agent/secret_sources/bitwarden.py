@@ -436,12 +436,15 @@ def _write_encrypted_disk_cache(
             os.replace(tmp, path)
             # A successful encrypted write completes migration; remove the
             # legacy plaintext cache so stale secrets cannot remain on disk.
+            # If the legacy file cannot be removed, the migration is NOT
+            # complete — report failure so callers never serve a value whose
+            # plaintext copy is still at rest.
             try:
                 _disk_cache_path(home_path).unlink()
             except FileNotFoundError:
                 pass
             except OSError:
-                pass
+                return False
             return True
         except BaseException:
             try:
@@ -661,10 +664,6 @@ def fetch_bitwarden_secrets(
         kind = _classify_bws_error(str(exc))
         if use_cache and kind in (ErrorKind.NETWORK, ErrorKind.TIMEOUT):
             if not encrypted_cache_enabled:
-                # Memory-only mode: the legacy plaintext cache is never
-                # consulted, but it must still be removed so it does not
-                # survive the upgrade.
-                _remove_legacy_plaintext_cache(home_path)
                 raise
             stale = _read_encrypted_disk_cache(
                 cache_key=cache_key,
@@ -697,6 +696,11 @@ def fetch_bitwarden_secrets(
                     f"bws live fetch failed ({exc}); falling back to "
                     f"stale disk cache ({int(age)}s old)"
                 ]
+        if not encrypted_cache_enabled:
+            # Memory-only mode: the legacy plaintext cache is never consulted,
+            # but it must still be removed so it does not survive the upgrade —
+            # independently of cache TTL / use-cache settings.
+            _remove_legacy_plaintext_cache(home_path)
         raise
     entry = _CachedFetch(secrets=secrets, fetched_at=time.time())
     if use_cache:
@@ -712,6 +716,11 @@ def fetch_bitwarden_secrets(
                 entry=entry,
                 home_path=home_path,
             )
+    # The encrypted-only policy removes a pre-upgrade plaintext cache
+    # independently of cache TTL / use-cache settings: even a zero TTL or a
+    # fully bypassed cache must not leave bws_cache.json at rest after a
+    # successful live fetch.
+    _remove_legacy_plaintext_cache(home_path)
     return secrets, warnings
 
 

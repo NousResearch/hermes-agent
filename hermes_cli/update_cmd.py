@@ -1456,6 +1456,27 @@ def _update_complete_message(pre_version: str | None) -> str:
     if post_version:
         return f"✓ Update complete! (v{post_version})"
     return "✓ Update complete!"
+ 
+ 
+def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
+    """Delete the WAL / shared-memory / rollback-journal files next to *db_path*.
+
+    Call this immediately before overwriting a database file with a snapshot
+    image. Quick snapshots are produced by ``backup._safe_copy_db`` through
+    ``sqlite3.backup()``, so the image is already checkpointed and owns no WAL —
+    which is exactly why ``backup._EXCLUDED_SUFFIXES`` refuses to ship sidecars
+    inside a snapshot. Copying the image over the destination replaces only the
+    main database file, so any ``-wal`` / ``-shm`` left behind by the *old*
+    database (a crashed writer, or a second Hermes process the updater's drain
+    did not stop) survives and is replayed over the fresh image on the next
+    open. The result passes ``PRAGMA integrity_check`` while serving the old
+    database's contents, and the first checkpoint folds it in permanently.
+
+    Removing them is safe here specifically: they belong to a database the
+    caller has already declared corrupt and is about to discard.
+    """
+    for suffix in ("-wal", "-shm", "-journal"):
+        db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
 
 
 def _print_update_summary(
@@ -1878,6 +1899,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
                                 try:
                                     import shutil as _shutil
 
+                                    _clear_stale_sqlite_sidecars(_state_path)
                                     _shutil.copy2(_snap_state, _state_path)
                                     _restored_ok = verify_sqlite_integrity(
                                         _state_path,
@@ -7084,6 +7106,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 try:
                                     import shutil as _shutil
 
+                                    _clear_stale_sqlite_sidecars(_state_path)
                                     _shutil.copy2(_snap_state, _state_path)
                                     _restored_ok = verify_sqlite_integrity(
                                         _state_path,

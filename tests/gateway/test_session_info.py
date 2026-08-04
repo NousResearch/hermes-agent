@@ -64,6 +64,58 @@ class TestFormatSessionInfo:
         assert "localhost:11434" in info
         assert "8K" in info
 
+    def test_named_custom_provider_keeps_context_pin_without_model_base_url(
+        self, runner, tmp_path
+    ):
+        """Session-reset banner must honor model.context_length for named custom providers.
+
+        Repro: /status shows 262144 from config while the reset banner said
+        ``131K tokens (detected)`` because empty model.base_url + runtime URL
+        falsely cleared the pin and fell through to the Qwen family default.
+        """
+        model = "custom-local-agentw/Qwen-AgentWorld-35B-A3B-Q5_K_XL"
+        config_yaml = (
+            "model:\n"
+            f"  default: {model}\n"
+            "  provider: custom-local-agentw\n"
+            "  context_length: 262144\n"
+            "custom_providers:\n"
+            "  - name: custom-local-agentw\n"
+            "    base_url: http://127.0.0.1:8080/v1\n"
+            "    models: {}\n"
+        )
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            config_yaml,
+            model,
+            {
+                "provider": "custom-local-agentw",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "api_key": "",
+            },
+        )
+        with p1, p2, p3, patch(
+            "hermes_cli.config.get_compatible_custom_providers",
+            return_value=[
+                {
+                    "name": "custom-local-agentw",
+                    "base_url": "http://127.0.0.1:8080/v1",
+                    "models": {},
+                }
+            ],
+        ), patch(
+            "agent.model_metadata.get_model_context_length",
+            side_effect=lambda *args, **kwargs: (
+                kwargs.get("config_context_length")
+                if kwargs.get("config_context_length")
+                else 131072
+            ),
+        ):
+            info = runner._format_session_info()
+        assert "262K" in info
+        assert "config" in info
+        assert "131K" not in info
+
 
 class TestResetNoticeSessionInfo:
     """#59003: the auto-reset banner must report the serving profile's config,

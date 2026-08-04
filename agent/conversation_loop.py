@@ -58,6 +58,11 @@ from agent.message_sanitization import (
     _strip_images_from_messages,
     _strip_non_ascii,
 )
+# Must mirror _STALE_TOOL_CALL_MARKER_RE in hermes_state.py — kept local
+# to avoid importing hermes_state at module load time (its module-level
+# DEFAULT_DB_PATH = get_hermes_home() / "state.db" breaks tests that
+# monkeypatch get_hermes_home to return a str).
+_STALE_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     _estimate_tools_tokens_rough,
@@ -4759,6 +4764,41 @@ def run_conversation(
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
+                        # Also compress the message history so the output-cap
+                        # retry does not just spin on max_tokens alone.  The
+                        # compressor drops the middle window, freeing enough
+                        # tokens for the total to fit inside context_length.
+                        # (#55546)
+                        try:
+                            original_len = len(messages)
+                            original_tokens = estimate_messages_tokens_rough(messages)
+                            _overflow_input = messages
+                            messages, active_system_prompt = agent._compress_context(
+                                messages, system_message,
+                                approx_tokens=request_input_estimate,
+                                task_id=effective_task_id,
+                            )
+                            if messages is _overflow_input and compression_skipped_due_to_lock(agent):
+                                compression_attempts -= 1
+                                agent._persist_session(messages, conversation_history)
+                                return _compression_deferred_result(
+                                    agent, messages, api_call_count
+                                )
+                            conversation_history = conversation_history_after_compression(
+                                agent, messages, conversation_history
+                            )
+                            new_tokens = estimate_messages_tokens_rough(messages)
+                            if len(messages) < original_len:
+                                agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
+                            elif new_tokens > 0 and new_tokens < original_tokens * 0.95:
+                                agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
+                        except Exception:
+                            # Compression must never turn an output-cap error
+                            # fatal — fall through and retry on max_tokens alone.
+                            logger.warning(
+                                "%sOutput-cap compression hit an error; retrying on max_tokens only.",
+                                agent.log_prefix,
+                            )
                         _retry.restart_with_compressed_messages = True
                         break
 
@@ -6117,8 +6157,24 @@ def run_conversation(
                     ]
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
-                
+
                 turn_content = assistant_message.content or ""
+
+                # Some local tool-call templates emit a bare bracketed token
+                # (for example ``[memory]``) as assistant content alongside a
+                # function call. It is protocol scaffolding, not an answer.
+                # Persisting or caching it as visible content lets the empty
+                # post-tool fallback replay that token forever after compaction (#78148).
+                if (
+                    assistant_message.tool_calls
+                    and _STALE_MARKER_RE.fullmatch(turn_content.strip())
+                ):
+                    logger.warning(
+                        "Discarding bare tool-call marker from assistant content: %s",
+                        turn_content,
+                    )
+                    turn_content = ""
+                    assistant_msg["content"] = ""
 
                 # Classify tools in this turn to determine if they are all housekeeping.
                 # This classification is needed regardless of whether the turn has visible content,

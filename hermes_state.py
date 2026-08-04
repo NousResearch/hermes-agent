@@ -405,6 +405,57 @@ def _strip_background_review_harness(
     return out
 
 
+# Matches a bare protocol/tool-name marker such as "[memory]" or "[skill_manage]".
+_STALE_TOOL_CALL_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
+
+
+def _is_stale_tool_call_marker_message(msg: Dict[str, Any]) -> bool:
+    """True when ``msg`` is a persisted assistant turn whose content is a bare
+    bracketed marker (e.g. ``[memory]``) left over from a tool-call turn.
+
+    Before the #78148 fix in ``agent.conversation_loop``, a local tool-call
+    template could emit a bare marker as assistant content alongside a real
+    tool call. The loop cached that marker as a fallback and later replayed
+    it as the "final response", persisting it into the session. Sessions
+    written before the fix can still carry these rows.
+    """
+    if not isinstance(msg, dict):
+        return False
+    if msg.get("role") != "assistant":
+        return False
+    if not msg.get("tool_calls"):
+        return False
+    content = msg.get("content")
+    if not isinstance(content, str):
+        return False
+    return bool(_STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip()))
+
+
+def _strip_stale_tool_call_markers(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Clear bare protocol-marker content persisted before the #78148 fix.
+
+    Replaying "[memory]" as if the model had actually answered teaches the
+    model, by example, to keep emitting the same marker in later turns — the
+    exact symptom the issue reported. Only the stray ``content`` field is
+    blanked; the tool call and its result are left untouched so provider
+    tool_call/tool_result pairing stays intact. Sessions with no affected
+    rows pass through unchanged.
+    """
+    repaired = 0
+    for msg in messages:
+        if _is_stale_tool_call_marker_message(msg):
+            msg["content"] = ""
+            repaired += 1
+    if repaired:
+        logger.info(
+            "Cleared %d stale tool-call marker message(s) while restoring session (#78148)",
+            repaired,
+        )
+    return messages
+
+
 def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
     """Format a user-facing 'session DB unavailable' message with cause.
 
@@ -7168,6 +7219,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # assistant reply immediately following it, so a polluted session
         # resumes clean even if stray rows exist.
         messages = _strip_background_review_harness(messages)
+        # DEFENSE-IN-DEPTH against #78148: before that fix, a bare tool-call
+        # marker (e.g. "[memory]") could get cached as a fallback and
+        # persisted as if it were the model's real answer. Sessions written
+        # before the fix can still carry those rows — clear the stray
+        # content on load so replaying history doesn't re-teach the model
+        # to keep emitting the marker. No-op for unaffected sessions.
+        messages = _strip_stale_tool_call_markers(messages)
         if repair_alternation and messages:
             # Lazy import: hermes_state already depends on agent.* (see
             # sanitize_context above), but keep this optional path from
@@ -8384,6 +8442,108 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
+
+    def purge_stale_tool_call_markers(
+        self, *, dry_run: bool = False, backup: bool = True
+    ) -> Dict[str, Any]:
+        """Permanently clear bare tool-call marker content (e.g. "[memory]")
+        left in the ``messages`` table by sessions persisted before the
+        #78148 fix in ``agent.conversation_loop``.
+
+        ``_strip_stale_tool_call_markers`` already repairs this in memory on
+        every session load (see ``_rows_to_conversation``), so running this
+        is optional — but for long-lived sessions the same rows get
+        re-scanned and re-repaired on every resume, which is wasted work
+        and keeps the contaminated bytes sitting in the DB (and in any
+        downstream cache/backup snapshot of it) indefinitely. This rewrites
+        the affected rows once, in place.
+
+        Only the ``content`` column is touched — ``role``, ``tool_calls``,
+        and every other column on the row are left exactly as they are, so
+        provider tool_call/tool_result pairing is unaffected.
+
+        Unlike the in-memory repair, this UPDATE is permanent and can't be
+        undone from within the DB. Since ``backup`` defaults to True, a
+        timestamped full snapshot is taken via ``VACUUM INTO`` (safe against
+        a live connection, unlike the raw-copy ``_backup_db_file`` used for
+        malformed-schema repair) before any row is touched — mirroring
+        ``repair_state_db_schema``'s backup-by-default convention for
+        destructive state.db operations. No snapshot is taken when there is
+        nothing to change.
+
+        With ``dry_run=True``, reports the affected row count/ids without
+        writing or backing up (read-only, no write lock taken).
+
+        Returns ``{"dry_run": bool, "rows_affected": int, "row_ids": [...],
+        "backup_path": str|None}``.
+        """
+
+        def _find_affected(conn) -> List[int]:
+            cursor = conn.execute(
+                "SELECT id, content FROM messages "
+                "WHERE role = 'assistant' AND tool_calls IS NOT NULL AND tool_calls != ''"
+            )
+            affected: List[int] = []
+            for row in cursor.fetchall():
+                content = row["content"]
+                if isinstance(content, str) and _STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip()):
+                    affected.append(row["id"])
+            return affected
+
+        with self._read_ctx() as conn:
+            affected_ids = _find_affected(conn)
+
+        if dry_run:
+            return {
+                "dry_run": True,
+                "rows_affected": len(affected_ids),
+                "row_ids": affected_ids,
+                "backup_path": None,
+            }
+
+        if not affected_ids:
+            return {
+                "dry_run": False,
+                "rows_affected": 0,
+                "row_ids": [],
+                "backup_path": None,
+            }
+
+        backup_path: Optional[str] = None
+        if backup:
+            import datetime
+
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            dest = self.db_path.with_name(
+                f"{self.db_path.name}.pre-clean-markers-backup-{stamp}"
+            )
+            with self._lock:
+                self._conn.execute("VACUUM INTO ?", (str(dest),))
+            backup_path = str(dest)
+            logger.info("Backed up state.db to %s before clean-markers write", backup_path)
+
+        def _do(conn):
+            ids = _find_affected(conn)
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                conn.execute(
+                    f"UPDATE messages SET content = '' WHERE id IN ({placeholders})",
+                    ids,
+                )
+            return ids
+
+        affected_ids = self._execute_write(_do)
+        if affected_ids:
+            logger.info(
+                "Permanently cleared %d stale tool-call marker row(s) in state.db (#78148)",
+                len(affected_ids),
+            )
+        return {
+            "dry_run": False,
+            "rows_affected": len(affected_ids),
+            "row_ids": affected_ids,
+            "backup_path": backup_path,
+        }
 
     # ── Meta key/value (for scheduler bookkeeping) ──
 

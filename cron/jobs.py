@@ -919,8 +919,8 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         - For "cron": "expr" (cron expression)
     
     Examples:
-        "30m"              → once in 30 minutes
-        "2h"               → once in 2 hours
+        "30m"              → every 30 minutes (recurring)
+        "2h"               → every 2 hours (recurring)
         "every 30m"        → recurring every 30 minutes
         "every 2h"         → recurring every 2 hours
         "every monday 9am" → recurring weekly (cron)
@@ -1030,14 +1030,32 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         except ValueError as e:
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
     
-    # Duration like "30m", "2h", "1d" → one-shot from now
-    try:
-        minutes = parse_duration(schedule)
+    # Duration like "30m", "2h", "1d" → RECURRING interval, matching the
+    # documented tool contract ("30m (every 30 minutes)"). Previously this
+    # returned kind="once", silently creating a one-shot job for a schedule
+    # the schema documents as recurring — an agent passing '30m' for "every
+    # 30 minutes" got a job that ran once and died (cron contract bug, fixed
+    # 2026-08-04). Explicit one-shot-by-duration is "in 30m"/"in 2h".
+    if schedule_lower.startswith("in "):
+        duration_str = schedule[3:].strip()
+        try:
+            minutes = parse_duration(duration_str)
+        except ValueError:
+            raise ValueError(
+                f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'."
+            )
         run_at = _hermes_now() + timedelta(minutes=minutes)
         return {
             "kind": "once",
             "run_at": run_at.isoformat(),
-            "display": f"once in {original}"
+            "display": f"once in {duration_str}",
+        }
+    try:
+        minutes = parse_duration(schedule)
+        return {
+            "kind": "interval",
+            "minutes": minutes,
+            "display": f"every {minutes}m",
         }
     except ValueError:
         pass
@@ -2229,7 +2247,28 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
-    # Normalize repeat: treat 0 or negative values as None (infinite)
+    # Normalize repeat: treat 0 or negative values as None (infinite).
+    # Also coerce the documented string forms ('forever' -> None,
+    # 'once' -> 1, numeric strings -> int) — the tool schema exposes repeat
+    # as an integer but agents legitimately pass the user-facing strings
+    # 'forever'/'once', which previously died with
+    # "'<=' not supported between instances of 'str' and 'int'"
+    # (#66824/#64520/#7142). Coerce here so every entry point (tool, CLI,
+    # API, dashboard) inherits the fix.
+    if isinstance(repeat, str):
+        repeat_str = repeat.strip().lower()
+        if repeat_str in ("forever", "infinite", "inf", "none", ""):
+            repeat = None
+        elif repeat_str in ("once", "one", "1x"):
+            repeat = 1
+        else:
+            try:
+                repeat = int(repeat_str)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid repeat value {repeat!r}: use an integer, "
+                    f"'forever', or 'once'."
+                )
     if repeat is not None and repeat <= 0:
         repeat = None
 

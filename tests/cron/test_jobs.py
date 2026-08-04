@@ -76,11 +76,24 @@ class TestParseDuration:
 # =========================================================================
 
 class TestParseSchedule:
-    def test_duration_becomes_once(self):
+    def test_bare_duration_becomes_recurring_interval(self):
+        """Contract: bare '30m' means EVERY 30 minutes (tool schema says so).
+
+        Regression for the cron contract bug (2026-08-04): parse_schedule
+        returned kind='once' for bare durations, so an agent passing '30m'
+        for 'every 30 minutes' silently got a one-shot job that ran once and
+        died. The documented tool contract (tools/cronjob_tools.py) says
+        '30m' (every 30 minutes) — the code now honors it.
+        """
         result = parse_schedule("30m")
+        assert result["kind"] == "interval"
+        assert result["minutes"] == 30
+        assert "run_at" not in result
+
+    def test_in_duration_becomes_once(self):
+        """Explicit one-shot by duration: 'in 30m' fires once in 30 minutes."""
+        result = parse_schedule("in 30m")
         assert result["kind"] == "once"
-        assert "run_at" in result
-        # run_at should be a valid ISO timestamp string ~30 minutes from now
         run_at_str = result["run_at"]
         assert isinstance(run_at_str, str)
         run_at = datetime.fromisoformat(run_at_str)
@@ -359,7 +372,7 @@ class TestJobCRUD:
         assert job["id"]
         assert job["prompt"] == "Check server status"
         assert job["enabled"] is True
-        assert job["schedule"]["kind"] == "once"
+        assert job["schedule"]["kind"] == "interval"
 
         fetched = get_job(job["id"])
         assert fetched is not None
@@ -379,8 +392,25 @@ class TestJobCRUD:
 
 
     def test_auto_repeat_for_once(self, tmp_cron_dir):
-        job = create_job(prompt="One-shot", schedule="1h")
+        job = create_job(prompt="One-shot", schedule="in 1h")
         assert job["repeat"]["times"] == 1
+
+    def test_repeat_string_forms_coerced(self, tmp_cron_dir):
+        """Agents pass 'forever'/'once' as repeat — must coerce, not TypeError.
+
+        Regression for #66824/#64520/#7142: repeat='forever' died with
+        "'<=' not supported between instances of 'str' and 'int'". The tool
+        schema documents repeat as an integer but user-facing forms are
+        strings; coerce at create_job so every entry point inherits it.
+        """
+        forever = create_job(prompt="Str forever", schedule="every 1h", repeat="forever")
+        assert forever["repeat"]["times"] is None  # None = infinite
+        once = create_job(prompt="Str once", schedule="every 1h", repeat="once")
+        assert once["repeat"]["times"] == 1
+        three = create_job(prompt="Str 3", schedule="every 1h", repeat="3")
+        assert three["repeat"]["times"] == 3
+        with pytest.raises(ValueError, match="Invalid repeat"):
+            create_job(prompt="Bad", schedule="every 1h", repeat="banana")
 
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
@@ -569,7 +599,7 @@ class TestMarkJobRun:
 
     def test_repeat_limit_retains_completed_record(self, tmp_cron_dir):
         """A finished one-shot must stay inspectable, not vanish from the store."""
-        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        job = create_job(prompt="Once", schedule="in 30m", repeat=1)
         mark_job_run(job["id"], success=True)
         updated = get_job(job["id"])
         assert updated is not None, "completed one-shot was deleted from jobs.json"
@@ -580,7 +610,7 @@ class TestMarkJobRun:
 
     def test_repeat_limit_retains_delivery_error(self, tmp_cron_dir):
         """A one-shot whose delivery failed must keep the error on its record."""
-        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        job = create_job(prompt="Once", schedule="in 30m", repeat=1)
         mark_job_run(
             job["id"], success=True,
             delivery_error="platform 'telegram' not configured",
@@ -592,7 +622,7 @@ class TestMarkJobRun:
 
     def test_completed_oneshot_visible_in_list(self, tmp_cron_dir):
         """list_jobs(include_disabled=True) surfaces the completed record."""
-        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        job = create_job(prompt="Once", schedule="in 30m", repeat=1)
         mark_job_run(job["id"], success=True, delivery_error="send failed: 502")
         listed = {j["id"]: j for j in list_jobs(include_disabled=True)}
         assert job["id"] in listed
@@ -603,7 +633,7 @@ class TestMarkJobRun:
 
     def test_completed_oneshot_not_due(self, tmp_cron_dir):
         """A retained completed one-shot must never be dispatched again."""
-        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        job = create_job(prompt="Once", schedule="in 30m", repeat=1)
         mark_job_run(job["id"], success=True)
         assert job["id"] not in {j["id"] for j in get_due_jobs()}
 
@@ -708,7 +738,7 @@ class TestAdvanceNextRun:
 
     def test_skips_oneshot_job(self, tmp_cron_dir):
         """One-shot jobs should NOT be advanced — they need to retry on restart."""
-        job = create_job(prompt="Run once", schedule="30m")
+        job = create_job(prompt="Run once", schedule="in 30m")
         original_next = get_job(job["id"])["next_run_at"]
 
         result = advance_next_run(job["id"])
@@ -1166,7 +1196,7 @@ class TestCronOutputRetention:
         d.mkdir(parents=True, exist_ok=True)
         names = [f"2026-06-25_10-00-{i:02d}.md" for i in range(count)]
         for n in names:
-            (d / n).write_text("x")
+            (d / n).write_text("x", encoding="utf-8")
         return names
 
     def test_prune_keeps_newest_n(self, tmp_path):
@@ -1646,7 +1676,7 @@ class TestAdvanceNextRuns:
     def _make_due(self, tmp_cron_dir, n_recurring=3, n_oneshot=1):
         rec = [create_job(prompt=f"rec {i}", schedule="every 1h")
                for i in range(n_recurring)]
-        one = [create_job(prompt=f"one {i}", schedule="30m")
+        one = [create_job(prompt=f"one {i}", schedule="in 30m")
                for i in range(n_oneshot)]
         jobs = load_jobs()
         old = (datetime.now() - timedelta(minutes=5)).isoformat()
@@ -1712,7 +1742,7 @@ class TestCompletedOneshotRetentionSweep:
 
     def _completed_oneshot(self, age_days: float):
         """Create a one-shot, complete it, and backdate its last_run_at."""
-        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        job = create_job(prompt="Once", schedule="in 30m", repeat=1)
         mark_job_run(job["id"], success=True, delivery_error="boom")
         stamp = (
             datetime.now(timezone.utc) - timedelta(days=age_days)

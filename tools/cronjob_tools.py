@@ -1970,7 +1970,8 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "schedule": {
                 "type": "string",
-                "description": "REQUIRED for create. '30m' (every 30 minutes), 'every 2h', 'every monday 9am' / 'every day at 9am' (recurring weekly/daily), cron syntax '0 9 * * *' (daily 9am), or an ISO timestamp for one-shot ('2026-06-01T09:00:00')."
+                "type": "string",
+                "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'."
             },
             "name": {
                 "type": "string",

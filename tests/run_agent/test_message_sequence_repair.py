@@ -222,6 +222,35 @@ def test_repair_merge_preserves_real_tool_calls_on_surviving_turn():
     assert messages[1]["tool_calls"] == real_calls
 
 
+def test_repair_merge_drops_stale_api_content_sidecar_on_surviving_turn():
+    """A pre-existing ``api_content`` sidecar on the surviving (first)
+    assistant turn must be dropped when the merge rewrites ``content`` —
+    otherwise the sidecar (which takes priority over ``content`` at
+    API-build time, see ``conversation_loop``'s ``api_messages`` build)
+    replays the STALE pre-merge bytes on the next call, silently discarding
+    everything the merge just concatenated on. Same stale-field-survives-
+    the-merge shape as the ``tool_calls`` gap above (#77921), for the
+    ``api_content`` field instead.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {
+            "role": "assistant",
+            "content": "first reply",
+            "api_content": "first reply (stale pre-merge bytes)",
+        },
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    assert "api_content" not in messages[1]
+    assert messages[1]["content"] == "first reply\nsecond reply"
+
+
 def test_repair_merge_unions_tool_calls_from_later_turn():
     """Regression guard: when the LATER turn carries the real tool_calls
     (and the earlier one has none), the union still lands on the surviving
@@ -418,6 +447,34 @@ def test_sanitize_preserves_distinct_tool_call_ids():
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_A", "call_B"]
     assert sorted(m["tool_call_id"] for m in out if m.get("role") == "tool") == ["call_A", "call_B"]
+
+
+def test_sanitize_drops_tool_result_with_missing_tool_call_id():
+    """A tool message with NO ``tool_call_id`` must be dropped, not silently
+    passed through.
+
+    Before the fix: ``result_call_ids`` only ever collects TRUTHY ids, so a
+    missing/empty id is never added to that set and can therefore never land
+    in ``orphaned_results`` (a set-difference against ``surviving_call_ids``)
+    either -- the message survives sanitize_api_messages untouched and can
+    reach the provider with no ``tool_call_id`` at all, a schema violation
+    on strict OpenAI-compatible providers (#78071).
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_Z", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_Z", "content": "real result"},
+        {"role": "tool", "tool_call_id": "", "content": "no id"},
+        {"role": "tool", "content": "id key entirely absent"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    tool_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
+    assert tool_ids == ["call_Z"]  # only the properly-paired result survives
 
 
 def test_sanitize_drops_empty_tool_calls_array():

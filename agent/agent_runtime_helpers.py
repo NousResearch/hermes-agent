@@ -677,6 +677,18 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             # non-empty one suffices).
             if not prev.get("reasoning_content") and msg.get("reasoning_content"):
                 prev["reasoning_content"] = msg["reasoning_content"]
+            # ``prev`` may carry an ``api_content`` sidecar (the exact bytes
+            # previously sent to the API, e.g. a sanitize-divergence stamp —
+            # see ``_flush_messages_to_session_db``) from BEFORE this merge.
+            # The sidecar takes priority over ``content`` at API-build time
+            # (``conversation_loop``'s ``api_messages`` build substitutes it
+            # back in for role ``assistant``), so leaving it in place would
+            # silently replay the pre-merge bytes and discard everything this
+            # merge just concatenated onto ``prev["content"]`` — the same
+            # stale-field-survives-the-merge shape as the ``tool_calls`` gap
+            # above, just for a different field. Drop it so the freshly
+            # merged content is what actually reaches the wire.
+            drop_stale_api_content(prev)
             repairs += 1
             continue
         collapsed.append(msg)
@@ -3364,6 +3376,31 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     pass
             elif isinstance(tc, dict):
                 tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
+
+    # --- Drop tool results with a missing/empty tool_call_id ---
+    # The orphan-sweep below only ever adds a TRUTHY ``tool_call_id`` to
+    # ``result_call_ids``, so a message with a missing/empty id is never
+    # added to that set and can therefore never land in ``orphaned_results``
+    # (a set-difference against ``surviving_call_ids``) either — it silently
+    # passes through this chokepoint untouched and can reach the provider
+    # with no ``tool_call_id`` at all, which strict OpenAI-compatible
+    # providers reject as a schema violation. ``repair_message_sequence``'s
+    # Pass 1 already drops this shape (`if tc_id and tc_id in
+    # known_tool_ids`) when it runs first on the same list, but any caller
+    # that reaches this function without going through
+    # ``repair_message_sequence`` first has no such guard. Drop explicitly
+    # here so this "final chokepoint" claim (see module docstring) actually
+    # holds regardless of caller (#78071).
+    _pre_id_filter_count = len(messages)
+    messages = [
+        m for m in messages
+        if not (m.get("role") == "tool" and not (m.get("tool_call_id") or "").strip())
+    ]
+    if len(messages) != _pre_id_filter_count:
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped %d tool result(s) with missing/empty tool_call_id",
+            _pre_id_filter_count - len(messages),
+        )
 
     surviving_call_ids: set = set()
     for msg in messages:

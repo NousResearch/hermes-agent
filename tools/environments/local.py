@@ -432,6 +432,21 @@ def _build_provider_env_blocklist() -> frozenset:
     # It arrives via the registry loop above (anthropic api_key_env_vars),
     # so remove it explicitly.
     blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
+    # Buzz-ACP managed agents (this process spawned by Buzz Desktop's buzz-acp
+    # harness) receive BUZZ_PRIVATE_KEY / BUZZ_RELAY_URL / BUZZ_AUTH_TAG in the
+    # process env ON PURPOSE: the platform's reply-delivery contract is the
+    # model driving the `buzz` CLI from the terminal (block/buzz#2698 — final
+    # session text is NOT delivered to the channel). The bundled buzz platform
+    # plugin registers these names as "messaging" credentials, which would
+    # strip them here and silently break every reply. Mirror the
+    # CLAUDE_CODE_OAUTH_TOKEN exception above: when this process is a
+    # Buzz-managed agent (BUZZ_MANAGED_AGENT is set by the harness), the vars
+    # are the harness's deliberate hand-off to the agent, not a Hermes-managed
+    # secret. Gateway/CLI/kanban processes never carry BUZZ_MANAGED_AGENT, so
+    # the platform-plugin secret (path ③, ~/.hermes/.env) stays stripped there.
+    if os.environ.get("BUZZ_MANAGED_AGENT"):
+        for _buzz_var in ("BUZZ_PRIVATE_KEY", "BUZZ_RELAY_URL", "BUZZ_AUTH_TAG"):
+            blocked.discard(_buzz_var)
     return frozenset(blocked)
 
 

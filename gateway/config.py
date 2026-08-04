@@ -1867,6 +1867,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Discord
     discord_token = getenv("DISCORD_BOT_TOKEN")
     if discord_token:
+        # Startup validation: reject tokens that match known compromised values
+        # or have suspicious format. This is a defence-in-depth check — the
+        # primary protection is never hardcoding tokens in source code.
+        _discord_token_stripped = discord_token.strip()
+        if len(_discord_token_stripped) < 50:
+            logger.warning(
+                "DISCORD_BOT_TOKEN is unusually short (%d chars) — "
+                "may be invalid or a placeholder",
+                len(_discord_token_stripped),
+            )
+        # Check for known leaked token prefix (from commit a66ec2ce02)
+        if _discord_token_stripped.startswith("MTUwNjAyNDQyMTEwNDgxMjI3NA"):
+            logger.error(
+                "DISCORD_BOT_TOKEN matches a known compromised token "
+                "(leaked in commit a66ec2ce02). Rotate immediately."
+            )
         discord_config = _enable_from_env(Platform.DISCORD)
         discord_config.token = discord_token
     

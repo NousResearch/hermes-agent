@@ -30,11 +30,14 @@ class _Relay:
         self.events: list[tuple[Any, ...]] = []
         self._callbacks: dict[str, Any] = {}
         self._starts: dict[Any, dict[str, Any]] = {}
+        self._tool_starts: dict[Any, dict[str, Any]] = {}
         self._scope_starts: dict[Any, dict[str, Any]] = {}
         self._scope = contextvars.ContextVar("relay_scope", default=None)
         self._scope_stack = contextvars.ContextVar("relay_scope_stack", default=None)
         self._scope_serial = 0
-        self.ScopeType = SimpleNamespace(Agent="agent", Function="function")
+        self.ScopeType = SimpleNamespace(
+            Agent="agent", Function="function", Tool="tool"
+        )
         self.LLMRequest = _Request
         self.scope = SimpleNamespace(
             push=self._scope_push,
@@ -42,6 +45,7 @@ class _Relay:
             event=self._scope_event,
         )
         self.llm = SimpleNamespace(call=self._llm_call, call_end=self._llm_call_end)
+        self.tools = SimpleNamespace(call=self._tool_call, call_end=self._tool_call_end)
         self.subscribers = SimpleNamespace(
             register=self._register,
             deregister=self._deregister,
@@ -102,6 +106,17 @@ class _Relay:
 
     def _scope_event(self, name: str, **kwargs: Any) -> None:
         self.events.append(("scope.event", name, kwargs))
+        event = SimpleNamespace(
+            kind="mark",
+            category=None,
+            name=name,
+            scope_category=None,
+            category_profile=None,
+            metadata=kwargs.get("metadata"),
+            data=kwargs.get("data"),
+        )
+        for callback in list(self._callbacks.values()):
+            callback(event)
 
     def _get_scope_stack(self) -> Any:
         stack = self._scope_stack.get()
@@ -141,6 +156,41 @@ class _Relay:
                 "otel.status_code": "OK",
             },
             data=response,
+        )
+        for callback in list(self._callbacks.values()):
+            callback(event)
+
+    def _tool_call(
+        self,
+        name: str,
+        args: dict[str, Any],
+        **kwargs: Any,
+    ) -> Any:
+        handle = ("tool", name, len(self._tool_starts))
+        self._tool_starts[handle] = kwargs
+        self.events.append(("tool.call", name, args, kwargs))
+        return handle
+
+    def _tool_call_end(
+        self,
+        handle: Any,
+        result: dict[str, Any],
+        **kwargs: Any,
+    ) -> None:
+        start = self._tool_starts.pop(handle)
+        self.events.append(("tool.call_end", handle, result, kwargs))
+        event = SimpleNamespace(
+            kind="scope",
+            category="tool",
+            name=handle[1],
+            scope_category="end",
+            category_profile={},
+            metadata={
+                **start["metadata"],
+                **kwargs["metadata"],
+                "otel.status_code": "OK",
+            },
+            data=result,
         )
         for callback in list(self._callbacks.values()):
             callback(event)
@@ -196,6 +246,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     base = {
         "session_id": "sensitive-session",
         "task_id": "task-1",
+        "turn_id": "turn-1",
         "api_request_id": "request-1",
         "platform": "cli",
         "provider": "custom",
@@ -212,13 +263,32 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         request={"body": {"messages": ["sensitive-prompt"]}},
     )
     lifecycle.invoke_hook(
+        "pre_tool_call",
+        **base,
+        tool_call_id="sensitive-tool-call",
+        tool_name="terminal",
+        toolset="terminal",
+        args={"command": "sensitive-command"},
+    )
+    lifecycle.invoke_hook(
+        "post_approval_response",
+        turn_id=base["turn_id"],
+        tool_call_id="sensitive-tool-call",
+        choice="once",
+        command="sensitive-command",
+        description="sensitive-approval-description",
+    )
+    lifecycle.invoke_hook(
         "post_tool_call",
         **base,
         tool_call_id="sensitive-tool-call",
         tool_name="terminal",
+        toolset="terminal",
         args={"command": "sensitive-command"},
         result={"output": "sensitive-tool-result"},
         status="ok",
+        duration_ms=275,
+        retry_count=0,
     )
     lifecycle.invoke_hook(
         "api_request_error",
@@ -258,6 +328,10 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
 
     starts = [event for event in direct_runtime.events if event[0] == "llm.call"]
     ends = [event for event in direct_runtime.events if event[0] == "llm.call_end"]
+    tool_starts = [event for event in direct_runtime.events if event[0] == "tool.call"]
+    tool_ends = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
     scope_starts = [
         event for event in direct_runtime.events if event[0] == "scope.push"
     ]
@@ -272,6 +346,17 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     }
     assert len(starts) == 1
     assert len(ends) == 1
+    assert len(tool_starts) == 1
+    assert len(tool_ends) == 1
+    assert tool_starts[0][1] == "hermes.tool_call"
+    assert tool_starts[0][2] == {}
+    assert tool_ends[0][2] == {
+        "approval_outcome": "approved",
+        "latency_bucket": "250ms_to_500ms",
+        "outcome": "success",
+        "retry_count_bucket": "0",
+        "tool_category": "terminal",
+    }
     assert starts[0][2] == {}
     assert starts[0][3]["model_name"] == "unknown"
     assert ends[0][2] == {
@@ -285,6 +370,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     assert "sensitive-command" not in serialized_events
     assert "sensitive-tool-result" not in serialized_events
     assert "sensitive-tool-call" not in serialized_events
+    assert "sensitive-approval-description" not in serialized_events
     assert "gpt-sensitive-model-id" not in serialized_events
     assert plugins.get_plugin_manager().list_plugins() == []
 
@@ -297,12 +383,35 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "hermes.model_route.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
+        "hermes.tool_approval.count",
+        "hermes.tool_call.count",
     }
     assert metrics["hermes.model_route.count"]["dimensions"] == {
         "model": "claude-sonnet",
         "provider": "anthropic",
     }
     assert metrics["hermes.model_route.count"]["value"] == 1
+    assert metrics["hermes.tool_call.count"] == {
+        "name": "hermes.tool_call.count",
+        "type": "counter",
+        "dimensions": {
+            "approval_outcome": "approved",
+            "latency_bucket": "250ms_to_500ms",
+            "outcome": "success",
+            "retry_count_bucket": "0",
+            "tool_category": "terminal",
+        },
+        "value": 1,
+    }
+    assert metrics["hermes.tool_approval.count"] == {
+        "name": "hermes.tool_approval.count",
+        "type": "counter",
+        "dimensions": {
+            "attribution": "tool_call",
+            "outcome": "approved",
+        },
+        "value": 1,
+    }
     assert metrics["hermes.task_run.started"] == {
         "name": "hermes.task_run.started",
         "type": "counter",
@@ -371,6 +480,21 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     )
     lifecycle.invoke_hook("pre_api_request", **success, retry_count=1)
     lifecycle.invoke_hook(
+        "pre_tool_call",
+        **success,
+        tool_call_id="sensitive-tool-call",
+        tool_name="terminal",
+        args={"command": prompt_canary},
+    )
+    lifecycle.invoke_hook(
+        "post_approval_response",
+        turn_id=success["turn_id"],
+        tool_call_id="sensitive-tool-call",
+        choice="session",
+        command=prompt_canary,
+        description="sensitive-approval-description",
+    )
+    lifecycle.invoke_hook(
         "post_tool_call",
         **success,
         tool_call_id="sensitive-tool-call",
@@ -378,6 +502,8 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         args={"command": prompt_canary},
         result={"output": tool_canary},
         status="ok",
+        duration_ms=125,
+        retry_count=0,
     )
     lifecycle.invoke_hook(
         "post_api_request",
@@ -400,6 +526,23 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     lifecycle.invoke_hook("pre_llm_call", **failed, messages=[prompt_canary])
     lifecycle.invoke_hook("pre_api_request", **failed, retry_count=0)
     lifecycle.invoke_hook(
+        "pre_tool_call",
+        **failed,
+        tool_call_id="sensitive-failed-tool-call",
+        tool_name="read_file",
+        args={"path": prompt_canary},
+    )
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **failed,
+        tool_call_id="sensitive-failed-tool-call",
+        tool_name="read_file",
+        args={"path": prompt_canary},
+        result={"error": tool_canary},
+        status="error",
+        duration_ms=750,
+    )
+    lifecycle.invoke_hook(
         "api_request_error",
         **failed,
         retry_count=0,
@@ -420,6 +563,23 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     lifecycle.invoke_hook("on_session_start", **cancelled)
     lifecycle.invoke_hook("pre_llm_call", **cancelled, messages=[prompt_canary])
     lifecycle.invoke_hook("pre_api_request", **cancelled, retry_count=0)
+    lifecycle.invoke_hook(
+        "pre_tool_call",
+        **cancelled,
+        tool_call_id="sensitive-cancelled-tool-call",
+        tool_name="browser_navigate",
+        args={"url": prompt_canary},
+    )
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **cancelled,
+        tool_call_id="sensitive-cancelled-tool-call",
+        tool_name="browser_navigate",
+        args={"url": prompt_canary},
+        result={"error": tool_canary},
+        status="cancelled",
+        duration_ms=31_000,
+    )
     lifecycle.invoke_hook(
         "on_session_end",
         **cancelled,
@@ -454,6 +614,43 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         "provider": "custom",
     }
     assert model_counter["value"] == 3
+    assert {
+        counter["dimensions"]["outcome"]
+        for counter in by_metric["hermes.tool_call.count"]
+    } == {"success", "failed", "cancelled"}
+    tool_by_outcome = {
+        counter["dimensions"]["outcome"]: counter["dimensions"]
+        for counter in by_metric["hermes.tool_call.count"]
+    }
+    assert tool_by_outcome["success"] == {
+        "approval_outcome": "approved",
+        "latency_bucket": "100ms_to_250ms",
+        "outcome": "success",
+        "retry_count_bucket": "0",
+        "tool_category": "terminal",
+    }
+    assert tool_by_outcome["failed"] == {
+        "approval_outcome": "not_required",
+        "latency_bucket": "500ms_to_1s",
+        "outcome": "failed",
+        "retry_count_bucket": "unknown",
+        "tool_category": "file",
+    }
+    assert tool_by_outcome["cancelled"] == {
+        "approval_outcome": "not_required",
+        "latency_bucket": "gte_30s",
+        "outcome": "cancelled",
+        "retry_count_bucket": "unknown",
+        "tool_category": "browser",
+    }
+    assert len(by_metric["hermes.tool_approval.count"]) == 1
+    approval_counter = by_metric["hermes.tool_approval.count"][0]
+    assert approval_counter["dimensions"] == {
+        "attribution": "tool_call",
+        "outcome": "approved",
+    }
+    assert approval_counter["value"] == 1
+    assert approval_counter["packaged_value"] == 1
     terminal_by_outcome = {
         counter["dimensions"]["outcome"]: counter
         for counter in by_metric["hermes.task_run.finished"]
@@ -502,10 +699,183 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         "sensitive-task",
         "sensitive-request",
         "sensitive-tool-call",
+        "sensitive-failed-tool-call",
+        "sensitive-cancelled-tool-call",
+        "sensitive-approval-description",
     ):
         assert canary not in serialized_analytics
 
 
+def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
+    real_binding_runtime,
+    tmp_path,
+    monkeypatch,
+):
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from tools import approval
+
+    assert real_binding_runtime._native is not None
+    base = {
+        "session_id": "sensitive-session",
+        "task_id": "sensitive-task",
+        "turn_id": "sensitive-turn",
+        "api_request_id": "sensitive-request",
+        "platform": "cli",
+    }
+
+    def plugin_hook(hook_name: str, **kwargs: Any) -> list[dict[str, str]]:
+        if hook_name == "pre_tool_call":
+            return [{"action": "approve", "message": "sensitive-rule"}]
+        return []
+
+    monkeypatch.setattr(plugins, "invoke_hook", plugin_hook)
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
+    monkeypatch.setattr(approval, "is_approved", lambda *args: False)
+    monkeypatch.setattr(approval, "get_current_session_key", lambda: "session-key")
+    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *args, **kwargs: "deny")
+
+    lifecycle.invoke_hook("on_session_start", **base)
+    lifecycle.invoke_hook("pre_llm_call", **base, messages=["sensitive-prompt"])
+    block_message = plugins.resolve_pre_tool_block(
+        "write_file",
+        {"path": "sensitive-path"},
+        task_id=base["task_id"],
+        session_id=base["session_id"],
+        turn_id=base["turn_id"],
+        api_request_id=base["api_request_id"],
+        tool_call_id="sensitive-tool-call",
+    )
+    assert block_message is not None
+    assert "User denied" in block_message
+
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **base,
+        tool_call_id="sensitive-tool-call",
+        tool_name="write_file",
+        args={"path": "sensitive-path"},
+        result={"error": block_message},
+        status="blocked",
+        duration_ms=12,
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=False,
+        failed=True,
+        interrupted=False,
+        turn_exit_reason="approval_denied",
+    )
+    lifecycle.finalize_session(session_id=base["session_id"])
+
+    root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
+    store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
+    snapshot = store.counter_snapshot()
+    tool_metrics = [
+        counter
+        for counter in snapshot
+        if counter["metric_name"] == "hermes.tool_call.count"
+    ]
+    assert len(tool_metrics) == 1
+    assert tool_metrics[0]["dimensions"] == {
+        "approval_outcome": "denied",
+        "latency_bucket": "lt_100ms",
+        "outcome": "blocked",
+        "retry_count_bucket": "unknown",
+        "tool_category": "file",
+    }
+    approval_metrics = [
+        counter
+        for counter in snapshot
+        if counter["metric_name"] == "hermes.tool_approval.count"
+    ]
+    assert len(approval_metrics) == 1
+    assert approval_metrics[0]["dimensions"] == {
+        "attribution": "tool_call",
+        "outcome": "denied",
+    }
+    assert "sensitive" not in json.dumps(snapshot)
+
+
+def test_real_binding_aggregates_tool_and_approval_timeouts(
+    real_binding_runtime,
+    tmp_path,
+):
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    assert real_binding_runtime._native is not None
+    base = {
+        "session_id": "timeout-sensitive-session",
+        "task_id": "timeout-sensitive-task",
+        "turn_id": "timeout-sensitive-turn",
+        "platform": "cli",
+    }
+
+    lifecycle.invoke_hook("on_session_start", **base)
+    lifecycle.invoke_hook("pre_llm_call", **base, messages=["timeout-sensitive-prompt"])
+    lifecycle.invoke_hook(
+        "pre_tool_call",
+        **base,
+        tool_call_id="timeout-sensitive-tool-call",
+        tool_name="terminal",
+        args={"command": "timeout-sensitive-command"},
+    )
+    lifecycle.invoke_hook(
+        "post_approval_response",
+        **base,
+        tool_call_id="timeout-sensitive-tool-call",
+        choice="timeout",
+        command="timeout-sensitive-command",
+    )
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **base,
+        tool_call_id="timeout-sensitive-tool-call",
+        tool_name="terminal",
+        result={"error": "timeout-sensitive-result"},
+        status="timeout",
+        duration_ms=30_000,
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=False,
+        failed=True,
+        interrupted=False,
+        turn_exit_reason="provider_timeout",
+    )
+    lifecycle.finalize_session(session_id=base["session_id"])
+
+    root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
+    snapshot = SharedMetricsStore(
+        root / "metrics.sqlite3",
+        root / "outbox",
+    ).counter_snapshot()
+    [tool_metric] = [
+        counter
+        for counter in snapshot
+        if counter["metric_name"] == "hermes.tool_call.count"
+    ]
+    assert tool_metric["dimensions"] == {
+        "approval_outcome": "timed_out",
+        "latency_bucket": "gte_30s",
+        "outcome": "timed_out",
+        "retry_count_bucket": "unknown",
+        "tool_category": "terminal",
+    }
+    [approval_metric] = [
+        counter
+        for counter in snapshot
+        if counter["metric_name"] == "hermes.tool_approval.count"
+    ]
+    assert approval_metric["dimensions"] == {
+        "attribution": "tool_call",
+        "outcome": "timed_out",
+    }
+    assert "timeout-sensitive" not in json.dumps(snapshot)
 
 
 
@@ -810,24 +1180,29 @@ def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
 
     assert not relay_shared_metrics.enabled()
     counters_before_stale_event = runtime.subscriber.store.counter_snapshot()
-    runtime.subscriber(SimpleNamespace(
-        kind="scope",
-        category="function",
-        category_profile=None,
-        name="hermes.task_run",
-        scope_category="start",
-        metadata={
-            "hermes.metrics.schema_version": "hermes.metrics.event.v1",
-            relay_runtime.RUNTIME_INSTANCE_KEY: runtime.host.runtime_id,
-        },
-        data={"entrypoint": "interactive", "execution_surface": "cli"},
-    ))
+    runtime.subscriber(
+        SimpleNamespace(
+            kind="scope",
+            category="function",
+            category_profile=None,
+            name="hermes.task_run",
+            scope_category="start",
+            metadata={
+                "hermes.metrics.schema_version": "hermes.metrics.event.v1",
+                relay_runtime.RUNTIME_INSTANCE_KEY: runtime.host.runtime_id,
+            },
+            data={"entrypoint": "interactive", "execution_surface": "cli"},
+        )
+    )
     assert runtime.subscriber.store.counter_snapshot() == counters_before_stale_event
-    assert runtime.start_task({
-        "session_id": "session",
-        "task_id": "stale-runtime-task",
-        "platform": "cli",
-    }) is None
+    assert (
+        runtime.start_task({
+            "session_id": "session",
+            "task_id": "stale-runtime-task",
+            "platform": "cli",
+        })
+        is None
+    )
     relay_shared_metrics.finish_task_run(
         session_id="session",
         task_id="task",
@@ -1092,6 +1467,7 @@ def test_subagent_agent_boundary_closes_its_own_scope(
         )
         AIAgent.run_conversation(child_agent, "private", task_id="child-task")
     elif terminal == "exception":
+
         def fail(*_args, **_kwargs):
             raise RuntimeError("child failed")
 
@@ -1099,6 +1475,7 @@ def test_subagent_agent_boundary_closes_its_own_scope(
         with pytest.raises(RuntimeError, match="child failed"):
             AIAgent.run_conversation(child_agent, "private", task_id="child-task")
     elif terminal == "cancelled":
+
         def cancel(*_args, **_kwargs):
             raise KeyboardInterrupt
 
@@ -1106,6 +1483,7 @@ def test_subagent_agent_boundary_closes_its_own_scope(
         with pytest.raises(KeyboardInterrupt):
             AIAgent.run_conversation(child_agent, "private", task_id="child-task")
     else:
+
         def time_out(*_args, **_kwargs):
             raise TimeoutError("child timed out")
 
@@ -1278,6 +1656,525 @@ def test_same_request_id_is_isolated_between_tasks(direct_runtime):
     assert all(fields["retry_count_bucket"] == "0" for fields in task_ends)
 
 
+def test_reused_tool_call_id_is_counted_for_each_provider_request(direct_runtime):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+
+    for api_request_id in ("request-1", "request-2"):
+        call = {
+            **base,
+            "api_request_id": api_request_id,
+            "tool_call_id": "provider-reused-id",
+            "tool_name": "terminal",
+        }
+        lifecycle.invoke_hook("pre_tool_call", **call, args={"command": "private"})
+        lifecycle.invoke_hook(
+            "post_tool_call",
+            **call,
+            result={"output": "private"},
+            status="ok",
+        )
+
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    tool_ends = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert len(tool_ends) == 2
+    [task_end] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert task_end[2]["output"]["tool_call_count_bucket"] == "2"
+
+
+def test_partial_terminal_context_reuses_the_pending_tool_span(direct_runtime):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "api_request_id": "request-1",
+        "platform": "cli",
+        "tool_call_id": "tool-1",
+        "tool_name": "terminal",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook("pre_tool_call", **base)
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **{key: value for key, value in base.items() if key != "api_request_id"},
+        result={"output": "private"},
+        status="ok",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    [tool_end] = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert tool_end[2]["outcome"] == "success"
+    [task_end] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert task_end[2]["output"]["tool_call_count_bucket"] == "1"
+
+
+def test_partial_terminal_variants_do_not_double_count_a_completed_call(
+    direct_runtime,
+):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "api_request_id": "request-1",
+        "platform": "cli",
+        "tool_call_id": "tool-1",
+        "tool_name": "terminal",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook("pre_tool_call", **base)
+    for omitted_field in ("api_request_id", "turn_id"):
+        lifecycle.invoke_hook(
+            "post_tool_call",
+            **{key: value for key, value in base.items() if key != omitted_field},
+            result={"output": "private"},
+            status="ok",
+        )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    tool_ends = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert len(tool_ends) == 1
+    [task_end] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert task_end[2]["output"]["tool_call_count_bucket"] == "1"
+
+
+def test_ambiguous_partial_terminal_does_not_create_a_phantom_tool_span(
+    direct_runtime,
+):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+        "tool_call_id": "provider-reused-id",
+        "tool_name": "terminal",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    for api_request_id in ("request-1", "request-2"):
+        lifecycle.invoke_hook(
+            "pre_tool_call",
+            **base,
+            api_request_id=api_request_id,
+        )
+
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **base,
+        result={"output": "ambiguous-private-result"},
+        status="ok",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=False,
+        failed=True,
+        interrupted=False,
+        turn_exit_reason="system_aborted",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    tool_ends = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert len(tool_ends) == 2
+    assert all(event[2]["outcome"] == "failed" for event in tool_ends)
+    [task_end] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert task_end[2]["output"]["tool_call_count_bucket"] == "2"
+
+
+def test_reused_task_id_starts_a_new_run_for_each_turn(direct_runtime):
+    for turn_id in ("turn-1", "turn-2"):
+        base = {
+            "session_id": "reused-session",
+            "task_id": "reused-session",
+            "turn_id": turn_id,
+            "platform": "api",
+        }
+        lifecycle.invoke_hook("pre_llm_call", **base)
+        lifecycle.invoke_hook(
+            "post_tool_call",
+            **base,
+            api_request_id=f"request-{turn_id}",
+            tool_call_id=f"tool-{turn_id}",
+            tool_name="read_file",
+            result={"output": "private"},
+            status="ok",
+        )
+        lifecycle.invoke_hook(
+            "on_session_end",
+            **base,
+            completed=True,
+            failed=False,
+            interrupted=False,
+            turn_exit_reason="text_response(stop)",
+        )
+
+    lifecycle.finalize_session(session_id="reused-session")
+
+    task_starts = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.push" and event[1] == "hermes.task_run"
+    ]
+    task_ends = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    tool_ends = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert len(task_starts) == 2
+    assert len(task_ends) == 2
+    assert len(tool_ends) == 2
+    assert all(
+        event[2]["output"]["tool_call_count_bucket"] == "1" for event in task_ends
+    )
+
+
+def test_late_tool_result_does_not_attach_to_reused_task_id(direct_runtime):
+    first = {
+        "session_id": "reused-session",
+        "task_id": "reused-session",
+        "turn_id": "turn-1",
+        "platform": "api",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **first)
+    lifecycle.invoke_hook(
+        "pre_tool_call",
+        **first,
+        api_request_id="request-1",
+        tool_call_id="tool-1",
+        tool_name="terminal",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **first,
+        completed=False,
+        failed=True,
+        interrupted=False,
+        turn_exit_reason="timed_out",
+    )
+
+    second = {**first, "turn_id": "turn-2"}
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    assert runtime.start_task({
+        "session_id": second["session_id"],
+        "task_id": second["task_id"],
+        "platform": second["platform"],
+    })
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **first,
+        api_request_id="request-1",
+        tool_call_id="tool-1",
+        tool_name="terminal",
+        result={"output": "late-private-result"},
+        status="ok",
+    )
+    lifecycle.invoke_hook("pre_llm_call", **second)
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **second,
+        api_request_id="request-2",
+        tool_call_id="tool-2",
+        tool_name="read_file",
+        result={"output": "current-private-result"},
+        status="ok",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **second,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id="reused-session")
+
+    tool_ends = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert len(tool_ends) == 2
+    assert [event[2]["outcome"] for event in tool_ends] == [
+        "timed_out",
+        "success",
+    ]
+    assert [event[2]["tool_category"] for event in tool_ends] == [
+        "terminal",
+        "file",
+    ]
+    task_ends = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert [
+        event[2]["output"]["tool_call_count_bucket"] for event in task_ends
+    ] == ["1", "1"]
+
+
+def test_pending_tool_is_closed_and_counted_when_task_is_interrupted(direct_runtime):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+    }
+
+    lifecycle.invoke_hook("on_session_start", **base)
+    lifecycle.invoke_hook(
+        "pre_tool_call",
+        **base,
+        tool_call_id="tool-1",
+        tool_name="terminal",
+        args={"command": "must-not-pass"},
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=False,
+        failed=False,
+        interrupted=True,
+        turn_exit_reason="interrupted_by_user",
+    )
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **base,
+        tool_call_id="tool-1",
+        tool_name="terminal",
+        result={"output": "late-result-must-not-pass"},
+        status="ok",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    [tool_end] = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert tool_end[2] == {
+        "approval_outcome": "not_required",
+        "latency_bucket": tool_end[2]["latency_bucket"],
+        "outcome": "cancelled",
+        "retry_count_bucket": "unknown",
+        "tool_category": "terminal",
+    }
+    [task_end] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert task_end[2]["output"]["tool_call_count_bucket"] == "1"
+    task_starts = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.push" and event[1] == "hermes.task_run"
+    ]
+    assert len(task_starts) == 1
+
+
+def test_pending_tool_uses_the_outer_task_timeout_outcome(direct_runtime):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "api",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook(
+        "pre_tool_call",
+        **base,
+        tool_call_id="tool-1",
+        tool_name="web_search",
+    )
+
+    relay_shared_metrics.finish_task_run(
+        session_id="s1",
+        task_id="t1",
+        platform="api",
+        error=TimeoutError("private timeout detail"),
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    [tool_end] = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert tool_end[2]["outcome"] == "timed_out"
+    [task_end] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert task_end[2]["output"]["outcome"] == "timed_out"
+    assert task_end[2]["output"]["tool_call_count_bucket"] == "1"
+    assert "private timeout detail" not in repr(direct_runtime.events)
+
+
+def test_approval_without_tool_context_is_counted_as_unattributed(direct_runtime):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+    }
+
+    lifecycle.invoke_hook("on_session_start", **base)
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook(
+        "post_approval_response",
+        turn_id="turn-1",
+        choice="deny",
+        command="must-not-pass",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=False,
+        failed=True,
+        interrupted=False,
+        turn_exit_reason="approval_denied",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    [approval] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.event" and event[1] == "hermes.tool_approval"
+    ]
+    assert approval[2]["data"] == {
+        "attribution": "unattributed",
+        "outcome": "denied",
+    }
+
+
+def test_approval_with_unmatched_tool_id_is_counted_as_unattributed(direct_runtime):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+    }
+
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook(
+        "post_approval_response",
+        **base,
+        tool_call_id="spoofed-tool-call",
+        choice="deny",
+        command="must-not-pass",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=False,
+        failed=True,
+        interrupted=False,
+        turn_exit_reason="approval_denied",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    [approval] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.event" and event[1] == "hermes.tool_approval"
+    ]
+    assert approval[2]["data"] == {
+        "attribution": "unattributed",
+        "outcome": "denied",
+    }
+
+
+def test_tool_category_comes_from_runtime_registry_metadata(
+    direct_runtime,
+    monkeypatch,
+):
+    import model_tools
+
+    monkeypatch.setattr(
+        model_tools,
+        "get_toolset_for_tool",
+        lambda name: "terminal" if name == "runtime_only_tool" else None,
+    )
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **base,
+        tool_call_id="tool-1",
+        tool_name="runtime_only_tool",
+        result={"output": "private"},
+        status="ok",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    [tool_end] = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert tool_end[2]["tool_category"] == "terminal"
 def test_task_retry_count_survives_provider_fallback_ordinal_reset(direct_runtime):
     base = {
         "session_id": "s1",

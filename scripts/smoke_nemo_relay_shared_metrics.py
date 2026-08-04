@@ -20,6 +20,9 @@ from typing import Any
 PROMPT_CANARY = "relay-smoke-sensitive-prompt"
 MODEL_CANARY = "gpt-relay-smoke-sensitive-model"
 RESPONSE_CANARY = "relay-smoke-sensitive-response"
+TOOL_CALL_CANARY = "relay-smoke-sensitive-tool-call"
+TOOL_RESULT_CANARY = "relay-smoke-sensitive-tool-result"
+TOOL_FILE = "relay-smoke-input.txt"
 
 
 def _resolve_hermes_executable(hermes_repo: Path) -> Path:
@@ -68,30 +71,51 @@ class _ModelHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         request = json.loads(self.rfile.read(length) or b"{}")
         type(self).requests.append(request)
+        request_tool = not any(
+            message.get("role") == "tool"
+            for message in request.get("messages") or []
+            if isinstance(message, dict)
+        )
         if request.get("stream"):
-            self._write_stream()
+            self._write_stream(request_tool=request_tool)
         else:
-            self._write_json({
-                "id": "chatcmpl-relay-smoke",
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": MODEL_CANARY,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": RESPONSE_CANARY,
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 1,
-                    "total_tokens": 11,
-                },
-            })
+            self._write_json(self._completion(request_tool=request_tool))
+
+    def _completion(self, *, request_tool: bool) -> dict[str, Any]:
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": "" if request_tool else RESPONSE_CANARY,
+        }
+        finish_reason = "tool_calls" if request_tool else "stop"
+        if request_tool:
+            message["tool_calls"] = [
+                {
+                    "id": TOOL_CALL_CANARY,
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": json.dumps({"path": TOOL_FILE}),
+                    },
+                }
+            ]
+        return {
+            "id": "chatcmpl-relay-smoke",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": MODEL_CANARY,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": finish_reason,
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 1,
+                "total_tokens": 11,
+            },
+        }
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -106,9 +130,9 @@ class _ModelHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.close_connection = True
 
-    def _write_stream(self) -> None:
+    def _write_stream(self, *, request_tool: bool) -> None:
         now = int(time.time())
-        chunks = [
+        chunks: list[dict[str, Any]] = [
             {
                 "id": "chatcmpl-relay-smoke",
                 "object": "chat.completion.chunk",
@@ -119,18 +143,66 @@ class _ModelHandler(BaseHTTPRequestHandler):
                         "index": 0,
                         "delta": {
                             "role": "assistant",
-                            "content": RESPONSE_CANARY,
+                            "content": "",
                         },
                         "finish_reason": None,
                     }
                 ],
-            },
+            }
+        ]
+        if request_tool:
+            chunks.append({
+                "id": "chatcmpl-relay-smoke",
+                "object": "chat.completion.chunk",
+                "created": now,
+                "model": MODEL_CANARY,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": TOOL_CALL_CANARY,
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": json.dumps({"path": TOOL_FILE}),
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            })
+        else:
+            chunks.append({
+                "id": "chatcmpl-relay-smoke",
+                "object": "chat.completion.chunk",
+                "created": now,
+                "model": MODEL_CANARY,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": RESPONSE_CANARY},
+                        "finish_reason": None,
+                    }
+                ],
+            })
+        chunks.extend([
             {
                 "id": "chatcmpl-relay-smoke",
                 "object": "chat.completion.chunk",
                 "created": now,
                 "model": MODEL_CANARY,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "tool_calls" if request_tool else "stop",
+                    }
+                ],
             },
             {
                 "id": "chatcmpl-relay-smoke",
@@ -144,7 +216,7 @@ class _ModelHandler(BaseHTTPRequestHandler):
                     "total_tokens": 11,
                 },
             },
-        ]
+        ])
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -220,25 +292,29 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         }
         for name, dimensions, value, packaged_value in rows
     ]
-    by_name = {counter["name"]: counter for counter in counters}
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for counter in counters:
+        by_name.setdefault(counter["name"], []).append(counter)
     if set(by_name) != {
         "hermes.model_route.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
+        "hermes.tool_call.count",
     }:
         raise AssertionError(
             f"Unexpected SQLite counters:\n{json.dumps(counters, indent=2)}"
         )
+    [model] = by_name["hermes.model_route.count"]
     expected_model = {
         "name": "hermes.model_route.count",
         "dimensions": {
             "model": MODEL_CANARY,
             "provider": "custom",
         },
-        "value": 1,
-        "packaged_value": 1,
+        "value": 2,
+        "packaged_value": 2,
     }
-    if by_name["hermes.model_route.count"] != expected_model:
+    if model != expected_model:
         raise AssertionError(
             f"Unexpected model counter: {by_name['hermes.model_route.count']}"
         )
@@ -251,21 +327,21 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "value": 1,
         "packaged_value": 1,
     }
-    if by_name["hermes.task_run.started"] != expected_start:
+    if by_name["hermes.task_run.started"] != [expected_start]:
         raise AssertionError(
             f"Unexpected task start: {by_name['hermes.task_run.started']}"
         )
-    terminal = by_name["hermes.task_run.finished"]
+    [terminal] = by_name["hermes.task_run.finished"]
     expected_terminal_dimensions = {
         "duration_bucket": terminal["dimensions"].get("duration_bucket"),
         "end_reason": "completed",
         "entrypoint": "interactive",
         "execution_surface": "cli",
-        "model_call_count_bucket": "1",
+        "model_call_count_bucket": "2",
         "outcome": "success",
         "retry_count_bucket": "0",
         "termination": "none",
-        "tool_call_count_bucket": "0",
+        "tool_call_count_bucket": "1",
     }
     if (
         terminal["dimensions"] != expected_terminal_dimensions
@@ -273,6 +349,21 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         or terminal["packaged_value"] != 1
     ):
         raise AssertionError(f"Unexpected task terminal counter: {terminal}")
+    [tool] = by_name["hermes.tool_call.count"]
+    expected_tool_dimensions = {
+        "approval_outcome": "not_required",
+        "latency_bucket": tool["dimensions"].get("latency_bucket"),
+        "outcome": "success",
+        "retry_count_bucket": "unknown",
+        "tool_category": "file",
+    }
+    if (
+        tool["dimensions"] != expected_tool_dimensions
+        or tool["dimensions"]["latency_bucket"] == "unknown"
+        or tool["value"] != 1
+        or tool["packaged_value"] != 1
+    ):
+        raise AssertionError(f"Unexpected tool counter: {tool}")
     return counters
 
 
@@ -292,41 +383,62 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
     jsonschema.validate(package, schema)
 
     serialized = json.dumps(package)
-    for prohibited in (PROMPT_CANARY, RESPONSE_CANARY):
+    for prohibited in (
+        PROMPT_CANARY,
+        RESPONSE_CANARY,
+        TOOL_CALL_CANARY,
+        TOOL_RESULT_CANARY,
+    ):
         if prohibited in serialized:
             raise AssertionError(
                 f"Exported package leaked prohibited value: {prohibited!r}"
             )
-    metrics = {metric["name"]: metric for metric in package.get("metrics", [])}
+    metrics: dict[str, list[dict[str, Any]]] = {}
+    for metric in package.get("metrics", []):
+        metrics.setdefault(metric["name"], []).append(metric)
     if set(metrics) != {
         "hermes.model_route.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
+        "hermes.tool_call.count",
     }:
         raise AssertionError(
             f"Unexpected package metrics:\n{json.dumps(package.get('metrics'), indent=2)}"
         )
-    model_dimensions = metrics["hermes.model_route.count"]["dimensions"]
-    if model_dimensions != {
+    [model] = metrics["hermes.model_route.count"]
+    if model["dimensions"] != {
         "model": MODEL_CANARY,
         "provider": "custom",
-    }:
+    } or model["value"] != 2:
         raise AssertionError(
             f"Unexpected model metric: {metrics['hermes.model_route.count']}"
         )
-    terminal = metrics["hermes.task_run.finished"]
+    [terminal] = metrics["hermes.task_run.finished"]
     if terminal["dimensions"] != {
         "duration_bucket": terminal["dimensions"].get("duration_bucket"),
         "end_reason": "completed",
         "entrypoint": "interactive",
         "execution_surface": "cli",
-        "model_call_count_bucket": "1",
+        "model_call_count_bucket": "2",
         "outcome": "success",
         "retry_count_bucket": "0",
         "termination": "none",
-        "tool_call_count_bucket": "0",
+        "tool_call_count_bucket": "1",
     }:
         raise AssertionError(f"Unexpected task terminal metric: {terminal}")
+    [tool] = metrics["hermes.tool_call.count"]
+    if (
+        tool["dimensions"]
+        != {
+            "approval_outcome": "not_required",
+            "latency_bucket": tool["dimensions"].get("latency_bucket"),
+            "outcome": "success",
+            "retry_count_bucket": "unknown",
+            "tool_category": "file",
+        }
+        or tool["dimensions"]["latency_bucket"] == "unknown"
+    ):
+        raise AssertionError(f"Unexpected tool metric: {tool}")
     return package_path, package
 
 
@@ -353,6 +465,7 @@ def main() -> int:
     home = root / "hermes-home"
     workdir = root / "workspace"
     workdir.mkdir()
+    (workdir / TOOL_FILE).write_text(TOOL_RESULT_CANARY, encoding="utf-8")
     home.mkdir()
     (home / ".no-bundled-skills").touch()
 
@@ -382,7 +495,7 @@ def main() -> int:
                 "--quiet",
                 "--ignore-rules",
                 "--toolsets",
-                "search",
+                "file",
                 "--max-turns",
                 "2",
             ],
@@ -404,13 +517,18 @@ def main() -> int:
             f"Hermes exited with {result.returncode}\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
-    if not _ModelHandler.requests:
-        raise AssertionError("Hermes did not call the local model endpoint")
+    if len(_ModelHandler.requests) != 2:
+        raise AssertionError(
+            f"Expected two model requests, got {len(_ModelHandler.requests)}"
+        )
     request = _ModelHandler.requests[0]
     if request.get("model") != MODEL_CANARY:
         raise AssertionError(f"Unexpected model request: {request.get('model')!r}")
     if PROMPT_CANARY not in json.dumps(request.get("messages", [])):
         raise AssertionError("Hermes model request did not contain the prompt canary")
+    follow_up = json.dumps(_ModelHandler.requests[1].get("messages", []))
+    if TOOL_CALL_CANARY not in follow_up or TOOL_RESULT_CANARY not in follow_up:
+        raise AssertionError("Hermes did not return the tool result to the model")
     if RESPONSE_CANARY not in result.stdout:
         raise AssertionError("Hermes did not print the mock model response")
 

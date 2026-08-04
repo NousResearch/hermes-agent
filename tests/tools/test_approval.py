@@ -1245,6 +1245,71 @@ class TestApprovalTimeoutIsNotConsent:
         assert "NOT consented" in r["message"]
         assert "rephrase" in r["message"].lower()
 
+    def test_timeout_emits_post_hook_with_timeout_outcome(self, monkeypatch):
+        """Plugins must be able to distinguish timeout from explicit deny.
+
+        This is what an audit / notification plugin needs to alert
+        operators on 'agent asked, user never replied' incidents like #24912.
+        """
+        from tools import approval as mod
+        self._force_short_timeout(monkeypatch, seconds=1)
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+
+        hook_calls = []
+        original_fire = mod._fire_approval_hook
+
+        def _capture(event_name, **kwargs):
+            hook_calls.append((event_name, kwargs))
+            return original_fire(event_name, **kwargs)
+
+        monkeypatch.setattr(mod, "_fire_approval_hook", _capture)
+
+        mod.check_all_command_guards("rm -rf .git", "local")
+
+        # post_approval_response must be in the hook log with choice=timeout
+        posts = [c for c in hook_calls if c[0] == "post_approval_response"]
+        assert posts, "post_approval_response hook did not fire"
+        last_post = posts[-1][1]
+        assert last_post.get("choice") == "timeout", (
+            f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
+        )
+
+    def test_notify_failure_emits_post_hook_and_cleans_up(self, monkeypatch):
+        """A failed notification still terminates the approval lifecycle."""
+        from tools import approval as mod
+
+        hook_calls = []
+
+        def _capture(event_name, **kwargs):
+            hook_calls.append((event_name, kwargs))
+
+        monkeypatch.setattr(mod, "_fire_approval_hook", _capture)
+
+        def _fail_notify(_data):
+            raise RuntimeError("private gateway failure")
+
+        decision = mod._await_gateway_decision(
+            self.SESSION_KEY,
+            _fail_notify,
+            {
+                "command": "redacted-command",
+                "description": "redacted-description",
+                "pattern_key": "dangerous",
+                "pattern_keys": ["dangerous"],
+            },
+        )
+
+        assert decision == {
+            "resolved": False,
+            "choice": None,
+            "notify_failed": True,
+        }
+        assert self.SESSION_KEY not in mod._gateway_queues
+        assert [name for name, _ in hook_calls] == [
+            "pre_approval_request",
+            "post_approval_response",
+        ]
+        assert hook_calls[-1][1]["choice"] == "notify_failed"
 
 class TestTirithImportErrorFailOpenPolicy:
     """Regression guard for #20733.

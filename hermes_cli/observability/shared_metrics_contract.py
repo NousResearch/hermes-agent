@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any
 
 from agent.relay_runtime import (
@@ -16,11 +17,15 @@ SCHEMA_VERSION = "hermes.metrics.event.v2"
 MODEL_CALL_SCOPE = "hermes.model_call"
 MODEL_CALL_PROFILE_MODEL = "unknown"
 TASK_SCOPE = "hermes.task_run"
+TOOL_CALL_SCOPE = "hermes.tool_call"
+TOOL_APPROVAL_MARK = "hermes.tool_approval"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
 LEGACY_MODEL_CALL_METRIC = "hermes.model_call.count"
 MODEL_ROUTE_METRIC = "hermes.model_route.count"
 TASK_STARTED_METRIC = "hermes.task_run.started"
 TASK_FINISHED_METRIC = "hermes.task_run.finished"
+TOOL_CALL_METRIC = "hermes.tool_call.count"
+TOOL_APPROVAL_METRIC = "hermes.tool_approval.count"
 MODEL_IDENTIFIER_MAX_LENGTH = 256
 PROVIDER_IDENTIFIER_MAX_LENGTH = 64
 _METRIC_IDENTIFIER_CHARACTERS = frozenset(
@@ -95,6 +100,58 @@ COUNT_BUCKETS: frozenset[str] = frozenset({
     "6_to_10",
     "gte_11",
 })
+TOOL_CATEGORIES: frozenset[str] = frozenset({
+    "browser",
+    "code_execution",
+    "communication",
+    "computer_use",
+    "delegation",
+    "file",
+    "home_automation",
+    "mcp",
+    "media",
+    "memory",
+    "other",
+    "planning",
+    "project",
+    "scheduler",
+    "skill",
+    "terminal",
+    "unknown",
+    "web",
+})
+TOOL_OUTCOMES: frozenset[str] = frozenset({
+    "blocked",
+    "cancelled",
+    "failed",
+    "success",
+    "timed_out",
+    "unknown",
+})
+TOOL_APPROVAL_OUTCOMES: frozenset[str] = frozenset({
+    "approved",
+    "denied",
+    "not_required",
+    "timed_out",
+    "unknown",
+})
+TOOL_APPROVAL_ATTRIBUTIONS: frozenset[str] = frozenset({
+    "tool_call",
+    "unattributed",
+})
+TOOL_LATENCY_BUCKETS: frozenset[str] = frozenset({
+    "100ms_to_250ms",
+    "10s_to_30s",
+    "1s_to_2s",
+    "250ms_to_500ms",
+    "2s_to_5s",
+    "500ms_to_1s",
+    "5s_to_10s",
+    "gte_30s",
+    "lt_100ms",
+    "unknown",
+})
+TOOL_RETRY_BUCKETS: frozenset[str] = COUNT_BUCKETS | frozenset({"unknown"})
 
 _LEGACY_PROVIDER_FAMILIES = frozenset({
     "aggregator",
@@ -153,11 +210,24 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "termination": TASK_TERMINATIONS,
         "tool_call_count_bucket": COUNT_BUCKETS,
     },
+    TOOL_CALL_METRIC: {
+        "approval_outcome": TOOL_APPROVAL_OUTCOMES,
+        "latency_bucket": TOOL_LATENCY_BUCKETS,
+        "outcome": TOOL_OUTCOMES,
+        "retry_count_bucket": TOOL_RETRY_BUCKETS,
+        "tool_category": TOOL_CATEGORIES,
+    },
+    TOOL_APPROVAL_METRIC: {
+        "attribution": TOOL_APPROVAL_ATTRIBUTIONS,
+        "outcome": TOOL_APPROVAL_OUTCOMES - {"not_required"},
+    },
 }
 COUNTER_METRICS: frozenset[str] = frozenset({
     MODEL_ROUTE_METRIC,
     TASK_FINISHED_METRIC,
     TASK_STARTED_METRIC,
+    TOOL_APPROVAL_METRIC,
+    TOOL_CALL_METRIC,
 })
 
 
@@ -184,10 +254,19 @@ def counter_dimensions_are_valid(
     if contract is None or set(dimensions) != set(contract):
         return False
     return all(
-        isinstance(dimensions[field], str)
-        and dimensions[field] in allowed_values
+        isinstance(dimensions[field], str) and dimensions[field] in allowed_values
         for field, allowed_values in contract.items()
     )
+
+
+def _event_metadata_is_valid(event: Any) -> bool:
+    metadata = getattr(event, "metadata", None)
+    if not isinstance(metadata, dict) or metadata.get(SCHEMA_KEY) != SCHEMA_VERSION:
+        return False
+    relay_metadata = set(metadata) - {SCHEMA_KEY, RUNTIME_INSTANCE_KEY}
+    return not relay_metadata - {"otel.status_code"} and metadata.get(
+        "otel.status_code", "OK"
+    ) in {"OK", "ERROR"}
 
 
 def model_call_dimensions(event: Any) -> dict[str, str] | None:
@@ -195,14 +274,7 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
     auxiliary = _auxiliary_model_call_dimensions(event)
     if auxiliary is not None:
         return auxiliary
-
-    metadata = getattr(event, "metadata", None)
-    if not isinstance(metadata, dict) or metadata.get(SCHEMA_KEY) != SCHEMA_VERSION:
-        return None
-    relay_metadata = set(metadata) - {SCHEMA_KEY, RUNTIME_INSTANCE_KEY}
-    if relay_metadata - {"otel.status_code"} or metadata.get(
-        "otel.status_code", "OK"
-    ) not in {"OK", "ERROR"}:
+    if not _event_metadata_is_valid(event):
         return None
     if (
         str(getattr(event, "kind", "") or "") != "scope"
@@ -277,13 +349,7 @@ def _auxiliary_model_call_dimensions(event: Any) -> dict[str, str] | None:
 
 def task_counter(event: Any) -> tuple[str, dict[str, str]] | None:
     """Return one validated task counter from a task scope event."""
-    metadata = getattr(event, "metadata", None)
-    if not isinstance(metadata, dict) or metadata.get(SCHEMA_KEY) != SCHEMA_VERSION:
-        return None
-    relay_metadata = set(metadata) - {SCHEMA_KEY, RUNTIME_INSTANCE_KEY}
-    if relay_metadata - {"otel.status_code"} or metadata.get(
-        "otel.status_code", "OK"
-    ) not in {"OK", "ERROR"}:
+    if not _event_metadata_is_valid(event):
         return None
     if (
         str(getattr(event, "kind", "") or "") != "scope"
@@ -329,6 +395,56 @@ def task_counter(event: Any) -> tuple[str, dict[str, str]] | None:
     if not counter_dimensions_are_valid(TASK_FINISHED_METRIC, dimensions):
         return None
     return TASK_FINISHED_METRIC, dimensions
+
+
+def tool_call_dimensions(event: Any) -> dict[str, str] | None:
+    """Return package dimensions for one allowlisted tool lifecycle end event."""
+    if not _event_metadata_is_valid(event):
+        return None
+    if (
+        str(getattr(event, "kind", "") or "") != "scope"
+        or str(getattr(event, "category", "") or "") != "tool"
+        or str(getattr(event, "name", "") or "") != TOOL_CALL_SCOPE
+        or str(getattr(event, "scope_category", "") or "") != "end"
+        or getattr(event, "category_profile", None) != {}
+    ):
+        return None
+    data = getattr(event, "data", None)
+    expected_fields = {
+        "approval_outcome",
+        "latency_bucket",
+        "outcome",
+        "retry_count_bucket",
+        "tool_category",
+    }
+    if not isinstance(data, dict) or set(data) != expected_fields:
+        return None
+    dimensions = {field: data.get(field) for field in sorted(expected_fields)}
+    if not counter_dimensions_are_valid(TOOL_CALL_METRIC, dimensions):
+        return None
+    return dimensions
+
+
+def tool_approval_counter(event: Any) -> tuple[str, dict[str, str]] | None:
+    """Return one validated approval counter from a safe Relay mark event."""
+    if not _event_metadata_is_valid(event):
+        return None
+    if (
+        str(getattr(event, "kind", "") or "") != "mark"
+        or str(getattr(event, "name", "") or "") != TOOL_APPROVAL_MARK
+        or getattr(event, "category", None) is not None
+        or getattr(event, "scope_category", None) is not None
+        or getattr(event, "category_profile", None) is not None
+    ):
+        return None
+    data = getattr(event, "data", None)
+    expected_fields = {"attribution", "outcome"}
+    if not isinstance(data, dict) or set(data) != expected_fields:
+        return None
+    dimensions = {field: data.get(field) for field in sorted(expected_fields)}
+    if not counter_dimensions_are_valid(TOOL_APPROVAL_METRIC, dimensions):
+        return None
+    return TOOL_APPROVAL_METRIC, dimensions
 
 
 def execution_surface(kwargs: dict[str, Any]) -> str:
@@ -457,6 +573,138 @@ def count_bucket(count: int) -> str:
     if value <= 10:
         return "6_to_10"
     return "gte_11"
+
+
+def tool_category(kwargs: dict[str, Any]) -> str:
+    """Map Hermes registry toolset metadata to a low-cardinality category."""
+    toolset = str(kwargs.get("toolset") or "").strip().lower()
+    if not toolset:
+        return "unknown"
+    if toolset in TOOL_CATEGORIES:
+        return toolset
+    if toolset.startswith("mcp"):
+        return "mcp"
+    if toolset.startswith("browser"):
+        return "browser"
+    if toolset.startswith(("image", "tts", "video", "vision")):
+        return "media"
+    if toolset.startswith("homeassistant"):
+        return "home_automation"
+    if toolset in {"clarify", "kanban", "todo"}:
+        return "planning"
+    if toolset == "session_search":
+        return "memory"
+    if toolset == "cronjob":
+        return "scheduler"
+    if toolset == "skills":
+        return "skill"
+    if toolset == "x_search":
+        return "web"
+    if toolset.startswith(
+        ("discord", "email", "feishu", "hermes-yuanbao", "slack", "sms")
+    ):
+        return "communication"
+    return "other"
+
+
+def tool_outcome(kwargs: dict[str, Any]) -> str:
+    """Normalize the terminal Hermes tool status without inspecting its result."""
+    status = str(kwargs.get("status") or "").strip().lower()
+    return {
+        "blocked": "blocked",
+        "cancelled": "cancelled",
+        "error": "failed",
+        "failed": "failed",
+        "ok": "success",
+        "success": "success",
+        "timed_out": "timed_out",
+        "timeout": "timed_out",
+    }.get(status, "unknown")
+
+
+def tool_approval_outcome(kwargs: dict[str, Any]) -> str:
+    """Normalize a terminal approval choice to a bounded outcome."""
+    choice = str(kwargs.get("choice") or "").strip().lower()
+    if choice in {"always", "approve", "approved", "once", "session", "smart_approve"}:
+        return "approved"
+    if choice in {"deny", "denied", "smart_deny"}:
+        return "denied"
+    if choice in {"timed_out", "timeout"}:
+        return "timed_out"
+    return "unknown"
+
+
+def tool_terminal_fields(
+    kwargs: dict[str, Any],
+    *,
+    category: str | None = None,
+    approval_outcome: str = "not_required",
+    fallback_duration_ms: int | None = None,
+) -> dict[str, str]:
+    """Build one bounded tool-call terminal payload."""
+    return {
+        "approval_outcome": (
+            approval_outcome
+            if approval_outcome in TOOL_APPROVAL_OUTCOMES
+            else "unknown"
+        ),
+        "latency_bucket": tool_latency_bucket(
+            kwargs.get("duration_ms"),
+            fallback_duration_ms=fallback_duration_ms,
+        ),
+        "outcome": tool_outcome(kwargs),
+        "retry_count_bucket": tool_retry_bucket(kwargs.get("retry_count")),
+        "tool_category": (
+            category if category in TOOL_CATEGORIES else tool_category(kwargs)
+        ),
+    }
+
+
+def tool_latency_bucket(
+    value: Any,
+    *,
+    fallback_duration_ms: int | None = None,
+) -> str:
+    """Bucket a tool duration reported in milliseconds."""
+    duration_ms = _non_negative_number(value)
+    if duration_ms is None:
+        duration_ms = _non_negative_number(fallback_duration_ms)
+    if duration_ms is None:
+        return "unknown"
+    if duration_ms < 100:
+        return "lt_100ms"
+    if duration_ms < 250:
+        return "100ms_to_250ms"
+    if duration_ms < 500:
+        return "250ms_to_500ms"
+    if duration_ms < 1_000:
+        return "500ms_to_1s"
+    if duration_ms < 2_000:
+        return "1s_to_2s"
+    if duration_ms < 5_000:
+        return "2s_to_5s"
+    if duration_ms < 10_000:
+        return "5s_to_10s"
+    if duration_ms < 30_000:
+        return "10s_to_30s"
+    return "gte_30s"
+
+
+def tool_retry_bucket(value: Any) -> str:
+    """Bucket only explicit tool retries; missing relationships stay unknown."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return "unknown"
+    return count_bucket(value)
+
+
+def _non_negative_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return number if isfinite(number) and number >= 0 else None
 
 
 def model_call_fields(kwargs: dict[str, Any]) -> dict[str, str]:

@@ -6,6 +6,7 @@ import atexit
 import contextvars
 import logging
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from time import monotonic_ns
 from typing import Any, Callable
@@ -21,9 +22,15 @@ from .shared_metrics_contract import (
     SCHEMA_VERSION,
     SUBSCRIBER_NAME,
     TASK_SCOPE,
+    TOOL_APPROVAL_MARK,
+    TOOL_CALL_SCOPE,
     model_call_fields,
     task_start_fields,
     task_terminal_fields,
+    task_terminal_state,
+    tool_approval_outcome,
+    tool_category,
+    tool_terminal_fields,
 )
 from .shared_metrics_subscriber import SharedMetricsSubscriber
 
@@ -36,7 +43,9 @@ HANDLED_HOOKS = frozenset({
     "on_session_reset",
     "pre_llm_call",
     "pre_api_request",
+    "pre_tool_call",
     "post_tool_call",
+    "post_approval_response",
     "post_api_request",
     "api_request_error",
     "subagent_stop",
@@ -63,14 +72,26 @@ class _ModelCall:
 
 
 @dataclass
+class _ToolCall:
+    handle: Any
+    task_id: str
+    category: str
+    started_ns: int
+    approval_outcome: str = "not_required"
+
+
+@dataclass
 class _TaskRun:
+    task_id: str
     handle: Any
     context: contextvars.Context
     started_ns: int
     start_fields: dict[str, str]
     model_call_ids: set[str] = field(default_factory=set)
-    tool_call_ids: set[str] = field(default_factory=set)
+    tool_call_ids: set[tuple[str, str, str]] = field(default_factory=set)
     turn_ids: set[str] = field(default_factory=set)
+    retired_turn_ids: frozenset[str] = field(default_factory=frozenset)
+    completed_tool_call_ids: set[tuple[str, str, str]] = field(default_factory=set)
     unidentified_tool_calls: int = 0
     retry_count: int = 0
 
@@ -83,6 +104,12 @@ class _MetricsSession:
     closing: bool = False
     model_calls: dict[tuple[str, str], _ModelCall] = field(default_factory=dict)
     tasks: dict[str, _TaskRun] = field(default_factory=dict)
+    tool_calls: dict[tuple[str, str, str, str], _ToolCall] = field(
+        default_factory=dict
+    )
+    retired_turn_ids: deque[str] = field(
+        default_factory=lambda: deque(maxlen=256),
+    )
 
 
 class _Runtime:
@@ -169,7 +196,10 @@ class _Runtime:
             if session is None:
                 return None
             with session.lock:
-                if session.closing or session.relay_session.context is None:
+                if (
+                    session.closing
+                    or session.relay_session.context is None
+                ):
                     return None
                 task_context = session.relay_session.context.copy()
                 start_fields = task_start_fields(event)
@@ -195,10 +225,12 @@ class _Runtime:
 
                 handle = task_context.run(push_task)
                 task = _TaskRun(
+                    task_id=task_id,
                     handle=handle,
                     context=task_context,
                     started_ns=monotonic_ns(),
                     start_fields=start_fields,
+                    retired_turn_ids=frozenset(session.retired_turn_ids),
                 )
                 session.tasks[task_id] = task
                 with self._task_sessions_lock:
@@ -306,8 +338,8 @@ class _Runtime:
                 return
             model_call.fields = model_call_fields(event)
 
-    def record_tool_call(self, event: dict[str, Any]) -> None:
-        """Count one unique tool invocation under its owning task."""
+    def start_tool_call(self, event: dict[str, Any]) -> None:
+        """Open one privacy-safe Relay tool lifecycle under its task."""
         task_id = str(event.get("task_id") or "")
         session = self._task_session(event, allow_task_id_fallback=True)
         task = session.tasks.get(task_id) if session is not None else None
@@ -317,14 +349,121 @@ class _Runtime:
         if session is None or task is None:
             return
         tool_call_id = str(event.get("tool_call_id") or "")
+        if not tool_call_id:
+            return
+        identity = self._tool_call_identity(event)
         with session.lock:
             if session.closing:
                 return
+            if not self._event_matches_task_turn(task, event):
+                return
+            self._remember_turn(session, task, event)
+            key = (task_id, *identity)
+            if identity in task.completed_tool_call_ids or key in session.tool_calls:
+                return
+            task.tool_call_ids.add(identity)
+            session.tool_calls[key] = self._open_tool_call(task, event)
+
+    def record_approval(self, event: dict[str, Any]) -> None:
+        """Record one bounded approval result without approval text or commands."""
+        session, task = self._approval_task(event)
+        if session is None or task is None:
+            return
+        outcome = tool_approval_outcome(event)
+        tool_call_id = str(event.get("tool_call_id") or "")
+        attribution = "unattributed"
+        with session.lock:
+            if session.closing:
+                return
+            if not self._event_matches_task_turn(task, event):
+                return
+            if tool_call_id:
+                identity = self._tool_call_identity(event)
+                tool_call = session.tool_calls.get((task.task_id, *identity))
+                if tool_call is None:
+                    matching_keys = [
+                        key
+                        for key in session.tool_calls
+                        if key[0] == task.task_id
+                        and self._tool_call_identities_are_compatible(
+                            key[1:],
+                            identity,
+                        )
+                    ]
+                    tool_call = (
+                        session.tool_calls[matching_keys[0]]
+                        if len(matching_keys) == 1
+                        else None
+                    )
+                if tool_call is not None:
+                    tool_call.approval_outcome = outcome
+                    attribution = "tool_call"
+            self._run_in_task(
+                task,
+                self.relay.scope.event,
+                TOOL_APPROVAL_MARK,
+                handle=task.handle,
+                data={"attribution": attribution, "outcome": outcome},
+                metadata=self._event_metadata(),
+            )
+
+    def record_tool_call(self, event: dict[str, Any]) -> None:
+        """Close and count one unique privacy-safe tool lifecycle."""
+        task_id = str(event.get("task_id") or "")
+        session = self._task_session(event, allow_task_id_fallback=True)
+        task = session.tasks.get(task_id) if session is not None else None
+        if session is None or task is None:
+            return
+        tool_call_id = str(event.get("tool_call_id") or "")
+        with session.lock:
+            if session.closing:
+                return
+            if not self._event_matches_task_turn(task, event):
+                return
             self._remember_turn(session, task, event)
             if tool_call_id:
-                task.tool_call_ids.add(tool_call_id)
+                observed_identity = self._tool_call_identity(event)
+                if observed_identity in task.completed_tool_call_ids:
+                    return
+                identity = observed_identity
+                tool_call = session.tool_calls.pop((task_id, *identity), None)
+                if tool_call is None:
+                    if any(
+                        self._tool_call_identities_are_compatible(
+                            completed_identity,
+                            observed_identity,
+                        )
+                        for completed_identity in task.completed_tool_call_ids
+                    ):
+                        return
+                    matching_keys = [
+                        key
+                        for key in session.tool_calls
+                        if key[0] == task_id
+                        and self._tool_call_identities_are_compatible(
+                            key[1:],
+                            observed_identity,
+                        )
+                    ]
+                    if len(matching_keys) > 1:
+                        # Partial context cannot safely choose between
+                        # concurrent calls that reused the provider-local ID.
+                        return
+                    if matching_keys:
+                        key = matching_keys[0]
+                        identity = key[1:]
+                        tool_call = session.tool_calls.pop(key)
+                task.completed_tool_call_ids.update({
+                    identity,
+                    observed_identity,
+                })
+                task.tool_call_ids.add(identity)
             else:
                 task.unidentified_tool_calls += 1
+                tool_call = None
+            if tool_call is None:
+                tool_call = self._open_tool_call(task, event)
+            self._finish_tool_call(task, tool_call, event)
 
     def end_model_call(self, event: dict[str, Any]) -> None:
         session = self._task_session(event, allow_task_id_fallback=True)
@@ -546,6 +685,162 @@ class _Runtime:
         with self._task_sessions_lock:
             self._turn_sessions[(session.session_id, turn_id)] = session
 
+    @staticmethod
+    def _tool_call_identity(event: dict[str, Any]) -> tuple[str, str, str]:
+        """Identify one provider-local tool call without exporting its IDs."""
+        return (
+            str(event.get("api_request_id") or ""),
+            str(event.get("turn_id") or ""),
+            str(event.get("tool_call_id") or ""),
+        )
+
+    @staticmethod
+    def _tool_call_identities_are_compatible(
+        candidate: tuple[str, str, str],
+        observed: tuple[str, str, str],
+    ) -> bool:
+        """Match partial hook context without crossing known call boundaries."""
+        if not observed[2] or candidate[2] != observed[2]:
+            return False
+        return all(
+            not candidate_value
+            or not observed_value
+            or candidate_value == observed_value
+            for candidate_value, observed_value in zip(
+                candidate[:2],
+                observed[:2],
+                strict=True,
+            )
+        )
+
+    @staticmethod
+    def _event_matches_task_turn(
+        task: _TaskRun,
+        event: dict[str, Any],
+    ) -> bool:
+        """Reject delayed hooks from a prior run that reused the task ID."""
+        turn_id = str(event.get("turn_id") or "")
+        if not turn_id:
+            return True
+        if turn_id in task.retired_turn_ids:
+            return False
+        return not task.turn_ids or turn_id in task.turn_ids
+
+    def _approval_task(
+        self,
+        event: dict[str, Any],
+    ) -> tuple[_MetricsSession | None, _TaskRun | None]:
+        """Resolve approval correlation without guessing across ambiguous turns."""
+        active = relay_runtime.active_turn()
+        if active is not None:
+            correlated = {
+                **event,
+                "session_id": active.lease.session_id,
+                "task_id": active.task_id,
+            }
+            session = self._task_session(correlated)
+            task = session.tasks.get(active.task_id) if session is not None else None
+            if task is not None:
+                return session, task
+
+        session = self._task_session(event)
+        task_id = str(event.get("task_id") or "")
+        task = session.tasks.get(task_id) if session is not None else None
+        if task is not None:
+            return session, task
+
+        turn_id = str(event.get("turn_id") or "")
+        if not turn_id:
+            return None, None
+        with self._task_sessions_lock:
+            candidates = [
+                candidate
+                for (
+                    candidate_session_id,
+                    candidate_turn_id,
+                ), candidate in self._turn_sessions.items()
+                if candidate_turn_id == turn_id
+                and self._sessions.get(candidate_session_id) is candidate
+            ]
+        unique_sessions = {id(candidate): candidate for candidate in candidates}
+        if len(unique_sessions) != 1:
+            return None, None
+        session = next(iter(unique_sessions.values()))
+        matching_tasks = [
+            candidate
+            for candidate in session.tasks.values()
+            if turn_id in candidate.turn_ids
+        ]
+        if len(matching_tasks) != 1:
+            return None, None
+        return session, matching_tasks[0]
+
+    def _open_tool_call(
+        self,
+        task: _TaskRun,
+        event: dict[str, Any],
+    ) -> _ToolCall:
+        handle = self._run_in_task(
+            task,
+            self.relay.tools.call,
+            TOOL_CALL_SCOPE,
+            {},
+            handle=task.handle,
+            metadata=self._event_metadata(),
+        )
+        return _ToolCall(
+            handle=handle,
+            task_id=task.task_id,
+            category=tool_category(event),
+            started_ns=monotonic_ns(),
+        )
+
+    def _finish_tool_call(
+        self,
+        task: _TaskRun,
+        tool_call: _ToolCall,
+        event: dict[str, Any],
+    ) -> None:
+        fields = tool_terminal_fields(
+            event,
+            category=tool_call.category,
+            approval_outcome=tool_call.approval_outcome,
+            fallback_duration_ms=max(
+                0,
+                (monotonic_ns() - tool_call.started_ns) // 1_000_000,
+            ),
+        )
+        try:
+            self._run_in_task(
+                task,
+                self.relay.tools.call_end,
+                tool_call.handle,
+                fields,
+                metadata=self._event_metadata(),
+            )
+        except Exception:
+            logger.warning(
+                "Hermes shared-metrics tool call close failed",
+                exc_info=True,
+            )
+
+    def _end_pending_tool_calls(
+        self,
+        session: _MetricsSession,
+        task: _TaskRun,
+        event: dict[str, Any],
+    ) -> None:
+        pending_keys = [key for key in session.tool_calls if key[0] == task.task_id]
+        task_outcome, _, _ = task_terminal_state(event)
+        status = {
+            "cancelled": "cancelled",
+            "timed_out": "timeout",
+        }.get(task_outcome, "error")
+        for key in pending_keys:
+            tool_call = session.tool_calls.pop(key, None)
+            if tool_call is not None:
+                self._finish_tool_call(task, tool_call, {**event, "status": status})
+
     def _finish_model_call(
         self,
         session: _MetricsSession,
@@ -628,6 +923,7 @@ class _Runtime:
         task = session.tasks.get(task_id)
         if task is None:
             return False
+        self._end_pending_tool_calls(session, task, event)
         self._end_pending_model_calls(session, {**event, "task_id": task_id})
         fields = task_terminal_fields(
             {**task.start_fields, **event},
@@ -648,6 +944,7 @@ class _Runtime:
             logger.warning("Hermes shared-metrics task close failed", exc_info=True)
         finally:
             session.tasks.pop(task_id, None)
+            session.retired_turn_ids.extend(task.turn_ids)
             with self._task_sessions_lock:
                 task_key = (session.session_id, task_id)
                 if self._task_sessions.get(task_key) is session:
@@ -697,8 +994,7 @@ def enabled() -> bool:
             telemetry.get("shared_metrics") if isinstance(telemetry, dict) else None
         )
         value = (
-            isinstance(shared_metrics, dict)
-            and shared_metrics.get("enabled") is True
+            isinstance(shared_metrics, dict) and shared_metrics.get("enabled") is True
         )
     if value:
         return True
@@ -729,8 +1025,12 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
             runtime.start_task(kwargs)
         elif hook_name == "pre_api_request":
             runtime.start_model_call(kwargs)
+        elif hook_name == "pre_tool_call":
+            runtime.start_tool_call(_with_runtime_toolset(kwargs))
         elif hook_name == "post_tool_call":
-            runtime.record_tool_call(kwargs)
+            runtime.record_tool_call(_with_runtime_toolset(kwargs))
+        elif hook_name == "post_approval_response":
+            runtime.record_approval(kwargs)
         elif hook_name == "post_api_request":
             runtime.end_model_call(kwargs)
         elif hook_name == "api_request_error":
@@ -747,6 +1047,22 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
         logger.warning(
             "Hermes shared metrics hook failed: %s", hook_name, exc_info=True
         )
+
+
+def _with_runtime_toolset(event: dict[str, Any]) -> dict[str, Any]:
+    """Attach the toolset already declared by Hermes's runtime registry."""
+    if event.get("toolset"):
+        return event
+    tool_name = str(event.get("tool_name") or "")
+    if not tool_name:
+        return event
+    try:
+        from model_tools import get_toolset_for_tool
+
+        toolset = get_toolset_for_tool(tool_name)
+    except Exception:
+        toolset = None
+    return {**event, "toolset": toolset or "other"}
 
 
 def prepare_session_start() -> None:

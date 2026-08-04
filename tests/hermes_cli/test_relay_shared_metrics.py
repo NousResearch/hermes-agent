@@ -36,6 +36,12 @@ from hermes_cli.observability.shared_metrics_contract import (
     TASK_ENTRYPOINTS,
     TASK_OUTCOMES,
     TASK_TERMINATIONS,
+    TOOL_APPROVAL_ATTRIBUTIONS,
+    TOOL_APPROVAL_OUTCOMES,
+    TOOL_CATEGORIES,
+    TOOL_LATENCY_BUCKETS,
+    TOOL_OUTCOMES,
+    TOOL_RETRY_BUCKETS,
     count_bucket,
     duration_bucket,
     execution_surface,
@@ -45,6 +51,14 @@ from hermes_cli.observability.shared_metrics_contract import (
     task_start_fields,
     task_terminal_fields,
     task_terminal_state,
+    tool_approval_counter,
+    tool_approval_outcome,
+    tool_call_dimensions,
+    tool_category,
+    tool_latency_bucket,
+    tool_outcome,
+    tool_retry_bucket,
+    tool_terminal_fields,
 )
 
 
@@ -74,6 +88,11 @@ def _package_dimension_schema() -> dict[str, object]:
 
 
 def _task_dimension_schema(kind: str) -> dict[str, object]:
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    return schema["$defs"][kind]["properties"]["dimensions"]
+
+
+def _tool_dimension_schema(kind: str) -> dict[str, object]:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     return schema["$defs"][kind]["properties"]["dimensions"]
 
@@ -329,6 +348,129 @@ def test_v1_package_schema_retains_the_legacy_model_contract():
     }
 
 
+def test_package_schema_matches_the_tool_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    tool = _tool_dimension_schema("tool_call_counter")["properties"]
+    approval = _tool_dimension_schema("tool_approval_counter")["properties"]
+
+    assert set(tool["tool_category"]["enum"]) == TOOL_CATEGORIES
+    assert set(tool["outcome"]["enum"]) == TOOL_OUTCOMES
+    assert set(tool["approval_outcome"]["enum"]) == TOOL_APPROVAL_OUTCOMES
+    assert tool["latency_bucket"] == {"$ref": "#/$defs/tool_latency_bucket"}
+    assert tool["retry_count_bucket"] == {"$ref": "#/$defs/tool_retry_bucket"}
+    assert set(schema["$defs"]["tool_latency_bucket"]["enum"]) == (
+        TOOL_LATENCY_BUCKETS
+    )
+    assert set(schema["$defs"]["tool_retry_bucket"]["enum"]) == TOOL_RETRY_BUCKETS
+    assert set(approval["attribution"]["enum"]) == TOOL_APPROVAL_ATTRIBUTIONS
+    assert set(approval["outcome"]["enum"]) == (
+        TOOL_APPROVAL_OUTCOMES - {"not_required"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("toolset", "expected"),
+    [
+        ("", "unknown"),
+        ("file", "file"),
+        ("terminal", "terminal"),
+        ("code_execution", "code_execution"),
+        ("delegation", "delegation"),
+        ("skills", "skill"),
+        ("browser-cdp", "browser"),
+        ("image_gen", "media"),
+        ("homeassistant", "home_automation"),
+        ("kanban", "planning"),
+        ("project", "project"),
+        ("discord", "communication"),
+        ("feishu_doc", "communication"),
+        ("mcp-github", "mcp"),
+        ("private_plugin", "other"),
+    ],
+)
+def test_tool_category_uses_bounded_runtime_toolsets(toolset, expected):
+    assert tool_category({"toolset": toolset}) == expected
+
+
+def test_tool_category_does_not_classify_raw_tool_names():
+    assert tool_category({"tool_name": "read_file"}) == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("ok", "success"),
+        ("error", "failed"),
+        ("blocked", "blocked"),
+        ("cancelled", "cancelled"),
+        ("timeout", "timed_out"),
+        ("private", "unknown"),
+        (None, "unknown"),
+    ],
+)
+def test_tool_outcome_is_bounded(status, expected):
+    assert tool_outcome({"status": status}) == expected
+
+
+@pytest.mark.parametrize(
+    ("choice", "expected"),
+    [
+        ("once", "approved"),
+        ("session", "approved"),
+        ("always", "approved"),
+        ("smart_approve", "approved"),
+        ("deny", "denied"),
+        ("smart_deny", "denied"),
+        ("timeout", "timed_out"),
+        (None, "unknown"),
+    ],
+)
+def test_tool_approval_outcome_is_bounded(choice, expected):
+    assert tool_approval_outcome({"choice": choice}) == expected
+
+
+@pytest.mark.parametrize(
+    ("duration_ms", "expected"),
+    [
+        (0, "lt_100ms"),
+        (100, "100ms_to_250ms"),
+        (250, "250ms_to_500ms"),
+        (500, "500ms_to_1s"),
+        (1_000, "1s_to_2s"),
+        (2_000, "2s_to_5s"),
+        (5_000, "5s_to_10s"),
+        (10_000, "10s_to_30s"),
+        (30_000, "gte_30s"),
+        (-1, "unknown"),
+        (True, "unknown"),
+        ("100", "unknown"),
+    ],
+)
+def test_tool_latency_bucket_is_bounded(duration_ms, expected):
+    assert tool_latency_bucket(duration_ms) == expected
+
+
+@pytest.mark.parametrize(
+    ("retry_count", "expected"),
+    [
+        (0, "0"),
+        (1, "1"),
+        (2, "2"),
+        (3, "3_to_5"),
+        (6, "6_to_10"),
+        (11, "gte_11"),
+        (None, "unknown"),
+        (-1, "unknown"),
+        (True, "unknown"),
+    ],
+)
+def test_tool_retry_bucket_requires_an_explicit_non_negative_count(
+    retry_count,
+    expected,
+):
+    assert tool_retry_bucket(retry_count) == expected
+
+
 def test_model_call_fields_report_terminal_model_and_provider_without_a_catalog():
     assert model_call_fields({
         "model": "fallback/model",
@@ -423,6 +565,50 @@ def test_model_call_fields_collapse_malformed_identifiers(field, value):
     event[field] = value
 
     assert model_call_fields(event)[field] == "unknown"
+
+
+def test_tool_subscriber_contract_accepts_only_bounded_events():
+    terminal = SimpleNamespace(
+        kind="scope",
+        category="tool",
+        category_profile={},
+        name="hermes.tool_call",
+        scope_category="end",
+        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v2"},
+        data={
+            "approval_outcome": "approved",
+            "latency_bucket": "250ms_to_500ms",
+            "outcome": "success",
+            "retry_count_bucket": "0",
+            "tool_category": "terminal",
+        },
+    )
+    assert tool_call_dimensions(terminal) == terminal.data
+
+    terminal.data["result"] = "must-not-pass"
+    assert tool_call_dimensions(terminal) is None
+    terminal.data.pop("result")
+    terminal.data["tool_category"] = "private-tool-name"
+    assert tool_call_dimensions(terminal) is None
+    terminal.data["tool_category"] = "terminal"
+    terminal.category_profile["tool_name"] = "must-not-pass"
+    assert tool_call_dimensions(terminal) is None
+
+    approval = SimpleNamespace(
+        kind="mark",
+        category=None,
+        category_profile=None,
+        name="hermes.tool_approval",
+        scope_category=None,
+        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v2"},
+        data={"attribution": "unattributed", "outcome": "denied"},
+    )
+    assert tool_approval_counter(approval) == (
+        "hermes.tool_approval.count",
+        approval.data,
+    )
+    approval.data["command"] = "must-not-pass"
+    assert tool_approval_counter(approval) is None
 
 
 def test_store_does_not_record_the_retired_model_metric(tmp_path):

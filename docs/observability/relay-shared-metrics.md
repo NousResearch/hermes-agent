@@ -55,11 +55,12 @@ dependency does not change the collection or privacy policy.
 
 ## Current Slices
 
-The current vertical slices record logical model calls and top-level task runs:
+The current vertical slices record logical model calls, top-level task runs,
+and tool and approval outcomes:
 
 ```text
-Hermes turn, API, and tool hooks
-  -> Relay session, task, and LLM lifecycle
+Hermes turn, API, tool, and approval hooks
+  -> Relay session, task, LLM, tool, and mark lifecycle
   -> Hermes shared-metrics subscriber
   -> SQLite counters
   -> immutable JSON delta package
@@ -89,6 +90,21 @@ ID after a terminal tool result is observed. The outer `AIAgent` execution
 boundary closes the task for normal returns, early returns, exceptions, and
 cancellations. Active task ownership follows the task ID if Hermes rotates its
 conversation session during context compression.
+
+Each tool invocation is represented by a Relay tool lifecycle named
+`hermes.tool_call`. The terminal counter contains only bounded tool category,
+outcome, approval outcome, latency, and explicit retry-count buckets. Hermes
+derives the category from the toolset already declared in its runtime registry;
+custom and unrecognized toolsets collapse to `other` rather than exporting
+tool or plugin names. Hermes does not infer retries from repeated tool names or
+adjacent calls; when the
+hook does not provide an explicit retry relationship, the retry bucket is
+`unknown`. Approval decisions are emitted as `hermes.tool_approval` marks and
+recorded as attributed to a tool call or explicitly `unattributed`. Tool names,
+call IDs, arguments, results, commands, descriptions, and error text are not
+included in shared-metrics events or packages. A started tool that is still
+open when its task terminates is closed as failed, timed out, or cancelled and
+remains in the task's tool-count bucket.
 
 Local state is written under:
 
@@ -131,6 +147,8 @@ The script uses the installed `nemo-relay` dependency by default. Pass
 `--relay-python ../nemo-relay/python` only when testing a locally built Relay
 binding.
 
-The smoke verifies the model request reached the local server, model and task
-counters were stored with the expected model and provider, one package was
-exported, and prompt and response canaries are absent from the package.
+The smoke has the local model request a real `read_file` tool call before its
+final response. It verifies model, provider, task, and bounded tool counters in
+SQLite, validates the exported package against the closed schema, and checks
+that prompt, response, tool-call ID, and tool-result canaries are absent from
+the package.

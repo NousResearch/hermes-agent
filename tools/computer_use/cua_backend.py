@@ -728,6 +728,10 @@ class _EmbeddedCuaDaemon:
                     "--approve-capability-manifest",
                 ]
             )
+        # The private daemon owns the platform cursor overlay. Applying the
+        # policy only to its MCP proxy leaves this long-lived serve process
+        # free to create a full-screen overlay before session tuning runs.
+        command = _mcp_args_with_overlay_flag(command, driver_cmd=self._command)
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,

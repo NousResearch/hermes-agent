@@ -19,7 +19,6 @@ import uuid
 from collections import deque
 from contextlib import suppress
 from datetime import datetime
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
@@ -2113,13 +2112,13 @@ def _snapshot_primary_runtime(agent):
 
 
 def _init_usage_state(agent):
-    from agent.runtime_cwd import _is_install_tree, scope_terminal_cwd
-    terminal_cwd = scope_terminal_cwd()
+    from agent.runtime_cwd import _is_install_tree, resolve_agent_cwd
+    session_cwd = resolve_agent_cwd()
     agent._subdirectory_hints = SubdirectoryHintTracker(
-        working_dir=terminal_cwd or None,
-        allow_install_tree=bool(
-            terminal_cwd and _is_install_tree(Path(terminal_cwd).expanduser())
-        ),
+        working_dir=str(session_cwd),
+        # Platform identity alone is not authority: a TUI rooted at $HOME can
+        # visit the install tree. Only an in-tree session root opts in.
+        allow_install_tree=_is_install_tree(session_cwd),
     )
     _set_defaults(agent, _USAGE_STATE)
 

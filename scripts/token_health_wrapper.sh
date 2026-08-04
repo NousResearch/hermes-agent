@@ -17,8 +17,8 @@ mkdir -p "${HERMES_HOME_DIR}/runbooks/token-health/$(date +%Y-%m-%d)"
 report_file="${HERMES_HOME_DIR}/runbooks/token-health/$(date +%Y-%m-%d)/report.html"
 
 output_file=$(mktemp)
-/home/kensei/repos/KenseiAgent/.venv/bin/python "$SCRIPT_DIR/token_health.py" > "$output_file"
-rc=$?
+rc=0
+/home/kensei/repos/KenseiAgent/.venv/bin/python "$SCRIPT_DIR/token_health.py" > "$output_file" || rc=$?
 if [ "$rc" -ne 0 ]; then
     echo "Token health check failed (rc=$rc)"
     echo "MEDIA:$report_file"

@@ -1,9 +1,9 @@
 #!/bin/bash
 # blog-backlog-pregen.sh — backlog pre-generation (P13: dry-run + no background detach).
 # Generates ONE ready-to-approve post per run (rotating ai/pm/builder), pulling
-# from the backlog queues. P13 removes the old background detach (`&`) and runs
-# synchronously under the cron agent. BLOG_DAILY_DRY_RUN=1 short-circuits before
-# any Python invocation. One post = ~3 Codex images, well under the usage cap.
+# from the backlog queues. Runs synchronously under the cron agent.
+# BLOG_DAILY_DRY_RUN=1 short-circuits before any Python invocation.
+# One post = ~3 Codex images, well under the usage cap.
 # Posts accrue as approved:false drafts + approval cards.
 set -euo pipefail
 
@@ -40,7 +40,9 @@ fi
   rc=$?
   echo "[$(date -Is)] finished backlog pregen rc=$rc"
   exit "$rc"
-) >>"$LOG" 2>&1
+) >>"$LOG" 2>&1 || true
 
 # Synchronous — silent on success (no Discord delivery)
+# NOTE: || true prevents set -e from propagating the subshell's exit code.
+# The subshell's rc is already captured and logged inside the block.
 exit 0

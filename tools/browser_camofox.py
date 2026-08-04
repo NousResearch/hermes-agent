@@ -31,7 +31,7 @@ import logging
 import os
 import threading
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import requests
@@ -664,15 +664,185 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
         # Strip @ prefix if present (our tool convention)
         clean_ref = ref.lstrip("@")
 
+        before = _list_camofox_tabs(session)
         data = _post(
             f"/tabs/{session['tab_id']}/click",
             {"userId": session["user_id"], "ref": clean_ref},
         )
-        return json.dumps({
+        followed = _follow_new_tab_after_click(session, before, task_id)
+        response = {
             "success": True,
             "clicked": clean_ref,
             "url": data.get("url", ""),
-        })
+        }
+        if followed:
+            response["followed_new_tab"] = followed
+            response["note"] = (
+                "The click opened a new tab and the session switched to it. "
+                "Use browser_tabs(action='switch', tab_id=...) to go back."
+            )
+        return json.dumps(response)
+    except Exception as e:
+        return tool_error(str(e), success=False)
+
+
+def _list_camofox_tabs(session: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    """Return Camofox's tabs for this session's user.
+
+    Returns ``None`` when the tab list could not be established at all, and a
+    list (possibly empty) when it could. The distinction matters: an empty list
+    means "this user genuinely has no tabs", while ``None`` means "we don't
+    know". Collapsing both to ``[]`` let a caller treat an unverified tab id as
+    acceptable, so the two states are kept apart here.
+
+    Never raises: tab bookkeeping is an enhancement to the click path and must
+    not be able to turn a successful click into an error.
+    """
+    if not get_camofox_url():
+        return None
+    try:
+        tabs = _get("/tabs", params={"userId": session["user_id"]}, timeout=5).get("tabs", [])
+    except Exception as exc:
+        logger.debug("Camofox tab list failed for %s: %s", session.get("user_id"), exc)
+        return None
+    if not isinstance(tabs, list):
+        return None
+    return [t for t in tabs if isinstance(t, dict)]
+
+
+def _camofox_tab_is_private(session: Dict[str, Any], tab_id: str, task_id: Optional[str]) -> Optional[str]:
+    """Return the blocked URL when *tab_id* points at a private/internal address.
+
+    A tab the model did not navigate to — one a click opened, or one it asks to
+    switch to — was never seen by the ``browser_navigate`` preflight, so it can
+    address an intranet or cloud-metadata host. Probing the candidate BEFORE
+    adopting it is the Camofox analogue of the recheck the local switch path
+    does, and it means a blocked candidate never becomes the session's tab.
+
+    Fail-open on probe failure, matching ``_camofox_private_page_block`` and the
+    snapshot/vision guards.
+    """
+    from tools.browser_tool import (
+        _camofox_current_page_private_url,
+        _eval_ssrf_guard_active,
+    )
+
+    if not _eval_ssrf_guard_active(task_id or "default"):
+        return None
+    return _camofox_current_page_private_url(tab_id, session["user_id"])
+
+
+def _follow_new_tab_after_click(
+    session: Dict[str, Any],
+    before: Optional[List[Dict[str, Any]]],
+    task_id: Optional[str] = None,
+) -> Optional[str]:
+    """Adopt a tab the click just opened, returning its id when one was adopted.
+
+    Camofox pins ``session["tab_id"]`` at navigate time and every later call
+    targets ``/tabs/<that id>/...``. A click that opens a second tab — an OAuth
+    consent screen, a ``target="_blank"`` link, ``window.open()`` — therefore
+    leaves the session addressing the page the model already left, and every
+    following snapshot/click/type silently applies to the wrong tab.
+
+    ``before`` is the tab list captured immediately before the click, so only a
+    tab that genuinely appeared as a result of the click is adopted; an
+    unrelated tab that was already open is left alone.
+    """
+    if not before:
+        # Without a usable "before" list a new tab can't be distinguished from
+        # a pre-existing one, and guessing is worse than doing nothing.
+        return None
+    known = {t.get("tabId") for t in before}
+    after = _list_camofox_tabs(session)
+    if after is None:
+        return None
+    fresh = [
+        t.get("tabId") for t in after
+        if isinstance(t.get("tabId"), str) and t.get("tabId") not in known
+    ]
+    if not fresh:
+        return None
+    # Newest wins when a click somehow opened several.
+    new_tab_id = fresh[-1]
+    # A page can open a tab pointing anywhere, including an intranet or
+    # cloud-metadata host the model was never allowed to navigate to. Adopting
+    # it would silently make that page the session's current tab and hand its
+    # content to the next snapshot. Stay on the tab we know is safe.
+    blocked = _camofox_tab_is_private(session, new_tab_id, task_id)
+    if blocked:
+        logger.info(
+            "Camofox click opened tab %s at a private address (%s); not following it",
+            new_tab_id, blocked,
+        )
+        return None
+    session["tab_id"] = new_tab_id
+    logger.debug("Camofox click opened tab %s; session now follows it", new_tab_id)
+    return new_tab_id
+
+
+def camofox_tabs(
+    action: str = "list",
+    tab_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """List or switch Camofox tabs (see ``browser_tool.browser_tabs``)."""
+    try:
+        session = _get_session(task_id)
+        if action == "list":
+            tabs = _list_camofox_tabs(session)
+            if tabs is None:
+                return tool_error(
+                    "Could not read the camofox tab list.", success=False,
+                )
+            current = session.get("tab_id")
+            out = [
+                {
+                    "tab_id": t.get("tabId"),
+                    "url": t.get("url", ""),
+                    "title": t.get("title", ""),
+                    "active": t.get("tabId") == current,
+                }
+                for t in tabs
+            ]
+            return json.dumps({"success": True, "tabs": out, "count": len(out)})
+
+        if action == "switch":
+            tabs = _list_camofox_tabs(session)
+            # An unreadable tab list is NOT permission to switch anywhere. The
+            # id has to be confirmed against a list we actually received,
+            # otherwise an unverified id would silently become the session's
+            # tab and every later call would address it.
+            if tabs is None:
+                return tool_error(
+                    "Could not read the camofox tab list, so the tab id cannot be "
+                    "confirmed. Not switching.",
+                    success=False,
+                )
+            if tab_id not in {t.get("tabId") for t in tabs}:
+                return tool_error(
+                    f"Unknown tab '{tab_id}'. Call browser_tabs() to list open tabs.",
+                    success=False,
+                )
+            # Probe BEFORE mutating the session so a blocked candidate never
+            # becomes the current tab — the previous tab is left untouched.
+            blocked = _camofox_tab_is_private(session, tab_id, task_id)
+            if blocked:
+                return tool_error(
+                    "Blocked: that tab's URL targets a private or internal address "
+                    f"({blocked}). Staying on the current tab.",
+                    success=False,
+                )
+            session["tab_id"] = tab_id
+            return json.dumps({"success": True, "switched_to": tab_id})
+
+        # Camofox's REST surface has no verified tab-close endpoint, so this
+        # reports honestly instead of pretending to close the tab.
+        return tool_error(
+            "Closing a tab is not supported on the camofox backend; "
+            "switch to another tab instead.",
+            success=False,
+        )
     except Exception as e:
         return tool_error(str(e), success=False)
 

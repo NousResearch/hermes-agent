@@ -2065,6 +2065,30 @@ BROWSER_TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "browser_tabs",
+        "description": (
+            "List, switch between, or close browser tabs. Use this when a click opened "
+            "a second tab (OAuth/SSO consent screens, target=_blank links, window.open) "
+            "and you need to see what is open, return to the tab you came from, or close "
+            "one you are done with. Requires browser_navigate to be called first."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "switch", "close"],
+                    "description": "list (default) shows open tabs; switch makes tab_id current; close closes it",
+                },
+                "tab_id": {
+                    "type": "string",
+                    "description": "Tab id from a previous list call. Required for switch; optional for close (defaults to the active tab).",
+                },
+            },
+            "required": []
+        }
+    },
+    {
         "name": "browser_press",
         "description": "Press a keyboard key. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts. Requires browser_navigate to be called first.",
         "parameters": {
@@ -3464,6 +3488,141 @@ def browser_back(task_id: Optional[str] = None) -> str:
             "error": result.get("error", "Failed to go back")
         }
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+
+
+def browser_tabs(
+    action: str = "list",
+    tab_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """
+    List, switch between, or close browser tabs.
+
+    A click can open a second tab (``target="_blank"``, ``window.open()``, an
+    OAuth consent screen). The session then has more than one tab, but nothing
+    ever let the model see that, go back to the tab it came from, or close one
+    it is done with.
+
+    Args:
+        action: "list" | "switch" | "close"
+        tab_id: Tab to act on. Required for "switch"; optional for "close"
+                (defaults to the active tab).
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with the tab list, or the result of the switch/close
+    """
+    action = (action or "list").strip().lower()
+    if action not in ("list", "switch", "close"):
+        return json.dumps({
+            "success": False,
+            "error": f"Unknown action '{action}'. Use list, switch, or close.",
+        }, ensure_ascii=False)
+    if action == "switch" and not tab_id:
+        return json.dumps({
+            "success": False,
+            "error": "action='switch' requires tab_id. Call browser_tabs() first to see the ids.",
+        }, ensure_ascii=False)
+
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_tabs
+        return camofox_tabs(action, tab_id, task_id)
+
+    effective_task_id = _last_session_key(task_id or "default")
+
+    if action == "list":
+        result = _run_browser_command(effective_task_id, "tab", ["list"])
+        if not result.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": result.get("error", "Failed to list tabs"),
+            }, ensure_ascii=False)
+        raw = (result.get("data") or {}).get("tabs") or []
+        tabs = [
+            {
+                "tab_id": t.get("tabId"),
+                "url": t.get("url", ""),
+                "title": t.get("title", ""),
+                "active": bool(t.get("active")),
+            }
+            for t in raw
+            if isinstance(t, dict)
+        ]
+        return json.dumps({"success": True, "tabs": tabs, "count": len(tabs)},
+                          ensure_ascii=False)
+
+    if action == "switch":
+        # The agent-browser CLI has no "what would this tab be" probe — the only
+        # way to read a tab's URL is to make it current. So unlike the Camofox
+        # path, which probes the candidate before mutating, this has to switch
+        # first and undo. Remember where we were, but only when the guard is
+        # armed: with it off there is nothing to undo and nothing to pay for.
+        previous_tab = None
+        if _eval_ssrf_guard_active(effective_task_id):
+            listing = _run_browser_command(effective_task_id, "tab", ["list"])
+            if listing.get("success"):
+                for t in ((listing.get("data") or {}).get("tabs") or []):
+                    if isinstance(t, dict) and t.get("active"):
+                        previous_tab = t.get("tabId")
+                        break
+
+        result = _run_browser_command(effective_task_id, "tab", [str(tab_id)])
+        if not result.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": result.get("error", f"Failed to switch to tab {tab_id}"),
+            }, ensure_ascii=False)
+        # Switching makes another page current, and that page was never seen by
+        # the browser_navigate preflight — a tab opened by script can point at a
+        # private or cloud-metadata address. Re-check here for the same reason
+        # browser_back does after history navigation.
+        if _eval_ssrf_guard_active(effective_task_id):
+            blocked_url = _current_page_private_url(effective_task_id)
+            if blocked_url:
+                # The switch already happened; leaving the session parked on the
+                # blocked page while reporting a refusal would make the message
+                # false and hand the next snapshot that page. Put it back.
+                restored = False
+                if previous_tab and str(previous_tab) != str(tab_id):
+                    restored = bool(
+                        _run_browser_command(
+                            effective_task_id, "tab", [str(previous_tab)]
+                        ).get("success")
+                    )
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "Blocked: page URL targets a private or internal address "
+                        f"({blocked_url}). "
+                        + (
+                            f"Returned to tab {previous_tab}."
+                            if restored
+                            else "Could not return to the previous tab — call "
+                                 "browser_tabs() to see where the session is."
+                        )
+                    ),
+                }, ensure_ascii=False)
+        data = result.get("data") or {}
+        return json.dumps({
+            "success": True,
+            "switched_to": data.get("tabId", tab_id),
+            "url": data.get("url", ""),
+            "title": data.get("title", ""),
+        }, ensure_ascii=False)
+
+    # close
+    args = ["close"] if not tab_id else ["close", str(tab_id)]
+    result = _run_browser_command(effective_task_id, "tab", args)
+    if not result.get("success"):
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", "Failed to close tab"),
+        }, ensure_ascii=False)
+    data = result.get("data") or {}
+    return json.dumps({
+        "success": True,
+        "closed": data.get("tabId", tab_id or "active"),
+    }, ensure_ascii=False)
 
 
 def browser_press(key: str, task_id: Optional[str] = None) -> str:
@@ -5062,6 +5221,18 @@ registry.register(
     handler=lambda args, **kw: browser_back(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="◀️",
+)
+registry.register(
+    name="browser_tabs",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_tabs"],
+    handler=lambda args, **kw: browser_tabs(
+        action=args.get("action", "list"),
+        tab_id=args.get("tab_id"),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_browser_requirements,
+    emoji="🗂️",
 )
 registry.register(
     name="browser_press",

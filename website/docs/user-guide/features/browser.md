@@ -483,6 +483,28 @@ Supported keys: `Enter`, `Tab`, `Escape`, `ArrowDown`, `ArrowUp`, and more.
 
 Navigate back to the previous page in browser history.
 
+### `browser_tabs`
+
+List, switch between, or close browser tabs.
+
+```
+browser_tabs()                                   # list open tabs
+browser_tabs(action="switch", tab_id="t2")       # make a tab current
+browser_tabs(action="close", tab_id="t2")        # close it (omit tab_id for the active tab)
+```
+
+Reach for this when a click opened a second tab — an OAuth/SSO consent screen, a
+`target="_blank"` link, `window.open()` — and you need to see what is open or get
+back to the tab you came from.
+
+Switching re-checks the destination against the private-address guard: a tab a
+page opened was never seen by the `browser_navigate` preflight, so one pointing
+at an internal or cloud-metadata host is refused and the current tab is kept.
+
+On the Camofox backend a click that opens a tab now switches the session to it
+automatically (the local `agent-browser` backend already did this), and `close`
+is unsupported there — switch to another tab instead.
+
 ### `browser_get_images`
 
 List all images on the current page with their URLs and alt text. Useful for finding images to analyze.

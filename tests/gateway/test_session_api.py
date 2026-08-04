@@ -350,7 +350,10 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
     session_db.append_message(source_id, "user", "before compression")
     session_db.end_session(source_id, "compression")
     session_db.create_session("tip-session", "api_server", parent_session_id=source_id)
-    session_db.replace_messages(source_id, [])
+    # Don't mutate the compression-closed source: hermes_state now guards writes
+    # to a session ended by compression (adopt its live continuation instead).
+    # The endpoint follows the tip regardless of the source's residual messages,
+    # so the redirect is what this asserts.
     session_db.append_message("tip-session", "user", "after compression")
 
     app = _create_session_app(adapter)

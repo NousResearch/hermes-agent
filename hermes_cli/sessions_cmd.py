@@ -1039,6 +1039,22 @@ def cmd_sessions(args, sessions_parser=None):
             f"({_size_delta_label(saved)})"
         )
 
+    elif action == "clean-markers":
+        if args.dry_run:
+            print("Dry run — scanning for stale tool-call marker rows (#78148)…")
+        else:
+            print("Scanning for stale tool-call marker rows (#78148)…")
+        report = db.purge_stale_tool_call_markers(dry_run=args.dry_run)
+        if report["rows_affected"] == 0:
+            print("✓ No affected rows found — nothing to clean.")
+        elif args.dry_run:
+            print(
+                f"Would clear {report['rows_affected']} row(s): "
+                f"ids {report['row_ids']}"
+            )
+        else:
+            print(f"✓ Cleared {report['rows_affected']} row(s).")
+
     elif action == "optimize-storage":
         db_path = db.db_path
         if not db.fts_optimize_available():

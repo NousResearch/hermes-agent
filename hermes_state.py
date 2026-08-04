@@ -8443,6 +8443,64 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._remove_session_files(sessions_dir, sid)
         return count
 
+    def purge_stale_tool_call_markers(self, *, dry_run: bool = False) -> Dict[str, Any]:
+        """Permanently clear bare tool-call marker content (e.g. "[memory]")
+        left in the ``messages`` table by sessions persisted before the
+        #78148 fix in ``agent.conversation_loop``.
+
+        ``_strip_stale_tool_call_markers`` already repairs this in memory on
+        every session load (see ``_rows_to_conversation``), so running this
+        is optional — but for long-lived sessions the same rows get
+        re-scanned and re-repaired on every resume, which is wasted work
+        and keeps the contaminated bytes sitting in the DB (and in any
+        downstream cache/backup snapshot of it) indefinitely. This rewrites
+        the affected rows once, in place.
+
+        Only the ``content`` column is touched — ``role``, ``tool_calls``,
+        and every other column on the row are left exactly as they are, so
+        provider tool_call/tool_result pairing is unaffected.
+
+        With ``dry_run=True``, reports the affected row count/ids without
+        writing (read-only, no write lock taken).
+
+        Returns ``{"dry_run": bool, "rows_affected": int, "row_ids": [...]}``.
+        """
+
+        def _find_affected(conn) -> List[int]:
+            cursor = conn.execute(
+                "SELECT id, content FROM messages "
+                "WHERE role = 'assistant' AND tool_calls IS NOT NULL AND tool_calls != ''"
+            )
+            affected: List[int] = []
+            for row in cursor.fetchall():
+                content = row["content"]
+                if isinstance(content, str) and _STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip()):
+                    affected.append(row["id"])
+            return affected
+
+        if dry_run:
+            with self._read_ctx() as conn:
+                affected_ids = _find_affected(conn)
+            return {"dry_run": True, "rows_affected": len(affected_ids), "row_ids": affected_ids}
+
+        def _do(conn):
+            affected_ids = _find_affected(conn)
+            if affected_ids:
+                placeholders = ",".join("?" * len(affected_ids))
+                conn.execute(
+                    f"UPDATE messages SET content = '' WHERE id IN ({placeholders})",
+                    affected_ids,
+                )
+            return affected_ids
+
+        affected_ids = self._execute_write(_do)
+        if affected_ids:
+            logger.info(
+                "Permanently cleared %d stale tool-call marker row(s) in state.db (#78148)",
+                len(affected_ids),
+            )
+        return {"dry_run": False, "rows_affected": len(affected_ids), "row_ids": affected_ids}
+
     # ── Meta key/value (for scheduler bookkeeping) ──
 
     def get_meta(self, key: str) -> Optional[str]:

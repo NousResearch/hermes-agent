@@ -12159,6 +12159,27 @@ def main():
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
     )
 
+    sessions_clean_markers = sessions_subparsers.add_parser(
+        "clean-markers",
+        help="Permanently clear stale tool-call marker content left by sessions from before #78148",
+        description=(
+            "Before the #78148 fix, a local tool-call template could persist a "
+            "bare bracketed marker (e.g. \"[memory]\") as an assistant turn's "
+            "content instead of real text. This is already repaired in memory "
+            "on every session load, so running this is optional — it rewrites "
+            "the affected rows once, in place, so long-lived sessions stop "
+            "re-scanning/re-repairing the same rows on every resume. Only the "
+            "content column is touched; tool_calls and every other column on "
+            "the row are left untouched."
+        ),
+    )
+    sessions_clean_markers.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Report the affected row count without writing",
+    )
+
     sessions_optimize_storage = sessions_subparsers.add_parser(
         "optimize-storage",
         help="Migrate the search index to the compact v23 layout (reclaims disk on large DBs)",

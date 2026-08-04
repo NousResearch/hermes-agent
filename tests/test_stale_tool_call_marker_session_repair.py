@@ -134,3 +134,89 @@ class TestGetMessagesAsConversationStripsStaleMarkers:
                 assert contents == ["What's the weather?", "It's sunny."]
             finally:
                 db.close()
+
+
+class TestPurgeStaleToolCallMarkers:
+    """SessionDB.purge_stale_tool_call_markers: the permanent, one-time DB
+    rewrite. Complements the load-on-read repair — this variant edits the
+    stored rows in place so long-lived sessions stop re-scanning/re-repairing
+    the same contaminated rows on every resume."""
+
+    def _seed_polluted_db(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="do the full task")
+        db.append_message(
+            "s1", role="assistant", content="[memory]",
+            tool_calls=[{"id": "1", "function": {"name": "skill_manage", "arguments": "{}"}}],
+        )
+        db.append_message("s1", role="tool", content="ok", tool_call_id="1")
+        db.append_message("s1", role="assistant", content="Here is the result.")
+
+    def test_dry_run_reports_without_writing(self):
+        import tempfile
+        from pathlib import Path
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            try:
+                self._seed_polluted_db(db)
+
+                report = db.purge_stale_tool_call_markers(dry_run=True)
+                assert report["dry_run"] is True
+                assert report["rows_affected"] == 1
+
+                # Nothing written: the raw row still has the marker.
+                raw = db._conn.execute(
+                    "SELECT content FROM messages WHERE role = 'assistant' "
+                    "AND tool_calls IS NOT NULL AND tool_calls != ''"
+                ).fetchone()
+                assert raw["content"] == "[memory]"
+            finally:
+                db.close()
+
+    def test_purge_clears_content_keeps_tool_calls(self):
+        import tempfile
+        from pathlib import Path
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            try:
+                self._seed_polluted_db(db)
+
+                report = db.purge_stale_tool_call_markers(dry_run=False)
+                assert report["dry_run"] is False
+                assert report["rows_affected"] == 1
+
+                row = db._conn.execute(
+                    "SELECT content, tool_calls FROM messages WHERE role = 'assistant' "
+                    "AND tool_calls IS NOT NULL AND tool_calls != ''"
+                ).fetchone()
+                assert row["content"] == ""
+                # tool_calls column itself must survive the rewrite untouched.
+                assert row["tool_calls"]
+
+                # Running again finds nothing left to clean — idempotent.
+                second = db.purge_stale_tool_call_markers(dry_run=False)
+                assert second["rows_affected"] == 0
+            finally:
+                db.close()
+
+    def test_no_affected_rows_on_clean_db(self):
+        import tempfile
+        from pathlib import Path
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            try:
+                db.create_session(session_id="s1", source="cli")
+                db.append_message("s1", role="user", content="What's the weather?")
+                db.append_message("s1", role="assistant", content="It's sunny.")
+
+                report = db.purge_stale_tool_call_markers(dry_run=False)
+                assert report["rows_affected"] == 0
+                assert report["row_ids"] == []
+            finally:
+                db.close()

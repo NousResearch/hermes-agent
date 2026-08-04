@@ -4775,7 +4775,7 @@ def run_conversation(
                             _overflow_input = messages
                             messages, active_system_prompt = agent._compress_context(
                                 messages, system_message,
-                                approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
+                                approx_tokens=request_input_estimate,
                                 task_id=effective_task_id,
                             )
                             if messages is _overflow_input and compression_skipped_due_to_lock(agent):

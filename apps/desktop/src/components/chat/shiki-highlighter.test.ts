@@ -57,12 +57,10 @@ second @url:"https://two.example" @file:\`src/app.ts\``
     expect(copyableCodeText(code)).toBe('first https://one.example\nsecond https://two.example @file:`src/app.ts`')
   })
 
-  it('keeps hostless HTTP(S) URL directives raw', () => {
-    const http = '@url:http://'
-    const https = '@url:https://'
-
-    expect(copyableCodeText(http)).toBe(http)
-    expect(copyableCodeText(https)).toBe(https)
+  it('keeps hostless and malformed-host HTTP(S) URL directives raw', () => {
+    for (const code of ['@url:http://', '@url:https://', '@url:http://?', '@url:https://#fragment', '@url:http://:80']) {
+      expect(copyableCodeText(code)).toBe(code)
+    }
   })
 
   it('leaves invalid URL directives and other reference kinds unchanged', () => {

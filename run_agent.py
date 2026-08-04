@@ -251,6 +251,11 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     # drive the bounded retry. Persisting them would replay the internal
     # retry instruction as user-authored context on resume.
     "_dropped_toolcall_nudge",
+    # false-stop nudge: the synthetic "issue the actual tool call now"
+    # user nudge drives the false-stop retry loop. The assistant candidate
+    # is NOT synthetic — it persists with finish_reason="false_stop_retry"
+    # and is emitted as an interim message. Only the user nudge is stripped.
+    "_false_stop_synthetic",
 )
 
 

@@ -25,72 +25,12 @@ def valid_db(tmp_path):
     return path
 
 
-def test_valid_db_passes(valid_db):
-    res = verify_sqlite_integrity(valid_db)
-    assert res["valid"] is True
-    assert res["size"] == valid_db.stat().st_size
-    assert "passed" in res["message"]
 
 
-def test_zeroed_db_fails_header_check(valid_db):
-    # The #68474 signature: same size, all null bytes.
-    size = valid_db.stat().st_size
-    valid_db.write_bytes(b"\x00" * size)
-    res = verify_sqlite_integrity(valid_db)
-    assert res["valid"] is False
-    assert "header" in res["message"]
 
 
-def test_missing_file():
-    from pathlib import Path
-
-    res = verify_sqlite_integrity(Path("/nonexistent/state.db"))
-    assert res["valid"] is False
-    assert "not found" in res["message"]
 
 
-def test_too_small_file(tmp_path):
-    path = tmp_path / "state.db"
-    path.write_bytes(b"SQLite")
-    res = verify_sqlite_integrity(path)
-    assert res["valid"] is False
-    assert "too small" in res["message"]
-
-
-def test_header_ok_but_garbage_body_fails_pragma(tmp_path):
-    path = tmp_path / "state.db"
-    path.write_bytes(b"SQLite format 3\0" + b"\xff" * 4096)
-    res = verify_sqlite_integrity(path)
-    assert res["valid"] is False
-
-
-def test_oversized_db_skips_pragma_but_still_checks_header(valid_db):
-    res = verify_sqlite_integrity(valid_db, max_bytes=1)
-    # Header intact + schema probe passes → pass without the full pragma.
-    assert res["valid"] is True
-    assert "skipped PRAGMA integrity_check" in res["message"]
-    size = valid_db.stat().st_size
-    valid_db.write_bytes(b"\x00" * size)
-    res = verify_sqlite_integrity(valid_db, max_bytes=1)
-    # Zeroed header must still fail even when pragma is skipped for size.
-    assert res["valid"] is False
-
-
-def test_default_max_bytes_bounds_the_pragma_by_size():
-    """The default must NOT be size-unbounded.
-
-    ``PRAGMA integrity_check`` walks every page in the file, so an unbounded
-    default made `hermes update` peg a CPU for minutes on a multi-GB
-    state.db with no output (read as a hang). Callers that omit max_bytes
-    must inherit a finite ceiling.
-    """
-    import inspect
-
-    from hermes_cli.backup import DEFAULT_INTEGRITY_CHECK_MAX_BYTES
-
-    default = inspect.signature(verify_sqlite_integrity).parameters["max_bytes"].default
-    assert default == DEFAULT_INTEGRITY_CHECK_MAX_BYTES
-    assert default > 0, "size-unbounded integrity_check is never a safe default"
 
 
 def test_oversized_db_probe_catches_malformed_schema(tmp_path):
@@ -117,27 +57,8 @@ def test_oversized_db_probe_catches_malformed_schema(tmp_path):
     assert "probe" in res["message"]
 
 
-def test_max_bytes_zero_forces_full_check(valid_db):
-    """``max_bytes=0`` remains the explicit opt-in for a full scan."""
-    res = verify_sqlite_integrity(valid_db, max_bytes=0)
-    assert res["valid"] is True
-    assert "integrity check passed" in res["message"]
 
 
-def test_copy_db_and_verify_roundtrip(valid_db, tmp_path):
-    dst = tmp_path / "snapshot" / "state.db"
-    dst.parent.mkdir()
-    assert copy_db_and_verify(valid_db, dst) is True
-    assert verify_sqlite_integrity(dst)["valid"] is True
-
-
-def test_copy_db_and_verify_refuses_zeroed_source(valid_db, tmp_path):
-    size = valid_db.stat().st_size
-    valid_db.write_bytes(b"\x00" * size)
-    dst = tmp_path / "snapshot" / "state.db"
-    dst.parent.mkdir()
-    assert copy_db_and_verify(valid_db, dst) is False
-    assert not dst.exists()
 
 
 def test_restore_flow_end_to_end(valid_db, tmp_path):

@@ -35,9 +35,9 @@ from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool;
-# delegate subagent runs are tagged "subagent" — neither belongs in the
-# user's session history.
-_HIDDEN_SESSION_SOURCES = ("subagent", "tool")
+# delegate subagent runs are tagged "subagent"; kanban dispatcher workers are
+# tagged "kanban" — none belongs in the user's session history.
+_HIDDEN_SESSION_SOURCES = ("kanban", "subagent", "tool")
 
 # Automation sources that are kept searchable but DEMOTED below interactive
 # sessions in discover ranking. Cron jobs run on a schedule and accumulate
@@ -54,6 +54,18 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # interactive matches buried under a wall of cron hits, so this is well above
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
+
+# Raw FTS rows are only a discovery-plan input. The final response hydrates
+# its own anchored message window and bookends after lineage deduplication.
+_DISCOVER_SEARCH_FIELDS = (
+    "id",
+    "session_id",
+    "role",
+    "snippet",
+    "source",
+    "model",
+    "session_started",
+)
 
 # Prefixes that identify generated context-compaction handoff summaries.
 # These are inserted by agent/context_compressor.py as normal user/assistant
@@ -160,6 +172,25 @@ def _is_compression_ended(db, session_id: str) -> bool:
         return False
 
 
+def _get_message_storage_state(db, message_id) -> Optional[Dict[str, Any]]:
+    """Return the owning session and visibility flags for *message_id*."""
+    if not message_id:
+        return None
+    try:
+        with db._lock:
+            cursor = db._conn.execute(
+                "SELECT session_id, active, compacted FROM messages WHERE id = ?",
+                (message_id,),
+            )
+            row = cursor.fetchone()
+    except Exception:
+        logging.debug(
+            "message storage-state lookup failed for %s", message_id, exc_info=True
+        )
+        return None
+    return dict(row) if row is not None else None
+
+
 def _is_compacted_message(db, message_id) -> bool:
     """Return True if *message_id* is a compaction-archived row.
 
@@ -173,18 +204,8 @@ def _is_compacted_message(db, message_id) -> bool:
     Returns False on any error so the caller falls back to the safe default
     (skip the current session).
     """
-    if not message_id:
-        return False
-    try:
-        with db._lock:
-            cursor = db._conn.execute(
-                "SELECT active, compacted FROM messages WHERE id = ?", (message_id,)
-            )
-            row = cursor.fetchone()
-    except Exception:
-        logging.debug("is_compacted_message lookup failed for %s", message_id, exc_info=True)
-        return False
-    return row is not None and row["active"] == 0 and row["compacted"] == 1
+    state = _get_message_storage_state(db, message_id)
+    return state is not None and state["active"] == 0 and state["compacted"] == 1
 
 
 def _annotate_rebuild_status(db, payload: Dict[str, Any]) -> None:
@@ -238,6 +259,12 @@ def _shape_message(
     is added so callers know the payload was bounded.
     """
     raw_content = m.get("content")
+    if isinstance(raw_content, str) and "\x1b" in raw_content:
+        # Recalled messages can carry ANSI escape sequences (e.g. archived
+        # terminal output). Strip them before returning content to the model.
+        from tools.ansi_strip import strip_ansi
+
+        raw_content = strip_ansi(raw_content)
     if max_content_len and raw_content and len(raw_content) > max_content_len:
         content = raw_content[:max_content_len] + "…"
         truncated = True
@@ -291,6 +318,28 @@ def _resolve_profile_db(profile: str):
     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
 
 
+def _session_link(session_id: str, profile: str = None) -> str:
+    """The reference the agent writes to point the user at a session.
+
+    Same value the desktop composer emits when a session is dragged into a
+    message, so the desktop renders it as a link carrying the session's title.
+    The profile segment is omitted when we can't name it confidently — a bare
+    id still resolves, it just can't disambiguate across profiles.
+    """
+    name = (profile or "").strip()
+    if not name:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            resolved = get_active_profile_name()
+            name = "" if resolved == "custom" else resolved
+        except Exception:
+            logging.debug("get_active_profile_name failed for session link", exc_info=True)
+            name = ""
+
+    return f"@session:{name}/{session_id}" if name else f"@session:{session_id}"
+
+
 def _locate_session_db(session_id: str):
     """Scan every profile's ``state.db`` (read-only) for a session id.
 
@@ -335,7 +384,7 @@ def _locate_session_db(session_id: str):
     return None, None
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
+def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
     """Read shape: dump a whole session by id (head + tail when large).
 
     Serves the linked-session case — the user dropped an @session reference and
@@ -366,6 +415,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         "success": True,
         "mode": "read",
         "session_id": session_id,
+        "link": _session_link(session_id, link_profile),
         "session_meta": {
             "when": _format_timestamp(meta.get("started_at")),
             "source": meta.get("source"),
@@ -384,7 +434,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
@@ -405,6 +455,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
                 continue
             results.append({
                 "session_id": sid,
+                "link": _session_link(sid, link_profile),
                 "title": s.get("title") or None,
                 "source": s.get("source", ""),
                 "started_at": s.get("started_at", ""),
@@ -457,16 +508,40 @@ def _scroll(
             window = 5
     window = max(1, min(window, 20))
 
-    # Reject scrolling inside the active session lineage — those messages are
-    # already in context.
+    # Locate the anchor before applying the current-lineage guard. Discovery
+    # intentionally surfaces two kinds of same-lineage history that are no
+    # longer in live context: in-place compacted rows, and rows owned by a
+    # legacy session that ended via compression. Scroll must preserve that
+    # distinction instead of rejecting the discovery result it just returned.
+    anchor_state = _get_message_storage_state(db, around_message_id)
+    owning_session_id = (
+        anchor_state.get("session_id") if anchor_state is not None else None
+    )
+
     if current_session_id:
-        a_root = _resolve_lineage(db, session_id)
+        anchor_session_id = owning_session_id or session_id
+        a_root = _resolve_lineage(db, anchor_session_id)
         c_root = _resolve_lineage(db, current_session_id)
         if a_root and c_root and a_root == c_root:
-            return tool_error(
-                "scroll rejected: anchor lives in the current session lineage (already in your active context)",
-                success=False,
+            is_compacted_anchor = (
+                anchor_state is not None
+                and anchor_state["active"] == 0
+                and anchor_state["compacted"] == 1
             )
+            is_inactive_non_compacted_anchor = (
+                anchor_state is not None
+                and anchor_state["active"] == 0
+                and anchor_state["compacted"] != 1
+            )
+            is_compression_history = (
+                not is_inactive_non_compacted_anchor
+                and _is_compression_ended(db, anchor_session_id)
+            )
+            if not (is_compacted_anchor or is_compression_history):
+                return tool_error(
+                    "scroll rejected: anchor lives in the current session lineage (already in your active context)",
+                    success=False,
+                )
 
     # Session existence check
     try:
@@ -491,18 +566,7 @@ def _scroll(
     # child sessions). Locate the real owning session and refetch.
     rebind_warning = None
     if not messages:
-        owning = None
-        try:
-            conn = getattr(db, "_conn", None)
-            if conn is not None:
-                row = conn.execute(
-                    "SELECT session_id FROM messages WHERE id = ?",
-                    (around_message_id,),
-                ).fetchone()
-                owning = row[0] if row else None
-        except Exception as e:
-            logging.debug("owning-session lookup failed: %s", e, exc_info=True)
-            owning = None
+        owning = owning_session_id
         if owning and owning != session_id:
             a_root = _resolve_lineage(db, session_id)
             o_root = _resolve_lineage(db, owning)
@@ -630,6 +694,7 @@ def _discover(
     limit: int,
     sort: Optional[str],
     current_session_id: str = None,
+    link_profile: str = None,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
@@ -646,6 +711,7 @@ def _discover(
             # of cron rows are still in hand for the demotion pass below.
             offset=0,
             sort=sort,
+            fields=_DISCOVER_SEARCH_FIELDS,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
@@ -764,6 +830,9 @@ def _discover(
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
+    for entry in results:
+        entry["link"] = _session_link(entry["session_id"], link_profile)
+
     _final_payload = {
         "success": True,
         "mode": "discover",
@@ -848,7 +917,7 @@ def session_search(
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
         sid = session_id.strip()
-        result = _read_session(db, sid)
+        result = _read_session(db, sid, link_profile=profile)
         if json.loads(result).get("success"):
             return result
 
@@ -858,7 +927,7 @@ def session_search(
         located, owner = _locate_session_db(sid)
         if located is not None:
             try:
-                found = json.loads(_read_session(located, sid))
+                found = json.loads(_read_session(located, sid, link_profile=owner))
             finally:
                 located.close()
             if found.get("success"):
@@ -876,7 +945,7 @@ def session_search(
 
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -897,14 +966,15 @@ def session_search(
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
+        link_profile=profile,
     )
 
 
 def check_session_search_requirements() -> bool:
     """Requires the SQLite state database."""
     try:
-        from hermes_state import DEFAULT_DB_PATH
-        return DEFAULT_DB_PATH.parent.exists()
+        from hermes_state import _default_db_path
+        return _default_db_path().parent.exists()
     except ImportError:
         return False
 
@@ -962,6 +1032,16 @@ SESSION_SEARCH_SCHEMA = {
         "     session_search()\n"
         "     Returns recent sessions chronologically: titles, previews, timestamps. "
         "Use when the user asks \"what was I working on\" without naming a topic.\n\n"
+        "LINKING THE USER TO A SESSION\n\n"
+        "  When you refer the user to a session, write its `link` value inline in "
+        "your reply — every result carries one, e.g. "
+        "`@session:default/20260722_204335_d62c16`. Copy it verbatim; do not "
+        "reformat it as a markdown link or wrap it in backticks. Hermes renders "
+        "it as a link showing the session's title, so the link IS the title: "
+        "use it as a noun mid-sentence (\"that's @session:default/... — want me "
+        "to pick it up?\"), never alone on its own line, and never alongside the "
+        "title, id, or date spelled out — that shows the user the same session "
+        "twice.\n\n"
         "FTS5 SYNTAX\n\n"
         "  AND is the default — multi-word queries require all terms. Use OR explicitly "
         "for broader recall (`alpha OR beta OR gamma`), quoted phrases for exact match "

@@ -16,10 +16,10 @@ Vector search engine for production RAG systems.
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/qdrant` |
 | Path | `optional-skills/mlops/qdrant` |
-| Version | `1.0.0` |
+| Version | `1.0.1` |
 | Author | Orchestra Research |
 | License | MIT |
-| Dependencies | `qdrant-client>=1.12.0` |
+| Dependencies | `qdrant-client>=1.14.0` |
 | Platforms | linux, macos, windows |
 | Tags | `RAG`, `Vector Search`, `Qdrant`, `Semantic Search`, `Embeddings`, `Similarity Search`, `HNSW`, `Production`, `Distributed` |
 
@@ -106,17 +106,17 @@ client.upsert(
     ]
 )
 
-# Search with filtering
-results = client.search(
+# Search with filtering (query_points is the current API; client.search is removed in qdrant-client 1.14+)
+response = client.query_points(
     collection_name="documents",
-    query_vector=[0.15, 0.25, ...],
+    query=[0.15, 0.25, ...],
     query_filter={
         "must": [{"key": "category", "match": {"value": "tech"}}]
     },
     limit=10
 )
 
-for point in results:
+for point in response.points:
     print(f"ID: {point.id}, Score: {point.score}, Payload: {point.payload}")
 ```
 
@@ -186,14 +186,15 @@ print(f"Points: {info.points_count}, Vectors: {info.vectors_count}")
 ### Basic search
 
 ```python
-# Simple nearest neighbor search
-results = client.search(
+# Simple nearest neighbor search (returns a QueryResponse; use .points)
+response = client.query_points(
     collection_name="documents",
-    query_vector=[0.1, 0.2, ...],
+    query=[0.1, 0.2, ...],
     limit=10,
     with_payload=True,
     with_vectors=False  # Don't return vectors (faster)
 )
+results = response.points
 ```
 
 ### Filtered search
@@ -202,9 +203,9 @@ results = client.search(
 from qdrant_client.models import Filter, FieldCondition, MatchValue, Range
 
 # Complex filtering
-results = client.search(
+response = client.query_points(
     collection_name="documents",
-    query_vector=query_embedding,
+    query=query_embedding,
     query_filter=Filter(
         must=[
             FieldCondition(key="category", match=MatchValue(value="tech")),
@@ -215,12 +216,12 @@ results = client.search(
         ]
     ),
     limit=10
-)
+).points
 
 # Shorthand filter syntax
-results = client.search(
+response = client.query_points(
     collection_name="documents",
-    query_vector=query_embedding,
+    query=query_embedding,
     query_filter={
         "must": [
             {"key": "category", "match": {"value": "tech"}},
@@ -228,23 +229,27 @@ results = client.search(
         ]
     },
     limit=10
-)
+).points
 ```
 
 ### Batch search
 
 ```python
-from qdrant_client.models import SearchRequest
+from qdrant_client.models import QueryRequest
 
-# Multiple queries in one request
-results = client.search_batch(
+# Multiple queries in one request (search_batch is replaced by query_batch_points)
+responses = client.query_batch_points(
     collection_name="documents",
     requests=[
-        SearchRequest(vector=[0.1, ...], limit=5),
-        SearchRequest(vector=[0.2, ...], limit=5, filter={"must": [...]}),
-        SearchRequest(vector=[0.3, ...], limit=10)
+        QueryRequest(query=[0.1, ...], limit=5),
+        QueryRequest(query=[0.2, ...], limit=5, filter={"must": [...]}),
+        QueryRequest(query=[0.3, ...], limit=10)
     ]
 )
+# Each element is a QueryResponse; use .points
+for resp in responses:
+    for point in resp.points:
+        print(point.id, point.score)
 ```
 
 ## RAG integration
@@ -285,12 +290,12 @@ client.upsert(collection_name="knowledge_base", points=points)
 # RAG retrieval
 def retrieve(query: str, top_k: int = 5) -> list[dict]:
     query_vector = encoder.encode(query).tolist()
-    results = client.search(
+    response = client.query_points(
         collection_name="knowledge_base",
-        query_vector=query_vector,
+        query=query_vector,
         limit=top_k
     )
-    return [{"text": r.payload["text"], "score": r.score} for r in results]
+    return [{"text": r.payload["text"], "score": r.score} for r in response.points]
 
 # Use in RAG pipeline
 context = retrieve("What is Python?")
@@ -351,12 +356,14 @@ client.upsert(
     ]
 )
 
-# Search specific vector
-results = client.search(
+# Search specific named vector (pass the vector name via `using`)
+response = client.query_points(
     collection_name="hybrid_search",
-    query_vector=("dense", query_dense),  # Specify which vector
+    query=query_dense,
+    using="dense",  # Specify which named vector to search
     limit=10
 )
+results = response.points
 ```
 
 ### Sparse vectors (BM25, SPLADE)
@@ -397,12 +404,13 @@ client.create_collection(
 )
 
 # Search with rescoring
-results = client.search(
+response = client.query_points(
     collection_name="quantized",
-    query_vector=query,
+    query=query,
     search_params={"quantization": {"rescore": True}},  # Rescore top results
     limit=10
 )
+results = response.points
 ```
 
 ## Payload indexing
@@ -510,5 +518,5 @@ client = QdrantClient(
 - **Docs**: https://qdrant.tech/documentation/
 - **Python Client**: https://github.com/qdrant/qdrant-client
 - **Cloud**: https://cloud.qdrant.io
-- **Version**: 1.12.0+
+- **Version**: 1.14.0+
 - **License**: Apache 2.0

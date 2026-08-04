@@ -23,19 +23,19 @@ import {
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
-  setSessionProfileTotals,
+  setSessionProfilesTruncated,
   setSessions,
-  setSessionsLoading,
-  setSessionsTotal
+  setSessionsLoading
 } from '@/store/session'
 import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
-// The recents list is local-only: cron rows have their own section, and each
-// messaging platform (telegram, discord, …) is fetched separately into its own
-// self-managed sidebar section (refreshMessagingSessions). Excluding both here
-// keeps "Load more" paging through interactive local chats instead of
+// The recents list is local-only: cron rows have their own section, kanban
+// dispatcher workers are read on the board, and each messaging platform
+// (telegram, discord, …) is fetched separately into its own self-managed
+// sidebar section (refreshMessagingSessions). Excluding them here keeps
+// "Load more" paging through interactive local chats instead of
 // interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -202,9 +202,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
           return sameCronSignature(prev, next) ? prev : next
         })
-        setSessionsTotal(typeof recents.total === 'number' ? recents.total : recents.sessions.length)
-        setSessionProfileTotals(prev => {
-          const next = recents.profile_totals ?? {}
+        // "Is there another page?" instead of an exact total: the backend
+        // reports which profiles filled their window, which costs nothing on
+        // top of the rows it already read (the old exact totals ran a COUNT(*)
+        // per profile DB on every refresh). Reference-stable when unchanged so
+        // the sidebar's group memos don't recompute per refresh.
+        setSessionProfilesTruncated(prev => {
+          const next = recents.profiles_truncated ?? {}
           const prevKeys = Object.keys(prev)
 
           return prevKeys.length === Object.keys(next).length && prevKeys.every(key => prev[key] === next[key])
@@ -258,8 +262,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)
     ])
 
-    const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
-    setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))
+    // A full window back means the profile still has more on disk.
+    const truncated = result.sessions.length >= loaded + SIDEBAR_SESSIONS_PAGE_SIZE
+    setSessionProfilesTruncated(prev => ({ ...prev, [key]: truncated }))
   }, [])
 
   return {

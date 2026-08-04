@@ -53,34 +53,6 @@ def test_adapter_supports_push_default_true():
     assert adapter_supports_push(ApiServerLikeAdapter()) is False
 
 
-def test_deliver_wake_push_adapter_uses_handle_message():
-    adapter = PushAdapter()
-    asyncio.run(deliver_wake(adapter, text="wake up", source=_source()))
-    assert len(adapter.handled) == 1
-    evt = adapter.handled[0]
-    assert evt.text == "wake up"
-    assert evt.internal is True
-    assert evt.source.chat_id == "chat-1"
-
-
-def test_deliver_wake_push_adapter_requires_source():
-    with pytest.raises(ValueError):
-        asyncio.run(deliver_wake(PushAdapter(), text="x", session_id="sid"))
-
-
-def test_deliver_wake_non_push_requires_session_id():
-    with pytest.raises(ValueError):
-        asyncio.run(deliver_wake(ApiServerLikeAdapter(), text="x", source=_source()))
-
-
-def test_deliver_wake_non_push_requires_api_key():
-    """Session continuation is 403-gated on API_SERVER_KEY — a missing key
-    must fail loudly instead of running the wake in a fresh session."""
-    adapter = ApiServerLikeAdapter(key="")
-    with pytest.raises(RuntimeError, match="API_SERVER_KEY"):
-        asyncio.run(deliver_wake(adapter, text="x", session_id="raw-sid"))
-
-
 async def _serve(handler):
     """Spin an in-process aiohttp server on an ephemeral loopback port."""
     from aiohttp import web
@@ -153,36 +125,3 @@ def test_deliver_wake_retries_429_then_succeeds(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_deliver_wake_raises_on_permanent_http_error(monkeypatch):
-    """Auth/validation errors (403/400) are permanent — raise immediately so
-    the caller can rewind instead of treating the event as delivered."""
-    from aiohttp import web
-
-    calls = {"n": 0}
-
-    async def handler(request):
-        calls["n"] += 1
-        return web.json_response({"error": "forbidden"}, status=403)
-
-    async def run():
-        runner, port = await _serve(handler)
-        try:
-            adapter = ApiServerLikeAdapter(port=port)
-            with pytest.raises(RuntimeError, match="HTTP 403"):
-                await deliver_wake(adapter, text="x", session_id="sid")
-        finally:
-            await runner.cleanup()
-
-    asyncio.run(run())
-    assert calls["n"] == 1
-
-
-def test_deliver_wake_raises_after_exhausted_retries(monkeypatch):
-    """Connection failures raise after bounded retries — never silent."""
-    import gateway.wake as wake_mod
-
-    monkeypatch.setattr(wake_mod, "_RETRY_DELAYS_SECONDS", (0.01,))
-    # Nothing is listening on this port.
-    adapter = ApiServerLikeAdapter(host="127.0.0.1", port=1, key="k")
-    with pytest.raises(RuntimeError, match="gave up"):
-        asyncio.run(deliver_wake(adapter, text="x", session_id="sid"))

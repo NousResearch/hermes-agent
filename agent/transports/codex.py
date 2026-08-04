@@ -28,6 +28,52 @@ def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
     return f"pck_{digest}"
 
 
+# Wire-name used when Hermes keeps client-side web_search on xAI Responses.
+# A function literally named ``web_search`` collides with Grok's native
+# server-side tool (incomplete hang or HTTP 400 duplicate names); this alias
+# avoids that while still dispatching through Hermes's configured provider
+# (Firecrawl / Tavily / …). Mapped back to ``web_search`` in normalize_response.
+_XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
+
+
+def _xai_prefers_native_web_search() -> bool:
+    """True when xAI Responses should use Grok's native ``web_search`` built-in.
+
+    Delegates to the web-search registry's provider resolution (which reads
+    ``web.search_backend`` / ``web.backend`` from config) and checks whether
+    the resolved provider is xAI. Falls back to the legacy ``_get_search_backend``
+    probe when the registry has no providers loaded. On any resolution failure,
+    returns True (fail-closed to native — preserves the #48108 incomplete-hang
+    fix rather than risk reintroducing it).
+    """
+    try:
+        from agent.web_search_registry import get_active_search_provider
+
+        provider = get_active_search_provider()
+        if provider is not None:
+            return getattr(provider, "name", None) == "xai"
+
+        from tools.web_tools import _get_search_backend
+
+        return (_get_search_backend() or "").strip().lower() == "xai"
+    except Exception:
+        # Fail closed to native — same behavior as pre-fix main.
+        return True
+
+
+def _rename_client_web_search_for_xai(response_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rename client ``web_search`` → alias so xAI won't hijack it server-side."""
+    rewritten: List[Dict[str, Any]] = []
+    for tool in response_tools:
+        if isinstance(tool, dict) and tool.get("name") == "web_search":
+            aliased = dict(tool)
+            aliased["name"] = _XAI_CLIENT_WEB_SEARCH_ALIAS
+            rewritten.append(aliased)
+        else:
+            rewritten.append(tool)
+    return rewritten
+
+
 _EXTENDED_PROMPT_CACHE_MODELS = (
     "gpt-5.5-pro",
     "gpt-5.5",
@@ -232,63 +278,41 @@ class ResponsesApiTransport(ProviderTransport):
 
         response_tools = _responses_tools(tools)
 
-        # xAI server-side web search.
+        # xAI server-side web search vs Hermes web providers.
         #
-        # grok models on xAI's /v1/responses surface (notably
-        # grok-composer-2.5-fast on SuperGrok OAuth) have a *native*,
-        # server-executed web search.  When the model is handed a
-        # client-side function literally named ``web_search``, it routes
-        # the intent to that native engine — but because the tool is
-        # declared as a plain ``function`` rather than xAI's first-class
-        # ``{"type": "web_search"}`` built-in, the server-side search is
-        # dispatched but never reconciled: the response streams reasoning
-        # + ``web_search_call`` progress items, the searches never reach
-        # ``status="completed"`` in the assembled output, no final
-        # message is emitted, and ``_normalize_codex_response`` correctly
-        # sees reasoning-with-no-answer and reports ``incomplete``.  The
-        # turn then burns 3 continuation retries and fails with "Codex
-        # response remained incomplete after 3 continuation attempts".
-        # Verified live against grok-composer-2.5-fast (2026-06).
+        # grok models on xAI's /v1/responses surface have a *native*,
+        # server-executed web search.  A client-side function literally named
+        # ``web_search`` collides with that engine: declared as a plain
+        # ``function`` rather than ``{"type": "web_search"}``, the search
+        # dispatches but never reconciles → incomplete turn + 3 retries.
+        # Verified live against grok-composer-2.5-fast (2026-06); see #48108.
         #
-        # Fix: when the agent HAS a client-side ``web_search`` function (i.e.
-        # the user enabled the web toolset), declare xAI's native
-        # ``web_search`` built-in instead so the search actually runs to
-        # completion server-side and the model streams a real answer.  The
-        # Responses API rejects two tools sharing the name ``web_search``
-        # (HTTP 400 "Duplicate tool names"), so we drop the client-side
-        # ``web_search`` function for the xAI path and let the native tool
-        # satisfy it.  All other client-side tools (read_file, terminal,
-        # web_extract, MCP tools, …) are untouched and continue to dispatch
-        # through Hermes's agent loop.
+        # Two modes, chosen by the user's web-search backend config:
         #
-        # Scope: we ONLY swap in the native built-in when the client
-        # ``web_search`` was actually present.  We do NOT force-enable Grok
-        # server-side search on turns where the user never had web enabled —
-        # that would silently route around Hermes's web-provider config and
-        # tool-trace/citation plumbing for every xai-oauth turn.  The swap is
-        # a 1:1 replacement of an already-requested capability, not an
-        # additive grant.
-        #
-        # NOTE: for the swapped case this routes ``web_search`` to Grok's
-        # native search engine for xAI sessions instead of Hermes's
-        # configured web provider (Tavily/etc.), and those results bypass
-        # Hermes's tool-trace / citation plumbing (they arrive baked into the
-        # model's answer rather than as a tool result the loop observes).
-        # Scoped to ``is_xai_responses`` deliberately; narrow to specific
-        # models if a future grok variant should keep the client-side
-        # function.
+        # 1. **Native** (active/configured backend is ``xai``, or resolution
+        #    fails): drop the client ``web_search`` function and declare
+        #    xAI's built-in instead. 1:1 swap only when client ``web_search``
+        #    was already present — never an additive grant.
+        # 2. **Client** (Firecrawl / Tavily / Exa / … configured or resolved):
+        #    keep Hermes dispatch so ``web.backend`` / ``web.search_backend``
+        #    is honored, but rename the wire tool to
+        #    ``hermes_web_search`` so Grok cannot hijack the name. The alias
+        #    is mapped back to ``web_search`` in ``normalize_response``.
         if is_xai_responses and response_tools:
             has_client_web_search = any(
                 isinstance(t, dict) and t.get("name") == "web_search"
                 for t in response_tools
             )
             if has_client_web_search:
-                filtered = [
-                    t for t in response_tools
-                    if not (isinstance(t, dict) and t.get("name") == "web_search")
-                ]
-                filtered.append({"type": "web_search"})
-                response_tools = filtered
+                if _xai_prefers_native_web_search():
+                    filtered = [
+                        t for t in response_tools
+                        if not (isinstance(t, dict) and t.get("name") == "web_search")
+                    ]
+                    filtered.append({"type": "web_search"})
+                    response_tools = filtered
+                else:
+                    response_tools = _rename_client_web_search_for_xai(response_tools)
 
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
@@ -487,9 +511,14 @@ class ResponsesApiTransport(ProviderTransport):
                     provider_data["call_id"] = tc.call_id
                 if hasattr(tc, "response_item_id") and tc.response_item_id:
                     provider_data["response_item_id"] = tc.response_item_id
+                name = tc.function.name if hasattr(tc, "function") else getattr(tc, "name", "")
+                # Undo the xAI client-path wire alias so Hermes dispatches
+                # the real ``web_search`` tool (Firecrawl / etc.).
+                if name == _XAI_CLIENT_WEB_SEARCH_ALIAS:
+                    name = "web_search"
                 tool_calls.append(ToolCall(
-                    id=tc.id if hasattr(tc, "id") else (tc.function.name if hasattr(tc, "function") else None),
-                    name=tc.function.name if hasattr(tc, "function") else getattr(tc, "name", ""),
+                    id=tc.id if hasattr(tc, "id") else (name or None),
+                    name=name,
                     arguments=tc.function.arguments if hasattr(tc, "function") else getattr(tc, "arguments", "{}"),
                     provider_data=provider_data or None,
                 ))
@@ -544,10 +573,13 @@ class ResponsesApiTransport(ProviderTransport):
         *,
         allow_stream: bool = False,
         is_github_responses: bool = False,
+        sanitize_harmony_tokens: bool = False,
     ) -> dict:
         """Validate and sanitize Codex API kwargs before the call.
 
         Normalizes input items, strips unsupported fields, validates structure.
+        ``sanitize_harmony_tokens`` is enabled only for the ChatGPT Codex
+        backend, which rejects literal reserved Harmony wire tokens in text.
         """
         from agent.codex_responses_adapter import _preflight_codex_api_kwargs
 
@@ -555,6 +587,7 @@ class ResponsesApiTransport(ProviderTransport):
             api_kwargs,
             allow_stream=allow_stream,
             is_github_responses=is_github_responses,
+            sanitize_harmony_tokens=sanitize_harmony_tokens,
         )
         if "prompt_cache_key" in normalized:
             bounded = _bounded_prompt_cache_key(normalized["prompt_cache_key"])

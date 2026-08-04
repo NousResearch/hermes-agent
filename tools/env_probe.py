@@ -33,7 +33,6 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 from typing import Optional
@@ -75,6 +74,7 @@ _WAIT_ALREADY_TIMED_OUT = False
 # imports nothing from tools).
 _REMOTE_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
+    "vercel_sandbox",
 })
 
 
@@ -203,6 +203,12 @@ def _build_probe_line() -> str:
     py3_has_pip = _has_pip_module("python3") if py3_ver else False
     pip_bound_to = _pip_python_version()
     py3_pep668 = _detect_pep668("python3") if py3_ver else False
+    # Bare which() is correct here, unlike Hermes's own uv call sites: this
+    # reports the environment *the model will see* in the terminal tool, and
+    # what the model can type is exactly what is on that subshell's PATH.
+    # local.py puts the Hermes-managed $HERMES_HOME/bin there, so a managed-only
+    # install answers yes — without that, claiming uv the model cannot invoke
+    # would be worse than claiming none.
     has_uv = shutil.which("uv") is not None
 
     # If python3 exists, has pip, has uv (or no PEP 668), and there's no

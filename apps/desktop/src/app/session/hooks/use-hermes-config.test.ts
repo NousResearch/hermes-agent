@@ -2,17 +2,20 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $terminalFontFamily, setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
 import {
   $currentCwd,
   $currentFastMode,
   $currentReasoningEffort,
+  $defaultReasoningEffort,
   markComposerSelectionManual,
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModelSource,
-  setCurrentReasoningEffort
+  setCurrentReasoningEffort,
+  setDefaultReasoningEffort
 } from '@/store/session'
 
 import { useHermesConfig } from './use-hermes-config'
@@ -44,7 +47,30 @@ describe('useHermesConfig refreshHermesConfig', () => {
     setCurrentFastMode(false)
     setCurrentModelSource('')
     setCurrentReasoningEffort('')
+    setDefaultReasoningEffort('')
+    setTerminalFontFamilyFromConfig('')
     persistString(WORKSPACE_CWD_KEY, null)
+  })
+
+  // Regression: the composer keeps a manual model pick sticky, which skips the
+  // composer reseed. The profile default must still be published, because the
+  // model picker resolves "the default effort" from it when applying a model's
+  // preset — otherwise selecting a model silently downgrades a configured
+  // `agent.reasoning_effort: high` to Hermes' built-in medium.
+  it('publishes the profile default effort even when a manual pick blocks the composer reseed', async () => {
+    setCurrentModelSource('manual')
+    setCurrentReasoningEffort('low')
+
+    mockConfig({ agent: { reasoning_effort: 'high' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($defaultReasoningEffort.get()).toBe('high')
+    // The manual pick itself is still respected.
+    expect($currentReasoningEffort.get()).toBe('low')
   })
 
   it('does not let terminal.cwd replace an inactive selected workspace', async () => {
@@ -127,5 +153,41 @@ describe('useHermesConfig refreshHermesConfig', () => {
 
     expect($currentReasoningEffort.get()).toBe('low')
     expect($currentFastMode.get()).toBe(false)
+  })
+
+  it('loads the profile terminal font for already-mounted terminal surfaces', async () => {
+    mockConfig({ terminal: { font_family: 'MesloLGS NF' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($terminalFontFamily.get()).toBe('MesloLGS NF')
+  })
+
+  it('does not let an older profile response restore its terminal font', async () => {
+    const profileB = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    const profileC = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    vi.mocked(getHermesConfig).mockReturnValueOnce(profileB.promise).mockReturnValueOnce(profileC.promise)
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    let refreshB!: Promise<void>
+    let refreshC!: Promise<void>
+    act(() => {
+      refreshB = result.current.refreshHermesConfig(true)
+      refreshC = result.current.refreshHermesConfig(true)
+    })
+
+    profileC.resolve({ terminal: { font_family: 'Hack Nerd Font' } })
+    await act(async () => {
+      await refreshC
+    })
+    profileB.resolve({ terminal: { font_family: 'MesloLGS NF' } })
+    await act(async () => {
+      await refreshB
+    })
+
+    expect($terminalFontFamily.get()).toBe('Hack Nerd Font')
   })
 })

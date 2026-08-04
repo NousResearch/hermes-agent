@@ -18,10 +18,7 @@
         map (p: p.passthru.packageJsonPath or null) packages
       );
 
-      # Non-npm packages may have their own devShellHook (e.g. hermes-agent
-      # stamps pyproject.toml + uv.lock for Python venv setup).
-      nonNpmHooks = map (p: p.passthru.devShellHook or "") packages;
-      combinedNonNpm = pkgs.lib.concatStringsSep "\n" (builtins.filter (h: h != "") nonNpmHooks);
+      hermesAgentDevShellHook = self'.packages.default.passthru.devShellHook;
     in
     {
       devShells.default = pkgs.mkShell {
@@ -49,7 +46,7 @@
         ]
         ++ self'.packages.default.passthru.devDeps;
         shellHook = ''
-          ${combinedNonNpm}
+          ${hermesAgentDevShellHook}
           ${hermesNpmLib.mkNpmDevShellHook npmPackageJsonPaths}
 
           # Force Node to use Nix's playwright-test binary instead of node_modules/.bin

@@ -34,6 +34,27 @@ from hermes_constants import (
     with_hermes_node_path,
 )
 
+def _wenv(name: str, default: str = "") -> str:
+    """Read a WHATSAPP_* env var through the profile secret scope.
+
+    Under multiplexing, ``os.getenv`` bypasses the per-profile ``.env`` and
+    returns the process-global value (often unset), causing the bridge to
+    silently fall back to ``"self-chat"`` and reject all messages.
+    ``get_secret`` honors the active ``_profile_runtime_scope`` so secondary
+    profiles see their own credentials.
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        val = get_secret(name)
+    except UnscopedSecretError:
+        # DEFAULT profile's adapter constructs/connects outside any
+        # _profile_runtime_scope under multiplexing; os.environ is that
+        # profile's own value there. Same pattern as Slack SLACK_APP_TOKEN
+        # (#59739) and the Matrix recovery key. A *scoped* miss still
+        # returns the default (no cross-profile borrow).
+        val = os.getenv(name)
+    return val if val is not None else default
+
 logger = logging.getLogger(__name__)
 
 # Inbound owner-typed WhatsApp text is prefixed at MessageEvent construction so
@@ -379,6 +400,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     - allow_from: List of sender IDs allowed in DMs (when dm_policy="allowlist")
     - group_policy: "open" | "allowlist" | "disabled" | "pairing" — which groups are processed (default: "pairing")
     - group_allow_from: List of group JIDs allowed (when group_policy="allowlist")
+    - send_read_receipts: Mark accepted inbound WhatsApp messages as read
 
     Behavior (gating, mention parsing, markdown conversion, chunking) is
     provided by ``WhatsAppBehaviorMixin`` so the Cloud API adapter can
@@ -406,10 +428,33 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
-        self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
-        self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
-        self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
+        self._dm_policy = str(config.extra.get("dm_policy") or _wenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
+        # Prefer config.extra, then the documented WHATSAPP_ALLOWED_USERS env
+        # (setup wizard / pairing mirror). Select by key *presence* so an
+        # explicit empty allow_from: [] stays authoritative and does not fall
+        # through to a lower-precedence env grant. Track which source won so
+        # live DM checks preserve that precedence. Env reads go through the
+        # profile secret scope (_wenv) so multiplexed profiles see their own.
+        if "allow_from" in config.extra:
+            self._dm_allowlist_source = "config"
+            allow_raw = config.extra.get("allow_from")
+        elif "allowFrom" in config.extra:
+            self._dm_allowlist_source = "config"
+            allow_raw = config.extra.get("allowFrom")
+        elif _wenv("WHATSAPP_ALLOWED_USERS"):
+            self._dm_allowlist_source = "WHATSAPP_ALLOWED_USERS"
+            allow_raw = _wenv("WHATSAPP_ALLOWED_USERS")
+        else:
+            self._dm_allowlist_source = None
+            allow_raw = None
+        self._allow_from = self._coerce_allow_list(allow_raw)
+        self._group_policy = str(config.extra.get("group_policy") or _wenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        read_receipts = config.extra.get("send_read_receipts", False)
+        self._send_read_receipts = (
+            read_receipts if isinstance(read_receipts, bool)
+            else str(read_receipts or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -592,17 +637,26 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 # treated as stale by definition.
                                 running_hash = data.get("scriptHash", "")
                                 disk_hash = _file_content_hash(bridge_path)
-                                if running_hash and disk_hash and running_hash == disk_hash:
+                                running_read_receipts = bool(data.get("sendReadReceipts", False))
+                                config_matches = running_read_receipts == self._send_read_receipts
+                                if (
+                                    running_hash
+                                    and disk_hash
+                                    and running_hash == disk_hash
+                                    and config_matches
+                                ):
                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                                     self._mark_connected()
                                     self._bridge_process = None  # Not managed by us
                                     self._http_session = aiohttp.ClientSession()
                                     self._poll_task = asyncio.create_task(self._poll_messages())
                                     return True
-                                print(
-                                    f"[{self.name}] Running bridge is stale "
-                                    f"(running={running_hash or 'unversioned'}, disk={disk_hash}), restarting"
+                                stale_reason = (
+                                    f"running={running_hash or 'unversioned'}, disk={disk_hash}"
+                                    if running_hash != disk_hash
+                                    else "send_read_receipts config changed"
                                 )
+                                print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
@@ -616,7 +670,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Start the bridge process in its own process group.
             # Route output to a log file so QR codes, errors, and reconnection
             # messages are preserved for troubleshooting.
-            whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+            whatsapp_mode = _wenv("WHATSAPP_MODE", "self-chat")
             self._bridge_log = self._session_path.parent / "bridge.log"
             bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_log_fh = bridge_log_fh
@@ -628,6 +682,33 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env = with_hermes_node_path()
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+            bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = (
+                "true" if self._send_read_receipts else "false"
+            )
+            # Under multiplexing, the bridge subprocess runs with a copy of
+            # os.environ that does NOT contain the secondary profile's .env
+            # vars.  Inject the resolved WHATSAPP_* values so the Node bridge
+            # (which reads process.env.WHATSAPP_MODE etc.) sees the profile's
+            # own configuration instead of falling back to self-chat defaults.
+            _profile_wa_mode = _wenv("WHATSAPP_MODE", "self-chat")
+            if _profile_wa_mode:
+                bridge_env["WHATSAPP_MODE"] = _profile_wa_mode
+            for _key in (
+                "WHATSAPP_ALLOWED_USERS", "WHATSAPP_ALLOW_FROM",
+                "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY",
+                "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_GROUP_ALLOW_FROM",
+                "WHATSAPP_REQUIRE_MENTION", "WHATSAPP_MENTION_PATTERNS",
+                "WHATSAPP_FREE_RESPONSE_CHATS",
+                # Full set bridge.js consumes -- without these a secondary
+                # profile's bridge silently reverts to defaults for debug,
+                # forwarding, prefixes, and send pacing.
+                "WHATSAPP_DEBUG", "WHATSAPP_FORWARD_OWNER_MESSAGES",
+                "WHATSAPP_REPLY_PREFIX", "WHATSAPP_MAX_MESSAGE_LENGTH",
+                "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
+            ):
+                _v = _wenv(_key)
+                if _v:
+                    bridge_env[_key] = _v
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
             # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges
@@ -1253,6 +1334,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         for msg_data in messages:
                             event = await self._build_message_event(msg_data)
                             if event:
+                                # Fire-and-forget: a slow bridge /read must not
+                                # delay message dispatch (matches BlueBubbles
+                                # asyncio.create_task pattern for mark_read).
+                                asyncio.create_task(self._send_read_receipt(msg_data))
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:
@@ -1268,6 +1353,30 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 await asyncio.sleep(5)
             
             await asyncio.sleep(1)  # Poll interval
+
+    async def _send_read_receipt(self, data: Dict[str, Any]) -> None:
+        """Mark a policy-accepted inbound message as read via the bridge."""
+        if not self._send_read_receipts or not self._http_session:
+            return
+        key = data.get("readReceiptKey")
+        if not isinstance(key, dict):
+            return
+        try:
+            import aiohttp
+
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/read",
+                json={"key": key},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        "[%s] WhatsApp read receipt failed with HTTP %s",
+                        self.name,
+                        resp.status,
+                    )
+        except Exception as exc:
+            logger.warning("[%s] WhatsApp read receipt failed: %s", self.name, exc)
 
     # ── Text debounce batching ──────────────────────────────────────
 
@@ -1438,6 +1547,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             body = data.get("body", "")
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
+            if (
+                msg_type == MessageType.VOICE
+                and cached_urls
+                and str(body).strip().lower() == "[ptt received]"
+            ):
+                # The bridge synthesizes this placeholder for captionless voice
+                # notes. The cached audio is the real payload; retaining the
+                # placeholder makes the agent answer it as if it were user text.
+                body = ""
 
             # If this is a reply, keep the quoted message in structured fields
             # only. GatewayRunner._prepare_inbound_message_text owns rendering

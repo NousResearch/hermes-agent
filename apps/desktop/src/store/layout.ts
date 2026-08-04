@@ -2,6 +2,7 @@ import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
@@ -37,10 +38,14 @@ const RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY = 'hermes.desktop.rightRailActiveTab'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
 export const FILE_BROWSER_PANE_ID = 'file-browser'
+/** The file tree's id in the LAYOUT TREE — distinct from the pane-state id
+ *  above, which keys its open/width record. Toggles need both. */
+export const FILES_PANE_ID = 'files'
 export const PREVIEW_PANE_ID = 'preview'
-export const RIGHT_RAIL_PREVIEW_TAB_ID = 'preview'
 
-export type RightRailTabId = typeof RIGHT_RAIL_PREVIEW_TAB_ID | `file:${string}`
+/** Every rail tab is a preview of something, namespaced by what backs it: a
+ *  path on disk, a live URL, or an id into the in-memory artifact registry. */
+export type RightRailTabId = `artifact:${string}` | `file:${string}` | `url:${string}`
 
 ensurePaneRegistered(CHAT_SIDEBAR_PANE_ID, { open: true })
 ensurePaneRegistered(FILE_BROWSER_PANE_ID, { open: false })
@@ -56,13 +61,12 @@ export const $fileBrowserOpen: ReadableAtom<boolean> = computed(
   states => states[FILE_BROWSER_PANE_ID]?.open ?? false
 )
 
-// Persisted so a relaunch reopens the same rail tab. A restored file-tab id with
-// no matching tab is reconciled back to the preview tab in the preview store.
-export const $rightRailActiveTabId = persistentAtom<RightRailTabId>(
-  RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY,
-  RIGHT_RAIL_PREVIEW_TAB_ID,
-  { decode: raw => raw as RightRailTabId, encode: tabId => tabId }
-)
+// Persisted so a relaunch reopens the same rail tab. Null when the rail has no
+// tabs; a restored id with no matching tab is reconciled in the preview store.
+export const $rightRailActiveTabId = persistentAtom<RightRailTabId | null>(RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY, null, {
+  decode: raw => (raw ? (raw as RightRailTabId) : null),
+  encode: tabId => tabId ?? ''
+})
 
 export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states => {
   const override = states[CHAT_SIDEBAR_PANE_ID]?.widthOverride
@@ -221,6 +225,21 @@ export function dismissAutoProject(id: string): void {
   }
 }
 
+// Auto projects dismissed from the overview stay out of every surface that
+// lists projects (sidebar + ⌘K). Explicit rows never match.
+export function filterVisibleProjects<T extends { id: string; isAuto?: boolean }>(
+  projects: readonly T[],
+  dismissedIds: readonly string[] = $dismissedAutoProjectIds.get()
+): T[] {
+  if (!dismissedIds.length) {
+    return projects as T[]
+  }
+
+  const dismissed = new Set(dismissedIds)
+
+  return projects.filter(project => !(project.isAuto && dismissed.has(project.id)))
+}
+
 // Hide a worktree row after it's been removed via git.
 export function dismissWorktree(id: string): void {
   const current = $dismissedWorktreeIds.get()
@@ -272,9 +291,23 @@ export function toggleSidebarOpen() {
 }
 
 export function toggleFileBrowserOpen() {
-  if (!revealNarrowPane(FILE_BROWSER_PANE_ID, 'toggle')) {
-    togglePane(FILE_BROWSER_PANE_ID)
+  if (revealNarrowPane(FILE_BROWSER_PANE_ID, 'toggle')) {
+    return
   }
+
+  // Ask the TREE, not the pane's boolean. `$fileBrowserOpen` stays true while
+  // the tree pane sits behind a sibling tab in the shared right column (the
+  // preview rail, the diff) or inside a minimized zone, so ⌘J spent its press
+  // re-asserting a value it already held and read as a dead key. Only fold the
+  // side when the tree is genuinely the thing on screen; otherwise bring it
+  // forward through the reveal path, which fronts and un-minimizes.
+  if (!isPaneVisible(FILES_PANE_ID) && $fileBrowserOpen.get()) {
+    revealTreePane(FILES_PANE_ID)
+
+    return
+  }
+
+  togglePane(FILE_BROWSER_PANE_ID)
 }
 
 export function setFileBrowserOpen(open: boolean) {
@@ -308,7 +341,7 @@ export function togglePanesFlipped() {
   $panesFlipped.set(!$panesFlipped.get())
 }
 
-export function selectRightRailTab(id: RightRailTabId) {
+export function selectRightRailTab(id: RightRailTabId | null) {
   $rightRailActiveTabId.set(id)
 }
 

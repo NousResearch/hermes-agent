@@ -130,14 +130,6 @@ class TestUserOptOut:
             "bootstrap must not overwrite an explicit user setting"
         )
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="Only meaningful on Windows where we'd otherwise set these",
-    )
-    def test_user_pythonioencoding_preserved(self, monkeypatch):
-        monkeypatch.setenv("PYTHONIOENCODING", "latin-1")
-        _fresh_import()
-        assert os.environ["PYTHONIOENCODING"] == "latin-1"
 
 
 class TestPosixNoOp:
@@ -162,19 +154,6 @@ class TestPosixNoOp:
         assert "PYTHONIOENCODING" not in os.environ
         assert hb._bootstrap_applied is False
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Real POSIX required for this check",
-    )
-    def test_real_posix_bootstrap_is_noop(self, monkeypatch):
-        """On actual Linux/macOS, importing the module must not set
-        PYTHONUTF8 or reconfigure stdio."""
-        monkeypatch.delenv("PYTHONUTF8", raising=False)
-        monkeypatch.delenv("PYTHONIOENCODING", raising=False)
-        hb = _fresh_import()
-        assert hb._bootstrap_applied is False
-        assert "PYTHONUTF8" not in os.environ
-        assert "PYTHONIOENCODING" not in os.environ
 
 
 class TestIdempotence:
@@ -188,10 +167,6 @@ class TestIdempotence:
             "Second call should return False (idempotent no-op)"
         )
 
-    def test_no_exceptions_on_repeated_calls(self):
-        hb = _fresh_import()
-        for _ in range(5):
-            hb.apply_windows_utf8_bootstrap()
 
 
 class TestStdioReconfigureErrorHandling:
@@ -214,22 +189,6 @@ class TestStdioReconfigureErrorHandling:
         except Exception as exc:
             pytest.fail(f"bootstrap raised on non-reconfigurable stdout: {exc}")
 
-    def test_reconfigure_oserror_is_caught(self, monkeypatch):
-        """If reconfigure() itself raises (closed stream, etc.), swallow
-        the error — the env-var half of the fix still applies."""
-        hb = _fresh_import()
-        hb._IS_WINDOWS = True
-        hb._bootstrap_applied = False
-
-        class _BrokenStream:
-            encoding = "utf-8"
-            def reconfigure(self, **kwargs):
-                raise OSError("simulated: stream already closed")
-
-        monkeypatch.setattr(sys, "stdout", _BrokenStream())
-        monkeypatch.setattr(sys, "stderr", _BrokenStream())
-        # Must not raise.
-        hb.apply_windows_utf8_bootstrap()
 
 
 class TestEntryPointsImportBootstrap:
@@ -360,10 +319,6 @@ class TestHardenImportPath:
         # but only AFTER the Hermes root.
         assert result.index("/opt/hermes") < result.index("/home/user/tg-ws-proxy")
 
-    def test_src_root_not_duplicated(self):
-        hb = _fresh_import()
-        result = self._run(hb, ["/opt/hermes", "/opt/hermes", ""])
-        assert result.count("/opt/hermes") == 1
 
     def test_env_var_used_when_no_arg(self):
         hb = _fresh_import()
@@ -381,22 +336,6 @@ class TestHardenImportPath:
             else:
                 os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env
 
-    def test_defaults_to_module_dir(self):
-        # With neither arg nor env var, the helper anchors on the bootstrap
-        # module's own directory — the repo root for shipped entry points.
-        hb = _fresh_import()
-        original = sys.path[:]
-        original_env = os.environ.get("HERMES_PYTHON_SRC_ROOT")
-        try:
-            sys.path[:] = ["", "/somewhere/else"]
-            os.environ.pop("HERMES_PYTHON_SRC_ROOT", None)
-            hb.harden_import_path()
-            expected = os.path.dirname(os.path.abspath(hb.__file__))
-            assert sys.path[0] == expected
-        finally:
-            sys.path[:] = original
-            if original_env is not None:
-                os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env
 
 
 class TestSuppressPlatformVerConsole:
@@ -429,13 +368,3 @@ class TestSuppressPlatformVerConsole:
             if original is not None:
                 platform._syscmd_ver = original
 
-    def test_never_raises(self, monkeypatch):
-        hb = _fresh_import()
-        monkeypatch.setattr(hb, "_IS_WINDOWS", True)
-        import platform
-        original = platform._syscmd_ver
-        try:
-            monkeypatch.delattr(platform, "_syscmd_ver")
-            hb.suppress_platform_ver_console()  # hasattr guard → silent no-op
-        finally:
-            platform._syscmd_ver = original

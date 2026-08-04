@@ -77,6 +77,7 @@ declare module '@hermes/ink' {
   }
 
   export type ScrollBoxHandle = {
+    readonly adjustScrollTop: (dy: number) => void
     readonly scrollTo: (y: number) => void
     readonly scrollBy: (dy: number) => void
     readonly scrollToElement: (el: unknown, offset?: number) => void
@@ -104,6 +105,7 @@ declare module '@hermes/ink' {
   export const NoSelect: React.ComponentType<any>
   export const ScrollBox: React.ComponentType<any>
   export const Text: React.ComponentType<any>
+  export function setDimFallbackColor(color: string | undefined): void
   export const TextInput: React.ComponentType<any>
   export const stringWidth: (s: string) => number
   export function isXtermJs(): boolean
@@ -166,7 +168,11 @@ declare module '@hermes/ink' {
     readonly write: (data: string) => boolean
   }
   export function useTerminalFocus(): boolean
-  export function useTerminalTitle(title: string | null): void
+  export function useTerminalTitle(title: string | TerminalTitlePair | null): void
+  export interface TerminalTitlePair {
+    tab?: string
+    window?: string
+  }
   export function useDeclaredCursor(args: {
     readonly line: number
     readonly column: number

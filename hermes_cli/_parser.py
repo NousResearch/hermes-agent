@@ -147,6 +147,18 @@ def build_top_level_parser():
             "under model.provider — use `hermes setup` or edit the file to change it."
         ),
     )
+    _inherited_flag(
+        parser,
+        "--reasoning",
+        default=None,
+        metavar="LEVEL",
+        help=(
+            "Reasoning effort for this invocation: none, minimal, low, medium, "
+            "high, xhigh, max, or ultra. Overrides agent.reasoning_effort in "
+            "config.yaml for this run only; the persistent level lives there "
+            "(or per-model under agent.reasoning_overrides)."
+        ),
+    )
     parser.add_argument(
         "-t",
         "--toolsets",
@@ -301,6 +313,17 @@ def build_top_level_parser():
     )
     _inherited_flag(
         chat_parser,
+        "--reasoning",
+        default=argparse.SUPPRESS,
+        metavar="LEVEL",
+        help=(
+            "Reasoning effort for this session: none, minimal, low, medium, "
+            "high, xhigh, max, or ultra. Overrides agent.reasoning_effort for "
+            "this run only (same levels as the /reasoning slash command)."
+        ),
+    )
+    _inherited_flag(
+        chat_parser,
         "-s",
         "--skills",
         action="append",
@@ -382,7 +405,7 @@ def build_top_level_parser():
         type=int,
         default=None,
         metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
+        help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
     )
     _inherited_flag(
         chat_parser,

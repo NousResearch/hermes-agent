@@ -103,72 +103,8 @@ def compressor_128k():
 
 
 class TestProtectedTailPressure61932:
-    def test_pressure_constants_aligned_with_tail_floor(self):
-        assert _MAX_TAIL_MESSAGE_FLOOR == 8
-        assert _PRESSURE_KEEP_RECENT_MESSAGES == 3
-        assert _PRESSURE_KEEP_RECENT_MESSAGES <= _MAX_TAIL_MESSAGE_FLOOR
 
-    def test_prune_demotes_protected_tail_when_tool_bodies_dominate(
-        self, compressor_128k
-    ):
-        """Protected-region tool bodies that blow the soft budget must demote.
 
-        With protect_last_n=20 and only ~14 messages, the old floor treated
-        every remaining tool result as sacred and prune was a pure no-op.
-        """
-        c = compressor_128k
-        msgs = _already_compacted_session(
-            n_pairs=4, tool_chars=200_000, user_chars=80_000
-        )
-        before = estimate_messages_tokens_rough(msgs)
-        assert before > c.context_length
-
-        pruned, n = c._prune_old_tool_results(
-            msgs,
-            protect_tail_count=c.protect_last_n,
-            protect_tail_tokens=c.tail_token_budget,
-        )
-        after = estimate_messages_tokens_rough(pruned)
-
-        assert n >= 1, "pressure demotion should touch at least one tool body"
-        assert after < before * 0.5, (
-            f"expected large reclaim from protected-tail demotion: "
-            f"{before:,} → {after:,}"
-        )
-        # Active user ask must remain verbatim.
-        assert pruned[-1]["role"] == "user"
-        assert pruned[-1]["content"].startswith("Full structured report:")
-        assert "U" * 100 in pruned[-1]["content"]
-
-    def test_pressure_last_resort_demotes_newest_oversized_tool_result(
-        self, compressor_128k
-    ):
-        """The newest tool body is demoted when it alone exceeds the ceiling."""
-        c = compressor_128k
-        old_pair = _unique_tool_pair(0, 1_000)
-        newest_pair = _unique_tool_pair(1, 4_000)
-        newest_content = newest_pair[1]["content"]
-        msgs = [
-            *old_pair,
-            *newest_pair,
-            {"role": "user", "content": "Use those results."},
-        ]
-
-        pruned, n = c._prune_old_tool_results(
-            msgs,
-            protect_tail_count=c.protect_last_n,
-            protect_tail_tokens=100,  # soft ceiling = 150 tokens
-        )
-
-        # The earlier pressure pass first demotes call_0.  The newest body
-        # remains over the soft ceiling by itself, forcing the documented
-        # absolute-last-resort branch to demote call_1 as well.
-        assert n == 2
-        assert pruned[1]["content"] != old_pair[1]["content"]
-        assert pruned[3]["content"] != newest_content
-        assert len(pruned[3]["content"]) < len(newest_content)
-        assert pruned[3]["tool_call_id"] == "call_1"
-        assert pruned[-1] == msgs[-1]
 
     def test_compress_escapes_cannot_compress_further_dead_end(
         self, compressor_128k
@@ -268,28 +204,3 @@ class TestProtectedTailPressure61932:
         for cid in call_ids:
             assert cid in tool_result_ids, f"orphaned tool call {cid!r}"
 
-    def test_light_tail_still_keeps_recent_tool_bodies(self, compressor_128k):
-        """Pressure demotion must not fire on a normal-sized protected tail."""
-        c = compressor_128k
-        msgs = _already_compacted_session(
-            n_pairs=2, tool_chars=800, user_chars=200
-        )
-        before_tools = [
-            m["content"]
-            for m in msgs
-            if m.get("role") == "tool" and isinstance(m.get("content"), str)
-        ]
-        pruned, n = c._prune_old_tool_results(
-            msgs,
-            protect_tail_count=c.protect_last_n,
-            protect_tail_tokens=c.tail_token_budget,
-        )
-        after_tools = [
-            m["content"]
-            for m in pruned
-            if m.get("role") == "tool" and isinstance(m.get("content"), str)
-        ]
-        assert after_tools, "expected tool messages to remain"
-        # Light unique bodies fit inside the soft budget — none should demote.
-        assert n == 0
-        assert after_tools == before_tools

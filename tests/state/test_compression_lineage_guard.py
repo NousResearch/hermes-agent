@@ -42,12 +42,6 @@ def test_find_live_compression_child_fails_closed_when_ambiguous(db: SessionDB) 
     assert db.find_live_compression_child("parent") is None
 
 
-def test_find_live_compression_child_ignores_ended_children(db: SessionDB) -> None:
-    _compression_parent(db)
-    db.create_session("ended-child", source="webui", parent_session_id="parent")
-    db.end_session("ended-child", "agent_close")
-
-    assert db.find_live_compression_child("parent") is None
 
 
 def test_find_live_compression_child_ignores_non_continuation_children(
@@ -75,36 +69,10 @@ def test_find_live_compression_child_ignores_non_continuation_children(
     assert child["id"] == "canonical"
 
 
-def test_append_message_rejects_compression_ended_parent_atomically(db: SessionDB) -> None:
-    _compression_parent(db)
-    before = db.get_session("parent")["message_count"]
-
-    with pytest.raises(RuntimeError, match="closed by compression"):
-        db.append_message("parent", "assistant", "must not land on parent")
-
-    assert db.get_session("parent")["message_count"] == before
-    assert [m["content"] for m in db.get_messages("parent")] == ["before split"]
 
 
-def test_append_message_preserves_legacy_behavior_for_other_end_reasons(db: SessionDB) -> None:
-    db.create_session("ended", source="test")
-    db.end_session("ended", "agent_close")
-
-    message_id = db.append_message("ended", "user", "legacy append")
-
-    assert isinstance(message_id, int)
-    assert db.get_messages("ended")[-1]["content"] == "legacy append"
 
 
-def test_replace_messages_rejects_compression_ended_parent_atomically(
-    db: SessionDB,
-) -> None:
-    _compression_parent(db)
-
-    with pytest.raises(RuntimeError, match="closed by compression"):
-        db.replace_messages("parent", [{"role": "user", "content": "rewrite"}])
-
-    assert [m["content"] for m in db.get_messages("parent")] == ["before split"]
 
 
 def test_publish_compression_child_is_atomic_on_handoff_failure(

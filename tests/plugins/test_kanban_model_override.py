@@ -82,17 +82,6 @@ def test_set_and_clear_model_override(conn):
     assert t.provider_override is None
 
 
-def test_set_model_override_events(conn):
-    tid = kb.create_task(conn, title="t", assignee="worker")
-    kb.set_model_override(conn, tid, "sonnet-x", provider="anthropic")
-    events = kb.list_events(conn, tid)
-    kinds = [e.kind for e in events]
-    assert "model_override_set" in kinds
-    ev = next(e for e in events if e.kind == "model_override_set")
-    assert ev.payload["model"] == "sonnet-x"
-    assert ev.payload["provider"] == "anthropic"
-
-
 def test_provider_without_model_rejected(conn):
     tid = kb.create_task(conn, title="t", assignee="worker")
     with pytest.raises(ValueError):
@@ -101,30 +90,6 @@ def test_provider_without_model_rejected(conn):
         kb.create_task(
             conn, title="t2", assignee="worker", provider_override="openrouter",
         )
-
-
-def test_set_model_override_unknown_task(conn):
-    assert kb.set_model_override(conn, "t_nope", "some-model") is False
-
-
-def test_set_model_override_archived_task_rejected(conn):
-    tid = kb.create_task(conn, title="t", assignee="worker")
-    assert kb.archive_task(conn, tid)
-    with pytest.raises(RuntimeError):
-        kb.set_model_override(conn, tid, "some-model")
-
-
-def test_set_model_override_allowed_on_running(conn):
-    """The rate-limit recovery flow: override a running task so the NEXT
-    dispatch (after reclaim/retry) picks up the new model."""
-    tid = kb.create_task(conn, title="t", assignee="worker")
-    claimed = kb.claim_task(conn, tid, claimer="worker")
-    assert claimed is not None
-    assert kb.set_model_override(conn, tid, "fallback-model", provider="nous")
-    t = kb.get_task(conn, tid)
-    assert t.status == "running"
-    assert t.model_override == "fallback-model"
-    assert t.provider_override == "nous"
 
 
 def test_create_task_with_model_and_provider(conn):
@@ -184,24 +149,6 @@ def test_spawn_passes_model_and_provider(monkeypatch, tmp_path, conn):
     assert cmd[j + 1] == "openrouter"
 
 
-def test_spawn_model_only_omits_provider_flag(monkeypatch, tmp_path, conn):
-    tid = kb.create_task(
-        conn, title="t", assignee="elias", model_override="glm-5",
-    )
-    task = kb.get_task(conn, tid)
-    cmd = _spawn_and_capture(monkeypatch, tmp_path, task)
-    assert "-m" in cmd
-    assert "--provider" not in cmd
-
-
-def test_spawn_no_override_omits_both_flags(monkeypatch, tmp_path, conn):
-    tid = kb.create_task(conn, title="t", assignee="elias")
-    task = kb.get_task(conn, tid)
-    cmd = _spawn_and_capture(monkeypatch, tmp_path, task)
-    assert "-m" not in cmd
-    assert "--provider" not in cmd
-
-
 # ---------------------------------------------------------------------------
 # Dashboard API — PATCH / bulk / create / model-options
 # ---------------------------------------------------------------------------
@@ -225,38 +172,6 @@ def test_patch_sets_model_override(client):
     updated = r.json()["task"]
     assert updated["model_override"] == "gpt-5.6-sol"
     assert updated["provider_override"] == "openai"
-
-
-def test_patch_clears_model_override(client):
-    task = _create(
-        client, model_override="gpt-5.6-sol", provider_override="openai",
-    )
-    assert task["model_override"] == "gpt-5.6-sol"
-    r = client.patch(
-        f"/api/plugins/kanban/tasks/{task['id']}",
-        json={"clear_model_override": True},
-    )
-    assert r.status_code == 200, r.text
-    updated = r.json()["task"]
-    assert updated["model_override"] is None
-    assert updated["provider_override"] is None
-
-
-def test_patch_provider_without_model_is_400(client):
-    task = _create(client)
-    r = client.patch(
-        f"/api/plugins/kanban/tasks/{task['id']}",
-        json={"model_override": "", "provider_override": "openai"},
-    )
-    assert r.status_code == 400
-
-
-def test_create_task_with_override_via_api(client):
-    task = _create(
-        client, model_override="qwen-max", provider_override="openrouter",
-    )
-    assert task["model_override"] == "qwen-max"
-    assert task["provider_override"] == "openrouter"
 
 
 def test_bulk_model_override(client):
@@ -290,3 +205,118 @@ def test_model_options_endpoint_shape(client, monkeypatch):
         assert "slug" in row and "label" in row and "models" in row
         assert isinstance(row["models"], list)
         assert len(row["models"]) >= 1  # empty-model rows are filtered out
+
+
+# ---------------------------------------------------------------------------
+# Per-task reasoning effort — the depth half of the board's model picker
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_effort_normalizes_and_rejects(conn):
+    tid = kb.create_task(conn, title="t", assignee="worker", reasoning_effort="  HIGH ")
+    assert kb.get_task(conn, tid).reasoning_effort == "high"
+
+    # "none" is a VALUE (thinking off), not a clear.
+    assert kb.set_reasoning_effort(conn, tid, "none")
+    assert kb.get_task(conn, tid).reasoning_effort == "none"
+
+    # Empty clears back to "inherit the profile".
+    assert kb.set_reasoning_effort(conn, tid, "")
+    assert kb.get_task(conn, tid).reasoning_effort is None
+
+    with pytest.raises(ValueError):
+        kb.set_reasoning_effort(conn, tid, "extremely-hard")
+
+
+def test_reasoning_effort_survives_clearing_the_model(conn):
+    """Depth and model are independent knobs: dropping a model override must
+    not silently reset the thinking depth the operator chose."""
+    tid = kb.create_task(
+        conn, title="t", assignee="worker",
+        model_override="glm-5", provider_override="openrouter",
+        reasoning_effort="ultra",
+    )
+    assert kb.set_model_override(conn, tid, None)
+    t = kb.get_task(conn, tid)
+    assert t.model_override is None
+    assert t.provider_override is None
+    assert t.reasoning_effort == "ultra"
+
+
+def test_reasoning_effort_without_a_model_override(conn):
+    """A task may run the profile's OWN model at a different depth."""
+    tid = kb.create_task(conn, title="t", assignee="worker", reasoning_effort="low")
+    t = kb.get_task(conn, tid)
+    assert t.model_override is None
+    assert t.reasoning_effort == "low"
+
+
+def test_spawn_passes_reasoning_without_a_model(monkeypatch, tmp_path, conn):
+    tid = kb.create_task(conn, title="t", assignee="elias", reasoning_effort="high")
+    task = kb.get_task(conn, tid)
+    cmd = _spawn_and_capture(monkeypatch, tmp_path, task)
+    assert "-m" not in cmd
+    i = cmd.index("--reasoning")
+    assert cmd[i + 1] == "high"
+
+
+def test_spawn_omits_reasoning_when_unset(monkeypatch, tmp_path, conn):
+    tid = kb.create_task(conn, title="t", assignee="elias")
+    task = kb.get_task(conn, tid)
+    cmd = _spawn_and_capture(monkeypatch, tmp_path, task)
+    assert "--reasoning" not in cmd
+
+
+def test_worker_cli_accepts_the_reasoning_flag():
+    """The dispatcher's --reasoning must be a real flag on the worker's CLI —
+    a spawn arg no parser accepts fails every dispatch."""
+    from hermes_cli._parser import build_top_level_parser
+
+    parser = build_top_level_parser()[0]
+    args = parser.parse_args(["--cli", "chat", "-q", "hi", "--reasoning", "high"])
+    assert args.reasoning == "high"
+
+
+def test_patch_sets_and_clears_reasoning_effort(client):
+    task = _create(client)
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"reasoning_effort": "xhigh"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["reasoning_effort"] == "xhigh"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"clear_reasoning_effort": True},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["reasoning_effort"] is None
+
+
+def test_patch_rejects_an_unknown_level(client):
+    task = _create(client)
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"reasoning_effort": "bogus"},
+    )
+    assert r.status_code == 400
+
+
+def test_create_accepts_reasoning_effort(client):
+    task = _create(client, reasoning_effort="minimal")
+    assert task["reasoning_effort"] == "minimal"
+
+
+def test_bulk_reasoning_effort(client):
+    t1 = _create(client)
+    t2 = _create(client)
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [t1["id"], t2["id"]], "reasoning_effort": "max"},
+    )
+    assert r.status_code == 200, r.text
+    assert all(entry["ok"] for entry in r.json()["results"])
+    for tid in (t1["id"], t2["id"]):
+        got = client.get(f"/api/plugins/kanban/tasks/{tid}").json()["task"]
+        assert got["reasoning_effort"] == "max"

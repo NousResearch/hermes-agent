@@ -21,7 +21,17 @@
  *      native bearer when present, else the cookie partition. Cookie-only
  *      routing returns 401 no_cookie for a cookieless native session.
  *
- * All three are trivial once named; the value is the test that pins the
+ *   4. resolveReadinessProbeAuth — the boot readiness probe must authenticate
+ *      the same way the rest of the connection does. A credential-free probe
+ *      against a gated gateway 401s forever; worse, it cannot tell a missing
+ *      route from a rejected session (see backend-health.ts).
+ *
+ *   5. oauthGuardMayHardFail — `auth_required: true` means "this gateway is
+ *      gated", NOT "this gateway speaks OAuth". A password-provider gateway
+ *      can satisfy neither the native-bearer nor the OAuth-partition-cookie
+ *      check by design, so the pre-flight guard must not hard-fail it.
+ *
+ * All five are trivial once named; the value is the test that pins the
  * contract so the god-file call sites can't drift back to the buggy shape.
  */
 
@@ -59,4 +69,76 @@ export function resolveOauthRestAuth(nativeAccessToken: string | null | undefine
   }
 
   return { kind: 'cookie' }
+}
+
+export type ReadinessProbeAuth = OauthRestAuth | { kind: 'token'; token: string | null } | { kind: 'public' }
+
+/**
+ * Decide how the boot readiness probe authenticates.
+ *
+ * The probe must present the SAME credentials the rest of the connection
+ * will use. A credential-free probe against a gated gateway 401s until the
+ * boot deadline even though the session is perfectly valid — and because the
+ * dashboard auth gate runs ahead of the SPA catch-all, an unknown `/api/*`
+ * path answers 401 rather than 404, so the probe also cannot detect a backend
+ * that predates `/api/health`. Sending credentials is what lets a missing
+ * route surface as a real 404 (see `isMissingHealthEndpointError`).
+ *
+ * `oauth` reuses `resolveOauthRestAuth` so the probe and every other oauth
+ * REST call make the identical bearer-vs-cookie choice. `token` presents the
+ * connection's session token. `local` (and anything unrecognized) stays
+ * public: a loopback backend has no gate, and sending credentials it never
+ * issued would be meaningless.
+ */
+export function resolveReadinessProbeAuth(
+  authMode: string | null | undefined,
+  nativeAccessToken?: string | null,
+  connectionToken?: string | null
+): ReadinessProbeAuth {
+  if (authMode === 'oauth') {
+    return resolveOauthRestAuth(nativeAccessToken)
+  }
+
+  if (authMode === 'token') {
+    return { kind: 'token', token: connectionToken ?? null }
+  }
+
+  return { kind: 'public' }
+}
+
+export interface AdvertisedAuthProvider {
+  name?: string
+  supportsPassword?: boolean
+}
+
+/**
+ * Whether the oauth pre-flight guard may hard-fail a connection for "not
+ * signed in".
+ *
+ * `authModeFromStatus` maps the gateway's `auth_required: true` onto
+ * `'oauth'`, but that flag only means the dashboard is GATED — it says
+ * nothing about how you authenticate. A gateway whose providers are all
+ * username/password cannot satisfy the guard's checks by construction:
+ * `start_login` raises NotImplementedError, `/auth/native/authorize` rejects
+ * password providers, and its cookies are set by a plain password-login POST
+ * rather than the `/auth/callback` redirect the OAuth partition is primed
+ * for. Hard-failing there rejects a live session one line before the
+ * ws-ticket mint that would have succeeded against that very partition.
+ *
+ * Returns false only when EVERY advertised provider is password-based. An
+ * unknown or empty list keeps the strict guard, so backends that predate
+ * `/api/auth/providers` are unaffected.
+ */
+export function oauthGuardMayHardFail(providers: AdvertisedAuthProvider[] | null | undefined): boolean {
+  if (!Array.isArray(providers) || providers.length === 0) {
+    return true
+  }
+
+  const named = providers.filter(provider => provider && typeof provider === 'object' && provider.name)
+
+  if (named.length === 0) {
+    return true
+  }
+
+  return !named.every(provider => provider.supportsPassword)
 }

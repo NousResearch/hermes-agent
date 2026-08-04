@@ -43,6 +43,35 @@ def _auth_env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
+def _platform_gate_env(name: str, default: str = "") -> str:
+    """Read a platform allow/deny gate env var with per-profile isolation.
+
+    Like ``_auth_env`` but authoritative under multiplex: when a profile
+    secret scope is installed AND multiplexing is active, a key absent from
+    the scope returns ``default`` instead of falling through to
+    ``os.environ``. Under multiplex the process env may hold ANOTHER
+    profile's first-writer-bridged value (the YAML→env bridges in the
+    Discord/Telegram adapters' ``_apply_yaml_config`` are first-writer-wins),
+    so falling through would leak profile A's allowlist into profile B
+    (issue #72348). Single-profile deployments — no scope installed, or
+    multiplex off — behave exactly like the legacy ``os.getenv`` read.
+    """
+    if not name:
+        return default
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        scope = current_secret_scope()
+        if scope is not None and is_multiplex_active():
+            val = scope.get(name)
+            if val is None:
+                return default
+            return str(val).strip()
+    except Exception:
+        pass
+    return (os.getenv(name) or default).strip()
+
+
 def _coerce_allow_set(raw) -> set[str]:
     """Parse allowlist values from config or env var into a set of strings.
 
@@ -78,6 +107,16 @@ class GatewayAuthorizationMixin:
             return None
         profile_name = (profile or "").strip() or None
         if profile_name and profile_name != "default":
+            active_profile = None
+            active_profile_fn = getattr(self, "_active_profile_name", None)
+            if callable(active_profile_fn):
+                try:
+                    active_profile = active_profile_fn()
+                except Exception:
+                    active_profile = None
+            if profile_name == active_profile:
+                adapters = getattr(self, "adapters", None) or {}
+                return adapters.get(platform)
             profile_adapters = getattr(self, "_profile_adapters", None) or {}
             if profile_name in profile_adapters:
                 return profile_adapters[profile_name].get(platform)
@@ -417,7 +456,7 @@ class GatewayAuthorizationMixin:
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
-                raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
+                raw_chat_allowlist = _platform_gate_env(chat_allowlist_env)
                 if raw_chat_allowlist:
                     allowed_group_ids = {
                         cid.strip()
@@ -459,7 +498,7 @@ class GatewayAuthorizationMixin:
         }
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
-            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+            if allow_bots_var and _platform_gate_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True
 
         if not user_id:
@@ -612,6 +651,26 @@ class GatewayAuthorizationMixin:
                         profile=adapter_profile,
                     )
                 if effective_policy == "allowlist":
+                    # Trust allowlist intake only when the live adapter still
+                    # allowlists this sender. Pairing revoke can clear
+                    # WHATSAPP_ALLOWED_USERS while a construction-time
+                    # ``_allow_from`` snapshot would otherwise keep authorizing
+                    # until restart; re-check when the adapter exposes a DM
+                    # allowlist helper. Adapters without that helper keep the
+                    # historical "reached the gateway under allowlist policy"
+                    # rubber-stamp (#34515).
+                    if source.chat_type not in {"group", "forum", "channel"}:
+                        adapter = self._authorization_adapter(
+                            source.platform,
+                            profile=adapter_profile,
+                        )
+                        dm_check = (
+                            getattr(adapter, "_is_dm_allowed", None)
+                            if adapter is not None
+                            else None
+                        )
+                        if callable(dm_check):
+                            return bool(dm_check(user_id))
                     return True
             # Some adapters (e.g. Telegram) gate access via config.extra.allow_from /
             # group_allow_from at intake but do not override enforces_own_access_policy.
@@ -692,8 +751,9 @@ class GatewayAuthorizationMixin:
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
 
-        # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
-        if source.platform == Platform.WHATSAPP:
+        # WhatsApp (Baileys + Cloud): resolve phone↔LID / JID aliases so
+        # device-suffix and bare-phone allowlist entries match the same principal.
+        if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
             normalized_allowed_ids = set()
             for allowed_id in allowed_ids:
                 normalized_allowed_ids.update(_expand_whatsapp_auth_aliases(allowed_id))
@@ -816,13 +876,13 @@ class GatewayAuthorizationMixin:
                 ),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
             }
-            if os.getenv(platform_env_map.get(platform, ""), "").strip():
+            if _platform_gate_env(platform_env_map.get(platform, "")).strip():
                 return "ignore"
             for env_key in platform_group_env_map.get(platform, ()):
-                if os.getenv(env_key, "").strip():
+                if _platform_gate_env(env_key).strip():
                     return "ignore"
 
-        if os.getenv("GATEWAY_ALLOWED_USERS", "").strip():
+        if _platform_gate_env("GATEWAY_ALLOWED_USERS").strip():
             return "ignore"
 
         return "pair"

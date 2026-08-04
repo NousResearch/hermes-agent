@@ -43,6 +43,7 @@ import {
   $layoutTree,
   $treeDragging,
   type DropHint,
+  isSessionStripPane,
   revealTreePane,
   SESSION_TILE_DRAG
 } from '@/components/pane-shell/tree/store'
@@ -84,7 +85,7 @@ function chatZonePane(groupId: string): null | string {
   const tree = $layoutTree.get()
   const panes = tree ? (findGroup(tree, groupId)?.panes ?? []) : []
 
-  return panes.find(p => p === 'workspace' || p.startsWith('session-tile:')) ?? null
+  return panes.find(isSessionStripPane) ?? null
 }
 
 /**

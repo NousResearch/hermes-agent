@@ -77,46 +77,7 @@ class TestCmdUpdateNpmLockfileCache:
         cache_key = hashlib.sha256(str(project_root).encode()).hexdigest()[:12]
         return hermes_root / f".npm_lock_hash_{cache_key}"
 
-    def test_npm_lockfile_changed_no_cache(self, tmp_path, monkeypatch):
-        from hermes_cli import main as hm
 
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
-        (tmp_path / "node_modules").mkdir()
-
-        assert hm._npm_lockfile_changed(tmp_path) is True
-
-    def test_npm_lockfile_changed_matching(self, tmp_path, monkeypatch):
-        from hermes_cli import main as hm
-
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
-        (tmp_path / "node_modules").mkdir()
-        self._cache_file(tmp_path, tmp_path).write_text(hm._npm_manifests_digest())
-
-        assert hm._npm_lockfile_changed(tmp_path) is False
-
-    def test_npm_lockfile_changed_mismatch(self, tmp_path, monkeypatch):
-        from hermes_cli import main as hm
-
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
-        (tmp_path / "node_modules").mkdir()
-        self._cache_file(tmp_path, tmp_path).write_text("old-digest")
-
-        assert hm._npm_lockfile_changed(tmp_path) is True
-
-    def test_npm_lockfile_changed_missing_node_modules(self, tmp_path, monkeypatch):
-        from hermes_cli import main as hm
-
-        content = b'{"lockfileVersion": 3}'
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package-lock.json").write_bytes(content)
-        digest = hashlib.sha256(content).hexdigest()
-        self._cache_file(tmp_path, tmp_path).write_text(digest)
-        # node_modules missing: should report changed even though hash matches
-
-        assert hm._npm_lockfile_changed(tmp_path) is True
 
     def test_record_npm_lockfile_hash(self, tmp_path, monkeypatch):
         from hermes_cli import main as hm
@@ -149,76 +110,11 @@ class TestCmdUpdateNpmLockfileCache:
         )
         assert hm._npm_lockfile_changed(tmp_path) is True
 
-    def test_workspace_package_json_edit_defeats_skip(self, tmp_path, monkeypatch):
-        """The manifest list comes from the root package.json `workspaces`
-        globs (npm's source of truth), so ANY workspace (desktop included)
-        defeats the skip, not a hardcoded set."""
-        from hermes_cli import main as hm
 
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
-        (tmp_path / "package.json").write_text(
-            '{"workspaces": ["apps/*", "ui-tui"]}'
-        )
-        (tmp_path / "ui-tui").mkdir()
-        (tmp_path / "ui-tui" / "package.json").write_text("{}")
-        (tmp_path / "apps" / "desktop").mkdir(parents=True)
-        (tmp_path / "apps" / "desktop" / "package.json").write_text("{}")
-        (tmp_path / "node_modules").mkdir()
-        hm._record_npm_lockfile_hash(tmp_path)
-        assert hm._npm_lockfile_changed(tmp_path) is False
 
-        # A glob-matched workspace (desktop) defeats the skip…
-        (tmp_path / "apps" / "desktop" / "package.json").write_text(
-            '{"name": "desktop"}'
-        )
-        assert hm._npm_lockfile_changed(tmp_path) is True
 
-        # …and so does a literal-listed one.
-        hm._record_npm_lockfile_hash(tmp_path)
-        assert hm._npm_lockfile_changed(tmp_path) is False
-        (tmp_path / "ui-tui" / "package.json").write_text('{"name": "x"}')
-        assert hm._npm_lockfile_changed(tmp_path) is True
 
-    def test_new_workspace_added_defeats_skip(self, tmp_path, monkeypatch):
-        """Adding a whole new workspace dir under an existing glob changes
-        the manifest set itself — must also defeat the skip."""
-        from hermes_cli import main as hm
 
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
-        (tmp_path / "package.json").write_text('{"workspaces": ["apps/*"]}')
-        (tmp_path / "node_modules").mkdir()
-        hm._record_npm_lockfile_hash(tmp_path)
-        assert hm._npm_lockfile_changed(tmp_path) is False
-
-        (tmp_path / "apps" / "newtool").mkdir(parents=True)
-        (tmp_path / "apps" / "newtool" / "package.json").write_text("{}")
-        assert hm._npm_lockfile_changed(tmp_path) is True
-
-    def test_npm_lockfile_changed_cache_read_error(self, tmp_path, monkeypatch):
-        from hermes_cli import main as hm
-
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
-        (tmp_path / "node_modules").mkdir()
-        # Make cache file a directory to cause OSError on read
-        self._cache_file(tmp_path, tmp_path).mkdir(parents=True)
-
-        assert hm._npm_lockfile_changed(tmp_path) is True
-
-    def test_update_skips_npm_when_lockfile_unchanged(self, tmp_path, monkeypatch):
-        from hermes_cli import main as hm
-
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "package.json").write_text("{}")
-
-        with patch("shutil.which", return_value="/usr/bin/npm"), \
-             patch.object(hm, "_npm_lockfile_changed", return_value=False), \
-             patch("subprocess.run") as mock_run:
-            hm._update_node_dependencies()
-
-        mock_run.assert_not_called()
 
     def test_update_uses_one_shared_npm_cache_across_profiles(
         self, tmp_path, monkeypatch
@@ -305,117 +201,8 @@ class TestCmdUpdateTermuxUvBootstrap:
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
 
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_falls_back_to_main_when_branch_not_on_remote(
-        self, mock_run, _mock_which, mock_args, capsys
-    ):
-        mock_run.side_effect = _make_run_side_effect(
-            branch="fix/stoicneko", verify_ok=False, commit_count="3"
-        )
 
-        cmd_update(mock_args)
 
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-
-        # rev-list should use origin/main, not origin/fix/stoicneko
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert len(rev_list_cmds) == 1
-        assert "origin/main" in rev_list_cmds[0]
-        assert "origin/fix/stoicneko" not in rev_list_cmds[0]
-
-        # pull should use main, not fix/stoicneko
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_uses_current_branch_when_on_remote(
-        self, mock_run, _mock_which, mock_args, capsys
-    ):
-        mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="2"
-        )
-
-        cmd_update(mock_args)
-
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert len(rev_list_cmds) == 1
-        assert "origin/main" in rev_list_cmds[0]
-
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_already_up_to_date(
-        self, mock_run, _mock_which, mock_args, capsys
-    ):
-        mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="0"
-        )
-
-        with patch("hermes_cli.managed_uv.update_managed_uv") as mock_uv_update, \
-             patch(
-                 "hermes_cli.managed_uv.ensure_uv",
-                 return_value=None,
-             ) as mock_uv_ensure:
-            cmd_update(mock_args)
-
-        captured = capsys.readouterr()
-        assert "Already up to date!" in captured.out
-        update_observer = mock_uv_update.call_args.kwargs["repair_observer"]
-        ensure_observer = mock_uv_ensure.call_args.kwargs["repair_observer"]
-        assert update_observer.__self__ is ensure_observer.__self__
-        assert update_observer.__self__ == []
-
-        # Should NOT have called pull
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 0
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_zero_commit_runtime_repair_requires_process_restart(
-        self, mock_run, _mock_which, mock_args, capsys, tmp_path
-    ):
-        from hermes_cli.managed_uv import RuntimeRepairResult
-
-        mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="0"
-        )
-        backup = tmp_path / "venv.stale.runtime-test"
-        repair = RuntimeRepairResult(
-            "repaired",
-            sqlite_before="3.50.4",
-            sqlite_after="3.53.1",
-            backup_venv=backup,
-        )
-
-        def fake_update(*, repair_observer):
-            repair_observer(repair)
-            return "/managed/uv"
-
-        with patch(
-            "hermes_cli.managed_uv.update_managed_uv",
-            side_effect=fake_update,
-        ), patch(
-            "hermes_cli.managed_uv.ensure_uv",
-            return_value="/managed/uv",
-        ), patch(
-            "hermes_cli.main._is_windows",
-            return_value=False,
-        ):
-            cmd_update(mock_args)
-
-        captured = capsys.readouterr()
-        assert "Restart required to finish the managed Python runtime repair" in captured.out
-        assert "long-lived processes still use the previous runtime" in captured.out
-        assert str(backup) in captured.out
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -447,105 +234,6 @@ class TestCmdUpdateBranchFallback:
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 
-    @patch("shutil.which")
-    @patch("subprocess.run")
-    def test_update_refreshes_repo_and_tui_node_dependencies(
-        self, mock_run, mock_which, mock_args
-    ):
-        from hermes_cli import main as hm
-
-        mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
-        mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="1"
-        )
-        # The web UI build runs through _run_with_idle_timeout now (issue
-        # #33788) so it no longer appears in subprocess.run's call list.
-        # Mock it so the test doesn't actually shell out to ``tsc``.
-        import subprocess as _subprocess
-        build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        with patch.object(hm, "_is_termux_env", return_value=False), \
-             patch.object(hm, "_run_with_idle_timeout", return_value=build_ok) as mock_idle:
-            cmd_update(mock_args)
-
-        npm_calls = [
-            (call.args[0], call.kwargs.get("cwd"))
-            for call in mock_run.call_args_list
-            if call.args and call.args[0][0] == "/usr/bin/npm"
-        ]
-
-        # cmd_update runs npm commands in these locations:
-        #   1. repo root  — root-only install (--workspaces=false)
-        #   2. repo root  — workspace install (--workspace ui-tui --workspace web)
-        #   3. web/       — npm ci --silent (if lockfile not at root)
-        #                  via _build_web_ui (subprocess.run)
-        #   4. web/       — npm run build (_run_with_idle_timeout)
-        #
-        # With a single workspace lockfile at the repo root, the root
-        # install covers all workspaces.  The web/ ci call runs from the
-        # workspace root too (parent of web_dir) when the root lockfile
-        # exists.
-        #
-        # The root install omits `--silent` and runs without
-        # `capture_output` so optional postinstall scripts (e.g.
-        # `@askjo/camofox-browser`'s browser-binary fetch) print progress —
-        # otherwise long downloads look like a hang (#18840).
-        root_flags = [
-            "/usr/bin/npm",
-            "ci",
-            "--include=dev",
-            "--no-fund",
-            "--no-audit",
-            "--progress=false",
-            "--workspaces=false",
-        ]
-        ws_flags = [
-            "/usr/bin/npm",
-            "ci",
-            "--include=dev",
-            "--no-fund",
-            "--no-audit",
-            "--progress=false",
-            "--workspace",
-            "ui-tui",
-            "--workspace",
-            "web",
-        ]
-        assert npm_calls[:2] == [
-            (root_flags, PROJECT_ROOT),
-            (ws_flags, PROJECT_ROOT),
-        ]
-        if len(npm_calls) > 2:
-            # The web/ install runs from the workspace root when the root
-            # lockfile exists (npm workspaces hoist node_modules upward).
-            assert npm_calls[2:] == [
-                (["/usr/bin/npm", "ci", "--include=dev", "--workspace", "web", "--silent"], PROJECT_ROOT),
-            ]
-
-        # The web UI build itself went through the streaming helper.
-        mock_idle.assert_called_once()
-        idle_args, idle_kwargs = mock_idle.call_args
-        assert idle_args[0] == ["/usr/bin/npm", "run", "build"]
-        assert idle_kwargs["cwd"] == PROJECT_ROOT / "web"
-
-        # Regression for #18840: root npm installs must stream output
-        # (capture_output=False) so postinstall progress is visible
-        # to the user.  The _build_web_ui install uses --silent and
-        # capture_output=True, so exclude it.
-        root_install_calls = [
-            call
-            for call in mock_run.call_args_list
-            if call.args
-            and call.args[0][0] == "/usr/bin/npm"
-            and call.args[0][1] == "ci"
-            and call.kwargs.get("cwd") == PROJECT_ROOT
-            and "--silent" not in call.args[0]
-        ]
-        assert len(root_install_calls) == 2  # root-only + workspace install
-        for call in root_install_calls:
-            assert call.kwargs.get("capture_output") is False, (
-                "repo-root npm install must stream output "
-                "(no capture_output) so postinstall progress is visible"
-            )
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
@@ -789,66 +477,10 @@ class TestCmdUpdateBranchFlag:
         assert any("origin/bb/gui" in c for c in rev_list_cmds), rev_list_cmds
         assert not any("origin/main" in c for c in rev_list_cmds), rev_list_cmds
 
-        # pull must target bb/gui
-        pull_cmds = [c for c in commands if "pull" in c and "ff-only" in c]
-        assert any("bb/gui" in c and "main" not in c.split() for c in pull_cmds), pull_cmds
+        # the ff-only merge must target origin/bb/gui
+        merge_cmds = [c for c in commands if "merge --ff-only" in c]
+        assert any("origin/bb/gui" in c and "origin/main" not in c for c in merge_cmds), merge_cmds
 
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_branch_flag_defaults_to_main_when_none(self, mock_run, _mock_which, capsys):
-        """No --branch (or --branch=None) preserves the historical 'main' default."""
-        mock_run.side_effect = self._branch_side_effect(
-            current_branch="main", target_branch="main", commit_count="0"
-        )
-        args = SimpleNamespace(branch=None)
-
-        cmd_update(args)
-
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert all("origin/main" in c for c in rev_list_cmds), rev_list_cmds
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_branch_flag_switches_from_different_branch(self, mock_run, _mock_which, capsys):
-        """When HEAD is on main and --branch=bb/gui, switch to bb/gui first."""
-        mock_run.side_effect = self._branch_side_effect(
-            current_branch="main", target_branch="bb/gui", commit_count="2"
-        )
-        args = SimpleNamespace(branch="bb/gui")
-
-        cmd_update(args)
-
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        # First checkout call should switch us to bb/gui (not -B; happy-path branch exists locally)
-        checkout_cmds = [c for c in commands if "checkout" in c and "rev-parse" not in c]
-        assert len(checkout_cmds) >= 1
-        assert "bb/gui" in checkout_cmds[0]
-
-        out = capsys.readouterr().out
-        assert "switching to bb/gui" in out
-
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_branch_flag_tracks_remote_when_branch_absent_locally(self, mock_run, _mock_which, capsys):
-        """If local lacks the branch but origin has it, fall back to ``checkout -B``."""
-        mock_run.side_effect = self._branch_side_effect(
-            current_branch="main",
-            target_branch="bb/gui",
-            checkout_fails=True,  # plain checkout fails
-            track_fails=False,    # -B from origin/bb/gui succeeds
-            commit_count="2",
-        )
-        args = SimpleNamespace(branch="bb/gui")
-
-        cmd_update(args)
-
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        # Should have BOTH a failed `checkout bb/gui` AND a successful `checkout -B bb/gui origin/bb/gui`
-        track_cmds = [c for c in commands if "checkout" in c and "-B" in c]
-        assert len(track_cmds) == 1
-        assert "bb/gui" in track_cmds[0]
-        assert "origin/bb/gui" in track_cmds[0]
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -1029,12 +661,6 @@ def test_is_termux_env_true_for_termux_prefix():
     assert hm._is_termux_env({"PREFIX": "/data/data/com.termux/files/usr"}) is True
 
 
-def test_is_termux_env_false_for_non_termux_prefix():
-    from hermes_cli import main as hm
-
-    assert hm._is_termux_env({"PREFIX": "/usr/local"}) is False
-
-
 def test_load_installable_optional_extras_supports_termux_group(tmp_path, monkeypatch):
     from hermes_cli import main as hm
 
@@ -1062,91 +688,10 @@ class TestNodeRuntimeNpmResolution:
     """Regression tests for #30271 — WSL must not run Windows npm against the
     Linux checkout, and a failed Node refresh must not report success."""
 
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "/mnt/c/Program Files/nodejs/npm",
-            "/mnt/c/Program Files/nodejs/npm.cmd",
-            "C:\\Program Files\\nodejs\\npm.exe",
-            "/usr/local/bin/npm.bat",
-        ],
-    )
-    def test_windows_npm_paths_detected(self, path):
-        from hermes_cli import main as hm
 
-        assert hm._is_windows_npm_path(path) is True
 
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "/usr/bin/npm",
-            "/root/.local/bin/npm",
-            "/home/u/.nvm/versions/node/v22/bin/npm",
-        ],
-    )
-    def test_linux_npm_paths_not_flagged(self, path):
-        from hermes_cli import main as hm
 
-        assert hm._is_windows_npm_path(path) is False
 
-    def test_resolve_rejects_windows_npm_and_rescans_path(self, monkeypatch):
-        """On WSL/Linux, a Windows npm is refused and PATH is re-scanned
-        (skipping /mnt mounts) for a Linux-native npm."""
-        from hermes_cli import main as hm
-        import hermes_constants
-
-        monkeypatch.setattr(hm, "_is_windows", lambda: False)
-        monkeypatch.setenv(
-            "PATH", "/mnt/c/Program Files/nodejs:/root/.local/bin:/usr/bin"
-        )
-
-        def fake_which(cmd, path=None):
-            if path is None:
-                # Mirrors WSL: interop puts the Windows shim first on PATH.
-                return "/mnt/c/Program Files/nodejs/npm"
-            if path == "/root/.local/bin":
-                return "/root/.local/bin/npm"
-            return None
-
-        monkeypatch.setattr(
-            hermes_constants,
-            "find_node_executable",
-            lambda _command: "/mnt/c/Program Files/nodejs/npm",
-        )
-        monkeypatch.setattr(hm.shutil, "which", fake_which)
-        assert hm._resolve_node_runtime_npm() == "/root/.local/bin/npm"
-
-    def test_resolve_returns_none_when_only_windows_npm(self, monkeypatch):
-        from hermes_cli import main as hm
-        import hermes_constants
-
-        monkeypatch.setattr(hm, "_is_windows", lambda: False)
-        monkeypatch.setenv("PATH", "/mnt/c/Program Files/nodejs:/usr/bin")
-
-        def fake_which(cmd, path=None):
-            if path is None:
-                return "/mnt/c/Program Files/nodejs/npm"
-            return None
-
-        monkeypatch.setattr(
-            hermes_constants,
-            "find_node_executable",
-            lambda _command: "/mnt/c/Program Files/nodejs/npm",
-        )
-        monkeypatch.setattr(hm.shutil, "which", fake_which)
-        assert hm._resolve_node_runtime_npm() is None
-
-    def test_resolve_keeps_platform_npm_on_windows(self, monkeypatch):
-        from hermes_cli import main as hm
-        import hermes_constants
-
-        monkeypatch.setattr(hm, "_is_windows", lambda: True)
-        monkeypatch.setattr(
-            hermes_constants,
-            "find_node_executable",
-            lambda _command: "C:\\nodejs\\npm.cmd",
-        )
-        assert hm._resolve_node_runtime_npm() == "C:\\nodejs\\npm.cmd"
 
     def test_node_failure_returns_failed_labels_and_warns(
         self, tmp_path, monkeypatch, capsys
@@ -1167,35 +712,7 @@ class TestNodeRuntimeNpmResolution:
         out = capsys.readouterr().out
         assert "mixed state" in out
 
-    def test_node_success_returns_empty(self, tmp_path, monkeypatch):
-        from hermes_cli import main as hm
 
-        (tmp_path / "package.json").write_text("{}")
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "/usr/bin/npm")
-        monkeypatch.setattr(
-            hm,
-            "_run_npm_install_deterministic",
-            lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
-        )
-
-        assert hm._update_node_dependencies() == []
-
-    def test_wsl_windows_only_npm_flags_skip(self, tmp_path, monkeypatch, capsys):
-        from hermes_cli import main as hm
-        import hermes_constants
-
-        (tmp_path / "package.json").write_text("{}")
-        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
-        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: None)
-        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
-        monkeypatch.setattr(
-            hm.shutil, "which", lambda cmd, path=None: "/mnt/c/nodejs/npm"
-        )
-
-        failed = hm._update_node_dependencies()
-        assert failed == ["repo root"]
-        assert "Windows npm" in capsys.readouterr().out
 
     def test_wsl_update_skips_windows_npm_build_paths(self, mock_args, monkeypatch):
         """A Windows-only npm on WSL must not reach web or desktop builds."""

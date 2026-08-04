@@ -87,7 +87,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -133,6 +133,30 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+
+def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
+    """Normalize a per-task reasoning effort into a storable level.
+
+    Accepts any level in ``hermes_constants.VALID_REASONING_EFFORTS`` plus
+    ``"none"`` (thinking disabled), case-insensitively. Empty / None means
+    "inherit the worker profile's own ``agent.reasoning_effort``" and stores
+    NULL. Anything else is rejected rather than silently dropped — a typo'd
+    level must not quietly hand the task back to the profile default.
+    """
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    value = str(effort or "").strip().lower()
+    if not value:
+        return None
+    if value == "none" or value in VALID_REASONING_EFFORTS:
+        return value
+    allowed = ", ".join(("none", *VALID_REASONING_EFFORTS))
+    raise ValueError(
+        f"reasoning_effort must be one of {allowed}, got {effort!r}"
+    )
+
+
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
@@ -175,7 +199,7 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
     it through.
     """
     try:
-        from hermes_cli.plugins import invoke_hook
+        from hermes_cli.lifecycle import invoke_hook
         from hermes_cli.profiles import get_active_profile_name
         try:
             profile_name = get_active_profile_name()
@@ -673,6 +697,11 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        # Optional first-class Project this board is scoped to. When set, new
+        # tasks inherit it (deterministic worktree + branch under the project's
+        # primary repo) and ``default_workdir`` mirrors the project's primary
+        # path so the persistent-workspace inheritance path keeps working.
+        "project_id": None,
         "created_at": None,
         "archived": False,
     }
@@ -700,11 +729,16 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
     Preserves any existing fields not mentioned in the call. Sets
     ``created_at`` on first write. Returns the resulting metadata dict.
+
+    ``project_id``: ``None`` leaves it unchanged; empty string clears the
+    project scope; a value sets it (not validated here — the caller resolves
+    it against ``projects_db``).
     """
     _assert_not_delegated_child_mutation()
     slug = _normalize_board_slug(board) or DEFAULT_BOARD
@@ -724,6 +758,8 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if project_id is not None:
+        meta["project_id"] = str(project_id) if project_id else None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -744,6 +780,7 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -761,6 +798,7 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        project_id=project_id,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -915,6 +953,12 @@ class Task:
     # model (pre-existing behaviour). Solves the "model from provider A,
     # profile configured for provider B" mismatch class.
     provider_override: Optional[str] = None
+    # Per-task reasoning effort for the worker (one of
+    # ``hermes_constants.VALID_REASONING_EFFORTS``, or ``"none"`` for thinking
+    # off). When set, the dispatcher passes ``--reasoning <level>`` so the
+    # worker runs at that depth regardless of the profile's
+    # ``agent.reasoning_effort``. NULL = the worker profile's own setting.
+    reasoning_effort: Optional[str] = None
     # Per-task override for the consecutive-failure circuit breaker.
     # The value is the failure count at which the breaker trips — e.g.
     # ``max_retries=1`` blocks on the first failure (zero retries),
@@ -1016,6 +1060,11 @@ class Task:
             provider_override=(
                 row["provider_override"]
                 if "provider_override" in keys and row["provider_override"]
+                else None
+            ),
+            reasoning_effort=(
+                row["reasoning_effort"]
+                if "reasoning_effort" in keys and row["reasoning_effort"]
                 else None
             ),
             max_retries=(
@@ -1186,6 +1235,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- worker resolves the model against the right backend instead of the
     -- profile's configured provider. NULL = profile provider.
     provider_override    TEXT,
+    -- Per-task reasoning effort for the worker (minimal|low|medium|high|
+    -- xhigh|max|ultra, or 'none' for thinking off). When set, the dispatcher
+    -- passes --reasoning <level> so the worker runs at that depth regardless
+    -- of the profile's agent.reasoning_effort. NULL = profile setting.
+    reasoning_effort     TEXT,
     -- Per-task override for the consecutive-failure circuit breaker.
     -- The value is the failure count at which the breaker trips — e.g.
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
@@ -1300,9 +1354,11 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     task_id       TEXT NOT NULL,
     platform      TEXT NOT NULL,
     chat_id       TEXT NOT NULL,
+    chat_type     TEXT,
     thread_id     TEXT NOT NULL DEFAULT '',
     user_id       TEXT,
     notifier_profile TEXT,
+    delivery_metadata TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
@@ -1366,10 +1422,20 @@ def _resolve_busy_timeout_ms() -> int:
 
 
 def _sqlite_connect(path: Path) -> sqlite3.Connection:
-    """Open a Kanban SQLite connection with consistent lock waiting."""
+    """Open a Kanban SQLite connection with consistent lock waiting.
+
+    Uses ``connect_tracked`` so the live-connection registry knows this file
+    is open: while it is, byte-level probes of the same file are refused,
+    because an ``open()``/``close()`` would cancel this process's POSIX
+    advisory locks on the database (see ``hermes_cli.sqlite_safe_read``).
+    The registration is released automatically when the connection closes.
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     busy_timeout_ms = _resolve_busy_timeout_ms()
-    conn = sqlite3.connect(
-        str(path),
+    conn = connect_tracked(
+        path,
+        connect_fn=sqlite3.connect,
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
     )
@@ -1628,10 +1694,14 @@ def _validate_sqlite_header(path: Path) -> None:
         return
     if stat.st_size == 0:
         return
-    try:
-        with path.open("rb") as handle:
-            head = handle.read(64)
-    except OSError:
+    # Byte-level probe, so it must run BEFORE any connection to this path
+    # exists (connect() calls it under the init lock, ahead of _sqlite_connect).
+    # read_header_bytes_preopen refuses once a connection is live, because the
+    # close() would cancel this process's POSIX locks on the file.
+    from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+
+    head = read_header_bytes_preopen(path, length=64)
+    if head is None:
         return
     if head.startswith(_SQLITE_HEADER):
         return
@@ -1736,6 +1806,25 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     resolved = path.resolve()
     parent = resolved.parent
     base_name = resolved.name  # basename only
+    # This reads the whole DB file to fingerprint it. That is a close()-on-a-
+    # database-file hazard (it cancels this process's POSIX advisory locks --
+    # see hermes_cli.sqlite_safe_read), so it must only run once the board has
+    # been taken out of service. Every caller reaches here on the corrupt/
+    # quarantine path after closing its probe connection, but another
+    # SessionDB/kanban connection elsewhere in the process would still be at
+    # risk -- so REFUSE rather than warn-and-proceed. Losing a forensic copy
+    # is strictly better than corrupting the live database we are trying to
+    # rescue.
+    from hermes_cli.sqlite_safe_read import has_live_connection
+
+    if has_live_connection(resolved):
+        _log.error(
+            "refusing to quarantine %s: a connection to it is still open in "
+            "this process, and fingerprinting the file would cancel that "
+            "connection's POSIX locks. Close all connections first.",
+            resolved,
+        )
+        return None
     digest = hashlib.sha256()
     try:
         with resolved.open("rb") as handle:
@@ -2115,6 +2204,12 @@ def connect(
         return conn
 
     with _cross_process_init_lock(path):
+        # Read-only file/sidecar preflight (port of kilocode#12508) —
+        # repair-or-refuse before the header/integrity probes so a stray
+        # read-only kanban.db fails with an actionable message instead of
+        # "attempt to write a readonly database" mid-init.
+        from hermes_state import preflight_db_writability
+        preflight_db_writability(path, db_label=f"kanban.db ({path.name})")
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.
         _validate_sqlite_header(path)
@@ -2132,7 +2227,7 @@ def connect(
                 # critical section as schema initialization so concurrent gateway
                 # startup threads do not race before _INITIALIZED_PATHS is populated.
                 # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-                # falls back to DELETE with one WARNING so kanban stays usable there.
+                # falls back to DELETE with one ERROR log so kanban stays usable there.
                 # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
                 from hermes_state import apply_wal_with_fallback
                 apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
@@ -2333,6 +2428,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "provider_override", "provider_override TEXT"
         )
 
+    if "reasoning_effort" not in cols:
+        # Per-task thinking depth for the worker. NULL = the worker profile's
+        # own agent.reasoning_effort, which is what existing rows were getting.
+        _add_column_if_missing(
+            conn, "tasks", "reasoning_effort", "reasoning_effort TEXT"
+        )
+
     if "goal_mode" not in cols:
         # Ralph-style goal loop toggle for the dispatched worker. 0 (the
         # default) = classic single-shot worker, preserving the behaviour
@@ -2411,6 +2513,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         if "notifier_profile" not in notify_cols:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
+            )
+        if "chat_type" not in notify_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_subs", "chat_type", "chat_type TEXT"
+            )
+        if "delivery_metadata" not in notify_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_subs", "delivery_metadata", "delivery_metadata TEXT"
             )
 
     # One-shot backfill: any task that is 'running' before runs existed
@@ -2534,8 +2644,8 @@ _REBUILD_SPECS = {
     "kanban_notify_subs": (
         "CREATE TABLE kanban_notify_subs ("
         " task_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,"
-        " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
-        " notifier_profile TEXT, created_at INTEGER NOT NULL,"
+        " chat_type TEXT, thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
+        " notifier_profile TEXT, delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
@@ -2619,42 +2729,40 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
 
 
 def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
-    """Read the SQLite header page_count and compare against actual file size.
+    """Compare SQLite's own page accounting against the file size on disk.
 
     Raises sqlite3.DatabaseError if the file is shorter than the header claims
     (torn-extend corruption).
+
+    Both sides are read WITHOUT opening the database file. The header side
+    comes from ``PRAGMA page_count`` over the existing connection; the on-disk
+    side from ``stat()``. An earlier version read the header field with a bare
+    ``open(path,"rb")`` -- but ``close()`` cancels every POSIX advisory lock
+    this process holds on the file, so that probe silently dropped the locks
+    of concurrent writers (and of a running VACUUM) and let other processes
+    write into a database a writer still believed it owned. That is the
+    documented corruption route in sqlite.org/howtocorrupt.html section 2.2.
     """
+    from hermes_cli.sqlite_safe_read import file_length_matches_header
+
+    # In WAL mode a just-committed page can still live in the -wal file, so
+    # the main file legitimately lags its page count. Only enforce the
+    # invariant under a rollback journal, where every committed page must
+    # already be in the main file.
     try:
-        row = conn.execute("PRAGMA database_list").fetchone()
-        if row is None:
-            return
-        path_str = row[2]  # column 2 is the file path; empty for in-memory DBs
-        if not path_str:
-            return  # in-memory or unnamed DB; skip
-        path = path_str
-        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-        file_size = os.path.getsize(path)
-        with open(path, "rb") as f:
-            f.seek(28)
-            header_bytes = f.read(4)
-        if len(header_bytes) < 4:
-            return  # can't read header; skip
-        header_page_count = int.from_bytes(header_bytes, "big")
-        if header_page_count == 0:
-            return  # new/empty DB; skip
-        actual_pages = file_size // page_size
-        if actual_pages < header_page_count:
-            raise sqlite3.DatabaseError(
-                f"torn-extend detected: page count mismatch on {path}: "
-                f"header claims {header_page_count} pages, "
-                f"file has {actual_pages} pages "
-                f"(missing {header_page_count - actual_pages} pages, "
-                f"file_size={file_size}, page_size={page_size})"
-            )
-    except sqlite3.DatabaseError:
-        raise
-    except Exception:
-        pass  # I/O errors during check are non-fatal; let normal ops continue
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        journal_mode = str(row[0]).lower() if row and row[0] is not None else ""
+    except sqlite3.Error:
+        return
+    if journal_mode == "wal":
+        return
+
+    ok = file_length_matches_header(conn)
+    if ok is False:
+        raise sqlite3.DatabaseError(
+            "torn-extend detected: the database file is shorter than its "
+            "header page count claims"
+        )
 
 
 # SQLite's own busy_timeout uses a near-deterministic backoff, so concurrent
@@ -2790,6 +2898,7 @@ def create_task(
     max_retries: Optional[int] = None,
     model_override: Optional[str] = None,
     provider_override: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
@@ -2826,6 +2935,11 @@ def create_task(
     config — passed to the worker as ``-m <model> [--provider <name>]``.
     ``provider_override`` requires ``model_override``.
 
+    ``reasoning_effort`` pins the worker's thinking depth for this task
+    (``minimal``…``ultra``, or ``none`` to disable thinking), passed as
+    ``--reasoning <level>``. It is independent of ``model_override``: a task
+    can run the profile's own model at a different depth.
+
     ``project_source_task_id`` is an internal cross-profile fallback for a
     worker-created child. When the active profile cannot resolve ``project_id``
     in its own projects.db, a matching canonical project-linked task in this
@@ -2834,6 +2948,7 @@ def create_task(
     """
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
+    reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)
@@ -2852,6 +2967,18 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+
+    # Inherit the board's scoped project when the caller didn't name one, so a
+    # project-scoped board anchors every new task to that project's repo
+    # (deterministic worktree + branch) without each surface repeating it.
+    if project_id is None:
+        try:
+            _bmeta = read_board_metadata(board if board else get_current_board())
+            _board_project = (_bmeta.get("project_id") or "").strip()
+            if _board_project:
+                project_id = _board_project
+        except Exception:
+            pass
 
     # Resolve an optional first-class Project link. A project-linked task is
     # anchored to the project's primary repo as a git worktree, so its branch
@@ -3089,8 +3216,9 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
+                        reasoning_effort,
                         goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3112,6 +3240,7 @@ def create_task(
                         int(max_retries) if max_retries is not None else None,
                         model_override,
                         provider_override,
+                        reasoning_effort,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
@@ -3141,6 +3270,7 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -3161,6 +3291,47 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
     ).fetchall()
     present = {r["id"] for r in rows}
     return [p for p in parents if p not in present]
+
+
+def _inherit_notify_subs(
+    conn: sqlite3.Connection,
+    child_id: str,
+    parents: Iterable[str],
+    *,
+    created_at: Optional[int] = None,
+) -> None:
+    """Copy gateway notification subscriptions from parent tasks to a child.
+
+    The inherited subscription starts caught up to the child's current event
+    cursor. This makes manual `link_tasks(parent, existing_child)` safe: the
+    parent chat receives future child terminal events without replaying the
+    child's pre-link history.
+    """
+    parent_ids = tuple(dict.fromkeys(p for p in parents if p))
+    if not parent_ids:
+        return
+    row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events WHERE task_id = ?",
+        (child_id,),
+    ).fetchone()
+    cursor = int(row["cursor"] if row is not None else 0)
+    placeholders = ",".join("?" * len(parent_ids))
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id,
+             notifier_profile, created_at, last_event_id)
+        SELECT ?, platform, chat_id, thread_id, user_id, notifier_profile, ?, ?
+          FROM kanban_notify_subs
+         WHERE task_id IN ({placeholders})
+        """,
+        (
+            child_id,
+            int(created_at if created_at is not None else time.time()),
+            cursor,
+            *parent_ids,
+        ),
+    )
 
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
@@ -3312,6 +3483,44 @@ def set_model_override(
         return True
 
 
+def set_reasoning_effort(
+    conn: sqlite3.Connection,
+    task_id: str,
+    effort: Optional[str],
+) -> bool:
+    """Set (or clear) the per-task reasoning effort.
+
+    ``effort=None`` (or empty) clears the override — the worker falls back to
+    its profile's own ``agent.reasoning_effort``. ``"none"`` is a real value,
+    not a clear: it pins thinking OFF for this task.
+
+    Deliberately independent of :func:`set_model_override`: a task may run the
+    profile's own model at a different depth, and clearing a model override
+    must not silently reset the depth the operator chose. Like the model
+    override, it takes effect on the NEXT dispatch, so it is settable on a
+    running task. Returns True on success.
+    """
+    effort = normalize_reasoning_effort(effort)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if row["status"] == "archived":
+            raise RuntimeError(
+                f"cannot set reasoning effort on archived task {task_id}"
+            )
+        conn.execute(
+            "UPDATE tasks SET reasoning_effort = ? WHERE id = ?",
+            (effort, task_id),
+        )
+        _append_event(
+            conn, task_id, "reasoning_effort_set", {"reasoning_effort": effort}
+        )
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Links
 # ---------------------------------------------------------------------------
@@ -3344,6 +3553,7 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},
         )
+        _inherit_notify_subs(conn, child_id, (parent_id,))
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -3451,6 +3661,33 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
     rows = conn.execute(
         "SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
         (task_id,),
+    ).fetchall()
+    return [
+        Comment(
+            id=r["id"],
+            task_id=r["task_id"],
+            author=r["author"],
+            body=r["body"],
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+
+def list_comments_after(
+    conn: sqlite3.Connection, task_id: str, *, after_id: int = 0
+) -> list[Comment]:
+    """Return comments on ``task_id`` with ``id > after_id`` (ascending).
+
+    Keyed on the monotonic rowid rather than ``created_at`` so a same-second
+    burst can't be skipped. Used by the live worker bridge to fold new
+    operator notes into a running task without a restart (see
+    ``tools.kanban_tools.inject_new_comments_from_env``).
+    """
+    rows = conn.execute(
+        "SELECT id, task_id, author, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND id > ? ORDER BY id ASC",
+        (task_id, int(after_id)),
     ).fetchall()
     return [
         Comment(
@@ -5417,7 +5654,6 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
-    routed_to = "blocked"
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
@@ -5468,7 +5704,6 @@ def block_task(
                 conn, task_id, "dependency_wait",
                 {"reason": reason, "kind": kind}, run_id=run_id,
             )
-            routed_to = "todo"
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(
                 "kanban_task_blocked",
@@ -5528,7 +5763,6 @@ def block_task(
                 },
                 run_id=run_id,
             )
-            routed_to = "triage"
         else:
             if expected_run_id is None:
                 cur = conn.execute(
@@ -5981,6 +6215,7 @@ def decompose_triage_task(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
+            _inherit_notify_subs(conn, new_id, (task_id,), created_at=now)
             child_ids.append(new_id)
 
         # Link children to their sibling parents (within the decomposed graph).
@@ -7103,7 +7338,6 @@ def detect_stale_running(
 
 
     now = int(time.time())
-    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     reclaimed: list[str] = []
 
     rows = conn.execute(
@@ -7617,7 +7851,6 @@ def _record_task_failure(
         if row is None:
             return False
         failures = int(row["consecutive_failures"]) + 1
-        cur_status = row["status"]
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
@@ -8702,6 +8935,32 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+_retagged_workspace_roots: set[str] = set()
+
+
+def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
+    """Reclaim pre-tag worker rows in state.db so they leave the session lists.
+
+    Best-effort and gated — the durable ``state_meta`` gate lives in
+    ``retag_kanban_worker_sessions``; the in-process set keeps a busy
+    dispatcher from reopening state.db on every spawn just to read it. A
+    dispatcher tick must never fail because a session DB was busy or missing.
+    """
+    if workspaces_root_path in _retagged_workspace_roots:
+        return
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.retag_kanban_worker_sessions(workspaces_root_path)
+        finally:
+            db.close()
+        _retagged_workspace_roots.add(workspaces_root_path)
+    except Exception as exc:
+        _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -8730,6 +8989,12 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+    # The dispatcher is detached from every conversation. Its worker must never
+    # inherit routing mirrored by a previous gateway turn, even before the first
+    # session binds ContextVars in this process.
+    from gateway.session_context import _VAR_MAP
+    for key in _VAR_MAP:
+        env.pop(key, None)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
@@ -8753,6 +9018,14 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Tag the worker's session so it lands in state.db as `kanban`, not as an
+    # untitled `cli` row. A worker is a dispatcher-owned run whose transcript is
+    # read on the board and in `hermes kanban log` — it is not a conversation
+    # the user started, so every session-browsing surface (desktop sidebar, TUI
+    # resume picker, session_search) filters it out by source. Without this the
+    # sidebar renders one row per attempt, labeled with the worker's own prompt
+    # ("work kanban task t_…").
+    env["HERMES_SESSION_SOURCE"] = "kanban"
     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
     # context-file loader anchor on the workspace, not whatever cwd the
     # dispatching gateway happened to export. The worker subprocess is already
@@ -8800,6 +9073,7 @@ def _default_spawn(
     # but unusual symlink / Docker layouts are caught here too.
     env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
     env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
+    _retag_legacy_worker_sessions(env["HERMES_KANBAN_WORKSPACES_ROOT"])
     # Board slug — the final defense-in-depth pin. If the worker ever
     # resolves kanban paths without the DB / workspaces env vars, the
     # board slug still forces it to the right directory.
@@ -8846,6 +9120,11 @@ def _default_spawn(
         # the classic mis-set that stalls a board).
         if task.provider_override:
             cmd.extend(["--provider", task.provider_override])
+    # Per-task thinking depth. Independent of the model override — a task can
+    # run the profile's own model at a different depth — so this is its own
+    # branch, not a nested one.
+    if task.reasoning_effort:
+        cmd.extend(["--reasoning", task.reasoning_effort])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
@@ -9298,28 +9577,100 @@ def task_age(task: Task) -> dict:
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
 
+def _encode_notify_delivery_metadata(
+    metadata: Optional[Mapping[str, Any]],
+) -> Optional[str]:
+    """Serialize platform send metadata stored on notification subscriptions."""
+    if not isinstance(metadata, Mapping):
+        return None
+    clean: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            clean[str(key)] = value
+    if not clean:
+        return None
+    return json.dumps(clean, sort_keys=True, separators=(",", ":"))
+
+
+def _decode_notify_delivery_metadata(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(str(raw))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(key): value
+        for key, value in data.items()
+        if isinstance(value, (str, int, float, bool))
+    }
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
     task_id: str,
     platform: str,
     chat_id: str,
+    chat_type: Optional[str] = None,
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
+    delivery_metadata: Optional[Mapping[str, Any]] = None,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
+    for ``task_id``. Idempotent on (task, platform, chat, thread).
+
+    New subscriptions start "caught up": ``last_event_id`` snaps to the
+    task's current ``MAX(task_events.id)`` at creation instead of the
+    schema default 0. A cursor of 0 on an already-active task made the
+    gateway notifier replay every historical terminal event on its next
+    tick — and with many stale subs, a single boot-time burst of 100+
+    messages (issue #29905). Subscribers only want events that occur
+    AFTER they subscribe; the gateway/tool auto-subscribe paths run at
+    task creation, where the snapshot is 0 anyway.
+    """
     now = int(time.time())
+    metadata_json = _encode_notify_delivery_metadata(delivery_metadata)
     with write_txn(conn):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, chat_type, thread_id, user_id,
+                 notifier_profile, delivery_metadata, created_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (
+                task_id,
+                platform,
+                chat_id,
+                chat_type,
+                thread_id or "",
+                user_id,
+                notifier_profile,
+                metadata_json,
+                now,
+                task_id,
+            ),
         )
+        if chat_type:
+            # Self-heal rows created before chat_type was persisted.
+            conn.execute(
+                """
+                UPDATE kanban_notify_subs
+                   SET chat_type = ?
+                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                   AND (chat_type IS NULL OR chat_type = '')
+                """,
+                (chat_type, task_id, platform, chat_id, thread_id or ""),
+            )
         if notifier_profile:
             # Self-heal legacy rows that predate notifier ownership by
             # backfilling only when the existing value is unset.
@@ -9332,18 +9683,154 @@ def add_notify_sub(
                 """,
                 (notifier_profile, task_id, platform, chat_id, thread_id or ""),
             )
+        if metadata_json:
+            # A duplicate subscribe from the same chat/thread should refresh
+            # the routing anchor. Telegram DM-topic notifications need the
+            # latest reply anchor to stay inside the visible topic lane.
+            conn.execute(
+                """
+                UPDATE kanban_notify_subs
+                   SET delivery_metadata = ?
+                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                """,
+                (metadata_json, task_id, platform, chat_id, thread_id or ""),
+            )
+
+
+def _notify_profile_filter(
+    notifier_profiles: Optional[Iterable[str]],
+    *,
+    include_unowned: bool,
+) -> tuple[str, list[str]]:
+    """Build an optional SQL predicate for notification profile ownership."""
+    if notifier_profiles is None:
+        return "", []
+
+    profiles = sorted(
+        {
+            str(profile).strip()
+            for profile in notifier_profiles
+            if str(profile).strip()
+        }
+    )
+    clauses: list[str] = []
+    params: list[str] = []
+    if profiles:
+        clauses.append(
+            "notifier_profile IN (" + ",".join("?" for _ in profiles) + ")"
+        )
+        params.extend(profiles)
+    if include_unowned:
+        clauses.append("notifier_profile IS NULL OR notifier_profile = ''")
+    if not clauses:
+        return "0", []
+    return "(" + ") OR (".join(clauses) + ")", params
 
 
 def list_notify_subs(
-    conn: sqlite3.Connection, task_id: Optional[str] = None,
+    conn: sqlite3.Connection,
+    task_id: Optional[str] = None,
+    *,
+    notifier_profiles: Optional[Iterable[str]] = None,
+    include_unowned: bool = False,
 ) -> list[dict]:
+    """List subscriptions, optionally restricted to notifier profile owners.
+
+    Passing no ``notifier_profiles`` preserves the historical all-subscriptions
+    result. Gateway notifier processes pass the profiles whose adapters they
+    own so they cannot claim another gateway's events. ``include_unowned`` is
+    used by the dispatch owner for legacy rows created before profile stamping.
+    """
+    owner_where, owner_params = _notify_profile_filter(
+        notifier_profiles, include_unowned=include_unowned,
+    )
+    where: list[str] = []
+    params: list[Any] = []
     if task_id is not None:
-        rows = conn.execute(
-            "SELECT * FROM kanban_notify_subs WHERE task_id = ?", (task_id,),
-        ).fetchall()
-    else:
-        rows = conn.execute("SELECT * FROM kanban_notify_subs").fetchall()
-    return [dict(r) for r in rows]
+        where.append("task_id = ?")
+        params.append(task_id)
+    if owner_where:
+        where.append(owner_where)
+        params.extend(owner_params)
+    sql = "SELECT * FROM kanban_notify_subs"
+    if where:
+        sql += " WHERE " + " AND ".join(f"({clause})" for clause in where)
+    rows = conn.execute(sql, params).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        if "delivery_metadata" in item:
+            item["delivery_metadata"] = _decode_notify_delivery_metadata(
+                item.get("delivery_metadata")
+            )
+        out.append(item)
+    return out
+
+
+def count_notify_subs(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+    notifier_profiles: Optional[Iterable[str]] = None,
+    include_unowned: bool = False,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+) -> int:
+    """Count ``kanban_notify_subs`` rows via a read-only connection.
+
+    Cheap probe for the gateway notifier's zero-subscription early exit:
+    unlike :func:`connect`, this never creates the DB file, never runs
+    schema init/migration, and never opens the database writable (no
+    write locks, no checkpoints — though a read-only open of a WAL
+    database may still create the ``-shm``/``-wal`` sidecars, it cannot
+    write table content). Rows in a not-yet-checkpointed WAL are
+    visible, so a freshly added subscription is never missed. A missing
+    DB, or a legacy DB that predates the subscriptions table, counts as
+    zero. When ``notifier_profiles`` is supplied, only subscriptions owned
+    by those profiles are counted; ``include_unowned`` also includes legacy
+    rows without an owner stamp. Optional platform/chat/thread filters narrow
+    the probe to one notification owner without changing the unfiltered count.
+    Platform matching is case-insensitive, matching notifier routing; chat and
+    thread identifiers are exact. Path resolution matches :func:`connect`
+    (explicit ``db_path``, else ``board`` via :func:`kanban_db_path`). Raises
+    :class:`sqlite3.Error` when the DB exists but cannot be read
+    (locked, corrupt); callers choose their own fallback.
+    """
+    path = db_path if db_path is not None else kanban_db_path(board=board)
+    if not path.exists():
+        return 0
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        try:
+            owner_where, owner_params = _notify_profile_filter(
+                notifier_profiles, include_unowned=include_unowned,
+            )
+            clauses: list[str] = []
+            params: list[Any] = []
+            if owner_where:
+                clauses.append(f"({owner_where})")
+                params.extend(owner_params)
+            if platform is not None:
+                clauses.append("LOWER(platform) = LOWER(?)")
+                params.append(platform)
+            if chat_id is not None:
+                clauses.append("chat_id = ?")
+                params.append(chat_id)
+            if thread_id is not None:
+                clauses.append("thread_id = ?")
+                params.append(thread_id)
+            query = "SELECT COUNT(*) FROM kanban_notify_subs"
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
+            row = conn.execute(query, params).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return 0
+            raise
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
 
 
 def remove_notify_sub(

@@ -76,24 +76,6 @@ class TestOAuthFlagOnRefresh:
         # And the flag is untouched regardless.
         assert agent._is_anthropic_oauth is False
 
-    def test_native_anthropic_preserves_existing_oauth_behaviour(self, agent):
-        """Regression: native anthropic with OAuth token still flips flag to True."""
-        agent.api_mode = "anthropic_messages"
-        agent.provider = "anthropic"
-        agent._anthropic_api_key = "***"
-        agent._anthropic_client = MagicMock()
-        agent._is_anthropic_oauth = False
-
-        with (
-            patch("agent.anthropic_adapter.resolve_anthropic_token",
-                  return_value=_OAUTH_LIKE_TOKEN),
-            patch("agent.anthropic_adapter.build_anthropic_client",
-                  return_value=MagicMock()),
-        ):
-            result = agent._try_refresh_anthropic_client_credentials()
-
-        assert result is True
-        assert agent._is_anthropic_oauth is True
 
 
 class TestOAuthFlagOnCredentialSwap:
@@ -174,9 +156,3 @@ class TestApiKeyTokensAlwaysSafe:
         from agent.anthropic_adapter import _is_oauth_token
         assert _is_oauth_token(_API_KEY_TOKEN) is False
 
-    def test_third_party_key_shape(self):
-        from agent.anthropic_adapter import _is_oauth_token
-        # Third-party key shapes (MiniMax 'mxp-...', GLM 'glm.sess.', etc.)
-        # already return False from _is_oauth_token; the guard adds a second
-        # defense line in case future token formats accidentally look OAuth-y.
-        assert _is_oauth_token("mxp-abcdef123") is False

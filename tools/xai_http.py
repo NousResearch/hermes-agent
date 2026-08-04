@@ -36,8 +36,14 @@ def has_xai_credentials() -> bool:
     other availability scans. Truthful refresh + expiry handling happens
     in ``search()`` (or whichever caller actually makes the request).
     """
-    if os.environ.get("XAI_API_KEY", "").strip():
-        return True
+    try:
+        from agent.secret_scope import get_secret
+    except ImportError:  # pragma: no cover — secret_scope is in-repo
+        if os.environ.get("XAI_API_KEY", "").strip():
+            return True
+    else:
+        if (get_secret("XAI_API_KEY", "") or "").strip():
+            return True
     try:
         from hermes_constants import get_hermes_home
 
@@ -79,13 +85,11 @@ def get_env_value(name: str, default=None):
     """
     try:
         from hermes_cli.config import get_env_value as _hermes_get_env_value
+    except ImportError:
+        return os.environ.get(name, default)
 
-        value = _hermes_get_env_value(name)
-        if value is not None:
-            return value
-    except Exception:
-        pass
-    return os.environ.get(name, default)
+    value = _hermes_get_env_value(name)
+    return value if value is not None else default
 
 
 def hermes_xai_user_agent() -> str:
@@ -95,6 +99,16 @@ def hermes_xai_user_agent() -> str:
     except Exception:
         __version__ = "unknown"
     return f"Hermes-Agent/{__version__}"
+
+
+def hermes_xai_default_headers() -> Dict[str, str]:
+    """Default headers for OpenAI-SDK and raw HTTP clients talking to xAI.
+
+    Replaces the OpenAI Python SDK's identifying ``User-Agent: OpenAI/Python …``
+    so chat/completions and Responses traffic is attributed as Hermes Agent,
+    matching the direct HTTP integrations (search, TTS, STT, image, video).
+    """
+    return {"User-Agent": hermes_xai_user_agent()}
 
 
 def _load_config_section(section_name: str) -> Dict[str, Any]:
@@ -301,7 +315,12 @@ def resolve_xai_http_credentials(
     except Exception:
         pass
 
-    api_key = str(get_env_value("XAI_API_KEY") or "").strip()
+    try:
+        from tools.tool_backend_helpers import resolve_provider_secret
+
+        api_key = resolve_provider_secret("XAI_API_KEY", "xai", env_getter=get_env_value)
+    except ImportError:  # pragma: no cover — helpers are in-repo
+        api_key = str(get_env_value("XAI_API_KEY") or "").strip()
     base_url = str(get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1").strip().rstrip("/")
     return {
         "provider": "xai",

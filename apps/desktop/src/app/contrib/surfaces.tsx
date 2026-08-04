@@ -9,7 +9,7 @@
 
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo } from 'react'
-import { Navigate, Route, Routes, useParams } from 'react-router-dom'
+import { Navigate, Route, Routes, useParams } from 'react-router'
 
 import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
@@ -25,6 +25,7 @@ import { useStatusbarItems } from '../shell/hooks/use-statusbar-items'
 import { ModelMenuPanel } from '../shell/model-menu-panel'
 import { StatusbarControls } from '../shell/statusbar-controls'
 
+import { latestChatActions, latestSidebarActions } from './latest-actions'
 import { setStatusbarItemGroup, useStatusbarContributions } from './panes'
 import type { SidebarActions, WiringActions } from './types'
 
@@ -48,12 +49,14 @@ export const SidebarSurface = memo(function SidebarSurface({
   actions: SidebarActions
   currentView: ComponentProps<typeof ChatSidebar>['currentView']
 }) {
-  return <ChatSidebar currentView={currentView} {...actions} />
+  const latestActions = useMemo(() => latestSidebarActions(actions), [actions])
+
+  return <ChatSidebar currentView={currentView} {...latestActions} />
 })
 
 export const TerminalSurface = memo(function TerminalSurface() {
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-(--ui-editor-surface-background)">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-(--ui-terminal-surface-background)">
       <TerminalPaneChrome />
     </div>
   )
@@ -137,33 +140,14 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
     [actions, activeGatewayProfile, gateway, gatewayState]
   )
 
+  const chatActions = useMemo(() => latestChatActions(actions), [actions])
+
   const chatView = (
     <ChatView
       gateway={gateway}
       maxVoiceRecordingSeconds={maxVoiceRecordingSeconds}
       modelMenuContent={modelMenuContent}
-      onAddContextRef={actions.onAddContextRef}
-      onAddUrl={actions.onAddUrl}
-      onAttachDroppedItems={actions.onAttachDroppedItems}
-      onAttachImageBlob={actions.onAttachImageBlob}
-      onBranchInNewChat={actions.onBranchInNewChat}
-      onCancel={actions.onCancel}
-      onDeleteSelectedSession={actions.onDeleteSelectedSession}
-      onDismissError={actions.onDismissError}
-      onEdit={actions.onEdit}
-      onPasteClipboardImage={actions.onPasteClipboardImage}
-      onPickFiles={actions.onPickFiles}
-      onPickFolders={actions.onPickFolders}
-      onPickImages={actions.onPickImages}
-      onReload={actions.onReload}
-      onRemoveAttachment={actions.onRemoveAttachment}
-      onRestoreToMessage={actions.onRestoreToMessage}
-      onRetryResume={actions.onRetryResume}
-      onSteer={actions.onSteer}
-      onSubmit={actions.onSubmit}
-      onThreadMessagesChange={actions.onThreadMessagesChange}
-      onToggleSelectedPin={actions.onToggleSelectedPin}
-      onTranscribeAudio={actions.onTranscribeAudio}
+      {...chatActions}
     />
   )
 

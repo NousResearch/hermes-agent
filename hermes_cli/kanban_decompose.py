@@ -428,6 +428,62 @@ def decompose_task(
             "assignee": chosen,
             "parents": clean_parents,
         })
+    # ── Economics Gate fan-out constraint (MCL-HERMES-ECONOMICS-GATE-002, seam #4) ──
+    # Applied BEFORE any child task is created/activated/spawned. Collapses
+    # duplicated roles and caps runnable children to the class TEAM_LIMIT.
+    # Fail-closed: a missing adapter blocks ALL fan-out (runnable=[]). The
+    # deferred children are recorded as an event so the brief survives, but
+    # they are NEVER created as executable tasks (no parallel overshoot).
+    mission_class = getattr(task, "class", None) or "simple"
+    try:
+        from hermes_cli.economics_enforcement_shim import fanout_constrain
+        _fc = fanout_constrain(children, mission_class)
+    except Exception as _fc_exc:  # never let a gate fault create oversized fan-out
+        _fc = {
+            "blocked": True, "within_limit": False, "limit": 0,
+            "runnable": [], "deferred": children,
+            "runnable_count": 0, "deferred_count": len(children),
+            "error": f"ECONOMICS_FANOUT_ERROR: {_fc_exc}",
+        }
+    if not _fc.get("runnable"):
+        # Fail-closed or fully-deferred: create zero executable children, record why.
+        try:
+            with kb.connect_closing() as conn:
+                with kb.write_txn(conn):
+                    kb._append_event(
+                        conn, task_id, "economics_fanout_blocked",
+                        {
+                            "limit": _fc.get("limit"),
+                            "proposed": len(children),
+                            "runnable": _fc.get("runnable_count", 0),
+                            "deferred": _fc.get("deferred_count", 0),
+                            "error": _fc.get("error"),
+                        },
+                    )
+        except Exception:
+            pass
+        return DecomposeOutcome(
+            task_id, False,
+            f"economics fan-out blocked: proposed={len(children)} "
+            f"runnable={_fc.get('runnable_count', 0)} limit={_fc.get('limit')}",
+        )
+    _deferred = _fc.get("deferred") or []
+    if _deferred:
+        try:
+            with kb.connect_closing() as conn:
+                with kb.write_txn(conn):
+                    kb._append_event(
+                        conn, task_id, "economics_fanout_deferred",
+                        {
+                            "limit": _fc.get("limit"),
+                            "runnable": _fc.get("runnable_count", 0),
+                            "deferred_titles": [c.get("title") for c in _deferred],
+                        },
+                    )
+        except Exception:
+            pass
+    children = _fc["runnable"]
+
 
     try:
         with kb.connect_closing() as conn:

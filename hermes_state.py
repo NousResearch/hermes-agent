@@ -405,6 +405,57 @@ def _strip_background_review_harness(
     return out
 
 
+# Matches a bare protocol/tool-name marker such as "[memory]" or "[skill_manage]".
+_STALE_TOOL_CALL_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
+
+
+def _is_stale_tool_call_marker_message(msg: Dict[str, Any]) -> bool:
+    """True when ``msg`` is a persisted assistant turn whose content is a bare
+    bracketed marker (e.g. ``[memory]``) left over from a tool-call turn.
+
+    Before the #78148 fix in ``agent.conversation_loop``, a local tool-call
+    template could emit a bare marker as assistant content alongside a real
+    tool call. The loop cached that marker as a fallback and later replayed
+    it as the "final response", persisting it into the session. Sessions
+    written before the fix can still carry these rows.
+    """
+    if not isinstance(msg, dict):
+        return False
+    if msg.get("role") != "assistant":
+        return False
+    if not msg.get("tool_calls"):
+        return False
+    content = msg.get("content")
+    if not isinstance(content, str):
+        return False
+    return bool(_STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip()))
+
+
+def _strip_stale_tool_call_markers(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Clear bare protocol-marker content persisted before the #78148 fix.
+
+    Replaying "[memory]" as if the model had actually answered teaches the
+    model, by example, to keep emitting the same marker in later turns — the
+    exact symptom the issue reported. Only the stray ``content`` field is
+    blanked; the tool call and its result are left untouched so provider
+    tool_call/tool_result pairing stays intact. Sessions with no affected
+    rows pass through unchanged.
+    """
+    repaired = 0
+    for msg in messages:
+        if _is_stale_tool_call_marker_message(msg):
+            msg["content"] = ""
+            repaired += 1
+    if repaired:
+        logger.info(
+            "Cleared %d stale tool-call marker message(s) while restoring session (#78148)",
+            repaired,
+        )
+    return messages
+
+
 def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
     """Format a user-facing 'session DB unavailable' message with cause.
 
@@ -7168,6 +7219,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # assistant reply immediately following it, so a polluted session
         # resumes clean even if stray rows exist.
         messages = _strip_background_review_harness(messages)
+        # DEFENSE-IN-DEPTH against #78148: before that fix, a bare tool-call
+        # marker (e.g. "[memory]") could get cached as a fallback and
+        # persisted as if it were the model's real answer. Sessions written
+        # before the fix can still carry those rows — clear the stray
+        # content on load so replaying history doesn't re-teach the model
+        # to keep emitting the marker. No-op for unaffected sessions.
+        messages = _strip_stale_tool_call_markers(messages)
         if repair_alternation and messages:
             # Lazy import: hermes_state already depends on agent.* (see
             # sanitize_context above), but keep this optional path from

@@ -11,10 +11,6 @@ from agent.i18n import t
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
-from gateway.slash_commands import (
-    _RestartTransaction,
-    _TransitionResult,
-)
 from tests.gateway.restart_test_helpers import (
     attach_real_launcher_under_mocked_popen,
     make_restart_runner,
@@ -67,54 +63,18 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
         "gateway.restart.is_container_restart_context", lambda: False
     )
     runner, _adapter = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
     # Fail-closed safety: launcher and stop are AsyncMocks from fixture.
     assert isinstance(runner._launch_detached_restart_command, AsyncMock)
     assert isinstance(runner.stop, AsyncMock)
+    # Production drain cap; must not be exercised because the P1 fix
+    # publishes the accepted ack BEFORE drain, so dispatch returns fast.
+    runner._restart_after_turn_timeout = 3600.0
 
-    # Safe fake protocol: create a minimal stub that mimics the
-    # request_restart side effects without touching the OS.
-    captured: dict = {}
-
-    def safe_request_restart(
-        *,
-        detached: bool,
-        via_service: bool,
-        transaction: _RestartTransaction | None = None,
-    ) -> bool:
-        captured["detached"] = detached
-        captured["via_service"] = via_service
-        captured["transaction"] = transaction
-
-        # Set the runner's restart flags (done by real request_restart).
-        runner._restart_requested = True
-        runner._restart_detached = detached
-        runner._restart_via_service = via_service
-        runner._restart_task_started = True
-
-        async def _run_restart() -> None:
-            # Complete the handoff protocol so the ack is ready.
-            claimed = await transaction.claim_handoff()  # type: ignore[union-attr]
-            assert claimed is True, "claim_handoff must succeed before complete_started"
-            transition = await transaction.complete_started()  # type: ignore[union-attr]
-            assert transition in (
-                _TransitionResult.TRANSITIONED,
-                _TransitionResult.ALREADY_COMPLETE,
-            ), (
-                f"complete_started must produce TRANSITIONED or ALREADY_COMPLETE, "
-                f"got {transition!r}"
-            )
-
-            await runner.stop(
-                restart=True,
-                detached_restart=detached,
-                service_restart=via_service,
-            )
-
-        task = asyncio.create_task(_run_restart())
-        transaction.restart_task = task  # type: ignore[union-attr]
-        return True
-
-    runner.request_restart = safe_request_restart  # type: ignore[method-assign]
+    # REAL path — no safe_request_restart stub. The P1 fix must let the
+    # requesting turn (which holds its _running_agents slot below) receive
+    # the accepted ack immediately, then drain in the background after the
+    # turn is released.
 
     event = MessageEvent(
         text="/restart",
@@ -148,12 +108,31 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     assert expected != "gateway.draining"
     assert "Draining" in expected and "1" in expected
     running_agent.interrupt.assert_not_called()
-    # request_restart was called once via the safe protocol.
-    assert captured["detached"] is True
-    assert captured["via_service"] is False
-    assert captured["transaction"] is not None
-    assert isinstance(captured["transaction"], _RestartTransaction)
-    assert captured["transaction"].request_id.startswith("req-")
+
+    # P1 #71876: the real request_restart ran (not a stub), the transaction
+    # was claimed (IN_FLIGHT) and the accepted ack was published, so
+    # dispatch returned "Draining" instead of timing out. The launcher must
+    # NOT have been called while the turn is still active.
+    txn = runner._restart_transaction
+    assert txn is not None
+    from gateway.slash_commands import _RestartStage
+
+    assert txn.stage is _RestartStage.IN_FLIGHT
+    assert runner._launch_detached_restart_command.called is False
+    runner.stop.assert_not_called()
+
+    # Release the busy turn → background helper drains → launcher → stop.
+    runner._running_agents.pop(session_key, None)
+    try:
+        await asyncio.wait_for(asyncio.shield(txn.restart_task), timeout=3.0)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+    assert runner._launch_detached_restart_command.called is True, (
+        "After the busy turn is released, the helper must proceed to launch."
+    )
+    assert runner.stop.called is True, (
+        "After launch, the helper must call stop()."
+    )
     assert popen_calls == [], f"real Popen called: {popen_calls}"
 
 

@@ -258,13 +258,14 @@ class _RestartFinalOutcome(Enum):
 class _RestartAckOutcome(Enum):
     """Three-state ack from helper to dispatcher (spec section 二).
 
-    * ACCEPTED: handoff was accepted and the detached watcher is running
-      (or the supervisor restart was signalled). The dispatcher proceeds
-      to the success path.
+    * ACCEPTED: the transaction was claimed by the helper — claim_handoff
+      succeeded and the helper entered the safe, non-reentrant IN_FLIGHT
+      state (P1 #71876). The dispatcher returns so the requesting turn can
+      finish. This ack does NOT mean drain/launcher/stop completed; the
+      terminal outcome is carried by stage / final_outcome.
     * NOT_STARTED: the launcher returned False early and the contract
       guarantees no side-effect (stage is ABORTED, task is done, marker
-      was rolled back). The dispatcher returns a definite failure and
-      may_retry=True.
+      was rolled back). The caller may retry.
     * OUTCOME_UNKNOWN: the launcher raised an exception, or the result
       could not be confirmed. The dispatcher MUST NOT cancel the restart
       task or rollback the marker. can_retry=False.
@@ -341,7 +342,17 @@ class _RestartTransaction:
         self.stage: _RestartStage = _RestartStage.PREPARING
         # Three-state ack future. Shielded by the dispatcher's wait_for
         # so an outer CancelledError never cancels the future itself.
+        #
+        # P1 #71876: the helper writes ACCEPTED here immediately after
+        # claim_handoff — that is the *claimed* acknowledgement, meaning
+        # "transaction claimed; restart will proceed". It is NOT a terminal
+        # signal. The terminal outcome is carried by stage / final_outcome
+        # (set by complete_*). A later complete_* transition therefore never
+        # rewrites the ack_future (it is already ACCEPTED), and an
+        # ACCEPTED-then-UNKNOWN/NOT_STARTED sequence is NOT an ack conflict
+        # — it is the normal claimed-then-failed path.
         self.ack_future: asyncio.Future[_RestartAckOutcome] = loop.create_future()
+        self.claimed_ack: bool = False
         self.restart_task: Optional[asyncio.Task] = None
         self.final_outcome: _RestartFinalOutcome = _RestartFinalOutcome.UNKNOWN
         self.final_outcome_event: asyncio.Event = asyncio.Event()
@@ -403,6 +414,13 @@ class _RestartTransaction:
             return False
         try:
             self.ack_future.set_result(outcome)
+            if outcome is _RestartAckOutcome.ACCEPTED:
+                # P1 #71876: the claimed acknowledgement (written right
+                # after claim_handoff) is recorded so a later terminal
+                # transition (complete_unknown / complete_not_started)
+                # knows the ack already carries the claimed signal and
+                # must not raise an "ack conflict".
+                self.claimed_ack = True
             return True
         except asyncio.InvalidStateError:
             return False
@@ -489,25 +507,32 @@ class _RestartTransaction:
                     f"ack future cancelled: cannot write {ack_outcome.value} "
                     f"(request_id={self.request_id})"
                 )
-            if self.ack_future.done():
+            ack_already_set = self.ack_future.done()
+            if ack_already_set:
                 existing = self.ack_future.result()
-                if existing is not ack_outcome:
+                if existing is not ack_outcome and not self.claimed_ack:
                     raise RuntimeError(
                         f"ack conflict: existing={existing.value}, "
                         f"attempted={ack_outcome.value} "
                         f"(request_id={self.request_id})"
                     )
-                # Same ack already set — idempotent.
-                return _TransitionResult.ALREADY_COMPLETE
+                # Same ack already set, OR the claimed acknowledgement
+                # (ACCEPTED written right after claim_handoff, P1 #71876).
+                # The claimed ack is NOT a terminal signal: we must still
+                # apply the terminal state transition below
+                # (stage / final_outcome / launcher_result) so the
+                # transaction reaches its true terminal stage. The ack write
+                # itself is skipped because the future is already done.
 
             # Update state.
             self.stage = target_stage
             self.final_outcome = target_final_outcome
             self.launcher_result = target_launcher_result
 
-            # Write ack (synchronous, inside lock).
-            # The future is guaranteed pending at this point (checked above).
-            self.ack_future.set_result(ack_outcome)
+            if not ack_already_set:
+                # Write ack (synchronous, inside lock).
+                # The future is guaranteed pending at this point (checked above).
+                self.ack_future.set_result(ack_outcome)
 
             # Set event (synchronous, inside lock).
             self.final_outcome_event.set()
@@ -2208,7 +2233,15 @@ class GatewaySlashCommandsMixin:
 
         # Map ack_outcome → (success, message, rollback_marker).
         if ack_outcome is _RestartAckOutcome.ACCEPTED:
-            transaction.set_final_outcome(_RestartFinalOutcome.COMMITTED)
+            # P1 #71876: the accepted ack is now written by the helper
+            # immediately after claim_handoff — it means "transaction
+            # claimed; restart will proceed", NOT "drain/launcher/stop
+            # completed". Do NOT set final_outcome=COMMITTED here: the
+            # helper sets it later via complete_started() once the launcher
+            # actually started (or complete_not_started / complete_unknown
+            # on failure). Dispatch returns so the requesting turn can
+            # finish; drain/launcher/stop failures are recorded via
+            # transaction final_outcome, marker rollback, and notification.
             active_agents = self._running_agent_count()
             if active_agents:
                 return True, t("gateway.draining", count=active_agents)

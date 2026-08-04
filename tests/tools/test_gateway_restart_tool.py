@@ -181,9 +181,22 @@ async def test_tool_returns_failure_json_when_handoff_fails(monkeypatch, tmp_pat
             res_str = await asyncio.wrap_future(fut)
             res = json.loads(res_str)
 
-            assert res["success"] is False
-            assert "Handoff failed" in res["message"]
+            # P1 #71876: the accepted ack is published at claim_handoff, so
+            # the tool reports success=True ("restart will proceed") even
+            # when the launcher later fails. The launcher failure is
+            # recorded by the background helper (NOT_STARTED → ABORTED →
+            # marker rollback), never by the tool's return value.
+            assert res["success"] is True
             runner.stop.assert_not_called()
+
+            # Let the background helper finish the NOT_STARTED rollback so
+            # the event loop exits cleanly.
+            txn = runner._restart_transaction
+            if txn is not None and txn.restart_task is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(txn.restart_task), timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
     finally:
         gw_run._gateway_runner_ref = orig
 

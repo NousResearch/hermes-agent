@@ -98,11 +98,14 @@ async def test_handoff_failure_returns_false_and_preserves_marker(
     monkeypatch, tmp_path
 ):
     """The detached launcher raising OSError maps to launcher_result=UNKNOWN
-    → dispatcher returns the do-not-retry JSON.
+    → the background helper records OUTCOME_UNKNOWN (marker preserved).
 
-    Per the spec: UNKNOWN deliberately does NOT rollback the marker or
-    restore runner-global flags. The marker survives so a subsequent
-    successful restart cannot be misinterpreted as a duplicate.
+    P1 #71876 semantic: the accepted ack is published immediately after
+    claim_handoff, so dispatch returns success=True ("transaction claimed;
+    restart will proceed") BEFORE the launcher runs. The launcher failure is
+    then recorded by the background helper via complete_unknown(): stage
+    OUTCOME_UNKNOWN, final_outcome UNKNOWN, marker deliberately NOT rolled
+    back (UNKNOWN cannot prove no side-effect), stop() never reached.
 
     Implementation note: `make_restart_runner()` defaults
     `runner._launch_detached_restart_command` to an AsyncMock that
@@ -125,27 +128,44 @@ async def test_handoff_failure_returns_false_and_preserves_marker(
     # AsyncMock; we keep it that way so we can use `assert_not_called`
     # below. No override needed.
 
-    runner._launch_detached_restart_command = AsyncMock(  # type: ignore[method-assign]
-        side_effect=OSError("simulated launcher failure")
-    )
+    captured_txn: list = []
+
+    async def launcher_raises():
+        # Capture the live transaction while the helper is executing it
+        # (dispatch returns before the launcher runs, and the helper clears
+        # runner._restart_transaction when it records a terminal state).
+        captured_txn.append(runner._restart_transaction)
+        raise OSError("simulated launcher failure")
+
+    runner._launch_detached_restart_command = launcher_raises  # type: ignore[method-assign]
 
     with patch("gateway.run._hermes_home", tmp_path):
         success, msg = await runner.dispatch_gateway_restart(
             source=_make_source(chat_id="chat-HF"), origin="agent_tool"
         )
 
-    # Authoritative contract: launch failed in detached mode with OSError
-    # → UNKNOWN outcome → "Do not retry immediately".
-    assert success is False
-    assert msg == "Restart outcome could not be confirmed. Do not retry immediately."
+    # P1 #71876: dispatch returns success because the accepted ack was
+    # published at claim_handoff time (before the launcher ran). The
+    # message must NOT claim completion — "restarting" / "draining" only
+    # means the transaction was claimed and will proceed in the background.
+    assert success is True
+
+    # The helper executed the launcher, so the transaction was live then.
+    txn = captured_txn[0]
+    assert txn is not None
+
+    # Wait for the background helper to record the launcher failure.
+    if txn.restart_task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(txn.restart_task), timeout=2.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
 
     # stop() must NEVER have been reached (no commit, no shutdown).
     runner.stop.assert_not_called()
 
-    # The dispatcher retains the live transaction until the OUTCOME_UNKNOWN
-    # branch returns. Validate the state machine record directly without
-    # reaching into production internals beyond what dispatch exposes.
-    txn = runner._restart_transaction
+    # The transaction must now be in OUTCOME_UNKNOWN (launcher raised after
+    # claim), NOT still IN_FLIGHT and NOT committed.
     if txn is not None:
         from gateway.slash_commands import (
             _LauncherResult,
@@ -202,8 +222,12 @@ async def test_dispatcher_cancel_after_helper_inflight_does_not_stop(
 ):
     """Cancelling the dispatcher once the helper has crossed IN_FLIGHT
     MUST NOT cancel the helper, MUST NOT trigger shutdown, MUST NOT
-    rollback the marker. The dispatcher becomes a pure observer per
-    spec section 二. The helper continues independently and only stop()
+    rollback the marker.
+
+    P1 #71876: the accepted ack is published immediately after
+    claim_handoff, so dispatch returns (success) as soon as the helper is
+    IN_FLIGHT. A caller that cancels the dispatch task after that point is
+    a pure observer — the helper continues independently and only stop()
     is invoked if it actually reaches HANDOFF_COMMITTED.
 
     No fixed sleep is used: synchronization is via asyncio.Event so the
@@ -227,13 +251,6 @@ async def test_dispatcher_cancel_after_helper_inflight_does_not_stop(
 
     runner._launch_detached_restart_command = fake_launch_gated  # type: ignore[method-assign]
 
-    # Shrink the dispatcher ack timeout so the test does not depend on
-    # the 8s default; the helper is gated anyway, so ack will not fire
-    # before timeout regardless.
-    monkeypatch.setattr(
-        "gateway.slash_commands._RESTART_DISPATCH_ACK_TIMEOUT_S", 0.05
-    )
-
     with patch("gateway.run._hermes_home", tmp_path):
         dispatch_task = asyncio.create_task(
             runner.dispatch_gateway_restart(
@@ -243,32 +260,35 @@ async def test_dispatcher_cancel_after_helper_inflight_does_not_stop(
         # Wait deterministically for the helper to enter IN_FLIGHT
         # (claim_handoff already succeeded and fake_launch is awaiting).
         await helper_in_flight.wait()
-        # Now cancel the dispatcher. With helper already IN_FLIGHT,
-        # claim_abort() returns False → observer path → no rollback,
-        # no helper cancel, no shutdown.
-        dispatch_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await dispatch_task
+        # The dispatcher has already observed the claimed ack and returns
+        # success; the helper is IN_FLIGHT and must not be disturbed.
+        success, _msg = await dispatch_task
 
-        # The dispatcher returned (with CancelledError propagated).
-        # The helper is still pending in fake_launch_gated.
+        assert success is True
+        # The helper is still pending in fake_launch_gated (IN_FLIGHT).
+        assert runner._restart_transaction is not None
 
     # Authoritative contract under observer mode:
     # 1. stop() is NEVER called from the dispatcher observer branch.
     runner.stop.assert_not_called()
 
-    # 2. The marker survives (UNKNOWN does not rollback).
+    # 2. The marker survives (IN_FLIGHT: no rollback yet).
     on_disk = json.loads(
         (tmp_path / ".restart_last_processed.json").read_text(encoding="utf-8")
     )
     assert on_disk["chat_id"] == "chat-DC", (
-        f"Observer mode must preserve the dedup marker; got {on_disk}"
+        f"IN_FLIGHT must preserve the dedup marker; got {on_disk}"
     )
 
-    # 3. Release + clean up the helper task we left pending so the
-    #    event loop exits cleanly (the helper is not the spec target
-    #    of this test).
+    # 3. Release + let the helper finish → stop() is invoked.
     helper_release.set()
+    for _ in range(50):
+        if runner.stop.called:
+            break
+        await asyncio.sleep(0.02)
+    assert runner.stop.called is True, (
+        "After release, helper MUST proceed to HANDOFF_COMMITTED → stop()."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +490,14 @@ async def test_service_path_ignores_launcher_exceptions(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_detached_path_launcher_failure_rolls_back(monkeypatch, tmp_path):
-    """Blocker 2: Detached path still calls launcher; failure means NOT_STARTED, rollback, no stop()."""
+    """Blocker 2: Detached path still calls launcher; failure means NOT_STARTED, rollback, no stop().
+
+    P1 #71876 semantic: dispatch returns success=True once the accepted ack
+    is published at claim_handoff (before the launcher runs). The launcher
+    returning False (NOT_STARTED — provably no side-effect) is recorded by
+    the background helper: transaction ABORTED, marker rolled back, stop()
+    never reached.
+    """
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
     monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: False)
@@ -496,15 +523,16 @@ async def test_detached_path_launcher_failure_rolls_back(monkeypatch, tmp_path):
             source=_make_source(), origin="agent_tool"
         )
 
-    assert success is False
-    assert "Handoff failed" in msg
-    mock_launcher.assert_awaited_once()
+    # P1 #71876: accepted ack published at claim_handoff → dispatch success.
+    assert success is True
 
     tx = captured.get("tx")
     assert tx is not None
-    assert tx.is_aborted() is True
 
+    # Wait for the background helper to roll back the marker and record ABORTED.
     await asyncio.wait_for(asyncio.shield(tx.restart_task), timeout=2.0)
+
+    assert tx.is_aborted() is True
 
     runner.stop.assert_not_called()
     assert runner._restart_transaction is None
@@ -586,9 +614,12 @@ async def test_redelivery_suppression_in_public_handle_message_entry(monkeypatch
 
 @pytest.mark.asyncio
 async def test_dispatcher_rolls_back_marker_on_not_started(monkeypatch, tmp_path):
-    """Helper returns NOT_STARTED: dispatcher rolls back the dedup marker
-    to whatever was there before the new request began. The "old-NOT"
+    """Helper returns NOT_STARTED: background helper rolls back the dedup
+    marker to whatever was there before the new request began. The "old-NOT"
     marker must survive on disk unchanged.
+
+    P1 #71876 semantic: dispatch returns success=True at claim_handoff; the
+    NOT_STARTED rollback is performed by the background helper.
     """
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
@@ -608,7 +639,10 @@ async def test_dispatcher_rolls_back_marker_on_not_started(monkeypatch, tmp_path
     runner.stop = AsyncMock()  # type: ignore[method-assign]
 
     # Helper claims handoff and returns NOT_STARTED (Popen refused to run).
+    captured_txn: list = []
+
     async def fake_launch_not_started() -> bool:
+        captured_txn.append(runner._restart_transaction)
         return False
 
     runner._launch_detached_restart_command = fake_launch_not_started  # type: ignore[method-assign]
@@ -618,10 +652,21 @@ async def test_dispatcher_rolls_back_marker_on_not_started(monkeypatch, tmp_path
             source=_make_source(chat_id="chat-NOT"), origin="agent_tool"
         )
 
-    assert success is False
-    assert "Handoff failed" in msg or "could not be spawned" in msg
+    # P1 #71876: accepted ack published at claim_handoff → dispatch success.
+    assert success is True
 
-    # The pre_marker survives. The dispatcher rolled back the new write.
+    # The helper executed the launcher, so the transaction was live then.
+    txn = captured_txn[0]
+    assert txn is not None
+
+    # Wait for the background helper to complete the NOT_STARTED rollback.
+    if txn.restart_task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(txn.restart_task), timeout=2.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+
+    # The pre_marker survives. The helper rolled back the new write.
     on_disk = json.loads(
         (tmp_path / ".restart_last_processed.json").read_text(encoding="utf-8")
     )
@@ -635,11 +680,13 @@ async def test_dispatcher_rolls_back_marker_on_not_started(monkeypatch, tmp_path
 
 @pytest.mark.asyncio
 async def test_dispatcher_returns_do_not_retry_on_unknown(monkeypatch, tmp_path):
-    """Helper raises mid-launch → dispatcher returns DO NOT RETRY JSON.
+    """Helper raises mid-launch → background helper records OUTCOME_UNKNOWN.
 
-    Maps launcher_result=UNKNOWN → stage=OUTCOME_UNKNOWN → user message
-    "Restart outcome could not be confirmed. Do not retry immediately."
-    The marker stays on disk (UNKNOWN refuses rollback).
+    Maps launcher_result=UNKNOWN → stage=OUTCOME_UNKNOWN. The marker stays on
+    disk (UNKNOWN refuses rollback).
+
+    P1 #71876 semantic: dispatch returns success=True at claim_handoff; the
+    launcher failure is recorded by the background helper.
     """
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
@@ -649,7 +696,11 @@ async def test_dispatcher_returns_do_not_retry_on_unknown(monkeypatch, tmp_path)
     runner._gateway_loop = gw_loop
     runner.stop = AsyncMock()  # type: ignore[method-assign]
 
+    captured_txn: list = []
+
     async def fake_launch_raises() -> bool:
+        # Capture the live transaction while the helper is executing it.
+        captured_txn.append(runner._restart_transaction)
         # Popen raised after the fork attempt — maps to UNKNOWN in detached mode.
         raise OSError("simulated post-fork failure")
 
@@ -660,8 +711,27 @@ async def test_dispatcher_returns_do_not_retry_on_unknown(monkeypatch, tmp_path)
             source=_make_source(chat_id="chat-UNK"), origin="agent_tool"
         )
 
-    assert success is False
-    assert msg == "Restart outcome could not be confirmed. Do not retry immediately."
+    # P1 #71876: accepted ack published at claim_handoff → dispatch success.
+    assert success is True
+
+    # The helper executed the launcher, so the transaction was live then.
+    txn = captured_txn[0]
+    assert txn is not None
+
+    # Wait for the background helper to record the UNKNOWN outcome.
+    if txn.restart_task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(txn.restart_task), timeout=2.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+
+    from gateway.slash_commands import (
+        _RestartFinalOutcome,
+        _RestartStage,
+    )
+
+    assert txn.stage is _RestartStage.OUTCOME_UNKNOWN
+    assert txn.final_outcome is _RestartFinalOutcome.UNKNOWN
 
     # Marker survives — UNKNOWN refuses rollback.
     assert (tmp_path / ".restart_last_processed.json").exists()
@@ -718,12 +788,14 @@ async def test_preparing_claim_abort_wins_blocks_handoff(
 async def test_in_flight_observer_does_not_rollback_or_cancel(
     monkeypatch, tmp_path
 ):
-    """Dispatcher times out after helper crossed IN_FLIGHT.
+    """Helper crossed IN_FLIGHT and dispatch has returned (P1 #71876).
 
-    The dispatcher becomes a pure observer: it MUST NOT cancel the helper
-    task, MUST NOT rollback, MUST NOT write ack. The helper goes on to
-    STARTED → HANDOFF_COMMITTED → stop(). This is the spec section 二
-    observer contract.
+    With the P1 fix, the accepted ack is published immediately after
+    claim_handoff, so dispatch returns BEFORE the launcher runs. The
+    dispatcher must NOT cancel the helper task, MUST NOT rollback, MUST NOT
+    write a second ack. The helper goes on to STARTED → HANDOFF_COMMITTED →
+    stop(). This is the spec section 二 observer contract, now exercised
+    from the post-claim/pre-launch window.
     """
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
@@ -739,9 +811,9 @@ async def test_in_flight_observer_does_not_rollback_or_cancel(
 
     runner.stop = fake_stop  # type: ignore[method-assign]
 
-    # Gate the helper so it stays IN_FLIGHT long enough for the dispatcher
-    # timeout to fire. Release only after the test confirms the dispatcher
-    # already returned.
+    # Gate the helper so it stays IN_FLIGHT (launcher pending) while the
+    # dispatcher returns. Release only after the test confirms the
+    # dispatcher already returned.
     helper_in_flight = asyncio.Event()
     release_helper = asyncio.Event()
 
@@ -752,23 +824,21 @@ async def test_in_flight_observer_does_not_rollback_or_cancel(
 
     runner._launch_detached_restart_command = fake_launch_gated  # type: ignore[method-assign]
 
-    # Shrink the dispatcher ack timeout so we don't wait the full 8s.
-    monkeypatch.setattr(
-        "gateway.slash_commands._RESTART_DISPATCH_ACK_TIMEOUT_S", 0.05
-    )
-
     with patch("gateway.run._hermes_home", tmp_path):
         dispatch_task = asyncio.create_task(
             runner.dispatch_gateway_restart(
                 source=_make_source(chat_id="chat-OBS"), origin="agent_tool"
             )
         )
+        # Wait for the helper to reach the gated launcher (IN_FLIGHT).
         await helper_in_flight.wait()
         success, msg = await dispatch_task
 
-    assert success is False
-    # dispatcher re-derives ack_outcome → OUTCOME_UNKNOWN branch
-    assert msg == "Restart outcome could not be confirmed. Do not retry immediately."
+    # P1 #71876: accepted ack published at claim_handoff → dispatch success
+    # even though the launcher is still gated. The message does NOT claim
+    # completion — the transaction is claimed and will proceed in the
+    # background.
+    assert success is True
 
     # At this point the dispatcher has returned. The helper is still in the
     # gate. Releasing it now lets the helper proceed to STARTED → stop().
@@ -782,8 +852,9 @@ async def test_in_flight_observer_does_not_rollback_or_cancel(
             break
         await asyncio.sleep(0.02)
     assert stop_called, (
-        "After dispatcher timeout, helper MUST proceed to STARTED → stop(). "
-        "Dispatcher observer role MUST NOT prevent helper completion."
+        "After dispatcher returned at claim time, helper MUST proceed to "
+        "STARTED → stop(). Dispatcher observer role MUST NOT prevent helper "
+        "completion."
     )
 
 

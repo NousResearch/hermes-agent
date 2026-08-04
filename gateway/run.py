@@ -10981,8 +10981,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Drain in-flight work before any restart side-effect (upstream #77184): refuse new turns and wait for active
             # agents/cron/api work to reach zero, then let the launch / stop path run against an idle gateway. This also
             # honors upstream's guidance to launch the detached helper only AFTER the after-turn wait.
-            await self._await_active_work_before_restart()
-
+            #
+            # IMPORTANT (self-deadlock fix, P1 #71876): the requesting turn — the natural-language agent turn that
+            # invoked request_gateway_restart — still holds its _running_agents slot while dispatch_gateway_restart is
+            # awaiting the handoff acknowledgement. If we drain BEFORE claiming the transaction, the drain waits for
+            # that turn, the turn waits for dispatch to return, and dispatch waits for our ack → ack timeout → abort.
+            # Claim the transaction FIRST (entering IN_FLIGHT is the safe, non-reentrant state), publish the
+            # accepted/claimed ack so dispatch returns and the requesting turn can finish, THEN drain in the
+            # background. The ack means "transaction claimed; restart will proceed" — it does NOT mean drain,
+            # launcher, or stop has completed. Drain/launcher/stop failures are recorded via transaction
+            # final_outcome, marker rollback, and notification.
             if transaction is not None:
                 # ----- CLAIM HANDOFF (spec section 二) ------------------
                 # The helper MUST win the handoff gate BEFORE performing
@@ -11012,6 +11020,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # final_outcome here. The caller's
                     # _handle_timeout_or_cancel will do that.
                     return
+
+                # Publish the accepted/claimed ack immediately so dispatch
+                # returns and the requesting turn can finish (P1 #71876).
+                # try_write_ack is idempotent and safe to call before any
+                # external side-effect has occurred.
+                transaction.try_write_ack(_RestartAckOutcome.ACCEPTED)
+
+            # Drain in-flight work AFTER the handoff was claimed: the
+            # requesting turn is now free to finish, so the drain will
+            # actually converge. The launch / stop path still runs only
+            # after active work reaches zero (upstream #77184).
+            await self._await_active_work_before_restart()
+
+            if transaction is not None:
 
                 # ----- LAUNCH (no lock held) -----------------------------
                 # Map the helper's outcome to the three-state terminal
@@ -11119,11 +11141,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     tr = await transaction.complete_not_started()
                     if tr is _TransitionResult.LOST_RACE:
                         return
+                    if self._restart_transaction is transaction:
+                        self._restart_transaction = None
                     return
                 else:  # UNKNOWN
                     tr = await transaction.complete_unknown()
                     if tr is _TransitionResult.LOST_RACE:
                         return
+                    if self._restart_transaction is transaction:
+                        self._restart_transaction = None
                     return
 
                 # ----- POST-LAUNCH (helper may be cancelled here) ------
@@ -11143,6 +11169,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Stage is HANDOFF_COMMITTED already. DO NOT regress.
                     # Re-raise so the task is properly cancelled.
                     raise
+                # P1 #71876: dispatch returns at claim_handoff (accepted
+                # ack), so the helper is the last party to observe the
+                # terminal state. Clear the runner's live-transaction
+                # pointer here (dispatch's NOT_STARTED/OUTCOME_UNKNOWN
+                # cleanup branches are no longer reached for claimed
+                # transactions).
+                if self._restart_transaction is transaction:
+                    self._restart_transaction = None
             else:
                 # Legacy fallback for callers without a transaction object
                 if detached:

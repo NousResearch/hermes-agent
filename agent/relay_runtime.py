@@ -267,7 +267,7 @@ class _ProcessRelayPluginConfiguration:
 
             try:
                 plugin_mod = getattr(relay, "plugin", None)
-                plugin_config, dynamic_plugins = _configured_plugin_inputs()
+                plugin_config, dynamic_plugins = _configured_plugin_inputs(relay)
                 if dynamic_plugins:
                     initialize_dynamic = getattr(
                         plugin_mod,
@@ -1905,8 +1905,8 @@ def _load_nemo_relay() -> Any:
     return importlib.import_module("nemo_relay")
 
 
-def _configured_plugin_inputs() -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Load one explicit config overlay and its Hermes dynamic host specs."""
+def _configured_plugin_inputs(relay: Any) -> tuple[dict[str, Any], list[Any]]:
+    """Load one explicit static overlay and dynamic host specs."""
     configured = os.environ.get(RELAY_PLUGINS_CONFIG_ENV, "").strip()
     if not configured:
         return {}, []
@@ -1915,7 +1915,28 @@ def _configured_plugin_inputs() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     try:
         with config_path.open("rb") as config_file:
             config = tomllib.load(config_file)
-        dynamic_plugins = _dynamic_plugin_specs(config, config_path)
+        legacy_dynamic_plugins = _dynamic_plugin_specs(config, config_path)
+        plugins_section = config.get("plugins")
+        if plugins_section is not None and legacy_dynamic_plugins:
+            raise ValueError(
+                "configure either Relay [[plugins.dynamic]] records or Hermes "
+                "[[dynamic_plugins]] activation specs, not both"
+            )
+
+        dynamic_plugins = legacy_dynamic_plugins
+        if plugins_section:
+            plugin_mod = getattr(relay, "plugin", None)
+            load_dynamic_plugins = getattr(
+                plugin_mod,
+                "load_dynamic_plugin_activation_specs",
+                None,
+            )
+            if not callable(load_dynamic_plugins):
+                raise RuntimeError(
+                    "installed NeMo Relay binding does not expose "
+                    "plugin.load_dynamic_plugin_activation_specs"
+                )
+            dynamic_plugins = load_dynamic_plugins(config_path)
         plugin_config = dict(config)
         plugin_config.pop("dynamic_plugins", None)
         plugin_config.pop("plugins", None)
@@ -1934,16 +1955,10 @@ def _dynamic_plugin_specs(
     config: dict[str, Any],
     config_path: Path,
 ) -> list[dict[str, Any]]:
-    """Validate Hermes-owned specs for Relay's public dynamic host API."""
+    """Validate Hermes worker activation specs pending Relay lifecycle loading."""
     plugins_section = config.get("plugins")
-    if plugins_section is not None:
-        if not isinstance(plugins_section, dict):
-            raise ValueError("[plugins] must be a table")
-        if plugins_section:
-            raise ValueError(
-                "Relay CLI [[plugins.dynamic]] records require lifecycle state; "
-                "use Hermes [[dynamic_plugins]] activation specs"
-            )
+    if plugins_section is not None and not isinstance(plugins_section, dict):
+        raise ValueError("[plugins] must be a table")
 
     raw_specs = config.get("dynamic_plugins")
     if raw_specs is None:

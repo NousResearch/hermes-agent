@@ -5011,14 +5011,34 @@ class AIAgent:
                 exc,
             )
 
+    def _build_primary_client_for_active_provider(self, *, reason: str) -> Any:
+        """Build the shared client shape required by the active provider.
+
+        MoA is a virtual provider whose ``client`` is an in-process facade,
+        not an OpenAI SDK client. Generic rebuild paths (credential rotation,
+        timeout application, and dead-connection cleanup) still pass through
+        this helper, so they must preserve that provider/client invariant.
+        """
+        if (getattr(self, "provider", "") or "").strip().lower() == "moa":
+            from agent.moa_loop import build_moa_facade
+
+            return build_moa_facade(self, self.model)
+        return self._create_openai_client(
+            self._client_kwargs,
+            reason=reason,
+            shared=True,
+        )
+
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:
-                new_client = self._create_openai_client(self._client_kwargs, reason=reason, shared=True)
+                new_client = self._build_primary_client_for_active_provider(
+                    reason=reason,
+                )
             except Exception as exc:
                 logger.warning(
-                    "Failed to rebuild shared OpenAI client (%s) %s error=%s",
+                    "Failed to rebuild shared primary client (%s) %s error=%s",
                     reason,
                     self._client_log_context(),
                     exc,

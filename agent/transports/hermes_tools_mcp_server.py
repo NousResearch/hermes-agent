@@ -119,6 +119,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "browser_snapshot",
     "browser_scroll",
     "browser_back",
+    "browser_wait",
     "browser_get_images",
     "browser_console",
     "browser_vision",

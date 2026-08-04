@@ -483,6 +483,14 @@ Supported keys: `Enter`, `Tab`, `Escape`, `ArrowDown`, `ArrowUp`, and more.
 
 Navigate back to the previous page in browser history.
 
+### `browser_wait`
+
+Wait for the page to settle before reading it again — for slow single-page apps that are still loading, or right after an interaction that triggers async updates. With `text`, polls the page and returns as soon as that text appears (or the timeout elapses, max 30s); without it, sleeps for the given duration. Prefer this over calling `browser_snapshot` repeatedly, which returns the same unfinished page and trips the tool-loop guardrail.
+
+```
+Wait until the flight results appear
+```
+
 ### `browser_get_images`
 
 List all images on the current page with their URLs and alt text. Useful for finding images to analyze.

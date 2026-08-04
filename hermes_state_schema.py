@@ -16,6 +16,7 @@ from typing import Dict, Optional
 from hermes_constants import get_hermes_home
 from hermes_state_common import (
     DEFERRED_INDEX_SQL,
+    FTS_CJK_STALE_KEY,
     FTS_SQL,
     FTS_STORAGE_VERSION,
     FTS_TRIGRAM_SQL,
@@ -34,6 +35,27 @@ logger = logging.getLogger("hermes_state")
 
 class SessionSchemaMixin:
     """See module docstring — mixin for SessionDB (Schema cluster)."""
+
+    def _dedupe_legacy_system_prompts(self, cursor: sqlite3.Cursor) -> None:
+        """Move inline prompt snapshots into the shared content-addressed table."""
+        try:
+            rows = cursor.execute(
+                "SELECT id, system_prompt FROM sessions "
+                "WHERE system_prompt IS NOT NULL"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+
+        for row in rows:
+            session_id = row["id"] if isinstance(row, sqlite3.Row) else row[0]
+            prompt = row["system_prompt"] if isinstance(row, sqlite3.Row) else row[1]
+            prompt_hash = self._store_system_prompt(cursor, prompt)
+            cursor.execute(
+                "UPDATE sessions "
+                "SET system_prompt_hash = ?, system_prompt = NULL "
+                "WHERE id = ?",
+                (prompt_hash, session_id),
+            )
 
     def _sqlite_supports_fts5(self, cursor: sqlite3.Cursor) -> bool:
         try:
@@ -55,6 +77,143 @@ class SessionSchemaMixin:
             _FTS_TRIGGERS,
         ).fetchone()
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
+
+
+    @staticmethod
+    def _fts_update_trigger_needs_narrowing(sql: Optional[str]) -> bool:
+        """True when trigger SQL is missing AFTER UPDATE OF (still broad)."""
+        if not sql:
+            return False
+        # Collapse whitespace so multi-line DDL still matches.
+        compact = " ".join(sql.split()).upper()
+        # Already narrowed.
+        if "AFTER UPDATE OF " in compact:
+            return False
+        # Broad UPDATE trigger that we still need to replace.
+        return "AFTER UPDATE ON " in compact
+
+    def _migrate_broad_fts_update_triggers(self, cursor: sqlite3.Cursor) -> int:
+        """Replace broad AFTER UPDATE FTS triggers with AFTER UPDATE OF variants.
+
+        ``CREATE TRIGGER IF NOT EXISTS`` will not replace an existing broad
+        trigger, so installs that already created ``AFTER UPDATE ON messages``
+        would keep firing on every messages row touch (status/compaction
+        writes included). Inspect ``sqlite_master``, drop any still-broad
+        UPDATE triggers, and re-apply the current DDL constants.
+
+        No FTS rebuild: content correctness was already gated by WHEN clauses
+        on modern installs; OF only skips unnecessary trigger evaluation.
+
+        Returns the number of triggers dropped (0 when already converged).
+        """
+        # CJK is a v23-only surface.  Decide the layout before selecting
+        # destructive candidates so the legacy branch never drops a trigger
+        # it does not recreate.
+        legacy_layout = self._db_has_legacy_inline_fts(cursor)
+        update_names = (
+            "messages_fts_update",
+            "messages_fts_trigram_update",
+        )
+        if not legacy_layout and hasattr(self, "_ensure_fts_cjk_schema"):
+            update_names += ("messages_fts_cjk_update",)
+        placeholders = ", ".join("?" for _ in update_names)
+        rows = cursor.execute(
+            "SELECT name, sql FROM sqlite_master "
+            f"WHERE type = 'trigger' AND name IN ({placeholders})",
+            update_names,
+        ).fetchall()
+        to_drop = []
+        for row in rows:
+            name = row[0] if not isinstance(row, sqlite3.Row) else row["name"]
+            sql = row[1] if not isinstance(row, sqlite3.Row) else row["sql"]
+            if self._fts_update_trigger_needs_narrowing(sql):
+                to_drop.append(name)
+        if not to_drop:
+            return 0
+
+        for name in to_drop:
+            # Names are drawn from the update_names literal allowlist above —
+            # never user input — so the identifier is interpolation-safe.
+            cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+
+        # Re-apply current DDL so CREATE TRIGGER installs the OF variants.
+        # Choose legacy vs v23 the same way _init_schema does.
+        if legacy_layout:
+            self._ensure_fts_schema(cursor, "messages_fts", LEGACY_FTS_SQL)
+            self._ensure_fts_schema(
+                cursor, "messages_fts_trigram", LEGACY_FTS_TRIGRAM_SQL
+            )
+        else:
+            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
+            self._ensure_fts_schema(
+                cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+            )
+            # CJK triggers live on the host SessionDB; only recreate one that
+            # this migration actually dropped. ``_ensure_fts_cjk_schema`` is
+            # documented never-raises and soft-fails OperationalError by
+            # clearing availability — raise-path handling alone is not
+            # enough. After ensure, require a narrowed CJK UPDATE trigger or
+            # durable quarantine (stale breadcrumb + unavailable).
+            if "messages_fts_cjk_update" in to_drop:
+                try:
+                    self._ensure_fts_cjk_schema(cursor)
+                except Exception:
+                    self._quarantine_cjk_after_update_of_migration(cursor)
+                    logger.exception(
+                        "CJK FTS re-ensure after UPDATE OF migration failed"
+                    )
+                    raise
+                if not self._cjk_update_trigger_is_narrowed(cursor):
+                    self._quarantine_cjk_after_update_of_migration(cursor)
+                    logger.warning(
+                        "CJK FTS UPDATE trigger missing or still broad after "
+                        "UPDATE OF migration; marked stale and unavailable"
+                    )
+
+        logger.info(
+            "Migrated %d broad FTS UPDATE trigger(s) to AFTER UPDATE OF "
+            "(no rebuild required)",
+            len(to_drop),
+        )
+        return len(to_drop)
+
+    def _cjk_update_trigger_is_narrowed(self, cursor: sqlite3.Cursor) -> bool:
+        """True when messages_fts_cjk_update exists with AFTER UPDATE OF."""
+        row = cursor.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'trigger' AND name = ?",
+            ("messages_fts_cjk_update",),
+        ).fetchone()
+        if not row:
+            return False
+        sql = row[0] if not isinstance(row, sqlite3.Row) else row["sql"]
+        return not self._fts_update_trigger_needs_narrowing(sql)
+
+    def _quarantine_cjk_after_update_of_migration(
+        self, cursor: sqlite3.Cursor
+    ) -> None:
+        """Fail-closed after dropping CJK UPDATE during OF migration.
+
+        Clears availability, persists ``fts_cjk_stale``, and drops any
+        residual broad/partial CJK UPDATE trigger so a later open cannot
+        ``CREATE TRIGGER IF NOT EXISTS`` a gap without rebuild.
+        """
+        self._fts_cjk_available = False
+        try:
+            self.set_meta(FTS_CJK_STALE_KEY, "1", cursor=cursor)
+        except Exception:
+            logger.debug(
+                "Could not persist CJK FTS stale breadcrumb",
+                exc_info=True,
+            )
+        try:
+            cursor.execute("DROP TRIGGER IF EXISTS messages_fts_cjk_update")
+        except Exception:
+            logger.debug(
+                "Could not drop residual CJK UPDATE trigger after quarantine",
+                exc_info=True,
+            )
+
 
     @staticmethod
     def _rebuild_fts_indexes(
@@ -724,6 +883,14 @@ class SessionSchemaMixin:
                 if fts5_available and self._db_has_legacy_inline_fts(cursor):
                     self.set_meta("fts_optimize_available", "1", cursor=cursor)
 
+            if current_version < 25:
+                # v25: de-duplicate per-session system prompt snapshots into
+                # a shared content-addressed table. Keep the old column as a
+                # read fallback for partially migrated or externally written
+                # rows, but clear migrated rows so future writes do not keep
+                # one large prompt copy per session.
+                self._dedupe_legacy_system_prompts(cursor)
+
             # The FTS storage layout is versioned independently of the main
             # schema (see the v23 note above). Stamp the current layout so the
             # main version can always advance: a fresh/optimized DB is at
@@ -854,6 +1021,11 @@ class SessionSchemaMixin:
                     # CJK-bigram index (cjk_unicode61). Strictly additive to
                     # the surfaces above and gated on the loadable tokenizer:
                     self._ensure_fts_cjk_schema(cursor)
+
+            # Replace any pre-existing broad AFTER UPDATE triggers with
+            # AFTER UPDATE OF variants. IF NOT EXISTS cannot rewrite them.
+            if getattr(self, "_fts_enabled", False):
+                self._migrate_broad_fts_update_triggers(cursor)
 
         self._conn.commit()
 

@@ -9773,6 +9773,9 @@ def count_notify_subs(
     board: Optional[str] = None,
     notifier_profiles: Optional[Iterable[str]] = None,
     include_unowned: bool = False,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> int:
     """Count ``kanban_notify_subs`` rows via a read-only connection.
 
@@ -9786,7 +9789,10 @@ def count_notify_subs(
     DB, or a legacy DB that predates the subscriptions table, counts as
     zero. When ``notifier_profiles`` is supplied, only subscriptions owned
     by those profiles are counted; ``include_unowned`` also includes legacy
-    rows without an owner stamp. Path resolution matches :func:`connect`
+    rows without an owner stamp. Optional platform/chat/thread filters narrow
+    the probe to one notification owner without changing the unfiltered count.
+    Platform matching is case-insensitive, matching notifier routing; chat and
+    thread identifiers are exact. Path resolution matches :func:`connect`
     (explicit ``db_path``, else ``board`` via :func:`kanban_db_path`). Raises
     :class:`sqlite3.Error` when the DB exists but cannot be read
     (locked, corrupt); callers choose their own fallback.
@@ -9800,10 +9806,24 @@ def count_notify_subs(
             owner_where, owner_params = _notify_profile_filter(
                 notifier_profiles, include_unowned=include_unowned,
             )
-            sql = "SELECT COUNT(*) FROM kanban_notify_subs"
+            clauses: list[str] = []
+            params: list[Any] = []
             if owner_where:
-                sql += " WHERE " + owner_where
-            row = conn.execute(sql, owner_params).fetchone()
+                clauses.append(f"({owner_where})")
+                params.extend(owner_params)
+            if platform is not None:
+                clauses.append("LOWER(platform) = LOWER(?)")
+                params.append(platform)
+            if chat_id is not None:
+                clauses.append("chat_id = ?")
+                params.append(chat_id)
+            if thread_id is not None:
+                clauses.append("thread_id = ?")
+                params.append(thread_id)
+            query = "SELECT COUNT(*) FROM kanban_notify_subs"
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
+            row = conn.execute(query, params).fetchone()
         except sqlite3.OperationalError as exc:
             if "no such table" in str(exc).lower():
                 return 0

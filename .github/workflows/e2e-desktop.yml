@@ -66,8 +66,12 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
+
       - name: Set up Python 3.11
-        run: uv python install 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
       - name: Install Python dependencies
         uses: ./.github/actions/retry
         with:

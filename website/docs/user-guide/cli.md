@@ -223,6 +223,8 @@ Set a predefined personality to change the agent's tone:
 
 Built-in personalities include: `helpful`, `concise`, `technical`, `creative`, `teacher`, `kawaii`, `catgirl`, `pirate`, `shakespeare`, `surfer`, `noir`, `uwu`, `philosopher`, `hype`.
 
+To go back to the default (no overlay), use `/personality none` — `default` and `neutral` work too.
+
 You can also define custom personalities in `~/.hermes/config.yaml`:
 
 ```yaml

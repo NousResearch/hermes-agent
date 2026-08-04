@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
@@ -240,7 +240,10 @@ function ChatRuntimeBoundary({
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
 }
 
-export function ChatView({
+// Memoized: the tile caller (session-tile.tsx) and the contrib surface re-render
+// on idle ticks unrelated to the chat; with stable callback props (hoisted to
+// useCallback at the call sites) memo() lets the whole chat shell skip those.
+export const ChatView = memo(function ChatView({
   className,
   gateway,
   modelMenuContent,
@@ -596,4 +599,4 @@ export function ChatView({
       </ChatRuntimeBoundary>
     </div>
   )
-}
+})

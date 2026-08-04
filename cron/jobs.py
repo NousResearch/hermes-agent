@@ -404,6 +404,49 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
     return normalized
 
 
+def _normalize_repeat_value(repeat: Any) -> Optional[int]:
+    """Normalize the repeat argument from any accepted form into None or int.
+
+    The JSON schema declares ``repeat`` as ``type: integer``, but agents and
+    the ``cronjob`` tool description advertise the concept \"forever\" — which
+    some callers pass as the literal string ``"forever"``.  Normalizing here
+    prevents raw ``TypeError`` at comparison sites and gives clean behaviour.
+
+    Recognised values::
+        None      -> None      (infinite / not set)
+        <int <=0> -> None      (treat zero/negative as infinite)
+        "forever" -> None      (synonyms: "forever", "infinite", "inf", "")
+        >0 int    -> int       (finite recurrence count)
+
+    Raises ValueError for strings that don't match the recognised set.
+    """
+    if repeat is None:
+        return None
+    if isinstance(repeat, str):
+        stripped = repeat.strip().lower()
+        if stripped in ("forever", "infinite", "inf", ""):
+            return None
+        try:
+            value = int(stripped)
+        except ValueError:
+            raise ValueError(
+                f"repeat must be an integer or one of 'forever', 'infinite', "
+                f"'inf', got {repeat!r}"
+            )
+        repeat = value
+    # At this point repeat should be int (or coerceible)
+    try:
+        repeat = int(repeat)
+    except (ValueError, TypeError):
+        raise ValueError(
+            f"repeat must be an integer or one of 'forever', 'infinite', 'inf', "
+            f"got {repeat!r} ({type(repeat).__name__})"
+        )
+    if repeat <= 0:
+        return None
+    return repeat
+
+
 def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     """Return a job dict with canonical `skills` and legacy `skill` fields aligned."""
     normalized = dict(job)
@@ -1311,9 +1354,8 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
-    # Normalize repeat: treat 0 or negative values as None (infinite)
-    if repeat is not None and repeat <= 0:
-        repeat = None
+    # Normalize repeat: handle string synonyms ("forever"/"inf") and ints
+    repeat = _normalize_repeat_value(repeat)
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:

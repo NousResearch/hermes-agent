@@ -2059,7 +2059,7 @@ def _update_node_dependencies() -> list[str]:
                 (_m().PROJECT_ROOT / workspace / "package.json").exists()
                 for workspace in ("ui-tui", "web")
             ):
-                failed.append("ui-tui, web workspaces")
+                failed.append("ui-tui, @hermes/ink, web workspaces")
             return failed
         return []
 
@@ -2116,9 +2116,18 @@ def _update_node_dependencies() -> list[str]:
             print(f"    {stderr.splitlines()[-1]}")
         return _partial_update_failure("repo root")
 
-    # Step 2: install only the workspaces update needs (ui-tui, web).
+    # Step 2: install only the workspaces update needs (ui-tui, its nested
+    # @hermes/ink package, and web).
     # --workspace selects specific workspaces; the rest (desktop) are skipped.
-    ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
+    ws_args = [
+        *extra_args,
+        "--workspace",
+        "ui-tui",
+        "--workspace",
+        "ui-tui/packages/hermes-ink",
+        "--workspace",
+        "web",
+    ]
     ws_result = _m()._run_npm_install_deterministic(
         npm,
         _m().PROJECT_ROOT,
@@ -2128,14 +2137,14 @@ def _update_node_dependencies() -> list[str]:
     )
     if ws_result.returncode == 0:
         _record_npm_lockfile_hash(shared_hermes_root)
-        print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
+        print("  ✓ repo root + ui-tui, @hermes/ink, web workspaces (desktop skipped)")
         return []
 
     print("  ⚠ npm workspace install failed")
     stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
     if stderr:
         print(f"    {stderr.splitlines()[-1]}")
-    return _partial_update_failure("ui-tui, web workspaces")
+    return _partial_update_failure("ui-tui, @hermes/ink, web workspaces")
 
 def _log_only_write(text: str) -> None:
     """Write ``text`` to ``~/.hermes/logs/update.log`` only, never the terminal.

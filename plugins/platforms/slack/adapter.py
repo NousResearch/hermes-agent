@@ -2401,6 +2401,20 @@ class SlackAdapter(BasePlatformAdapter):
         """Return an in-memory routing marker without changing legacy no-team tests."""
         return (str(team_id), str(message_id)) if team_id else str(message_id)
 
+    def scope_id_for_chat(self, chat_id: str) -> Optional[str]:
+        """Return the workspace (team) id that owns ``chat_id``.
+
+        Reads the channel → workspace map maintained by
+        ``_remember_channel_team``. Returns ``None`` for unknown channels and
+        for channels claimed by more than one workspace (which that map drops),
+        so callers get no scope rather than a wrong one.
+        """
+        if not chat_id:
+            return None
+        channel_team = getattr(self, "_channel_team", None) or {}
+        team_id = channel_team.get(str(chat_id))
+        return str(team_id) if team_id else None
+
     def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
         """Return the workspace-specific WebClient for a channel."""
         if team_id and team_id in self._team_clients:

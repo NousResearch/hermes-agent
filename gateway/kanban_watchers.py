@@ -125,6 +125,44 @@ def _release_singleton_lock(handle) -> None:
         pass
 
 
+def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
+    """Return the tenant scope (Slack workspace) a subscription's wake keys to.
+
+    ``build_session_key()`` includes ``SessionSource.scope_id`` on platforms
+    where one bot serves several isolated tenants, so a wake source must carry
+    the same scope as inbound messages from that chat to resolve to the same
+    session.
+
+    The subscription's persisted ``delivery_metadata`` wins over the adapter's
+    live chat → scope mapping, because it records the scope the subscription was
+    created from; the mapping only covers rows that stored no metadata. ``None``
+    means the chat has no scope, which is what an unscoped platform's key
+    contains.
+    """
+    delivery_meta = sub.get("delivery_metadata")
+    if isinstance(delivery_meta, dict):
+        for key in ("scope_id", "slack_team_id", "team_id"):
+            value = delivery_meta.get(key)
+            if value:
+                return str(value)
+    resolver = getattr(adapter, "scope_id_for_chat", None)
+    if callable(resolver):
+        try:
+            resolved = resolver(str(sub.get("chat_id") or ""))
+        except Exception as exc:
+            # An adapter-side lookup failure yields no scope, never an error.
+            logger.debug(
+                "kanban notifier: scope lookup failed for chat %s: %s",
+                sub.get("chat_id"),
+                exc,
+                exc_info=True,
+            )
+            return None
+        if resolved:
+            return str(resolved)
+    return None
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -791,6 +829,7 @@ class GatewayKanbanWatchersMixin:
                                     user_id=sub.get("user_id"),
                                     user_id_alt=sub.get("user_id_alt"),
                                     profile=sub_profile or None,
+                                    scope_id=_wake_scope_id(adapter, sub),
                                 )
                                 # deliver_wake preserves the synthetic
                                 # MessageEvent/handle_message path for

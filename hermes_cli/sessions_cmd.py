@@ -325,8 +325,8 @@ def cmd_sessions(args, sessions_parser=None):
 
         _sort = getattr(args, "sort", None)
         if _sort is None:
-            from hermes_cli.config_defaults import DEFAULT_CONFIG
-            _sort = DEFAULT_CONFIG.get("sessions", {}).get("list_sort", "last-active")
+            from hermes_cli.config import load_config
+            _sort = load_config().get("sessions", {}).get("list_sort", "last-active")
         _order_by_last_active = (_sort == "last-active")
 
         sessions = db.list_sessions_rich(

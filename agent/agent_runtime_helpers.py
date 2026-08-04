@@ -2715,6 +2715,43 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 agent._is_anthropic_oauth = False
                 agent.client = None
                 agent._client_kwargs = {}
+            elif new_provider == "bedrock":
+                # Same bug class as the Vertex branch above, and predates it:
+                # Bedrock-hosted Claude also speaks Anthropic Messages but
+                # authenticates through the AWS SDK, against a base_url with
+                # no ``/v1/messages`` route. ``agent_init``,
+                # ``run_agent._rebuild_anthropic_client`` and
+                # ``run_agent._create_request_anthropic_client`` all dispatch
+                # on ``provider == "bedrock"``; this site did not, so a
+                # ``/model`` switch on Bedrock replaced a working
+                # AnthropicBedrock client with a direct Anthropic one and
+                # every call after the switch failed. Restarting the session
+                # recovered it (agent_init gets it right), which is likely why
+                # it went unnoticed.
+                from agent.anthropic_adapter import build_anthropic_bedrock_client
+                agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+                # Prefer the region named by the endpoint we are switching TO;
+                # fall back to the region stashed at init, then AWS's default.
+                # Mirrors the regex agent_init.py runs over the resolved
+                # base_url.
+                _region_match = re.search(
+                    r"bedrock-runtime\.([a-z0-9-]+)\.", agent._anthropic_base_url or ""
+                )
+                _br_region = (
+                    _region_match.group(1)
+                    if _region_match
+                    else (getattr(agent, "_bedrock_region", None) or "us-east-1")
+                )
+                agent._bedrock_region = _br_region
+                # Placeholder, same rationale as the vertex branch: the
+                # AnthropicBedrock SDK signs requests via the AWS credential
+                # chain, so no Anthropic API key goes on the wire.
+                agent.api_key = "aws-sdk"
+                agent._anthropic_api_key = "aws-sdk"
+                agent._anthropic_client = build_anthropic_bedrock_client(_br_region)
+                agent._is_anthropic_oauth = False
+                agent.client = None
+                agent._client_kwargs = {}
             else:
                 from agent.anthropic_adapter import (
                     build_anthropic_client,

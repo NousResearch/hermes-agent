@@ -124,15 +124,23 @@ const PlainCode: FC<{ code: string }> = ({ code }) => {
   )
 }
 
-// Keep code literals such as `@url:http://` raw: a copyable URL needs a host.
-const URL_REFERENCE_VALUE_RE = /^https?:\/\/[^/\s]\S*$/i
+/** Match the composer's contract: only HTTP(S) URLs with a parsed host become URL references. */
+function isHttpUrlWithHost(value: string): boolean {
+  try {
+    const url = new URL(value)
+
+    return (url.protocol === 'http:' || url.protocol === 'https:') && Boolean(url.hostname)
+  } catch {
+    return false
+  }
+}
 
 /** Convert URL references back to literal URLs for code-block clipboard text. */
 export function copyableCodeText(code: string): string {
   return code.replace(referenceRe(), (directive, kind: string, value: string) => {
     const url = unquoteReferenceValue(value)
 
-    return kind === 'url' && URL_REFERENCE_VALUE_RE.test(url) ? url : directive
+    return kind === 'url' && isHttpUrlWithHost(url) ? url : directive
   })
 }
 

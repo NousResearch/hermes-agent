@@ -64,7 +64,12 @@ Your selection is saved to `config.yaml`:
 image_gen:
   model: fal-ai/flux-2/klein/9b
   use_gateway: false            # true if using Nous Subscription
+  max_parallel_requests: 4      # concurrent images in one tool-call batch
 ```
+
+`max_parallel_requests` defaults to `4`. Hermes clamps it to at least one and
+to the global tool-worker limit, so image providers receive bounded parallel
+requests without allowing an image batch to bypass the agent's concurrency cap.
 
 ### GPT-Image Quality
 

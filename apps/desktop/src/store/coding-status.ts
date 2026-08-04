@@ -112,6 +112,14 @@ export const $repoChangeByPath = computed([$repoStatus, $currentCwd], (status, c
   return map
 })
 
+/**
+ * Per-row Git decoration subscription. A visible file row reads one scalar, so
+ * a fresh repo-status map only re-renders that row when its own kind changed.
+ */
+export function repoChangeKindForPath(path: string): ReadableAtom<RepoChangeKind | undefined> {
+  return computed($repoChangeByPath, changes => changes.get(path))
+}
+
 // Cwds whose rails are on screen right now (refcounted — two tiles in one
 // worktree register it twice). Every refresh edge re-probes each registered
 // cwd plus the primary workspace, so a tile's rail moves when ITS agent

@@ -51,10 +51,65 @@ import {
 import { MemoryPipelineManager } from "../utils/pipeline-manager.js";
 import { CheckpointManager } from "../utils/checkpoint.js";
 import { SessionFilter } from "../utils/session-filter.js";
-import { StandaloneLLMRunnerFactory } from "../adapters/standalone/llm-runner.js";
+import { StandaloneLLMRunner, StandaloneLLMRunnerFactory } from "../adapters/standalone/llm-runner.js";
+import { resolveStandaloneLlmForRuntime } from "../adapters/standalone/llm-provider-resolver.js";
 import { MetricTrackingRunnerFactory } from "./report/metric-tracking-runner.js";
 
+// ── Skill module (v2 redesign 2026-06-17) ──
+import {
+  SkillCore,
+  SkillResourceStore,
+  SkillVersioning,
+  SqliteSkillStore,
+  SkillExtractor,
+  resolveSkillConfig,
+  SKILL_REVIEW_PROMPT,
+} from "./skill/index.js";
+// Skill async-extract 现在完全走 conversation-add 侧的 agent 队列 + Worker
+// (SkillTriggerService.archive → agent 队列 → SkillConversationExtractWorker),
+// 由 gateway/openclaw host wiring 的 wireConversationAdd 起。tdai-core 只负责
+// 构造 SkillExtractor 单例给 wire 层用。
+import type {
+  ResolvedSkillConfig,
+  SkillEnvProbe,
+  ExtractorLLMRunner,
+} from "./skill/index.js";
+import type { Skill } from "./skill/types.js";
+
 const TAG = "[memory-tdai] [core]";
+
+/**
+ * Skill 生命周期钩子的注入点。用于把 skill 的 create/access/archive 事件同步到
+ * 上层的资产注册表（`meta_assets` + `meta_agent_fixed_assets`），实现「skill 创建
+ * 后前端管控页立即可见」「skill 归档后 agent 绑定被清」等语义。
+ *
+ * 契约与 `SkillVersioningOptions.onSkillCreated` / `SkillCoreOptions.onSkillArchived`
+ * / `SkillCoreOptions.onSkillAccessed` 完全一致（详见 skill-versioning.ts 与
+ * skill-core.ts 的 doc）：
+ *   - onSkillCreated：v1 首创前置 await，抛异常 = create 失败
+ *   - onSkillAccessed：fire-and-forget，抛异常 SkillCore 内部吞掉
+ *   - onSkillArchived：fire-and-forget，抛异常 SkillCore 内部吞掉
+ *
+ * 存在的必要性（standalone / OpenClaw 模式）：
+ *   service 模式下 gateway/server.ts:resolveSkillCore 已经挂了同名钩子；
+ *   standalone / OpenClaw 模式下 SkillCore 由 TdaiCore 全局构造，之前不挂钩子
+ *   导致：绕过 gateway handler 的任何调用路径（CLI / 未来内嵌 / skill.extract 同步分支）
+ *   都不会登记 asset，且 handleGet / handleFilesRead 完全没有兜底，读时自愈失效。
+ *   通过这个 options 让上层（如 gateway 或 openclaw 插件）可以选择性注入 hooks，
+ *   把 asset 联动语义带进 standalone / OpenClaw 路径。
+ */
+export interface SkillAssetHooks {
+  onSkillCreated?: (params: {
+    skill_id: string;
+    team_id?: string;
+    agent_id?: string;
+    user_id?: string;
+    name: string;
+    description: string;
+  }) => Promise<void>;
+  onSkillAccessed?: (skill: Skill) => void;
+  onSkillArchived?: (params: { skill_id: string; team_id?: string }) => void;
+}
 
 // ============================
 // Constructor options
@@ -71,6 +126,17 @@ export interface TdaiCoreOptions {
   instanceId?: string;
   /** StorageAdapter for file operations (COS/local). When absent, modules fall back to fs. */
   storage?: StorageAdapter;
+  /**
+   * 可选：把 skill 生命周期事件同步到上层资产注册表的钩子。
+   *
+   * 由 host wiring 层（gateway/openclaw 插件）在构造 TdaiCore 时按需注入，注入后
+   * standalone / OpenClaw 模式下的 SkillCore 与 service 模式行为对齐。详见
+   * `SkillAssetHooks` 的 doc。
+   *
+   * 不注入（undefined）→ SkillCore/SkillVersioning 不挂任何钩子，保持既有行为
+   * （零耦合：OpenClaw 无 MetadataService 场景仍可安全构造）。
+   */
+  skillAssetHooks?: SkillAssetHooks;
 }
 
 // ============================
@@ -112,6 +178,33 @@ export class TdaiCore {
   private schedulerStartPromise?: Promise<void>;
   private storeReady?: Promise<void>;
 
+  // ── Skill module (v2 redesign 2026-06-17) ──
+  // Constructed in ensureSkillModuleWired after vectorStore + storage are ready,
+  // gated on cfg.skill?.enabled and resolveSkillConfig's degradation matrix.
+  private skillCore?: SkillCore;
+  private skillExtractor?: SkillExtractor;
+  private resolvedSkillConfig?: ResolvedSkillConfig;
+  /**
+   * 可选：skill 生命周期钩子，用来把 create/access/archive 同步到上层 asset 注册表。
+   * 见 `SkillAssetHooks` 的 doc。undefined = 不挂钩子（既有 standalone 老行为）。
+   */
+  private skillAssetHooks?: SkillAssetHooks;
+  /**
+   * B1 fix: in-flight guard for `ensureSkillModuleWired()`. The original guard
+   * was a sync `if (this.skillCore) return`, but assignment to `skillCore`
+   * happens AFTER `await storeReady` + SkillCore/queue construction. Two
+   * concurrent callers (`initialize()` → storeReady.then chain, and
+   * `setStorage()`'s re-trigger) would both slip past the guard and each
+   * construct a full SkillCore + extract worker.
+   *
+   * Storing the in-flight promise lets every concurrent caller await the same
+   * wiring sequence. On success the promise stays as a sentinel and
+   * subsequent calls fall through to the fast-path `if (this.skillCore)
+   * return`. On failure the promise is cleared so a later `setStorage()` +
+   * explicit `ensureSkillModuleWired()` can retry.
+   */
+  private skillWiringPromise?: Promise<void>;
+
   /**
    * In-flight fire-and-forget background tasks started by
    * ``handleTurnCommitted`` (currently: deferred L0 embedding for
@@ -137,6 +230,7 @@ export class TdaiCore {
     this.sessionFilter = opts.sessionFilter ?? new SessionFilter([]);
     this.instanceId = opts.instanceId;
     this.storage = opts.storage;
+    this.skillAssetHooks = opts.skillAssetHooks;
   }
 
   // ============================
@@ -167,6 +261,31 @@ export class TdaiCore {
         });
     }
 
+    // ── Skill module wiring ──
+    // Independent of extraction.enabled: even when L1/L2/L3 extraction is off,
+    // skill management (CRUD/listing/search) should still work as long as the
+    // user opted in via cfg.skill.enabled. Construction requires BOTH
+    // vectorStore (raw DatabaseSync handle) AND storage (StorageAdapter for
+    // SKILL.md / resources). Storage may be set later via setStorage() (the
+    // gateway sets it AFTER core.initialize() finishes), so the host wiring
+    // layer is responsible for calling `ensureSkillModuleWired()` at the
+    // right moment — typically right after setStorage(). This method is a
+    // no-op if already wired or if the gates aren't satisfied yet.
+    //
+    // We DO start the wiring eagerly here too, so OpenClaw's in-process path
+    // (which constructs storage before calling core methods) gets it for
+    // free; but the gateway's HTTP path will rely on the post-setStorage
+    // call to actually land it.
+    if (this.cfg.skill?.enabled) {
+      this.storeReady
+        .then(() => this.ensureSkillModuleWired())
+        .catch((err) => {
+          this.logger.warn(
+            `${TAG} Store init failed; skill module wiring skipped: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+    }
+
     this.logger.debug?.(`${TAG} TDAI Core initialized`);
   }
 
@@ -184,6 +303,10 @@ export class TdaiCore {
       this.schedulerStartPromise = undefined;
       this.logger.debug?.(`${TAG} Scheduler destroyed`);
     }
+
+    // Skill async-extract worker + queue 由 gateway/openclaw 侧 wireConversationAdd
+    // 起, 也在各自的 WiredConversationAdd.stop() 里 graceful shutdown。tdai-core
+    // 无需在这里 stop skill 侧的 worker/queue (它已经不再持有它们)。
 
     // Drain fire-and-forget background tasks started by auto-capture
     // (currently: deferred L0 embedding writes).  We must wait for
@@ -417,10 +540,35 @@ export class TdaiCore {
     return this.storage;
   }
 
+  /** Skill module facade (may be undefined when skill.enabled=false or wiring failed). */
+  getSkillCore(): SkillCore | undefined {
+    return this.skillCore;
+  }
+
+  /** Skill review-agent extractor (may be undefined when extraction.enabled=false or no LLM). */
+  getSkillExtractor(): SkillExtractor | undefined {
+    return this.skillExtractor;
+  }
+
+  /** The resolved skill config (with degradation matrix). undefined → skill not constructed. */
+  getResolvedSkillConfig(): ResolvedSkillConfig | undefined {
+    return this.resolvedSkillConfig;
+  }
+
   /** Set the StorageAdapter (for service mode, injected by Gateway after config resolution). */
   setStorage(adapter: StorageAdapter): void {
     this.storage = adapter;
     this.logger.info(`${TAG} StorageAdapter set: type=${adapter.type}`);
+    // Re-trigger skill wiring — the gateway path sets storage AFTER
+    // initialize() finishes, so the eager promise chain in initialize()
+    // would have observed `storage` as undefined and bailed.
+    if (this.cfg.skill?.enabled && !this.skillCore) {
+      this.ensureSkillModuleWired().catch((err) => {
+        this.logger.warn(
+          `${TAG} Skill module wiring failed after setStorage: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
   }
 
   /**
@@ -472,6 +620,52 @@ export class TdaiCore {
     }
   }
 
+  /**
+   * 把 this.cfg.llm 按 provider 解析成运行时可直接用的 (baseUrl, apiKey, model)。
+   * provider=openai 时透传；provider=proxy 时替换 baseUrl 为 `${baseUrl}/proxy/<iid>/v1`，
+   * apiKey 用 env.TDAI_MEMORY_SYSTEM_USER_KEY。四个 runner factory 构造点共用。
+   */
+  private resolveRuntimeLlm(): {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    maxTokens: number;
+    timeoutMs: number;
+  } {
+    const resolved = resolveStandaloneLlmForRuntime(this.cfg.llm, this.instanceId);
+    return {
+      baseUrl: resolved.baseUrl,
+      apiKey: resolved.apiKey,
+      model: resolved.model,
+      maxTokens: resolved.maxTokens ?? 4096,
+      timeoutMs: resolved.timeoutMs ?? 120_000,
+    };
+  }
+
+  /**
+   * Whether this call site must override the host-provided runner factory
+   * with a `StandaloneLLMRunnerFactory` built from `cfg.llm`.
+   *
+   * Historical rule was "only when hostType=openclaw + cfg.llm.enabled" —
+   * that skipped the override in gateway/service mode, which meant
+   * `provider=proxy` never got a chance to rewrite baseUrl to
+   * `${base}/proxy/<iid>/v1` or swap in the sk-mem-xxx system key, so
+   * memory L1/L2/L3 quietly hit the raw upstream (or 401'd on proxy
+   * fallback routes). We now ALSO override whenever the user explicitly
+   * asked for `provider=proxy`, regardless of host — that's the whole
+   * point of that config value.
+   *
+   * `useStandaloneRunner=true` is a precondition (else the host runner
+   * IS the runner, and there's nothing to override) and cfg.llm must
+   * actually be enabled (otherwise `resolveRuntimeLlm` has nothing to
+   * work with).
+   */
+  private shouldOverrideRunnerFactory(useStandaloneRunner: boolean): boolean {
+    if (!useStandaloneRunner || !this.cfg.llm.enabled) return false;
+    if (this.hostAdapter.hostType === "openclaw") return true;
+    return this.cfg.llm.provider === "proxy";
+  }
+
   private wirePipelineRunners(): void {
     if (!this.scheduler) return;
 
@@ -484,21 +678,39 @@ export class TdaiCore {
       : undefined;
 
     // When standalone runner is active, create LLM runners from the factory.
-    // If cfg.llm is configured AND we're in OpenClaw mode, build a dedicated
-    // StandaloneLLMRunnerFactory from cfg.llm to override the host runner.
+    // Override the host-provided factory whenever `cfg.llm` is enabled and
+    // either (a) we're in OpenClaw in-process mode, or (b) the user set
+    // `provider=proxy` (which requires resolver-rewritten baseUrl + sk-mem
+    // apiKey and MUST NOT go through the raw host runner). See
+    // `shouldOverrideRunnerFactory` for the full rationale.
+    //
+    // Note: in service mode this factory is a fallback — every request
+    // routes through `runL{1,2,3}WithStore` below, which reconstructs its
+    // own factory with the per-request instanceId. `wirePipelineRunners`
+    // runs at construction time (instanceId may still be `__unset__`), so
+    // if resolver would throw we swallow it and keep the host runner as
+    // fallback — the per-call site will succeed once instanceId is set.
     let runnerFactory = this.runnerFactory;
-    if (useStandaloneRunner && this.cfg.llm.enabled && this.hostAdapter.hostType === "openclaw") {
-      runnerFactory = new StandaloneLLMRunnerFactory({
-        config: {
-          baseUrl: this.cfg.llm.baseUrl,
-          apiKey: this.cfg.llm.apiKey,
-          model: this.cfg.llm.model,
-          maxTokens: this.cfg.llm.maxTokens,
-          timeoutMs: this.cfg.llm.timeoutMs,
-        },
-        logger: this.logger,
-      });
-      this.logger.debug?.(`${TAG} Using standalone LLM override: model=${this.cfg.llm.model}, baseUrl=${this.cfg.llm.baseUrl}`);
+    if (this.shouldOverrideRunnerFactory(useStandaloneRunner)) {
+      try {
+        const runtimeLlm = this.resolveRuntimeLlm();
+        runnerFactory = new StandaloneLLMRunnerFactory({
+          config: runtimeLlm,
+          logger: this.logger,
+        });
+        this.logger.debug?.(
+          `${TAG} Using standalone LLM override: provider=${this.cfg.llm.provider ?? "openai"}, ` +
+          `model=${runtimeLlm.model}, baseUrl=${runtimeLlm.baseUrl}`,
+        );
+      } catch (err) {
+        // Most common at construction time: instanceId is still `__unset__`
+        // (service mode) and provider=proxy resolver refuses to build a URL.
+        // Not fatal — per-call sites (runL1WithStore etc.) will rebuild the
+        // factory with the real instanceId when the request lands.
+        this.logger.debug?.(
+          `${TAG} wirePipelineRunners: standalone LLM override deferred: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
 
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
@@ -562,6 +774,253 @@ export class TdaiCore {
   }
 
   // ============================
+  // Skill module wiring (M0–M9)
+  // ============================
+
+  /**
+   * Construct SkillCore + (optionally) SkillExtractor + TeamSkillService.
+   *
+   * Idempotent + lazy: callable multiple times. On each call we re-check the
+   * three preconditions (cfg.skill.enabled, vectorStore ready, storage set);
+   * once they all hold we construct exactly once and stash the result. After
+   * that, subsequent calls are a fast no-op.
+   *
+   * The gateway calls this AFTER `setStorage()` because StorageAdapter is
+   * injected post-`initialize()` in the HTTP path (server.ts wiring). The
+   * OpenClaw in-process path also reaches this via the storeReady chain.
+   *
+   * Failure is non-fatal: a warn line + degraded state (no skill features,
+   * /v3/skill/* returns 404). The host process never crashes here.
+   */
+  async ensureSkillModuleWired(): Promise<void> {
+    if (this.skillCore) return; // already wired — fast path
+    if (!this.cfg.skill?.enabled) return;
+
+    // B1 fix: concurrent-callers coalesce onto the same in-flight promise so
+    // SkillCore + extract worker are constructed AT MOST ONCE. Without this,
+    // the storeReady.then chain in initialize() and setStorage()'s re-trigger
+    // both race past the sync `if (this.skillCore) return` guard above and
+    // each end up constructing a full SkillCore.
+    if (this.skillWiringPromise) return this.skillWiringPromise;
+    this.skillWiringPromise = this.doWireSkillModule().finally(() => {
+      // Release the guard on failure so a later setStorage() + explicit
+      // ensureSkillModuleWired can retry; on success the fast path
+      // (`if (this.skillCore) return`) short-circuits anyway.
+      if (!this.skillCore) {
+        this.skillWiringPromise = undefined;
+      }
+    });
+    return this.skillWiringPromise;
+  }
+
+  private async doWireSkillModule(): Promise<void> {
+    // Wait for storeReady (no-op if already resolved)
+    if (this.storeReady) {
+      try { await this.storeReady; } catch { /* fall through to gate check */ }
+    }
+
+    if (!this.vectorStore) {
+      this.logger.debug?.(`${TAG} Skill wiring deferred: vectorStore not ready`);
+      return;
+    }
+    if (!this.storage) {
+      this.logger.debug?.(`${TAG} Skill wiring deferred: storage not set`);
+      return;
+    }
+
+    try {
+      // Build the env probe — describes ambient capabilities to the resolver
+      // so it can downgrade with proper warn lines (M0 §0.3).
+      const tcvdbHasCreds = !!(
+        this.cfg.tcvdb?.url && this.cfg.tcvdb?.apiKey && this.cfg.tcvdb?.database
+      );
+      const cosHasCreds = !!(
+        this.cfg.cos?.secretId &&
+        this.cfg.cos?.secretKey &&
+        this.cfg.cos?.bucket
+      );
+      const probe: SkillEnvProbe = {
+        outerStoreBackend: this.cfg.storeBackend,
+        hasTcvdbCredentials: tcvdbHasCreds,
+        hasCosCredentials: cosHasCreds,
+        embeddingAvailable:
+          this.cfg.embedding.enabled && (this.cfg.embedding.dimensions ?? 0) > 0,
+        llmRunnerAvailable:
+          (this.cfg.llm?.enabled ?? false) &&
+          !!this.cfg.llm?.baseUrl &&
+          !!this.cfg.llm?.apiKey,
+      };
+      const resolverLogger = {
+        info: (m: string) => this.logger.info(m),
+        warn: (m: string) => this.logger.warn(m),
+      };
+      const resolved = resolveSkillConfig(this.cfg.skill, probe, resolverLogger);
+      this.resolvedSkillConfig = resolved;
+
+      // Open the underlying DatabaseSync (raw handle escape hatch — see
+      // VectorStore.getRawDb() docstring). Skill tables (skill_meta /
+      // skill_fts / skill_vec / task_*) live in the SAME connection.
+      const rawDbCarrier = this.vectorStore as unknown as {
+        getRawDb?: () => unknown;
+        getEmbeddingDimensions?: () => number;
+      };
+      if (typeof rawDbCarrier.getRawDb !== "function") {
+        this.logger.warn(
+          `${TAG} Skill wiring skipped: vectorStore does not expose getRawDb() (only SQLite-backed VectorStore is supported in MVP)`,
+        );
+        return;
+      }
+      const db = rawDbCarrier.getRawDb() as import("node:sqlite").DatabaseSync;
+      const dimensions =
+        typeof rawDbCarrier.getEmbeddingDimensions === "function"
+          ? rawDbCarrier.getEmbeddingDimensions()
+          : (this.cfg.embedding.dimensions ?? 0);
+
+      const skillStore = new SqliteSkillStore({
+        db,
+        dimensions,
+        logger: this.logger,
+      });
+      skillStore.init();
+
+      const skillResources = new SkillResourceStore({
+        storage: this.storage,
+        maxResourceSizeBytes: resolved.resources.maxResourceSizeBytes,
+      });
+
+      // 资产联动钩子（可选注入）——与 service 模式 gateway/server.ts:resolveSkillCore
+      // 挂的三钩子完全对齐。未注入时保持零耦合老行为。
+      const assetHooks = this.skillAssetHooks;
+
+      const skillVersioning = new SkillVersioning({
+        store: skillStore,
+        resources: skillResources,
+        storage: this.storage,
+        onSkillCreated: assetHooks?.onSkillCreated,
+      });
+
+      this.skillCore = new SkillCore({
+        store: skillStore,
+        resources: skillResources,
+        versioning: skillVersioning,
+        onSkillAccessed: assetHooks?.onSkillAccessed,
+        onSkillArchived: assetHooks?.onSkillArchived,
+      });
+
+      // ── Extraction wiring (queue + worker + optional single-tenant extractor) ──
+      //
+      // 队列构造与 LLM runner **解耦**：队列只是 Redis / local 数据结构，
+      // 与 llm 是否可构造无关。之前把它塞在 `if (llmRunner)` 里，导致
+      // service 模式下 llm runner 因 `provider=proxy + instanceId=__unset__`
+      // 抛错时，整段 skill wiring（含队列）都被 catch 掉，handler 端拿不到
+      // queue 就永远回 QUEUE_UNAVAILABLE。
+      //
+      // 新顺序：
+      //   1. 先构造 queue（前置条件：extraction.enabled && queue.enabled）
+      //   2. 再尝试构造单例 llm runner + extractor（standalone 模式必需；
+      //      service 模式失败也没关系——worker 走 extractorFactory 现场构造）
+      //   3. 起 worker：constructSkillWorker=true 且有 queue 就起
+      //      - 有单例 extractor → 用单例（standalone）
+      //      - 没有单例 extractor → 让 host wiring（server.ts）负责起带 factory 的 worker，
+      //        tdai-core 这里跳过
+      if (resolved.extraction.enabled) {
+        // 只构造 SkillExtractor 单例 —— worker + queue 现在由 gateway/openclaw
+        // 侧 wireConversationAdd 起 (SkillConversationExtractWorker + agent 队列),
+        // 见 2026-07-17 skill_extract 收敛方案。standalone 模式下 wire 层
+        // 通过 core.getSkillExtractor() 拿这个单例; service 模式忽略, 走
+        // per-instance factory (buildSkillExtractorForInstance)。
+        let llmRunner: ExtractorLLMRunner | undefined;
+        try {
+          llmRunner = this.buildSkillLlmRunner();
+        } catch (err) {
+          this.logger.warn(
+            `${TAG} Skill singleton llm runner build failed (non-fatal in service mode): ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+          );
+          llmRunner = undefined;
+        }
+        if (llmRunner) {
+          this.skillExtractor = new SkillExtractor({
+            core: this.skillCore,
+            runner: llmRunner,
+            systemPrompt: SKILL_REVIEW_PROMPT,
+            maxIterations: resolved.extraction.maxIterations,
+            headChars: resolved.extraction.headChars,
+            tailChars: resolved.extraction.tailChars,
+            maxTokens: resolved.extraction.maxTokens,
+            logger: this.logger,
+          });
+        } else {
+          this.logger.warn(
+            `${TAG} Skill singleton extractor not constructed — service mode 会走 per-instance factory；` +
+              `standalone/openclaw 模式下 /skill/extract 会因缺 extractor 无法抽取, 请检查 cfg.llm。`,
+          );
+        }
+      }
+
+      this.logger.info(
+        `${TAG} Skill module wired (v2): store=${resolved.storeBackend}, content=${resolved.contentBackend}, ` +
+          `extraction=${resolved.extraction.enabled ? (this.skillExtractor ? "on" : "noop") : "off"}, ` +
+          `degradations=${resolved.degradations.length}`,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `${TAG} Skill module wiring failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      this.skillCore = undefined;
+      this.skillExtractor = undefined;
+    }
+  }
+
+  /**
+   * Build an `ExtractorLLMRunner` for the Skill Review Agent.
+   *
+   * Uses `StandaloneLLMRunner` so the skill module gets the full AI SDK
+   * tool-calling loop for free — when SkillExtractor passes
+   * `tools: skill_list/skill_view/skill_manage` and `enableTools: true`,
+   * the AI SDK drives the multi-turn tool loop and we get back the
+   * final text. This is what the M-tool rewrite of SkillExtractor needs;
+   * the previous fetch-only impl could not drive tool calls.
+   *
+   * Returns undefined when LLM credentials are missing — the caller
+   * skips constructing SkillExtractor in that case (M0 records the
+   * 'extraction.runtime: enabled→noop' degradation).
+   */
+  private buildSkillLlmRunner(): ExtractorLLMRunner | undefined {
+    const cfg = this.cfg.llm;
+    if (!cfg?.enabled) return undefined;
+    // provider=proxy 时 cfg.apiKey 可能为空（真正的 apiKey 由 resolver 从 env 注入），
+    // 因此只要 provider=proxy 就允许构造；provider=openai 时保留原有 baseUrl+apiKey 检查。
+    if (!cfg.baseUrl) return undefined;
+    if ((cfg.provider ?? "openai") === "openai" && !cfg.apiKey) return undefined;
+    const logger = this.logger;
+    // Construct the StandaloneLLMRunner with tools eligible by default.
+    // Per-call SkillExtractor passes its own `tools` dict + enableTools=true,
+    // which the runner honors over its own setting (see standalone/llm-runner.ts).
+    const runtimeLlm = this.resolveRuntimeLlm();
+    const runner = new StandaloneLLMRunner({
+      config: {
+        baseUrl: runtimeLlm.baseUrl,
+        apiKey: runtimeLlm.apiKey,
+        model: runtimeLlm.model,
+        maxTokens: runtimeLlm.maxTokens,
+        timeoutMs: runtimeLlm.timeoutMs,
+      },
+      // Default to enabled so the runner doesn't strip caller-provided tools.
+      enableTools: true,
+      logger,
+    });
+    return {
+      async run(params) {
+        // Pass through everything: prompt, systemPrompt, tools, enableTools,
+        // maxIterations, taskId, timeoutMs. StandaloneLLMRunner.run() now
+        // honors all of these (see types.ts / standalone/llm-runner.ts).
+        return runner.run(params);
+      },
+    };
+  }
+
+  // ============================
   // Per-instance Store runners (multi-tenant)
   // ============================
 
@@ -579,24 +1038,23 @@ export class TdaiCore {
     store: IMemoryStore,
     embedding: EmbeddingService,
     storage?: StorageAdapter,
-  ): Promise<{ storedCount: number; creditUsed: number; hasMore: boolean; hasFullBacklog: boolean }> {
+  ): Promise<{ storedCount: number; creditUsed: number; hasMore: boolean; hasFullBacklog: boolean; profileScopes: string[] }> {
     const useStandaloneRunner = this.cfg.llm.enabled || this.hostAdapter.hostType !== "openclaw";
     const openclawConfig = (!useStandaloneRunner && this.hostAdapter.hostType === "openclaw")
       ? (this.hostAdapter as { getOpenClawConfig?(): unknown }).getOpenClawConfig?.()
       : undefined;
 
     let runnerFactory = this.runnerFactory;
-    if (useStandaloneRunner && this.cfg.llm.enabled && this.hostAdapter.hostType === "openclaw") {
+    if (this.shouldOverrideRunnerFactory(useStandaloneRunner)) {
+      const runtimeLlm = this.resolveRuntimeLlm();
       runnerFactory = new StandaloneLLMRunnerFactory({
-        config: {
-          baseUrl: this.cfg.llm.baseUrl,
-          apiKey: this.cfg.llm.apiKey,
-          model: this.cfg.llm.model,
-          maxTokens: this.cfg.llm.maxTokens,
-          timeoutMs: this.cfg.llm.timeoutMs,
-        },
+        config: runtimeLlm,
         logger: this.logger,
       });
+      this.logger.debug?.(
+        `${TAG} [L1] Using standalone LLM override: provider=${this.cfg.llm.provider ?? "openai"}, ` +
+        `model=${runtimeLlm.model}, baseUrl=${runtimeLlm.baseUrl}`,
+      );
     }
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
@@ -622,7 +1080,8 @@ export class TdaiCore {
     const storedCount = result?.storedCount ?? 0;
     const hasMore = result?.hasMore ?? false;
     const hasFullBacklog = result?.hasFullBacklog ?? false;
-    return { storedCount, creditUsed, hasMore, hasFullBacklog };
+    const profileScopes = result?.profileScopes ?? [];
+    return { storedCount, creditUsed, hasMore, hasFullBacklog, profileScopes };
   }
 
   /**
@@ -635,17 +1094,16 @@ export class TdaiCore {
       : undefined;
 
     let runnerFactory = this.runnerFactory;
-    if (useStandaloneRunner && this.cfg.llm.enabled && this.hostAdapter.hostType === "openclaw") {
+    if (this.shouldOverrideRunnerFactory(useStandaloneRunner)) {
+      const runtimeLlm = this.resolveRuntimeLlm();
       runnerFactory = new StandaloneLLMRunnerFactory({
-        config: {
-          baseUrl: this.cfg.llm.baseUrl,
-          apiKey: this.cfg.llm.apiKey,
-          model: this.cfg.llm.model,
-          maxTokens: this.cfg.llm.maxTokens,
-          timeoutMs: this.cfg.llm.timeoutMs,
-        },
+        config: runtimeLlm,
         logger: this.logger,
       });
+      this.logger.debug?.(
+        `${TAG} [L2] Using standalone LLM override: provider=${this.cfg.llm.provider ?? "openai"}, ` +
+        `model=${runtimeLlm.model}, baseUrl=${runtimeLlm.baseUrl}`,
+      );
     }
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
@@ -680,17 +1138,16 @@ export class TdaiCore {
       : undefined;
 
     let runnerFactory = this.runnerFactory;
-    if (useStandaloneRunner && this.cfg.llm.enabled && this.hostAdapter.hostType === "openclaw") {
+    if (this.shouldOverrideRunnerFactory(useStandaloneRunner)) {
+      const runtimeLlm = this.resolveRuntimeLlm();
       runnerFactory = new StandaloneLLMRunnerFactory({
-        config: {
-          baseUrl: this.cfg.llm.baseUrl,
-          apiKey: this.cfg.llm.apiKey,
-          model: this.cfg.llm.model,
-          maxTokens: this.cfg.llm.maxTokens,
-          timeoutMs: this.cfg.llm.timeoutMs,
-        },
+        config: runtimeLlm,
         logger: this.logger,
       });
+      this.logger.debug?.(
+        `${TAG} [L3] Using standalone LLM override: provider=${this.cfg.llm.provider ?? "openai"}, ` +
+        `model=${runtimeLlm.model}, baseUrl=${runtimeLlm.baseUrl}`,
+      );
     }
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);

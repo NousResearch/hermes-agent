@@ -144,6 +144,8 @@ export interface PipelineConfig {
 export interface L1RunnerResult {
   /** Number of messages successfully processed */
   processedCount?: number;
+  /** Agent/profile-level L2 keys affected by this L1 run. */
+  profileScopes?: string[];
   /**
    * True iff there are still L0 rows past the cursor that this run did not
    * consume. The runner detects backlog by over-fetching (query 2N rows but
@@ -749,13 +751,17 @@ export class MemoryPipelineManager {
     // Success: reset retry count and advance state
     const timers = this.getOrCreateTimers(sessionKey);
     timers.l1RetryCount = 0;
-    state.l2_pending_l1_count = state.conversation_count;
     state.conversation_count = 0;
     this.advanceWarmupThreshold(state);
+    const l2Keys = runnerResult?.profileScopes?.length ? runnerResult.profileScopes : [sessionKey];
+    for (const l2Key of l2Keys) {
+      const l2State = this.getOrCreateState(l2Key);
+      l2State.l2_pending_l1_count = 1;
+    }
     await this.persistStates();
 
-    // Advance the L2 timer (downward-only) to fire after delay, respecting minInterval
-    this.advanceL2Timer(sessionKey);
+    // Advance agent/profile-level L2 timer(s), respecting minInterval
+    for (const l2Key of l2Keys) this.advanceL2Timer(l2Key);
 
     // ── L0 backlog drain ──────────────────────────────────
     //

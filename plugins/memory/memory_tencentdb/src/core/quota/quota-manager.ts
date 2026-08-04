@@ -15,7 +15,7 @@ import type { Logger } from "../logger.js";
 import type { IQuotaReporter } from "../abstractions/index.js";
 
 export interface QuotaConfig {
-  memoryLimit: number;   // 记忆总条数上限 (default: 50000)
+  memoryLimit: number;   // 记忆总条数上限 (default: 10000)
   creditLimit: number;   // Credit 限额 (default: 1000)
   memoryUsage: number;   // 当前已用记忆条数
   creditUsage: number;   // 当前已用 Credit
@@ -56,7 +56,7 @@ export class QuotaManager {
     this.reporter = opts.reporter;
     this.logger = opts.logger;
     this.cacheTtlMs = opts.cacheTtlMs ?? 60_000;
-    this.defaultMemoryLimit = opts.defaultMemoryLimit ?? 50_000;
+    this.defaultMemoryLimit = opts.defaultMemoryLimit ?? 10_000;
     this.defaultCreditLimit = opts.defaultCreditLimit ?? 1_000;
   }
 
@@ -107,7 +107,8 @@ export class QuotaManager {
    */
   async checkMemoryQuota(instanceId: string, delta: number = 1): Promise<QuotaCheckResult> {
     const quota = await this.getQuota(instanceId);
-    if (quota.memoryUsage + delta > quota.memoryLimit) {
+    // limit < 0 表示不限额（兼容控制面用 -1 表达 unlimited）。
+    if (quota.memoryLimit >= 0 && quota.memoryUsage + delta > quota.memoryLimit) {
       return {
         allowed: false,
         reason: "memory_limit_exceeded",
@@ -123,7 +124,8 @@ export class QuotaManager {
    */
   async checkCreditQuota(instanceId: string): Promise<QuotaCheckResult> {
     const quota = await this.getQuota(instanceId);
-    if (quota.creditUsage >= quota.creditLimit) {
+    // limit < 0 表示不限额（兼容控制面用 -1 表达 unlimited）。
+    if (quota.creditLimit >= 0 && quota.creditUsage >= quota.creditLimit) {
       return {
         allowed: false,
         reason: "credit_limit_exceeded",
@@ -140,7 +142,7 @@ export class QuotaManager {
    * @param creditDelta Credit 消耗变化 (正=消耗)
    * @param level 记忆层级 ("L0" | "L1" | "L2" | "L3")
    */
-  async reportUsage(instanceId: string, memoryDelta: number, creditDelta: number, level: "L0" | "L1" | "L2" | "L3" = "L0"): Promise<void> {
+  async reportUsage(instanceId: string, memoryDelta: number, creditDelta: number, level: "L0" | "L1" | "L2" | "L3" | "Skill" = "L0"): Promise<void> {
     if (memoryDelta === 0 && creditDelta === 0) return;
 
     // Reporter 内部保证不抛错; 这里仍然 try/catch 以防接口契约被违反
@@ -180,6 +182,20 @@ export class QuotaManager {
    */
   async reportCreditUsed(instanceId: string, credits: number, level: "L0" | "L1" | "L2" | "L3" = "L1"): Promise<void> {
     return this.reportUsage(instanceId, 0, credits, level);
+  }
+
+  /**
+   * 快捷方法: 上报 Skill VDB 新增 (新建 skill / 新增版本)
+   */
+  async reportSkillAdded(instanceId: string, count: number = 1): Promise<void> {
+    return this.reportUsage(instanceId, count, 0, "Skill");
+  }
+
+  /**
+   * 快捷方法: 上报 Skill VDB 删除 (软删除 / TTL 清理)
+   */
+  async reportSkillDeleted(instanceId: string, count: number = 1): Promise<void> {
+    return this.reportUsage(instanceId, -count, 0, "Skill");
   }
 
   /** 清除缓存 (测试用) */

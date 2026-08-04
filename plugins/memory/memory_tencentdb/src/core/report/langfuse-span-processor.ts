@@ -85,6 +85,74 @@ export function isLLMRelatedSpan(spanName: string): boolean {
 }
 
 // ============================
+// Vercel AI SDK metadata → Langfuse OTel 原生属性 映射
+// ============================
+
+/**
+ * Vercel AI SDK 会把 experimental_telemetry.metadata 里每个 key 序列化为
+ * `ai.telemetry.metadata.<key>` 前缀的 span attribute。但当我们**直接**用
+ * OTLP HTTP exporter 发到 Langfuse（不经过官方 Langfuse SDK 桥），Langfuse
+ * 只识别其原生约定的属性名（见 https://langfuse.com/integrations/native/opentelemetry）。
+ *
+ * 为让 Langfuse UI 上的 Trace name / SessionId / UserId / Tags 生效，
+ * 这里把 AI SDK 的 metadata 键翻译成 Langfuse 原生键。
+ *
+ * 映射规则（源缺失或空值时不写目标；目标已存在时不覆盖）：
+ *   ai.telemetry.metadata.langfuseTraceName  → langfuse.trace.name
+ *   ai.telemetry.metadata.sessionId          → langfuse.session.id
+ *   ai.telemetry.metadata.userId             → langfuse.user.id
+ *   ai.telemetry.metadata.tags               → langfuse.trace.tags
+ *
+ * 返回**新对象**，包含所有原属性 + 增补的 langfuse.* 键。不修改入参。
+ */
+export function mapAiTelemetryToLangfuseAttrs(
+  attrs: Record<string, unknown> | undefined | null,
+): Record<string, unknown> {
+  if (!attrs || typeof attrs !== "object") return {};
+  const out: Record<string, unknown> = { ...attrs };
+
+  const setIfAbsent = (
+    targetKey: string,
+    sourceKey: string,
+    check: (v: unknown) => boolean,
+  ): void => {
+    if (out[targetKey] !== undefined) return; // 尊重用户显式设置
+    const v = attrs[sourceKey];
+    if (v === undefined || v === null) return;
+    if (!check(v)) return;
+    out[targetKey] = v;
+  };
+
+  const nonEmptyStr = (v: unknown): boolean =>
+    typeof v === "string" && v.length > 0;
+  const nonEmptyArr = (v: unknown): boolean =>
+    Array.isArray(v) && v.length > 0;
+
+  setIfAbsent(
+    "langfuse.trace.name",
+    "ai.telemetry.metadata.langfuseTraceName",
+    nonEmptyStr,
+  );
+  setIfAbsent(
+    "langfuse.session.id",
+    "ai.telemetry.metadata.sessionId",
+    nonEmptyStr,
+  );
+  setIfAbsent(
+    "langfuse.user.id",
+    "ai.telemetry.metadata.userId",
+    nonEmptyStr,
+  );
+  setIfAbsent(
+    "langfuse.trace.tags",
+    "ai.telemetry.metadata.tags",
+    nonEmptyArr,
+  );
+
+  return out;
+}
+
+// ============================
 // LangfuseFilteringProcessor（门面层）
 // ============================
 
@@ -136,15 +204,25 @@ export class LangfuseFilteringProcessor implements ISpanProcessor {
 
   onEnd(span: unknown): void {
     try {
-      const s = span as { name?: string };
+      const s = span as { name?: string; attributes?: Record<string, unknown> };
       // 统一过滤：只转发 LLM 相关 span
       if (!s.name || !isLLMRelatedSpan(s.name)) {
         return;
       }
 
       if (this._exporter) {
+        // 在导出前把 Vercel AI SDK 的 metadata 翻译成 Langfuse 原生属性，
+        // 这样 Langfuse UI 上的 Trace name / SessionId / UserId / Tags 才生效。
+        // 为避免影响 span 后续被其他 processor 使用，这里构造一个浅拷贝 span 对象。
+        const enrichedAttrs = mapAiTelemetryToLangfuseAttrs(s.attributes);
+        const enrichedSpan =
+          enrichedAttrs === s.attributes
+            ? span
+            : Object.assign(Object.create(Object.getPrototypeOf(span) ?? {}), span, {
+                attributes: enrichedAttrs,
+              });
         // 使用真正的 exporter 发送到 Langfuse OTLP 端点
-        this._exporter.export([span], () => {});
+        this._exporter.export([enrichedSpan], () => {});
       } else if (this._processor) {
         // 委托给 ILLMTraceBackend 的 processor
         this._processor.onEnd(span);

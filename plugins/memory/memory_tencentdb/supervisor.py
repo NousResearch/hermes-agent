@@ -111,6 +111,7 @@ class GatewaySupervisor:
             base_url=self._base_url,
             timeout=5,
             api_key=self._api_key,
+            service_id="default",
         )
         self._process: Optional[subprocess.Popen] = None
         # File handles for child's stdout/stderr. Kept open for the lifetime of

@@ -59,6 +59,13 @@ export interface TaskPayload {
   type: "L1" | "L2" | "L3" | "flush" | "offload-l1" | "offload-l15" | "offload-l2";
   instanceId: string;
   sessionId: string;
+  /**
+   * 租户身份（可选）。v2 pipeline 用 (teamId, agentId) 决定锁粒度与
+   * Redis hash tag，避免 single-instance 大 key 热点；offload 子系统不依赖。
+   * 缺失时锁/key 退化到 instance 级（兼容旧调用方）。
+   */
+  teamId?: string;
+  agentId?: string;
   priority: number; // 0=high, 1=normal, 2=low
   data?: Record<string, unknown>;
   createdAt: number;
@@ -71,6 +78,9 @@ export interface TaskPayload {
 export interface CaptureAtomicParams {
   instanceId: string;
   sessionId: string;
+  /** 同 TaskPayload.teamId / agentId — 决定 buffer + state 的 hash slot 归属。 */
+  teamId?: string;
+  agentId?: string;
   messageJson: string;
   threshold: number;
   fireAtMs: number;
@@ -92,14 +102,20 @@ export interface CaptureAtomicResult {
 
 export interface IStateBackend {
   // ═══ Buffer ═══
-  appendBuffer(instanceId: string, sessionId: string, message: string): Promise<void>;
-  drainBuffer(instanceId: string, sessionId: string): Promise<string[]>;
-  getBufferLength(instanceId: string, sessionId: string): Promise<number>;
+  // teamId/agentId 为可选；缺失时 Redis backend hash tag 退化到 {p:inst}（旧布局）。
+  // 推荐 v2 pipeline 调用方一定传入，避免单 instance 集中到一个 hash slot 形成热 key。
+  appendBuffer(instanceId: string, sessionId: string, message: string, teamId?: string, agentId?: string): Promise<void>;
+  drainBuffer(instanceId: string, sessionId: string, teamId?: string, agentId?: string): Promise<string[]>;
+  getBufferLength(instanceId: string, sessionId: string, teamId?: string, agentId?: string): Promise<number>;
 
   // ═══ Session State ═══
-  getSessionState(instanceId: string, sessionId: string): Promise<PipelineSessionState | null>;
-  updateSessionState(instanceId: string, sessionId: string, patch: Partial<PipelineSessionState>): Promise<void>;
-  deleteSessionState(instanceId: string, sessionId: string): Promise<void>;
+  getSessionState(instanceId: string, sessionId: string, teamId?: string, agentId?: string): Promise<PipelineSessionState | null>;
+  updateSessionState(instanceId: string, sessionId: string, patch: Partial<PipelineSessionState>, teamId?: string, agentId?: string): Promise<void>;
+  deleteSessionState(instanceId: string, sessionId: string, teamId?: string, agentId?: string): Promise<void>;
+  /**
+   * 列出 instance 下所有 active session（用于 standalone 模式 persister 回放 checkpoint）。
+   * Cluster 模式下 hash tag 散开后此方法只能覆盖单节点，service 模式 persister 不设置故不会调用 —— 仅作 standalone 兼容存在。
+   */
   listActiveSessions(instanceId: string): Promise<string[]>;
 
   // ═══ Timer ═══

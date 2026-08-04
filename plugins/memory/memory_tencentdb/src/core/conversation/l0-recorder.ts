@@ -19,6 +19,7 @@ import { sanitizeText, stripCodeBlocks, shouldCaptureL0 } from "../../utils/sani
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 import type { Logger } from "../types.js";
+import { DEFAULT_ISOLATION_ID } from "../store/types.js";
 
 // ============================
 // Types
@@ -45,6 +46,10 @@ function generateMessageId(): string {
 export interface L0MessageRecord {
   sessionKey: string;
   sessionId: string;
+  /** Three-dim tenancy isolation. Optional during rollout — see
+   *  docs/l0l3-tenant-isolation-design.md. */
+  userId?: string;
+  agentId?: string;
   recordedAt: string; // ISO timestamp
   id: string;
   role: "user" | "assistant";
@@ -88,6 +93,9 @@ const TAG = "[memory-tdai][l0]";
 export async function recordConversation(params: {
   sessionKey: string;
   sessionId?: string;
+  /** Three-dim tenancy isolation, propagated into every L0 record written. */
+  userId?: string;
+  agentId?: string;
   rawMessages: unknown[];
   baseDir: string;
   logger?: Logger;
@@ -105,7 +113,7 @@ export async function recordConversation(params: {
   /** StorageAdapter for file operations (COS/local). Falls back to fs when absent. */
   storage?: StorageAdapter;
 }): Promise<ConversationMessage[]> {
-  const { sessionKey, sessionId, rawMessages, baseDir, logger, originalUserText, afterTimestamp, originalUserMessageCount, storage } = params;
+  const { sessionKey, sessionId, userId, agentId, rawMessages, baseDir, logger, originalUserText, afterTimestamp, originalUserMessageCount, storage } = params;
 
   // Step 1: Position slice + extract user/assistant messages.
   //
@@ -269,7 +277,10 @@ export async function recordConversation(params: {
   for (const msg of filtered) {
     const record: L0MessageRecord = {
       sessionKey,
-      sessionId: sessionId || "",
+      sessionId: sessionId || DEFAULT_ISOLATION_ID,
+      // Tenancy isolation — missing fields go to the default compatibility bucket.
+      userId: userId || DEFAULT_ISOLATION_ID,
+      agentId: agentId || DEFAULT_ISOLATION_ID,
       recordedAt: now,
       id: msg.id,
       role: msg.role,
@@ -384,7 +395,7 @@ export async function readConversationRecords(
           };
           records.push({
             sessionKey: (parsed.sessionKey as string) || sessionKey,
-            sessionId: (parsed.sessionId as string) || "",
+            sessionId: (parsed.sessionId as string) || DEFAULT_ISOLATION_ID,
             recordedAt: (parsed.recordedAt as string) || new Date().toISOString(),
             messageCount: 1,
             messages: [msg],

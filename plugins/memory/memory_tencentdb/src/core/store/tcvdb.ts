@@ -2,9 +2,9 @@
  * TcvdbMemoryStore: Tencent Cloud VectorDB backend implementing IMemoryStore.
  *
  * Features:
- * - Server-side dense embedding (embeddingItems via Collection embedding config)
- * - Client-side sparse vectors (BM25 local encoder for hybridSearch)
- * - Native hybridSearch (dense + sparse + RRFRerank)
+ * - Optional server-side dense embedding (embeddingItems via Collection embedding config)
+ * - Client-side sparse vectors (BM25 local encoder; can run BM25-only without dense embedding)
+ * - Native hybridSearch (dense + sparse + RRFRerank) when dense embedding is enabled
  * - Filter expressions for scalar field queries
  * - Time fields stored as uint64 epoch ms (ISO ↔ epoch conversion internal)
  *
@@ -30,9 +30,21 @@ import type {
   StoreLogger,
   L0PaginatedFilter,
   L0PaginatedResult,
+  L0CountFilter,
+  L1CountFilter,
   L1PaginatedFilter,
   L1PaginatedResult,
+  ProfileCountFilter,
+  IsolationFilter,
+  L0Record,
+  AuditEntry,
+  AuditQueryFilter,
+  KnowledgeEntity,
+  KnowledgeType,
+  KnowledgeListResult,
+  BatchDeleteResult,
 } from "./types.js";
+import { DEFAULT_ISOLATION_ID } from "./types.js";
 import { TcvdbClient, TcvdbApiError } from "./tcvdb-client.js";
 import type { BM25LocalEncoder } from "./bm25-local.js";
 import type { SparseVector } from "@tencentdb-agent-memory/tcvdb-text";
@@ -46,6 +58,8 @@ export interface TcvdbMemoryStoreConfig {
   username: string;
   apiKey: string;
   database: string;
+  /** Enable VectorDB server-side dense embedding/vector index. Default false: BM25 sparse-only. */
+  embeddingEnabled?: boolean;
   embeddingModel: string;
   timeout: number;
   /** Path to CA certificate PEM file (for HTTPS connections) */
@@ -60,6 +74,20 @@ const TAG = "[memory-tdai][tcvdb]";
 const L1_COLLECTION_SUFFIX = "l1_memories";
 const L0_COLLECTION_SUFFIX = "l0_conversations";
 const PROFILES_COLLECTION_SUFFIX = "profiles";
+const AUDIT_COLLECTION_SUFFIX = "memory_audit";
+/** entity_knowledge 明细注册表（见 docs/design/vdb-knowledge-collection.md）。 */
+const KNOWLEDGE_COLLECTION_SUFFIX = "knowledge";
+
+const KNOWLEDGE_OUTPUT_FIELDS = [
+  "id", "type", "team_id", "agent_id", "name", "user_id",
+  "service_url", "summary", "metadata", "created_at_ms", "updated_at_ms",
+];
+
+/**
+ * Memory type 预埋字段默认值。预留给后续区分同 agent 不同记忆类型（如对话、技能、偏好等），
+ * 当前所有 L1/profile 写入都填这个默认值，读路径暂不消费 memory_type 字段。
+ */
+const DEFAULT_MEMORY_TYPE = "default";
 
 /** Max documents per /document/query page (VectorDB API limit). */
 const QUERY_PAGE_SIZE = 100;
@@ -67,24 +95,31 @@ const QUERY_PAGE_SIZE = 100;
 /** All L1 output fields returned by query/search (excludes vector/sparse_vector). */
 const L1_OUTPUT_FIELDS = [
   "id", "text", "type", "priority", "scene_name",
-  "session_key", "session_id", "timestamp_str", "timestamp_start",
+  "team_id", "user_id", "agent_id", "session_key", "session_id", "task_id", "version", "timestamp_str", "timestamp_start",
   "timestamp_end", "metadata_json", "created_time_ms", "updated_time_ms",
 ];
 
 /** All L0 output fields returned by query/search. */
 const L0_OUTPUT_FIELDS = [
-  "id", "message_text", "agent_id", "session_key", "session_id", "role",
+  "id", "message_text", "team_id", "user_id", "agent_id", "session_key", "session_id", "task_id", "role",
   "recorded_at_ms", "timestamp",
 ];
 
 const PROFILE_OUTPUT_FIELDS = [
-  "id", "type", "filename", "content", "content_md5", "agent_id",
+  "id", "type", "filename", "content", "content_md5", "team_id", "user_id", "agent_id",
   "version", "created_at_ms", "updated_at_ms",
 ];
 
 const PROFILE_METADATA_OUTPUT_FIELDS = [
-  "id", "type", "filename", "content_md5", "agent_id",
+  "id", "type", "filename", "content_md5", "team_id", "user_id", "agent_id",
   "version", "created_at_ms", "updated_at_ms",
+];
+
+/** memory_audit 字段：每行一条修改事件（L1/L2/L3 的 update/delete）。 */
+const AUDIT_OUTPUT_FIELDS = [
+  "id", "record_id", "layer", "action",
+  "team_id", "agent_id", "user_id", "task_id",
+  "version", "updated_at_ms", "request_id",
 ];
 
 // ============================
@@ -102,18 +137,30 @@ function epochMsToIso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
-/**
- * Extract agent ID from a sessionKey like `agent:<agentId>:<channel>`.
- * Returns empty string if the format doesn't match.
- */
-function extractAgentId(sessionKey: string): string {
-  if (!sessionKey) return "";
-  const parts = sessionKey.split(":");
-  // Format: "agent:<agentId>:..." → parts[1]
-  if (parts.length >= 2 && parts[0] === "agent") {
-    return parts[1];
-  }
-  return "";
+function escapeFilterString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function eqFilter(field: string, value: string): string {
+  return `${field} = "${escapeFilterString(value)}"`;
+}
+
+function buildIsolationConditions(filter?: IsolationFilter): string[] {
+  const conditions: string[] = [];
+  if (!filter) return conditions;
+  // teamId 与 isolation.ts buildIsolationWhere 对齐：team 级隔离过滤必须最先出现，
+  // 否则跨 team 的 L0/L1 记录会在 search/query 时漏过滤（团队记忆隔离失效）。
+  if (filter.teamId !== undefined) conditions.push(eqFilter("team_id", filter.teamId));
+  if (filter.userId !== undefined) conditions.push(eqFilter("user_id", filter.userId));
+  if (filter.agentId !== undefined) conditions.push(eqFilter("agent_id", filter.agentId));
+  if (filter.sessionId !== undefined) conditions.push(eqFilter("session_id", filter.sessionId));
+  if (filter.taskId !== undefined) conditions.push(eqFilter("task_id", filter.taskId));
+  if (filter.sessionKey !== undefined) conditions.push(eqFilter("session_key", filter.sessionKey));
+  return conditions;
+}
+
+function joinFilter(conditions: string[]): string | undefined {
+  return conditions.length > 0 ? conditions.join(" and ") : undefined;
 }
 
 // ============================
@@ -122,12 +169,15 @@ function extractAgentId(sessionKey: string): string {
 
 export class TcvdbMemoryStore implements IMemoryStore {
   private readonly client: TcvdbClient;
+  private readonly embeddingEnabled: boolean;
   private readonly embeddingModel: string;
   private readonly logger?: StoreLogger;
   private readonly bm25Encoder?: BM25LocalEncoder;
   private readonly l1Collection: string;
   private readonly l0Collection: string;
   private readonly profilesCollection: string;
+  private readonly auditCollection: string;
+  private readonly knowledgeCollection: string;
   private degraded = false;
 
   /** Promise that resolves when async init completes. */
@@ -142,6 +192,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
       timeout: config.timeout,
       caPemPath: config.caPemPath,
     }, config.logger);
+    this.embeddingEnabled = config.embeddingEnabled === true;
     this.embeddingModel = config.embeddingModel;
     this.logger = config.logger;
     this.bm25Encoder = config.bm25Encoder;
@@ -151,6 +202,8 @@ export class TcvdbMemoryStore implements IMemoryStore {
     this.l1Collection = `${config.database}_${L1_COLLECTION_SUFFIX}`;
     this.l0Collection = `${config.database}_${L0_COLLECTION_SUFFIX}`;
     this.profilesCollection = `${config.database}_${PROFILES_COLLECTION_SUFFIX}`;
+    this.auditCollection = `${config.database}_${AUDIT_COLLECTION_SUFFIX}`;
+    this.knowledgeCollection = `${config.database}_${KNOWLEDGE_COLLECTION_SUFFIX}`;
   }
 
   // ── Lifecycle ────────────────────────────────────────────
@@ -206,19 +259,33 @@ export class TcvdbMemoryStore implements IMemoryStore {
   }
 
   /**
-   * Create a collection with DISK_FLAT vector index, falling back to HNSW
-   * if the storage engine doesn't support DISK_FLAT.
+   * Create a BM25 sparse collection. When embeddingEnabled=true, the dense
+   * vector index uses DISK_FLAT → HNSW fallback and VDB server-side embedding.
+   * When false, embedding is disabled but a dim=1 placeholder vector index is
+   * still required by VDB hybridSearch; semantic signal comes from BM25 only.
    */
   private async _createCollectionWithVectorFallback(
     params: Record<string, unknown>,
     filterIndexes: Array<Record<string, unknown>>,
   ): Promise<void> {
-    const buildIndexes = (vectorIndex: Record<string, unknown>) => [
+    const buildIndexes = (vectorIndex?: Record<string, unknown>) => [
       { fieldName: "id", fieldType: "string", indexType: "primaryKey" },
-      vectorIndex,
+      ...(vectorIndex ? [vectorIndex] : []),
       { fieldName: "sparse_vector", fieldType: "sparseVector", indexType: "inverted", metricType: "IP" },
       ...filterIndexes,
     ];
+
+    if (!this.embeddingEnabled) {
+      await this.client.createCollection({
+        ...params,
+        embedding: { status: "disabled" },
+        indexes: buildIndexes({
+          fieldName: "vector", fieldType: "vector", indexType: "FLAT",
+          dimension: 1, metricType: "COSINE",
+        }),
+      });
+      return;
+    }
 
     try {
       await this.client.createCollection({ ...params, indexes: buildIndexes(TcvdbMemoryStore.VECTOR_INDEX_DISK_FLAT) });
@@ -262,13 +329,19 @@ export class TcvdbMemoryStore implements IMemoryStore {
           { fieldName: "type",            fieldType: "string", indexType: "filter" },
           { fieldName: "priority",        fieldType: "uint64", indexType: "filter" },
           { fieldName: "scene_name",      fieldType: "string", indexType: "filter" },
+          { fieldName: "team_id",       fieldType: "string", indexType: "filter" },
+          { fieldName: "user_id",         fieldType: "string", indexType: "filter" },
           { fieldName: "agent_id",        fieldType: "string", indexType: "filter" },
           { fieldName: "session_key",     fieldType: "string", indexType: "filter" },
           { fieldName: "session_id",      fieldType: "string", indexType: "filter" },
+          { fieldName: "task_id",         fieldType: "string", indexType: "filter" },
+          { fieldName: "version",         fieldType: "uint64", indexType: "filter" },
           { fieldName: "timestamp_start", fieldType: "string", indexType: "filter" },
           { fieldName: "timestamp_end",   fieldType: "string", indexType: "filter" },
           { fieldName: "created_time_ms", fieldType: "uint64", indexType: "filter" },
           { fieldName: "updated_time_ms", fieldType: "uint64", indexType: "filter" },
+          // memory_type: 预埋字段，区分同 agent 不同记忆类型。当前一律 "default"，读路径暂不消费
+          { fieldName: "memory_type",     fieldType: "string", indexType: "filter" },
         ],
       );
 
@@ -287,9 +360,12 @@ export class TcvdbMemoryStore implements IMemoryStore {
           },
         },
         [
+          { fieldName: "team_id",        fieldType: "string", indexType: "filter" },
+          { fieldName: "user_id",        fieldType: "string", indexType: "filter" },
           { fieldName: "agent_id",       fieldType: "string", indexType: "filter" },
           { fieldName: "session_key",    fieldType: "string", indexType: "filter" },
           { fieldName: "session_id",     fieldType: "string", indexType: "filter" },
+          { fieldName: "task_id",        fieldType: "string", indexType: "filter" },
           { fieldName: "role",           fieldType: "string", indexType: "filter" },
           { fieldName: "recorded_at_ms", fieldType: "uint64", indexType: "filter" },
           { fieldName: "timestamp",      fieldType: "int64",  indexType: "filter" },
@@ -309,10 +385,61 @@ export class TcvdbMemoryStore implements IMemoryStore {
           { fieldName: "type",          fieldType: "string", indexType: "filter" },
           { fieldName: "filename",      fieldType: "string", indexType: "filter" },
           { fieldName: "content_md5",   fieldType: "string", indexType: "filter" },
+          { fieldName: "team_id",       fieldType: "string", indexType: "filter" },
+          { fieldName: "user_id",       fieldType: "string", indexType: "filter" },
           { fieldName: "agent_id",      fieldType: "string", indexType: "filter" },
           { fieldName: "created_at_ms", fieldType: "uint64", indexType: "filter" },
           { fieldName: "updated_at_ms", fieldType: "uint64", indexType: "filter" },
           { fieldName: "version",       fieldType: "uint64", indexType: "filter" },
+          // memory_type: 预埋字段，区分同 agent 不同记忆类型。当前一律 "default"，读路径暂不消费
+          { fieldName: "memory_type",   fieldType: "string", indexType: "filter" },
+        ],
+      });
+
+      // memory_audit collection — 修改审计事件流（L1/L2/L3 update/delete）
+      // 不需向量检索，固定 dim=1 占位；所有过滤字段建 filter 索引便于查询
+      await this.client.createCollection({
+        collection: this.auditCollection,
+        shardNum: 1,
+        replicaNum: 2,
+        description: "Memory 修改审计：L1/L2/L3 update/delete 事件流",
+        embedding: { status: "disabled" },
+        indexes: [
+          { fieldName: "id",            fieldType: "string", indexType: "primaryKey" },
+          { fieldName: "vector",        fieldType: "vector", indexType: "FLAT",
+            dimension: 1, metricType: "COSINE" },
+          { fieldName: "record_id",     fieldType: "string", indexType: "filter" },
+          { fieldName: "layer",         fieldType: "string", indexType: "filter" },
+          { fieldName: "action",        fieldType: "string", indexType: "filter" },
+          { fieldName: "team_id",       fieldType: "string", indexType: "filter" },
+          { fieldName: "agent_id",      fieldType: "string", indexType: "filter" },
+          { fieldName: "user_id",       fieldType: "string", indexType: "filter" },
+          { fieldName: "task_id",       fieldType: "string", indexType: "filter" },
+          { fieldName: "version",       fieldType: "uint64", indexType: "filter" },
+          { fieldName: "updated_at_ms", fieldType: "uint64", indexType: "filter" },
+        ],
+      });
+
+      // knowledge_entities registry — 明细表（dim=1 占位；metadata 用 JSON 类型收类型专属字段）
+      // 见 docs/design/vdb-knowledge-collection.md
+      await this.client.createCollection({
+        collection: this.knowledgeCollection,
+        shardNum: 1,
+        replicaNum: 2,
+        description: "Knowledge entity metadata registry",
+        embedding: { status: "disabled" },
+        indexes: [
+          { fieldName: "id",            fieldType: "string", indexType: "primaryKey" },
+          { fieldName: "vector",        fieldType: "vector", indexType: "FLAT",
+            dimension: 1, metricType: "COSINE" },
+          { fieldName: "type",          fieldType: "string", indexType: "filter" },
+          { fieldName: "team_id",       fieldType: "string", indexType: "filter" },
+          { fieldName: "agent_id",      fieldType: "string", indexType: "filter" },
+          { fieldName: "name",          fieldType: "string", indexType: "filter" },
+          { fieldName: "user_id",       fieldType: "string", indexType: "filter" },
+          { fieldName: "metadata",      fieldType: "json",   indexType: "filter" },
+          { fieldName: "created_at_ms", fieldType: "uint64", indexType: "filter" },
+          { fieldName: "updated_at_ms", fieldType: "uint64", indexType: "filter" },
         ],
       });
 
@@ -337,9 +464,9 @@ export class TcvdbMemoryStore implements IMemoryStore {
   getCapabilities(): StoreCapabilities {
     const hasBm25 = !!this.bm25Encoder;
     return {
-      vectorSearch: true,
+      vectorSearch: this.embeddingEnabled,
       ftsSearch: hasBm25,
-      nativeHybridSearch: hasBm25,
+      nativeHybridSearch: this.embeddingEnabled && hasBm25,
       sparseVectors: hasBm25,
     };
   }
@@ -420,16 +547,22 @@ export class TcvdbMemoryStore implements IMemoryStore {
       type: record.type,
       priority: record.priority,
       scene_name: record.scene_name,
-      agent_id: extractAgentId(record.sessionKey),
+      team_id: record.teamId ?? "",
+      user_id: record.userId ?? "",
+      agent_id: record.agentId ?? "",
+      version: record.version ?? 0,
       session_key: record.sessionKey,
       session_id: record.sessionId,
+      task_id: record.taskId ?? "",
       timestamp_str: tsStr,
       timestamp_start: tsStart,
       timestamp_end: tsEnd,
       created_time_ms: isoToEpochMs(record.createdAt),
       updated_time_ms: isoToEpochMs(record.updatedAt),
       metadata_json: JSON.stringify(record.metadata),
+      memory_type: DEFAULT_MEMORY_TYPE,
     };
+    if (!this.embeddingEnabled) doc.vector = [1];
 
     // BM25 sparse vector (if sidecar available)
     if (this.bm25Encoder) {
@@ -465,16 +598,22 @@ export class TcvdbMemoryStore implements IMemoryStore {
           type: record.type,
           priority: record.priority,
           scene_name: record.scene_name,
-          agent_id: extractAgentId(record.sessionKey),
+          team_id: record.teamId ?? "",
+          user_id: record.userId ?? "",
+          agent_id: record.agentId ?? "",
+          version: record.version ?? 0,
           session_key: record.sessionKey,
           session_id: record.sessionId,
+          task_id: record.taskId ?? "",
           timestamp_str: tsStr,
           timestamp_start: tsStart,
           timestamp_end: tsEnd,
           created_time_ms: isoToEpochMs(record.createdAt),
           updated_time_ms: isoToEpochMs(record.updatedAt),
           metadata_json: JSON.stringify(record.metadata),
+          memory_type: DEFAULT_MEMORY_TYPE,
         };
+        if (!this.embeddingEnabled) doc.vector = [1];
 
         if (this.bm25Encoder) {
           const sparse = this.bm25Encoder.encodeTexts([record.content]);
@@ -559,11 +698,28 @@ export class TcvdbMemoryStore implements IMemoryStore {
 
   // ── L1 Read Operations ───────────────────────────────────
 
-  async countL1(): Promise<number> {
+  async countL1(filter?: L1CountFilter): Promise<number> {
     try {
       await this._ensureInit();
       if (this.degraded) return 0;
-      return await this.client.count(this.l1Collection);
+      const conditions: string[] = [];
+      if (filter?.type) conditions.push(eqFilter("type", filter.type));
+      conditions.push(...buildIsolationConditions({
+        teamId: filter?.teamId,
+        userId: filter?.userId,
+        agentId: filter?.agentId,
+        sessionId: filter?.sessionId,
+        taskId: filter?.taskId,
+      }));
+      if (filter?.timeStart) {
+        const ms = isoToEpochMs(filter.timeStart);
+        if (ms > 0) conditions.push(`updated_time_ms >= ${ms}`);
+      }
+      if (filter?.timeEnd) {
+        const ms = isoToEpochMs(filter.timeEnd);
+        if (ms > 0) conditions.push(`updated_time_ms <= ${ms}`);
+      }
+      return await this.client.count(this.l1Collection, joinFilter(conditions));
     } catch (err) {
       this.logger?.warn(`${TAG} [L1-count] FAILED: ${err instanceof Error ? err.message : String(err)}`);
       return 0;
@@ -576,14 +732,12 @@ export class TcvdbMemoryStore implements IMemoryStore {
       if (this.degraded) return [];
 
       // Build filter expression
-      const conditions: string[] = [];
-      if (filter?.sessionKey) conditions.push(`session_key = "${filter.sessionKey}"`);
-      if (filter?.sessionId) conditions.push(`session_id = "${filter.sessionId}"`);
+      const conditions = buildIsolationConditions(filter);
       if (filter?.updatedAfter) {
         const afterMs = isoToEpochMs(filter.updatedAfter);
         if (afterMs > 0) conditions.push(`updated_time_ms > ${afterMs}`);
       }
-      const filterExpr = conditions.length > 0 ? conditions.join(" and ") : undefined;
+      const filterExpr = joinFilter(conditions);
 
       // Primary key lookup: use documentIds (fast, no full scan)
       if (filter?.recordIds && filter.recordIds.length > 0) {
@@ -603,6 +757,11 @@ export class TcvdbMemoryStore implements IMemoryStore {
           scene_name: String(doc.scene_name ?? ""),
           session_key: String(doc.session_key ?? ""),
           session_id: String(doc.session_id ?? ""),
+          task_id: String(doc.task_id ?? ""),
+          team_id: String(doc.team_id ?? ""),
+          user_id: String(doc.user_id ?? ""),
+          agent_id: String(doc.agent_id ?? ""),
+          version: Number(doc.version ?? 0),
           timestamp_str: String(doc.timestamp_str ?? ""),
           timestamp_start: String(doc.timestamp_start ?? ""),
           timestamp_end: String(doc.timestamp_end ?? ""),
@@ -630,6 +789,11 @@ export class TcvdbMemoryStore implements IMemoryStore {
         scene_name: String(doc.scene_name ?? ""),
         session_key: String(doc.session_key ?? ""),
         session_id: String(doc.session_id ?? ""),
+        task_id: String(doc.task_id ?? ""),
+        team_id: String(doc.team_id ?? ""),
+        user_id: String(doc.user_id ?? ""),
+        agent_id: String(doc.agent_id ?? ""),
+        version: Number(doc.version ?? 0),
         timestamp_str: String(doc.timestamp_str ?? ""),
         timestamp_start: String(doc.timestamp_start ?? ""),
         timestamp_end: String(doc.timestamp_end ?? ""),
@@ -667,21 +831,21 @@ export class TcvdbMemoryStore implements IMemoryStore {
 
   // ── L1 Search Operations ─────────────────────────────────
 
-  async searchL1Vector(_queryEmbedding: Float32Array, topK?: number, queryText?: string): Promise<L1SearchResult[]> {
+  async searchL1Vector(_queryEmbedding: Float32Array, topK?: number, queryText?: string, filter?: IsolationFilter): Promise<L1SearchResult[]> {
     // TCVDB uses server-side embedding — delegate to hybrid search with text
     if (queryText) {
-      return this.searchL1HybridAsync({ queryText, topK });
+      return this.searchL1HybridAsync({ queryText, topK, filter });
     }
     // No queryText and TCVDB can't use client embeddings directly via embeddingItems
     // Return empty — callers should pass queryText for TCVDB
     return [];
   }
 
-  async searchL1Fts(ftsQuery: string, limit?: number): Promise<L1FtsResult[]> {
+  async searchL1Fts(ftsQuery: string, limit?: number, filter?: IsolationFilter): Promise<L1FtsResult[]> {
     // TCVDB has no pure FTS — use hybrid search with sparse-only path
     // The ftsQuery is raw text, use it as queryText for hybrid
     if (!ftsQuery) return [];
-    const results = await this.searchL1HybridAsync({ queryText: ftsQuery, topK: limit });
+    const results = await this.searchL1HybridAsync({ queryText: ftsQuery, topK: limit, filter });
     // L1SearchResult and L1FtsResult have identical shapes
     return results;
   }
@@ -691,10 +855,11 @@ export class TcvdbMemoryStore implements IMemoryStore {
     queryEmbedding?: Float32Array;
     sparseVector?: SparseVector;
     topK?: number;
+    filter?: IsolationFilter;
   }): Promise<L1SearchResult[]> {
     const queryText = params.query;
     if (!queryText) return [];
-    return this.searchL1HybridAsync({ queryText, topK: params.topK });
+    return this.searchL1HybridAsync({ queryText, topK: params.topK, filter: params.filter });
   }
 
   /**
@@ -704,19 +869,39 @@ export class TcvdbMemoryStore implements IMemoryStore {
   async searchL1HybridAsync(params: {
     queryText: string;
     topK?: number;
+    filter?: IsolationFilter;
   }): Promise<L1SearchResult[]> {
-    const { queryText, topK = 10 } = params;
+    const { queryText, topK = 10, filter } = params;
     if (!queryText) return [];
 
     try {
       await this._ensureInit();
       if (this.degraded) return [];
 
+      const filterExpr = joinFilter(buildIsolationConditions(filter));
+
       // Build search params
       const searchParams: Record<string, unknown> = {
         limit: topK,
         outputFields: L1_OUTPUT_FIELDS,
       };
+      if (filterExpr) searchParams.filter = filterExpr;
+
+      const sparse = this.bm25Encoder?.encodeQueries([queryText]) ?? [];
+      const sparseVec = sparse.length > 0 && sparse[0].length > 0 ? sparse[0] : undefined;
+
+      if (!this.embeddingEnabled) {
+        if (!sparseVec) return [];
+        searchParams.ann = [{ fieldName: "vector", data: [[1]], limit: topK }];
+        searchParams.match = [{
+          fieldName: "sparse_vector",
+          data: [sparseVec],
+          limit: topK,
+        }];
+        searchParams.rerank = { method: "rrf", k: 60 };
+        const resp = await this.client.hybridSearch(this.l1Collection, searchParams);
+        return this._parseL1SearchResults(resp.documents);
+      }
 
       // ann: use embedding field name "text" for server-side embedding
       // (per SDK: AnnSearch(field_name="text", data='query string'))
@@ -726,37 +911,30 @@ export class TcvdbMemoryStore implements IMemoryStore {
         limit: topK,
       }];
 
-      let match: Array<Record<string, unknown>> | undefined;
-      if (this.bm25Encoder) {
-        const sparse = this.bm25Encoder.encodeQueries([queryText]);
-        if (sparse.length > 0 && sparse[0].length > 0) {
-          match = [{
-            fieldName: "sparse_vector",
-            data: [sparse[0]], // SDK wraps single sparse vector in array
-            limit: topK,
-          }];
-        }
-      }
-
-      if (match) {
+      if (sparseVec) {
         // Full hybrid: dense + sparse + RRF
         searchParams.ann = ann;
-        searchParams.match = match;
+        searchParams.match = [{
+          fieldName: "sparse_vector",
+          data: [sparseVec], // hybridSearch wraps single sparse vector in array
+          limit: topK,
+        }];
         searchParams.rerank = { method: "rrf", k: 60 };
 
         const resp = await this.client.hybridSearch(this.l1Collection, searchParams);
         return this._parseL1SearchResults(resp.documents);
-      } else {
-        // Dense-only fallback (BM25 unavailable) — use /document/search with embeddingItems
-        const denseSearch: Record<string, unknown> = {
-          embeddingItems: [queryText],
-          limit: topK,
-          retrieveVector: false,
-          outputFields: L1_OUTPUT_FIELDS,
-        };
-        const resp = await this.client.search(this.l1Collection, denseSearch);
-        return this._parseL1SearchResults(resp.documents);
       }
+
+      // Dense-only fallback (BM25 unavailable) — use /document/search with embeddingItems
+      const denseSearch: Record<string, unknown> = {
+        embeddingItems: [queryText],
+        limit: topK,
+        retrieveVector: false,
+        outputFields: L1_OUTPUT_FIELDS,
+      };
+      if (filterExpr) denseSearch.filter = filterExpr;
+      const resp = await this.client.search(this.l1Collection, denseSearch);
+      return this._parseL1SearchResults(resp.documents);
     } catch (err) {
       this.logger?.warn(`${TAG} [L1-hybridSearch] FAILED: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -765,7 +943,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
 
   // ── L0 Write Operations ──────────────────────────────────
 
-  async upsertL0(record: { id: string; sessionKey: string; sessionId: string; role: string; messageText: string; recordedAt: string; timestamp: number }, _embedding?: Float32Array): Promise<boolean> {
+  async upsertL0(record: L0Record, _embedding?: Float32Array): Promise<boolean> {
     try {
       await this._upsertL0Async(record);
       return true;
@@ -775,20 +953,24 @@ export class TcvdbMemoryStore implements IMemoryStore {
     }
   }
 
-  private async _upsertL0Async(record: { id: string; sessionKey: string; sessionId: string; role: string; messageText: string; recordedAt: string; timestamp: number }): Promise<void> {
+  private async _upsertL0Async(record: L0Record): Promise<void> {
     await this._ensureInit();
     if (this.degraded) return;
 
     const doc: Record<string, unknown> = {
       id: record.id,
       message_text: record.messageText,
-      agent_id: extractAgentId(record.sessionKey),
+      team_id: record.teamId ?? "",
+      user_id: record.userId || DEFAULT_ISOLATION_ID,
+      agent_id: record.agentId || DEFAULT_ISOLATION_ID,
       session_key: record.sessionKey,
-      session_id: record.sessionId,
+      session_id: record.sessionId || DEFAULT_ISOLATION_ID,
+      task_id: record.taskId ?? "",
       role: record.role,
       recorded_at_ms: isoToEpochMs(record.recordedAt),
       timestamp: record.timestamp,
     };
+    if (!this.embeddingEnabled) doc.vector = [1];
 
     if (this.bm25Encoder) {
       const sparse = this.bm25Encoder.encodeTexts([record.messageText]);
@@ -804,7 +986,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
    * Batch upsert multiple L0 records in a single API call.
    * Used by migration scripts to reduce request count.
    */
-  async upsertL0Batch(records: Array<{ id: string; sessionKey: string; sessionId: string; role: string; messageText: string; recordedAt: string; timestamp: number }>): Promise<number> {
+  async upsertL0Batch(records: L0Record[]): Promise<number> {
     if (records.length === 0) return 0;
     try {
       await this._ensureInit();
@@ -814,13 +996,17 @@ export class TcvdbMemoryStore implements IMemoryStore {
         const doc: Record<string, unknown> = {
           id: record.id,
           message_text: record.messageText,
-          agent_id: extractAgentId(record.sessionKey),
+          team_id: record.teamId ?? "",
+          user_id: record.userId || DEFAULT_ISOLATION_ID,
+          agent_id: record.agentId || DEFAULT_ISOLATION_ID,
           session_key: record.sessionKey,
-          session_id: record.sessionId,
+          session_id: record.sessionId || DEFAULT_ISOLATION_ID,
+          task_id: record.taskId ?? "",
           role: record.role,
           recorded_at_ms: isoToEpochMs(record.recordedAt),
           timestamp: record.timestamp,
         };
+        if (!this.embeddingEnabled) doc.vector = [1];
 
         if (this.bm25Encoder) {
           const sparse = this.bm25Encoder.encodeTexts([record.messageText]);
@@ -839,12 +1025,15 @@ export class TcvdbMemoryStore implements IMemoryStore {
     }
   }
 
-  async deleteL0(recordId: string): Promise<boolean> {
+  async deleteL0(recordId: string, filter?: IsolationFilter): Promise<boolean> {
     try {
       await this._ensureInit();
       if (this.degraded) return false;
+      const filterExpr = joinFilter(buildIsolationConditions(filter));
+      const query: Record<string, unknown> = { documentIds: [recordId] };
+      if (filterExpr) query.filter = filterExpr;
       const affected = await this.client.deleteDoc(this.l0Collection, {
-        query: { documentIds: [recordId] },
+        query,
       });
       return affected > 0;
     } catch (err) {
@@ -890,11 +1079,28 @@ export class TcvdbMemoryStore implements IMemoryStore {
 
   // ── L0 Read Operations ───────────────────────────────────
 
-  async countL0(): Promise<number> {
+  async countL0(filter?: L0CountFilter): Promise<number> {
     try {
       await this._ensureInit();
       if (this.degraded) return 0;
-      return await this.client.count(this.l0Collection);
+      const conditions: string[] = [];
+      if (filter?.sessionId) {
+        const sid = escapeFilterString(filter.sessionId);
+        conditions.push(`(session_key = "${sid}" or session_id = "${sid}")`);
+      }
+      conditions.push(...buildIsolationConditions({
+        teamId: filter?.teamId,
+        userId: filter?.userId,
+        agentId: filter?.agentId,
+        taskId: filter?.taskId,
+      }));
+      if (filter?.timeStartMs !== undefined) {
+        conditions.push(`recorded_at_ms >= ${filter.timeStartMs}`);
+      }
+      if (filter?.timeEndMs !== undefined) {
+        conditions.push(`recorded_at_ms <= ${filter.timeEndMs}`);
+      }
+      return await this.client.count(this.l0Collection, joinFilter(conditions));
     } catch (err) {
       this.logger?.warn(`${TAG} [L0-count] FAILED: ${err instanceof Error ? err.message : String(err)}`);
       return 0;
@@ -906,7 +1112,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
       await this._ensureInit();
       if (this.degraded) return [];
 
-      const conditions: string[] = [`session_key = "${sessionKey}"`];
+      const conditions: string[] = [eqFilter("session_key", sessionKey)];
       if (afterRecordedAtMs && afterRecordedAtMs > 0) {
         conditions.push(`recorded_at_ms > ${afterRecordedAtMs}`);
       }
@@ -926,7 +1132,13 @@ export class TcvdbMemoryStore implements IMemoryStore {
       const rows: L0QueryRow[] = docs.map((doc) => ({
         record_id: String(doc.id ?? ""),
         session_key: String(doc.session_key ?? ""),
-        session_id: String(doc.session_id ?? ""),
+        // Normalize legacy/imported empty values at the Service L0 read boundary
+        // so grouping, L1 writes, and L2 queries share one session identity.
+        session_id: String(doc.session_id ?? "").trim() || DEFAULT_ISOLATION_ID,
+        team_id: String(doc.team_id ?? ""),
+        task_id: String(doc.task_id ?? ""),
+        user_id: String(doc.user_id ?? ""),
+        agent_id: String(doc.agent_id ?? ""),
         role: String(doc.role ?? ""),
         message_text: String(doc.message_text ?? ""),
         recorded_at: epochMsToIso(Number(doc.recorded_at_ms ?? 0)),
@@ -944,16 +1156,23 @@ export class TcvdbMemoryStore implements IMemoryStore {
     try {
       const rows = await this.queryL0ForL1(sessionKey, afterRecordedAtMs, limit);
 
-      // Group by session_id
-      const groupMap = new Map<string, Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }>>();
+      // Group by full isolation tuple + session_id to avoid cross-tenant merging.
+      // 注意：必须把 teamId / taskId 带进 group。L2 scope (team:T|agent:A) 依赖
+      // L1 record 的 teamId 正确透传；缺失会退化到 team:${userId}|... 写错位。
+      const groupMap = new Map<string, L0SessionGroup>();
       for (const row of rows) {
-        const sid = row.session_id || "";
-        let group = groupMap.get(sid);
+        const sid = row.session_id || DEFAULT_ISOLATION_ID;
+        const teamId = row.team_id || "";
+        const userId = row.user_id || "";
+        const agentId = row.agent_id || "";
+        const taskId = row.task_id || "";
+        const groupKey = `${teamId}\u0000${userId}\u0000${agentId}\u0000${taskId}\u0000${sid}`;
+        let group = groupMap.get(groupKey);
         if (!group) {
-          group = [];
-          groupMap.set(sid, group);
+          group = { sessionId: sid, teamId, userId, agentId, taskId, messages: [] };
+          groupMap.set(groupKey, group);
         }
-        group.push({
+        group.messages.push({
           id: row.record_id,
           role: row.role,
           content: row.message_text,
@@ -964,9 +1183,9 @@ export class TcvdbMemoryStore implements IMemoryStore {
 
       // Convert to array, sorted by earliest message timestamp
       const groups: L0SessionGroup[] = [];
-      for (const [sessionId, messages] of groupMap) {
-        if (messages.length > 0) {
-          groups.push({ sessionId, messages });
+      for (const group of groupMap.values()) {
+        if (group.messages.length > 0) {
+          groups.push(group);
         }
       }
       groups.sort((a, b) => a.messages[0].timestamp - b.messages[0].timestamp);
@@ -1002,18 +1221,18 @@ export class TcvdbMemoryStore implements IMemoryStore {
 
   // ── L0 Search Operations ─────────────────────────────────
 
-  async searchL0Vector(_queryEmbedding: Float32Array, topK?: number, queryText?: string): Promise<L0SearchResult[]> {
+  async searchL0Vector(_queryEmbedding: Float32Array, topK?: number, queryText?: string, filter?: IsolationFilter): Promise<L0SearchResult[]> {
     // TCVDB uses server-side embedding — delegate to hybrid search with text
     if (queryText) {
-      return this.searchL0HybridAsync({ queryText, topK });
+      return this.searchL0HybridAsync({ queryText, topK, filter });
     }
     return [];
   }
 
-  async searchL0Fts(ftsQuery: string, limit?: number): Promise<L0FtsResult[]> {
+  async searchL0Fts(ftsQuery: string, limit?: number, filter?: IsolationFilter): Promise<L0FtsResult[]> {
     if (!ftsQuery) return [];
     // Use hybrid search; L0SearchResult and L0FtsResult have identical shapes
-    return this.searchL0HybridAsync({ queryText: ftsQuery, topK: limit });
+    return this.searchL0HybridAsync({ queryText: ftsQuery, topK: limit, filter });
   }
 
   async searchL0Hybrid(params: {
@@ -1021,10 +1240,11 @@ export class TcvdbMemoryStore implements IMemoryStore {
     queryEmbedding?: Float32Array;
     sparseVector?: SparseVector;
     topK?: number;
+    filter?: IsolationFilter;
   }): Promise<L0SearchResult[]> {
     const queryText = params.query;
     if (!queryText) return [];
-    return this.searchL0HybridAsync({ queryText, topK: params.topK });
+    return this.searchL0HybridAsync({ queryText, topK: params.topK, filter: params.filter });
   }
 
   /**
@@ -1033,18 +1253,38 @@ export class TcvdbMemoryStore implements IMemoryStore {
   async searchL0HybridAsync(params: {
     queryText: string;
     topK?: number;
+    filter?: IsolationFilter;
   }): Promise<L0SearchResult[]> {
-    const { queryText, topK = 10 } = params;
+    const { queryText, topK = 10, filter } = params;
     if (!queryText) return [];
 
     try {
       await this._ensureInit();
       if (this.degraded) return [];
 
+      const filterExpr = joinFilter(buildIsolationConditions(filter));
+
       const searchParams: Record<string, unknown> = {
         limit: topK,
         outputFields: L0_OUTPUT_FIELDS,
       };
+      if (filterExpr) searchParams.filter = filterExpr;
+
+      const sparse = this.bm25Encoder?.encodeQueries([queryText]) ?? [];
+      const sparseVec = sparse.length > 0 && sparse[0].length > 0 ? sparse[0] : undefined;
+
+      if (!this.embeddingEnabled) {
+        if (!sparseVec) return [];
+        searchParams.ann = [{ fieldName: "vector", data: [[1]], limit: topK }];
+        searchParams.match = [{
+          fieldName: "sparse_vector",
+          data: [sparseVec],
+          limit: topK,
+        }];
+        searchParams.rerank = { method: "rrf", k: 60 };
+        const resp = await this.client.hybridSearch(this.l0Collection, searchParams);
+        return this._parseL0SearchResults(resp.documents);
+      }
 
       // ann: use embedding field name "message_text" for L0 server-side embedding
       const ann = [{
@@ -1053,34 +1293,27 @@ export class TcvdbMemoryStore implements IMemoryStore {
         limit: topK,
       }];
 
-      let match: Array<Record<string, unknown>> | undefined;
-      if (this.bm25Encoder) {
-        const sparse = this.bm25Encoder.encodeQueries([queryText]);
-        if (sparse.length > 0 && sparse[0].length > 0) {
-          match = [{
-            fieldName: "sparse_vector",
-            data: [sparse[0]],
-            limit: topK,
-          }];
-        }
-      }
-
-      if (match) {
+      if (sparseVec) {
         searchParams.ann = ann;
-        searchParams.match = match;
+        searchParams.match = [{
+          fieldName: "sparse_vector",
+          data: [sparseVec],
+          limit: topK,
+        }];
         searchParams.rerank = { method: "rrf", k: 60 };
         const resp = await this.client.hybridSearch(this.l0Collection, searchParams);
         return this._parseL0SearchResults(resp.documents);
-      } else {
-        const denseSearch: Record<string, unknown> = {
-          embeddingItems: [queryText],
-          limit: topK,
-          retrieveVector: false,
-          outputFields: L0_OUTPUT_FIELDS,
-        };
-        const resp = await this.client.search(this.l0Collection, denseSearch);
-        return this._parseL0SearchResults(resp.documents);
       }
+
+      const denseSearch: Record<string, unknown> = {
+        embeddingItems: [queryText],
+        limit: topK,
+        retrieveVector: false,
+        outputFields: L0_OUTPUT_FIELDS,
+      };
+      if (filterExpr) denseSearch.filter = filterExpr;
+      const resp = await this.client.search(this.l0Collection, denseSearch);
+      return this._parseL0SearchResults(resp.documents);
     } catch (err) {
       this.logger?.warn(`${TAG} [L0-hybridSearch] FAILED: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -1104,7 +1337,10 @@ export class TcvdbMemoryStore implements IMemoryStore {
         filename: String(doc.filename ?? ""),
         content: String(doc.content ?? ""),
         contentMd5: String(doc.content_md5 ?? ""),
+        teamId: String(doc.team_id ?? "") || undefined,
         agentId: String(doc.agent_id ?? "") || undefined,
+        userId: String(doc.user_id ?? "") || undefined,
+        sessionId: undefined,
         version: Number(doc.version ?? 0),
         createdAtMs: Number(doc.created_at_ms ?? 0),
         updatedAtMs: Number(doc.updated_at_ms ?? 0),
@@ -1115,6 +1351,66 @@ export class TcvdbMemoryStore implements IMemoryStore {
     }
   }
 
+  async queryProfilesByIds(ids: string[]): Promise<ProfileRecord[]> {
+    if (ids.length === 0) return [];
+    try {
+      await this._ensureInit();
+      if (this.degraded) return [];
+
+      const resp = await this.client.query(this.profilesCollection, {
+        retrieveVector: false,
+        documentIds: ids,
+        outputFields: PROFILE_OUTPUT_FIELDS,
+        limit: ids.length,
+      });
+      const docs = resp.documents ?? [];
+      return docs.map((doc) => ({
+        id: String(doc.id ?? ""),
+        type: doc.type === "l3" ? "l3" : "l2",
+        filename: String(doc.filename ?? ""),
+        content: String(doc.content ?? ""),
+        contentMd5: String(doc.content_md5 ?? ""),
+        teamId: String(doc.team_id ?? "") || undefined,
+        agentId: String(doc.agent_id ?? "") || undefined,
+        userId: String(doc.user_id ?? "") || undefined,
+        sessionId: undefined,
+        version: Number(doc.version ?? 0),
+        createdAtMs: Number(doc.created_at_ms ?? 0),
+        updatedAtMs: Number(doc.updated_at_ms ?? 0),
+      }));
+    } catch (err) {
+      this.logger?.warn(`${TAG} [profiles-query-by-ids] FAILED: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  async countProfiles(filter?: ProfileCountFilter): Promise<number> {
+    try {
+      await this._ensureInit();
+      if (this.degraded) return 0;
+      const conditions: string[] = [];
+      if (filter?.type) conditions.push(eqFilter("type", filter.type));
+      if (filter?.teamId !== undefined) conditions.push(eqFilter("team_id", filter.teamId));
+      if (filter?.userId !== undefined) conditions.push(eqFilter("user_id", filter.userId));
+      if (filter?.agentId !== undefined) conditions.push(eqFilter("agent_id", filter.agentId));
+      const filterExpr = joinFilter(conditions);
+
+      if (filter?.pathPrefix) {
+        const docs = await this._queryAllDocs(
+          this.profilesCollection,
+          filterExpr,
+          ["id", "filename"],
+        );
+        return docs.filter((doc) => String(doc.filename ?? "").startsWith(filter.pathPrefix!)).length;
+      }
+
+      return await this.client.count(this.profilesCollection, filterExpr);
+    } catch (err) {
+      this.logger?.warn(`${TAG} [profiles-count] FAILED: ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
+    }
+  }
+
   async syncProfiles(records: ProfileSyncRecord[]): Promise<void> {
     if (records.length === 0) return;
 
@@ -1122,13 +1418,17 @@ export class TcvdbMemoryStore implements IMemoryStore {
       await this._ensureInit();
       if (this.degraded) return;
 
-      const remoteDocs = await this._queryAllDocs(
-        this.profilesCollection,
-        undefined,
-        PROFILE_METADATA_OUTPUT_FIELDS,
-      );
+      const ids = [...new Set(records.map((record) => record.id).filter(Boolean))];
+      const remoteResp = ids.length > 0
+        ? await this.client.query(this.profilesCollection, {
+          retrieveVector: false,
+          documentIds: ids,
+          outputFields: PROFILE_METADATA_OUTPUT_FIELDS,
+          limit: ids.length,
+        })
+        : { documents: [] };
       const remoteMap = new Map(
-        remoteDocs.map((doc) => [String(doc.id ?? ""), doc] as const),
+        (remoteResp.documents ?? []).map((doc) => [String(doc.id ?? ""), doc] as const),
       );
       const now = Date.now();
       const upserts: Array<Record<string, unknown>> = [];
@@ -1144,10 +1444,13 @@ export class TcvdbMemoryStore implements IMemoryStore {
             filename: record.filename,
             content: record.content,
             content_md5: record.contentMd5,
+            team_id: record.teamId ?? "",
+            user_id: record.userId ?? "",
             agent_id: record.agentId ?? "",
-            version: 1,
+            version: record.version ?? 0,
             created_at_ms: createdAtMs,
             updated_at_ms: now,
+            memory_type: DEFAULT_MEMORY_TYPE,
           });
           continue;
         }
@@ -1174,10 +1477,13 @@ export class TcvdbMemoryStore implements IMemoryStore {
           filename: record.filename,
           content: record.content,
           content_md5: record.contentMd5,
+          team_id: record.teamId ?? "",
+          user_id: record.userId ?? "",
           agent_id: record.agentId ?? "",
           version: currentVersion + 1,
           created_at_ms: currentCreatedAtMs,
           updated_at_ms: now,
+          memory_type: DEFAULT_MEMORY_TYPE,
         });
       }
 
@@ -1201,6 +1507,162 @@ export class TcvdbMemoryStore implements IMemoryStore {
     } catch (err) {
       this.logger?.warn(`${TAG} [profiles-delete] FAILED: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  // ── Knowledge entity (wiki / code-graph metadata) ─────────
+  //
+  // 明细注册表：Proxy 按 knowledge_id 联查渲染。类型专属字段（repo_url/branch…）
+  // 收进 JSON 类型字段 metadata（见 docs/design/vdb-knowledge-collection.md）。
+
+  private _knowledgeToDoc(e: Omit<KnowledgeEntity, "created_at" | "updated_at">, createdAtMs: number, updatedAtMs: number): Record<string, unknown> {
+    const metadata: Record<string, unknown> = {};
+    if (e.repo_url !== undefined) metadata.repo_url = e.repo_url;
+    if (e.branch !== undefined) metadata.branch = e.branch;
+    return {
+      id: e.knowledge_id,
+      vector: [0],
+      type: e.type,
+      team_id: e.team_id,
+      agent_id: e.agent_id ?? "",
+      name: e.name,
+      user_id: e.user_id ?? "",
+      service_url: e.service_url,
+      summary: e.summary ?? "",
+      metadata,
+      created_at_ms: createdAtMs,
+      updated_at_ms: updatedAtMs,
+    };
+  }
+
+  private _docToKnowledge(doc: Record<string, unknown>): KnowledgeEntity {
+    const metadata = (doc.metadata ?? {}) as Record<string, unknown>;
+    const repoUrl = metadata.repo_url !== undefined ? String(metadata.repo_url) : undefined;
+    const branch = metadata.branch !== undefined ? String(metadata.branch) : undefined;
+    return {
+      knowledge_id: String(doc.id ?? ""),
+      type: (doc.type as KnowledgeType) ?? "wiki",
+      service_url: String(doc.service_url ?? ""),
+      name: String(doc.name ?? ""),
+      summary: doc.summary ? String(doc.summary) : null,
+      team_id: String(doc.team_id ?? ""),
+      agent_id: String(doc.agent_id ?? ""),
+      user_id: doc.user_id ? String(doc.user_id) : null,
+      repo_url: repoUrl,
+      branch,
+      created_at: epochMsToIso(Number(doc.created_at_ms ?? 0)),
+      updated_at: epochMsToIso(Number(doc.updated_at_ms ?? 0)),
+    };
+  }
+
+  async createKnowledge(input: Omit<KnowledgeEntity, "created_at" | "updated_at">): Promise<KnowledgeEntity> {
+    await this._ensureInit();
+    if (this.degraded) throw new Error("tcvdb store degraded");
+    // upsert：保留已有 created_at_ms
+    let createdAtMs = Date.now();
+    try {
+      const existing = await this.client.query(this.knowledgeCollection, {
+        retrieveVector: false, documentIds: [input.knowledge_id],
+        outputFields: ["id", "created_at_ms"], limit: 1,
+      });
+      const prev = existing.documents?.[0];
+      if (prev?.created_at_ms) createdAtMs = Number(prev.created_at_ms);
+    } catch { /* 视为新建 */ }
+    const now = Date.now();
+    const doc = this._knowledgeToDoc(input, createdAtMs, now);
+    await this.client.upsert(this.knowledgeCollection, [doc]);
+    return this._docToKnowledge(doc);
+  }
+
+  async getKnowledge(knowledgeId: string): Promise<KnowledgeEntity | null> {
+    await this._ensureInit();
+    if (this.degraded) return null;
+    const resp = await this.client.query(this.knowledgeCollection, {
+      retrieveVector: false, documentIds: [knowledgeId],
+      outputFields: KNOWLEDGE_OUTPUT_FIELDS, limit: 1,
+    });
+    const doc = resp.documents?.[0];
+    return doc ? this._docToKnowledge(doc) : null;
+  }
+
+  async updateKnowledge(
+    knowledgeId: string,
+    patch: Partial<Pick<KnowledgeEntity, "name" | "summary" | "service_url" | "repo_url" | "branch">>,
+  ): Promise<KnowledgeEntity | null> {
+    const current = await this.getKnowledge(knowledgeId);
+    if (!current) return null;
+    const merged: Omit<KnowledgeEntity, "created_at" | "updated_at"> = {
+      knowledge_id: current.knowledge_id,
+      type: current.type,
+      service_url: patch.service_url ?? current.service_url,
+      name: patch.name ?? current.name,
+      summary: patch.summary !== undefined ? patch.summary : current.summary,
+      team_id: current.team_id,
+      agent_id: current.agent_id ?? "",
+      user_id: current.user_id,
+      repo_url: patch.repo_url !== undefined ? patch.repo_url : current.repo_url,
+      branch: patch.branch !== undefined ? patch.branch : current.branch,
+    };
+    return this.createKnowledge(merged);
+  }
+
+  async deleteKnowledge(knowledgeIds: string[], teamId?: string): Promise<BatchDeleteResult> {
+    await this._ensureInit();
+    const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
+    if (this.degraded) {
+      for (const id of knowledgeIds) result.failed.push({ id, reason: "degraded" });
+      return result;
+    }
+    for (const id of knowledgeIds) {
+      const row = await this.getKnowledge(id);
+      if (!row) { result.failed.push({ id, reason: "not_found" }); continue; }
+      if (teamId && row.team_id !== teamId) { result.failed.push({ id, reason: "team_mismatch" }); continue; }
+      await this.client.deleteDoc(this.knowledgeCollection, { query: { documentIds: [id] } });
+      result.deleted_ids.push(id);
+    }
+    return result;
+  }
+
+  async listKnowledge(input: { team_id: string; type?: KnowledgeType; knowledge_ids?: string[]; limit?: number; offset?: number }): Promise<KnowledgeListResult> {
+    await this._ensureInit();
+    if (this.degraded) return { items: [], total: 0 };
+    if (input.knowledge_ids && input.knowledge_ids.length === 0) return { items: [], total: 0 };
+
+    if (input.knowledge_ids && input.knowledge_ids.length > 0) {
+      // TCVDB primary key `id` is not a normal filter field in /document/query;
+      // filtering with `id in (...)` fails with "Field Not Found:id".
+      // Use documentIds for primary-key lookup, then apply team/type guards in memory
+      // to preserve tenant isolation and optional type filtering.
+      const resp = await this.client.query(this.knowledgeCollection, {
+        retrieveVector: false,
+        documentIds: input.knowledge_ids,
+        outputFields: KNOWLEDGE_OUTPUT_FIELDS,
+        limit: input.knowledge_ids.length,
+      });
+      const items = (resp.documents ?? [])
+        .map((d) => this._docToKnowledge(d))
+        .filter((item) => item.team_id === input.team_id)
+        .filter((item) => !input.type || item.type === input.type);
+      return { items, total: items.length };
+    }
+
+    const parts = [`team_id = "${escapeFilterString(input.team_id)}"`];
+    if (input.type) parts.push(`type = "${escapeFilterString(input.type)}"`);
+    const filter = parts.join(" and ");
+
+    const docs = await this._queryAllDocs(
+      this.knowledgeCollection,
+      filter,
+      KNOWLEDGE_OUTPUT_FIELDS,
+      input.limit,
+      [{ fieldName: "updated_at_ms", direction: "desc" }],
+    );
+    let items = docs.map((d) => this._docToKnowledge(d));
+    // 分页（_queryAllDocs 不含 offset 语义时在此裁剪）
+    const offset = Math.max(input.offset ?? 0, 0);
+    const limit = Math.min(Math.max(input.limit ?? 20, 1), 1000);
+    const total = items.length;
+    items = items.slice(offset, offset + limit);
+    return { items, total };
   }
 
   // ── Re-index ─────────────────────────────────────────────
@@ -1228,15 +1690,22 @@ export class TcvdbMemoryStore implements IMemoryStore {
     try {
       const conditions: string[] = [];
       if (filter.sessionId) {
-        conditions.push(`(session_key = "${filter.sessionId}" or session_id = "${filter.sessionId}")`);
+        const sid = escapeFilterString(filter.sessionId);
+        conditions.push(`(session_key = "${sid}" or session_id = "${sid}")`);
       }
+      conditions.push(...buildIsolationConditions({
+        teamId: filter.teamId,
+        userId: filter.userId,
+        agentId: filter.agentId,
+        taskId: filter.taskId,
+      }));
       if (filter.timeStartMs !== undefined) {
         conditions.push(`recorded_at_ms >= ${filter.timeStartMs}`);
       }
       if (filter.timeEndMs !== undefined) {
         conditions.push(`recorded_at_ms <= ${filter.timeEndMs}`);
       }
-      const filterExpr = conditions.length > 0 ? conditions.join(" and ") : undefined;
+      const filterExpr = joinFilter(conditions);
 
       // Get total count
       const total = await this.client.count(this.l0Collection, filterExpr);
@@ -1247,7 +1716,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
         limit: filter.limit,
         offset: filter.offset,
         filter: filterExpr,
-        outputFields: ["id", "session_key", "session_id", "role", "message_text", "recorded_at_ms", "timestamp"],
+        outputFields: L0_OUTPUT_FIELDS,
         sort: [{ fieldName: "recorded_at_ms", direction: "desc" }],
       });
       const docs = resp.documents ?? [];
@@ -1256,6 +1725,10 @@ export class TcvdbMemoryStore implements IMemoryStore {
         record_id: d.id,
         session_key: d.session_key ?? "",
         session_id: d.session_id ?? "",
+        team_id: d.team_id ?? "",
+        task_id: d.task_id ?? "",
+        user_id: d.user_id ?? "",
+        agent_id: d.agent_id ?? "",
         role: d.role ?? "",
         message_text: d.message_text ?? "",
         recorded_at: d.recorded_at_ms ? new Date(d.recorded_at_ms).toISOString() : "",
@@ -1276,8 +1749,15 @@ export class TcvdbMemoryStore implements IMemoryStore {
     try {
       const conditions: string[] = [];
       if (filter.type) {
-        conditions.push(`type = "${filter.type}"`);
+        conditions.push(eqFilter("type", filter.type));
       }
+      conditions.push(...buildIsolationConditions({
+        teamId: filter.teamId,
+        userId: filter.userId,
+        agentId: filter.agentId,
+        sessionId: filter.sessionId,
+        taskId: filter.taskId,
+      }));
       if (filter.timeStart) {
         const ms = new Date(filter.timeStart).getTime();
         conditions.push(`updated_time_ms >= ${ms}`);
@@ -1286,7 +1766,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
         const ms = new Date(filter.timeEnd).getTime();
         conditions.push(`updated_time_ms <= ${ms}`);
       }
-      const filterExpr = conditions.length > 0 ? conditions.join(" and ") : undefined;
+      const filterExpr = joinFilter(conditions);
 
       // Get total count
       const total = await this.client.count(this.l1Collection, filterExpr);
@@ -1297,7 +1777,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
         limit: filter.limit,
         offset: filter.offset,
         filter: filterExpr,
-        outputFields: ["id", "text", "type", "priority", "scene_name", "session_key", "session_id", "timestamp_str", "timestamp_start", "timestamp_end", "created_time_ms", "updated_time_ms", "metadata_json"],
+        outputFields: L1_OUTPUT_FIELDS,
         sort: [{ fieldName: "updated_time_ms", direction: "desc" }],
       });
       const docs = resp.documents ?? [];
@@ -1310,6 +1790,11 @@ export class TcvdbMemoryStore implements IMemoryStore {
         scene_name: d.scene_name ?? "",
         session_key: d.session_key ?? "",
         session_id: d.session_id ?? "",
+        team_id: d.team_id ?? "",
+        task_id: d.task_id ?? "",
+        user_id: d.user_id ?? "",
+        agent_id: d.agent_id ?? "",
+        version: Number(d.version ?? 0),
         timestamp_str: d.timestamp_str ?? "",
         timestamp_start: d.timestamp_start ?? "",
         timestamp_end: d.timestamp_end ?? "",
@@ -1325,11 +1810,13 @@ export class TcvdbMemoryStore implements IMemoryStore {
     }
   }
 
-  async deleteL0BySession(sessionId: string): Promise<number> {
+  async deleteL0BySession(sessionId: string, filter?: IsolationFilter): Promise<number> {
     await this._ensureInit();
     if (this.degraded) return 0;
     try {
-      const filterExpr = `(session_key = "${sessionId}" or session_id = "${sessionId}")`;
+      const sid = escapeFilterString(sessionId);
+      const conditions = [`(session_key = "${sid}" or session_id = "${sid}")`, ...buildIsolationConditions(filter)];
+      const filterExpr = joinFilter(conditions);
       const affected = await this.client.deleteDoc(this.l0Collection, {
         query: { filter: filterExpr },
       });
@@ -1359,6 +1846,11 @@ export class TcvdbMemoryStore implements IMemoryStore {
         timestamp_end: String(doc.timestamp_end ?? ""),
         session_key: String(doc.session_key ?? ""),
         session_id: String(doc.session_id ?? ""),
+        team_id: String(doc.team_id ?? ""),
+        task_id: String(doc.task_id ?? ""),
+        user_id: String(doc.user_id ?? ""),
+        agent_id: String(doc.agent_id ?? ""),
+        version: Number(doc.version ?? 0),
         metadata_json: String(doc.metadata_json ?? "{}"),
       });
     }
@@ -1373,6 +1865,10 @@ export class TcvdbMemoryStore implements IMemoryStore {
         record_id: String(doc.id ?? ""),
         session_key: String(doc.session_key ?? ""),
         session_id: String(doc.session_id ?? ""),
+        team_id: String(doc.team_id ?? ""),
+        task_id: String(doc.task_id ?? ""),
+        user_id: String(doc.user_id ?? ""),
+        agent_id: String(doc.agent_id ?? ""),
         role: String(doc.role ?? ""),
         message_text: String(doc.message_text ?? ""),
         score: Number(doc.score ?? 0),
@@ -1381,5 +1877,87 @@ export class TcvdbMemoryStore implements IMemoryStore {
       });
     }
     return results;
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // Memory Audit (修改审计)
+  // ─────────────────────────────────────────────────────────
+
+  async appendAudit(entry: AuditEntry): Promise<void> {
+    await this._ensureInit();
+    if (this.degraded) return;
+
+    // dim=1 占位向量（audit 不需向量检索，仅用 filter 查询）
+    const doc: Record<string, unknown> = {
+      id:            entry.audit_id,
+      vector:        [0],
+      record_id:     entry.record_id,
+      layer:         entry.layer,
+      action:        entry.action,
+      team_id:       entry.team_id ?? "",
+      agent_id:      entry.agent_id ?? "",
+      user_id:       entry.user_id ?? "",
+      task_id:       entry.task_id ?? "",
+      version:       entry.version,
+      updated_at_ms: entry.updated_at_ms,
+      request_id:    entry.request_id ?? "",
+    };
+
+    try {
+      await this.client.upsert(this.auditCollection, [doc]);
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [audit-append] FAILED audit_id=${entry.audit_id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  async queryAudit(filter: AuditQueryFilter): Promise<AuditEntry[]> {
+    await this._ensureInit();
+    if (this.degraded) return [];
+
+    const conds: string[] = [];
+    if (filter.record_id !== undefined) conds.push(eqFilter("record_id", filter.record_id));
+    if (filter.layer !== undefined)     conds.push(eqFilter("layer", filter.layer));
+    if (filter.action !== undefined)    conds.push(eqFilter("action", filter.action));
+    if (filter.team_id !== undefined)   conds.push(eqFilter("team_id", filter.team_id));
+    if (filter.agent_id !== undefined)  conds.push(eqFilter("agent_id", filter.agent_id));
+    if (filter.user_id !== undefined)   conds.push(eqFilter("user_id", filter.user_id));
+    if (filter.task_id !== undefined)   conds.push(eqFilter("task_id", filter.task_id));
+    if (filter.since_ms !== undefined)  conds.push(`updated_at_ms >= ${filter.since_ms}`);
+    if (filter.until_ms !== undefined)  conds.push(`updated_at_ms <= ${filter.until_ms}`);
+
+    const filterExpr = joinFilter(conds);
+    const limit = Math.min(Math.max(filter.limit ?? 100, 1), 1000);
+
+    try {
+      const docs = await this._queryAllDocs(
+        this.auditCollection,
+        filterExpr,
+        AUDIT_OUTPUT_FIELDS,
+        limit,
+        [{ fieldName: "updated_at_ms", direction: "desc" }],
+      );
+
+      return docs.map((doc) => ({
+        audit_id:      String(doc.id ?? ""),
+        record_id:     String(doc.record_id ?? ""),
+        layer:         (doc.layer === "L1" || doc.layer === "L2" || doc.layer === "L3")
+                       ? doc.layer : "L1",
+        action:        (doc.action === "delete" ? "delete" : "update") as "update" | "delete",
+        team_id:       String(doc.team_id ?? "") || undefined,
+        agent_id:      String(doc.agent_id ?? "") || undefined,
+        user_id:       String(doc.user_id ?? "") || undefined,
+        task_id:       String(doc.task_id ?? "") || undefined,
+        version:       Number(doc.version ?? 0),
+        updated_at_ms: Number(doc.updated_at_ms ?? 0),
+        request_id:    String(doc.request_id ?? "") || undefined,
+      }));
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [audit-query] FAILED: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
   }
 }

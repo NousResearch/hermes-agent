@@ -10,7 +10,7 @@
  * The tool is registered via `api.registerTool()` in index.ts.
  */
 
-import type { IMemoryStore, L0SearchResult } from "../store/types.js";
+import type { IMemoryStore, IsolationFilter, L0SearchResult } from "../store/types.js";
 import { buildFtsQuery } from "../store/sqlite.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
@@ -22,6 +22,9 @@ import type { Logger } from "../types.js";
 export interface ConversationSearchResultItem {
   id: string;
   session_key: string;
+  session_id: string;
+  user_id: string;
+  agent_id: string;
   /** Role of the message sender: "user" or "assistant" */
   role: string;
   /** Text content of this single message */
@@ -84,6 +87,7 @@ export async function executeConversationSearch(params: {
   query: string;
   limit: number;
   sessionKey?: string;
+  filter?: IsolationFilter;
   vectorStore?: IMemoryStore;
   embeddingService?: EmbeddingService;
   logger?: Logger;
@@ -92,6 +96,7 @@ export async function executeConversationSearch(params: {
     query,
     limit,
     sessionKey: sessionFilter,
+    filter: isolationFilter,
     vectorStore,
     embeddingService,
     logger,
@@ -140,10 +145,15 @@ export async function executeConversationSearch(params: {
   // second HTTP request with garbled FTS tokens as embedding input.
   if (vectorStore.getCapabilities().nativeHybridSearch && vectorStore.searchL0Hybrid) {
     logger?.debug?.(`${TAG} [native-hybrid] Single-call hybrid search...`);
-    const results = await vectorStore.searchL0Hybrid({ query, topK: candidateK });
+    const results = await vectorStore.searchL0Hybrid(
+      isolationFilter ? { query, topK: candidateK, filter: isolationFilter } : { query, topK: candidateK },
+    );
     let items: ConversationSearchResultItem[] = results.map((r) => ({
       id: r.record_id,
       session_key: r.session_key,
+      session_id: r.session_id,
+      user_id: r.user_id,
+      agent_id: r.agent_id,
       role: r.role,
       content: r.message_text,
       score: r.score,
@@ -174,7 +184,9 @@ export async function executeConversationSearch(params: {
           return [];
         }
         logger?.debug?.(`${TAG} [hybrid-fts] FTS5 query: "${ftsQuery}"`);
-        const ftsResults = await vectorStore.searchL0Fts(ftsQuery, candidateK);
+        const ftsResults = isolationFilter
+          ? await vectorStore.searchL0Fts(ftsQuery, candidateK, isolationFilter)
+          : await vectorStore.searchL0Fts(ftsQuery, candidateK);
         logger?.debug?.(`${TAG} [hybrid-fts] FTS5 returned ${ftsResults.length} candidates`);
         return ftsResults.map((r) => ({
           id: r.record_id,
@@ -201,11 +213,16 @@ export async function executeConversationSearch(params: {
         logger?.debug?.(
           `${TAG} [hybrid-vec] Embedding OK, dims=${queryEmbedding.length}, searching top-${candidateK}...`,
         );
-        const vecResults: L0SearchResult[] = await vectorStore.searchL0Vector(queryEmbedding, candidateK, query);
+        const vecResults: L0SearchResult[] = isolationFilter
+          ? await vectorStore.searchL0Vector(queryEmbedding, candidateK, query, isolationFilter)
+          : await vectorStore.searchL0Vector(queryEmbedding, candidateK, query);
         logger?.debug?.(`${TAG} [hybrid-vec] Vector search returned ${vecResults.length} candidates`);
         return vecResults.map((r) => ({
           id: r.record_id,
           session_key: r.session_key,
+          session_id: r.session_id,
+          user_id: r.user_id,
+          agent_id: r.agent_id,
           role: r.role,
           content: r.message_text,
           score: r.score,

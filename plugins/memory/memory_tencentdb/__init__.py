@@ -7,6 +7,9 @@ The Gateway runs the memory-tencentdb Core engine (the same engine used by
 the OpenClaw plugin) as an HTTP service. This provider translates Hermes
 lifecycle events into Gateway API calls.
 
+v3 migration: data-plane calls now use /v3/* endpoints with
+team_id / agent_id / user_id tenancy isolation.
+
 Config via environment variables:
   MEMORY_TENCENTDB_GATEWAY_HOST — Gateway host (default: 127.0.0.1)
   MEMORY_TENCENTDB_GATEWAY_PORT — Gateway port (default: 8420)
@@ -66,18 +69,7 @@ _SYNC_JOIN_TIMEOUT_SECS = 5.0
 _SHUTDOWN_JOIN_TIMEOUT_SECS = 5.0
 
 # Watchdog: a daemon thread that periodically inspects the Gateway and
-# resurrects it on death. This is the *only* mechanism that can recover from
-# the "stuck-in-False" state where _gateway_available has been flipped to
-# False (initial start failed or breaker-open path swallowed all errors) and
-# every business request short-circuits before reaching the failure path that
-# would otherwise call _try_recover_gateway().
-#
-# _WATCHDOG_INTERVAL_SECS controls the polling cadence. Kept smaller than
-# _BREAKER_COOLDOWN_SECS so we can detect death and re-enable the provider
-# well before the breaker would naturally expire.
-# _WATCHDOG_SHUTDOWN_TIMEOUT_SECS bounds how long shutdown waits for the
-# watchdog to exit cleanly; the thread is daemonized so a hang would not
-# block interpreter exit, but a bounded join keeps logs orderly.
+# resurrects it on death.
 _WATCHDOG_INTERVAL_SECS = 10.0
 _WATCHDOG_SHUTDOWN_TIMEOUT_SECS = 2.0
 
@@ -85,16 +77,14 @@ _WATCHDOG_SHUTDOWN_TIMEOUT_SECS = 2.0
 _DEFAULT_GATEWAY_HOST = "127.0.0.1"
 _DEFAULT_GATEWAY_PORT = 8420
 
+# Default tenancy IDs for v3 isolation.
+_DEFAULT_TEAM_ID = "default"
+_DEFAULT_AGENT_ID = "default"
+_DEFAULT_USER_ID = "default"
+
 
 def _resolve_gateway_port(default: int = _DEFAULT_GATEWAY_PORT) -> int:
-    """Resolve MEMORY_TENCENTDB_GATEWAY_PORT with validation.
-
-    Accepts surrounding whitespace. Falls back to ``default`` and logs a
-    warning when the env var is unset, empty, not a valid integer, or
-    outside the valid TCP port range (1..65535). This keeps ``is_available``
-    exception-safe (required by the provider registration contract) and
-    gives users a clear diagnostic instead of a raw ValueError stack.
-    """
+    """Resolve MEMORY_TENCENTDB_GATEWAY_PORT with validation."""
     raw = os.environ.get("MEMORY_TENCENTDB_GATEWAY_PORT")
     if raw is None or not raw.strip():
         return default
@@ -127,23 +117,7 @@ def _resolve_gateway_host(default: str = _DEFAULT_GATEWAY_HOST) -> str:
 
 
 def _resolve_gateway_api_key() -> Optional[str]:
-    """Read the optional Gateway Bearer token from the environment.
-
-    Looks at ``MEMORY_TENCENTDB_GATEWAY_API_KEY`` (Hermes-namespaced) first;
-    falls back to ``TDAI_GATEWAY_API_KEY`` so an operator who already wired
-    up the Gateway-side env var does not have to set two names. Returns
-    ``None`` when neither is set, which means "do not attach an
-    Authorization header" — exactly matching the Gateway's own legacy
-    default. Whitespace-only values are treated as unset to guard against
-    shells that quote ``\\n`` into env vars.
-
-    Important: this is purely the **client-side** secret. Whether the
-    Gateway actually enforces a Bearer check is decided on the Gateway
-    side (its own ``TDAI_GATEWAY_API_KEY`` / ``server.apiKey``); the
-    plugin does not propagate this value across to the spawned Gateway.
-    The operator must configure the same secret on both ends if they
-    want auth enforcement.
-    """
+    """Read the optional Gateway Bearer token from the environment."""
     for var in ("MEMORY_TENCENTDB_GATEWAY_API_KEY", "TDAI_GATEWAY_API_KEY"):
         raw = os.environ.get(var)
         if raw is None:
@@ -158,55 +132,24 @@ def _resolve_gateway_api_key() -> Optional[str]:
 # set MEMORY_TENCENTDB_GATEWAY_CMD. Order matters: in-tree checkout (next to
 # this file) wins over ad-hoc clones in ``$HOME``.
 _GATEWAY_DISCOVERY_RELATIVE_PATHS = (
-    # hermes-plugin/memory/memory_tencentdb/__init__.py → plugin root
     Path("src") / "gateway" / "server.ts",
 )
 _GATEWAY_DISCOVERY_HOME_PATHS = (
-    # New canonical install location (managed by install_hermes_memory_tencentdb.sh
-    # and memory-tencentdb-ctl.sh): ~/.memory-tencentdb/tdai-memory-openclaw-plugin/...
     Path(".memory-tencentdb") / "tdai-memory-openclaw-plugin" / "src" / "gateway" / "server.ts",
-    # Legacy locations (kept for backward compatibility with installations done
-    # before the ~/.memory-tencentdb/ consolidation):
     Path("tdai-memory-openclaw-plugin") / "src" / "gateway" / "server.ts",
     Path(".hermes") / "plugins" / "tdai-memory-openclaw-plugin" / "src" / "gateway" / "server.ts",
 )
 
 
 def _discover_gateway_cmd() -> Optional[str]:
-    """Best-effort fallback to locate the Node Gateway entry point.
-
-    Called only when ``MEMORY_TENCENTDB_GATEWAY_CMD`` is unset, so that a fresh
-    checkout works out-of-the-box without the user having to hand-craft an
-    absolute launch command. Resolution order:
-
-      1. ``<plugin-root>/src/gateway/server.ts`` (in-tree: this file lives at
-         ``<plugin-root>/hermes-plugin/memory/memory_tencentdb/__init__.py``).
-      2. Well-known paths under ``$HOME`` (preferred:
-         ``~/.memory-tencentdb/tdai-memory-openclaw-plugin``; legacy:
-         ``~/tdai-memory-openclaw-plugin`` and
-         ``~/.hermes/plugins/tdai-memory-openclaw-plugin``).
-
-    Returns a ready-to-``Popen`` command string wrapping a ``sh -c`` that
-    ``cd``-s into the plugin root before exec-ing ``pnpm exec tsx
-    src/gateway/server.ts``. The ``cd`` is required because ``tsx`` is
-    installed under ``<plugin-root>/node_modules`` and Node's ESM resolver
-    searches ``package.json`` from the cwd upward — if we launched ``tsx``
-    with the hermes-agent cwd, resolution would fail with
-    ``ERR_MODULE_NOT_FOUND``. Using ``sh -c`` keeps the supervisor's
-    ``shlex.split`` + ``Popen(argv)`` contract intact (no ``shell=True``).
-
-    Returns ``None`` if no ``server.ts`` candidate exists. The function never
-    raises: supervisor-side validation will surface a friendly warning if the
-    discovered path later fails to start.
-    """
+    """Best-effort fallback to locate the Node Gateway entry point."""
     import shlex
 
     here = Path(__file__).resolve()
-    # hermes-plugin/memory/memory_tencentdb/__init__.py → parents[3] = plugin root
     plugin_root_candidates: List[Path] = []
     try:
         plugin_root_candidates.append(here.parents[3])
-    except IndexError:  # pragma: no cover - defensive; __file__ depth is stable
+    except IndexError:
         pass
 
     home_raw = os.environ.get("HOME") or os.environ.get("USERPROFILE")
@@ -223,23 +166,18 @@ def _discover_gateway_cmd() -> Optional[str]:
     for candidate in searched:
         try:
             if candidate.is_file():
-                # candidate = <plugin-root>/src/gateway/server.ts
-                # -> parents[2] = <plugin-root>
                 plugin_root = candidate.parents[2]
                 logger.info(
                     "memory-tencentdb Gateway command auto-discovered: %s "
                     "(override with MEMORY_TENCENTDB_GATEWAY_CMD)",
                     candidate,
                 )
-                # shlex.quote guards against spaces / shell metachars in paths.
-                # The inner command mirrors start-memory-tencentdb-gateway.sh:
-                #   cd <plugin-root> && exec pnpm exec tsx src/gateway/server.ts
                 inner = (
                     f"cd {shlex.quote(str(plugin_root))} && "
                     "exec pnpm exec tsx src/gateway/server.ts"
                 )
                 return f"sh -c {shlex.quote(inner)}"
-        except OSError:  # pragma: no cover - e.g. permission errors on is_file
+        except OSError:
             continue
 
     logger.debug(
@@ -260,22 +198,7 @@ def _coerce_limit(
     default: int = _DEFAULT_SEARCH_LIMIT,
     maximum: int = _MAX_SEARCH_LIMIT,
 ) -> int:
-    """Coerce a tool-call ``limit`` arg into a valid int in ``[1, maximum]``.
-
-    LLM tool calls don't always honor the JSON Schema ``type: integer``
-    declaration — we regularly see strings ("10"), floats ("10.5"), None,
-    or booleans. A bare ``int(x)`` either raises ValueError (string "abc",
-    "10.5") or silently coerces True/False to 1/0, which would surface as
-    a useless ``Tool call failed: invalid literal for int()`` back to the
-    model. Instead we:
-
-      * accept None / empty string -> return ``default``;
-      * reject bool explicitly (bool is an ``int`` subclass in Python, and
-        ``int(True) == 1`` is almost never what the caller meant);
-      * accept int / float / numeric-looking strings via float() then int();
-      * clamp the result to ``[1, maximum]``;
-      * on any failure, log a warning and fall back to ``default``.
-    """
+    """Coerce a tool-call ``limit`` arg into a valid int in ``[1, maximum]``."""
     if raw is None or raw == "":
         return default
     if isinstance(raw, bool):
@@ -286,8 +209,6 @@ def _coerce_limit(
         )
         return default
     try:
-        # float() handles int, float, and numeric strings uniformly;
-        # int() then truncates toward zero.
         value = int(float(raw))
     except (TypeError, ValueError):
         logger.warning(
@@ -360,6 +281,25 @@ CONVERSATION_SEARCH_SCHEMA = {
     },
 }
 
+READ_SCENE_SCHEMA = {
+    "name": "memory_tencentdb_read_scene",
+    "description": (
+        "Read a scene block's full content by its name. "
+        "Use when you see a scene listed in the available scenes and want to "
+        "retrieve detailed information from that scene."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "scene_id": {
+                "type": "string",
+                "description": "Scene file name (e.g. 'travel-plan.md' or 'travel-plan').",
+            },
+        },
+        "required": ["scene_id"],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
@@ -372,15 +312,13 @@ class MemoryTencentdbProvider(MemoryProvider):
         self._supervisor: Optional[GatewaySupervisor] = None
         self._client: Optional[MemoryTencentdbSdkClient] = None
         self._session_id = ""
-        self._user_id = ""
+        self._user_id = _DEFAULT_USER_ID
+        self._team_id = _DEFAULT_TEAM_ID
+        self._agent_id = _DEFAULT_AGENT_ID
         self._gateway_available = False
-        self._initialized = False  # Track if initialize() has been called
+        self._initialized = False
 
         # Background sync threads.
-        # We allow at most _MAX_INFLIGHT_SYNCS in-flight sync threads at any
-        # time. Stuck threads (e.g. Gateway hung mid-capture) are tracked in
-        # _active_syncs so shutdown can still join them and we never lose
-        # references to spawned threads. _sync_lock guards both fields.
         self._sync_lock = threading.Lock()
         self._active_syncs: List[threading.Thread] = []
 
@@ -389,30 +327,10 @@ class MemoryTencentdbProvider(MemoryProvider):
         self._breaker_open_until = 0.0
 
         # Gateway auto-resurrect state.
-        # _recover_lock ensures only one thread at a time actually calls
-        # supervisor.ensure_running() (which can block up to 30s). Other
-        # threads that see a failure will try the lock non-blockingly and
-        # fall through — they never wait, so recovery attempts never add
-        # latency to business calls.
-        # _last_recover_attempt gates how often we retry when revival keeps
-        # failing (e.g. gateway binary missing, node not installed).
-        # Initialized to -inf (rather than 0.0) because time.monotonic()'s
-        # reference point is undefined — on some platforms (notably macOS)
-        # it starts near zero at process start, which would make the
-        # ``now - 0.0 < _RECOVER_COOLDOWN_SECS`` check swallow the very
-        # first recovery attempt. Using -inf guarantees the first attempt
-        # always passes the throttle.
         self._recover_lock = threading.Lock()
         self._last_recover_attempt = float("-inf")
 
         # Watchdog state.
-        # The watchdog runs as a daemon thread that periodically (every
-        # _WATCHDOG_INTERVAL_SECS) verifies the Gateway is alive and, on
-        # failure, calls _try_recover_gateway(). This breaks the
-        # "stuck-in-False" deadlock where business requests short-circuit on
-        # _gateway_available == False and never reach the failure path that
-        # would trigger recovery. _watchdog_stop is an Event so shutdown can
-        # signal a clean exit without waiting a full polling interval.
         self._watchdog_thread: Optional[threading.Thread] = None
         self._watchdog_stop = threading.Event()
 
@@ -447,34 +365,9 @@ class MemoryTencentdbProvider(MemoryProvider):
     # -- Gateway auto-resurrect ----------------------------------------------
 
     def _try_recover_gateway(self, *, bypass_cooldown: bool = False) -> bool:
-        """Best-effort: re-probe and, if needed, re-launch the Gateway.
-
-        Called from the *failure* path of prefetch / sync_turn / handle_tool_call
-        so a transient Gateway crash during an active Hermes session is not
-        stuck behind the 60s circuit breaker. Also called from the watchdog
-        thread (``bypass_cooldown=True``) which has its own cadence and must
-        not be throttled by the request-driven 15s gate.
-
-        Guarantees (do not break these without revisiting callers):
-          * Never raises — exceptions are logged and swallowed.
-          * Never blocks a losing thread: uses ``acquire(blocking=False)``.
-            If another thread is already attempting recovery, we return
-            ``False`` immediately.
-          * Throttled by ``_RECOVER_COOLDOWN_SECS`` so a Gateway that
-            refuses to start does not burn CPU on every failed request.
-            The watchdog opts out of this throttle via ``bypass_cooldown``.
-          * Refuses to run after ``shutdown()`` (detected via
-            ``self._supervisor is None``) so we never resurrect a provider
-            that the host has released.
-          * On success: refreshes ``self._client`` / ``self._gateway_available``
-            and resets the circuit breaker so the very next request isn't
-            falsely blocked.
-          * On failure: records the attempt timestamp; does NOT touch the
-            circuit breaker (the caller already recorded a failure).
-        """
+        """Best-effort: re-probe and, if needed, re-launch the Gateway."""
         supervisor = self._supervisor
         if supervisor is None:
-            # Either initialize() was never called, or shutdown() already ran.
             return False
 
         if not bypass_cooldown:
@@ -483,25 +376,18 @@ class MemoryTencentdbProvider(MemoryProvider):
                 return False
 
         if not self._recover_lock.acquire(blocking=False):
-            # Another thread is already attempting recovery — let it work.
             return False
 
         try:
-            # Re-check supervisor under the lock: shutdown() could have set it
-            # to None between our first read and acquiring the lock.
             supervisor = self._supervisor
             if supervisor is None:
                 return False
 
-            # Double-check the cooldown under the lock too: another recovery
-            # may have completed between our read and the acquire().
             if not bypass_cooldown:
                 now = time.monotonic()
                 if now - self._last_recover_attempt < _RECOVER_COOLDOWN_SECS:
                     return False
 
-            # Fast path: maybe the Gateway is already back (someone else
-            # restarted it, or it was a transient blip).
             if supervisor.is_running():
                 logger.info(
                     "memory-tencentdb Gateway is reachable again; restoring provider state."
@@ -516,11 +402,8 @@ class MemoryTencentdbProvider(MemoryProvider):
             self._last_recover_attempt = time.monotonic()
 
             if ok:
-                # Reattach the client (supervisor owns the authoritative one).
                 self._client = supervisor.client
                 self._gateway_available = True
-                # Clear the breaker so the next request can proceed
-                # immediately instead of being blocked by the 60s cooldown.
                 self._consecutive_failures = 0
                 self._breaker_open_until = 0.0
                 logger.info("memory-tencentdb Gateway recovery succeeded.")
@@ -531,7 +414,7 @@ class MemoryTencentdbProvider(MemoryProvider):
                 _RECOVER_COOLDOWN_SECS,
             )
             return False
-        except Exception as e:  # defensive: never propagate to caller
+        except Exception as e:
             self._last_recover_attempt = time.monotonic()
             logger.warning("memory-tencentdb Gateway recovery raised: %s", e)
             return False
@@ -541,45 +424,16 @@ class MemoryTencentdbProvider(MemoryProvider):
     # -- Watchdog & lazy probe -----------------------------------------------
 
     def _ensure_alive_for_request(self) -> bool:
-        """Lazy probe used by the request short-circuit guards.
-
-        Problem this solves: prefetch / sync_turn / handle_tool_call all
-        return early when ``_gateway_available`` is False, which means a
-        provider that failed to start (or was tripped by the 60s breaker
-        and never re-enabled) can never recover via the request path —
-        recovery only runs in the failure ``except`` branch, but the guard
-        prevents requests from ever reaching that branch.
-
-        This method gives the guards a way out: when the breaker is closed
-        but ``_gateway_available`` is False, attempt a single recovery
-        synchronously (subject to the same lock + cooldown as the failure
-        path). On success the caller can proceed with the real request; on
-        failure it returns the same empty / disabled response as before.
-
-        Safe to call from any thread. Never raises. Returns the value of
-        ``_gateway_available`` after the attempt.
-        """
+        """Lazy probe used by the request short-circuit guards."""
         if self._gateway_available:
             return True
         if self._is_breaker_open():
-            # Breaker takes precedence: respect its 60s cooldown so we do
-            # not turn every request into a Gateway-restart attempt during
-            # an outage.
             return False
-        # Try to bring the Gateway back. This is throttled by the same
-        # 15s cooldown as the failure path, so a flood of requests won't
-        # cause a recovery storm.
         self._try_recover_gateway()
         return self._gateway_available
 
     def _start_watchdog(self) -> None:
-        """Start the background watchdog thread (idempotent).
-
-        The watchdog is the only mechanism that can recover from the
-        "Gateway dies while no requests are in flight" scenario. It also
-        breaks the deadlock where _gateway_available is stuck False and
-        every request short-circuits before triggering recovery.
-        """
+        """Start the background watchdog thread (idempotent)."""
         if self._watchdog_thread is not None and self._watchdog_thread.is_alive():
             return
         self._watchdog_stop.clear()
@@ -592,26 +446,7 @@ class MemoryTencentdbProvider(MemoryProvider):
         thread.start()
 
     def _watchdog_loop(self) -> None:
-        """Periodically verify Gateway health and resurrect on death.
-
-        Runs until ``_watchdog_stop`` is set (by ``shutdown()``) or until
-        the supervisor reference is dropped. Each iteration:
-
-          1. Snapshot the supervisor reference. If None → exit (provider
-             was shut down).
-          2. Cheap path: if our own child PID is alive AND ``_gateway_available``
-             is True, do nothing. Skips the HTTP round-trip in the common
-             happy path.
-          3. Otherwise, perform a real health check via supervisor.is_running().
-             On success and ``_gateway_available`` is False (e.g. someone
-             externally restarted the Gateway), reattach the client.
-          4. On failure, call ``_try_recover_gateway(bypass_cooldown=True)``.
-             The watchdog has its own pacing (``_WATCHDOG_INTERVAL_SECS``)
-             so it must not be subject to the request-driven cooldown.
-
-        All exceptions are logged and swallowed — the watchdog must never
-        crash and leave the provider unsupervised.
-        """
+        """Periodically verify Gateway health and resurrect on death."""
         logger.debug(
             "memory-tencentdb watchdog started (interval=%.1fs)",
             _WATCHDOG_INTERVAL_SECS,
@@ -620,29 +455,21 @@ class MemoryTencentdbProvider(MemoryProvider):
             try:
                 supervisor = self._supervisor
                 if supervisor is None:
-                    # Provider was shut down between ticks.
                     break
 
-                # Cheap happy path: child is alive and we're already marked
-                # available. Nothing to do.
                 if self._gateway_available and supervisor.is_process_alive():
                     continue
 
-                # Either we never marked available, the child died, or the
-                # Gateway was started externally (no Popen handle but maybe
-                # listening on the port). Do a real health check.
                 healthy = False
                 try:
                     healthy = supervisor.is_running()
-                except Exception as e:  # pragma: no cover - defensive
+                except Exception as e:
                     logger.debug(
                         "memory-tencentdb watchdog health probe raised: %s", e,
                     )
 
                 if healthy:
                     if not self._gateway_available:
-                        # Externally revived (or first-time success after a
-                        # bumpy start): reattach without re-spawning.
                         logger.info(
                             "memory-tencentdb watchdog: Gateway is reachable; "
                             "restoring provider state."
@@ -653,14 +480,12 @@ class MemoryTencentdbProvider(MemoryProvider):
                         self._breaker_open_until = 0.0
                     continue
 
-                # Truly down. Attempt resurrection, bypassing the request-path
-                # cooldown — the watchdog itself enforces pacing.
                 logger.warning(
                     "memory-tencentdb watchdog: Gateway unreachable; "
                     "attempting to resurrect."
                 )
                 self._try_recover_gateway(bypass_cooldown=True)
-            except Exception as e:  # pragma: no cover - defensive
+            except Exception as e:
                 logger.warning(
                     "memory-tencentdb watchdog iteration raised (continuing): %s", e,
                 )
@@ -676,8 +501,6 @@ class MemoryTencentdbProvider(MemoryProvider):
             return
         thread.join(timeout=_WATCHDOG_SHUTDOWN_TIMEOUT_SECS)
         if thread.is_alive():
-            # Daemon thread, will not block interpreter exit; just log so
-            # users can correlate with Gateway hangs in the health probe.
             logger.debug(
                 "memory-tencentdb watchdog did not exit within %.1fs; "
                 "abandoning (daemon).",
@@ -687,20 +510,11 @@ class MemoryTencentdbProvider(MemoryProvider):
     # -- Core lifecycle -------------------------------------------------------
 
     def is_available(self) -> bool:
-        """Check if the Gateway is configured or already running.
-
-        Prefers local config checks (env vars) to avoid blocking network calls.
-        Only falls back to health check when no env config is present.
-        """
-        # Fast path: env var configured → assume available (will verify in initialize)
+        """Check if the Gateway is configured or already running."""
         if os.environ.get("MEMORY_TENCENTDB_GATEWAY_CMD"):
             return True
         if os.environ.get("MEMORY_TENCENTDB_GATEWAY_PORT"):
             return True
-        # Slow path: no env config, try a quick health check.
-        # Use validated resolvers so a malformed env var never raises here
-        # (is_available must never throw: it's called during provider
-        # registration and an exception would break the whole plugin).
         host = _resolve_gateway_host()
         port = _resolve_gateway_port()
         api_key = _resolve_gateway_api_key()
@@ -708,6 +522,7 @@ class MemoryTencentdbProvider(MemoryProvider):
             base_url=f"http://{host}:{port}",
             timeout=2,
             api_key=api_key,
+            service_id="default",
         )
         try:
             result = client.health(timeout=2)
@@ -718,37 +533,17 @@ class MemoryTencentdbProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         """Start or connect to the Gateway sidecar.
 
-        Gateway startup is performed in a background thread so that
-        ``initialize()`` returns immediately and does not block the
-        Hermes agent ``__init__`` (which would add up to 30 s latency
-        before the first prompt is accepted).
-
-        While the background thread is still running:
-          * ``prefetch`` / ``sync_turn`` / ``handle_tool_call`` see
-            ``_gateway_available == False`` and gracefully return empty
-            results or no-ops — no data is lost because capture will
-            succeed once the Gateway comes up and subsequent turns will
-            work normally.
-          * ``get_tool_schemas`` already returns schemas optimistically
-            (gated on ``_initialized``, not ``_gateway_available``),
-            so the tools appear in the LLM surface even before the
-            Gateway is ready.
+        v3: accepts team_id, agent_id, user_id for tenancy isolation.
+        All default to "default".
         """
         self._session_id = session_id
-        self._user_id = kwargs.get("user_id", "default")
+        self._user_id = kwargs.get("user_id", _DEFAULT_USER_ID)
+        self._team_id = kwargs.get("team_id", _DEFAULT_TEAM_ID)
+        self._agent_id = kwargs.get("agent_id", _DEFAULT_AGENT_ID)
 
         host = _resolve_gateway_host()
         port = _resolve_gateway_port()
-        # Priority: explicit env var → auto-discovery (in-tree / $HOME fallbacks).
-        # Auto-discovery lets fresh checkouts work without manual CMD wiring;
-        # it only runs when the env var is not set, so existing deployments
-        # are unaffected.
         gateway_cmd = os.environ.get("MEMORY_TENCENTDB_GATEWAY_CMD") or _discover_gateway_cmd()
-        # Optional Bearer token attached to outbound Gateway requests
-        # (off by default). The plugin only handles the client side — if
-        # the operator wants the Gateway to enforce auth, they must
-        # configure ``TDAI_GATEWAY_API_KEY`` / ``server.apiKey`` on the
-        # Gateway side directly so both ends agree on the secret.
         api_key = _resolve_gateway_api_key()
 
         self._supervisor = GatewaySupervisor(
@@ -758,12 +553,9 @@ class MemoryTencentdbProvider(MemoryProvider):
             api_key=api_key,
         )
 
-        # Mark as initialized immediately so tools are registered
-        # (get_tool_schemas checks _initialized, not _gateway_available).
         self._initialized = True
 
         def _background_start():
-            """Start / connect to the Gateway in the background."""
             try:
                 available = self._supervisor.ensure_running()
                 if available:
@@ -776,20 +568,13 @@ class MemoryTencentdbProvider(MemoryProvider):
                 else:
                     logger.warning(
                         "memory-tencentdb Gateway not available after background start. "
-                        "Memory features will be disabled until the Gateway is reachable. "
-                        "Set MEMORY_TENCENTDB_GATEWAY_CMD to auto-start the Gateway, "
-                        "or place the plugin checkout at ~/tdai-memory-openclaw-plugin "
-                        "for auto-discovery."
+                        "Memory features will be disabled until the Gateway is reachable."
                     )
             except Exception as e:
                 logger.warning(
                     "memory-tencentdb background Gateway start failed (non-fatal): %s", e
                 )
 
-        # Fast path: if the Gateway is *already* running (e.g. started by
-        # systemd, memory-tencentdb-ctl, or a previous session), skip the
-        # thread overhead and attach synchronously. The health check takes
-        # <100ms for a local Gateway, so this doesn't block meaningfully.
         if self._supervisor.is_running():
             self._client = self._supervisor.client
             self._gateway_available = True
@@ -798,19 +583,12 @@ class MemoryTencentdbProvider(MemoryProvider):
                 host, port,
             )
         else:
-            # Gateway is not up yet — start it in the background.
             t = threading.Thread(
                 target=_background_start, daemon=True,
                 name="tdai-gateway-init",
             )
             t.start()
 
-        # Start the watchdog regardless of the initial start outcome.
-        # Even if _background_start fails (e.g. tdai binary missing on
-        # first launch), the watchdog will keep retrying so a later
-        # external fix (operator installs node, drops the plugin into
-        # the discovery path, etc.) is picked up automatically without
-        # requiring a hermes restart.
         self._start_watchdog()
 
     def system_prompt_block(self) -> str:
@@ -818,43 +596,120 @@ class MemoryTencentdbProvider(MemoryProvider):
             return ""
         return (
             "# memory-tencentdb Memory\n"
-            f"Active. User: {self._user_id}.\n"
+            f"Active. Team: {self._team_id}, Agent: {self._agent_id}, User: {self._user_id}.\n"
             "Four-layer memory system (L0→L1→L2→L3) with automatic conversation "
             "capture, structured memory extraction, scene blocks, and persona synthesis.\n"
             "Use memory_tencentdb_memory_search to find specific memories, "
-            "memory_tencentdb_conversation_search to search raw conversation history."
+            "memory_tencentdb_conversation_search to search raw conversation history, "
+            "memory_tencentdb_read_scene to read detailed scene content."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Synchronous recall — fetch memories in real-time for the current turn."""
+        """Synchronous recall — fetch memories in real-time for the current turn.
+
+        v3: parallel calls to atomic/search (L1) + core/read (L3) + scenario/ls (L2).
+        """
         if not query:
             return ""
-        # Lazy probe before the short-circuit guard. If the Gateway died but
-        # the breaker has not yet tripped (or has since cooled down), this
-        # gives the request path a chance to revive it instead of silently
-        # returning "" forever. See _ensure_alive_for_request() for the
-        # guarantees and rationale.
         if not self._ensure_alive_for_request() or not self._client:
             return ""
 
         effective_session = session_id or self._session_id
         try:
-            result = self._client.recall(
-                query=query,
-                session_key=effective_session,
-                user_id=self._user_id,
-            )
-            context = result.get("context", "")
+            # Parallel fetch: L1 memories + L3 core + L2 scene navigation
+            results: Dict[str, Any] = {}
+            errors: List[str] = []
+
+            def _fetch(label: str, fn):
+                try:
+                    results[label] = fn()
+                except Exception as e:
+                    errors.append(f"{label}: {e}")
+
+            threads = [
+                threading.Thread(
+                    target=_fetch,
+                    args=("l1", lambda: self._client.atomic_search(
+                        query=query,
+                        limit=5,
+                        team_id=self._team_id,
+                        agent_id=self._agent_id,
+                        user_id=self._user_id,
+                    )),
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=_fetch,
+                    args=("l3", lambda: self._client.core_read(
+                        team_id=self._team_id,
+                        agent_id=self._agent_id,
+                        user_id=self._user_id,
+                    )),
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=_fetch,
+                    args=("l2", lambda: self._client.scenario_ls(
+                        team_id=self._team_id,
+                        agent_id=self._agent_id,
+                        user_id=self._user_id,
+                    )),
+                    daemon=True,
+                ),
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=self._client._timeout if self._client else 10)
+
+            if errors:
+                logger.warning("memory-tencentdb prefetch partial failures: %s", "; ".join(errors))
+
+            # Build recall context from results
+            parts: List[str] = []
+
+            # L1 memories
+            l1_data = results.get("l1", {})
+            l1_items = l1_data.get("data", {}).get("items", [])
+            if l1_items:
+                lines = []
+                for m in l1_items:
+                    mtype = m.get("type", "unknown")
+                    content = m.get("content", "")
+                    lines.append(f"- [{mtype}] {content}")
+                parts.append(
+                    "<relevant-memories>\n"
+                    "以下是当前对话召回的相关记忆，仅作为参考：\n\n"
+                    + "\n".join(lines)
+                    + "\n</relevant-memories>"
+                )
+
+            # L3 core (persona)
+            l3_data = results.get("l3", {})
+            core_text = l3_data.get("data", {}).get("content", "")
+            if core_text:
+                parts.append(f"<user-core>\n{core_text}\n</user-core>")
+
+            # L2 scene navigation
+            l2_data = results.get("l2", {})
+            l2_entries = l2_data.get("data", {}).get("entries", [])
+            if l2_entries:
+                lines = []
+                for s in l2_entries:
+                    name = s.get("path", "").replace(".md", "")
+                    lines.append(f"- Scene: {name}")
+                parts.append(
+                    "<scene-navigation>\n"
+                    "Available scenes:\n"
+                    + "\n".join(lines)
+                    + "\n</scene-navigation>"
+                )
+
             self._record_success()
-            if context:
-                return f"## memory-tencentdb Memory\n{context}"
-            return ""
+            return "\n\n".join(parts) if parts else ""
         except Exception as e:
             self._record_failure()
             logger.debug("memory-tencentdb prefetch failed: %s", e)
-            # Fire-and-forget attempt to bring the Gateway back for the next
-            # call. Never blocks more than supervisor.ensure_running()'s own
-            # timeout, and only one thread at a time actually does the work.
             self._try_recover_gateway()
             return ""
 
@@ -865,50 +720,39 @@ class MemoryTencentdbProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Send the turn to Gateway for capture (non-blocking).
 
-        Threading model:
-          * Each call spawns a daemon thread that performs one ``capture``.
-          * ``_active_syncs`` retains references to all still-alive threads so
-            they are never orphaned when a new sync starts.
-          * If ``_MAX_INFLIGHT_SYNCS`` is reached (e.g. Gateway is hung),
-            we wait on the oldest thread for ``_SYNC_JOIN_TIMEOUT_SECS`` before
-            spawning a new one. If that thread is still alive afterwards we
-            still spawn, but keep the stuck thread tracked so ``shutdown`` can
-            try to reap it later.
-          * All mutations of ``_active_syncs`` are serialized by
-            ``_sync_lock`` so concurrent callers (future async entry points)
-            cannot leak references via a read/modify/write race.
+        v3: uses /v3/conversation/add with messages array.
         """
-        # Lazy probe — same rationale as prefetch(). Without this, a
-        # provider stuck in the False/closed-breaker state would silently
-        # drop every captured turn until the watchdog (or a manual
-        # restart) revived it.
         if not self._ensure_alive_for_request() or not self._client:
             return
 
         effective_session = session_id or self._session_id
         client = self._client
 
+        # Build v3 messages array with ISO 8601 timestamps
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        user_ts = now.replace(microsecond=max(0, now.microsecond - 1000)).isoformat().replace("+00:00", "Z")
+        assistant_ts = now.isoformat().replace("+00:00", "Z")
+        messages = [
+            {"role": "user", "content": user_content, "timestamp": user_ts},
+            {"role": "assistant", "content": assistant_content, "timestamp": assistant_ts},
+        ]
+
         def _sync():
             try:
-                client.capture(
-                    user_content=user_content,
-                    assistant_content=assistant_content,
-                    session_key=effective_session,
+                client.conversation_add(
+                    messages=messages,
+                    session_id=effective_session,
+                    team_id=self._team_id,
+                    agent_id=self._agent_id,
                     user_id=self._user_id,
                 )
                 self._record_success()
             except Exception as e:
                 self._record_failure()
                 logger.warning("memory-tencentdb sync failed: %s", e)
-                # Trigger recovery from a background thread — safe because
-                # _try_recover_gateway itself is non-blocking under
-                # contention and swallows all exceptions.
                 self._try_recover_gateway()
 
-        # Reap finished threads and, if at capacity, wait on the oldest one.
-        # We pick the oldest non-finished candidate *outside* the lock so the
-        # join() call doesn't hold _sync_lock (holding a lock across a
-        # potentially slow join would serialize every incoming turn).
         oldest_to_join: Optional[threading.Thread] = None
         with self._sync_lock:
             self._active_syncs = [t for t in self._active_syncs if t.is_alive()]
@@ -929,21 +773,14 @@ class MemoryTencentdbProvider(MemoryProvider):
             target=_sync, daemon=True, name="memory-tencentdb-sync",
         )
         with self._sync_lock:
-            # Reap again in case the join above freed slots, then register.
             self._active_syncs = [t for t in self._active_syncs if t.is_alive()]
             self._active_syncs.append(thread)
         thread.start()
 
     def shutdown(self) -> None:
         """Clean shutdown — flush and release resources."""
-        # Stop the watchdog FIRST so it does not race with shutdown by
-        # spawning a fresh recovery attempt while we're tearing the
-        # supervisor down. Idempotent + non-blocking-bounded.
         self._stop_watchdog()
 
-        # Wait for every background sync thread we ever spawned (not just the
-        # most recent one). Taking a snapshot under the lock first means new
-        # calls to sync_turn during shutdown can't race with our iteration.
         with self._sync_lock:
             pending = list(self._active_syncs)
             self._active_syncs.clear()
@@ -953,27 +790,22 @@ class MemoryTencentdbProvider(MemoryProvider):
                 continue
             t.join(timeout=_SHUTDOWN_JOIN_TIMEOUT_SECS)
             if t.is_alive():
-                # Threads are daemon, so they won't block interpreter exit —
-                # but log so users can correlate with Gateway issues.
                 logger.warning(
                     "memory-tencentdb shutdown: sync thread %s still alive "
                     "after %.1fs; abandoning (daemon).",
                     t.name, _SHUTDOWN_JOIN_TIMEOUT_SECS,
                 )
 
-        # Send session end if Gateway is available
-        if self._client and self._gateway_available:
-            try:
-                self._client.end_session(
-                    session_key=self._session_id,
-                    user_id=self._user_id,
-                )
-            except Exception as e:
-                logger.debug("memory-tencentdb session end failed: %s", e)
+        # v3 pipeline auto-handles session end; no explicit call needed.
+        # if self._client and self._gateway_available:
+        #     try:
+        #         self._client.end_session(
+        #             session_key=self._session_id,
+        #             user_id=self._user_id,
+        #         )
+        #     except Exception as e:
+        #         logger.debug("memory-tencentdb session end failed: %s", e)
 
-        # Stop only the Gateway process this supervisor spawned. If the
-        # provider merely attached to an already-running external Gateway,
-        # GatewaySupervisor.shutdown() is a no-op because _process is None.
         supervisor = self._supervisor
         if supervisor is not None:
             try:
@@ -981,9 +813,6 @@ class MemoryTencentdbProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("memory-tencentdb supervisor shutdown failed: %s", e)
 
-        # Drop our reference so any in-flight _try_recover_gateway() call sees
-        # self._supervisor is None and bails out instead of resurrecting a
-        # released provider.
         self._client = None
         self._gateway_available = False
         self._initialized = False
@@ -992,24 +821,13 @@ class MemoryTencentdbProvider(MemoryProvider):
     # -- Tools ----------------------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        # Optimistically return tool schemas if Gateway is configured or running.
-        # This is critical because MemoryManager.add_provider() calls
-        # get_tool_schemas() BEFORE initialize() to build the _tool_to_provider
-        # routing table. If we return [] here, tools won't be routable
-        # even after initialize() succeeds (despite _refresh_tool_registration).
         if self._gateway_available or self._initialized:
-            return [MEMORY_SEARCH_SCHEMA, CONVERSATION_SEARCH_SCHEMA]
-        # Pre-init: check if Gateway is likely to be available
+            return [MEMORY_SEARCH_SCHEMA, CONVERSATION_SEARCH_SCHEMA, READ_SCENE_SCHEMA]
         if os.environ.get("MEMORY_TENCENTDB_GATEWAY_CMD") or os.environ.get("MEMORY_TENCENTDB_GATEWAY_PORT"):
-            return [MEMORY_SEARCH_SCHEMA, CONVERSATION_SEARCH_SCHEMA]
+            return [MEMORY_SEARCH_SCHEMA, CONVERSATION_SEARCH_SCHEMA, READ_SCENE_SCHEMA]
         return []
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
-        # Lazy probe — gives tool-call path the same self-heal opportunity
-        # as prefetch / sync_turn. Without this, an LLM-issued memory_search
-        # call could see "Gateway is not connected" forever even after the
-        # Gateway came back up, because nothing else would flip
-        # _gateway_available back to True.
         self._ensure_alive_for_request()
         if not self._client:
             return json.dumps({
@@ -1024,31 +842,67 @@ class MemoryTencentdbProvider(MemoryProvider):
                 query = args.get("query", "")
                 if not query:
                     return json.dumps({"error": "Missing required parameter: query"})
-                result = self._client.search_memories(
+                result = self._client.atomic_search(
                     query=query,
                     limit=_coerce_limit(args.get("limit")),
                     type_filter=args.get("type", ""),
+                    team_id=self._team_id,
+                    agent_id=self._agent_id,
+                    user_id=self._user_id,
                 )
                 self._record_success()
-                return json.dumps(result)
+                # Unwrap v3 envelope for LLM consumption
+                items = result.get("data", {}).get("items", [])
+                if not items:
+                    return "No memories found for this query."
+                lines = []
+                for m in items:
+                    lines.append(f"- [{m.get('type', '?')}] {m.get('content', '')}")
+                return "\n".join(lines)
 
             if tool_name == "memory_tencentdb_conversation_search":
                 query = args.get("query", "")
                 if not query:
                     return json.dumps({"error": "Missing required parameter: query"})
-                result = self._client.search_conversations(
+                result = self._client.conversation_search(
                     query=query,
                     limit=_coerce_limit(args.get("limit")),
+                    team_id=self._team_id,
+                    agent_id=self._agent_id,
+                    user_id=self._user_id,
                 )
                 self._record_success()
-                return json.dumps(result)
+                items = result.get("data", {}).get("items", [])
+                if not items:
+                    return "No conversations found for this query."
+                lines = []
+                for m in items:
+                    role = m.get("role", "?")
+                    content = m.get("content", "")
+                    lines.append(f"[{role}] {content}")
+                return "\n".join(lines)
+
+            if tool_name == "memory_tencentdb_read_scene":
+                scene_id = args.get("scene_id", "")
+                if not scene_id:
+                    return "Error: scene_id is required"
+                path = scene_id if scene_id.endswith(".md") else f"{scene_id}.md"
+                result = self._client.scenario_read(
+                    path=path,
+                    team_id=self._team_id,
+                    agent_id=self._agent_id,
+                    user_id=self._user_id,
+                )
+                self._record_success()
+                content = result.get("data", {}).get("content", "")
+                if not content:
+                    return f"Scene '{scene_id}' is empty or not found."
+                return content
 
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
         except Exception as e:
             self._record_failure()
-            # Same fire-and-forget recovery as prefetch(); the error
-            # returned to the LLM below is unchanged.
             self._try_recover_gateway()
             return json.dumps({"error": f"Tool call failed: {e}"})
 
@@ -1056,20 +910,26 @@ class MemoryTencentdbProvider(MemoryProvider):
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes to memory-tencentdb for indexing."""
-        # TODO: Implement mirroring of Hermes builtin MEMORY.md/USER.md writes
-        # to memory-tencentdb's recall index for conflict suppression and dedup.
         pass
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """Trigger session-level flush on the Gateway."""
-        if self._client and self._gateway_available:
-            try:
-                self._client.end_session(
-                    session_key=self._session_id,
-                    user_id=self._user_id,
-                )
-            except Exception as e:
-                logger.debug("memory-tencentdb on_session_end failed: %s", e)
+        """Trigger session-level flush on the Gateway.
+
+        v3: pipeline auto-handles session end via timer-based scanning.
+        The explicit POST /session/end is no longer needed; kept as no-op.
+        """
+        # if self._client and self._gateway_available:
+        #     try:
+        #         self._client.end_session(
+        #             session_key=self._session_id,
+        #             user_id=self._user_id,
+        #         )
+        #     except Exception as e:
+        #         logger.debug("memory-tencentdb on_session_end failed: %s", e)
+        logger.debug(
+            "memory-tencentdb on_session_end: v3 pipeline auto-handles, no-op "
+            "(session=%s)", self._session_id,
+        )
 
     # -- Config ---------------------------------------------------------------
 

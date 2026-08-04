@@ -18,6 +18,7 @@
  */
 
 import type { IStateBackend, TaskPayload, TimerEntry } from "../core/state/types.js";
+import { parsePipelineTimerMember } from "../core/state/timer-member.js";
 
 interface Logger {
   debug?: (message: string) => void;
@@ -152,16 +153,18 @@ export class TimerScanner {
         }
 
         for (const entry of expired) {
-          const { instanceId, sessionId, taskType, priority, timerType } = this.parseShardMember(entry.member);
+          const { instanceId, sessionId, taskType, priority, timerType, teamId, agentId } = this.parseShardMember(entry.member);
 
           const task: TaskPayload = {
             id: `${taskType}-${instanceId.slice(-8)}-${sessionId.slice(-8)}-${now}`,
             type: taskType,
             instanceId,
             sessionId,
+            teamId,
+            agentId,
             priority,
             createdAt: now,
-            data: { triggeredBy: "timer_scanner", timerMember: `${sessionId}:${timerType}`, instanceId },
+            data: { triggeredBy: "timer_scanner", timerMember: `${sessionId}:${timerType}`, instanceId, teamId, agentId },
           };
 
           await this.backend.enqueueTask(task);
@@ -191,7 +194,7 @@ export class TimerScanner {
    * Parse shard member format: "{instanceId}\x00{sessionId}:{timerType}"
    * Example: "mem-j4wjesud\x00sess_001:L1_idle" → { instanceId: "mem-j4wjesud", sessionId: "sess_001", taskType: "L1" }
    */
-  private parseShardMember(member: string): { instanceId: string; sessionId: string; taskType: TaskPayload["type"]; priority: number; timerType: string } {
+  private parseShardMember(member: string): { instanceId: string; sessionId: string; taskType: TaskPayload["type"]; priority: number; timerType: string; teamId?: string; agentId?: string } {
     const sep = member.indexOf("\x00");
     let instanceId: string;
     let rest: string;
@@ -238,19 +241,8 @@ export class TimerScanner {
       return { instanceId, sessionId, taskType: "offload-l1", priority: 0, timerType: rest };
     }
 
-    // For non-offload types, use lastColon (original logic)
-    const lastColon = rest.lastIndexOf(":");
-    if (lastColon <= 0) {
-      return { instanceId, sessionId: rest, taskType: "L1", priority: 0, timerType: "L1_idle" };
-    }
-
-    const sessionId = rest.slice(0, lastColon);
-    const timerType = rest.slice(lastColon + 1);
-
-    if (timerType.startsWith("L1")) return { instanceId, sessionId, taskType: "L1", priority: 0, timerType };
-    if (timerType.startsWith("L2")) return { instanceId, sessionId, taskType: "L2", priority: 1, timerType };
-    if (timerType.startsWith("L3")) return { instanceId, sessionId, taskType: "L3", priority: 2, timerType };
-    return { instanceId, sessionId, taskType: "flush", priority: 0, timerType };
+    const parsed = parsePipelineTimerMember(rest);
+    return { instanceId, ...parsed };
   }
 }
 

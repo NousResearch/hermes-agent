@@ -35,21 +35,26 @@ export class LocalStateBackend implements IStateBackend {
     this.onTimerExpired = options?.onTimerExpired;
   }
 
-  private k(instanceId: string, sessionId: string): string {
-    return `${instanceId}:${sessionId}`;
+  /**
+   * Map key 拼成 `{instanceId}:{teamId}:{agentId}:{sessionId}` —— 与 RedisStateBackend 的
+   * hash tag 形态对齐：同一 (inst, tid, aid, sess) 必然 hash 到同一桶。
+   * tid/aid 缺失（旧调用）时用 "_" 占位，等价于退化到 instance 维度。
+   */
+  private k(instanceId: string, sessionId: string, teamId?: string, agentId?: string): string {
+    return `${instanceId}:${teamId || "_"}:${agentId || "_"}:${sessionId}`;
   }
 
   // ═══ Buffer ═══
 
-  async appendBuffer(instanceId: string, sessionId: string, message: string): Promise<void> {
-    const key = this.k(instanceId, sessionId);
+  async appendBuffer(instanceId: string, sessionId: string, message: string, teamId?: string, agentId?: string): Promise<void> {
+    const key = this.k(instanceId, sessionId, teamId, agentId);
     let buf = this.buffers.get(key);
     if (!buf) { buf = []; this.buffers.set(key, buf); }
     buf.push(message);
   }
 
-  async drainBuffer(instanceId: string, sessionId: string): Promise<string[]> {
-    const key = this.k(instanceId, sessionId);
+  async drainBuffer(instanceId: string, sessionId: string, teamId?: string, agentId?: string): Promise<string[]> {
+    const key = this.k(instanceId, sessionId, teamId, agentId);
     const buf = this.buffers.get(key);
     if (!buf || buf.length === 0) return [];
     const drained = buf.splice(0);
@@ -57,24 +62,24 @@ export class LocalStateBackend implements IStateBackend {
     return drained;
   }
 
-  async getBufferLength(instanceId: string, sessionId: string): Promise<number> {
-    return this.buffers.get(this.k(instanceId, sessionId))?.length ?? 0;
+  async getBufferLength(instanceId: string, sessionId: string, teamId?: string, agentId?: string): Promise<number> {
+    return this.buffers.get(this.k(instanceId, sessionId, teamId, agentId))?.length ?? 0;
   }
 
   // ═══ Session State ═══
 
-  async getSessionState(instanceId: string, sessionId: string): Promise<PipelineSessionState | null> {
-    return this.sessionStates.get(this.k(instanceId, sessionId)) ?? null;
+  async getSessionState(instanceId: string, sessionId: string, teamId?: string, agentId?: string): Promise<PipelineSessionState | null> {
+    return this.sessionStates.get(this.k(instanceId, sessionId, teamId, agentId)) ?? null;
   }
 
-  async updateSessionState(instanceId: string, sessionId: string, patch: Partial<PipelineSessionState>): Promise<void> {
-    const key = this.k(instanceId, sessionId);
+  async updateSessionState(instanceId: string, sessionId: string, patch: Partial<PipelineSessionState>, teamId?: string, agentId?: string): Promise<void> {
+    const key = this.k(instanceId, sessionId, teamId, agentId);
     const current = this.sessionStates.get(key) ?? { ...DEFAULT_PIPELINE_STATE, last_active_time: Date.now() };
     this.sessionStates.set(key, { ...current, ...patch });
   }
 
-  async deleteSessionState(instanceId: string, sessionId: string): Promise<void> {
-    const key = this.k(instanceId, sessionId);
+  async deleteSessionState(instanceId: string, sessionId: string, teamId?: string, agentId?: string): Promise<void> {
+    const key = this.k(instanceId, sessionId, teamId, agentId);
     this.sessionStates.delete(key);
     this.buffers.delete(key);
   }
@@ -83,7 +88,11 @@ export class LocalStateBackend implements IStateBackend {
     const prefix = `${instanceId}:`;
     const sessions: string[] = [];
     for (const key of this.sessionStates.keys()) {
-      if (key.startsWith(prefix)) sessions.push(key.slice(prefix.length));
+      if (key.startsWith(prefix)) {
+        // key format: {inst}:{tid}:{aid}:{sess}  → 取最后一段作为 sessionId
+        const parts = key.split(":");
+        if (parts.length >= 4) sessions.push(parts.slice(3).join(":"));
+      }
     }
     return sessions;
   }
@@ -215,11 +224,11 @@ export class LocalStateBackend implements IStateBackend {
   // ═══ Atomic Capture ═══
 
   async captureAtomic(params: CaptureAtomicParams): Promise<CaptureAtomicResult> {
-    const { instanceId, sessionId, messageJson, threshold, fireAtMs, timerMember, taskPayload, nowMs, rounds } = params;
+    const { instanceId, sessionId, teamId, agentId, messageJson, threshold, fireAtMs, timerMember, taskPayload, nowMs, rounds } = params;
 
-    await this.appendBuffer(instanceId, sessionId, messageJson);
+    await this.appendBuffer(instanceId, sessionId, messageJson, teamId, agentId);
 
-    const stateKey = this.k(instanceId, sessionId);
+    const stateKey = this.k(instanceId, sessionId, teamId, agentId);
     let state = this.sessionStates.get(stateKey);
     if (!state) {
       state = { ...DEFAULT_PIPELINE_STATE, last_active_time: nowMs };

@@ -19,8 +19,14 @@ import type { IMemoryStore, L1SearchResult, L1FtsResult } from "../store/types.j
 import { buildFtsQuery } from "../store/sqlite.js";
 import type { EmbeddingService, EmbeddingCallOptions } from "../store/embedding.js";
 import { sanitizeText } from "../../utils/sanitize.js";
-import type { StorageAdapter } from "../storage/adapter.js";
+import path from "node:path";
+import { createScopedStorageAdapter, type StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
+import {
+  DEFAULT_PROFILE_SCOPE,
+  buildProfileIsolationScope,
+  type ProfileIsolation,
+} from "../profile/profile-sync.js";
 import type { Logger } from "../types.js";
 
 const TAG = "[memory-tdai] [recall]";
@@ -94,6 +100,8 @@ export async function performAutoRecall(params: {
   embeddingService?: EmbeddingService;
   /** StorageAdapter for file operations (COS/local). Falls back to fs when absent. */
   storage?: StorageAdapter;
+  /** L2/L3 profile scope. Defaults to the standalone default team and agent. */
+  profileIsolation?: ProfileIsolation;
 }): Promise<RecallResult | undefined> {
   const { cfg, logger } = params;
   const timeoutMs = cfg.recall.timeoutMs ?? 5000;
@@ -147,9 +155,23 @@ async function performAutoRecallCore(params: {
   vectorStore?: IMemoryStore;
   embeddingService?: EmbeddingService;
   storage?: StorageAdapter;
+  profileIsolation?: ProfileIsolation;
 }): Promise<RecallResult | undefined> {
   const { userText, cfg, pluginDataDir, logger, vectorStore, embeddingService, storage } = params;
   const tRecallStart = performance.now();
+
+  // L2/L3 writers scope profile files by team+agent. Recall resolves the same
+  // scope and never falls back to the unscoped data root, preventing cross-scope
+  // profile reads.
+  const profileIsolation = params.profileIsolation ?? { teamId: "default", agentId: "default" };
+  const profileScope = buildProfileIsolationScope(profileIsolation);
+  const isScopedProfile = profileScope !== DEFAULT_PROFILE_SCOPE;
+  const profileDataDir = isScopedProfile
+    ? path.join(pluginDataDir, "profiles", encodeURIComponent(profileScope))
+    : pluginDataDir;
+  const profileStorage = storage && isScopedProfile
+    ? createScopedStorageAdapter(storage, `profiles/${encodeURIComponent(profileScope)}/`)
+    : storage;
 
   // Search relevant memories (L1 layer) — skip only when userText is empty/undefined
   const tSearchStart = performance.now();
@@ -184,13 +206,12 @@ async function performAutoRecallCore(params: {
   const tPersonaStart = performance.now();
   let personaContent: string | undefined;
   try {
-    let raw: string | null;
-    if (storage) {
-      raw = await storage.readFile(StoragePaths.persona);
+    let raw: string | null = null;
+    if (profileStorage) {
+      raw = await profileStorage.readFile(StoragePaths.persona);
     } else {
       const fs = await import("node:fs/promises");
-      const path = await import("node:path");
-      raw = await fs.default.readFile(path.default.join(pluginDataDir, "persona.md"), "utf-8");
+      raw = await fs.default.readFile(path.join(profileDataDir, "persona.md"), "utf-8");
     }
     if (raw) {
       personaContent = stripSceneNavigation(raw).trim();
@@ -206,16 +227,14 @@ async function performAutoRecallCore(params: {
   const tSceneStart = performance.now();
   let sceneNavigation: string | undefined;
   try {
-    // CR-3 fix (2026-05-19): pass `storage` so service-mode (COS) reads remote
-    // scene_index.json instead of falling back to local pluginDataDir/.metadata
-    // (which is empty on the worker pod). Also pass useCos=storage?.type==="cos"
-    // so the generated navigation references COS-style scenes/ paths and the
-    // footer mentions tdai_read_cos instead of read_file.
-    const sceneIndex = await readSceneIndex(pluginDataDir, storage);
+    const sceneIndex = await readSceneIndex(profileDataDir, profileStorage);
     if (sceneIndex.length > 0) {
-      const useCos = storage?.type === "cos";
-      sceneNavigation = generateSceneNavigation(sceneIndex, pluginDataDir, useCos);
-      logger?.debug?.(`${TAG} Scene navigation generated: ${sceneIndex.length} scenes (useCos=${useCos})`);
+      const useCos = profileStorage?.type === "cos";
+      sceneNavigation = generateSceneNavigation(sceneIndex, profileDataDir, useCos);
+      logger?.debug?.(
+        `${TAG} Scene navigation generated: ${sceneIndex.length} scenes ` +
+        `(scope=${profileScope}, useCos=${useCos})`,
+      );
     }
   } catch {
     logger?.debug?.(`${TAG} No scene index found`);
@@ -314,6 +333,7 @@ async function performAutoRecallInner(params: {
   vectorStore?: IMemoryStore;
   embeddingService?: EmbeddingService;
   storage?: StorageAdapter;
+  profileIsolation?: ProfileIsolation;
 }): Promise<RecallResult | undefined> {
   try {
     return await performAutoRecallCore(params);

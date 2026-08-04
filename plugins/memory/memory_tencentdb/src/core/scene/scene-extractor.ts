@@ -24,10 +24,12 @@ import type { SceneIndexEntry } from "../scene/scene-index.js";
 import { parseSceneBlock } from "../scene/scene-format.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
 import { normalizeSceneFilenames } from "./filename-normalizer.js";
+import type { MemoryPromptMode } from "../../config.js";
 import { buildSceneExtractionPrompt } from "../prompts/scene-extraction.js";
 import { report } from "../report/reporter.js";
 import { reportL2LatencyMetrics } from "../report/metric-tracking-l2-latency.js";
-import type { LLMRunner, Logger } from "../types.js";
+import type { LLMRunner, Logger, TraceContext } from "../types.js";
+import { buildTraceParams } from "../types.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 
@@ -48,6 +50,8 @@ export interface SceneExtractorOptions {
   config: unknown;
   model?: string;
   maxScenes?: number;
+  /** Prompt family for L2 scene extraction (default: chat). */
+  promptMode?: MemoryPromptMode;
   sceneBackupCount?: number;
   timeoutMs?: number;
   logger?: ExtractorLogger;
@@ -61,6 +65,8 @@ export interface SceneExtractorOptions {
   llmRunner?: LLMRunner;
   /** StorageAdapter for file operations (COS/local). Falls back to fs when absent. */
   storage?: StorageAdapter;
+  /** langfuse 上报身份四元组（team/user/agent/session）。传下来会填充 trace 顶级字段。 */
+  traceContext?: TraceContext;
 }
 
 /**
@@ -91,19 +97,23 @@ export class SceneExtractor {
   private runner: LLMRunner;
   private maxScenes: number;
   private sceneBackupCount: number;
+  private promptMode: MemoryPromptMode;
   private timeoutMs: number;
   private logger: ExtractorLogger | undefined;
   private instanceId: string | undefined;
   private storage: StorageAdapter | undefined;
+  private traceContext: TraceContext | undefined;
 
   constructor(opts: SceneExtractorOptions) {
     this.dataDir = opts.dataDir;
     this.maxScenes = opts.maxScenes ?? 15;
+    this.promptMode = opts.promptMode ?? "chat";
     this.sceneBackupCount = opts.sceneBackupCount ?? 10;
     this.timeoutMs = opts.timeoutMs ?? 300_000; // 5 min — LLM may do multiple tool calls
     this.logger = opts.logger;
     this.instanceId = opts.instanceId;
     this.storage = opts.storage;
+    this.traceContext = opts.traceContext;
 
     // Use injected LLMRunner if available, otherwise fall back to CleanContextRunner
     this.runner = opts.llmRunner ?? new CleanContextRunner({
@@ -113,7 +123,7 @@ export class SceneExtractor {
       logger: opts.logger,
     });
 
-    this.logger?.debug?.(`${TAG} Created: dataDir=${opts.dataDir}, model=${opts.model ?? "(default)"}, maxScenes=${this.maxScenes}, timeout=${this.timeoutMs}ms`);
+    this.logger?.debug?.(`${TAG} Created: dataDir=${opts.dataDir}, model=${opts.model ?? "(default)"}, promptMode=${this.promptMode}, maxScenes=${this.maxScenes}, timeout=${this.timeoutMs}ms`);
   }
 
   /**
@@ -224,6 +234,7 @@ export class SceneExtractor {
       sceneCountWarning,
       existingSceneFiles,
       maxScenes: this.maxScenes,
+      promptMode: this.promptMode,
     });
     this.logger?.debug?.(`${TAG} extract() prompt built: ${userPrompt.length} chars (${Date.now() - promptStartMs}ms)`);
 
@@ -233,6 +244,8 @@ export class SceneExtractor {
     try {
       this.logger?.debug?.(`${TAG} extract() starting LLM runner (timeout=${this.timeoutMs}ms, maxTokens=model default)...`);
       const runnerStartMs = Date.now();
+      // langfuse trace 语义：L2 场景抽取有独立 name / 顶级 user/session 列 / 可筛选 tags。
+      const traceParams = buildTraceParams("memory.scene-extract", this.traceContext);
       llmOutput = await this.runner.run({
         systemPrompt,
         prompt: userPrompt,
@@ -243,6 +256,7 @@ export class SceneExtractor {
         // Service mode: LLM tools read/write via StorageAdapter (COS) instead of local FS
         storage: this.storage,
         storagePrefix: this.storage ? StoragePaths.sceneBlocksDir : undefined,
+        ...traceParams,
       }) ?? "";
       llmDurationMs = Date.now() - runnerStartMs;
       this.logger?.debug?.(`${TAG} extract() LLM runner completed: ${llmDurationMs}ms`);

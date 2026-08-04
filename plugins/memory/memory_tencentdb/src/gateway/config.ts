@@ -60,7 +60,7 @@ export interface ScannerConfig {
 
 export interface WorkerConfig {
   pollMs: number;
-  /** 并发消费协程数 (default: 10) */
+  /** 并发消费协程数 (default: 60) */
   concurrency: number;
 }
 
@@ -147,11 +147,11 @@ export interface LangfuseConfig {
  * observability:
  *   otel:
  *     enabled: true
- *     endpoint: "http://trace.zhiyan.tencent-cloud.net:4317"
+ *     endpoint: "http://otel.example.com:4317"
  *     protocol: "grpc"
  *     serviceName: "core"
  *     serviceVersion: "1.0.0"
- *     tenantId: "18910#apm-log-dg3527fad4feeb6c#18597_190149___apm"
+ *     tenantId: "<APM_TENANT_ID>"
  *     metricExportInterval: 60
  *     logExportInterval: 5
  *   clickhouse:
@@ -279,6 +279,14 @@ export interface GatewayConfig {
   /** Parsed memory-tdai plugin config (recall, capture, extraction, pipeline, etc.). */
   memory: MemoryTdaiConfig;
 
+  /**
+   * Optional Skill module config — passed through to MemoryTdaiConfig.skill
+   * at load time. Kept at the top level here so gateway-only deployments
+   * can configure skills without nesting under `memory.skill`. The loader
+   * shallow-merges this onto `memory.skill` (yaml top-level wins).
+   */
+  skill?: import("../core/skill/types.js").SkillConfigInput;
+
   // ── Service-mode config (also settable via env vars, env takes priority) ──
 
   /** State backend type. env: STATE_BACKEND. yaml: stateBackend */
@@ -292,6 +300,12 @@ export interface GatewayConfig {
   cos: CosExtraConfig;
   /** 可观测性配置 (yaml: observability, env: KAFKA_METRIC_*) */
   observability: ObservabilityConfig;
+  /**
+   * 元数据模块配置（env 优先于 yaml；见 applyMetadataEnvFromGatewayConfig）。
+   * yaml: metadata.*
+   * env: TDAI_METADATA_*
+   */
+  metadata: GatewayMetadataConfig;
   /** Offload server executor 配置 (yaml: offload) */
   offload: {
     forceTriggerThreshold: number;
@@ -311,6 +325,35 @@ export interface GatewayConfig {
     emergencyCompressRatio: number;
     maxRetries: number;
   };
+}
+
+/** v3 元数据 Gateway yaml 配置（§6.3）。 */
+export interface GatewayMetadataStoreConfig {
+  sqliteBaseDir?: string;
+  mongoUri?: string;
+  mongoTransactions?: boolean;
+  storeCacheMaxInstances?: number;
+  /** 元数据库名前缀，默认 tdai_metadata；库名 {prefix}_{instance_id} */
+  mongoDbPrefix?: string;
+}
+
+export interface GatewayMemorySystemUserConfig {
+  userId?: string;
+  displayName?: string;
+  userKey?: string;
+}
+
+export interface GatewayMetadataSystemUserConfig {
+  memory?: GatewayMemorySystemUserConfig;
+}
+
+export interface GatewayMetadataConfig {
+  maxUsersPerInstance: number;
+  maxTeamsPerInstance: number;
+  configParamsFile?: string;
+  store?: GatewayMetadataStoreConfig;
+  /** 内部静态系统用户（仅 auth/verify；不落库）。 */
+  systemUser?: GatewayMetadataSystemUserConfig;
 }
 
 // ============================
@@ -391,18 +434,110 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
   const baseDir = rawBaseDir.startsWith("~/") ? path.join(home, rawBaseDir.slice(2)) : rawBaseDir;
 
   // LLM config
+  //
+  // provider 支持两种模式：
+  //   - "openai"（默认）：直连 OpenAI 兼容服务
+  //   - "proxy"：走 context_proxy，运行期把 baseUrl 拼成 `${baseUrl}/proxy/<iid>/v1`，
+  //             Authorization 用 memory 系统用户 key。gateway 层负责最终解析，
+  //             见 src/gateway/llm-resolver.ts 的 resolveEffectiveLlmConfig。
   const llmConfig = obj(fileConfig, "llm");
+  const llmProxyConfig = obj(llmConfig, "proxy");
+  const rawLlmProvider = env("TDAI_LLM_PROVIDER") ?? str(llmConfig, "provider");
+  const llmProvider: "openai" | "proxy" =
+    rawLlmProvider === "proxy" ? "proxy" : "openai";
   const llm: StandaloneLLMConfig = {
     baseUrl: env("TDAI_LLM_BASE_URL") ?? str(llmConfig, "baseUrl") ?? "https://api.openai.com/v1",
     apiKey: env("TDAI_LLM_API_KEY") ?? str(llmConfig, "apiKey") ?? "",
     model: env("TDAI_LLM_MODEL") ?? str(llmConfig, "model") ?? "gpt-4o",
     maxTokens: envInt("TDAI_LLM_MAX_TOKENS") ?? num(llmConfig, "maxTokens") ?? 4096,
     timeoutMs: envInt("TDAI_LLM_TIMEOUT_MS") ?? num(llmConfig, "timeoutMs") ?? 120_000,
+    provider: llmProvider,
+    proxy: {
+      useMemorySystemUserKey: bool(llmProxyConfig, "useMemorySystemUserKey") ?? true,
+    },
   };
 
   // Memory config (reuse the plugin's parseConfig for full compatibility)
   const memoryRaw = obj(fileConfig, "memory");
-  const memory = parseMemoryConfig(memoryRaw as Record<string, unknown> | undefined);
+  const topLevelPromptMode = str(fileConfig, "promptMode") ?? str(obj(fileConfig, "prompts"), "mode");
+  const memoryCompatRaw: Record<string, unknown> = { ...memoryRaw };
+  if (!str(memoryCompatRaw, "promptMode") && topLevelPromptMode) {
+    memoryCompatRaw.promptMode = topLevelPromptMode;
+  }
+  const memory = parseMemoryConfig(memoryCompatRaw);
+
+  // ── Standalone LLM override pass-through to MemoryTdaiConfig.llm ──
+  // The gateway has its own top-level `llm` block (read above into the
+  // `llm` variable), and `parseMemoryConfig` ALSO has a `memory.llm` block
+  // that defaults to enabled=false. When the gateway's top-level llm is
+  // configured (baseUrl + apiKey), splice it onto memory.llm so the
+  // SkillExtractor / L1 / L2 / L3 runners see a usable runner without
+  // requiring the user to duplicate the block under `memory.llm`.
+  // provider=proxy 模式下即使 apiKey 为空也要 splice —— 因为最终 apiKey 由
+  // memory systemUser.userKey 提供，llm.apiKey 只是 provider=openai 时的显式配置。
+  const shouldSpliceLlm =
+    !memory.llm.enabled && llm.baseUrl && (llm.apiKey || llm.provider === "proxy");
+  if (shouldSpliceLlm) {
+    memory.llm = {
+      enabled: true,
+      baseUrl: llm.baseUrl,
+      apiKey: llm.apiKey,
+      model: llm.model,
+      maxTokens: llm.maxTokens ?? 4096,
+      timeoutMs: llm.timeoutMs ?? 120_000,
+      provider: llm.provider,
+      proxy: {
+        useMemorySystemUserKey: llm.proxy?.useMemorySystemUserKey ?? true,
+      },
+    };
+  }
+
+  // ── Standalone embedding override pass-through ──
+  // Some existing gateway configs place `embedding` at the top level next to
+  // `llm`. The memory parser expects it under `memory.embedding`, so splice the
+  // top-level block into MemoryTdaiConfig for backward compatibility.
+  const topLevelEmbedding = obj(fileConfig, "embedding");
+  if (topLevelEmbedding) {
+    memory.embedding = {
+      ...memory.embedding,
+      enabled: bool(topLevelEmbedding, "enabled") ?? memory.embedding.enabled,
+      provider: str(topLevelEmbedding, "provider") ?? memory.embedding.provider,
+      baseUrl: str(topLevelEmbedding, "baseUrl") ?? memory.embedding.baseUrl,
+      apiKey: str(topLevelEmbedding, "apiKey") ?? memory.embedding.apiKey,
+      model: str(topLevelEmbedding, "model") ?? memory.embedding.model,
+      dimensions: num(topLevelEmbedding, "dimensions") ?? memory.embedding.dimensions,
+      sendDimensions: bool(topLevelEmbedding, "sendDimensions") ?? memory.embedding.sendDimensions,
+      conflictRecallTopK: num(topLevelEmbedding, "conflictRecallTopK") ?? memory.embedding.conflictRecallTopK,
+      maxInputChars: num(topLevelEmbedding, "maxInputChars") ?? memory.embedding.maxInputChars,
+      timeoutMs: num(topLevelEmbedding, "timeoutMs") ?? memory.embedding.timeoutMs,
+      recallTimeoutMs: num(topLevelEmbedding, "recallTimeoutMs") ?? memory.embedding.recallTimeoutMs,
+      captureTimeoutMs: num(topLevelEmbedding, "captureTimeoutMs") ?? memory.embedding.captureTimeoutMs,
+      proxyUrl: str(topLevelEmbedding, "proxyUrl") ?? memory.embedding.proxyUrl,
+    };
+  }
+
+  // ── Skill module config ──
+  // Resolution order:
+  //   1. Top-level `skill` block in yaml (preferred — skill is a top-level
+  //      gateway feature, not buried under `memory`).
+  //   2. `memory.skill` (if user nested it under memory by accident).
+  //   3. env var TDAI_SKILL_ENABLED forces enabled=true so a one-line
+  //      shell flag opts in without touching yaml.
+  // The result is *also* spliced onto memory.skill so TdaiCore (which reads
+  // from cfg.skill in its config) sees it regardless of which path wired it.
+  const topLevelSkill = (fileConfig.skill && typeof fileConfig.skill === "object" && !Array.isArray(fileConfig.skill))
+    ? (fileConfig.skill as import("../core/skill/types.js").SkillConfigInput)
+    : undefined;
+  const envSkillEnabled = env("TDAI_SKILL_ENABLED");
+  const skillFromAnywhere: import("../core/skill/types.js").SkillConfigInput | undefined =
+    topLevelSkill ?? memory.skill ?? (envSkillEnabled === "true" || envSkillEnabled === "1" ? { enabled: true } : undefined);
+  if (skillFromAnywhere) {
+    // Last write wins: env-only override forces enabled=true on top of yaml.
+    if (envSkillEnabled === "true" || envSkillEnabled === "1") {
+      skillFromAnywhere.enabled = true;
+    }
+    memory.skill = skillFromAnywhere;
+  }
 
   // Deploy mode: "standalone" (open-source single-node) or "service" (cloud multi-tenant)
   const rawMode = env("TDAI_DEPLOY_MODE") ?? str(fileConfig, "deployMode") ?? "standalone";
@@ -424,7 +559,11 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
     port: envInt("REDIS_PORT") ?? num(redisConfig, "port") ?? 6379,
     password: env("REDIS_PASSWORD") ?? str(redisConfig, "password"),
     db: envInt("REDIS_DB") ?? num(redisConfig, "db") ?? 0,
-    keyPrefix: env("REDIS_KEY_PREFIX") ?? str(redisConfig, "keyPrefix") ?? "tdai_memory",
+    // v2 默认 prefix：与升级前的 "tdai_memory" 物理隔离。
+    // 升级原因：sk/bk 的 hash tag 从 {p:inst} 升级到 {p:inst:tid:aid}，
+    // 旧 key 与新 key 不互斥，混跑会破坏锁互斥语义；切 prefix 直接物理隔离，
+    // 老数据丢弃。升级时若需保留 redis 中 pending 任务，先停服务 + 等队列空。
+    keyPrefix: env("REDIS_KEY_PREFIX") ?? str(redisConfig, "keyPrefix") ?? "tdai_memory_v2",
   };
 
   // Remote config source settings
@@ -449,7 +588,7 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
   const workerConfig = obj(fileConfig, "worker");
   const worker: WorkerConfig = {
     pollMs: envInt("WORKER_POLL_MS") ?? num(workerConfig, "pollMs") ?? 200,
-    concurrency: envInt("WORKER_CONCURRENCY") ?? num(workerConfig, "concurrency") ?? 10,
+    concurrency: envInt("WORKER_CONCURRENCY") ?? num(workerConfig, "concurrency") ?? 60,
   };
 
   // COS extra config
@@ -511,6 +650,45 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
   const observability: ObservabilityConfig = { otel, clickhouse, kafka, langfuse };
 
   // Offload executor config (yaml: offload)
+  const metadataConfig = obj(fileConfig, "metadata");
+  const storeYaml = obj(metadataConfig, "store");
+  const systemUserYaml = obj(metadataConfig, "systemUser");
+  const memorySystemUserYaml = obj(systemUserYaml, "memory");
+  const metadataStore: GatewayMetadataStoreConfig | undefined =
+    str(storeYaml, "sqliteBaseDir") || str(storeYaml, "mongoUri") ||
+    str(storeYaml, "mongoDbPrefix") ||
+    bool(storeYaml, "mongoTransactions") !== undefined || num(storeYaml, "storeCacheMaxInstances") !== undefined
+      ? {
+          sqliteBaseDir: str(storeYaml, "sqliteBaseDir"),
+          mongoUri: str(storeYaml, "mongoUri"),
+          mongoTransactions: bool(storeYaml, "mongoTransactions") ?? true,
+          storeCacheMaxInstances: num(storeYaml, "storeCacheMaxInstances"),
+          mongoDbPrefix: str(storeYaml, "mongoDbPrefix"),
+        }
+      : undefined;
+  const metadata: GatewayMetadataConfig = {
+    maxUsersPerInstance: positiveQuotaLimit(
+      envInt("TDAI_METADATA_MAX_USERS") ?? num(metadataConfig, "maxUsersPerInstance"),
+      500,
+    ),
+    maxTeamsPerInstance: positiveQuotaLimit(
+      envInt("TDAI_METADATA_MAX_TEAMS") ?? num(metadataConfig, "maxTeamsPerInstance"),
+      100,
+    ),
+    configParamsFile: process.env.TDAI_METADATA_CONFIG_PARAMS_FILE || str(metadataConfig, "configParamsFile") || undefined,
+    store: metadataStore,
+    systemUser: str(memorySystemUserYaml, "userId") || str(memorySystemUserYaml, "userKey") ||
+      str(memorySystemUserYaml, "displayName")
+      ? {
+          memory: {
+            userId: str(memorySystemUserYaml, "userId"),
+            displayName: str(memorySystemUserYaml, "displayName"),
+            userKey: str(memorySystemUserYaml, "userKey"),
+          },
+        }
+      : undefined,
+  };
+
   const offloadConfig = obj(fileConfig, "offload");
   const offload = {
     forceTriggerThreshold: num(offloadConfig, "forceTriggerThreshold") ?? 4,
@@ -545,7 +723,9 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
     worker,
     cos,
     observability,
+    metadata,
     offload,
+    skill: skillFromAnywhere,
   };
 
   // Merge overrides one level deep so partial `server`/`data`/`llm` patches
@@ -649,6 +829,15 @@ function str(src: Record<string, unknown>, key: string): string | undefined {
 function num(src: Record<string, unknown>, key: string): number | undefined {
   const v = src[key];
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+function positiveQuotaLimit(value: number | undefined, fallback: number): number {
+  return value !== undefined && value > 0 ? value : fallback;
+}
+
+function bool(src: Record<string, unknown>, key: string): boolean | undefined {
+  const v = src[key];
+  return typeof v === "boolean" ? v : undefined;
 }
 
 /**

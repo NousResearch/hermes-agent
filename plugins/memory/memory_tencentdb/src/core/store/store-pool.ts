@@ -23,9 +23,11 @@ import type { EmbeddingService } from "./embedding.js";
 import { createEmbeddingService, NoopEmbeddingService } from "./embedding.js";
 import { VectorStore } from "./sqlite.js";
 import { TcvdbMemoryStore } from "./tcvdb.js";
+import { TcvdbSkillStore } from "./tcvdb-skill-store.js";
 import { createBM25Encoder } from "./bm25-local.js";
 import type { BM25LocalEncoder } from "./bm25-local.js";
 import type { VdbConfig } from "../instance-config-provider.js";
+import type { ISkillStore } from "../skill/skill-store.interface.js";
 import { metricProducer } from "../report/kafka-metric-producer.js";
 
 const TAG = "[store-pool]";
@@ -72,8 +74,10 @@ export interface StorePoolOptions {
   memoryCfg: MemoryTdaiConfig;
   /** 数据目录 (SQLite 模式下使用) */
   dataDir?: string;
-  /** 最大池化实例数, 默认 100 */
+  /** 最大池化实例数 (Memory store), 默认 100 */
   maxStores?: number;
+  /** 最大 Skill store 缓存数, 默认 100 */
+  maxSkillStores?: number;
   /** Kafka 指标上报配置 (可选, 不配置则不上报) */
   kafka?: KafkaMetricOptions;
   logger: Logger;
@@ -93,6 +97,11 @@ export class StorePool {
   /** 全局共享的 BM25 编码器 (避免重复加载 jieba 词典导致 OOM) */
   private sharedBm25Encoder: BM25LocalEncoder | undefined;
 
+  /** Skill store 缓存上限 */
+  private maxSkillStores: number;
+  /** Skill store 最后访问时间 (LRU 淘汰用) */
+  private skillStoreAccessTimes = new Map<string, number>();
+
 
 
   /**
@@ -108,6 +117,7 @@ export class StorePool {
 
   constructor(opts: StorePoolOptions) {
     this.maxStores = opts.maxStores ?? 100;
+    this.maxSkillStores = opts.maxSkillStores ?? 100;
     this.mode = opts.mode;
     this.memoryCfg = opts.memoryCfg;
     this.dataDir = opts.dataDir ?? ".";
@@ -119,7 +129,7 @@ export class StorePool {
     // 初始化 Kafka Metric Producer（异步，不阻塞构造）
     this.initKafkaMetricProducer(opts.kafka);
 
-    this.logger.info(`${TAG} Initialized: mode=${this.mode}, maxStores=${this.maxStores}, bm25=${this.sharedBm25Encoder ? "shared" : "disabled"}`);
+    this.logger.info(`${TAG} Initialized: mode=${this.mode}, maxStores=${this.maxStores}, maxSkillStores=${this.maxSkillStores}, bm25=${this.sharedBm25Encoder ? "shared" : "disabled"}`);
   }
 
   /**
@@ -230,15 +240,48 @@ export class StorePool {
    * 进程关停场景下, 调用方可以选择缩短 grace 时间避免阻塞: setGraceCloseDelay(0)
    */
   async closeAll(): Promise<void> {
+    // 关闭 Memory store pool
     const entries = [...this.pool.entries()];
     this.pool.clear();
     // 触发延迟关闭 (这些 promise 会自动加入 pendingCloses)
     for (const [id, entry] of entries) {
       await this.closeEntry(id, entry);  // closeEntry 内部不阻塞, 立即返回
     }
+
+    // 关闭 Skill store 缓存
+    for (const [key, store] of this.skillStoreCache) {
+      try {
+        store.close();
+        this.logger.debug?.(`${TAG} Closed skill store: ${key}`);
+      } catch (e) {
+        this.logger.warn(`${TAG} Error closing skill store ${key}: ${e}`);
+      }
+    }
+    this.skillStoreCache.clear();
+    this.skillStoreAccessTimes.clear();
+
     // 等所有 pending close 完成 (含本次 + 之前 evict 留下的)
     await Promise.allSettled([...this.pendingCloses]);
-    this.logger.info(`${TAG} All stores closed`);
+    this.logger.info(`${TAG} All stores closed (${entries.length} memory + skill caches cleared)`);
+  }
+
+  /**
+   * 移除指定 instance 的 Skill store (实例销毁时调用).
+   * 调用 store.close() 设 degraded=true, 然后从缓存中移除.
+   */
+  evictSkillStore(instanceId: string): void {
+    const key = `skill:${instanceId}`;
+    const store = this.skillStoreCache.get(key);
+    if (store) {
+      try {
+        store.close();
+      } catch (e) {
+        this.logger.warn(`${TAG} Error closing skill store ${key}: ${e}`);
+      }
+      this.skillStoreCache.delete(key);
+      this.skillStoreAccessTimes.delete(key);
+      this.logger.info(`${TAG} Evicted skill store for ${instanceId} (cached: ${this.skillStoreCache.size})`);
+    }
   }
 
   /**
@@ -251,6 +294,44 @@ export class StorePool {
 
   get size(): number { return this.pool.size; }
   has(instanceId: string): boolean { return this.pool.has(instanceId); }
+
+  /**
+   * 获取指定 instanceId 的 Skill Store (TCVDB).
+   *
+   * 与 getStore() 使用相同的 VDB 实例，只是不同的 Collection ({db}_skills)。
+   * Skill store 有独立缓存 (skillStoreCache)，不受 Memory store 池化管理影响。
+   */
+  async getSkillStore(instanceId: string, vdbConfig: VdbConfig): Promise<ISkillStore> {
+    const key = `skill:${instanceId}`;
+    const cached = this.skillStoreCache.get(key);
+    if (cached) {
+      this.skillStoreAccessTimes.set(key, Date.now());
+      return cached;
+    }
+
+    // LRU 淘汰
+    if (this.skillStoreCache.size >= this.maxSkillStores) {
+      this.evictSkillStoreLru();
+    }
+
+    const store = new TcvdbSkillStore({
+      url: vdbConfig.url,
+      username: vdbConfig.user,
+      apiKey: vdbConfig.apiKey,
+      database: vdbConfig.database,
+      embeddingModel: this.memoryCfg.tcvdb?.embeddingModel ?? "bge-large-zh",
+      timeout: this.memoryCfg.tcvdb?.timeout ?? 10000,
+      logger: this.logger as StoreLogger,
+      bm25Encoder: this.sharedBm25Encoder,
+    });
+    store.init();
+    this.skillStoreCache.set(key, store);
+    this.skillStoreAccessTimes.set(key, Date.now());
+    this.logger.info(`${TAG} Created skill store for ${instanceId}: ${vdbConfig.url}/${vdbConfig.database} (cached: ${this.skillStoreCache.size})`);
+    return store;
+  }
+
+  private skillStoreCache = new Map<string, ISkillStore>();
 
   // ════════════════════════════════════════════════════════
   // Internal — TCVDB Store
@@ -269,6 +350,7 @@ export class StorePool {
       username: vdbConfig.user,
       apiKey: vdbConfig.apiKey,
       database: vdbConfig.database,
+      embeddingEnabled: this.memoryCfg.tcvdb?.embeddingEnabled,
       embeddingModel: this.memoryCfg.tcvdb?.embeddingModel ?? "bge-large-zh",
       timeout: this.memoryCfg.tcvdb?.timeout ?? 10000,
       caPemPath,
@@ -384,6 +466,33 @@ export class StorePool {
       const entry = this.pool.get(oldestKey)!;
       await this.closeEntry(oldestKey, entry);
       this.logger.debug?.(`${TAG} LRU evicted store for ${oldestKey}`);
+    }
+  }
+
+  /** Skill store LRU 淘汰：踢掉最久未访问的 entry. */
+  private evictSkillStoreLru(): void {
+    let oldestKey: string | null = null;
+    let oldestTime = Infinity;
+
+    for (const [key, time] of this.skillStoreAccessTimes) {
+      if (time < oldestTime) {
+        oldestTime = time;
+        oldestKey = key;
+      }
+    }
+
+    if (oldestKey) {
+      const store = this.skillStoreCache.get(oldestKey);
+      if (store) {
+        try {
+          store.close();
+        } catch (e) {
+          this.logger.warn(`${TAG} Error closing skill store ${oldestKey} during LRU evict: ${e}`);
+        }
+      }
+      this.skillStoreCache.delete(oldestKey);
+      this.skillStoreAccessTimes.delete(oldestKey);
+      this.logger.debug?.(`${TAG} LRU evicted skill store: ${oldestKey}`);
     }
   }
 }

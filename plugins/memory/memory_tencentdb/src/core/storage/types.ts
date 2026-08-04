@@ -246,7 +246,7 @@ export interface StorageLogger {
  *   .backup/scene_blocks/              — scene block backups
  */
 export const StoragePaths = {
-  /** L3 user persona */
+  /** L3 core memory. Chat mode stores persona; code mode stores Team Operating Doctrine in the same file. */
   persona: "persona.md",
   /** L2 scene blocks directory */
   sceneBlocksDir: "scene_blocks/",

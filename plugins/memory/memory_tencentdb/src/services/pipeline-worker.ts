@@ -50,13 +50,18 @@ export interface TaskExecutor {
 export interface PipelineWorkerConfig {
   /** Worker 节点 ID */
   workerId?: string;
-  /** 并发消费协程数 (default: 10). 每个协程独立消费任务，不同 session 并行执行。 */
+  /** 并发消费协程数 (default: 60). 每个协程独立消费任务，不同 session 并行执行。 */
   concurrency?: number;
   /** 消费轮询间隔 ms (default: 200) */
   pollIntervalMs?: number;
-  /** 锁 TTL ms (default: 120000 = 2min, 需大于最慢 LLM 调用时间) */
+  /**
+   * 锁 TTL ms (default: 240000 = 4min)。
+   * 必须 ≥ 2 × max(LLM timeout)：默认 LLM timeout 是 120s，
+   * 留 2x buffer 保证即便续约 timer 因 GC / 事件循环阻塞错过 1-2 次
+   * tick，锁也不会过期被别人抢走。
+   */
   lockTtlMs?: number;
-  /** 锁续约间隔 ms (default: 30000 = TTL 的 1/4) */
+  /** 锁续约间隔 ms (default: 30000 = TTL 的 1/8，避免续约失败) */
   lockRenewIntervalMs?: number;
   /** 最大重试次数 (default: 3) */
   maxRetries?: number;
@@ -73,12 +78,12 @@ export interface PipelineWorkerConfig {
    * 由 server.ts 注入 statefulManager.advanceL2TimerAfterL1。
    * 不注入则 L2 只靠 maxInterval 兜底。
    */
-  onL1Complete?: (sessionId: string, instanceId: string) => Promise<void>;
+  onL1Complete?: (sessionId: string, instanceId: string, teamId?: string, agentId?: string) => Promise<void>;
   /**
    * L2 完成后的回调，用于设置 L2 maxInterval timer。
    * 由 server.ts 注入 statefulManager.armL2MaxInterval。
    */
-  onL2Complete?: (sessionId: string, instanceId: string) => Promise<void>;
+  onL2Complete?: (sessionId: string, instanceId: string, teamId?: string, agentId?: string) => Promise<void>;
   /**
    * 分布式锁粒度 (default: "session")
    * - "session": L1/L2 per-session 锁, L3 per-instance 锁 (原行为, 最大并发)
@@ -89,6 +94,13 @@ export interface PipelineWorkerConfig {
    * 灰度时必须在 lockTtlMs 时间内完成全 worker 同步切换, 避免新老 worker 用不同 key 同时持锁.
    */
   lockGranularity?: "session" | "instance";
+
+  /**
+   * PipelineWorker 内部的并发信号量。historically 跨 memory + skill V2 worker 共享,
+   * 2026-07-17 skill 改造后 skill 侧不再用信号量做并发上限, 现在只有 memory
+   * pipeline 一个 consumer。未注入时行为不变。processTask 入口 acquire、finally release。
+   */
+  permitPool?: import("./worker-permit-pool.js").WorkerPermitPool;
 }
 
 export interface DeadLetterEntry {
@@ -107,10 +119,11 @@ const TAG = "[pipeline-worker]";
 export class PipelineWorker {
   private backend: IStateBackend;
   private executor: TaskExecutor;
-  private config: Required<Omit<PipelineWorkerConfig, "onDeadLetter" | "onL1Complete" | "onL2Complete">> & {
+  private config: Required<Omit<PipelineWorkerConfig, "onDeadLetter" | "onL1Complete" | "onL2Complete" | "permitPool">> & {
     onDeadLetter?: PipelineWorkerConfig["onDeadLetter"];
     onL1Complete?: PipelineWorkerConfig["onL1Complete"];
     onL2Complete?: PipelineWorkerConfig["onL2Complete"];
+    permitPool?: PipelineWorkerConfig["permitPool"];
   };
   private logger: Logger;
 
@@ -151,9 +164,9 @@ export class PipelineWorker {
     this.logger = logger ?? { info: console.log, warn: console.warn, error: console.error };
     this.config = {
       workerId: config?.workerId ?? `worker-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      concurrency: config?.concurrency ?? 10,
+      concurrency: config?.concurrency ?? 60,
       pollIntervalMs: config?.pollIntervalMs ?? 200,
-      lockTtlMs: config?.lockTtlMs ?? 120000,
+      lockTtlMs: config?.lockTtlMs ?? 240000,
       lockRenewIntervalMs: config?.lockRenewIntervalMs ?? 30000,
       maxRetries: config?.maxRetries ?? 3,
       retryBaseDelayMs: config?.retryBaseDelayMs ?? 5000,
@@ -163,6 +176,7 @@ export class PipelineWorker {
       onL1Complete: config?.onL1Complete,
       onL2Complete: config?.onL2Complete,
       lockGranularity: config?.lockGranularity ?? "session",
+      permitPool: config?.permitPool,
     };
   }
 
@@ -252,6 +266,25 @@ export class PipelineWorker {
     const lockKey = this.getLockKey(task);
     const retryCount = (task.data?.retryCount as number) ?? 0;
 
+    // permitPool acquire：memory pipeline 内部并发限流 (历史上跨 skill V2 共用，
+    // 2026-07 后 skill 侧不再用信号量做并发上限)。未注入 pool 时是 no-op。
+    // lock-free 与 with-lock 两条分支都要 finally release —— 用 releasePermitOnce 幂等。
+    const permitPool = this.config.permitPool;
+    if (permitPool) {
+      await permitPool.acquire();
+    }
+    let permitReleased = false;
+    const releasePermitOnce = (): void => {
+      if (permitReleased) return;
+      permitReleased = true;
+      if (permitPool) {
+        try { permitPool.release(); }
+        catch (err) {
+          this.logger.warn(`${TAG} permitPool release error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    };
+
     // Lock-free path: offload-l1 doesn't need distributed lock
     if (lockKey === null) {
       this.runningTasks.set(task.id, task);
@@ -281,6 +314,7 @@ export class PipelineWorker {
         }
       } finally {
         this.runningTasks.delete(task.id);
+        releasePermitOnce();
 
         // Deferred enqueue (same as locked path)
         const deferred = (task as any)._deferredEnqueue as TaskPayload[] | undefined;
@@ -310,6 +344,7 @@ export class PipelineWorker {
         if (msgId) {
           try { await this.backend.ackTask(msgId); } catch { /* best effort */ }
         }
+        releasePermitOnce();
         return;
       }
 
@@ -339,6 +374,7 @@ export class PipelineWorker {
         if (msgId) {
           try { await this.backend.ackTask(msgId); } catch { /* best effort */ }
         }
+        releasePermitOnce();
         return;
       }
       // Fall through to execute with acquired lock
@@ -455,6 +491,7 @@ export class PipelineWorker {
       this.activeLocks.delete(lockKey);
       this.runningTasks.delete(task.id);
       try { await this.backend.releaseLock(lockKey, this.config.workerId); } catch { /* best effort */ }
+      releasePermitOnce();
 
       // Step 7: 延迟入队 — executor 可通过 task._deferredEnqueue 暂存需要在锁释放后才入队的任务，
       // 避免新任务立即被消费时因同 session 锁仍被持有而产生不必要的锁冲突。
@@ -492,22 +529,29 @@ export class PipelineWorker {
 
   private async cascadeSchedule(task: TaskPayload): Promise<void> {
     const now = Date.now();
+    const tid = task.teamId ?? (task.data as any)?.teamId;
+    const aid = task.agentId ?? (task.data as any)?.agentId;
 
     if (task.type === "L1" || task.type === "flush") {
-      // L1 完成 → 更新 state + 推进 L2 timer（快路径，delay=10s）
+      // L1 完成 → reset session-level L1 state, then advance agent/profile-level L2 timers.
       await this.backend.updateSessionState(task.instanceId, task.sessionId, {
         conversation_count: 0,
-        l2_pending_l1_count: 1,
-      });
-      // onL1Complete 由 server.ts 注入 statefulManager.advanceL2TimerAfterL1
+      }, tid, aid);
+      const profileScopes = Array.isArray((task as any)._l2ProfileScopes)
+        ? ((task as any)._l2ProfileScopes as string[]).filter(Boolean)
+        : [];
+      const l2Keys = profileScopes.length > 0 ? profileScopes : [task.sessionId];
       if (this.config.onL1Complete) {
-        try {
-          await this.config.onL1Complete(task.sessionId, task.instanceId);
-        } catch (err) {
-          this.logger?.warn?.(`${TAG} onL1Complete failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        for (const l2Key of l2Keys) {
+          try {
+            await this.backend.updateSessionState(task.instanceId, l2Key, { l2_pending_l1_count: 1 }, tid, aid);
+            await this.config.onL1Complete(l2Key, task.instanceId, tid, aid);
+          } catch (err) {
+            this.logger?.warn?.(`${TAG} onL1Complete failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          }
         }
       }
-      this.logger?.debug?.(`${TAG} [${task.instanceId}/${task.sessionId}] L1 done → L2 timer advanced`);
+      this.logger?.debug?.(`${TAG} [${task.instanceId}/${task.sessionId}] L1 done → L2 timer advanced (${l2Keys.join(",")})`);
     }
 
     if (task.type === "L2") {
@@ -518,23 +562,26 @@ export class PipelineWorker {
       }
 
       // L2 完成 → 直接入队 L3（携带 trace context 用于跨异步链路关联）
+      // L3 task 也带 team/agent，保锁粒度对齐
       await this.backend.enqueueTask({
         id: `L3-${task.instanceId}-${now}`,
         type: "L3",
         instanceId: task.instanceId,
         sessionId: task.sessionId,
+        teamId: tid,
+        agentId: aid,
         priority: 2,
-        data: task.data ? { ...task.data, ...serializeTraceContext() } : { ...serializeTraceContext() },
+        data: task.data ? { ...task.data, ...serializeTraceContext() } : { teamId: tid, agentId: aid, ...serializeTraceContext() },
         createdAt: now,
       });
       await this.backend.updateSessionState(task.instanceId, task.sessionId, {
         l2_pending_l1_count: 0,
         l2_last_extraction_time: new Date().toISOString(),
-      });
+      }, tid, aid);
       // onL2Complete 由 server.ts 注入 statefulManager.armL2MaxInterval
       if (this.config.onL2Complete) {
         try {
-          await this.config.onL2Complete(task.sessionId, task.instanceId);
+          await this.config.onL2Complete(task.sessionId, task.instanceId, tid, aid);
         } catch (err) {
           this.logger?.warn?.(`${TAG} onL2Complete failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -548,27 +595,32 @@ export class PipelineWorker {
   // ============================
 
   /**
-   * Lock key 设计（受 lockGranularity 控制）：
+   * Lock key 设计：
    *
-   * lockGranularity="session" (default, 原行为):
-   *   - L1/L2: pipeline:{instanceId}:{sessionId}  — 同一 session 的 L1/L2 串行
-   *   - L3:    pipeline:{instanceId}              — 同一实例的 L3 串行（L3 无 sessionId 语义）
-   *   不含 task.type，确保 L1→L2→L3 天然有序：
-   *   L1 持锁执行中 → L2 timer 到期入队 → L2 抢锁失败 → 延迟重投 → L1 释放后 L2 才执行
+   * v2 pipeline 默认 (lockGranularity="session", 实际是 (instance, team, agent) 散开):
+   *   - L1: pipeline:{inst:tid:aid}:s:{sess}   — session 级锁
+   *           L1 数据按 (team,user,agent,session) 在 TCVDB 隔离，
+   *           不同 session 真并发抽取
+   *   - L2: pipeline:{inst:tid:aid}            — agent 级锁
+   *           L2 落地是 profiles/team:T|agent:X/scene_blocks/ 共享目录，
+   *           同 agent 不同 session 的 L2 必须互斥避免撞写 scene/index 文件
+   *   - L3: pipeline:{inst:tid:aid}            — agent 级锁（同 L2）
+   *           L3 写 profiles/team:T|agent:X/persona.md 一个 agent 一份
    *
-   * lockGranularity="instance" (CR-1 临时缓解, 2026-05-19):
-   *   - L1/L2/L3: pipeline:{instanceId}            — 全部 instance 级共享同一把锁
-   *   用途: 防止同 instance 不同 session 并发 append 到 daily JSONL 共享 key.
-   *   代价: 单 instance 内 task 完全串行, 单 instance 吞吐下降.
-   *   推荐配合 indexed/exponential backoff retry (见 processTask 中的 lockConflictBaseDelayMs).
+   * 跨 agent 完全并发：不同 (tid, aid) 散到不同 Redis Cluster slot，
+   * 避免单 instance 集中到一个 hash slot 形成大 key 热点。
    *
-   * Remote backend routing note:
-   *   instanceId 用 `{...}` 包裹，便于支持分片型后端将同一 instance 的
-   *   lock 路由到同一分片，减少跨分片协调开销。
+   * teamId / agentId 缺失（旧调用 / offload）时退化到 "_:_" 占位，
+   * 等价于按 instance 维度落同一 slot —— 兼容老行为，不会破坏锁互斥。
+   *
+   * lockGranularity="instance" (legacy CR-1 缓解):
+   *   - L1/L2/L3: pipeline:{instanceId}        — 全部 instance 级共享同一把锁
+   *   不推荐使用，保留向后兼容。新部署用默认即可。
    *
    * Rolling upgrade caveat:
    *   升级窗口期，新旧 pod 看到的 lock key 格式不同，可能短暂破坏跨 pod
-   *   互斥。缓解: 升级时停所有 worker → 等 pending 任务清空 → 启动新版。
+   *   互斥。本次升级已通过 keyPrefix 从 tdai_memory → tdai_memory_v2 物理隔离，
+   *   新老 pod 走不同 redis 命名空间，无交叉。
    */
   private getLockKey(task: TaskPayload): string | null {
     // offload-l1 is lock-free: rename guarantees exclusive file ownership,
@@ -589,11 +641,38 @@ export class PipelineWorker {
     if (this.config.lockGranularity === "instance") {
       return `pipeline:{${task.instanceId}}`;
     }
-    // session granularity (default)
-    if (task.type === "L3") {
-      return `pipeline:{${task.instanceId}}`;
+
+    // v2 默认：按 (instance, team, agent) 散开 hash tag
+    //
+    // teamId/agentId 优先级：
+    //   1. task.teamId / task.agentId（v2 入队时显式带）
+    //   2. task.data.teamId / task.data.agentId（兼容老调用）
+    //   3. 从 task.sessionId 解析（timer-scanner 入队的 L2/L3 task,
+    //      sessionId 形如 "profile:team:T|agent:A" 或
+    //      "profile:team:T|agent:A|session:S" 时从里面抠出 tid/aid）
+    //   4. "_" 占位退化到 instance 级（不推荐，hash 集中）
+    let tid = task.teamId || (task.data as any)?.teamId;
+    let aid = task.agentId || (task.data as any)?.agentId;
+    if (!tid || !aid) {
+      const m = task.sessionId.match(/^profile:team:([^|]+)\|agent:([^|]+)(?:\|session:.+)?$/);
+      if (m) {
+        // profile scope 里的 team 字段实际是 (teamId || userId)，与 buildProfileIsolationScope 一致。
+        // 这里直接当 teamId 用即可，hash 分桶维度对齐就行。
+        // 如果 key 携带 source session，它只作为 L2 输入边界，不进入锁粒度。
+        tid = tid || m[1];
+        aid = aid || m[2];
+      }
     }
-    return `pipeline:{${task.instanceId}}:${task.sessionId}`;
+    tid = tid || "_";
+    aid = aid || "_";
+    const ns = `{${task.instanceId}:${tid}:${aid}}`;
+
+    if (task.type === "L2" || task.type === "L3") {
+      // agent 级锁：同 agent 的 L2/L3 互斥，避免共享目录撞写
+      return `pipeline:${ns}`;
+    }
+    // L1 + flush 仍是 session 级
+    return `pipeline:${ns}:s:${task.sessionId}`;
   }
 
   // ============================
@@ -612,7 +691,7 @@ export class PipelineWorker {
     // CR-1 fix: ACK the original message to prevent stale recovery from picking it up
     // again. Without this, a dead-lettered task remains in XPENDING and gets re-claimed
     // every pendingRecoveryIntervalMs, causing infinite retry loops that block the
-    // worker pool (see mem-nqm17qg7 incident).
+    // worker pool (root-caused from a production incident).
     const msgId = (task as any)._msgId;
     if (msgId) {
       try { await this.backend.ackTask(msgId); } catch { /* best effort */ }
@@ -620,8 +699,10 @@ export class PipelineWorker {
 
     // Clean up timers for this session to prevent ghost triggers
     try {
-      await this.backend.removeTimer(task.instanceId, `${task.sessionId}:L1_idle`);
-      await this.backend.removeTimer(task.instanceId, `${task.sessionId}:L2_schedule`);
+      const tid = task.teamId ?? (task.data as any)?.teamId;
+      const aid = task.agentId ?? (task.data as any)?.agentId;
+      await this.backend.removeTimer(task.instanceId, buildPipelineTimerMember(task.sessionId, "L1_idle", { teamId: tid, agentId: aid }));
+      await this.backend.removeTimer(task.instanceId, buildPipelineTimerMember(task.sessionId, "L2_schedule", { teamId: tid, agentId: aid }));
     } catch { /* best effort */ }
 
     // 关键节点日志：任务进入死信队列

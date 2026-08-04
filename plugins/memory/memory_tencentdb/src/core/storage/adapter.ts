@@ -11,7 +11,71 @@
  * this adapter can be removed.
  */
 
-import type { IStorageBackend, StorageObject, ListEntry } from "./types.js";
+import type { IStorageBackend, StorageObject, ListEntry, ListObjectsOptions, ListResult, PutObjectOptions } from "./types.js";
+
+class ScopedStorageBackend implements IStorageBackend {
+  readonly type: "local" | "cos";
+  private readonly prefix: string;
+
+  constructor(private readonly base: IStorageBackend, prefix: string) {
+    this.type = base.type;
+    const normalized = prefix.replace(/^\/+/, "").replace(/\/+/g, "/");
+    this.prefix = normalized && !normalized.endsWith("/") ? `${normalized}/` : normalized;
+  }
+
+  private key(key: string): string {
+    if (typeof key !== "string" || key.includes("\0") || key.startsWith("/") || key.startsWith("\\")) {
+      throw new Error(`Invalid scoped storage key: ${JSON.stringify(key)}`);
+    }
+    const normalized = key.replace(/^\/+/, "").replace(/\\+/g, "/").replace(/\/+/g, "/");
+    if (normalized.split("/").some((part) => part === "..")) {
+      throw new Error(`Path traversal rejected in scoped storage key: ${key}`);
+    }
+    return `${this.prefix}${normalized}`;
+  }
+
+  private unkey(key: string): string {
+    return key.startsWith(this.prefix) ? key.slice(this.prefix.length) : key;
+  }
+
+  async putObject(key: string, content: string | Buffer, opts?: PutObjectOptions): Promise<void> {
+    return this.base.putObject(this.key(key), content, opts);
+  }
+
+  async appendObject(key: string, content: string | Buffer): Promise<void> {
+    return this.base.appendObject(this.key(key), content);
+  }
+
+  async getObject(key: string): Promise<StorageObject | null> {
+    const obj = await this.base.getObject(this.key(key));
+    return obj ? { ...obj, key: this.unkey(obj.key) } : null;
+  }
+
+  async exists(key: string): Promise<boolean> {
+    return this.base.exists(this.key(key));
+  }
+
+  async listObjects(prefix: string, opts?: ListObjectsOptions): Promise<ListResult> {
+    const result = await this.base.listObjects(this.key(prefix), opts);
+    return {
+      ...result,
+      entries: result.entries.map((entry) => ({ ...entry, key: this.unkey(entry.key) })),
+    };
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    return this.base.deleteObject(this.key(key));
+  }
+
+  async deleteByPrefix(prefix: string): Promise<number> {
+    return this.base.deleteByPrefix(this.key(prefix));
+  }
+}
+
+export function createScopedStorageAdapter(base: StorageAdapter, prefix: string): StorageAdapter {
+  if (!prefix) return base;
+  return new StorageAdapter(new ScopedStorageBackend(base.getBackend(), prefix));
+}
 
 export class StorageAdapter {
   constructor(private backend: IStorageBackend) {}
@@ -147,6 +211,68 @@ export class StorageAdapter {
       contentType: obj.contentType,
       metadata: obj.metadata,
     });
+  }
+
+  // ── fs.cp -r replacement (new in v2 redesign for skill versioning) ──
+
+  /**
+   * Recursively copy all objects under `srcPrefix` to `dstPrefix`.
+   *
+   * 路径映射：每个 src 下的 object key `${srcPrefix}/path/to/x` 都会被复制到
+   * `${dstPrefix}/path/to/x`。`prefix` 之间的相对路径保持不变。
+   *
+   * 行为：
+   *   - srcPrefix 下没有任何对象 → throw `STORAGE_NOT_FOUND: <srcPrefix>`
+   *   - dstPrefix 已存在 ≥1 个对象 → 默认 throw `DESTINATION_EXISTS: <dstPrefix>`
+   *   - 传入 `{ overwrite: true }` 时允许覆盖（dst 端可能存在残留也照写）
+   *
+   * 在 Phase 5 之后被 skill-versioning 使用：每次 owner 改动触发新版本时，
+   * 把上一版本目录拷贝到新版本目录，再应用本次资源变更（write/remove）。
+   */
+  async copyTree(
+    srcPrefix: string,
+    dstPrefix: string,
+    opts: { overwrite?: boolean } = {},
+  ): Promise<void> {
+    const srcEntries = await this.backend.listObjects(srcPrefix, {
+      maxKeys: 100_000,
+      recursive: true,
+    });
+
+    // src 下没有任何对象 → 视为不存在
+    const srcFiles = srcEntries.entries.filter((e) => !e.isDirectory);
+    const srcExists = await this.backend.exists(srcPrefix);
+    if (srcFiles.length === 0 && !srcExists) {
+      throw new Error(`STORAGE_NOT_FOUND: ${srcPrefix}`);
+    }
+
+    if (!opts.overwrite) {
+      const dstEntries = await this.backend.listObjects(dstPrefix, {
+        maxKeys: 1000,
+        recursive: true,
+      });
+      if (dstEntries.entries.some((e) => !e.isDirectory)) {
+        throw new Error(`DESTINATION_EXISTS: ${dstPrefix}`);
+      }
+    }
+
+    const srcNorm = srcPrefix.endsWith("/") ? srcPrefix : srcPrefix + "/";
+    const dstNorm = dstPrefix.endsWith("/") ? dstPrefix : dstPrefix + "/";
+
+    for (const entry of srcFiles) {
+      // 计算相对路径
+      let rel = entry.key;
+      if (rel.startsWith(srcNorm)) rel = rel.slice(srcNorm.length);
+      else if (rel === srcPrefix) rel = "";
+      const dstKey = `${dstNorm}${rel}`;
+
+      const obj = await this.backend.getObject(entry.key);
+      if (!obj) continue;
+      await this.backend.putObject(dstKey, obj.content, {
+        contentType: obj.contentType,
+        metadata: obj.metadata,
+      });
+    }
   }
 
   // ── Direct backend access ──

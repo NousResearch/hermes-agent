@@ -42,7 +42,6 @@ export function registerOffloadClient(api: OpenClawPluginApi, userConfig: Partia
   const afterToolCallHandler = createAfterToolCallHandler(
     client, config, logger,
     (sessionKey) => engine.getContext(sessionKey),
-    config.agentName,  // ← NEW: pass agentName for sessionId construction
   );
   api.on("after_tool_call", afterToolCallHandler);
 

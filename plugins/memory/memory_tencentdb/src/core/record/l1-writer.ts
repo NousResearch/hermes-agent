@@ -17,7 +17,7 @@
  */
 
 import crypto from "node:crypto";
-import type { IMemoryStore } from "../store/types.js";
+import { DEFAULT_ISOLATION_ID, type IMemoryStore } from "../store/types.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
@@ -27,8 +27,15 @@ import type { Logger } from "../types.js";
 // Types
 // ============================
 
-/** v3: 3 memory types aligned with Kenty's extraction prompt */
-export type MemoryType = "persona" | "episodic" | "instruction";
+/** L1 memory types: chat-mode legacy types + code/work-mode team memory types. */
+export type MemoryType =
+  | "persona"
+  | "episodic"
+  | "instruction"
+  | "work_fact"
+  | "work_task"
+  | "work_method"
+  | "work_artifact";
 
 /** Metadata for episodic memories (activity time range) */
 export interface EpisodicMetadata {
@@ -66,10 +73,28 @@ export interface MemoryRecord {
   createdAt: string;
   /** Last update timestamp (ISO) */
   updatedAt: string;
+  /** Monotonic version. New memories start at 1; update/merge increments by 1. */
+  version?: number;
   /** Source session key (conversation channel identifier) */
   sessionKey: string;
   /** Source session ID (single conversation instance identifier) */
   sessionId: string;
+  /** Optional task dimension for L0/L1 filtering. */
+  taskId?: string;
+  /**
+   * Three-dim tenancy isolation (new in this branch).
+   *
+   * `userId` / `agentId` are mandatory for new writes once gateway-level
+   * isolation enforcement is on, but kept optional on the type to avoid
+   * breaking pre-isolation call sites and tests during rollout. The SQLite
+   * upsert defaults them to '' if missing; the migration script backfills
+   * existing rows with `__legacy__`.
+   *
+   * See `docs/l0l3-tenant-isolation-design.md`.
+   */
+  teamId?: string;
+  userId?: string;
+  agentId?: string;
 }
 
 /**
@@ -141,6 +166,11 @@ export async function writeMemory(params: {
   baseDir: string;
   sessionKey: string;
   sessionId?: string;
+  taskId?: string;
+  /** Tenancy isolation propagated into MemoryRecord and downstream store. */
+  teamId?: string;
+  userId?: string;
+  agentId?: string;
   logger?: Logger;
   /** Optional vector store for dual-write (JSONL + vector DB) */
   vectorStore?: IMemoryStore;
@@ -149,7 +179,7 @@ export async function writeMemory(params: {
   /** StorageAdapter for file operations (COS/local). Falls back to fs when absent. */
   storage?: StorageAdapter;
 }): Promise<MemoryRecord | null> {
-  const { memory, decision, baseDir, sessionKey, sessionId, logger, vectorStore, embeddingService, storage } = params;
+  const { memory, decision, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage } = params;
 
   if (decision.action === "skip") {
     logger?.debug?.(`${TAG} Skipping memory: ${memory.content.slice(0, 50)}...`);
@@ -157,6 +187,17 @@ export async function writeMemory(params: {
   }
 
   const now = new Date().toISOString();
+
+  let nextVersion = 0;
+  if ((decision.action === "update" || decision.action === "merge") && decision.target_ids.length > 0 && vectorStore) {
+    try {
+      const existing = await vectorStore.queryL1Records({ recordIds: decision.target_ids });
+      const maxVersion = existing.reduce((max, row) => Math.max(max, row.version ?? 0), 0);
+      nextVersion = maxVersion + 1;
+    } catch (err) {
+      logger?.warn?.(`${TAG} Failed to read existing memory version, defaulting to v0: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   // Determine final content, type, priority based on action
   let finalContent: string;
@@ -188,8 +229,16 @@ export async function writeMemory(params: {
     timestamps: finalTimestamps,
     createdAt: now,
     updatedAt: now,
+    version: nextVersion,
     sessionKey,
-    sessionId: sessionId || "",
+    sessionId: sessionId || DEFAULT_ISOLATION_ID,
+    taskId,
+    teamId,
+    // Tenancy isolation — propagated end-to-end so SQLite / TCVDB upsert
+    // can persist the row's owner. Empty strings preserve pre-isolation
+    // behaviour for callers that haven't been updated yet.
+    userId: userId || DEFAULT_ISOLATION_ID,
+    agentId: agentId || DEFAULT_ISOLATION_ID,
   };
 
   const shardDate = formatLocalDate(new Date());
@@ -229,7 +278,14 @@ export async function writeMemory(params: {
     // by memory-cleaner (which reconciles against VectorStore as source of truth).
     if (vectorStore) {
       try {
-        await vectorStore.deleteL1Batch(decision.target_ids);
+        const deleteFilter = teamId || userId || agentId || sessionId
+          ? { teamId, userId, agentId, sessionId: sessionId || undefined, sessionKey }
+          : undefined;
+        if (deleteFilter) {
+          await vectorStore.deleteL1Batch(decision.target_ids, deleteFilter);
+        } else {
+          await vectorStore.deleteL1Batch(decision.target_ids);
+        }
         logger?.debug?.(`${TAG} VectorStore: deleted ${decision.target_ids.length} target record(s) for ${decision.action}`);
       } catch (err) {
         logger?.warn?.(

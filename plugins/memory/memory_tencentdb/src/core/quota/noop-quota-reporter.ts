@@ -21,7 +21,7 @@ export class NoopQuotaReporter implements IQuotaReporter {
     _instanceId: string,
     _memoryDelta: number,
     _creditDelta: number,
-    _level: "L0" | "L1" | "L2" | "L3",
+    _level: "L0" | "L1" | "L2" | "L3" | "Skill",
   ): Promise<void> {
     // intentionally empty — default build does not bill
   }

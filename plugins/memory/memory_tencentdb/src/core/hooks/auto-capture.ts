@@ -16,7 +16,7 @@ import { CheckpointManager } from "../../utils/checkpoint.js";
 import type { MemoryPipelineManager } from "../../utils/pipeline-manager.js";
 import { recordConversation } from "../conversation/l0-recorder.js";
 import type { ConversationMessage } from "../conversation/l0-recorder.js";
-import type { IMemoryStore, L0Record } from "../store/types.js";
+import { DEFAULT_ISOLATION_ID, type IMemoryStore, type L0Record } from "../store/types.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 
@@ -184,7 +184,7 @@ export async function performAutoCapture(params: {
         const l0Record: L0Record = {
           id: generateL0RecordId(sessionKey, i),
           sessionKey,
-          sessionId: sessionId || "",
+          sessionId: sessionId || DEFAULT_ISOLATION_ID,
           role: msg.role,
           messageText: msg.content,
           recordedAt: now,

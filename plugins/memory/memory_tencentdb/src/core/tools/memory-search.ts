@@ -10,7 +10,7 @@
  * The tool is registered via `api.registerTool()` in index.ts.
  */
 
-import type { IMemoryStore, L1SearchResult } from "../store/types.js";
+import type { IMemoryStore, IsolationFilter, L1SearchResult } from "../store/types.js";
 import { buildFtsQuery } from "../store/sqlite.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
@@ -23,9 +23,14 @@ export interface MemorySearchResultItem {
   id: string;
   content: string;
   type: string;
+  team_id?: string;
+  user_id?: string;
+  agent_id?: string;
+  task_id?: string;
   priority: number;
   scene_name: string;
   score: number;
+  version: number;
   created_at: string;
   updated_at: string;
 }
@@ -84,6 +89,7 @@ export async function executeMemorySearch(params: {
   limit: number;
   type?: string;
   scene?: string;
+  filter?: IsolationFilter;
   vectorStore?: IMemoryStore;
   embeddingService?: EmbeddingService;
   logger?: Logger;
@@ -93,6 +99,7 @@ export async function executeMemorySearch(params: {
     limit,
     type: typeFilter,
     scene: sceneFilter,
+    filter: isolationFilter,
     vectorStore,
     embeddingService,
     logger,
@@ -141,7 +148,9 @@ export async function executeMemorySearch(params: {
   // second HTTP request with garbled FTS tokens as embedding input.
   if (vectorStore.getCapabilities().nativeHybridSearch && vectorStore.searchL1Hybrid) {
     logger?.debug?.(`${TAG} [native-hybrid] Single-call hybrid search...`);
-    const results = await vectorStore.searchL1Hybrid({ query, topK: candidateK });
+    const results = await vectorStore.searchL1Hybrid(
+      isolationFilter ? { query, topK: candidateK, filter: isolationFilter } : { query, topK: candidateK },
+    );
     let items: MemorySearchResultItem[] = results.map((r) => ({
       id: r.record_id,
       content: r.content,
@@ -149,6 +158,11 @@ export async function executeMemorySearch(params: {
       priority: r.priority,
       scene_name: r.scene_name,
       score: r.score,
+      team_id: r.team_id,
+      user_id: r.user_id,
+      agent_id: r.agent_id,
+      task_id: r.task_id,
+      version: r.version ?? 0,
       created_at: r.timestamp_start,
       updated_at: r.timestamp_end,
     }));
@@ -179,7 +193,9 @@ export async function executeMemorySearch(params: {
           return [];
         }
         logger?.debug?.(`${TAG} [hybrid-fts] FTS5 query: "${ftsQuery}"`);
-        const ftsResults = await vectorStore.searchL1Fts(ftsQuery, candidateK);
+        const ftsResults = isolationFilter
+          ? await vectorStore.searchL1Fts(ftsQuery, candidateK, isolationFilter)
+          : await vectorStore.searchL1Fts(ftsQuery, candidateK);
         logger?.debug?.(`${TAG} [hybrid-fts] FTS5 returned ${ftsResults.length} candidates`);
         return ftsResults.map((r) => ({
           id: r.record_id,
@@ -188,6 +204,11 @@ export async function executeMemorySearch(params: {
           priority: r.priority,
           scene_name: r.scene_name,
           score: r.score,
+          team_id: r.team_id,
+      user_id: r.user_id,
+      agent_id: r.agent_id,
+      task_id: r.task_id,
+      version: r.version ?? 0,
           created_at: r.timestamp_start,
           updated_at: r.timestamp_end,
         }));
@@ -208,7 +229,9 @@ export async function executeMemorySearch(params: {
         logger?.debug?.(
           `${TAG} [hybrid-vec] Embedding OK, dims=${queryEmbedding.length}, searching top-${candidateK}...`,
         );
-        const vecResults: L1SearchResult[] = await vectorStore.searchL1Vector(queryEmbedding, candidateK, query);
+        const vecResults: L1SearchResult[] = isolationFilter
+          ? await vectorStore.searchL1Vector(queryEmbedding, candidateK, query, isolationFilter)
+          : await vectorStore.searchL1Vector(queryEmbedding, candidateK, query);
         logger?.debug?.(`${TAG} [hybrid-vec] Vector search returned ${vecResults.length} candidates`);
         return vecResults.map((r) => ({
           id: r.record_id,
@@ -217,6 +240,11 @@ export async function executeMemorySearch(params: {
           priority: r.priority,
           scene_name: r.scene_name,
           score: r.score,
+          team_id: r.team_id,
+      user_id: r.user_id,
+      agent_id: r.agent_id,
+      task_id: r.task_id,
+      version: r.version ?? 0,
           created_at: r.timestamp_start,
           updated_at: r.timestamp_end,
         }));

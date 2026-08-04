@@ -67,6 +67,7 @@ export function createStoreBundle(
         username: tcvdbCfg.username,
         apiKey: tcvdbCfg.apiKey,
         database,
+        embeddingEnabled: tcvdbCfg.embeddingEnabled,
         embeddingModel: tcvdbCfg.embeddingModel,
         timeout: tcvdbCfg.timeout,
         caPemPath: tcvdbCfg.caPemPath,
@@ -75,7 +76,8 @@ export function createStoreBundle(
       });
 
       logger?.debug?.(
-        `${TAG} Store created: backend=tcvdb, database=${database}, model=${tcvdbCfg.embeddingModel}, ` +
+        `${TAG} Store created: backend=tcvdb, database=${database}, ` +
+        `embedding=${tcvdbCfg.embeddingEnabled ? `enabled(${tcvdbCfg.embeddingModel})` : "disabled"}, ` +
         `bm25=${bm25Encoder ? "enabled" : "disabled"}`,
       );
 

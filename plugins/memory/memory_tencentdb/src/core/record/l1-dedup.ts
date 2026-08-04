@@ -11,15 +11,17 @@
  * 2. Batch LLM judgment on all new memories + their candidate pools (single call)
  */
 
+import type { MemoryPromptMode } from "../../config.js";
 import type { ExtractedMemory, MemoryRecord, DedupDecision, MemoryType } from "./l1-writer.js";
-import { CONFLICT_DETECTION_SYSTEM_PROMPT, formatBatchConflictPrompt } from "../prompts/l1-dedup.js";
+import { formatBatchConflictPrompt, getConflictDetectionSystemPrompt } from "../prompts/l1-dedup.js";
 import type { CandidateMatch } from "../prompts/l1-dedup.js";
 import { CleanContextRunner } from "../../utils/clean-context-runner.js";
 import { sanitizeJsonForParse } from "../../utils/sanitize.js";
-import type { IMemoryStore } from "../store/types.js";
+import type { IMemoryStore, IsolationFilter } from "../store/types.js";
 import { buildFtsQuery } from "../store/sqlite.js";
 import type { EmbeddingService } from "../store/embedding.js";
-import type { LLMRunner, Logger } from "../types.js";
+import type { LLMRunner, Logger, TraceContext } from "../types.js";
+import { buildTraceParams } from "../types.js";
 
 const TAG = "[memory-tdai][l1-dedup]";
 
@@ -53,6 +55,8 @@ export async function batchDedup(params: {
   config: unknown;
   logger?: Logger;
   model?: string;
+  /** Prompt family for conflict detection (default: chat). */
+  promptMode?: MemoryPromptMode;
   /** Vector store for cosine similarity candidate recall */
   vectorStore?: IMemoryStore;
   /** Embedding service for computing query vectors */
@@ -63,8 +67,12 @@ export async function batchDedup(params: {
   embeddingTimeoutMs?: number;
   /** Host-neutral LLM runner — when provided, used instead of CleanContextRunner. */
   llmRunner?: LLMRunner;
+  /** Isolation filter applied to candidate recall so dedup never crosses tenants. */
+  filter?: IsolationFilter;
+  /** langfuse 上报身份四元组（team/user/agent/session），透传给 llmRunner。 */
+  traceContext?: TraceContext;
 }): Promise<DedupDecision[]> {
-  const { memories, config, logger, model, vectorStore, embeddingService, llmRunner } = params;
+  const { memories, config, logger, model, promptMode = "chat", vectorStore, embeddingService, llmRunner, filter, traceContext } = params;
   const topK = params.conflictRecallTopK ?? 5;
 
   if (memories.length === 0) {
@@ -99,11 +107,11 @@ export async function batchDedup(params: {
   if (hasVectorData && embeddingService) {
     // === Tier 1: Vector recall mode ===
     logger?.debug?.(`${TAG} Using vector recall mode (topK=${topK})`);
-    matches = await findCandidatesByVector(memories, vectorStore!, embeddingService, topK, logger, params.embeddingTimeoutMs);
+    matches = await findCandidatesByVector(memories, vectorStore!, embeddingService, topK, logger, params.embeddingTimeoutMs, filter);
   } else if (hasFts) {
     // === Tier 2: FTS keyword recall ===
     logger?.debug?.(`${TAG} Using FTS keyword recall mode (no embedding service or no vector data)`);
-    matches = await findCandidatesByFts(memories, vectorStore!, logger);
+    matches = await findCandidatesByFts(memories, vectorStore!, logger, filter);
   } else {
     // Shouldn't reach here given the fast-path check above, but be defensive
     logger?.debug?.(`${TAG} No usable recall path, skipping conflict detection`);
@@ -119,7 +127,7 @@ export async function batchDedup(params: {
   }
 
   // Phase 2: Batch LLM judgment
-  return runLlmJudgment(matches, memories, config, logger, model, llmRunner);
+  return runLlmJudgment(matches, memories, config, logger, model, promptMode, llmRunner, traceContext);
 }
 
 /**
@@ -131,21 +139,29 @@ async function runLlmJudgment(
   config: unknown,
   logger: Logger | undefined,
   model: string | undefined,
+  promptMode: MemoryPromptMode,
   llmRunner?: LLMRunner,
+  traceContext?: TraceContext,
 ): Promise<DedupDecision[]> {
-  logger?.debug?.(`${TAG} Running batch conflict detection for ${memories.length} memories`);
+  logger?.debug?.(`${TAG} Running batch conflict detection for ${memories.length} memories (promptMode=${promptMode})`);
 
   try {
     const userPrompt = formatBatchConflictPrompt(matches);
+    const systemPrompt = getConflictDetectionSystemPrompt(promptMode);
     let result: string;
+
+    // langfuse trace 语义：见 l1-extractor.ts 里的说明。dedup 是 L1 的子步骤，
+    // 用独立 name 便于在 UI 上区分 "抽取阶段" vs "去重判定阶段"。
+    const traceParams = buildTraceParams("memory.l1-dedup", traceContext);
 
     if (llmRunner) {
       // Use the host-neutral LLMRunner interface
       result = await llmRunner.run({
         prompt: userPrompt,
-        systemPrompt: CONFLICT_DETECTION_SYSTEM_PROMPT,
+        systemPrompt,
         taskId: "l1-conflict-detection",
         timeoutMs: 180_000,
+        ...traceParams,
       });
     } else {
       // Fallback: create CleanContextRunner (OpenClaw path)
@@ -158,9 +174,10 @@ async function runLlmJudgment(
 
       result = await runner.run({
         prompt: userPrompt,
-        systemPrompt: CONFLICT_DETECTION_SYSTEM_PROMPT,
+        systemPrompt,
         taskId: "l1-conflict-detection",
         timeoutMs: 180_000,
+        ...traceParams,
       });
     }
 
@@ -193,6 +210,7 @@ async function findCandidatesByVector(
   topK: number,
   logger?: Logger,
   embeddingTimeoutMs?: number,
+  filter?: IsolationFilter,
 ): Promise<CandidateMatch[]> {
   const newRecordIds = new Set(memories.map((m) => m.record_id));
 
@@ -207,7 +225,9 @@ async function findCandidatesByVector(
     const queryVec = embeddings[i];
 
     // Vector search top-K (request extra to account for self-batch filtering)
-    const searchResults = await vectorStore.searchL1Vector(queryVec, topK + memories.length, mem.content);
+    const searchResults = filter
+      ? await vectorStore.searchL1Vector(queryVec, topK + memories.length, mem.content, filter)
+      : await vectorStore.searchL1Vector(queryVec, topK + memories.length, mem.content);
 
     // Exclude records from current batch, convert to MemoryRecord format
     const candidates: MemoryRecord[] = searchResults
@@ -247,6 +267,7 @@ async function findCandidatesByFts(
   memories: Array<ExtractedMemory & { record_id: string }>,
   vectorStore: IMemoryStore,
   _logger?: Logger,
+  filter?: IsolationFilter,
 ): Promise<CandidateMatch[]> {
   const newRecordIds = new Set(memories.map((m) => m.record_id));
   const matches: CandidateMatch[] = [];
@@ -254,7 +275,9 @@ async function findCandidatesByFts(
   for (const mem of memories) {
     const ftsQuery = buildFtsQuery(mem.content);
     if (ftsQuery) {
-      const ftsResults = await vectorStore.searchL1Fts(ftsQuery, 10);
+      const ftsResults = filter
+        ? await vectorStore.searchL1Fts(ftsQuery, 10, filter)
+        : await vectorStore.searchL1Fts(ftsQuery, 10);
       // Filter out records from the current batch
       const candidates: MemoryRecord[] = ftsResults
         .filter((r) => !newRecordIds.has(r.record_id))
@@ -287,7 +310,7 @@ async function findCandidatesByFts(
 // Result parsing
 // ============================
 
-const VALID_TYPES: MemoryType[] = ["persona", "episodic", "instruction"];
+const VALID_TYPES: MemoryType[] = ["persona", "episodic", "instruction", "work_fact", "work_task", "work_method", "work_artifact"];
 
 /**
  * Parse the LLM's batch conflict detection JSON response.

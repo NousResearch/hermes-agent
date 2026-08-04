@@ -35,8 +35,16 @@ import {
 import { SceneExtractor } from "../core/scene/scene-extractor.js";
 import { PersonaTrigger } from "../core/persona/persona-trigger.js";
 import { PersonaGenerator } from "../core/persona/persona-generator.js";
-import { pullProfilesToLocal, syncLocalProfilesToStore } from "../core/profile/profile-sync.js";
-import type { StorageAdapter } from "../core/storage/adapter.js";
+import {
+  DEFAULT_PROFILE_SCOPE,
+  buildProfileIsolationScope,
+  parseProfileIsolationScope,
+  pullProfilesToLocal,
+  syncLocalProfilesToStore,
+  type ProfileIsolation,
+  type ProfileScopeOptions,
+} from "../core/profile/profile-sync.js";
+import { createScopedStorageAdapter, type StorageAdapter } from "../core/storage/adapter.js";
 import type { Logger } from "../core/types.js";
 
 const TAG = "[memory-tdai] [pipeline-factory]";
@@ -67,6 +75,74 @@ export const L1_BATCH_QUERY = L1_BATCH_PROCESS * 2;
 
 function supportsProfileSyncWrite(store?: IMemoryStore): boolean {
   return !!(store?.syncProfiles || store?.deleteProfiles);
+}
+
+export const PROFILE_L2_KEY_PREFIX = "profile:";
+
+function buildIsolationScope(ctx?: ProfileIsolation): string {
+  return buildProfileIsolationScope(ctx);
+}
+
+export function buildProfileL2Key(ctx?: ProfileIsolation): string {
+  const sourceSession = ctx?.sessionId ? `|session:${encodeURIComponent(ctx.sessionId)}` : "";
+  return `${PROFILE_L2_KEY_PREFIX}${buildIsolationScope(ctx)}${sourceSession}`;
+}
+
+function parseProfileL2Key(key: string): ProfileIsolation | undefined {
+  if (!key.startsWith(PROFILE_L2_KEY_PREFIX)) return undefined;
+  return parseProfileIsolationScope(key.slice(PROFILE_L2_KEY_PREFIX.length));
+}
+
+function profileStoragePrefixForScope(scope: string): string {
+  return `profiles/${encodeURIComponent(scope)}/`;
+}
+
+function scopedStorage(storage: StorageAdapter | undefined, ctx?: ProfileIsolation): StorageAdapter | undefined {
+  return storage ? createScopedStorageAdapter(storage, profileStoragePrefixForScope(buildIsolationScope(ctx))) : undefined;
+}
+
+function scopedStorageForScope(storage: StorageAdapter | undefined, scope: string): StorageAdapter | undefined {
+  if (!storage || scope === DEFAULT_PROFILE_SCOPE) return storage;
+  return createScopedStorageAdapter(storage, profileStoragePrefixForScope(scope));
+}
+
+function scopedDataDir(dataDir: string, ctx?: ProfileIsolation): string {
+  return scopedDataDirForScope(dataDir, buildIsolationScope(ctx));
+}
+
+function scopedDataDirForScope(dataDir: string, scope: string): string {
+  return scope === DEFAULT_PROFILE_SCOPE ? dataDir : path.join(dataDir, "profiles", encodeURIComponent(scope));
+}
+
+function profileOptionsForScope(scope: string): ProfileScopeOptions | undefined {
+  if (scope === DEFAULT_PROFILE_SCOPE) return undefined;
+  return { scope, isolation: parseProfileIsolationScope(scope) };
+}
+
+async function discoverProfileScopes(dataDir: string, storage: StorageAdapter | undefined, logger: Logger): Promise<string[]> {
+  const scopes = new Set<string>();
+  if (storage) {
+    try {
+      const result = await storage.getBackend().listObjects("profiles/", { recursive: true, maxKeys: 10000 });
+      for (const entry of result.entries) {
+        const rest = entry.key.startsWith("profiles/") ? entry.key.slice("profiles/".length) : "";
+        const encoded = rest.split("/")[0];
+        if (encoded) scopes.add(decodeURIComponent(encoded));
+      }
+    } catch (err) {
+      logger.debug?.(`${TAG} [L3] Failed to discover storage profile scopes: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } else {
+    try {
+      const entries = await fs.promises.readdir(path.join(dataDir, "profiles"), { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) scopes.add(decodeURIComponent(entry.name));
+      }
+    } catch {
+      // No scoped profiles yet; legacy root mode below handles existing unscoped scene files.
+    }
+  }
+  return Array.from(scopes).sort();
 }
 
 // ============================
@@ -303,6 +379,7 @@ export function createL1Runner(opts: {
   hasMore: boolean;
   /** True iff the over-fetch returned exactly L1_BATCH_QUERY rows (i.e. likely large backlog). */
   hasFullBacklog: boolean;
+  profileScopes: string[];
 }> {
   const { pluginDataDir, cfg, openclawConfig, vectorStore, embeddingService, logger, getInstanceId, llmRunner, storage } = opts;
   const config = openclawConfig as Record<string, unknown> | undefined;
@@ -310,7 +387,7 @@ export function createL1Runner(opts: {
   return async ({ sessionKey }) => {
     if (!config && !llmRunner) {
       logger.debug?.(`${TAG} [l1] No OpenClaw config and no LLM runner, skipping L1 extraction`);
-      return { processedCount: 0, storedCount: 0, hasMore: false, hasFullBacklog: false };
+      return { processedCount: 0, storedCount: 0, hasMore: false, hasFullBacklog: false, profileScopes: [] };
     }
 
     const checkpoint = new CheckpointManager(pluginDataDir, logger, storage);
@@ -328,7 +405,7 @@ export function createL1Runner(opts: {
       // the oldest L1_BATCH_PROCESS (= N) for actual processing and use the
       // remaining rows merely as a *signal* to detect backlog. See file-level
       // comment on L1_BATCH_PROCESS / L1_BATCH_QUERY for rationale.
-      type FlatMessage = ConversationMessage & { sessionId: string; recordedAtMs: number };
+      type FlatMessage = ConversationMessage & { sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; recordedAtMs: number };
       let flat: FlatMessage[] = [];
       let queriedCount = 0;
 
@@ -345,6 +422,10 @@ export function createL1Runner(opts: {
               content: m.content,
               timestamp: m.timestamp,
               sessionId: g.sessionId,
+              teamId: g.teamId,
+              taskId: g.taskId,
+              userId: g.userId,
+              agentId: g.agentId,
               recordedAtMs: m.recordedAtMs,
             });
           }
@@ -375,6 +456,10 @@ export function createL1Runner(opts: {
               content: m.content,
               timestamp: m.timestamp,
               sessionId: g.sessionId,
+              teamId: undefined,
+              taskId: undefined,
+              userId: "",
+              agentId: "",
               recordedAtMs: m.recordedAtMs,
             });
           }
@@ -386,7 +471,7 @@ export function createL1Runner(opts: {
 
       if (queriedCount === 0) {
         logger.debug?.(`${TAG} [l1] No new L0 messages for session ${sessionKey}`);
-        return { processedCount: 0, storedCount: 0, hasMore: false, hasFullBacklog: false };
+        return { processedCount: 0, storedCount: 0, hasMore: false, hasFullBacklog: false, profileScopes: [] };
       }
 
       // Re-sort by recordedAtMs ascending (DB path returns ASC already, but
@@ -415,21 +500,22 @@ export function createL1Runner(opts: {
       }
       const processed = flat.slice(0, sliceEnd);
 
-      // ── Step 3: re-group sliced messages by sessionId (chronological within each group) ──
-      const groupMap = new Map<string, ConversationMessage[]>();
+      // ── Step 3: re-group sliced messages by isolation tuple + sessionId (chronological within each group) ──
+      const groupMap = new Map<string, { sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: ConversationMessage[] }>();
       let maxRecordedAtMs = 0;
       for (const m of processed) {
         if (m.recordedAtMs > maxRecordedAtMs) maxRecordedAtMs = m.recordedAtMs;
-        let g = groupMap.get(m.sessionId);
+        const groupKey = `${m.userId}\u0000${m.agentId}\u0000${m.sessionId}`;
+        let g = groupMap.get(groupKey);
         if (!g) {
-          g = [];
-          groupMap.set(m.sessionId, g);
+          g = { sessionId: m.sessionId, teamId: m.teamId, taskId: m.taskId, userId: m.userId, agentId: m.agentId, messages: [] };
+          groupMap.set(groupKey, g);
         }
-        g.push({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp });
+        g.messages.push({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp });
       }
-      const groups: Array<{ sessionId: string; messages: ConversationMessage[] }> = [];
-      for (const [sessionId, messages] of groupMap) {
-        groups.push({ sessionId, messages });
+      const groups: Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: ConversationMessage[] }> = [];
+      for (const group of groupMap.values()) {
+        groups.push(group);
       }
       // Sort groups by earliest timestamp so extractL1Memories sees them in
       // the same order they were captured (matches pre-existing behavior).
@@ -473,6 +559,7 @@ export function createL1Runner(opts: {
       let totalExtracted = 0;
       let totalStored = 0;
       let lastSceneName: string | undefined;
+      const profileScopes = new Set<string>();
 
       for (const group of groups) {
         logger.debug?.(
@@ -483,12 +570,17 @@ export function createL1Runner(opts: {
           messages: group.messages,
           sessionKey,
           sessionId: group.sessionId,
+          taskId: group.taskId,
+          teamId: group.teamId,
+          userId: group.userId,
+          agentId: group.agentId,
           baseDir: pluginDataDir,
           config,
           options: {
             enableDedup: cfg.extraction.enableDedup,
             maxMemoriesPerSession: cfg.extraction.maxMemoriesPerSession,
             model: cfg.extraction.model,
+            promptMode: cfg.extraction.promptMode,
             previousSceneName: lastSceneName ?? (runnerState.last_scene_name || undefined),
             vectorStore,
             embeddingService,
@@ -503,6 +595,18 @@ export function createL1Runner(opts: {
 
         totalExtracted += l1Result.extractedCount;
         totalStored += l1Result.storedCount;
+        if (l1Result.storedCount > 0) {
+          // L2/L3 output is team+agent scoped, but each L2 extraction input must
+          // stay bounded to the source session that just produced L1. Encode the
+          // source session in the L2 task key; buildIsolationScope() will ignore
+          // it later when choosing the profile output directory.
+          profileScopes.add(buildProfileL2Key({
+            teamId: group.teamId,
+            userId: group.userId,
+            agentId: group.agentId,
+            sessionId: group.sessionId,
+          }));
+        }
         if (l1Result.lastSceneName) {
           lastSceneName = l1Result.lastSceneName;
         }
@@ -516,7 +620,7 @@ export function createL1Runner(opts: {
         `${TAG} [l1] L1 complete: extracted=${totalExtracted}, stored=${totalStored} (${groups.length} group(s))`,
       );
 
-      return { processedCount: totalMessages, storedCount: totalStored, hasMore, hasFullBacklog };
+      return { processedCount: totalMessages, storedCount: totalStored, hasMore, hasFullBacklog, profileScopes: Array.from(profileScopes) };
     } catch (err) {
       logger.error(`${TAG} [l1] L1 failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
       throw err;
@@ -572,8 +676,9 @@ export function createL2Runner(opts: {
   let profileBaseline = new Map<string, { version: number; contentMd5: string; createdAtMs: number }>();
 
   return async (sessionKey: string, cursor?: string) => {
+    const profileFilter = parseProfileL2Key(sessionKey);
     logger.debug?.(
-      `${TAG} [L2] session=${sessionKey}, updatedAfter=${cursor ?? "(full)"}`,
+      `${TAG} [L2] session=${sessionKey}, profile=${profileFilter ? buildIsolationScope(profileFilter) : "(legacy-session)"}, updatedAfter=${cursor ?? "(full)"}`,
     );
 
     if (!openclawConfig && !llmRunner) {
@@ -581,15 +686,17 @@ export function createL2Runner(opts: {
       return;
     }
 
-    let records: Array<{ content: string; created_at: string; id: string; updatedAt: string }>;
-
-    if (vectorStore?.pullProfiles && !vectorStore.isDegraded()) {
-      profileBaseline = await pullProfilesToLocal(pluginDataDir, vectorStore, logger, storage);
-    }
+    let records: Array<{ content: string; created_at: string; id: string; updatedAt: string; teamId?: string; userId?: string; agentId?: string; sessionId?: string; taskId?: string }>;
 
     if (vectorStore && !vectorStore.isDegraded()) {
       const { queryMemoryRecords } = await import("../core/record/l1-reader.js");
-      const memRecords = await queryMemoryRecords(vectorStore, {
+      const memRecords = await queryMemoryRecords(vectorStore, profileFilter ? {
+        teamId: profileFilter.teamId,
+        userId: profileFilter.userId,
+        agentId: profileFilter.agentId,
+        sessionId: profileFilter.sessionId,
+        updatedAfter: cursor,
+      } : {
         sessionKey,
         updatedAfter: cursor,
       }, logger);
@@ -610,6 +717,11 @@ export function createL2Runner(opts: {
         created_at: r.createdAt,
         id: r.id,
         updatedAt: r.updatedAt,
+        teamId: r.teamId,
+        userId: r.userId,
+        agentId: r.agentId,
+        sessionId: r.sessionId,
+        taskId: r.taskId,
       }));
     } else {
       throw new Error(`${TAG} [L2] VectorStore unavailable — cannot read L1 memories for scene extraction (session=${sessionKey})`);
@@ -620,75 +732,89 @@ export function createL2Runner(opts: {
       return;
     }
 
-    const extractor = new SceneExtractor({
-      dataDir: pluginDataDir,
-      config: openclawConfig!,
-      model: cfg.persona.model,
-      maxScenes: cfg.persona.maxScenes,
-      sceneBackupCount: cfg.persona.sceneBackupCount,
-      logger,
-      instanceId,
-      llmRunner,
-      storage,
-    });
+    const grouped = new Map<string, typeof records>();
+    for (const record of records) {
+      const key = buildIsolationScope(record);
+      const list = grouped.get(key) ?? [];
+      list.push(record);
+      grouped.set(key, list);
+    }
 
-    const memories = records.map((r) => ({
-      content: r.content,
-      created_at: r.created_at,
-      id: r.id,
-    }));
+    let processedTotal = 0;
+    let anyEmptyExtraction = false;
+    for (const groupRecords of grouped.values()) {
+      const ctx = groupRecords[0];
+      const groupStorage = scopedStorage(storage, ctx);
+      const groupDataDir = scopedDataDir(pluginDataDir, ctx);
+      const groupScope = buildIsolationScope(ctx);
+      const groupProfileOptions = profileOptionsForScope(groupScope);
+      const groupBaseline = vectorStore?.pullProfiles && !vectorStore.isDegraded()
+        ? await pullProfilesToLocal(groupDataDir, vectorStore, logger, groupStorage, groupProfileOptions)
+        : profileBaseline;
 
-    const preCheckpoint = new CheckpointManager(pluginDataDir, logger, storage);
-    const preState = await preCheckpoint.read();
-    const preScenesProcessed = preState.scenes_processed;
-    const preMemoriesSince = preState.memories_since_last_persona;
-    const preTotalProcessed = preState.total_processed;
+      const extractor = new SceneExtractor({
+        dataDir: groupDataDir,
+        config: openclawConfig!,
+        model: cfg.persona.model,
+        promptMode: cfg.persona.promptMode,
+        maxScenes: cfg.persona.maxScenes,
+        sceneBackupCount: cfg.persona.sceneBackupCount,
+        logger,
+        instanceId,
+        llmRunner,
+        storage: groupStorage,
+        // langfuse: 透传身份四元组，UI 上可按 user/session 列过滤
+        traceContext: { teamId: ctx.teamId, userId: ctx.userId, agentId: ctx.agentId, sessionId: ctx.sessionId },
+      });
 
-    const extractResult = await extractor.extract(memories);
-    if (extractResult.success && extractResult.memoriesProcessed > 0) {
-      // Empty extraction: LLM ran but didn't produce any file changes — skip increment + cascade
+      const memories = groupRecords.map((r) => ({
+        content: r.content,
+        created_at: r.created_at,
+        id: r.id,
+      }));
+
+      const preCheckpoint = new CheckpointManager(groupDataDir, logger, groupStorage);
+      const preState = await preCheckpoint.read();
+      const preScenesProcessed = preState.scenes_processed;
+      const preTotalProcessed = preState.total_processed;
+
+      const extractResult = await extractor.extract(memories);
+      if (!(extractResult.success && extractResult.memoriesProcessed > 0)) continue;
       if (extractResult.emptyExtraction) {
+        anyEmptyExtraction = true;
         logger.warn(`${TAG} [L2] Extraction produced no file changes (empty run), skipping checkpoint increment`);
-        return { skipped: true };
+        continue;
       }
 
-      const checkpoint = new CheckpointManager(pluginDataDir, logger, storage);
+      const checkpoint = new CheckpointManager(groupDataDir, logger, groupStorage);
       const postState = await checkpoint.read();
-      if (
-        postState.scenes_processed < preScenesProcessed ||
-        postState.total_processed < preTotalProcessed
-      ) {
+      if (postState.scenes_processed < preScenesProcessed || postState.total_processed < preTotalProcessed) {
         logger.warn(
           `${TAG} [L2] ⚠️ Checkpoint corruption detected! ` +
           `scenes_processed: ${preScenesProcessed} → ${postState.scenes_processed}, ` +
-          `total_processed: ${preTotalProcessed} → ${postState.total_processed}, ` +
-          `memories_since: ${preMemoriesSince} → ${postState.memories_since_last_persona}. ` +
-          `Repairing...`,
+          `total_processed: ${preTotalProcessed} → ${postState.total_processed}. Repairing...`,
         );
         await checkpoint.write({
           ...postState,
           scenes_processed: Math.max(postState.scenes_processed, preScenesProcessed),
           total_processed: Math.max(postState.total_processed, preTotalProcessed),
-          memories_since_last_persona: Math.max(postState.memories_since_last_persona, preMemoriesSince),
         });
         logger.info(`${TAG} [L2] Checkpoint repaired`);
       }
 
       if (vectorStore && supportsProfileSyncWrite(vectorStore)) {
-        await syncLocalProfilesToStore(pluginDataDir, vectorStore, profileBaseline, logger, storage);
+        await syncLocalProfilesToStore(groupDataDir, vectorStore, groupBaseline, logger, groupStorage, groupProfileOptions);
       }
       await checkpoint.incrementScenesProcessed();
+      processedTotal += extractResult.memoriesProcessed;
+    }
 
-      const latestCursor = records.reduce((latest, r) => {
-        return r.updatedAt > latest ? r.updatedAt : latest;
-      }, "");
-
-      logger.debug?.(
-        `${TAG} [L2] Extraction complete: processed=${extractResult.memoriesProcessed}, latestCursor=${latestCursor}`,
-      );
-
+    if (processedTotal > 0) {
+      const latestCursor = records.reduce((latest, r) => r.updatedAt > latest ? r.updatedAt : latest, "");
+      logger.debug?.(`${TAG} [L2] Extraction complete: processed=${processedTotal}, latestCursor=${latestCursor}`);
       return { latestCursor: latestCursor || undefined };
     }
+    if (anyEmptyExtraction) return { skipped: true };
   };
 }
 
@@ -717,70 +843,89 @@ export function createL3Runner(opts: {
   const { pluginDataDir, cfg, openclawConfig, vectorStore, logger, instanceId, llmRunner, storage } = opts;
 
   return async () => {
-    const trigger = new PersonaTrigger({
-      dataDir: pluginDataDir,
-      interval: cfg.persona.triggerEveryN,
-      logger,
-      storage,
-    });
+    const scopes = await discoverProfileScopes(pluginDataDir, storage, logger);
+    const executionScopes = scopes.length > 0 ? scopes : [DEFAULT_PROFILE_SCOPE];
+    let generatedAny = false;
 
-    const { should, reason } = await trigger.shouldGenerate();
-    if (!should) {
-      logger.debug?.(`${TAG} [L3] Persona generation not needed`);
-      return;
-    }
+    for (const scope of executionScopes) {
+      const scopedDir = scopedDataDirForScope(pluginDataDir, scope);
+      const scopedStore = scopedStorageForScope(storage, scope);
+      const profileOptions = profileOptionsForScope(scope);
 
-    if (!openclawConfig && !llmRunner) {
-      logger.warn(`${TAG} [L3] No OpenClaw config and no LLM runner, skipping persona generation`);
-      return;
-    }
+      const trigger = new PersonaTrigger({
+        dataDir: scopedDir,
+        interval: cfg.persona.triggerEveryN,
+        logger,
+        storage: scopedStore,
+      });
 
-    // Guard: no scene files → nothing to generate from. Skip without marking
-    // checkpoint so cold-start trigger remains available for the next attempt.
-    const { readSceneIndex } = await import("../core/scene/scene-index.js");
-    const sceneIndex = await readSceneIndex(pluginDataDir, storage);
-    if (sceneIndex.length === 0) {
-      logger.info(`${TAG} [L3] No scene files available, skipping (checkpoint unchanged)`);
-      return;
-    }
+      const { should, reason } = await trigger.shouldGenerate();
+      if (!should) {
+        logger.debug?.(`${TAG} [L3] Persona generation not needed (scope=${scope})`);
+        continue;
+      }
 
-    // Pull remote profiles to establish fresh baseline before generation.
-    // This ensures syncLocalProfilesToStore() has correct baselineVersion
-    // for the optimistic-lock check instead of defaulting to 0.
-    let profileBaseline = new Map<string, { version: number; contentMd5: string; createdAtMs: number }>();
-    if (vectorStore?.pullProfiles && !vectorStore.isDegraded()) {
-      profileBaseline = await pullProfilesToLocal(pluginDataDir, vectorStore, logger, storage);
-    }
+      if (!openclawConfig && !llmRunner) {
+        logger.warn(`${TAG} [L3] No OpenClaw config and no LLM runner, skipping persona generation`);
+        return;
+      }
 
-    logger.info(`${TAG} [L3] Starting persona generation: ${reason}`);
-    const generator = new PersonaGenerator({
-      dataDir: pluginDataDir,
-      config: openclawConfig,
-      model: cfg.persona.model,
-      backupCount: cfg.persona.backupCount,
-      logger,
-      instanceId,
-      llmRunner,
-      storage,
-    });
-    const genResult = await generator.generateLocalPersona(reason);
+      // Guard: no scene files → nothing to generate from. Skip without marking
+      // checkpoint so cold-start trigger remains available for the next attempt.
+      const { readSceneIndex } = await import("../core/scene/scene-index.js");
+      const sceneIndex = await readSceneIndex(scopedDir, scopedStore);
+      if (sceneIndex.length === 0) {
+        logger.info(`${TAG} [L3] No scene files available for scope=${scope}, skipping (checkpoint unchanged)`);
+        continue;
+      }
 
-    const checkpoint = new CheckpointManager(pluginDataDir, logger, storage);
-    const cp = await checkpoint.read();
-    const personaMarker = cp.total_processed;
+      // Pull remote profiles to establish fresh baseline before generation.
+      // This ensures syncLocalProfilesToStore() has correct baselineVersion
+      // for the optimistic-lock check instead of defaulting to 0.
+      let profileBaseline = new Map<string, { version: number; contentMd5: string; createdAtMs: number }>();
+      if (vectorStore?.pullProfiles && !vectorStore.isDegraded()) {
+        profileBaseline = await pullProfilesToLocal(scopedDir, vectorStore, logger, scopedStore, profileOptions);
+      }
 
-    if (!genResult) {
-      logger.info(`${TAG} [L3] Persona generation skipped (no changes)`);
+      logger.info(`${TAG} [L3] Starting persona generation: ${reason} (scope=${scope})`);
+      // 反解 scope 拿回 teamId/userId/agentId/sessionId 给 langfuse trace 用
+      const scopeIsolation = parseProfileIsolationScope(scope);
+      const generator = new PersonaGenerator({
+        dataDir: scopedDir,
+        config: openclawConfig,
+        model: cfg.persona.model,
+        promptMode: cfg.persona.promptMode,
+        backupCount: cfg.persona.backupCount,
+        logger,
+        instanceId,
+        llmRunner,
+        storage: scopedStore,
+        traceContext: scopeIsolation,
+      });
+      const genResult = await generator.generateLocalPersona(reason);
+
+      const checkpoint = new CheckpointManager(scopedDir, logger, scopedStore);
+      const cp = await checkpoint.read();
+      const personaMarker = cp.total_processed;
+
+      if (!genResult) {
+        logger.info(`${TAG} [L3] Persona generation skipped (no changes, scope=${scope})`);
+        await checkpoint.markPersonaGenerated(personaMarker);
+        continue;
+      }
+
+      if (vectorStore && supportsProfileSyncWrite(vectorStore)) {
+        await syncLocalProfilesToStore(scopedDir, vectorStore, profileBaseline, logger, scopedStore, profileOptions);
+      }
+
       await checkpoint.markPersonaGenerated(personaMarker);
-      return;
+      generatedAny = true;
+      logger.info(`${TAG} [L3] Persona generation succeeded (scope=${scope})`);
     }
 
-    if (vectorStore && supportsProfileSyncWrite(vectorStore)) {
-      await syncLocalProfilesToStore(pluginDataDir, vectorStore, profileBaseline, logger, storage);
+    if (!generatedAny) {
+      logger.debug?.(`${TAG} [L3] No scoped persona generated`);
     }
-
-    await checkpoint.markPersonaGenerated(personaMarker);
-    logger.info(`${TAG} [L3] Persona generation succeeded`);
   };
 }
 

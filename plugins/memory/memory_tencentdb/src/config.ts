@@ -11,6 +11,9 @@
 // Type definitions
 // ============================
 
+/** Prompt family for L1-L3 memory pipeline. */
+export type MemoryPromptMode = "chat" | "code";
+
 /** Capture settings — controls L0 conversation recording. */
 export interface CaptureConfig {
   /** Enable auto-capture (default: true) */
@@ -40,6 +43,8 @@ export interface ExtractionConfig {
   maxMemoriesPerSession: number;
   /** LLM model for extraction, format: "provider/model" (falls back to OpenClaw default model when omitted) */
   model?: string;
+  /** Prompt family for L1 extraction (default: chat). */
+  promptMode: MemoryPromptMode;
 }
 
 /** Persona (L2/L3) settings — controls scene extraction (L2) and user profile generation (L3). */
@@ -54,6 +59,8 @@ export interface PersonaConfig {
   sceneBackupCount: number;
   /** LLM model for persona generation, format: "provider/model" (falls back to OpenClaw default model when omitted) */
   model?: string;
+  /** Prompt family for L2/L3 prompts (default: chat; code prompts will be wired as they are added). */
+  promptMode: MemoryPromptMode;
 }
 
 /** Pipeline trigger settings (L1→L2→L3 scheduling). */
@@ -162,7 +169,9 @@ export interface TcvdbConfig {
   database: string;
   /** User-friendly alias for this database (optional, for identification in database.json) */
   alias: string;
-  /** Built-in embedding model (default: "bge-large-zh") */
+  /** Whether to enable VectorDB server-side dense embedding/vector index. Default false: BM25 sparse only. */
+  embeddingEnabled?: boolean;
+  /** Built-in embedding model (default: "bge-large-zh"; used only when embeddingEnabled=true) */
   embeddingModel: string;
   /** Request timeout in ms (default: 10000) */
   timeout: number;
@@ -203,6 +212,20 @@ export interface StandaloneLLMOverrideConfig {
   maxTokens: number;
   /** Request timeout in milliseconds (default: 120000). */
   timeoutMs: number;
+  /**
+   * LLM 访问模式：
+   *   - "openai": 直连 OpenAI 兼容服务（默认）
+   *   - "proxy":  走 context_proxy，运行时把 baseUrl 拼成
+   *               `${baseUrl}/proxy/<instanceId>/v1`，Authorization 用 memory 系统用户 key
+   * gateway 层负责在构造 runner 前把 baseUrl / apiKey 换成解析后的最终值，
+   * 因此 runner 无需感知 provider 字段。
+   */
+  provider?: "openai" | "proxy";
+  /** provider=proxy 时的可选配置。 */
+  proxy?: {
+    /** 是否用 memory systemUser.userKey 作为 Authorization（默认 true）。 */
+    useMemorySystemUserKey?: boolean;
+  };
 }
 
 /** Context Offload settings — controls multi-layer context compression. */
@@ -286,6 +309,8 @@ export interface OffloadConfig {
 
 /** Fully resolved plugin configuration (v3). */
 export interface MemoryTdaiConfig {
+  /** Global prompt family; group-level promptMode can override it. */
+  promptMode: MemoryPromptMode;
   capture: CaptureConfig;
   extraction: ExtractionConfig;
   persona: PersonaConfig;
@@ -310,6 +335,12 @@ export interface MemoryTdaiConfig {
    */
   llm: StandaloneLLMOverrideConfig;
   offload: OffloadConfig;
+  /**
+   * Optional Skill module config. Pass-through to `resolveSkillConfig()` at
+   * the host wiring layer; defaults are applied there. When absent, the
+   * Skill module is not constructed (host-side gate). Shape: SkillConfigInput.
+   */
+  skill?: import("./core/skill/types.js").SkillConfigInput;
 }
 
 // ============================
@@ -322,6 +353,10 @@ export interface MemoryTdaiConfig {
  */
 export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTdaiConfig {
   const c = raw ?? {};
+
+  // --- Prompt mode (L1-L3) ---
+  const promptsGroup = obj(c, "prompts");
+  const globalPromptMode = normalizePromptMode(str(c, "promptMode") ?? str(promptsGroup, "mode"));
 
   // --- Capture (L0) ---
   const captureGroup = obj(c, "capture");
@@ -502,6 +537,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
   };
 
   return {
+    promptMode: globalPromptMode,
     capture: {
       enabled: bool(captureGroup, "enabled") ?? true,
       excludeAgents: strArray(captureGroup, "excludeAgents") ?? [],
@@ -513,6 +549,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       enableDedup: bool(extractionGroup, "enableDedup") ?? true,
       maxMemoriesPerSession: num(extractionGroup, "maxMemoriesPerSession") ?? 20,
       model: optStr(extractionGroup, "model"),
+      promptMode: normalizePromptMode(str(extractionGroup, "promptMode"), globalPromptMode),
     },
     persona: {
       triggerEveryN: num(personaGroup, "triggerEveryN") ?? 50,
@@ -520,6 +557,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       backupCount: num(personaGroup, "backupCount") ?? 3,
       sceneBackupCount: num(personaGroup, "sceneBackupCount") ?? 10,
       model: optStr(personaGroup, "model"),
+      promptMode: normalizePromptMode(str(personaGroup, "promptMode"), globalPromptMode),
     },
     pipeline: {
       everyNConversations: num(pipelineGroup, "everyNConversations") ?? 5,
@@ -563,6 +601,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       apiKey: str(tcvdbGroup, "apiKey") ?? "",
       database: str(tcvdbGroup, "database") ?? "",
       alias: str(tcvdbGroup, "alias") ?? "",
+      embeddingEnabled: bool(tcvdbGroup, "embeddingEnabled") ?? false,
       embeddingModel: str(tcvdbGroup, "embeddingModel") ?? "bge-large-zh",
       timeout: num(tcvdbGroup, "timeout") ?? 10000,
       caPemPath: str(tcvdbGroup, "caPemPath") || undefined,
@@ -578,6 +617,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     },
     llm: (() => {
       const llmGroup = obj(c, "llm");
+      const rawProvider = str(llmGroup, "provider");
+      const provider: "openai" | "proxy" =
+        rawProvider === "proxy" ? "proxy" : "openai";
+      const proxyGroup = obj(llmGroup, "proxy");
       return {
         enabled: bool(llmGroup, "enabled") ?? false,
         baseUrl: str(llmGroup, "baseUrl") ?? "https://api.openai.com/v1",
@@ -585,9 +628,20 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         model: str(llmGroup, "model") ?? "gpt-4o",
         maxTokens: num(llmGroup, "maxTokens") ?? 4096,
         timeoutMs: num(llmGroup, "timeoutMs") ?? 120_000,
+        provider,
+        proxy: {
+          // 默认 true：走 proxy 时用 memory 系统用户 key 作为 Authorization。
+          useMemorySystemUserKey: bool(proxyGroup, "useMemorySystemUserKey") ?? true,
+        },
       };
     })(),
     offload,
+    // Skill: passthrough — let the host wiring call resolveSkillConfig() with
+    // ambient probes (TCVDB / COS / embedding / LLMRunner). We don't apply
+    // defaults here so the resolver remains the single source of truth.
+    skill: (c.skill && typeof c.skill === "object" && !Array.isArray(c.skill))
+      ? (c.skill as import("./core/skill/types.js").SkillConfigInput)
+      : undefined,
   };
 }
 
@@ -604,6 +658,11 @@ function obj(c: Record<string, unknown>, key: string): Record<string, unknown> {
 function str(src: Record<string, unknown>, key: string): string | undefined {
   const v = src[key];
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
+function normalizePromptMode(value: string | undefined, fallback: MemoryPromptMode = "chat"): MemoryPromptMode {
+  if (value === "code" || value === "chat") return value;
+  return fallback;
 }
 
 function optStr(src: Record<string, unknown>, key: string): string | undefined {

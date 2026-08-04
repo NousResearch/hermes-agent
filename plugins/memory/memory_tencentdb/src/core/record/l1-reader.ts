@@ -82,8 +82,13 @@ function rowToMemoryRecord(row: L1RecordRow): MemoryRecord {
     timestamps,
     createdAt: row.created_time,
     updatedAt: row.updated_time,
+    version: row.version ?? 0,
     sessionKey: row.session_key,
     sessionId: row.session_id,
+    taskId: row.task_id,
+    teamId: row.team_id,
+    userId: row.user_id,
+    agentId: row.agent_id,
   };
 }
 

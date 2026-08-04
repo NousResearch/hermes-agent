@@ -1,0 +1,98 @@
+# ============================================================
+# TDAI Gateway — Standalone 单机版配置
+# ============================================================
+# 适用场景: 本地开发 / Hermes sidecar / 单 Agent 单机部署
+# 特点: 零外部依赖 (不需要 Redis/Shark), 进程内状态管理
+# ============================================================
+
+deployMode: standalone
+stateBackend: "local"
+
+server:
+  port: 8420
+  host: "127.0.0.1"
+
+data:
+  baseDir: "~/.memory-tencentdb/memory-tdai"
+
+# ── LLM (必填) ──
+llm:
+  baseUrl: "https://api.openai.com/v1"
+  apiKey: "${TDAI_LLM_API_KEY}"    # 通过环境变量注入
+  model: "gpt-4o"
+  maxTokens: 4096
+  timeoutMs: 120000
+
+# ── Memory 引擎配置 ──
+memory:
+
+  capture:
+    enabled: true
+
+  extraction:
+    enabled: true
+    enableDedup: true
+    maxMemoriesPerSession: 20
+
+  persona:
+    triggerEveryN: 50
+    maxScenes: 15
+
+  pipeline:
+    everyNConversations: 5
+    enableWarmup: true
+    l1IdleTimeoutSeconds: 600
+    l2DelayAfterL1Seconds: 90
+    l2MinIntervalSeconds: 900
+    l2MaxIntervalSeconds: 3600
+
+  recall:
+    enabled: true
+    maxResults: 5
+    scoreThreshold: 0.3
+    strategy: "hybrid"
+    timeoutMs: 5000
+
+  # ── 存储后端 ──
+  # sqlite: 本地 SQLite (默认, 零配置)
+  # tcvdb:  腾讯云向量数据库 (需填 tcvdb 配置)
+  storeBackend: "sqlite"
+
+  # 如需使用 TCVDB, 取消注释并填写:
+  # storeBackend: "tcvdb"
+  # tcvdb:
+  #   url: "http://10.0.1.1:80"
+  #   username: "root"
+  #   apiKey: ""
+  #   database: ""
+  #   embeddingModel: "bge-large-zh"
+  #   timeout: 10000
+
+  embedding:
+    provider: "none"               # 默认关闭向量搜索, 仅用 BM25
+    # 开启向量搜索示例:
+    # provider: "openai"
+    # baseUrl: "https://api.openai.com/v1"
+    # apiKey: "${TDAI_LLM_API_KEY}"
+    # model: "text-embedding-3-small"
+    # dimensions: 1536
+
+  bm25:
+    enabled: true
+    language: "zh"
+
+# ── Skill 模块（可选，默认关闭）──
+# Skill 是额外能力的加入，不影响上面的 Memory 引擎。
+# 启用后 skill 数据存储在 {baseDir}/skills/ 目录下。
+# 也可通过环境变量 TDAI_SKILL_ENABLED=true 启用。
+# skill:
+#   enabled: true
+#   routing:
+#     mode: "bm25"
+#     searchTopK: 20        # listing 接口最多注入多少条 skill（name+description）
+#   extraction:
+#     enabled: true         # 需要 llm 配置有效
+#     maxIterations: 16
+#   resources:
+#     maxResourceSizeBytes: 5000000
+#     allowExecutable: false

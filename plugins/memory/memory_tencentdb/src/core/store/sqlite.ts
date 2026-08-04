@@ -20,6 +20,7 @@
  * - Thread-safe via WAL mode.
  */
 
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -37,11 +38,26 @@ import type {
   L0QueryRow,
   L1RecordRow,
   L1QueryFilter,
+  L0CountFilter,
   L0PaginatedFilter,
   L0PaginatedResult,
+  L1CountFilter,
   L1PaginatedFilter,
   L1PaginatedResult,
+  IsolationFilter,
+  TeamEntity,
+  UserEntity,
+  AgentEntity,
+  TaskEntity,
+  KnowledgeEntity,
+  KnowledgeType,
+  KnowledgeListResult,
+  BatchDeleteResult,
+  AuditEntry,
+  AuditQueryFilter,
 } from "./types.js";
+import { DEFAULT_ISOLATION_ID, rowMatchesIsolation } from "./types.js";
+import { SKILLS_DDL, SKILL_FTS_DDL } from "../skill/skill-store-ddl.js";
 import type { Logger } from "../types.js";
 
 export type { L1RecordRow } from "./types.js";
@@ -61,8 +77,13 @@ export interface VectorSearchResult {
   timestamp_str: string;
   timestamp_start: string;
   timestamp_end: string;
+  version: number;
   session_key: string;
   session_id: string;
+  team_id: string;
+  task_id: string;
+  user_id: string;
+  agent_id: string;
   /** Raw metadata JSON string (e.g., contains activity_start_time / activity_end_time for episodic) */
   metadata_json: string;
 }
@@ -72,6 +93,10 @@ export interface L0VectorSearchResult {
   record_id: string;
   session_key: string;
   session_id: string;
+  team_id: string;
+  task_id: string;
+  user_id: string;
+  agent_id: string;
   role: string;
   message_text: string;
   /** Cosine similarity score (1.0 - cosine_distance) */
@@ -292,8 +317,13 @@ export interface FtsSearchResult {
   timestamp_str: string;
   timestamp_start: string;
   timestamp_end: string;
+  version: number;
   session_key: string;
   session_id: string;
+  team_id: string;
+  task_id: string;
+  user_id: string;
+  agent_id: string;
   metadata_json: string;
 }
 
@@ -302,6 +332,10 @@ export interface L0FtsSearchResult {
   record_id: string;
   session_key: string;
   session_id: string;
+  team_id: string;
+  task_id: string;
+  user_id: string;
+  agent_id: string;
   role: string;
   message_text: string;
   /** BM25-derived score (0–1, higher is better) */
@@ -419,6 +453,25 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
+   * Expose the underlying `DatabaseSync` handle for tightly-coupled co-tenants
+   * that need to live in the SAME SQLite connection (skill_meta / skill_fts /
+   * skill_vec live alongside l1_records — see SKILL_ENGINEERING_DESIGN §13.3).
+   *
+   * Intentional escape hatch: do NOT use this for unrelated stores. Sharing
+   * the connection is what gives us one sqlite-vec load + one WAL session +
+   * cross-table transactions; opening a second connection on `vectors.db`
+   * would defeat all three.
+   */
+  getRawDb(): DatabaseSync {
+    return this.db;
+  }
+
+  /** Embedding dimension this store was opened with (0 when provider="none"). */
+  getEmbeddingDimensions(): number {
+    return this.dimensions;
+  }
+
+  /**
    * Whether the store is in degraded mode (e.g. sqlite-vec failed to load).
    * When degraded, all write/search operations become safe no-ops.
    */
@@ -438,20 +491,24 @@ export class VectorStore implements IMemoryStore {
    *   so the caller can schedule a full re-embed.
    */
   init(providerInfo?: EmbeddingProviderInfo): VectorStoreInitResult {
-    // Load sqlite-vec extension (same approach as root project's sqlite-vec.ts)
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const sqliteVec = require("sqlite-vec");
-      this.db.enableLoadExtension(true);
-      sqliteVec.load(this.db);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger?.error(
-        `${TAG} Failed to load sqlite-vec extension: ${message}. ` +
-        `VectorStore entering degraded mode — all operations will be no-ops.`,
-      );
-      this.degraded = true;
-      return { needsReindex: false, reason: `sqlite-vec load failed: ${message}` };
+    // Load sqlite-vec extension only when vector tables are needed.
+    // dimensions=0 is a supported metadata/FTS-only mode and must not degrade
+    // just because sqlite-vec is unavailable in the local test/runtime build.
+    if (this.dimensions > 0) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const sqliteVec = require("sqlite-vec");
+        this.db.enableLoadExtension(true);
+        sqliteVec.load(this.db);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger?.error(
+          `${TAG} Failed to load sqlite-vec extension: ${message}. ` +
+          `VectorStore entering degraded mode — all operations will be no-ops.`,
+        );
+        this.degraded = true;
+        return { needsReindex: false, reason: `sqlite-vec load failed: ${message}` };
+      }
     }
 
     // ── Schema creation & prepared statements ──────────────────────────────
@@ -547,6 +604,8 @@ export class VectorStore implements IMemoryStore {
     // ── L1 schema ──────────────────────────────────
 
     // Metadata table
+    // NOTE: user_id / agent_id added for three-dim tenancy isolation
+    //       (see docs/l0l3-tenant-isolation-design.md).
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS l1_records (
         record_id TEXT PRIMARY KEY,
@@ -555,7 +614,12 @@ export class VectorStore implements IMemoryStore {
         priority INTEGER DEFAULT 50,
         scene_name TEXT DEFAULT '',
         session_key TEXT DEFAULT '',
-        session_id TEXT DEFAULT '',
+        session_id TEXT DEFAULT 'default',
+        team_id TEXT DEFAULT 'default',
+        task_id TEXT DEFAULT '',
+        user_id TEXT NOT NULL DEFAULT 'default',
+        agent_id TEXT NOT NULL DEFAULT 'default',
+        version INTEGER NOT NULL DEFAULT 0,
         timestamp_str TEXT DEFAULT '',
         timestamp_start TEXT DEFAULT '',
         timestamp_end TEXT DEFAULT '',
@@ -564,6 +628,19 @@ export class VectorStore implements IMemoryStore {
         metadata_json TEXT DEFAULT '{}'
       )
     `);
+
+    // Online migration: pre-isolation DBs lack user_id/agent_id columns. ALTER ADD is
+    // idempotent-safe: a try/catch around each statement is the SQLite-3 standard idiom.
+    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN team_id TEXT DEFAULT 'default'"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN task_id TEXT DEFAULT ''"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN version INTEGER NOT NULL DEFAULT 0"); } catch { /* exists */ }
+    this.db.prepare("UPDATE l1_records SET team_id = ? WHERE team_id = '' OR team_id IS NULL").run(DEFAULT_ISOLATION_ID);
+    this.db.prepare("UPDATE l1_records SET user_id = ? WHERE user_id = '' OR user_id IS NULL").run(DEFAULT_ISOLATION_ID);
+    this.db.prepare("UPDATE l1_records SET agent_id = ? WHERE agent_id = '' OR agent_id IS NULL").run(DEFAULT_ISOLATION_ID);
+    this.db.prepare("UPDATE l1_records SET session_id = ? WHERE session_id = '' OR session_id IS NULL").run(DEFAULT_ISOLATION_ID);
+    this.db.exec("UPDATE l1_records SET version = 0 WHERE version IS NULL OR version < 0");
 
     // Indexes for common queries
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_type ON l1_records(type)");
@@ -576,6 +653,12 @@ export class VectorStore implements IMemoryStore {
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_session_updated ON l1_records(session_id, updated_time)");
     // Composite index: session_key exact match + updated_time range scan (for pipeline cursor queries)
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_sessionkey_updated ON l1_records(session_key, updated_time)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_task_updated ON l1_records(task_id, updated_time)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_team_agent_updated ON l1_records(team_id, agent_id, updated_time)");
+    // Isolation indexes (three-dim tenancy)
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_user_agent_session ON l1_records(user_id, agent_id, session_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_user_updated  ON l1_records(user_id, updated_time)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_agent_updated ON l1_records(agent_id, updated_time)");
 
     // Vector virtual table (cosine distance) — only created when dimensions > 0.
     // When provider="none", dimensions=0 and vec0 tables are deferred until a
@@ -591,22 +674,31 @@ export class VectorStore implements IMemoryStore {
     }
 
     // Prepare statements for reuse
+    // NOTE: user_id / agent_id appended at the end of the column list so that
+    // existing positional bindings in this file remain in the same relative
+    // order; new bindings always come last. See upsertL1() for the call-site.
     this.stmtUpsertMeta = this.db.prepare(`
       INSERT INTO l1_records (
         record_id, content, type, priority, scene_name, session_key, session_id,
-        timestamp_str, timestamp_start, timestamp_end,
-        created_time, updated_time, metadata_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        team_id, task_id, version, timestamp_str, timestamp_start, timestamp_end,
+        created_time, updated_time, metadata_json,
+        user_id, agent_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
         content=excluded.content,
         type=excluded.type,
         priority=excluded.priority,
         scene_name=excluded.scene_name,
+        team_id=excluded.team_id,
+        task_id=excluded.task_id,
+        version=excluded.version,
         timestamp_str=excluded.timestamp_str,
         timestamp_start=excluded.timestamp_start,
         timestamp_end=excluded.timestamp_end,
         updated_time=excluded.updated_time,
-        metadata_json=excluded.metadata_json
+        metadata_json=excluded.metadata_json,
+        user_id=excluded.user_id,
+        agent_id=excluded.agent_id
     `);
 
     if (this.dimensions > 0) {
@@ -616,8 +708,8 @@ export class VectorStore implements IMemoryStore {
     this.stmtDeleteMeta = this.db.prepare("DELETE FROM l1_records WHERE record_id = ?");
 
     this.stmtGetMeta = this.db.prepare(`
-      SELECT content, type, priority, scene_name, session_key, session_id,
-             timestamp_str, timestamp_start, timestamp_end, metadata_json
+      SELECT content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id,
+             version, timestamp_str, timestamp_start, timestamp_end, metadata_json
       FROM l1_records WHERE record_id = ?
     `);
 
@@ -633,12 +725,18 @@ export class VectorStore implements IMemoryStore {
 
     // ── L0 schema ──────────────────────────────────
 
-    // L0 metadata table: stores individual messages for vector search
+    // L0 metadata table: stores individual messages for vector search.
+    // NOTE: user_id / agent_id added for three-dim tenancy isolation
+    //       (see docs/l0l3-tenant-isolation-design.md).
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS l0_conversations (
         record_id TEXT PRIMARY KEY,
         session_key TEXT NOT NULL,
-        session_id TEXT DEFAULT '',
+        session_id TEXT DEFAULT 'default',
+        team_id TEXT DEFAULT 'default',
+        task_id TEXT DEFAULT '',
+        user_id TEXT NOT NULL DEFAULT 'default',
+        agent_id TEXT NOT NULL DEFAULT 'default',
         role TEXT NOT NULL DEFAULT '',
         message_text TEXT NOT NULL,
         recorded_at TEXT DEFAULT '',
@@ -646,19 +744,45 @@ export class VectorStore implements IMemoryStore {
       )
     `);
 
-    // Migration: add timestamp column if missing (existing DBs pre-v3.x)
+    // Online migrations: each ADD COLUMN is wrapped in try/catch so re-running
+    // init() on an already-migrated DB is a no-op.
     try {
       this.db.exec("ALTER TABLE l0_conversations ADD COLUMN timestamp INTEGER DEFAULT 0");
       this.logger?.debug?.(`${TAG} Migrated l0_conversations: added timestamp column`);
-    } catch {
-      // Column already exists — expected on non-first run
+    } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN team_id TEXT DEFAULT 'default'"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN task_id TEXT DEFAULT ''"); } catch { /* exists */ }
+    this.db.prepare("UPDATE l0_conversations SET team_id = ? WHERE team_id = '' OR team_id IS NULL").run(DEFAULT_ISOLATION_ID);
+    this.db.prepare("UPDATE l0_conversations SET user_id = ? WHERE user_id = '' OR user_id IS NULL").run(DEFAULT_ISOLATION_ID);
+    this.db.prepare("UPDATE l0_conversations SET agent_id = ? WHERE agent_id = '' OR agent_id IS NULL").run(DEFAULT_ISOLATION_ID);
+    this.db.prepare("UPDATE l0_conversations SET session_id = ? WHERE session_id = '' OR session_id IS NULL").run(DEFAULT_ISOLATION_ID);
+
+    // Skill schema belongs to the same vectors.db. Initialize its base tables
+    // with the SQLite store so a freshly installed in-process OpenClaw plugin
+    // has a complete database even when SkillCore is not otherwise activated.
+    // SkillCore may call the same idempotent DDL later and initialize skill_vec.
+    try {
+      this.db.exec(SKILLS_DDL);
+      this.db.exec(SKILL_FTS_DDL);
+    } catch (err) {
+      this.logger?.warn(
+        `${TAG} Skill base schema init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
 
     // Indexes for L0 queries
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_session ON l0_conversations(session_key)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_session_id ON l0_conversations(session_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_task ON l0_conversations(task_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_team_agent ON l0_conversations(team_id, agent_id)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_recorded ON l0_conversations(recorded_at)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_timestamp ON l0_conversations(timestamp)");
+    // Isolation indexes (three-dim tenancy)
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_user_agent_session ON l0_conversations(user_id, agent_id, session_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_user_recorded  ON l0_conversations(user_id, recorded_at)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_agent_recorded ON l0_conversations(agent_id, recorded_at)");
 
     // L0 vector virtual table (cosine distance, same dimensions as L1) — deferred when dimensions=0
     if (this.dimensions > 0) {
@@ -672,14 +796,20 @@ export class VectorStore implements IMemoryStore {
     }
 
     // L0 prepared statements
+    // user_id / agent_id appended at the end of the bind list (see upsertL0()).
     this.stmtL0UpsertMeta = this.db.prepare(`
       INSERT INTO l0_conversations (
-        record_id, session_key, session_id, role, message_text, recorded_at, timestamp
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        record_id, session_key, session_id, team_id, task_id, role, message_text, recorded_at, timestamp,
+        user_id, agent_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
         message_text=excluded.message_text,
         recorded_at=excluded.recorded_at,
-        timestamp=excluded.timestamp
+        timestamp=excluded.timestamp,
+        team_id=excluded.team_id,
+        task_id=excluded.task_id,
+        user_id=excluded.user_id,
+        agent_id=excluded.agent_id
     `);
 
     if (this.dimensions > 0) {
@@ -689,7 +819,7 @@ export class VectorStore implements IMemoryStore {
     this.stmtL0DeleteMeta = this.db.prepare("DELETE FROM l0_conversations WHERE record_id = ?");
 
     this.stmtL0GetMeta = this.db.prepare(`
-      SELECT session_key, session_id, role, message_text, recorded_at, timestamp
+      SELECT session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp
       FROM l0_conversations WHERE record_id = ?
     `);
 
@@ -715,7 +845,7 @@ export class VectorStore implements IMemoryStore {
     // time) because L1 cursor uses recorded_at semantics. ISO 8601 string
     // comparison preserves time order.
     this.stmtL0QueryAll = this.db.prepare(`
-      SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp
+      SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp
       FROM l0_conversations
       WHERE session_key = ?
       ORDER BY recorded_at ASC
@@ -723,7 +853,7 @@ export class VectorStore implements IMemoryStore {
     `);
 
     this.stmtL0QueryAfter = this.db.prepare(`
-      SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp
+      SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp
       FROM l0_conversations
       WHERE session_key = ? AND recorded_at > ?
       ORDER BY recorded_at ASC
@@ -738,6 +868,121 @@ export class VectorStore implements IMemoryStore {
       LIMIT ?
     `);
 
+    // ── Entity metadata tables (Team / User / Agent / Task) ───────────────
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS entity_teams (
+        team_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        owner_user_id TEXT NOT NULL,
+        user_ids_json TEXT NOT NULL DEFAULT '[]',
+        agent_ids_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS entity_users (
+        user_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        job_description TEXT DEFAULT '',
+        team_ids_json TEXT NOT NULL DEFAULT '[]',
+        task_ids_json TEXT NOT NULL DEFAULT '[]',
+        owned_agent_ids_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS entity_agents (
+        agent_id TEXT PRIMARY KEY,
+        team_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        prompt TEXT DEFAULT '',
+        owner_user_id TEXT DEFAULT '',
+        visibility TEXT NOT NULL DEFAULT 'team',
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS entity_tasks (
+        task_id TEXT PRIMARY KEY,
+        team_id TEXT NOT NULL,
+        creator_user_id TEXT NOT NULL,
+        title TEXT DEFAULT '',
+        description TEXT DEFAULT '',
+        source_type TEXT NOT NULL DEFAULT 'manual',
+        source_url TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        auto_assign_floating_assets INTEGER NOT NULL DEFAULT 0,
+        risk_level TEXT NOT NULL DEFAULT 'low',
+        agent_ids_json TEXT NOT NULL DEFAULT '[]',
+        user_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS entity_knowledge (
+        knowledge_id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        service_url TEXT NOT NULL,
+        name TEXT NOT NULL,
+        summary TEXT,
+        team_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL DEFAULT '',
+        user_id TEXT,
+        repo_url TEXT,
+        branch TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    // 在线迁移：老库补 agent_id 列（预留 binding 维度，绑定权威在 meta_assets）
+    try { this.db.exec("ALTER TABLE entity_knowledge ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE entity_teams ADD COLUMN user_ids_json TEXT NOT NULL DEFAULT '[]'"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE entity_teams ADD COLUMN agent_ids_json TEXT NOT NULL DEFAULT '[]'"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE entity_tasks ADD COLUMN user_ids_json TEXT NOT NULL DEFAULT '[]'"); } catch { /* exists */ }
+    this.db.exec("DROP INDEX IF EXISTS idx_entity_teams_name");
+    this.db.exec("DROP INDEX IF EXISTS idx_entity_agents_team_name");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_entity_teams_name ON entity_teams(name)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_entity_users_status ON entity_users(status)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_entity_agents_team_name ON entity_agents(team_id, name)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_entity_agents_team_status ON entity_agents(team_id, status)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_entity_tasks_team_status ON entity_tasks(team_id, status)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_entity_knowledge_team ON entity_knowledge(team_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_entity_knowledge_team_type ON entity_knowledge(team_id, type)");
+
+    // ── Memory Audit (修改审计) ──
+    // 设计要点（per user 决策）：
+    //   - 原始 L0/L1/L2/L3 表完全不动，本表只追加事件
+    //   - 不存历史 content / 旧值，只记"什么时间、由谁、改了哪条"
+    //   - team/agent/user/task 来自外部请求 IdFields（不是 record 原值）
+    //   - L0 不参与（不可变流水）；L1/L2/L3 update + delete 各记一条
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_audit (
+        audit_id      TEXT PRIMARY KEY,
+        record_id     TEXT NOT NULL,
+        layer         TEXT NOT NULL CHECK (layer IN ('L1','L2','L3')),
+        action        TEXT NOT NULL CHECK (action IN ('update','delete')),
+        team_id       TEXT,
+        agent_id      TEXT,
+        user_id       TEXT,
+        task_id       TEXT,
+        version       INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        request_id    TEXT
+      )
+    `);
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_audit_record    ON memory_audit(record_id, updated_at_ms)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_audit_isolation ON memory_audit(team_id, agent_id, user_id, task_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_audit_time      ON memory_audit(updated_at_ms)");
+
     // ── FTS5 tables (best-effort — gracefully degrade if fts5 is not compiled in) ──
     // Schema v2: `content` column stores jieba-segmented text (for indexing),
     // `content_original` (UNINDEXED) stores the raw text (for display).
@@ -750,7 +995,9 @@ export class VectorStore implements IMemoryStore {
       // drop and recreate. The data will be repopulated by `rebuildFtsIndex()`.
       const needsFtsRebuild = this.migrateFtsTablesIfNeeded();
 
-      // L1 FTS5 virtual table (v2 schema)
+      // L1 FTS5 virtual table (v2 schema + isolation columns).
+      // user_id / agent_id added as UNINDEXED so they're carried alongside
+      // every FTS hit without affecting BM25 ranking.
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS l1_fts USING fts5(
           content,
@@ -761,6 +1008,11 @@ export class VectorStore implements IMemoryStore {
           scene_name UNINDEXED,
           session_key UNINDEXED,
           session_id UNINDEXED,
+          team_id UNINDEXED,
+          task_id UNINDEXED,
+          user_id UNINDEXED,
+          agent_id UNINDEXED,
+          version UNINDEXED,
           timestamp_str UNINDEXED,
           timestamp_start UNINDEXED,
           timestamp_end UNINDEXED,
@@ -768,7 +1020,7 @@ export class VectorStore implements IMemoryStore {
         )
       `);
 
-      // L0 FTS5 virtual table (v2 schema)
+      // L0 FTS5 virtual table (v2 schema + isolation columns).
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS l0_fts USING fts5(
           message_text,
@@ -776,6 +1028,10 @@ export class VectorStore implements IMemoryStore {
           record_id UNINDEXED,
           session_key UNINDEXED,
           session_id UNINDEXED,
+          team_id UNINDEXED,
+          task_id UNINDEXED,
+          user_id UNINDEXED,
+          agent_id UNINDEXED,
           role UNINDEXED,
           recorded_at UNINDEXED,
           timestamp UNINDEXED
@@ -785,15 +1041,17 @@ export class VectorStore implements IMemoryStore {
       // L1 FTS prepared statements
       this.stmtL1FtsInsert = this.db.prepare(`
         INSERT INTO l1_fts (content, content_original, record_id, type, priority, scene_name,
-          session_key, session_id, timestamp_str, timestamp_start, timestamp_end, metadata_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          session_key, session_id, team_id, task_id, user_id, agent_id, version,
+          timestamp_str, timestamp_start, timestamp_end, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       this.stmtL1FtsDelete = this.db.prepare("DELETE FROM l1_fts WHERE record_id = ?");
 
       this.stmtL1FtsSearch = this.db.prepare(`
         SELECT record_id, content_original AS content, type, priority, scene_name,
-               session_key, session_id, timestamp_str, timestamp_start, timestamp_end,
+               session_key, session_id, team_id, task_id, user_id, agent_id, version,
+               timestamp_str, timestamp_start, timestamp_end,
                metadata_json,
                bm25(l1_fts) AS rank
         FROM l1_fts
@@ -804,14 +1062,16 @@ export class VectorStore implements IMemoryStore {
 
       // L0 FTS prepared statements
       this.stmtL0FtsInsert = this.db.prepare(`
-        INSERT INTO l0_fts (message_text, message_text_original, record_id, session_key, session_id, role, recorded_at, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO l0_fts (message_text, message_text_original, record_id,
+          session_key, session_id, team_id, task_id, user_id, agent_id, role, recorded_at, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       this.stmtL0FtsDelete = this.db.prepare("DELETE FROM l0_fts WHERE record_id = ?");
 
       this.stmtL0FtsSearch = this.db.prepare(`
-        SELECT record_id, message_text_original AS message_text, session_key, session_id, role, recorded_at, timestamp,
+        SELECT record_id, message_text_original AS message_text,
+               session_key, session_id, team_id, task_id, user_id, agent_id, role, recorded_at, timestamp,
                bm25(l0_fts) AS rank
         FROM l0_fts
         WHERE l0_fts MATCH ?
@@ -847,7 +1107,10 @@ export class VectorStore implements IMemoryStore {
     // Mark vec0 tables as ready only when they were actually created
     this.vecTablesReady = this.dimensions > 0;
     // L1 query statements (for l1-reader)
+    // user_id / agent_id surfaced in every L1 read so callers (router /
+    // candidate-pool / l1-reader) can enforce isolation downstream.
     const l1QueryCols = `record_id, content, type, priority, scene_name, session_key, session_id,
+      team_id, task_id, user_id, agent_id, version,
       timestamp_str, timestamp_start, timestamp_end,
       created_time, updated_time, metadata_json`;
 
@@ -1024,7 +1287,12 @@ export class VectorStore implements IMemoryStore {
 
       this.db.exec("BEGIN");
       try {
-        // Upsert metadata (INSERT OR UPDATE)
+        // Upsert metadata (INSERT OR UPDATE).
+        // user_id / agent_id appended at the end to match the prepared statement
+        // column order added by the isolation migration. We tolerate undefined
+        // for legacy callers (e.g. older tests or pre-isolation seed scripts):
+        // empty string preserves the historic "no-isolation" semantics until the
+        // migration backfills.
         this.stmtUpsertMeta.run(
           recordId,
           record.content,
@@ -1032,13 +1300,18 @@ export class VectorStore implements IMemoryStore {
           record.priority,
           record.scene_name,
           record.sessionKey,
-          record.sessionId,
+          record.sessionId || DEFAULT_ISOLATION_ID,
+          (record as MemoryRecord & { teamId?: string }).teamId || DEFAULT_ISOLATION_ID,
+          record.taskId || "",
+          record.version ?? 0,
           tsStr,
           tsStart,
           tsEnd,
           record.createdAt,
           record.updatedAt,
           JSON.stringify(record.metadata),
+          (record as MemoryRecord & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
+          (record as MemoryRecord & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
         );
 
         if (!skipVec) {
@@ -1051,7 +1324,9 @@ export class VectorStore implements IMemoryStore {
           );
         }
 
-        // Sync FTS5 (delete + re-insert to handle updates)
+        // Sync FTS5 (delete + re-insert to handle updates).
+        // user_id / agent_id mirrored into FTS so post-recall isolation
+        // filtering doesn't require a join.
         if (this.ftsAvailable) {
           try {
             this.stmtL1FtsDelete.run(recordId);
@@ -1063,7 +1338,12 @@ export class VectorStore implements IMemoryStore {
               record.priority,
               record.scene_name,
               record.sessionKey,
-              record.sessionId,
+              record.sessionId || DEFAULT_ISOLATION_ID,
+              (record as MemoryRecord & { teamId?: string }).teamId || DEFAULT_ISOLATION_ID,
+              record.taskId || "",
+              (record as MemoryRecord & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
+              (record as MemoryRecord & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
+              record.version ?? 0,
               tsStr,
               tsStart,
               tsEnd,
@@ -1101,7 +1381,7 @@ export class VectorStore implements IMemoryStore {
    * **Fault-tolerant**: returns an empty array on any error (e.g. dimension
    * mismatch, corrupted DB) so callers can fall back to keyword search.
    */
-  searchL1Vector(queryEmbedding: Float32Array, topK = 5): VectorSearchResult[] {
+  searchL1Vector(queryEmbedding: Float32Array, topK = 5, _queryText?: string, filter?: IsolationFilter): VectorSearchResult[] {
     if (this.degraded || !this.vecTablesReady) {
       if (this.degraded) this.logger?.warn(`${TAG} [L1-search] SKIPPED (degraded mode)`);
       return [];
@@ -1115,7 +1395,7 @@ export class VectorStore implements IMemoryStore {
       // NOTE: "AND distance IS NOT NULL" is NOT usable because vec0 does not
       // support that constraint — it causes an empty result set.
       const ZERO_VEC_BUFFER = 10;
-      const retrieveCount = topK + ZERO_VEC_BUFFER;
+      const retrieveCount = filter ? Math.max(topK * 5, topK + ZERO_VEC_BUFFER) : topK + ZERO_VEC_BUFFER;
 
       this.logger?.debug?.(
         `${TAG} [L1-search] START topK=${topK}, retrieveCount=${retrieveCount}, ` +
@@ -1152,6 +1432,11 @@ export class VectorStore implements IMemoryStore {
               scene_name: string;
               session_key: string;
               session_id: string;
+              team_id: string;
+              task_id: string;
+              user_id: string;
+              agent_id: string;
+              version: number;
               timestamp_str: string;
               timestamp_start: string;
               timestamp_end: string;
@@ -1161,6 +1446,9 @@ export class VectorStore implements IMemoryStore {
 
         if (!meta) {
           this.logger?.warn(`${TAG} [L1-search] record_id=${record_id} has vector but NO metadata (orphan)`);
+          continue;
+        }
+        if (!rowMatchesIsolation(meta, filter)) {
           continue;
         }
 
@@ -1180,8 +1468,13 @@ export class VectorStore implements IMemoryStore {
           timestamp_str: meta.timestamp_str,
           timestamp_start: meta.timestamp_start,
           timestamp_end: meta.timestamp_end,
+          version: meta.version ?? 0,
           session_key: meta.session_key,
           session_id: meta.session_id,
+          team_id: meta.team_id ?? "",
+          task_id: meta.task_id ?? "",
+          user_id: meta.user_id ?? "",
+          agent_id: meta.agent_id ?? "",
           metadata_json: meta.metadata_json,
         });
       }
@@ -1205,9 +1498,13 @@ export class VectorStore implements IMemoryStore {
    *
    * **Fault-tolerant**: logs a warning on failure, never throws.
    */
-  deleteL1(recordId: string): boolean {
+  deleteL1(recordId: string, filter?: IsolationFilter): boolean {
     if (this.degraded) return false;
     try {
+      if (filter) {
+        const meta = this.stmtGetMeta.get(recordId) as { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
+        if (!meta || !rowMatchesIsolation(meta, filter)) return false;
+      }
       this.db.exec("BEGIN");
       try {
         const result = this.stmtDeleteMeta.run(recordId);
@@ -1237,7 +1534,7 @@ export class VectorStore implements IMemoryStore {
    *
    * **Fault-tolerant**: logs a warning on failure, never throws.
    */
-  deleteL1Batch(recordIds: string[]): boolean {
+  deleteL1Batch(recordIds: string[], filter?: IsolationFilter): boolean {
     if (this.degraded) return false;
     if (recordIds.length === 0) return true;
 
@@ -1245,6 +1542,10 @@ export class VectorStore implements IMemoryStore {
       this.db.exec("BEGIN");
       try {
         for (const id of recordIds) {
+          if (filter) {
+            const meta = this.stmtGetMeta.get(id) as { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
+            if (!meta || !rowMatchesIsolation(meta, filter)) continue;
+          }
           this.stmtDeleteMeta.run(id);
           if (this.vecTablesReady) this.stmtDeleteVec!.run(id);
           if (this.ftsAvailable) {
@@ -1332,16 +1633,54 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
-   * Get the total number of records in the store.
+   * Get the total number of L1 records matching optional filters.
    */
-  countL1(): number {
+  countL1(filter?: L1CountFilter): number {
     if (this.degraded) return 0;
     try {
+      const conditions: string[] = [];
+      const params: SQLInputValue[] = [];
+
+      if (filter?.type) {
+        conditions.push("type = ?");
+        params.push(filter.type);
+      }
+      if (filter?.sessionId) {
+        conditions.push("session_id = ?");
+        params.push(filter.sessionId);
+      }
+      if (filter?.teamId !== undefined) {
+        conditions.push("team_id = ?");
+        params.push(filter.teamId);
+      }
+      if (filter?.userId !== undefined) {
+        conditions.push("user_id = ?");
+        params.push(filter.userId);
+      }
+      if (filter?.agentId !== undefined) {
+        conditions.push("agent_id = ?");
+        params.push(filter.agentId);
+      }
+      if (filter?.taskId !== undefined) {
+        conditions.push("task_id = ?");
+        params.push(filter.taskId);
+      }
+      if (filter?.timeStart) {
+        conditions.push("updated_time >= ?");
+        params.push(filter.timeStart);
+      }
+      if (filter?.timeEnd) {
+        conditions.push("updated_time <= ?");
+        params.push(filter.timeEnd);
+      }
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
       const row = this.db
-        .prepare("SELECT COUNT(*) AS cnt FROM l1_records")
-        .get() as { cnt: number };
-      this.logger?.debug?.(`${TAG} [L1-count] total=${row.cnt}`);
-      return row.cnt;
+        .prepare(`SELECT COUNT(*) AS cnt FROM l1_records ${where}`)
+        .get(...params) as { cnt: number } | undefined;
+      const total = row?.cnt ?? 0;
+      this.logger?.debug?.(`${TAG} [L1-count] total=${total}`);
+      return total;
     } catch (err) {
       this.logger?.warn(
         `${TAG} count failed (non-fatal, returning 0): ${err instanceof Error ? err.message : String(err)}`,
@@ -1364,7 +1703,7 @@ export class VectorStore implements IMemoryStore {
       return [];
     }
     try {
-      const { sessionKey, sessionId, updatedAfter } = filter ?? {};
+      const { sessionKey, sessionId, taskId, updatedAfter } = filter ?? {};
 
       let raw: Record<string, unknown>[];
 
@@ -1392,10 +1731,19 @@ export class VectorStore implements IMemoryStore {
         return [];
       }
 
-      const rows = raw as unknown as L1RecordRow[];
+      let rows = raw as unknown as L1RecordRow[];
+      // Prepared statements above optimize the common session/time predicates.
+      // Isolation dimensions are optional and can be combined with any query
+      // shape (notably L2 profile queries use teamId+agentId+updatedAfter
+      // without sessionKey). Apply them in memory to keep the statement matrix
+      // bounded and to match queryL1Paginated semantics.
+      if (filter?.teamId !== undefined) rows = rows.filter((r) => r.team_id === filter.teamId);
+      if (filter?.userId !== undefined) rows = rows.filter((r) => r.user_id === filter.userId);
+      if (filter?.agentId !== undefined) rows = rows.filter((r) => r.agent_id === filter.agentId);
+      if (taskId !== undefined) rows = rows.filter((r) => r.task_id === taskId);
 
       this.logger?.info(
-        `${TAG} [L1-query] filter={sessionKey=${sessionKey ?? "(all)"}, sessionId=${sessionId ?? "(all)"}, updatedAfter=${updatedAfter ?? "(none)"}}, ` +
+        `${TAG} [L1-query] filter={sessionKey=${sessionKey ?? "(all)"}, sessionId=${sessionId ?? "(all)"}, teamId=${filter?.teamId ?? "(all)"}, userId=${filter?.userId ?? "(all)"}, agentId=${filter?.agentId ?? "(all)"}, taskId=${taskId ?? "(all)"}, updatedAfter=${updatedAfter ?? "(none)"}}, ` +
         `returned ${rows.length} record(s)`,
       );
       return rows;
@@ -1443,14 +1791,20 @@ export class VectorStore implements IMemoryStore {
 
       this.db.exec("BEGIN");
       try {
+        // Legacy callers may omit isolation fields; normalize them to the
+        // same default identity used by schema defaults and query filters.
         this.stmtL0UpsertMeta.run(
           record.id,
           record.sessionKey,
-          record.sessionId,
+          record.sessionId || DEFAULT_ISOLATION_ID,
+          (record as L0Record & { teamId?: string }).teamId || DEFAULT_ISOLATION_ID,
+          record.taskId || "",
           record.role,
           record.messageText,
           record.recordedAt,
           record.timestamp,
+          (record as L0Record & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
+          (record as L0Record & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
         );
 
         if (!skipVec) {
@@ -1463,7 +1817,9 @@ export class VectorStore implements IMemoryStore {
           );
         }
 
-        // Sync FTS5 (delete + re-insert to handle updates)
+        // Sync FTS5 (delete + re-insert to handle updates).
+        // user_id / agent_id mirrored into FTS so post-recall isolation
+        // filtering doesn't require a join.
         if (this.ftsAvailable) {
           try {
             this.stmtL0FtsDelete.run(record.id);
@@ -1472,7 +1828,11 @@ export class VectorStore implements IMemoryStore {
               record.messageText,                 // message_text_original — raw for display
               record.id,
               record.sessionKey,
-              record.sessionId,
+              record.sessionId || DEFAULT_ISOLATION_ID,
+              (record as L0Record & { teamId?: string }).teamId || DEFAULT_ISOLATION_ID,
+              record.taskId || "",
+              (record as L0Record & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
+              (record as L0Record & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
               record.role,
               record.recordedAt,
               record.timestamp,
@@ -1553,7 +1913,7 @@ export class VectorStore implements IMemoryStore {
    *
    * **Fault-tolerant**: returns an empty array on any error.
    */
-  searchL0Vector(queryEmbedding: Float32Array, topK = 5): L0VectorSearchResult[] {
+  searchL0Vector(queryEmbedding: Float32Array, topK = 5, _queryText?: string, filter?: IsolationFilter): L0VectorSearchResult[] {
     if (this.degraded || !this.vecTablesReady) {
       if (this.degraded) this.logger?.warn(`${TAG} [L0-search] SKIPPED (degraded mode)`);
       return [];
@@ -1566,7 +1926,7 @@ export class VectorStore implements IMemoryStore {
       // in KNN results.
       // NOTE: "AND distance IS NOT NULL" is NOT usable because vec0 does not
       // support that constraint — it causes an empty result set.
-      const retrieveCount = topK + VectorStore.ZERO_VEC_BUFFER;
+      const retrieveCount = filter ? Math.max(topK * 5, topK + VectorStore.ZERO_VEC_BUFFER) : topK + VectorStore.ZERO_VEC_BUFFER;
 
       this.logger?.debug?.(
         `${TAG} [L0-search] START topK=${topK}, retrieveCount=${retrieveCount}, ` +
@@ -1599,6 +1959,10 @@ export class VectorStore implements IMemoryStore {
           | {
               session_key: string;
               session_id: string;
+              team_id: string;
+              task_id: string;
+              user_id: string;
+              agent_id: string;
               role: string;
               message_text: string;
               recorded_at: string;
@@ -1608,6 +1972,9 @@ export class VectorStore implements IMemoryStore {
 
         if (!meta) {
           this.logger?.warn(`${TAG} [L0-search] record_id=${record_id} has vector but NO metadata (orphan)`);
+          continue;
+        }
+        if (!rowMatchesIsolation(meta, filter)) {
           continue;
         }
 
@@ -1621,6 +1988,10 @@ export class VectorStore implements IMemoryStore {
           record_id,
           session_key: meta.session_key,
           session_id: meta.session_id,
+          team_id: meta.team_id ?? "",
+          task_id: meta.task_id ?? "",
+          user_id: meta.user_id ?? "",
+          agent_id: meta.agent_id ?? "",
           role: meta.role,
           message_text: meta.message_text,
           score,
@@ -1648,9 +2019,13 @@ export class VectorStore implements IMemoryStore {
    *
    * **Fault-tolerant**: logs a warning on failure, never throws.
    */
-  deleteL0(recordId: string): boolean {
+  deleteL0(recordId: string, filter?: IsolationFilter): boolean {
     if (this.degraded) return false;
     try {
+      if (filter) {
+        const meta = this.stmtL0GetMeta.get(recordId) as { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
+        if (!meta || !rowMatchesIsolation(meta, filter)) return false;
+      }
       this.db.exec("BEGIN");
       try {
         const result = this.stmtL0DeleteMeta.run(recordId);
@@ -1738,18 +2113,52 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
-   * Get the total number of L0 message records in the store.
+   * Get the total number of L0 message records matching optional filters.
    *
    * **Fault-tolerant**: returns 0 on failure.
    */
-  countL0(): number {
+  countL0(filter?: L0CountFilter): number {
     if (this.degraded) return 0;
     try {
+      const conditions: string[] = [];
+      const params: SQLInputValue[] = [];
+
+      if (filter?.sessionId) {
+        conditions.push("(session_key = ? OR session_id = ?)");
+        params.push(filter.sessionId, filter.sessionId);
+      }
+      if (filter?.teamId !== undefined) {
+        conditions.push("team_id = ?");
+        params.push(filter.teamId);
+      }
+      if (filter?.userId !== undefined) {
+        conditions.push("user_id = ?");
+        params.push(filter.userId);
+      }
+      if (filter?.agentId !== undefined) {
+        conditions.push("agent_id = ?");
+        params.push(filter.agentId);
+      }
+      if (filter?.taskId !== undefined) {
+        conditions.push("task_id = ?");
+        params.push(filter.taskId);
+      }
+      if (filter?.timeStartMs !== undefined) {
+        conditions.push("timestamp >= ?");
+        params.push(filter.timeStartMs);
+      }
+      if (filter?.timeEndMs !== undefined) {
+        conditions.push("timestamp <= ?");
+        params.push(filter.timeEndMs);
+      }
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
       const row = this.db
-        .prepare("SELECT COUNT(*) AS cnt FROM l0_conversations")
-        .get() as { cnt: number };
-      this.logger?.debug?.(`${TAG} [L0-count] total=${row.cnt}`);
-      return row.cnt;
+        .prepare(`SELECT COUNT(*) AS cnt FROM l0_conversations ${where}`)
+        .get(...params) as { cnt: number } | undefined;
+      const total = row?.cnt ?? 0;
+      this.logger?.debug?.(`${TAG} [L0-count] total=${total}`);
+      return total;
     } catch (err) {
       this.logger?.warn(
         `${TAG} countL0 failed (non-fatal, returning 0): ${err instanceof Error ? err.message : String(err)}`,
@@ -1894,15 +2303,7 @@ export class VectorStore implements IMemoryStore {
     sessionKey: string,
     afterRecordedAtMs?: number,
     limit = 50,
-  ): Array<{
-    record_id: string;
-    session_key: string;
-    session_id: string;
-    role: string;
-    message_text: string;
-    recorded_at: string;
-    timestamp: number;
-  }> {
+  ): L0QueryRow[] {
     if (this.degraded) {
       this.logger?.warn(`${TAG} [L0-query] SKIPPED (degraded mode)`);
       return [];
@@ -1928,6 +2329,10 @@ export class VectorStore implements IMemoryStore {
         record_id: r.record_id as string,
         session_key: r.session_key as string,
         session_id: (r.session_id as string) || "",
+        team_id: (r.team_id as string) || "",
+        task_id: (r.task_id as string) || "",
+        user_id: (r.user_id as string) || "",
+        agent_id: (r.agent_id as string) || "",
         role: r.role as string,
         message_text: r.message_text as string,
         recorded_at: (r.recorded_at as string) || "",
@@ -1952,7 +2357,7 @@ export class VectorStore implements IMemoryStore {
     sessionKey: string,
     afterRecordedAtMs?: number,
     limit = 50,
-  ): Array<{ sessionId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }> }> {
+  ): Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }> }> {
     if (this.degraded) {
       this.logger?.warn(`${TAG} [L0-query-grouped] SKIPPED (degraded mode)`);
       return [];
@@ -1960,16 +2365,28 @@ export class VectorStore implements IMemoryStore {
     try {
       const rows = this.queryL0ForL1(sessionKey, afterRecordedAtMs, limit);
 
-      // Group by session_id
-      const groupMap = new Map<string, Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }>>();
+      // Group by full isolation tuple + session_id to avoid cross-tenant merging.
+      const groupMap = new Map<string, {
+        sessionId: string;
+        teamId?: string;
+        taskId?: string;
+        userId: string;
+        agentId: string;
+        messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }>;
+      }>();
       for (const row of rows) {
         const sid = row.session_id || "";
-        let group = groupMap.get(sid);
+        const teamId = row.team_id || undefined;
+        const taskId = row.task_id || undefined;
+        const userId = row.user_id || "";
+        const agentId = row.agent_id || "";
+        const groupKey = `${teamId ?? ""}\u0000${userId}\u0000${agentId}\u0000${sid}\u0000${taskId ?? ""}`;
+        let group = groupMap.get(groupKey);
         if (!group) {
-          group = [];
-          groupMap.set(sid, group);
+          group = { sessionId: sid, teamId, taskId, userId, agentId, messages: [] };
+          groupMap.set(groupKey, group);
         }
-        group.push({
+        group.messages.push({
           id: row.record_id,
           role: row.role,
           content: row.message_text,
@@ -1979,10 +2396,10 @@ export class VectorStore implements IMemoryStore {
       }
 
       // Convert to array, sorted by earliest message timestamp
-      const groups: Array<{ sessionId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }> }> = [];
-      for (const [sessionId, messages] of groupMap) {
-        if (messages.length > 0) {
-          groups.push({ sessionId, messages });
+      const groups: Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }> }> = [];
+      for (const group of groupMap.values()) {
+        if (group.messages.length > 0) {
+          groups.push(group);
         }
       }
       groups.sort((a, b) => a.messages[0].timestamp - b.messages[0].timestamp);
@@ -2064,6 +2481,23 @@ export class VectorStore implements IMemoryStore {
         conditions.push("(session_key = ? OR session_id = ?)");
         params.push(filter.sessionId, filter.sessionId);
       }
+      // Isolation dimensions — see docs/l0l3-tenant-isolation-design.md.
+      if (filter.teamId !== undefined) {
+        conditions.push("team_id = ?");
+        params.push(filter.teamId);
+      }
+      if (filter.userId !== undefined) {
+        conditions.push("user_id = ?");
+        params.push(filter.userId);
+      }
+      if (filter.agentId !== undefined) {
+        conditions.push("agent_id = ?");
+        params.push(filter.agentId);
+      }
+      if (filter.taskId !== undefined) {
+        conditions.push("task_id = ?");
+        params.push(filter.taskId);
+      }
       if (filter.timeStartMs !== undefined) {
         conditions.push("timestamp >= ?");
         params.push(filter.timeStartMs);
@@ -2081,7 +2515,7 @@ export class VectorStore implements IMemoryStore {
       const total = countRow?.cnt ?? 0;
 
       // Fetch page
-      const dataSql = `SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp FROM l0_conversations ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+      const dataSql = `SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp FROM l0_conversations ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
       const rows = this.db.prepare(dataSql).all(...params, filter.limit, filter.offset) as unknown as L0QueryRow[];
 
       return { rows, total };
@@ -2106,6 +2540,27 @@ export class VectorStore implements IMemoryStore {
         conditions.push("type = ?");
         params.push(filter.type);
       }
+      if (filter.sessionId) {
+        conditions.push("session_id = ?");
+        params.push(filter.sessionId);
+      }
+      // Isolation dimensions.
+      if (filter.teamId !== undefined) {
+        conditions.push("team_id = ?");
+        params.push(filter.teamId);
+      }
+      if (filter.userId !== undefined) {
+        conditions.push("user_id = ?");
+        params.push(filter.userId);
+      }
+      if (filter.agentId !== undefined) {
+        conditions.push("agent_id = ?");
+        params.push(filter.agentId);
+      }
+      if (filter.taskId !== undefined) {
+        conditions.push("task_id = ?");
+        params.push(filter.taskId);
+      }
       if (filter.timeStart) {
         conditions.push("updated_time >= ?");
         params.push(filter.timeStart);
@@ -2122,8 +2577,9 @@ export class VectorStore implements IMemoryStore {
       const countRow = this.db.prepare(countSql).get(...params) as { cnt: number } | undefined;
       const total = countRow?.cnt ?? 0;
 
-      // Fetch page
-      const dataSql = `SELECT record_id, content, type, priority, scene_name, session_key, session_id, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json FROM l1_records ${where} ORDER BY updated_time DESC LIMIT ? OFFSET ?`;
+      // Fetch page — must include user_id / agent_id so callers can enforce
+      // isolation in downstream filters / Coordinator candidate pool.
+      const dataSql = `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json FROM l1_records ${where} ORDER BY updated_time DESC LIMIT ? OFFSET ?`;
       const rows = this.db.prepare(dataSql).all(...params, filter.limit, filter.offset) as unknown as L1RecordRow[];
 
       return { rows, total };
@@ -2137,21 +2593,25 @@ export class VectorStore implements IMemoryStore {
    * Delete all L0 messages belonging to a session.
    * Returns the count of actually deleted rows.
    */
-  deleteL0BySession(sessionId: string): number {
+  deleteL0BySession(sessionId: string, filter?: IsolationFilter): number {
     if (this.degraded) return 0;
 
     try {
       // First get all record_ids for the session
       const rows = this.db.prepare(
-        "SELECT record_id FROM l0_conversations WHERE session_key = ? OR session_id = ?"
-      ).all(sessionId, sessionId) as Array<{ record_id: string }>;
+        "SELECT record_id, session_key, session_id, user_id, agent_id FROM l0_conversations WHERE session_key = ? OR session_id = ?"
+      ).all(sessionId, sessionId) as Array<{ record_id: string; session_key: string; session_id: string; user_id: string; agent_id: string }>;
 
       if (rows.length === 0) return 0;
 
       this.db.exec("BEGIN");
       try {
+        let deletedCount = 0;
         for (const row of rows) {
-          this.db.prepare("DELETE FROM l0_conversations WHERE record_id = ?").run(row.record_id);
+          if (filter && !rowMatchesIsolation(row, filter)) continue;
+          const result = this.db.prepare("DELETE FROM l0_conversations WHERE record_id = ?").run(row.record_id);
+          if (((result as any)?.changes ?? 0) <= 0) continue;
+          deletedCount++;
           if (this.vecTablesReady) {
             try { this.db.prepare("DELETE FROM l0_vec WHERE record_id = ?").run(row.record_id); } catch { /* vec may not exist */ }
           }
@@ -2160,7 +2620,7 @@ export class VectorStore implements IMemoryStore {
           }
         }
         this.db.exec("COMMIT");
-        return rows.length;
+        return deletedCount;
       } catch (err) {
         this.db.exec("ROLLBACK");
         throw err;
@@ -2169,6 +2629,343 @@ export class VectorStore implements IMemoryStore {
       this.logger?.warn(`[sqlite] deleteL0BySession failed: ${err instanceof Error ? err.message : String(err)}`);
       return 0;
     }
+  }
+
+  private entityId(prefix: string): string {
+    return `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  }
+
+  private jsonArray(value: unknown): string {
+    return JSON.stringify(Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.trim().length > 0) : []);
+  }
+
+  private parseArray(value: unknown): string[] {
+    if (Array.isArray(value)) return value.filter((v): v is string => typeof v === "string");
+    if (typeof value !== "string" || !value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private teamFromRow(row: any, includeRefs = false): TeamEntity {
+    const teamId = String(row.team_id ?? "");
+    const ownerUserId = String(row.owner_user_id ?? "");
+    const team: TeamEntity = {
+      team_id: teamId,
+      name: String(row.name ?? ""),
+      description: String(row.description ?? "") || undefined,
+      owner_user_id: ownerUserId,
+      status: (row.status as TeamEntity["status"]) || "active",
+      created_at: String(row.created_at ?? ""),
+      updated_at: String(row.updated_at ?? ""),
+    };
+    if (includeRefs) {
+      const userIds = new Set<string>(this.parseArray(row.user_ids_json));
+      if (ownerUserId) userIds.add(ownerUserId);
+      team.user_ids = Array.from(userIds).sort();
+      const agentIds = new Set<string>(this.parseArray(row.agent_ids_json));
+      const agents = this.db.prepare("SELECT agent_id FROM entity_agents WHERE team_id = ? AND status = 'active' ORDER BY agent_id").all(teamId) as any[];
+      for (const agent of agents) agentIds.add(String(agent.agent_id));
+      team.agent_ids = Array.from(agentIds).sort();
+      team.task_ids = (this.db.prepare("SELECT task_id FROM entity_tasks WHERE team_id = ? ORDER BY task_id").all(teamId) as any[]).map((r) => String(r.task_id));
+    }
+    return team;
+  }
+
+  private userFromRow(row: any, includeDerived = false): UserEntity {
+    const userId = String(row.user_id ?? "");
+    const user: UserEntity = {
+      user_id: userId,
+      name: String(row.name ?? ""),
+      job_description: String(row.job_description ?? "") || undefined,
+      team_ids: [],
+      task_ids: [],
+      owned_agent_ids: [],
+      status: (row.status as UserEntity["status"]) || "active",
+      created_at: String(row.created_at ?? ""),
+      updated_at: String(row.updated_at ?? ""),
+    };
+    if (includeDerived) {
+      const teams = this.db.prepare("SELECT team_id, owner_user_id, user_ids_json FROM entity_teams WHERE status = 'active'").all() as any[];
+      user.team_ids = teams
+        .filter((team) => String(team.owner_user_id ?? "") === userId || this.parseArray(team.user_ids_json).includes(userId))
+        .map((team) => String(team.team_id))
+        .sort();
+      const tasks = this.db.prepare("SELECT task_id, creator_user_id, user_ids_json, agent_ids_json FROM entity_tasks ORDER BY task_id").all() as any[];
+      const taskIds = new Set<string>();
+      const taskAgentIds = new Set<string>();
+      for (const task of tasks) {
+        const participates = String(task.creator_user_id ?? "") === userId || this.parseArray(task.user_ids_json).includes(userId);
+        if (!participates) continue;
+        taskIds.add(String(task.task_id));
+        for (const agentId of this.parseArray(task.agent_ids_json)) taskAgentIds.add(agentId);
+      }
+      user.task_ids = Array.from(taskIds).sort();
+      user.task_agent_ids = Array.from(taskAgentIds).sort();
+      user.owned_agent_ids = (this.db.prepare("SELECT agent_id FROM entity_agents WHERE owner_user_id = ? AND status = 'active' ORDER BY agent_id").all(userId) as any[]).map((r) => String(r.agent_id));
+    }
+    return user;
+  }
+
+  private agentFromRow(row: any, includeDerived = true): AgentEntity {
+    const agentId = String(row.agent_id ?? "");
+    const agent: AgentEntity = {
+      agent_id: agentId,
+      team_id: String(row.team_id ?? ""),
+      name: String(row.name ?? ""),
+      description: String(row.description ?? "") || undefined,
+      prompt: String(row.prompt ?? "") || undefined,
+      owner_user_id: String(row.owner_user_id ?? "") || undefined,
+      visibility: (row.visibility as AgentEntity["visibility"]) || "team",
+      status: (row.status as AgentEntity["status"]) || "active",
+      created_at: String(row.created_at ?? ""),
+      updated_at: String(row.updated_at ?? ""),
+    };
+    if (includeDerived) {
+      const tasks = this.db.prepare("SELECT task_id, agent_ids_json FROM entity_tasks ORDER BY task_id").all() as any[];
+      agent.task_ids = tasks.filter((task) => this.parseArray(task.agent_ids_json).includes(agentId)).map((task) => String(task.task_id));
+    }
+    return agent;
+  }
+
+  private taskFromRow(row: any): TaskEntity {
+    return {
+      task_id: String(row.task_id ?? ""),
+      team_id: String(row.team_id ?? ""),
+      creator_user_id: String(row.creator_user_id ?? ""),
+      title: String(row.title ?? "") || undefined,
+      description: String(row.description ?? "") || undefined,
+      source_type: (row.source_type as TaskEntity["source_type"]) || "manual",
+      source_url: String(row.source_url ?? "") || undefined,
+      agent_ids: this.parseArray(row.agent_ids_json),
+      user_ids: this.parseArray(row.user_ids_json),
+      created_at: String(row.created_at ?? ""),
+      updated_at: String(row.updated_at ?? ""),
+    };
+  }
+
+  createTeam(input: Omit<TeamEntity, "created_at" | "updated_at" | "status" | "user_ids" | "agent_ids" | "task_ids"> & { team_id?: string; status?: TeamEntity["status"] }): TeamEntity {
+    const now = new Date().toISOString();
+    const id = input.team_id || this.entityId("team");
+    this.db.prepare("INSERT INTO entity_teams (team_id, name, description, owner_user_id, user_ids_json, agent_ids_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.name, input.description ?? "", input.owner_user_id, this.jsonArray([input.owner_user_id]), this.jsonArray([]), input.status ?? "active", now, now);
+    return this.getTeam(id) ?? { team_id: id, name: input.name, owner_user_id: input.owner_user_id, status: input.status ?? "active", created_at: now, updated_at: now };
+  }
+
+  getTeam(teamId: string): TeamEntity | null {
+    const row = this.db.prepare("SELECT * FROM entity_teams WHERE team_id = ?").get(teamId) as any;
+    return row ? this.teamFromRow(row, true) : null;
+  }
+
+  updateTeam(teamId: string, patch: Partial<Pick<TeamEntity, "name" | "description" | "owner_user_id" | "user_ids" | "agent_ids" | "status">>): TeamEntity | null {
+    const row = this.db.prepare("SELECT * FROM entity_teams WHERE team_id = ?").get(teamId) as any;
+    if (!row) return null;
+    const current = this.teamFromRow(row, true);
+    const ownerUserId = patch.owner_user_id ?? current.owner_user_id;
+    const userIds = patch.user_ids !== undefined ? Array.from(new Set([...patch.user_ids, ownerUserId])).sort() : this.parseArray(row.user_ids_json);
+    if (ownerUserId && !userIds.includes(ownerUserId)) userIds.push(ownerUserId);
+    const agentIds = patch.agent_ids !== undefined ? patch.agent_ids : this.parseArray(row.agent_ids_json);
+    const next = { ...current, ...patch, owner_user_id: ownerUserId, updated_at: new Date().toISOString() };
+    this.db.prepare("UPDATE entity_teams SET name = ?, description = ?, owner_user_id = ?, user_ids_json = ?, agent_ids_json = ?, status = ?, updated_at = ? WHERE team_id = ?").run(next.name, next.description ?? "", ownerUserId, this.jsonArray(userIds), this.jsonArray(agentIds), next.status, next.updated_at, teamId);
+    return this.getTeam(teamId);
+  }
+
+  deleteTeams(teamIds: string[]): BatchDeleteResult {
+    const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
+    for (const id of teamIds) {
+      const row = this.getTeam(id);
+      if (!row) { result.failed.push({ id, reason: "not_found" }); continue; }
+      this.updateTeam(id, { status: "archived" });
+      result.deleted_ids.push(id);
+    }
+    return result;
+  }
+
+  createUser(input: Pick<UserEntity, "name"> & Partial<Pick<UserEntity, "job_description" | "status">> & { user_id?: string }): UserEntity {
+    const now = new Date().toISOString();
+    const id = input.user_id || this.entityId("user");
+    this.db.prepare("INSERT INTO entity_users (user_id, name, job_description, team_ids_json, task_ids_json, owned_agent_ids_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.name, input.job_description ?? "", this.jsonArray([]), this.jsonArray([]), this.jsonArray([]), input.status ?? "active", now, now);
+    return this.getUser(id) ?? { user_id: id, name: input.name, team_ids: [], task_ids: [], owned_agent_ids: [], status: input.status ?? "active", created_at: now, updated_at: now };
+  }
+
+  getUser(userId: string): UserEntity | null {
+    const row = this.db.prepare("SELECT * FROM entity_users WHERE user_id = ?").get(userId) as any;
+    return row ? this.userFromRow(row, true) : null;
+  }
+
+  updateUser(userId: string, patch: Partial<Pick<UserEntity, "name" | "job_description" | "status">>): UserEntity | null {
+    const current = this.getUser(userId);
+    if (!current) return null;
+    const next = { ...current, ...patch, updated_at: new Date().toISOString() };
+    this.db.prepare("UPDATE entity_users SET name = ?, job_description = ?, status = ?, updated_at = ? WHERE user_id = ?").run(next.name, next.job_description ?? "", next.status, next.updated_at, userId);
+    return this.getUser(userId);
+  }
+
+  deleteUsers(userIds: string[]): BatchDeleteResult {
+    const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
+    for (const id of userIds) {
+      if (!this.getUser(id)) { result.failed.push({ id, reason: "not_found" }); continue; }
+      this.updateUser(id, { status: "inactive" });
+      result.deleted_ids.push(id);
+    }
+    return result;
+  }
+
+  createAgent(input: Omit<AgentEntity, "created_at" | "updated_at" | "status" | "visibility" | "task_ids"> & { agent_id?: string; status?: AgentEntity["status"]; visibility?: AgentEntity["visibility"] }): AgentEntity {
+    const now = new Date().toISOString();
+    const id = input.agent_id || this.entityId("agent");
+    this.db.prepare("INSERT INTO entity_agents (agent_id, team_id, name, description, prompt, owner_user_id, visibility, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.team_id, input.name, input.description ?? "", input.prompt ?? "", input.owner_user_id ?? "", input.visibility ?? "team", input.status ?? "active", now, now);
+    const team = this.getTeam(input.team_id);
+    if (team && !(team.agent_ids ?? []).includes(id)) this.updateTeam(input.team_id, { agent_ids: [...(team.agent_ids ?? []), id] });
+    return this.getAgent(id) ?? { agent_id: id, team_id: input.team_id, name: input.name, visibility: input.visibility ?? "team", status: input.status ?? "active", created_at: now, updated_at: now };
+  }
+
+  getAgent(agentId: string): AgentEntity | null {
+    const row = this.db.prepare("SELECT * FROM entity_agents WHERE agent_id = ?").get(agentId) as any;
+    return row ? this.agentFromRow(row) : null;
+  }
+
+  updateAgent(agentId: string, patch: Partial<Pick<AgentEntity, "name" | "description" | "prompt" | "owner_user_id" | "visibility" | "status">>): AgentEntity | null {
+    const current = this.getAgent(agentId);
+    if (!current) return null;
+    const next = { ...current, ...patch, updated_at: new Date().toISOString() };
+    this.db.prepare("UPDATE entity_agents SET name = ?, description = ?, prompt = ?, owner_user_id = ?, visibility = ?, status = ?, updated_at = ? WHERE agent_id = ?").run(next.name, next.description ?? "", next.prompt ?? "", next.owner_user_id ?? "", next.visibility, next.status, next.updated_at, agentId);
+    return this.getAgent(agentId);
+  }
+
+  deleteAgents(agentIds: string[]): BatchDeleteResult {
+    const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
+    for (const id of agentIds) {
+      if (!this.getAgent(id)) { result.failed.push({ id, reason: "not_found" }); continue; }
+      this.updateAgent(id, { status: "inactive" });
+      result.deleted_ids.push(id);
+    }
+    return result;
+  }
+
+  createTask(input: Omit<TaskEntity, "created_at" | "updated_at" | "source_type" | "agent_ids" | "user_ids"> & { task_id?: string; source_type?: TaskEntity["source_type"]; agent_ids?: string[]; user_ids?: string[] }): TaskEntity {
+    const now = new Date().toISOString();
+    const id = input.task_id || this.entityId("task");
+    this.db.prepare("INSERT INTO entity_tasks (task_id, team_id, creator_user_id, title, description, source_type, source_url, status, auto_assign_floating_assets, risk_level, agent_ids_json, user_ids_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.team_id, input.creator_user_id, input.title ?? "", input.description ?? "", input.source_type ?? "manual", input.source_url ?? "", "pending", 0, "low", this.jsonArray(input.agent_ids), this.jsonArray(input.user_ids), now, now);
+    return this.getTask(id) ?? { task_id: id, team_id: input.team_id, creator_user_id: input.creator_user_id, source_type: input.source_type ?? "manual", agent_ids: input.agent_ids ?? [], user_ids: input.user_ids ?? [], created_at: now, updated_at: now };
+  }
+
+  getTask(taskId: string): TaskEntity | null {
+    const row = this.db.prepare("SELECT * FROM entity_tasks WHERE task_id = ?").get(taskId) as any;
+    return row ? this.taskFromRow(row) : null;
+  }
+
+  updateTask(taskId: string, patch: Partial<Pick<TaskEntity, "title" | "description" | "source_type" | "source_url" | "agent_ids" | "user_ids">>): TaskEntity | null {
+    const current = this.getTask(taskId);
+    if (!current) return null;
+    const next = { ...current, ...patch, updated_at: new Date().toISOString() };
+    this.db.prepare("UPDATE entity_tasks SET title = ?, description = ?, source_type = ?, source_url = ?, agent_ids_json = ?, user_ids_json = ?, updated_at = ? WHERE task_id = ?").run(next.title ?? "", next.description ?? "", next.source_type, next.source_url ?? "", this.jsonArray(next.agent_ids), this.jsonArray(next.user_ids), next.updated_at, taskId);
+    return this.getTask(taskId);
+  }
+
+  deleteTasks(taskIds: string[]): BatchDeleteResult {
+    const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
+    for (const id of taskIds) {
+      if (!this.getTask(id)) { result.failed.push({ id, reason: "not_found" }); continue; }
+      this.db.prepare("DELETE FROM entity_tasks WHERE task_id = ?").run(id);
+      result.deleted_ids.push(id);
+    }
+    return result;
+  }
+
+  // ── Knowledge entity ──
+
+  private knowledgeFromRow(row: any): KnowledgeEntity {
+    return {
+      knowledge_id: String(row.knowledge_id ?? ""),
+      type: (row.type as KnowledgeType) ?? "wiki",
+      service_url: String(row.service_url ?? ""),
+      name: String(row.name ?? ""),
+      summary: row.summary ?? null,
+      team_id: String(row.team_id ?? ""),
+      agent_id: String(row.agent_id ?? ""),
+      user_id: row.user_id ?? null,
+      repo_url: row.repo_url ?? undefined,
+      branch: row.branch ?? undefined,
+      created_at: String(row.created_at ?? ""),
+      updated_at: String(row.updated_at ?? ""),
+    };
+  }
+
+  createKnowledge(input: Omit<KnowledgeEntity, "created_at" | "updated_at">): KnowledgeEntity {
+    const now = new Date().toISOString();
+    // Upsert: if knowledge_id exists, update; else insert
+    const existing = this.db.prepare("SELECT created_at FROM entity_knowledge WHERE knowledge_id = ?").get(input.knowledge_id) as any;
+    if (existing) {
+      this.db.prepare(
+        "UPDATE entity_knowledge SET type=?, service_url=?, name=?, summary=?, team_id=?, agent_id=?, user_id=?, repo_url=?, branch=?, updated_at=? WHERE knowledge_id=?"
+      ).run(input.type, input.service_url, input.name, input.summary ?? null, input.team_id, input.agent_id ?? "", input.user_id ?? null, input.repo_url ?? null, input.branch ?? null, now, input.knowledge_id);
+      return this.getKnowledge(input.knowledge_id)!;
+    }
+    this.db.prepare(
+      "INSERT INTO entity_knowledge (knowledge_id, type, service_url, name, summary, team_id, agent_id, user_id, repo_url, branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(input.knowledge_id, input.type, input.service_url, input.name, input.summary ?? null, input.team_id, input.agent_id ?? "", input.user_id ?? null, input.repo_url ?? null, input.branch ?? null, now, now);
+    return this.getKnowledge(input.knowledge_id)!;
+  }
+
+  getKnowledge(knowledgeId: string): KnowledgeEntity | null {
+    const row = this.db.prepare("SELECT * FROM entity_knowledge WHERE knowledge_id = ?").get(knowledgeId) as any;
+    return row ? this.knowledgeFromRow(row) : null;
+  }
+
+  updateKnowledge(knowledgeId: string, patch: Partial<Pick<KnowledgeEntity, "name" | "summary" | "service_url" | "repo_url" | "branch">>): KnowledgeEntity | null {
+    const current = this.getKnowledge(knowledgeId);
+    if (!current) return null;
+    const now = new Date().toISOString();
+    const sets: string[] = ["updated_at = ?"];
+    const args: SQLInputValue[] = [now];
+    if (patch.name !== undefined) { sets.push("name = ?"); args.push(patch.name); }
+    if (patch.summary !== undefined) { sets.push("summary = ?"); args.push(patch.summary); }
+    if (patch.service_url !== undefined) { sets.push("service_url = ?"); args.push(patch.service_url); }
+    if (patch.repo_url !== undefined) { sets.push("repo_url = ?"); args.push(patch.repo_url); }
+    if (patch.branch !== undefined) { sets.push("branch = ?"); args.push(patch.branch); }
+    args.push(knowledgeId);
+    this.db.prepare(`UPDATE entity_knowledge SET ${sets.join(", ")} WHERE knowledge_id = ?`).run(...args);
+    return this.getKnowledge(knowledgeId);
+  }
+
+  deleteKnowledge(knowledgeIds: string[], teamId?: string): BatchDeleteResult {
+    const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
+    for (const id of knowledgeIds) {
+      const row = this.getKnowledge(id);
+      if (!row) { result.failed.push({ id, reason: "not_found" }); continue; }
+      if (teamId && row.team_id !== teamId) { result.failed.push({ id, reason: "team_mismatch" }); continue; }
+      this.db.prepare("DELETE FROM entity_knowledge WHERE knowledge_id = ?").run(id);
+      result.deleted_ids.push(id);
+    }
+    return result;
+  }
+
+  listKnowledge(input: { team_id: string; type?: KnowledgeType; knowledge_ids?: string[]; limit?: number; offset?: number }): KnowledgeListResult {
+    const limit = Math.min(Math.max(input.limit ?? 20, 1), 1000);
+    const offset = Math.max(input.offset ?? 0, 0);
+    // knowledge_ids 过滤（Proxy 按 id 批量联查明细）；空数组 → 空结果
+    const ids = input.knowledge_ids;
+    if (ids && ids.length === 0) return { items: [], total: 0 };
+    const idClause = ids && ids.length > 0 ? ` AND knowledge_id IN (${ids.map(() => "?").join(",")})` : "";
+
+    let sql = "SELECT * FROM entity_knowledge WHERE team_id = ?";
+    const args: SQLInputValue[] = [input.team_id];
+    if (input.type) { sql += " AND type = ?"; args.push(input.type); }
+    if (idClause) { sql += idClause; args.push(...ids!); }
+    sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?";
+    args.push(limit, offset);
+    const rows = this.db.prepare(sql).all(...args) as any[];
+    const items = rows.map((r) => this.knowledgeFromRow(r));
+
+    let countSql = "SELECT COUNT(*) as total FROM entity_knowledge WHERE team_id = ?";
+    const countArgs: SQLInputValue[] = [input.team_id];
+    if (input.type) { countSql += " AND type = ?"; countArgs.push(input.type); }
+    if (idClause) { countSql += idClause; countArgs.push(...ids!); }
+    const totalRow = this.db.prepare(countSql).get(...countArgs) as any;
+    return { items, total: totalRow?.total ?? 0 };
   }
 
   /**
@@ -2180,10 +2977,11 @@ export class VectorStore implements IMemoryStore {
    *
    * **Fault-tolerant**: returns an empty array on any error.
    */
-  searchL1Fts(ftsQuery: string, limit = 20): FtsSearchResult[] {
+  searchL1Fts(ftsQuery: string, limit = 20, filter?: IsolationFilter): FtsSearchResult[] {
     if (this.degraded || !this.ftsAvailable) return [];
     try {
-      const rows = this.stmtL1FtsSearch.all(ftsQuery, limit) as Array<{
+      const retrieveLimit = filter ? Math.max(limit * 5, limit) : limit;
+      const rows = this.stmtL1FtsSearch.all(ftsQuery, retrieveLimit) as Array<{
         record_id: string;
         content: string;
         type: string;
@@ -2191,6 +2989,11 @@ export class VectorStore implements IMemoryStore {
         scene_name: string;
         session_key: string;
         session_id: string;
+        team_id: string;
+        task_id: string;
+        user_id: string;
+        agent_id: string;
+        version: number;
         timestamp_str: string;
         timestamp_start: string;
         timestamp_end: string;
@@ -2198,20 +3001,28 @@ export class VectorStore implements IMemoryStore {
         rank: number;
       }>;
 
-      return rows.map((r) => ({
-        record_id: r.record_id,
-        content: r.content,
-        type: r.type,
-        priority: r.priority,
-        scene_name: r.scene_name,
-        score: bm25RankToScore(r.rank),
-        timestamp_str: r.timestamp_str,
-        timestamp_start: r.timestamp_start,
-        timestamp_end: r.timestamp_end,
-        session_key: r.session_key,
-        session_id: r.session_id,
-        metadata_json: r.metadata_json,
-      }));
+      return rows
+        .filter((r) => rowMatchesIsolation(r, filter))
+        .slice(0, limit)
+        .map((r) => ({
+          record_id: r.record_id,
+          content: r.content,
+          type: r.type,
+          priority: r.priority,
+          scene_name: r.scene_name,
+          score: bm25RankToScore(r.rank),
+          timestamp_str: r.timestamp_str,
+          timestamp_start: r.timestamp_start,
+          timestamp_end: r.timestamp_end,
+          version: r.version ?? 0,
+          session_key: r.session_key,
+          session_id: r.session_id,
+          team_id: r.team_id ?? "",
+          task_id: r.task_id ?? "",
+          user_id: r.user_id ?? "",
+          agent_id: r.agent_id ?? "",
+          metadata_json: r.metadata_json,
+        }));
     } catch (err) {
       this.logger?.warn(
         `${TAG} [L1-fts-search] FAILED (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`,
@@ -2229,30 +3040,42 @@ export class VectorStore implements IMemoryStore {
    *
    * **Fault-tolerant**: returns an empty array on any error.
    */
-  searchL0Fts(ftsQuery: string, limit = VectorStore.FTS_DEFAULT_LIMIT): L0FtsSearchResult[] {
+  searchL0Fts(ftsQuery: string, limit = VectorStore.FTS_DEFAULT_LIMIT, filter?: IsolationFilter): L0FtsSearchResult[] {
     if (this.degraded || !this.ftsAvailable) return [];
     try {
-      const rows = this.stmtL0FtsSearch.all(ftsQuery, limit) as Array<{
+      const retrieveLimit = filter ? Math.max(limit * 5, limit) : limit;
+      const rows = this.stmtL0FtsSearch.all(ftsQuery, retrieveLimit) as Array<{
         record_id: string;
         message_text: string;
         session_key: string;
         session_id: string;
+        team_id: string;
+        task_id: string;
+        user_id: string;
+        agent_id: string;
         role: string;
         recorded_at: string;
         timestamp: number;
         rank: number;
       }>;
 
-      return rows.map((r) => ({
-        record_id: r.record_id,
-        session_key: r.session_key,
-        session_id: r.session_id,
-        role: r.role,
-        message_text: r.message_text,
-        score: bm25RankToScore(r.rank),
-        recorded_at: r.recorded_at,
-        timestamp: r.timestamp ?? 0,
-      }));
+      return rows
+        .filter((r) => rowMatchesIsolation(r, filter))
+        .slice(0, limit)
+        .map((r) => ({
+          record_id: r.record_id,
+          session_key: r.session_key,
+          session_id: r.session_id,
+          team_id: r.team_id ?? "",
+          task_id: r.task_id ?? "",
+          user_id: r.user_id ?? "",
+          agent_id: r.agent_id ?? "",
+          role: r.role,
+          message_text: r.message_text,
+          score: bm25RankToScore(r.rank),
+          recorded_at: r.recorded_at,
+          timestamp: r.timestamp ?? 0,
+        }));
     } catch (err) {
       this.logger?.warn(
         `${TAG} [L0-fts-search] FAILED (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`,
@@ -2292,13 +3115,29 @@ export class VectorStore implements IMemoryStore {
         .prepare("SELECT name FROM pragma_table_info('l1_fts')")
         .all() as Array<{ name: string }>;
       const hasV2Col = cols.some((c) => c.name === "content_original");
+      // v3 marker: isolation columns added (user_id / agent_id).
+      const hasV3Col = cols.some((c) => c.name === "user_id")
+        && cols.some((c) => c.name === "agent_id");
+      const hasV4Col = cols.some((c) => c.name === "version");
+      const hasV5Col = cols.some((c) => c.name === "task_id");
 
-      if (hasV2Col) {
-        return false; // Already v2 — no migration needed
+      if (hasV2Col && hasV3Col && hasV4Col && hasV5Col) {
+        return false; // Already current — no migration needed
       }
 
-      // v1 → v2: drop both FTS tables (data will be repopulated by rebuildFtsIndex)
-      this.logger?.info(`${TAG} Migrating FTS5 tables from v1 to v2 (jieba segmented)`);
+      // Migrate forward. FTS5 has no ALTER ADD COLUMN, so any forward step
+      // means DROP both FTS tables and rely on rebuildFtsIndex() to repopulate
+      // from l0_conversations / l1_records (which now carry user_id/agent_id
+      // after the L0/L1 schema migration above).
+      if (!hasV2Col) {
+        this.logger?.info(`${TAG} Migrating FTS5 tables v1 → v3 (jieba + tenancy isolation)`);
+      } else if (!hasV3Col) {
+        this.logger?.info(`${TAG} Migrating FTS5 tables v2 → v3 (add user_id / agent_id columns)`);
+      } else if (!hasV4Col) {
+        this.logger?.info(`${TAG} Migrating FTS5 tables v3 → v4 (add version column)`);
+      } else if (!hasV5Col) {
+        this.logger?.info(`${TAG} Migrating FTS5 tables v4 → v5 (add task_id column)`);
+      }
       this.db.exec("DROP TABLE IF EXISTS l1_fts");
       this.db.exec("DROP TABLE IF EXISTS l0_fts");
       return true;
@@ -2330,11 +3169,13 @@ export class VectorStore implements IMemoryStore {
       // Clear existing FTS data
       this.db.exec("DELETE FROM l1_fts");
 
-      // Read all L1 records from metadata table
+      // Read all L1 records from metadata table.
+      // Include user_id / agent_id so the rebuilt FTS rows carry isolation info.
       const l1Rows = this.db
         .prepare(`
           SELECT record_id, content, type, priority, scene_name,
-                 session_key, session_id, timestamp_str, timestamp_start, timestamp_end, metadata_json
+                 session_key, session_id, team_id, task_id, user_id, agent_id, version,
+                 timestamp_str, timestamp_start, timestamp_end, metadata_json
           FROM l1_records
         `)
         .all() as Array<{
@@ -2345,6 +3186,11 @@ export class VectorStore implements IMemoryStore {
           scene_name: string;
           session_key: string;
           session_id: string;
+          team_id: string;
+          task_id: string;
+          user_id: string;
+          agent_id: string;
+          version: number;
           timestamp_str: string;
           timestamp_start: string;
           timestamp_end: string;
@@ -2362,7 +3208,12 @@ export class VectorStore implements IMemoryStore {
             r.priority,
             r.scene_name,
             r.session_key,
-            r.session_id,
+            r.session_id || DEFAULT_ISOLATION_ID,
+            r.team_id || "",
+            r.task_id || "",
+            r.user_id || DEFAULT_ISOLATION_ID,
+            r.agent_id || DEFAULT_ISOLATION_ID,
+            r.version ?? 0,
             r.timestamp_str,
             r.timestamp_start,
             r.timestamp_end,
@@ -2381,7 +3232,8 @@ export class VectorStore implements IMemoryStore {
 
       const l0Rows = this.db
         .prepare(`
-          SELECT record_id, message_text, session_key, session_id, role, recorded_at, timestamp
+          SELECT record_id, message_text, session_key, session_id, team_id, task_id, user_id, agent_id,
+                 role, recorded_at, timestamp
           FROM l0_conversations
         `)
         .all() as Array<{
@@ -2389,6 +3241,10 @@ export class VectorStore implements IMemoryStore {
           message_text: string;
           session_key: string;
           session_id: string;
+          team_id: string;
+          task_id: string;
+          user_id: string;
+          agent_id: string;
           role: string;
           recorded_at: string;
           timestamp: number;
@@ -2403,6 +3259,10 @@ export class VectorStore implements IMemoryStore {
             r.record_id,
             r.session_key,
             r.session_id,
+            r.team_id ?? "",
+            r.task_id ?? "",
+            r.user_id ?? "",
+            r.agent_id ?? "",
             r.role,
             r.recorded_at,
             r.timestamp,
@@ -2437,6 +3297,88 @@ export class VectorStore implements IMemoryStore {
       nativeHybridSearch: false,
       sparseVectors: false,
     };
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // Memory Audit (修改审计)
+  // ─────────────────────────────────────────────────────────
+
+  appendAudit(entry: AuditEntry): void {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO memory_audit
+        (audit_id, record_id, layer, action,
+         team_id, agent_id, user_id, task_id,
+         version, updated_at_ms, request_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      entry.audit_id,
+      entry.record_id,
+      entry.layer,
+      entry.action,
+      entry.team_id ?? null,
+      entry.agent_id ?? null,
+      entry.user_id ?? null,
+      entry.task_id ?? null,
+      entry.version,
+      entry.updated_at_ms,
+      entry.request_id ?? null,
+    );
+  }
+
+  queryAudit(filter: AuditQueryFilter): AuditEntry[] {
+    const conds: string[] = [];
+    const args: SQLInputValue[] = [];
+    if (filter.record_id !== undefined) { conds.push("record_id = ?"); args.push(filter.record_id); }
+    if (filter.layer !== undefined)     { conds.push("layer = ?");     args.push(filter.layer); }
+    if (filter.action !== undefined)    { conds.push("action = ?");    args.push(filter.action); }
+    if (filter.team_id !== undefined)   { conds.push("team_id = ?");   args.push(filter.team_id); }
+    if (filter.agent_id !== undefined)  { conds.push("agent_id = ?");  args.push(filter.agent_id); }
+    if (filter.user_id !== undefined)   { conds.push("user_id = ?");   args.push(filter.user_id); }
+    if (filter.task_id !== undefined)   { conds.push("task_id = ?");   args.push(filter.task_id); }
+    if (filter.since_ms !== undefined)  { conds.push("updated_at_ms >= ?"); args.push(filter.since_ms); }
+    if (filter.until_ms !== undefined)  { conds.push("updated_at_ms <= ?"); args.push(filter.until_ms); }
+
+    const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
+    const limit = Math.min(Math.max(filter.limit ?? 100, 1), 1000);
+    const offset = Math.max(filter.offset ?? 0, 0);
+
+    const sql = `
+      SELECT audit_id, record_id, layer, action,
+             team_id, agent_id, user_id, task_id,
+             version, updated_at_ms, request_id
+      FROM memory_audit
+      ${where}
+      ORDER BY updated_at_ms DESC, audit_id DESC
+      LIMIT ? OFFSET ?
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all(...args, limit, offset) as Array<{
+      audit_id: string;
+      record_id: string;
+      layer: "L1" | "L2" | "L3";
+      action: "update" | "delete";
+      team_id: string | null;
+      agent_id: string | null;
+      user_id: string | null;
+      task_id: string | null;
+      version: number;
+      updated_at_ms: number;
+      request_id: string | null;
+    }>;
+    return rows.map((r) => ({
+      audit_id: r.audit_id,
+      record_id: r.record_id,
+      layer: r.layer,
+      action: r.action,
+      team_id: r.team_id ?? undefined,
+      agent_id: r.agent_id ?? undefined,
+      user_id: r.user_id ?? undefined,
+      task_id: r.task_id ?? undefined,
+      version: r.version,
+      updated_at_ms: r.updated_at_ms,
+      request_id: r.request_id ?? undefined,
+    }));
   }
 
   /**

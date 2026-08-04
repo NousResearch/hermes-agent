@@ -19,6 +19,7 @@
 
 import type { IStateBackend, TaskPayload } from "../core/state/types.js";
 import type { PipelineSessionState as StatePipelineSessionState } from "../core/state/types.js";
+import { buildPipelineTimerMember } from "../core/state/timer-member.js";
 import type { PipelineSessionState as CheckpointPipelineSessionState } from "./checkpoint.js";
 import { SessionFilter } from "./session-filter.js";
 import { report } from "../core/report/reporter.js";
@@ -171,7 +172,14 @@ export class StatefulPipelineManager {
   // L0→L1: Notify (called from auto-capture)
   // ============================
 
-  async notifyConversation(sessionKey: string, _messages: CapturedMessage[], instanceId?: string, rounds?: number): Promise<void> {
+  async notifyConversation(
+    sessionKey: string,
+    _messages: CapturedMessage[],
+    instanceId?: string,
+    rounds?: number,
+    teamId?: string,
+    agentId?: string,
+  ): Promise<void> {
     if (this.destroyed) return;
     if (this.sessionFilter.shouldSkip(sessionKey)) return;
 
@@ -182,7 +190,7 @@ export class StatefulPipelineManager {
     const effectiveRounds = rounds ?? 1;
     this._activeInstances.add(effectiveInstanceId);
     const now = Date.now();
-    const state = await this.stateBackend.getSessionState(effectiveInstanceId, sessionKey);
+    const state = await this.stateBackend.getSessionState(effectiveInstanceId, sessionKey, teamId, agentId);
     const warmupThreshold = this.getEffectiveThreshold(state?.warmup_threshold ?? (this.enableWarmup ? 1 : 0));
 
     const taskPayload: TaskPayload = {
@@ -190,18 +198,22 @@ export class StatefulPipelineManager {
       type: "L1",
       instanceId: effectiveInstanceId,
       sessionId: sessionKey,
+      teamId,
+      agentId,
       priority: 0,
-      data: { instanceId: effectiveInstanceId, ...serializeTraceContext() },
+      data: { instanceId: effectiveInstanceId, teamId, agentId, ...serializeTraceContext() },
       createdAt: now,
     };
 
     const result = await this.stateBackend.captureAtomic({
       instanceId: effectiveInstanceId,
       sessionId: sessionKey,
+      teamId,
+      agentId,
       messageJson: "[]", // 实际消息已持久化到 VDB/JSONL，这里只做计数
       threshold: warmupThreshold,
       fireAtMs: now + this.l1IdleTimeoutMs,
-      timerMember: `${sessionKey}:L1_idle`,
+      timerMember: buildPipelineTimerMember(sessionKey, "L1_idle", { teamId, agentId }),
       taskPayload,
       nowMs: now,
       rounds: effectiveRounds,
@@ -219,7 +231,7 @@ export class StatefulPipelineManager {
       });
 
       // 推进 warmup 阈值
-      await this.advanceWarmupInBackend(sessionKey, state?.warmup_threshold ?? 1);
+      await this.advanceWarmupInBackend(sessionKey, state?.warmup_threshold ?? 1, teamId, agentId);
     } else {
       this.logger?.debug?.(
         `${TAG} [${sessionKey}] count=${result.conversationCount}/${warmupThreshold}, L1 idle timer set`,
@@ -231,7 +243,7 @@ export class StatefulPipelineManager {
   // Session End
   // ============================
 
-  async flushSession(sessionKey: string, instanceId?: string): Promise<void> {
+  async flushSession(sessionKey: string, instanceId?: string, teamId?: string, agentId?: string): Promise<void> {
     if (this.destroyed) return;
     if (this.sessionFilter.shouldSkip(sessionKey)) return;
 
@@ -240,14 +252,14 @@ export class StatefulPipelineManager {
       this.logger?.error?.(`${TAG} flushSession called without explicit instanceId (session=${sessionKey})`);
       return;
     }
-    const state = await this.stateBackend.getSessionState(effectiveInstanceId, sessionKey);
+    const state = await this.stateBackend.getSessionState(effectiveInstanceId, sessionKey, teamId, agentId);
     if (!state || state.conversation_count === 0) {
       this.logger?.debug?.(`${TAG} [${sessionKey}] flushSession: nothing to flush`);
       return;
     }
 
     // 取消 idle timer
-    await this.stateBackend.removeTimer(effectiveInstanceId, `${sessionKey}:L1_idle`);
+    await this.stateBackend.removeTimer(effectiveInstanceId, buildPipelineTimerMember(sessionKey, "L1_idle", { teamId, agentId }));
 
     // 入队 flush task
     await this.stateBackend.enqueueTask({
@@ -255,8 +267,10 @@ export class StatefulPipelineManager {
       type: "flush",
       instanceId: effectiveInstanceId,
       sessionId: sessionKey,
+      teamId,
+      agentId,
       priority: 0,
-      data: { instanceId: effectiveInstanceId },
+      data: { instanceId: effectiveInstanceId, teamId, agentId },
       createdAt: Date.now(),
     });
 
@@ -284,7 +298,7 @@ export class StatefulPipelineManager {
   /**
    * L1 完成后推进 L2 timer（由 Worker 调用）
    */
-  async advanceL2TimerAfterL1(sessionKey: string, instanceId?: string): Promise<void> {
+  async advanceL2TimerAfterL1(sessionKey: string, instanceId?: string, teamId?: string, agentId?: string): Promise<void> {
     if (this.destroyed) return;
 
     const effectiveId = instanceId ?? this.defaultInstanceId;
@@ -293,7 +307,7 @@ export class StatefulPipelineManager {
       return;
     }
     const now = Date.now();
-    const state = await this.stateBackend.getSessionState(effectiveId, sessionKey);
+    const state = await this.stateBackend.getSessionState(effectiveId, sessionKey, teamId, agentId);
     const lastL2 = state?.l2_last_extraction_time
       ? new Date(state.l2_last_extraction_time).getTime()
       : 0;
@@ -302,7 +316,7 @@ export class StatefulPipelineManager {
 
     const advanced = await this.stateBackend.setTimerIfEarlier(
       effectiveId,
-      `${sessionKey}:L2_schedule`,
+      buildPipelineTimerMember(sessionKey, "L2_schedule", { teamId, agentId }),
       desiredTime,
     );
 
@@ -316,7 +330,8 @@ export class StatefulPipelineManager {
   /**
    * L2 完成后设置 maxInterval timer（由 Worker 调用）
    */
-  async armL2MaxInterval(sessionKey: string, instanceId?: string): Promise<void> {
+  async armL2MaxInterval(sessionKey: string, instanceId?: string, teamId?: string, agentId?: string): Promise<void> {
+    // teamId/agentId 只进入 timer member 值，不进入 Redis timer ZSET key；Lua 仍是单 key，避免 CROSSSLOT。
     if (this.destroyed) return;
     const effectiveId = instanceId ?? this.defaultInstanceId;
     if (effectiveId === "__unset__") {
@@ -345,7 +360,7 @@ export class StatefulPipelineManager {
    * task with `triggeredBy: "drain"` — drain enqueues should pass the same
    * dedup checks as threshold-triggered tasks.
    */
-  async enqueueL1Drain(sessionKey: string, instanceId?: string): Promise<void> {
+  async enqueueL1Drain(sessionKey: string, instanceId?: string, teamId?: string, agentId?: string): Promise<void> {
     if (this.destroyed) return;
     const effectiveId = instanceId ?? this.defaultInstanceId;
     if (effectiveId === "__unset__") {
@@ -358,8 +373,10 @@ export class StatefulPipelineManager {
       type: "L1",
       instanceId: effectiveId,
       sessionId: sessionKey,
+      teamId,
+      agentId,
       priority: 0,
-      data: { instanceId: effectiveId, ...serializeTraceContext() },
+      data: { instanceId: effectiveId, teamId, agentId, ...serializeTraceContext() },
       createdAt: now,
     });
     this.logger?.debug?.(
@@ -378,7 +395,7 @@ export class StatefulPipelineManager {
    * earlier (via `setTimerIfEarlier`), that's fine — backlog will still get
    * drained on the next L1 round.
    */
-  async armL1IdleAfterDrain(sessionKey: string, instanceId?: string): Promise<void> {
+  async armL1IdleAfterDrain(sessionKey: string, instanceId?: string, teamId?: string, agentId?: string): Promise<void> {
     if (this.destroyed) return;
     const effectiveId = instanceId ?? this.defaultInstanceId;
     if (effectiveId === "__unset__") {
@@ -390,7 +407,7 @@ export class StatefulPipelineManager {
     // If no timer is pending, this sets it unconditionally.
     await this.stateBackend.setTimerIfEarlier(
       effectiveId,
-      `${sessionKey}:L1_idle`,
+      buildPipelineTimerMember(sessionKey, "L1_idle", { teamId, agentId }),
       fireAtMs,
     );
     this.logger?.debug?.(
@@ -437,7 +454,7 @@ export class StatefulPipelineManager {
     return Math.min(warmupThreshold, this.everyNConversations);
   }
 
-  private async advanceWarmupInBackend(sessionKey: string, currentThreshold: number): Promise<void> {
+  private async advanceWarmupInBackend(sessionKey: string, currentThreshold: number, teamId?: string, agentId?: string): Promise<void> {
     if (!this.enableWarmup || currentThreshold <= 0) return;
 
     const next = currentThreshold * 2;
@@ -445,7 +462,7 @@ export class StatefulPipelineManager {
     await this.stateBackend.updateSessionState(this.defaultInstanceId, sessionKey, {
       warmup_threshold: newThreshold,
       conversation_count: 0, // reset after L1 trigger
-    });
+    }, teamId, agentId);
 
     this.logger?.debug?.(
       `${TAG} [${sessionKey}] Warmup ${newThreshold === 0 ? "graduated" : `advanced → ${newThreshold}`}`,

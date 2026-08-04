@@ -6,8 +6,12 @@
  * userPrompt (data). Tool names aligned to OpenClaw actual API (write/edit).
  */
 
+import type { MemoryPromptMode } from "../../config.js";
+
 export interface PersonaPromptParams {
   mode: "first" | "incremental";
+  /** Prompt family for L3 generation (default: chat). */
+  promptMode?: MemoryPromptMode;
   currentTime: string;
   totalProcessed: number;
   sceneCount: number;
@@ -137,6 +141,128 @@ const PERSONA_SYSTEM_PROMPT = `# 🧬 Persona Architect - Incremental Evolution 
 - ✅ 不要添加场景导航（工程会自动追加）
 - ✅ 只操作 persona.md，不要操作其他文件`;
 
+const TEAM_MEMORY_SYSTEM_PROMPT = `# Team Operating Doctrine Architect
+
+**输出语言**：\`persona.md\` 的所有自然语言内容使用与变化场景内容相同的语言；Markdown 语法、标签格式、文件名 \`persona.md\` 保持英文。
+
+请你结合已有的 \`persona.md\` 和新增/变化的 L2 场景块，生成或更新一份高度精炼的团队工作原则文档。
+
+这份 L3 不是项目总结、进度记录、场景索引或事实汇总，而是团队在各种工作场合都可复用的 Operating Doctrine。它应帮助 Agent 在未来面对新任务时，知道应该如何判断、如何执行、如何避免错误。
+
+## ⛔ 文件操作约束
+
+1. **必须使用文件工具将最终内容写入 \`persona.md\`**。
+   - 首次生成 / 大幅重写：使用 **write**，参数：\`path\`=\`persona.md\`, \`content\`=完整内容。
+   - 增量更新：使用 **edit**，参数：\`path\`=\`persona.md\`, \`edits\`=[{\`oldText\`: 旧内容片段, \`newText\`: 新内容片段}]。
+2. **只能操作 \`persona.md\` 这一个文件**，禁止读取或写入任何其他文件。
+3. **无需 read 工具**：当前 \`persona.md\` 的完整内容已在用户消息中提供。
+4. 写入内容必须只包含最终 Markdown 文档，不要包含分析过程或解释。
+
+## 🚫 严格禁止
+
+- **禁止超过 1200 字**：最终 \`persona.md\` 必须高度压缩，求精不求多。
+- **禁止项目化碎片**：不要写只有在某个项目上下文里才懂的内容，例如"项目 v2 要优化"、"某模块继续推进"。
+- **禁止流水账**：不要记录发生了什么、谁做了什么、某任务进展如何，除非它已经抽象成通用方法。
+- **禁止低层事实堆积**：项目名、版本号、任务名、PR、Issue、文档名通常不要进入 L3，除非它们代表可复用范式。
+- **禁止语义不完整**：每条原则必须脱离原项目也能理解，必须包含动作对象、适用条件或判断逻辑。
+- **禁止个人画像化**：不要生成成员性格、个人偏好、私人状态或情绪判断。
+- **禁止过度推测**：没有场景证据的信息不要臆测。
+
+---
+
+## 核心目标
+
+你要从 L2 场景中提炼所有工作场合都可复用的内容：
+
+1. **SOP**：以后类似任务应该按什么流程做。
+2. **Principle**：团队长期遵守的工作原则。
+3. **Decision Logic**：遇到取舍时按什么标准判断。
+4. **Boundary**：哪些事情不能做，哪些内容不能自动化。
+5. **Anti-pattern**：哪些做法会导致错误、污染记忆、降低质量。
+6. **Agent Rule**：Agent 执行任务、更新记忆、生成结果时应遵守什么规则。
+
+项目事实、任务状态、资产名称只作为证据来源，不应直接进入 L3。只有当它们能抽象成跨场景规则时，才写入。
+
+---
+
+## 过滤标准
+
+写入 L3 前逐条检查：
+
+1. **通用性**：这条内容是否适用于多个项目、多个任务或多种工作场合？
+2. **完整性**：脱离原始项目后，读者是否仍能理解它在要求什么？
+3. **可执行性**：Agent 是否能据此改变未来行为？
+4. **稳定性**：它是否可能长期有效，而不是一次性任务状态？
+5. **精炼性**：能否用更少字表达？是否可以合并进已有原则？
+
+如果任一答案是否定，优先不写入。
+
+---
+
+## 增量更新策略
+
+面对变化场景，自主判断：
+
+- **强化**：新场景只是佐证已有原则，压缩进原句或不改。
+- **补充**：出现新的通用 SOP、禁忌、判断逻辑或 Agent 规则。
+- **修正**：旧原则被新证据推翻或边界变清晰。
+- **重构**：文档变散、变长、变项目化时，整体压缩重写。
+- **不改**：新增内容只有项目状态、普通任务或低层事实时，不更新 L3。
+
+不要把每次变化追加为新条目。L3 应持续压缩，保持少而准。
+
+---
+
+## 输出模板
+
+请参考以下格式，使用 **write** 或 **edit** 工具写入最终内容。可以删减章节，但必须保持 Markdown 格式，全文不超过 1200 字。
+
+# Team Operating Doctrine
+
+> **Operating Thesis**: [一句话概括团队最核心、最通用的工作方法或 Agent 执行原则。]
+
+## Core Principles
+[只写跨工作场景稳定成立的高层原则。每条必须语义完整。]
+
+- [原则]&#58; [适用条件 / 判断逻辑 / 为什么重要]
+
+## Reusable SOPs
+[只写能被反复执行的流程。不要写具体项目步骤。]
+
+- [SOP 名称]&#58; 当 [触发条件] 时，先 [步骤1]，再 [步骤2]，最后 [产出/验收标准]。
+
+## Decision Logic
+[记录取舍标准和优先级。]
+
+- 当 [场景] 时，优先 [A] 而不是 [B]，因为 [原因]。
+
+## Boundaries & Anti-patterns
+[记录禁忌、边界和错误模式。]
+
+- 不要 [错误做法]；应改为 [推荐做法]，因为 [原因]。
+
+## Agent Rules
+[记录 Agent 在工作中默认遵守的行为规则。]
+
+- Agent 应 [行为规则]，避免 [风险]。
+
+---
+
+> **最后更新**：[当前时间] · **来源场景**：[场景数] 个 · **记忆总数**：[总记忆数] 条
+
+---
+
+## 成功标准
+
+- ✅ 必须使用 write 或 edit 写入 \`persona.md\`
+- ✅ 最终内容不超过 1200 字
+- ✅ 只保留所有工作场合可复用的原则、SOP、禁忌、判断逻辑和 Agent 规则
+- ✅ 每条内容脱离具体项目后仍语义完整
+- ✅ 求精不求多，能不写就不写，能合并就合并
+- ✅ 不写项目进度、任务流水账、版本碎片或场景索引
+- ✅ 不要添加场景导航（工程会自动追加 Scene Navigation 和场景索引）
+- ✅ 只操作 \`persona.md\``;
+
 // ============================
 // User Prompt builder (dynamic data)
 // ============================
@@ -144,6 +270,7 @@ const PERSONA_SYSTEM_PROMPT = `# 🧬 Persona Architect - Incremental Evolution 
 export function buildPersonaPrompt(params: PersonaPromptParams): PersonaPromptResult {
   const {
     mode,
+    promptMode = "chat",
     currentTime,
     totalProcessed,
     sceneCount,
@@ -153,6 +280,8 @@ export function buildPersonaPrompt(params: PersonaPromptParams): PersonaPromptRe
     triggerInfo,
   } = params;
 
+  const isCodeMode = promptMode === "code";
+  const targetFile = "persona.md";
   const modeLabel = mode === "first" ? "🆕 首次生成" : "🔄 迭代更新";
 
   const triggerSection = triggerInfo
@@ -160,17 +289,24 @@ export function buildPersonaPrompt(params: PersonaPromptParams): PersonaPromptRe
     : "";
 
   const existingPersonaSection = existingPersona
-    ? `\n## 📄 当前 Persona（工程已预加载）\n\n` +
-      `*以下是现有 persona.md 的完整内容（${existingPersona.length} 字符），基于此更新后请控制在2000字内：*\n\n` +
-      `\`\`\`markdown\n${existingPersona}\n\`\`\`\n\n---\n`
+    ? isCodeMode
+      ? `\n## 📄 当前 Team Operating Doctrine（工程已预加载）\n\n` +
+        `*以下是现有 persona.md 中 Team Operating Doctrine 的完整内容（${existingPersona.length} 字符）。更新后必须压缩在 1200 字以内：*\n\n` +
+        `\`\`\`markdown\n${existingPersona}\n\`\`\`\n\n---\n`
+      : `\n## 📄 当前 Persona（工程已预加载）\n\n` +
+        `*以下是现有 persona.md 的完整内容（${existingPersona.length} 字符），基于此更新后请控制在2000字内：*\n\n` +
+        `\`\`\`markdown\n${existingPersona}\n\`\`\`\n\n---\n`
     : "";
 
   const iterationGuide = mode === "incremental"
-    ? `\n## 🔄 迭代决策指南\n\n` +
-      `面对变化场景，自主判断处理方式：强化（佐证已有洞察）/ 补充（新维度）/ 修正（矛盾）/ 重构（结构调整）/ 不改（无有用新增内容）。\n`
+    ? isCodeMode
+      ? `\n## 🔄 迭代决策指南\n\n` +
+        `面对变化场景，自主判断处理方式：强化（佐证已有原则）/ 补充（新的通用 SOP、禁忌、判断逻辑或 Agent 规则）/ 修正（旧原则被更新）/ 重构（内容变长、变散、变项目化）/ 不改（只有项目状态或低层事实）。\n`
+      : `\n## 🔄 迭代决策指南\n\n` +
+        `面对变化场景，自主判断处理方式：强化（佐证已有洞察）/ 补充（新维度）/ 修正（矛盾）/ 重构（结构调整）/ 不改（无有用新增内容）。\n`
     : "";
 
-  const userPrompt = `**输出语言**：\`persona.md\` 使用下方变化场景内容的主导语言。
+  const userPrompt = `**输出语言**：\`${targetFile}\` 使用下方变化场景内容的主导语言。
 
 **⏰ 更新时间**: ${currentTime}
 **模式**: ${modeLabel}
@@ -187,7 +323,7 @@ ${existingPersonaSection}
 ${iterationGuide}`;
 
   return {
-    systemPrompt: PERSONA_SYSTEM_PROMPT,
+    systemPrompt: isCodeMode ? TEAM_MEMORY_SYSTEM_PROMPT : PERSONA_SYSTEM_PROMPT,
     userPrompt,
   };
 }

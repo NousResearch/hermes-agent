@@ -89,7 +89,14 @@ export class TcvdbClient {
   private readonly dispatcher?: Dispatcher;
 
   constructor(config: TcvdbClientConfig, logger?: StoreLogger) {
-    this.baseUrl = config.url.replace(/\/+$/, "");
+    // 防御性 normalize：Shark 某些实例的 VdbUrl 可能只返回 `host:port`（缺 scheme），
+    // 此时 undici.request() 会抛 Invalid URL。这里补齐 http://（默认 VDB 内网走 HTTP）。
+    let url = config.url.replace(/\/+$/, "");
+    if (!/^https?:\/\//i.test(url)) {
+      url = `http://${url}`;
+      this.logger?.debug?.(`${TAG} normalized url: "${config.url}" → "${url}" (no scheme, prepended http://)`);
+    }
+    this.baseUrl = url;
     this.authHeader = `Bearer account=${config.username}&api_key=${config.apiKey}`;
     this.database = config.database;
     this.timeout = config.timeout;

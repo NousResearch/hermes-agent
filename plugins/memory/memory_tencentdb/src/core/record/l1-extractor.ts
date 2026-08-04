@@ -13,7 +13,7 @@
  */
 
 import type { ConversationMessage } from "../conversation/l0-recorder.js";
-import { EXTRACT_MEMORIES_SYSTEM_PROMPT, formatExtractionPrompt } from "../prompts/l1-extraction.js";
+import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryPromptMode } from "../prompts/l1-extraction.js";
 import { batchDedup } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
@@ -24,7 +24,8 @@ import type { EmbeddingService } from "../store/embedding.js";
 import { report } from "../report/reporter.js";
 import { metricProducer } from "../report/kafka-metric-producer.js";
 import { reportL1LatencyMetrics } from "../report/metric-tracking-l1-latency.js";
-import type { LLMRunner, Logger } from "../types.js";
+import type { LLMRunner, Logger, TraceContext } from "../types.js";
+import { buildTraceParams } from "../types.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 
 const TAG = "[memory-tdai][l1-extractor]";
@@ -79,6 +80,10 @@ export async function extractL1Memories(params: {
   messages: ConversationMessage[];
   sessionKey: string;
   sessionId?: string;
+  taskId?: string;
+  teamId?: string;
+  userId?: string;
+  agentId?: string;
   baseDir: string;
   config: unknown;
   options?: {
@@ -94,6 +99,8 @@ export async function extractL1Memories(params: {
     model?: string;
     /** Previous scene name for continuity */
     previousSceneName?: string;
+    /** Prompt family for L1 extraction (default: chat). */
+    promptMode?: MemoryPromptMode;
     /** Vector store for cosine similarity candidate recall */
     vectorStore?: IMemoryStore;
     /** Embedding service for computing query vectors */
@@ -121,7 +128,7 @@ export async function extractL1Memories(params: {
    */
   storage?: StorageAdapter;
 }): Promise<L1ExtractionResult> {
-  const { messages, sessionKey, sessionId, baseDir, config, logger, instanceId: metricInstanceId, storage } = params;
+  const { messages, sessionKey, sessionId, taskId, teamId, userId, agentId, baseDir, config, logger, instanceId: metricInstanceId, storage } = params;
   const options = params.options ?? {};
   const maxNewMessages = options.maxMessagesPerExtraction ?? 10;
   const maxBgMessages = options.maxBackgroundMessages ?? 5;
@@ -170,6 +177,8 @@ export async function extractL1Memories(params: {
       config,
       logger,
       model: options.model,
+      promptMode: options.promptMode,
+      traceContext: { teamId, userId, agentId, sessionId },
       llmRunner: options.llmRunner,
     });
     logger?.debug?.(`${TAG} LLM detected ${scenes.length} scene(s)`);
@@ -252,11 +261,14 @@ export async function extractL1Memories(params: {
         config,
         logger,
         model: options.model,
+        promptMode: options.promptMode,
         vectorStore: options.vectorStore,
         embeddingService: options.embeddingService,
         conflictRecallTopK: options.conflictRecallTopK,
         embeddingTimeoutMs: options.embeddingTimeoutMs,
         llmRunner: options.llmRunner,
+        traceContext: { teamId, userId, agentId, sessionId },
+        ...(teamId || userId || agentId || sessionId || taskId ? { filter: { teamId, userId, agentId, sessionId, taskId } } : {}),
       });
       dedupLatencyMs = Date.now() - dedupStartMs;
 
@@ -284,6 +296,10 @@ export async function extractL1Memories(params: {
         baseDir,
         sessionKey,
         sessionId,
+        taskId,
+        teamId,
+        userId,
+        agentId,
         logger,
         vectorStore: options.vectorStore,
         embeddingService: options.embeddingService,
@@ -292,10 +308,10 @@ export async function extractL1Memories(params: {
 
     } catch (err) {
       logger?.warn?.(`${TAG} Batch dedup failed, storing all as new: ${err instanceof Error ? err.message : String(err)}`);
-      storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, logger, options.vectorStore, options.embeddingService, storage);
+      storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage);
     }
   } else {
-    storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, logger, options.vectorStore, options.embeddingService, storage);
+    storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage);
   }
 
   logger?.info(`${TAG} Extraction complete: extracted=${extracted.length}, stored=${storedRecords.length}`);
@@ -375,11 +391,15 @@ async function callLlmExtraction(params: {
   config: unknown;
   logger?: Logger;
   model?: string;
+  promptMode?: MemoryPromptMode;
   /** Host-neutral LLM runner — when provided, used instead of CleanContextRunner. */
   llmRunner?: LLMRunner;
+  /** langfuse 上报身份四元组（team/user/agent/session）。 */
+  traceContext?: TraceContext;
 }): Promise<SceneSegment[]> {
-  const { newMessages, backgroundMessages, previousSceneName, config, logger, model, llmRunner } = params;
+  const { newMessages, backgroundMessages, previousSceneName, config, logger, model, promptMode = "chat", llmRunner, traceContext } = params;
 
+  const systemPrompt = getExtractMemoriesSystemPrompt(promptMode);
   const userPrompt = formatExtractionPrompt({
     newMessages,
     backgroundMessages,
@@ -388,18 +408,23 @@ async function callLlmExtraction(params: {
 
   // [l1-debug] ENTRY — what are we about to ask the LLM to extract?
   logger?.debug?.(
-    `${TAG} [l1-debug] ENTRY taskId=l1-extraction, newMsgs=${newMessages.length}, bgMsgs=${backgroundMessages.length}, userPromptLen=${userPrompt.length}, sysPromptLen=${EXTRACT_MEMORIES_SYSTEM_PROMPT.length}, model=${model ?? "(default)"}, previousSceneName=${previousSceneName ? JSON.stringify(previousSceneName) : "(none)"}, runnerKind=${llmRunner ? "llmRunner" : "CleanContextRunner"}`,
+    `${TAG} [l1-debug] ENTRY taskId=l1-extraction, promptMode=${promptMode}, newMsgs=${newMessages.length}, bgMsgs=${backgroundMessages.length}, userPromptLen=${userPrompt.length}, sysPromptLen=${systemPrompt.length}, model=${model ?? "(default)"}, previousSceneName=${previousSceneName ? JSON.stringify(previousSceneName) : "(none)"}, runnerKind=${llmRunner ? "llmRunner" : "CleanContextRunner"}`,
   );
 
   let result: string;
+
+  // langfuse trace 语义：让此次 L1 抽取在 UI 有稳定 name / 顶级 user/session 列
+  // / 可筛选 tags。避免所有记忆抽取都显示为 Unnamed trace。
+  const traceParams = buildTraceParams("memory.l1-extract", traceContext);
 
   if (llmRunner) {
     // Use the host-neutral LLMRunner interface
     result = await llmRunner.run({
       prompt: userPrompt,
-      systemPrompt: EXTRACT_MEMORIES_SYSTEM_PROMPT,
+      systemPrompt,
       taskId: "l1-extraction",
       timeoutMs: 180_000,
+      ...traceParams,
     });
   } else {
     // Fallback: create CleanContextRunner (OpenClaw path)
@@ -412,9 +437,10 @@ async function callLlmExtraction(params: {
 
     result = await runner.run({
       prompt: userPrompt,
-      systemPrompt: EXTRACT_MEMORIES_SYSTEM_PROMPT,
+      systemPrompt,
       taskId: "l1-extraction",
       timeoutMs: 180_000,
+      ...traceParams,
     });
   }
 
@@ -445,9 +471,20 @@ function parseExtractionResult(raw: string, logger?: Logger): SceneSegment[] {
       return [];
     }
 
-    // Sanitize control characters inside JSON string literals that LLM may produce
+    // Sanitize control characters inside JSON string literals that LLM may produce.
+    // Some weaker OpenAI-compatible models occasionally emit bare identifiers for
+    // numeric fields (e.g. `"priority": sheet`). Repair only known safe fields and
+    // retry once so one bad scalar does not drop the whole extraction result.
     const sanitized = sanitizeJsonForParse(arrayMatch[0]);
-    const parsed = JSON.parse(sanitized) as unknown[];
+    let parsed: unknown[];
+    try {
+      parsed = JSON.parse(sanitized) as unknown[];
+    } catch (err) {
+      const repaired = repairExtractionJson(sanitized);
+      if (repaired === sanitized) throw err;
+      parsed = JSON.parse(repaired) as unknown[];
+      logger?.warn?.(`${TAG} Repaired non-strict extraction JSON: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     if (!Array.isArray(parsed)) {
       logger?.warn?.(`${TAG} Extraction response is not an array`);
@@ -479,8 +516,21 @@ function parseExtractionResult(raw: string, logger?: Logger): SceneSegment[] {
     return scenes;
   } catch (err) {
     logger?.warn?.(`${TAG} Failed to parse extraction result: ${err instanceof Error ? err.message : String(err)}`);
+    const rawPreview = raw.slice(0, 2048);
+    logger?.warn?.(
+      `${TAG} [l1-debug] PARSE_FAIL rawLen=${raw.length}, rawFull=${JSON.stringify(rawPreview)}${raw.length > 2048 ? `…(+${raw.length - 2048})` : ""}`,
+    );
     return [];
   }
+}
+
+function repairExtractionJson(json: string): string {
+  return json
+    .replace(
+      /("priority"\s*:\s*)(?!-?\d+(?:\.\d+)?\s*[,}]|"[^"\\]*(?:\\.[^"\\]*)*"\s*[,}])([\s\S]*?)(?=,\s*"(?:content|type|priority|source_message_ids|metadata)"\s*:|[}\]])/g,
+      (_m, prefix: string) => `${prefix}50`,
+    )
+    .replace(/,\s*([}\]])/g, "$1");
 }
 
 // ============================
@@ -496,12 +546,16 @@ async function applyDecisions(params: {
   baseDir: string;
   sessionKey: string;
   sessionId?: string;
+  taskId?: string;
+  teamId?: string;
+  userId?: string;
+  agentId?: string;
   logger?: Logger;
   vectorStore?: IMemoryStore;
   embeddingService?: EmbeddingService;
   storage?: StorageAdapter;
 }): Promise<MemoryRecord[]> {
-  const { memoriesWithIds, decisions, baseDir, sessionKey, sessionId, logger, vectorStore, embeddingService, storage } = params;
+  const { memoriesWithIds, decisions, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage } = params;
   const storedRecords: MemoryRecord[] = [];
 
   // Build a map from record_id → decision
@@ -524,6 +578,10 @@ async function applyDecisions(params: {
         baseDir,
         sessionKey,
         sessionId,
+        taskId,
+        teamId,
+        userId,
+        agentId,
         logger,
         vectorStore,
         embeddingService,
@@ -551,6 +609,10 @@ async function storeAllDirectly(
   baseDir: string,
   sessionKey: string,
   sessionId: string | undefined,
+  taskId: string | undefined,
+  teamId?: string,
+  userId?: string,
+  agentId?: string,
   logger?: Logger,
   vectorStore?: IMemoryStore,
   embeddingService?: EmbeddingService,
@@ -570,6 +632,10 @@ async function storeAllDirectly(
         baseDir,
         sessionKey,
         sessionId,
+        taskId,
+        teamId,
+        userId,
+        agentId,
         logger,
         vectorStore,
         embeddingService,
@@ -592,7 +658,7 @@ async function storeAllDirectly(
 // Helpers
 // ============================
 
-const VALID_TYPES: MemoryType[] = ["persona", "episodic", "instruction"];
+const VALID_TYPES: MemoryType[] = ["persona", "episodic", "instruction", "work_fact", "work_task", "work_method", "work_artifact"];
 
 function normalizeType(raw: string): MemoryType | null {
   const lower = raw.toLowerCase().trim();

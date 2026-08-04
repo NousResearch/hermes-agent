@@ -82,6 +82,6 @@ export interface IQuotaReporter {
     instanceId: string,
     memoryDelta: number,
     creditDelta: number,
-    level: "L0" | "L1" | "L2" | "L3",
+    level: "L0" | "L1" | "L2" | "L3" | "Skill",
   ): Promise<void>;
 }

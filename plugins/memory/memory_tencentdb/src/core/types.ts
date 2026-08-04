@@ -74,6 +74,21 @@ export interface LLMRunParams {
   /** Max output tokens (optional — defaults to model catalog value). */
   maxTokens?: number;
   /**
+   * Caller-provided tool dict (Vercel AI SDK shape). When set, REPLACES
+   * the runner's default sandbox tools for this single call. Used by
+   * SkillExtractor to inject skill_list / skill_view / skill_manage
+   * without polluting the runner's permanent configuration.
+   */
+  tools?: Record<string, unknown>;
+  /**
+   * Per-call override of the runner's `enableTools` setting. When true
+   * and `tools` is provided, the runner drives an automatic tool-call
+   * loop via the AI SDK. When false, tools are ignored.
+   */
+  enableTools?: boolean;
+  /** Cap iterations of the per-call tool-call loop. Default 20 in standalone runner. */
+  maxIterations?: number;
+  /**
    * Working directory for tool-enabled runs.
    * When `enableTools` is true, the LLM's file tools resolve paths relative to this dir.
    * When omitted, a clean empty workspace is used.
@@ -95,6 +110,61 @@ export interface LLMRunParams {
    * tears down immediately to save tokens and avoid late writes.
    */
   abortSignal?: AbortSignal;
+  /**
+   * Langfuse trace name — 决定 Langfuse UI 上 trace 的 "Name" 字段。
+   * 未传时保持向后兼容（Langfuse 会显示 Unnamed trace）。
+   * 建议传业务语义值，如 "skill.extract" / "memory.l1-extract"。
+   */
+  traceName?: string;
+  /**
+   * Langfuse trace 标签，用于 UI 筛选。空数组等价于未传。
+   * 建议格式：["<domain>", "team:<id>", "agent:<id>"]。
+   */
+  tags?: string[];
+  /**
+   * Langfuse 顶级 sessionId 字段。空字符串等价于未传。
+   */
+  sessionId?: string;
+  /**
+   * Langfuse 顶级 userId 字段。空字符串等价于未传。
+   */
+  userId?: string;
+}
+
+/**
+ * TraceContext —— 记忆/技能抽取链路给 langfuse 上报用的身份四元组。
+ * 由 caller 向下透传到 llmRunner.run，最终填充 LLMRunParams 的 userId/sessionId/tags。
+ * 好处：langfuse UI 上按 user_id / session_id 独立列过滤，不用把身份塞进 name。
+ */
+export interface TraceContext {
+  teamId?: string;
+  userId?: string;
+  agentId?: string;
+  sessionId?: string;
+}
+
+/**
+ * 把 TraceContext 展平进 LLMRunParams 的 langfuse 三字段。
+ *   - traceName: 传业务锚点（如 "memory.l1-extract"）
+ *   - userId:    langfuse 顶级 userId 列
+ *   - sessionId: langfuse 顶级 sessionId 列
+ *   - tags:      ["team:<id>", "agent:<id>"] 便于侧栏筛选
+ * 三者结合后 langfuse UI 上一眼能定位某个 (user, agent, session) 的 trace 组。
+ */
+export function buildTraceParams(traceName: string, ctx?: TraceContext): {
+  traceName: string;
+  userId?: string;
+  sessionId?: string;
+  tags?: string[];
+} {
+  const out: { traceName: string; userId?: string; sessionId?: string; tags?: string[] } = { traceName };
+  if (ctx?.userId) out.userId = ctx.userId;
+  if (ctx?.sessionId) out.sessionId = ctx.sessionId;
+  const tags: string[] = [];
+  if (ctx?.teamId) tags.push(`team:${ctx.teamId}`);
+  if (ctx?.agentId) tags.push(`agent:${ctx.agentId}`);
+  if (tags.length > 0) out.tags = tags;
+  return out;
 }
 
 /**

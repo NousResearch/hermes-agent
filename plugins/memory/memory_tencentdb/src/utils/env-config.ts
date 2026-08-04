@@ -134,3 +134,30 @@ export function readCosToolEnvConfig(
     cosDomain: ENV.COS_DOMAIN ?? fallback.COS_DOMAIN,
   };
 }
+
+/**
+ * Whether metadata API trace logs to stdout (default: enabled).
+ * Set `TDAI_API_TRACE_ENABLED=false` to disable.
+ */
+export function readApiTraceEnabled(): boolean {
+  const raw = ENV.TDAI_API_TRACE_ENABLED;
+  if (!raw) return true;
+  return raw.toLowerCase() !== "false";
+}
+
+/**
+ * Whether `/v3` L0–L3 data-plane endpoints enforce the strict
+ * team+agent+user triple on every request.
+ *
+ * Source: `V3_STRICT_ISOLATION` — when "1" / "true" / "on" / "yes", the
+ * gateway rejects `/v3` L0–L3 requests missing any isolation field with 422.
+ * Defaults to OFF for local development and integration; production should
+ * enable it to keep multi-tenant isolation guarantees.
+ *
+ * `/v3/skill/*` is never subject to this triple regardless of the flag:
+ * skill is a team-scoped resource, not per-agent memory.
+ */
+export function resolveV3StrictIsolation(): boolean {
+  const raw = (ENV.V3_STRICT_ISOLATION ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}

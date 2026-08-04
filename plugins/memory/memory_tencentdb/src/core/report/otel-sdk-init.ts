@@ -77,9 +77,13 @@ let _initialized = false;
 export async function initOTelSDK(options: OTelSDKInitOptions = {}): Promise<boolean> {
   if (_initialized) return true;
 
+  // 当配置了 endpoint 或 Langfuse 时启用 SDK
+  const hasLangfuse = typeof options.langfuse === "object" && options.langfuse && options.langfuse.host;
   const enabled = options.endpoint
     ? true
-    : process.env.TDAI_OTEL_ENABLED === "true";
+    : hasLangfuse
+      ? true
+      : process.env.TDAI_OTEL_ENABLED === "true";
   if (!enabled) return false;
 
   // @opentelemetry/api 不可用时直接返回
@@ -132,7 +136,10 @@ export async function initOTelSDK(options: OTelSDKInitOptions = {}): Promise<boo
     // 解析配置
     const endpoint = options.endpoint
       ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
-      ?? "http://localhost:4317";
+      ?? "";
+
+    // 是否有主 OTel collector（区别于仅 Langfuse 场景）
+    const hasMainOtel = Boolean(endpoint);
 
     const protocol = options.protocol
       ?? (process.env.OTEL_EXPORTER_OTLP_PROTOCOL as "grpc" | "http/protobuf")
@@ -159,26 +166,37 @@ export async function initOTelSDK(options: OTelSDKInitOptions = {}): Promise<boo
     }
     const resource = createResource(resourceAttrs);
 
-    // Trace Exporter
-    const traceExporter = protocol === "grpc"
-      ? new GrpcTraceExporter({ url: endpoint, headers })
-      : new HttpTraceExporter({ url: `${endpoint}/v1/traces`, headers });
+    // Trace Exporter（仅当有主 OTel endpoint 时创建）
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let traceExporter: any = null;
+    if (hasMainOtel) {
+      traceExporter = protocol === "grpc"
+        ? new GrpcTraceExporter({ url: endpoint, headers })
+        : new HttpTraceExporter({ url: `${endpoint}/v1/traces`, headers });
+    }
 
     // 注意：Metric 不走 OTLP，通过 Kafka 上报。
 
-    // Log Exporter
-    const logExporter = protocol === "grpc"
-      ? new GrpcLogExporter({ url: endpoint, headers })
-      : new HttpLogExporter({ url: `${endpoint}/v1/logs`, headers });
+    // Log Exporter（仅当有主 OTel endpoint 时创建）
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let logExporter: any = null;
+    if (hasMainOtel) {
+      logExporter = protocol === "grpc"
+        ? new GrpcLogExporter({ url: endpoint, headers })
+        : new HttpLogExporter({ url: `${endpoint}/v1/logs`, headers });
+    }
 
     // 收集所有 Log Processors（新版 LoggerProvider 需要在构造时传入）
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const logProcessors: any[] = [
-      new BatchLogRecordProcessor(logExporter, {
-        maxExportBatchSize: 512,
-        scheduledDelayMillis: options.logExportIntervalMs ?? 5_000,
-      }),
-    ];
+    const logProcessors: any[] = [];
+    if (logExporter) {
+      logProcessors.push(
+        new BatchLogRecordProcessor(logExporter, {
+          maxExportBatchSize: 512,
+          scheduledDelayMillis: options.logExportIntervalMs ?? 5_000,
+        }),
+      );
+    }
 
     // ClickHouse 双写（可选）
     // options.clickhouse 为对象时视为已启用，为 true 时也视为启用，
@@ -237,9 +255,11 @@ export async function initOTelSDK(options: OTelSDKInitOptions = {}): Promise<boo
     // 所有 processor 必须在构造时通过 spanProcessors 选项一次性传入。
     const { BatchSpanProcessor, SimpleSpanProcessor } = await import("@opentelemetry/sdk-trace-base");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const spanProcessors: any[] = [
-      new BatchSpanProcessor(traceExporter),
-    ];
+    const spanProcessors: any[] = [];
+    // 仅当有主 OTel endpoint 时添加 BatchSpanProcessor
+    if (traceExporter) {
+      spanProcessors.push(new BatchSpanProcessor(traceExporter));
+    }
 
     // ClickHouse SpanProcessor
     if (clickhouseEnabled && (globalThis as Record<string, unknown>).__chSpanExporter) {
@@ -329,7 +349,7 @@ export async function initOTelSDK(options: OTelSDKInitOptions = {}): Promise<boo
     _initialized = true;
 
     console.info(
-      `[core][otel] SDK initialized ✓ | endpoint=${endpoint} | protocol=${protocol} | service=${serviceName} | tenantId=${tenantId ? tenantId.slice(0, 20) + "..." : "(none)"} | metrics=kafka`,
+      `[core][otel] SDK initialized ✓ | endpoint=${endpoint || "(langfuse-only)"} | protocol=${protocol} | service=${serviceName} | tenantId=${tenantId ? tenantId.slice(0, 20) + "..." : "(none)"} | metrics=kafka`,
     );
 
     return true;

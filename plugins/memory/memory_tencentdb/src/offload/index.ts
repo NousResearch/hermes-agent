@@ -821,6 +821,10 @@ export function registerOffload(api: any, offloadConfig: OffloadConfig): void {
           // Write skill file locally
           const { mkdir, writeFile } = await import("node:fs/promises");
           const { join } = await import("node:path");
+          // NOTE: stateManager.ctx.dataDir 已经是 <dataRoot>/<agentName>（见 storage.ts createStorageContext），
+          // 因此 skill 的 owner 隔离已经天然由 dataDir 提供，**不要**在路径里再拼一层 agentName，
+          // 否则会得到 <dataRoot>/<agentName>/skills/<agentName>/<skillName>/SKILL.md（agent 重复）。
+          // 与 core/skill 模块统一的目录契约：<dataDir>/skills/<skillName>/SKILL.md
           const skillsDir = join(stateManager.ctx.dataDir, "skills", resp.skillName);
           await mkdir(skillsDir, { recursive: true });
           await writeFile(join(skillsDir, "SKILL.md"), resp.skillContent, "utf-8");

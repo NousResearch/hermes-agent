@@ -15,6 +15,7 @@
  */
 
 import http from "node:http";
+import { join } from "node:path";
 import { URL } from "node:url";
 import { timingSafeEqual } from "node:crypto";
 import zlib from "node:zlib";
@@ -23,8 +24,12 @@ import { TdaiCore } from "../core/tdai-core.js";
 import { StandaloneHostAdapter } from "../adapters/standalone/host-adapter.js";
 import { loadGatewayConfig, parseBrokers } from "./config.js";
 import type { GatewayConfig } from "./config.js";
+import { applyMetadataEnvFromGatewayConfig } from "./metadata-env.js";
 import { initDataDirectories } from "../utils/pipeline-factory.js";
 import { SessionFilter } from "../utils/session-filter.js";
+import { WorkerPermitPool } from "../services/worker-permit-pool.js";
+import { createExtractorAdapter, SkillExtractor as SkillExtractorClass } from "../core/skill/skill-extractor.js";
+import type { SkillCore as SkillCoreType } from "../core/skill/skill-core.js";
 import type {
   HealthResponse,
   RecallRequest,
@@ -54,8 +59,43 @@ import { executeSeed } from "../core/seed/seed-runtime.js";
 import type { SeedProgress } from "../core/seed/types.js";
 import { handleV2Route, errorEnvelope, makeRequestId } from "./v2-router.js";
 import type { V2RouterDeps } from "./v2-router.js";
+import { handleV3MetaRoute, V3_PREFIX } from "../metadata/router/v3-meta-router.js";
+import { handleInternalMetaRoute, V3_INTERNAL_PREFIX } from "../metadata/router/internal-meta-router.js";
+import { MetadataService } from "../metadata/service/metadata-service.js";
+import { ConfigParamService } from "../metadata/service/config-param-service.js";
+import { loadDefaultRegistry } from "../metadata/config/param-registry.js";
+import type { IMetadataStore } from "../metadata/store/interface.js";
+import {
+  MetadataStorePool,
+  validateMetadataStartupConfig,
+} from "../metadata/store/factory.js";
+import {
+  maskMemorySystemUserKeyForLog,
+  resolveMemorySystemUserConfig,
+  validateMemorySystemUserConfig,
+} from "../metadata/system-user.js";
+import type { MemorySystemUserConfig } from "../metadata/system-user.js";
+import { validateLlmProviderConfig, LlmResolveError } from "./llm-resolver.js";
+import type { StandaloneLLMConfig } from "../adapters/standalone/llm-runner.js";
+import { resolveStandaloneLlmForRuntime } from "../adapters/standalone/llm-provider-resolver.js";
+import { resolveReportedCredit } from "./quota-credit-policy.js";
+import {
+  initApiTraceConfig,
+  wrapApiServiceForTrace,
+  wrapApiStoreForTrace,
+} from "../api-trace/index.js";
+import { readApiTraceEnabled } from "../utils/env-config.js";
+import { makeSkillRouteTable } from "./skill-handlers.js";
+import type { SkillRouterDeps as SkillRouterDeps } from "./skill-handlers.js";
+import {
+  wireConversationAdd,
+  type WiredConversationAdd,
+  type SkillAgentTaskQueueRedisLike,
+} from "../core/skill/conversation-add/index.js";
+import { makeKnowledgeRouteTable } from "./knowledge-handlers.js";
 import { handleOffloadV2Route } from "../offload_server/router.js";
 import type { OffloadV2Deps } from "../offload_server/router.js";
+import { resolveV3StrictIsolation } from "../utils/env-config.js";
 import { initServerOpikTracer } from "../offload_server/opik-tracer.js";
 import { classifyError } from "./error-handler.js";
 import { LocalStorageBackend } from "../core/storage/local-backend.js";
@@ -67,7 +107,7 @@ import type { TimerScanner } from "../services/timer-scanner.js";
 import type { PipelineWorker } from "../services/pipeline-worker.js";
 import type { StatefulPipelineManager } from "../utils/stateful-pipeline-manager.js";
 import type { PipelineLogger } from "../utils/pipeline-factory.js";
-import { createLocalTimerTask } from "./timer-routing.js";
+import { parsePipelineTimerMember } from "../core/state/timer-member.js";
 
 const TAG = "[tdai-gateway]";
 const VERSION = "0.1.0";
@@ -230,11 +270,19 @@ export class TdaiGateway {
   private core: TdaiCore;
   private server: http.Server | null = null;
   private startTime = Date.now();
+  /** Guards against concurrent / repeated stop() invocations (e.g. multiple SIGINT). */
+  private stopPromise: Promise<void> | null = null;
 
   // ── Integrated services (Scanner + Worker) ──
   private stateBackend: IStateBackend | null = null;
   private timerScanner: TimerScanner | null = null;
   private pipelineWorker: PipelineWorker | null = null;
+  /**
+   * 跨模块共享的并发信号量 —— memory PipelineWorker 用；skill 侧走
+   * conversation-add wire 出的 SkillConversationExtractWorker (agent 级串行 lock,
+   * 不依赖信号量做并发上限)。
+   */
+  private workerPermitPool: WorkerPermitPool | null = null;
 
   // ── Instance config & Store pool (multi-instance VDB) ──
   private configProvider: InstanceConfigProvider | null = null;
@@ -245,6 +293,23 @@ export class TdaiGateway {
   // ── COS: global shared client singleton + per-instance StorageAdapter cache ──
   private sharedCosClient: import("../integrations/cos/cos-backend.js").SharedCosClient | null = null;
   private cosStorageCache: Map<string, StorageAdapter> | null = null;
+
+  // ── Metadata (v3): shared store pool + per-instance MetadataService ──
+  private metadataStorePool: MetadataStorePool | null = null;
+  private memorySystemUserConfig: MemorySystemUserConfig | undefined;
+  private readonly metadataServiceByInstance = new Map<string, MetadataService>();
+
+  // ── Skill conversation-add (§21): per-instance handler+worker cache ──
+  //
+  // 每个实例懒加载一份 { handler, worker, sink, queue, buffer } —— storage 复用
+  // memory 侧的 CosStorageBackend cache (this.cosStorageCache), redis 复用
+  // stateBackend 的 ioredis 客户端 (getClient())。keyPrefix 拼接 memory 的
+  // redis.keyPrefix，避免和老 skill 队列以及 memory 状态撞。
+  //
+  // 用 in-flight Promise cache 而不是最终值 cache —— 避免并发请求同时 miss cache
+  // 导致重复 wire 出多个 Worker（v1 观察: 30 并发请求触发 30 次 wire, 每次起一个
+  // Worker 都 BRPOP 抢同一 agent → extract-lock 灾难）。
+  private readonly conversationAddByInstance = new Map<string, Promise<WiredConversationAdd>>();
 
   constructor(configOverrides?: Partial<GatewayConfig>) {
     this.config = loadGatewayConfig(configOverrides);
@@ -259,11 +324,121 @@ export class TdaiGateway {
     });
 
     // Create core
+    //
+    // ── Skill 资产联动钩子（standalone/OpenClaw 与 service 模式对齐） ──
+    // service 模式下 gateway/server.ts:resolveSkillCore 会为每个 instanceId 单独
+    // 构造 per-instance SkillCore 并挂同名钩子；tdai-core 里的这份 SkillCore 走
+    // standalone / OpenClaw 内嵌 / 未走 resolveSkillCore 的旁路。两者互不干扰
+    // （每个 SkillCore 只调它自己被挂上的钩子），ensureSkillAsset / deleteAssets
+    // 幂等，即使叠加触发也无副作用。详见 SkillAssetHooks doc。
+    //
+    // standalone 模式下 instanceId 固定为 "default"（见 start() 里的
+    // `this.config.instanceId ?? "default"`），闭包这里直接拿 default 即可；
+    // service 模式下这份 SkillCore 事实上不会被 v3/skill/* 走到，闭包的 default
+    // 只是占位（不 fire 就没影响）。
+    const gatewayRef = this;
+    const skillAssetInstanceId = this.config.instanceId
+      ?? (this.config.deployMode === "service" ? "__unset__" : "default");
+    // Shared permit pool — memory PipelineWorker 用。skill 侧走
+    // wireConversationAdd 内的 SkillConversationExtractWorker (agent 级串行 lock),
+    // 不再使用信号量做并发上限。
+    this.workerPermitPool = new WorkerPermitPool(this.config.worker.concurrency);
+
     this.core = new TdaiCore({
       hostAdapter: adapter,
       config: this.config.memory,
       sessionFilter: new SessionFilter(this.config.memory.capture.excludeAgents),
+      skillAssetHooks: {
+        // v1 首创前置 await：抛异常 = create 失败（避免「skill 已落库但 asset
+        // 缺失」的静默不一致）。standalone 模式下唯一的登记入口除了 handler 层的
+        // handleCreate 兜底之外就是这里 —— 无论谁调 SkillCore.create 都能触发。
+        onSkillCreated: async ({ skill_id, team_id, agent_id, name }) => {
+          if (!team_id || !agent_id) return; // 无租户上下文 → 跳过（OpenClaw local scope 等）
+          const metaSvc = await gatewayRef.ensureMetadataService(skillAssetInstanceId);
+          await metaSvc.ensureSkillAsset({ skill_id, team_id, agent_id, name });
+        },
+        // 读时自愈：fire-and-forget，异常吞掉。补历史 / 迁移 / 误删产生的孤儿 skill。
+        onSkillAccessed: (skill) => {
+          if (!skill.team_id || !skill.owner_agent_id) return;
+          gatewayRef
+            .ensureMetadataService(skillAssetInstanceId)
+            .then((svc) => svc.ensureSkillAsset({
+              skill_id: skill.skill_id,
+              team_id: skill.team_id!,
+              agent_id: skill.owner_agent_id!,
+              name: skill.name,
+            }))
+            .catch((err: unknown) => {
+              gatewayRef.logger.warn(
+                `[skill-asset-sync] ensureSkillAsset(access) failed for ${skill.skill_id}: `
+                  + (err instanceof Error ? err.message : String(err)),
+              );
+            });
+        },
+        // 归档级联：fire-and-forget，异常吞掉。二次 delete 会重触发钩子，最终收敛。
+        onSkillArchived: ({ skill_id, team_id }) => {
+          gatewayRef
+            .ensureMetadataService(skillAssetInstanceId)
+            .then((svc) => svc.deleteAssets([skill_id]))
+            .catch((err: unknown) => {
+              gatewayRef.logger.warn(
+                `[skill-asset-sync] deleteAssets(archive) failed for ${skill_id}`
+                  + ` (team=${team_id ?? "-"}): `
+                  + (err instanceof Error ? err.message : String(err)),
+              );
+            });
+        },
+      },
     });
+  }
+
+  /**
+   * Lazily init metadata store pool on first /v3/meta request.
+   */
+  private async ensureMetadataStorePool(): Promise<MetadataStorePool> {
+    if (!this.metadataStorePool) {
+      const fallbackSqliteBaseDir = join(this.config.data.baseDir, "metadata");
+      const config = validateMetadataStartupConfig(
+        this.config.deployMode,
+        process.env,
+        fallbackSqliteBaseDir,
+      );
+      this.metadataStorePool = new MetadataStorePool(config);
+      this.logger.info(`[META-V3] metadata store pool ready (backend=${config.backend})`);
+    }
+    return this.metadataStorePool;
+  }
+
+  private async ensureMetadataStore(instanceId: string): Promise<IMetadataStore> {
+    const pool = await this.ensureMetadataStorePool();
+    return pool.getStore(instanceId);
+  }
+
+  private async ensureMetadataService(instanceId: string): Promise<MetadataService> {
+    let svc = this.metadataServiceByInstance.get(instanceId);
+    if (!svc) {
+      const [store, pool] = await Promise.all([
+        this.ensureMetadataStore(instanceId),
+        this.ensureMetadataStorePool(),
+      ]);
+      const storeSource = pool.backend === "mongodb" ? "mongodb-adapter.ts" : "sqlite-adapter.ts";
+      const rawSvc = new MetadataService(
+        wrapApiStoreForTrace(store, storeSource),
+        instanceId,
+        this.logger,
+        this.config.metadata,
+        this.memorySystemUserConfig,
+      );
+
+      const registry = loadDefaultRegistry(this.config.metadata.configParamsFile);
+      const configSvc = new ConfigParamService(store, registry);
+      await configSvc.initDefaults(registry, this.config.metadata);
+      rawSvc.setConfigParamService(configSvc);
+
+      svc = wrapApiServiceForTrace(rawSvc);
+      this.metadataServiceByInstance.set(instanceId, svc);
+    }
+    return svc;
   }
 
   /**
@@ -272,6 +447,49 @@ export class TdaiGateway {
   async start(): Promise<void> {
     // Initialize data directories
     initDataDirectories(this.config.data.baseDir);
+
+    applyMetadataEnvFromGatewayConfig(this.config.metadata);
+
+    this.memorySystemUserConfig = resolveMemorySystemUserConfig(this.config.metadata);
+    validateMemorySystemUserConfig(this.config.deployMode, this.memorySystemUserConfig);
+    if (this.memorySystemUserConfig) {
+      this.logger.info(
+        `[META-V3] memory system user loaded user_id=${this.memorySystemUserConfig.userId} ` +
+        `key_prefix=${maskMemorySystemUserKeyForLog(this.memorySystemUserConfig.userKey)}`,
+      );
+    }
+
+    // llm.provider=proxy 时 fail-fast：确认 memory 系统用户完整、userKey 格式合法。
+    // instanceId 每请求变化，运行期由 resolveEffectiveLlmConfig 再校验一次；这里
+    // 只兜底 systemUser / baseUrl 这类启动即可确定的错误，避免走到第一次抽取才炸。
+    try {
+      validateLlmProviderConfig(this.config.llm, this.config.metadata);
+      if (this.config.llm.provider === "proxy") {
+        this.logger.info(
+          `[LLM] provider=proxy, baseUrl=${this.config.llm.baseUrl}, ` +
+          `useMemorySystemUserKey=${this.config.llm.proxy?.useMemorySystemUserKey ?? true}`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof LlmResolveError) {
+        throw new Error(`[LLM] provider 配置校验失败: ${err.message}`);
+      }
+      throw err;
+    }
+
+    const metadataStoreCfg = validateMetadataStartupConfig(
+      this.config.deployMode,
+      process.env,
+      join(this.config.data.baseDir, "metadata"),
+    );
+    if (this.config.deployMode === "service") {
+      this.logger.info(
+        `[META-V3] metadata store configured (backend=${metadataStoreCfg.backend})`,
+      );
+    }
+
+    const metadataPool = await this.ensureMetadataStorePool();
+    initApiTraceConfig(metadataPool.backend, { enabled: readApiTraceEnabled() });
 
     // ── 初始化可观测性门面层全局后端 ──
     // 必须在 initOTelSDK 之前调用，因为 LangfuseFilteringProcessor 构造时
@@ -315,14 +533,18 @@ export class TdaiGateway {
       this.logger.warn(`Observability backend init failed (non-fatal): ${msg}`);
     }
 
-    // ── 初始化 OTel SDK（Trace + Log + ClickHouse 双写）──
+    // ── 初始化 OTel SDK（Trace + Log + ClickHouse 双写 + Langfuse）──
     // 必须在 HTTP server 创建之前初始化，否则 wrapWithTrace 中的 Tracer 是 NoopTracer
-    if (obsCfg.otel.enabled) {
+    // 注意：即使 otel.enabled=false，只要 langfuse.enabled=true 也需要初始化 SDK
+    // （Langfuse 通过 OTel SDK 的 spanProcessor 上报 LLM span）
+    const needOTelSDK = obsCfg.otel.enabled || obsCfg.langfuse.enabled;
+    if (needOTelSDK) {
       try {
         const otelOk = await initOTelSDK({
           serviceName: obsCfg.otel.serviceName,
           serviceVersion: obsCfg.otel.serviceVersion,
-          endpoint: obsCfg.otel.endpoint,
+          // 仅当 otel 启用时才传 endpoint，避免 langfuse-only 模式下创建无效的 gRPC exporter
+          endpoint: obsCfg.otel.enabled ? obsCfg.otel.endpoint : undefined,
           protocol: obsCfg.otel.protocol,
           tenantId: obsCfg.otel.tenantId,
           logExportIntervalMs: obsCfg.otel.logExportInterval * 1000,
@@ -356,20 +578,71 @@ export class TdaiGateway {
     // ── Initialize Opik tracer for offload server ──
     await initServerOpikTracer(this.logger);
 
+    // ── Start integrated services (Scanner + Worker + State Backend) ──
+    // In service mode, startIntegratedServices() also invokes
+    // initSharedCosClient() which itself calls setStorage(new StorageAdapter(
+    // cosBackend)); the `if (!this.core.getStorage())` guard below then
+    // correctly skips the local fallback.
+    await this.startIntegratedServices();
+
     // ── Initialize StorageAdapter for v2 API ──
     // In standalone mode, use LocalStorageBackend pointing to dataDir.
-    // In service mode, CosStorageBackend is injected externally.
+    // In service mode, CosStorageBackend was already injected above.
     if (!this.core.getStorage()) {
       const backend = new LocalStorageBackend(this.config.data.baseDir);
       this.core.setStorage(new StorageAdapter(backend));
       this.logger.info(`${TAG} StorageAdapter initialized (local: ${this.config.data.baseDir})`);
     }
 
-    // ── Start integrated services (Scanner + Worker) if state_backend is configured ──
-    await this.startIntegratedServices();
+    // ── Skill module post-wiring (after storage is set) ──
+    // setStorage() above kicks off ensureSkillModuleWired() asynchronously
+    // (B1 fix in tdai-core: concurrent triggers coalesce onto one promise);
+    // we await it here so the FIRST /v3/skill/* request after `start()`
+    // resolves doesn't race against an unfinished construction. Noop when
+    // cfg.skill is absent or disabled.
+    try {
+      await this.core.ensureSkillModuleWired();
+    } catch (err) {
+      this.logger.warn(`${TAG} ensureSkillModuleWired failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     // Create HTTP server (with Trace middleware wrapping)
+    //
+    // [skill-perf 2026-07-21] Skill 接口可观测性埋点（issue：/v3/skill/extract
+    // ttfb 忽快忽慢，缺少 phase-by-phase 耗时 log）：
+    //   - socket-level 打 tcp.connect（debug）
+    //   - request 头读完后立即打 skill.perf.req.enter，作为服务端 T0
+    //   - res.on('finish') 打 skill.perf.req.finish（服务端 flush 时刻）
+    // 只针对 /v3/skill/ 前缀，避免污染 meta / memory 主链路日志。
     this.server = http.createServer((req, res) => {
+      const perfT0 = Date.now();
+      const isSkill = typeof req.url === "string" && req.url.startsWith("/v3/skill/");
+      if (isSkill) {
+        // 挂到 req 上以便 handler 内部读取 T0 计算 phase 耗时
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (req as any).__skillPerfT0 = perfT0;
+        const src = `${req.socket.remoteAddress ?? "?"}:${req.socket.remotePort ?? "?"}`;
+        this.logger.info(
+          `[skill-perf] req.enter t=${perfT0} method=${req.method ?? "?"} url=${req.url} src=${src}`,
+        );
+        res.on("finish", () => {
+          const now = Date.now();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const rid = (res as any).__skillReqId ?? "-";
+          this.logger.info(
+            `[skill-perf] req.finish t=${now} total=${now - perfT0}ms status=${res.statusCode} req_id=${rid} url=${req.url}`,
+          );
+        });
+        res.on("close", () => {
+          if (!res.writableEnded) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const rid = (res as any).__skillReqId ?? "-";
+            this.logger.warn(
+              `[skill-perf] req.close-before-end t=${Date.now()} elapsed=${Date.now() - perfT0}ms req_id=${rid} url=${req.url}`,
+            );
+          }
+        });
+      }
       wrapWithTrace(req, res, () => this.handleRequest(req, res)).catch((err) => {
         // wrapWithTrace 内部已经记录了错误，这里只做 fallback
         if (!res.headersSent) {
@@ -377,6 +650,14 @@ export class TdaiGateway {
           res.end(JSON.stringify({ error: "Internal Server Error" }));
         }
       });
+    });
+
+    // TCP-level：新 socket 打一条 debug，用来看 keepalive 是否命中（同一 src ip:port
+    // 在很短时间内多次触发这条 log = 反代/网关没复用连接）
+    this.server.on("connection", (socket) => {
+      this.logger.debug?.(
+        `[skill-perf] tcp.connect t=${Date.now()} src=${socket.remoteAddress ?? "?"}:${socket.remotePort ?? "?"}`,
+      );
     });
 
     const { port, host } = this.config.server;
@@ -444,6 +725,15 @@ export class TdaiGateway {
    * Gracefully stop the Gateway.
    */
   async stop(): Promise<void> {
+    // Idempotent: repeated calls (e.g. multiple SIGINT) share the same shutdown.
+    if (this.stopPromise) {
+      return this.stopPromise;
+    }
+    this.stopPromise = this.doStop();
+    return this.stopPromise;
+  }
+
+  private async doStop(): Promise<void> {
     this.logger.info("Shutting down gateway...");
 
     // 优雅关闭 OTel SDK（flush 剩余 Span/Log）
@@ -458,6 +748,19 @@ export class TdaiGateway {
       await this.pipelineWorker.stop();
       this.logger.info("Pipeline Worker stopped");
     }
+    // Stop skill conversation-add per-instance workers.
+    // Cache 里存的是 Promise<WiredConversationAdd>；先 await settle 再 stop。
+    if (this.conversationAddByInstance.size > 0) {
+      const settled = await Promise.allSettled(Array.from(this.conversationAddByInstance.values()));
+      const stops = settled.flatMap((r) =>
+        r.status === "fulfilled"
+          ? [r.value.stop().catch((e) => this.logger.warn(`[skill-conversation-add] stop failed: ${e}`))]
+          : [],
+      );
+      await Promise.allSettled(stops);
+      this.conversationAddByInstance.clear();
+      this.logger.info("Skill Conversation-Add workers stopped");
+    }
     if (this.timerScanner) {
       await this.timerScanner.stop();
       this.logger.info("Timer Scanner stopped");
@@ -467,8 +770,16 @@ export class TdaiGateway {
       this.logger.info("State Backend closed");
     }
     if (this.storePool) {
+      // 进程关停场景下没有需要保护的 in-flight 请求, 跳过 grace period (默认 30s),
+      // 否则 closeAll 会硬等满 grace 才返回, 拖慢退出。
+      this.storePool.setGraceCloseDelay(0);
       await this.storePool.closeAll();
       this.logger.info("Store Pool closed");
+    }
+    if (this.metadataStorePool) {
+      await this.metadataStorePool.closeAll();
+      this.metadataStorePool = null;
+      this.logger.info("Metadata Store Pool closed");
     }
 
     if (this.server) {
@@ -510,14 +821,53 @@ export class TdaiGateway {
         return await this.handleInstanceDestroy(req, res);
       }
 
-      // ── v2 API routes (14 endpoints under /v2/) ──
-      // Apply the develop-introduced apiKey gate first so v2 inherits the
+      // ── /v3/instance/destroy — v3 兼容版本。
+      //    请求/响应契约与 v2 一致；鉴权同 v2（Bearer apiKey，运维接口，
+      //    不走租户 x-tdai-user-key）。
+      //    实现上先复用 v2 的通用清理（state / store / cos / quota），再预留
+      //    v3 独有的 metadata 清理（team/user/asset/acl 等），后续由负责 v3
+      //    metadata 的同学补上。此处不做完全复用，避免把 v3 侧清理静默漏掉。
+      if (method === "POST" && pathname === "/v3/instance/destroy") {
+        if (!this.checkAuth(req, res)) return;
+        return await this.handleInstanceDestroyV3(req, res);
+      }
+
+      // ── v3 internal metadata（/v3/internal/meta/*，仅 Bearer）──
+      if (pathname.startsWith(`${V3_INTERNAL_PREFIX}/`)) {
+        if (!this.checkAuthForV2(req, res)) return;
+        const handledInternal = await handleInternalMetaRoute(
+          req, res, pathname, method, parseJsonBody, sendJson,
+          {
+            getMetadataService: (instanceId) => this.ensureMetadataService(instanceId),
+            logger: this.logger,
+          },
+        );
+        if (handledInternal) return;
+      }
+
+      // ── v3 metadata routes (/v3/meta/*) ──
+      // Layer 1: same Bearer apiKey gate as v2. Layer 3 (x-tdai-user-key) in handleV3MetaRoute.
+      if (pathname.startsWith(`${V3_PREFIX}/`)) {
+        if (!this.checkAuthForV2(req, res)) return;
+        const handledV3 = await handleV3MetaRoute(req, res, pathname, method, parseJsonBody, sendJson, {
+          getMetadataService: (instanceId) => this.ensureMetadataService(instanceId),
+          logger: this.logger,
+        });
+        if (handledV3) return;
+      }
+
+      // ── v2 / v3 API routes ──
+      // /v2 = 现有数据面 + 管理面入口（team/agent 可选，user fallback）。
+      // /v3 = L0–L3 数据面"严格 isolation 版本"（team/agent/user/session 必填），共享同一组 handler 实现，
+      //       仅在 dispatch 层多一层校验。详见 v2-router.ts 中 V3_PREFIX/V3_ALLOWED_SUBPATHS 注释。
+      //
+      // Apply the develop-introduced apiKey gate first so v2/v3 inherits the
       // optional shared-secret protection. v2's own `parseV2Auth` (Bearer +
       // x-tdai-service-id) still runs inside `handleV2Route`, preserving
       // its existing semantics. When `server.apiKey` is unset, this gate
       // is a no-op (default-open), matching the develop_server_test
       // baseline.
-      if (pathname.startsWith("/v2/")) {
+      if (pathname.startsWith("/v2/") || pathname.startsWith("/v3/")) {
         if (!this.checkAuthForV2(req, res)) return;
       }
 
@@ -532,6 +882,32 @@ export class TdaiGateway {
         stateBackend: this.stateBackend ?? undefined,
         pipelineWorker: this.pipelineWorker ?? undefined,
         logger: this.logger,
+        // `V3_STRICT_ISOLATION` controls only /v3 L0–L3 memory data-plane
+        // strictness. Default OFF for local/integration; production should set it.
+        v3StrictIsolation: resolveV3StrictIsolation(),
+        // handleConversationAdd 用它自动登记 chat_memory 资产（team+agent 粒度）
+        // 并绑定到 agent。首次写入触发 create + bind；后续同 (team, agent) 走
+        // MetadataService 的进程内 LRU 短路。
+        getMetadataService: (instanceId) => this.ensureMetadataService(instanceId),
+      };
+
+      // Skill module deps — composed alongside V2RouterDeps so v2-router.ts
+      // doesn't have to widen its interface (and break v2-router.test.ts
+      // mocks). The skill route table is registered as `extraRouteTable` in
+      // handleV2Route below, and our `mergedDeps` object satisfies BOTH
+      // interfaces simultaneously (TypeScript-wise the cast widens it to
+      // `unknown` so each handler reads its own fields).
+      const skillDeps: SkillRouterDeps = {
+        getSkillCore: () => this.core.getSkillCore(),
+        getSkillExtractor: () => this.core.getSkillExtractor(),
+        getResolvedSkillConfig: () => this.core.getResolvedSkillConfig(),
+        quotaManager: this.quotaManager ?? undefined,
+        logger: this.logger,
+        // Standalone 模式下 SkillCore 由 TdaiCore 全局构造（不带 onSkillCreated 钩子），
+        // handleCreate 用这个 dep 在 skill 创建成功后调 metaSvc.ensureSkillAsset()
+        // 完成 asset 登记 + agent fixed-asset 绑定。service 模式下 buildSkillCore 里
+        // 的 onSkillCreated 钩子做同样的事，两条路径都覆盖，ensureSkillAsset 本身幂等。
+        getMetadataService: (instanceId) => this.ensureMetadataService(instanceId),
       };
 
       // Service mode: inject per-instance resolvers (storePool + configProvider + COS)
@@ -548,50 +924,19 @@ export class TdaiGateway {
           return { store: pooled.store, embedding: pooled.embedding };
         };
 
-        v2Deps.resolveStorage = async (instanceId: string) => {
-          // Check cache first
-          const cached = this.cosStorageCache?.get(instanceId);
-          if (cached) return cached;
-
-          // Standalone mode: fall back to local storage (no COS needed)
-          if (!this.sharedCosClient && this.config.deployMode === "standalone") {
-            const localDir = this.config.data.baseDir;
-            const backend = new LocalStorageBackend({ rootDir: localDir, logger });
-            const adapter = new StorageAdapter(backend);
-            if (!this.cosStorageCache) this.cosStorageCache = new Map();
-            this.cosStorageCache.set(instanceId, adapter);
-            return adapter;
-          }
-
-          if (!this.sharedCosClient) {
-            throw new Error(`SharedCosClient not initialized for instance ${instanceId}`);
-          }
-
-          // Get current COS config to determine prefix
-          const cosConfig = await configProvider.resolveCos();
-          if (!cosConfig?.cosUrl) {
-            throw new Error(`COS config not available for instance ${instanceId} (Shark returned null or empty CosUrl)`);
-          }
-
-          // Per-instance CosStorageBackend: lightweight, only holds prefix
-          const { CosStorageBackend } = await import("../integrations/cos/cos-backend.js");
-          const prefix = `${cosConfig.pathPrefix.replace(/\/$/, '')}/${instanceId}/`;
-          const backend = new CosStorageBackend({
-            sharedClient: this.sharedCosClient,
-            prefix,
-            logger,
-          });
-          const adapter = new StorageAdapter(backend);
-          if (!this.cosStorageCache) this.cosStorageCache = new Map();
-          this.cosStorageCache.set(instanceId, adapter);
-          return adapter;
-        };
+        v2Deps.resolveStorage = (instanceId: string) => this.resolveStorageForInstance(instanceId);
 
         // Pipeline notify: trigger async L1 extraction when v2 /conversation/add writes L0
         if (this.statefulPipelineManager) {
           const pipelineManager = this.statefulPipelineManager;
-          v2Deps.notifyPipeline = async (instanceId: string, sessionId: string, rounds: number) => {
-            await pipelineManager.notifyConversation(sessionId, [], instanceId, rounds);
+          v2Deps.notifyPipeline = async (
+            instanceId: string,
+            sessionId: string,
+            rounds: number,
+            teamId?: string,
+            agentId?: string,
+          ) => {
+            await pipelineManager.notifyConversation(sessionId, [], instanceId, rounds, teamId, agentId);
           };
         }
 
@@ -599,6 +944,29 @@ export class TdaiGateway {
         if (this.quotaManager) {
           v2Deps.quotaManager = this.quotaManager;
         }
+
+        // ── Skill: per-instance resolver (TcvdbSkillStore + COS storage) ──
+        // 复用 Memory 侧的 COS adapter，创建 per-instance SkillCore。
+        // Skill queue + worker 如果已在 tdai-core 中启动则复用；否则
+        // service 模式下可在此处单独启动。
+        if (storePool.mode === "tcvdb") {
+          // per-instance resolvers 抽到了私有方法（同一份实现被 handler 和 skill worker 共用）。
+          skillDeps.resolveSkillCore = (instanceId: string) => this.resolveSkillCoreForInstance(instanceId);
+          skillDeps.buildSkillExtractor = (core, instanceId) => this.buildSkillExtractorForInstance(core, instanceId);
+        }
+        // /v3/skill/conversation/add + /v3/skill/extract{,result} wiring:
+        //   - tcvdb (service): 走 ensureConversationAddForInstance (per-instance TCVDB + COS)
+        //   - sqlite (standalone): 走 ensureConversationAddForStandalone (单例 SqliteSkillStore + LocalStorage/内存队列)
+        //
+        // 返回完整 WiredConversationAdd:
+        //   - handleConversationAdd 用 .handler
+        //   - handleExtract 用 .trigger (direct-trigger)
+        skillDeps.resolveConversationAdd = async (instanceId: string) => {
+          const wired = storePool.mode === "tcvdb"
+            ? await this.ensureConversationAddForInstance(instanceId)
+            : await this.ensureConversationAddForStandalone(instanceId);
+          return wired;
+        };
       }
 
       // ── Offload V2 routes (async ingest + mmd query) ──
@@ -612,7 +980,30 @@ export class TdaiGateway {
       const offloadHandled = await handleOffloadV2Route(req, res, pathname, method, parseJsonBody, sendJson, offloadDeps);
       if (offloadHandled) return;
 
-      const handled = await handleV2Route(req, res, pathname, method, parseJsonBody, sendJson, v2Deps);
+      // Compose deps: V2RouterDeps fields + SkillRouterDeps fields. The
+      // route table union of routeTable + makeSkillRouteTable() is what
+      // tells the dispatcher which subset of fields each handler reads.
+      const mergedDeps = Object.assign({}, v2Deps, skillDeps);
+
+      // Merge skill + knowledge extra route tables
+      const extraRoutes = {
+        ...makeSkillRouteTable(),
+        ...makeKnowledgeRouteTable(),
+      } as Record<
+        string,
+        (body: unknown, auth: import("./v2-schemas.js").V2AuthContext, requestId: string, deps: unknown) => Promise<import("./v2-schemas.js").ApiResponseEnvelope>
+      >;
+
+      const handled = await handleV2Route(
+        req,
+        res,
+        pathname,
+        method,
+        parseJsonBody,
+        sendJson,
+        mergedDeps as V2RouterDeps,
+        extraRoutes,
+      );
       if (handled) return;
 
       // ── v1 API routes ──
@@ -800,6 +1191,52 @@ export class TdaiGateway {
     }
 
     this.logger.info(`[instance/destroy] Purging instance: ${instanceId}`);
+    const cleaned = await this.purgeInstanceCommon(instanceId, "v2");
+
+    sendJson(res, 200, {
+      code: 0,
+      message: "ok",
+      data: { instance_id: instanceId, cleaned },
+    });
+  }
+
+  /**
+   * POST /v3/instance/destroy — v3 兼容路由。
+   *
+   * 请求/响应契约与 v2 完全一致，调用方零改动即可切换。
+   *
+   * 在通用清理之上 drop 该实例元数据库（v3.0 分库：`MetadataStorePool.purgeInstance`）。
+   */
+  private async handleInstanceDestroyV3(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const body = await parseJsonBody<{ instance_id?: string }>(req);
+    const instanceId = body?.instance_id;
+
+    if (!instanceId || typeof instanceId !== "string") {
+      sendJson(res, 400, { code: 400, message: "Missing required field: instance_id" });
+      return;
+    }
+
+    this.logger.info(`[instance/destroy] [v3] Purging instance: ${instanceId}`);
+    const cleaned = await this.purgeInstanceCommon(instanceId, "v3");
+
+    cleaned.v3_metadata = await this.purgeV3Metadata(instanceId);
+
+    sendJson(res, 200, {
+      code: 0,
+      message: "ok",
+      data: { instance_id: instanceId, cleaned },
+    });
+  }
+
+  /**
+   * 通用清理步骤（state / store / cos / quota），v2 与 v3 共用。
+   * @param source 仅用于日志前缀，便于分辨调用方。
+   */
+  private async purgeInstanceCommon(
+    instanceId: string,
+    source: "v2" | "v3",
+  ): Promise<Record<string, unknown>> {
+    const tag = `[instance/destroy] [${source}]`;
     const cleaned: Record<string, unknown> = {};
 
     // 1. Purge state backend (timers, sessions, buffers, pending tasks)
@@ -807,21 +1244,24 @@ export class TdaiGateway {
       try {
         const result = await this.stateBackend.purgeInstance(instanceId);
         cleaned.state = result;
-        this.logger.info(`[instance/destroy] State purged: sessions=${result.sessions}, timers=${result.timers}, buffers=${result.buffers}`);
+        this.logger.info(`${tag} State purged: sessions=${result.sessions}, timers=${result.timers}, buffers=${result.buffers}`);
       } catch (err) {
-        this.logger.error(`[instance/destroy] State purge failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.logger.error(`${tag} State purge failed: ${err instanceof Error ? err.message : String(err)}`);
         cleaned.state_error = err instanceof Error ? err.message : String(err);
       }
     }
 
-    // 2. Evict store from StorePool
+    // 2. Evict store from StorePool (Memory + Skill)
     if (this.storePool) {
       try {
         await this.storePool.evict(instanceId);
+        this.storePool.evictSkillStore(instanceId);
         cleaned.store_evicted = true;
+        cleaned.skill_store_evicted = true;
       } catch (err) {
-        this.logger.error(`[instance/destroy] Store evict failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.logger.error(`${tag} Store evict failed: ${err instanceof Error ? err.message : String(err)}`);
         cleaned.store_evicted = false;
+        cleaned.skill_store_evicted = false;
       }
     }
 
@@ -842,25 +1282,41 @@ export class TdaiGateway {
           });
           const deletedCount = await backend.deleteByPrefix("");
           cleaned.cos_objects_deleted = deletedCount;
-          this.logger.info(`[instance/destroy] COS objects deleted: ${deletedCount}`);
+          this.logger.info(`${tag} COS objects deleted: ${deletedCount}`);
         }
       } catch (err) {
-        this.logger.error(`[instance/destroy] COS cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.logger.error(`${tag} COS cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
         cleaned.cos_error = err instanceof Error ? err.message : String(err);
       }
     }
 
-    // 4. Clear QuotaManager cache
+    // 5. Clear QuotaManager cache
     if (this.quotaManager) {
       (this.quotaManager as any).cache?.delete?.(instanceId);
       cleaned.quota_cache_cleared = true;
     }
 
-    sendJson(res, 200, {
-      code: 0,
-      message: "ok",
-      data: { instance_id: instanceId, cleaned },
-    });
+    return cleaned;
+  }
+
+  /**
+   * v3 独有：drop 该实例元数据库（MongoDB dropDatabase / SQLite 删目录）。
+   * 失败时写入返回结构，不抛出，与 purgeInstanceCommon 一致。
+   */
+  private async purgeV3Metadata(instanceId: string): Promise<Record<string, unknown>> {
+    try {
+      const pool = await this.ensureMetadataStorePool();
+      const result = await pool.purgeInstance(instanceId);
+      this.metadataServiceByInstance.delete(instanceId);
+      this.logger.info(
+        `[instance/destroy] [v3] metadata purged: db=${result.db_name} dropped=${result.dropped}`,
+      );
+      return { db_name: result.db_name, dropped: result.dropped };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[instance/destroy] [v3] metadata purge failed: ${msg}`);
+      return { dropped: false, error: msg };
+    }
   }
 
   private handleHealth(res: http.ServerResponse): void {
@@ -1135,13 +1591,70 @@ export class TdaiGateway {
       type: backendType,
       local: backendType === "local" ? {
         onTimerExpired: (entry) => {
+          // Parse timer member by prefix: "offload-{type}:{instanceId}:{sessionId}[:{extra}]"
+          // or legacy "session:L2_schedule"
           const member = entry.member;
-          const task = createLocalTimerTask({
-            entry,
-            defaultInstanceId: this.config.instanceId ?? "default",
-          });
+          let taskType: string;
+          let instanceId: string;
+          let sessionId: string;
+          let teamId: string | undefined;
+          let agentId: string | undefined;
+
+          const firstColon = member.indexOf(":");
+          const prefix = firstColon > 0 ? member.slice(0, firstColon) : member;
+
+          if (prefix === "offload-l1" || prefix === "offload-l15" || prefix === "offload-l2") {
+            taskType = prefix;
+            // Format: "offload-{type}:{instanceId}:{sessionId}[:{mmdFile}]"
+            // instanceId is the segment right after the prefix
+            const rest = member.slice(firstColon + 1);
+            const instanceEnd = rest.indexOf(":");
+            if (instanceEnd > 0) {
+              instanceId = rest.slice(0, instanceEnd);
+              sessionId = rest.slice(instanceEnd + 1);
+            } else {
+              instanceId = this.config.instanceId ?? "default";
+              sessionId = rest;
+            }
+            // For offload-l2: strip trailing ":{mmdFile}" from sessionId
+            // (mmdFile is extracted separately from timerMember in the executor)
+            if (prefix === "offload-l2" && sessionId.endsWith(".mmd")) {
+              const lastColon = sessionId.lastIndexOf(":");
+              if (lastColon > 0) {
+                sessionId = sessionId.slice(0, lastColon);
+              }
+            }
+          } else {
+            // Pipeline memory timer. The member may be legacy "sessionId:L1_idle"
+            // or scoped "scope:team:T|agent:A|session:S:L1_idle"; scope is member
+            // data only and does not affect Redis key slotting.
+            const parsed = parsePipelineTimerMember(member);
+            sessionId = parsed.sessionId;
+            taskType = parsed.taskType;
+            teamId = parsed.teamId;
+            agentId = parsed.agentId;
+            instanceId = this.config.instanceId ?? "default";
+          }
+          const now = Date.now();
+          // Extract targetMmdFile from member for offload-l2 (needed by pipeline-worker lockKey)
+          let targetMmdFile: string | undefined;
+          if (taskType === "offload-l2") {
+            const mmdMatch = member.match(/(\d+-[^:]+\.mmd)$/);
+            if (mmdMatch) targetMmdFile = mmdMatch[1];
+          }
+          const task = {
+            id: `${taskType}-${sessionId}-${now}`,
+            type: taskType as any,
+            instanceId,
+            sessionId,
+            teamId,
+            agentId,
+            priority: 0,
+            createdAt: now,
+            data: { triggeredBy: "timer_scanner", timerMember: member, instanceId, targetMmdFile, teamId, agentId },
+          };
           this.stateBackend!.enqueueTask(task).then(() => {
-            this.logger.info(`[local-timer] Timer fired: ${member} → enqueued ${task.type} task`);
+            this.logger.info(`[local-timer] Timer fired: ${member} → enqueued ${taskType} task`);
           }).catch((err) => {
             this.logger.error(`[local-timer] Failed to enqueue task for ${member}: ${err instanceof Error ? err.message : String(err)}`);
           });
@@ -1156,6 +1669,11 @@ export class TdaiGateway {
       } : undefined,
     });
     this.logger.info(`State Backend created (${backendType})`);
+
+    // Skill V2 queue opens its own ioredis connection from the
+    // `skillRedisUrl` we passed into TdaiCore at construction time — see the
+    // constructor above. No cross-module shared client, no startup-order
+    // coupling with `setStorage()` / `ensureSkillModuleWired()`.
 
     // 1.2. Pick adapter set (default for standalone, enhanced for service).
     // InstanceConfigProvider/QuotaManager depend only on core abstractions;
@@ -1208,10 +1726,17 @@ export class TdaiGateway {
         reporter: adapterDeps.quotaReporter,
         logger: this.logger,
       });
-      this.logger.info("QuotaManager initialized (memoryLimit=50000, creditLimit=1000)");
+      this.logger.info("QuotaManager initialized (memoryLimit=10000, creditLimit=1000)");
     }
+    // Allow overriding store mode independently from deployMode. Useful for
+    // service-mode integration smoke tests where Redis + COS are real but no
+    // VDB is available — set STORE_MODE=sqlite to keep the VDB-dependent
+    // pieces local while exercising the rest of the service-mode wiring.
+    const storeModeOverride = process.env.STORE_MODE === "sqlite" || process.env.STORE_MODE === "tcvdb"
+      ? (process.env.STORE_MODE as "sqlite" | "tcvdb")
+      : undefined;
     this.storePool = new StorePool({
-      mode: this.config.deployMode === "service" ? "tcvdb" : "sqlite",
+      mode: storeModeOverride ?? (this.config.deployMode === "service" ? "tcvdb" : "sqlite"),
       memoryCfg: this.config.memory,
       dataDir: this.config.data.baseDir,
       maxStores: this.config.shark.maxInstances,
@@ -1270,9 +1795,442 @@ export class TdaiGateway {
       onL1Complete: statefulManager.advanceL2TimerAfterL1.bind(statefulManager),
       // L2 完成后设置 maxInterval 兜底 timer
       onL2Complete: statefulManager.armL2MaxInterval.bind(statefulManager),
+      // 与 skill worker 共享的节点级并发上限
+      permitPool: this.workerPermitPool ?? undefined,
     }, this.logger);
     await this.pipelineWorker.start();
     this.logger.info("Pipeline Worker started");
+
+    // Skill worker 由 ensureConversationAddForInstance/Standalone 内的
+    // wireConversationAdd 起, 无需在此额外启动 (对齐 2026-07-17 skill_extract
+    // 收敛方案: /v3/skill/extract 也走同一 worker + agent 队列)。
+  }
+
+  /**
+   * 按 instance_id 构造 per-instance SkillCore（TCVDB VDB + COS + versioning + hooks）。
+   *
+   * 与 handleRequest 里内联版本共享同一实现体，避免 skill worker（进程级单例）
+   * 和 handler（每请求）走两份不同的构造逻辑。
+   */
+  private async resolveSkillCoreForInstance(instanceId: string): Promise<SkillCoreType> {
+    if (!this.configProvider || !this.storePool) {
+      throw new SkillCoreError("SKILL_COS_REQUIRED", "resolveSkillCoreForInstance: configProvider/storePool not ready");
+    }
+    const configProvider = this.configProvider;
+    const storePool = this.storePool;
+    const logger = this.logger;
+    const sharedCosClient = this.sharedCosClient;
+
+    const vdbConfig = await configProvider.resolveVdb(instanceId);
+    const skillStore = await storePool.getSkillStore(instanceId, vdbConfig);
+
+    let storage: StorageAdapter;
+    const cachedStorage = this.cosStorageCache?.get(instanceId);
+    if (cachedStorage) {
+      storage = cachedStorage;
+    } else if (sharedCosClient) {
+      const cosConfig = await configProvider.resolveCos();
+      if (cosConfig?.cosUrl) {
+        const { CosStorageBackend } = await import("../integrations/cos/cos-backend.js");
+        const prefix = `${cosConfig.pathPrefix.replace(/\/$/, "")}/${instanceId}/`;
+        const backend = new CosStorageBackend({ sharedClient: sharedCosClient, prefix, logger });
+        storage = new StorageAdapter(backend);
+        if (!this.cosStorageCache) this.cosStorageCache = new Map();
+        this.cosStorageCache.set(instanceId, storage);
+      } else {
+        throw new SkillCoreError(
+          "SKILL_COS_REQUIRED",
+          "COS storage not configured for this instance. In service mode, skill.enabled=true requires COS credentials.",
+        );
+      }
+    } else {
+      throw new SkillCoreError(
+        "SKILL_COS_REQUIRED",
+        "COS storage not configured for this instance. In service mode, skill.enabled=true requires COS credentials.",
+      );
+    }
+
+    const maxResourceSize = this.core.getResolvedSkillConfig()?.resources.maxResourceSizeBytes ?? 5_000_000;
+    const { SkillResourceStore } = await import("../core/skill/skill-resource-store.js");
+    const skillResources = new SkillResourceStore({ storage, maxResourceSizeBytes: maxResourceSize });
+
+    const { SkillVersioning } = await import("../core/skill/skill-versioning.js");
+    const quotaMgr = this.quotaManager;
+    const resolveMetaSvc = () => this.ensureMetadataService(instanceId);
+    const skillVersioning = new SkillVersioning({
+      store: skillStore,
+      resources: skillResources,
+      storage,
+      logger,
+      onSkillVdbChanged: (delta: number) => {
+        quotaMgr?.reportUsage(instanceId, delta, 0, "Skill").catch(() => {});
+      },
+      onSkillCreated: async ({ skill_id, team_id, agent_id, name }) => {
+        if (!team_id || !agent_id) return;
+        const metaSvc = await resolveMetaSvc();
+        await metaSvc.ensureSkillAsset({ skill_id, team_id, agent_id, name });
+      },
+    });
+
+    const { SkillCore } = await import("../core/skill/skill-core.js");
+    return new SkillCore({
+      store: skillStore,
+      resources: skillResources,
+      versioning: skillVersioning,
+      onSkillAccessed: (skill) => {
+        if (!skill.team_id || !skill.owner_agent_id) return;
+        resolveMetaSvc()
+          .then((svc) => svc.ensureSkillAsset({
+            skill_id: skill.skill_id,
+            team_id: skill.team_id,
+            agent_id: skill.owner_agent_id,
+            name: skill.name,
+          }))
+          .catch((err: unknown) => {
+            logger.warn(
+              `[skill-asset-sync] ensureSkillAsset(access) failed for ${skill.skill_id}: `
+                + (err instanceof Error ? err.message : String(err)),
+            );
+          });
+      },
+      onSkillArchived: ({ skill_id, team_id }) => {
+        resolveMetaSvc()
+          .then((svc) => svc.deleteAssets([skill_id]))
+          .catch((err: unknown) => {
+            logger.warn(
+              `[skill-asset-sync] deleteAssets(archive) failed for ${skill_id}`
+                + ` (team=${team_id ?? "-"}): `
+                + (err instanceof Error ? err.message : String(err)),
+            );
+          });
+      },
+    });
+  }
+
+  /**
+   * 按 skillCore + instance_id 构造 per-instance SkillExtractor（含 LLM runner）。
+   * instance_id 参与 llm resolver 拼 upstream URL（provider=proxy 场景关键）。
+   */
+  private async buildSkillExtractorForInstance(
+    skillCore: SkillCoreType,
+    instanceId: string,
+  ): Promise<SkillExtractorClass> {
+    const { SKILL_REVIEW_PROMPT } = await import("../core/skill/index.js");
+    const { StandaloneLLMRunner } = await import("../adapters/standalone/llm-runner.js");
+    const { resolveStandaloneLlmForRuntime, LlmProviderResolveError } = await import("../adapters/standalone/llm-provider-resolver.js");
+
+    const llmCfg = this.config.llm;
+    if (!llmCfg?.baseUrl) {
+      throw new SkillCoreError("LLM_UNAVAILABLE", "LLM baseUrl not configured for skill extraction");
+    }
+    if ((llmCfg.provider ?? "openai") === "openai" && !llmCfg.apiKey) {
+      throw new SkillCoreError("LLM_UNAVAILABLE", "LLM apiKey not configured (provider=openai)");
+    }
+
+    let effective: import("../adapters/standalone/llm-runner.js").StandaloneLLMConfig;
+    try {
+      effective = resolveStandaloneLlmForRuntime(llmCfg, instanceId);
+    } catch (err) {
+      const msg = err instanceof LlmProviderResolveError ? err.message : String(err);
+      throw new SkillCoreError("LLM_UNAVAILABLE", `LLM provider resolve failed: ${msg}`);
+    }
+    this.logger.debug?.(
+      `[skill-extractor] resolved LLM: provider=${llmCfg.provider ?? "openai"}, model=${effective.model}, baseUrl=${effective.baseUrl}`,
+    );
+
+    const llmRunner = new StandaloneLLMRunner({
+      config: {
+        baseUrl: effective.baseUrl,
+        apiKey: effective.apiKey,
+        model: effective.model ?? "default",
+        timeoutMs: effective.timeoutMs ?? 120_000,
+      },
+    });
+    const cfg = this.core.getResolvedSkillConfig();
+    return new SkillExtractorClass({
+      core: skillCore,
+      runner: llmRunner,
+      systemPrompt: SKILL_REVIEW_PROMPT,
+      maxIterations: cfg?.extraction.maxIterations ?? 5,
+      // 透传 archiveBytes 派生的 head/tail chars + 独立的 maxTokens，
+      // 让 skill.extraction.archiveBytes 与 skill.extraction.maxTokens 生效
+      // (yaml 里改完不用改代码)。cfg 缺失时 SkillExtractor 内部有默认。
+      headChars: cfg?.extraction.headChars,
+      tailChars: cfg?.extraction.tailChars,
+      maxTokens: cfg?.extraction.maxTokens,
+      logger: this.logger,
+    } as import("../core/skill/skill-extractor.js").ExtractorOptions);
+  }
+
+  /**
+   * 懒装 per-instance conversation-add：handler + worker + sink 一整套。
+   *
+   * 依赖：
+   *   - storage: 复用 memory 的 CosStorageBackend（resolveSkillCoreForInstance 里已 cache）
+   *   - redis: 复用 stateBackend 的 ioredis 客户端（skill:tasks-mutex / skill:extract-lock
+   *     用同一物理连接）
+   *   - skillCore/extractor: 走跟 handleExtract 相同的 per-instance factory
+   *   - metadataService: 兜底登记 skill asset
+   *
+   * keyPrefix 拼 memory 的 redis.keyPrefix，例如
+   * `tdai_memory_prod_v3:skill-conv` —— 跟老 skill 队列
+   * (`{prefix}:skill:*`) 字面不撞。
+   */
+  private ensureConversationAddForInstance(instanceId: string): Promise<WiredConversationAdd> {
+    // In-flight cache：同 instanceId 并发请求共享同一个 wire promise，
+    // 避免并发情形下 wire 被跑多次生成多个 Worker（灾难：多 Worker 抢同一 agent lock）。
+    const cached = this.conversationAddByInstance.get(instanceId);
+    if (cached) return cached;
+
+    const inflight = this.buildConversationAddForInstance(instanceId);
+    this.conversationAddByInstance.set(instanceId, inflight);
+    // 失败时移除 cache，允许下次重试
+    inflight.catch(() => {
+      if (this.conversationAddByInstance.get(instanceId) === inflight) {
+        this.conversationAddByInstance.delete(instanceId);
+      }
+    });
+    return inflight;
+  }
+
+  /**
+   * Standalone (sqlite) 版本的 in-flight cache 入口，语义与
+   * ensureConversationAddForInstance 完全一致，只是 build 走 standalone 路径。
+   */
+  private ensureConversationAddForStandalone(instanceId: string): Promise<WiredConversationAdd> {
+    const cached = this.conversationAddByInstance.get(instanceId);
+    if (cached) return cached;
+
+    const inflight = this.buildConversationAddForStandalone(instanceId);
+    this.conversationAddByInstance.set(instanceId, inflight);
+    inflight.catch(() => {
+      if (this.conversationAddByInstance.get(instanceId) === inflight) {
+        this.conversationAddByInstance.delete(instanceId);
+      }
+    });
+    return inflight;
+  }
+
+  /**
+   * 把 resolved skill config 的归档/压缩派生字段翻译成 wireConversationAdd 的
+   * thresholds / compressOptions / oversizeOptions 覆盖参数。cfg 缺失时返回空对象,
+   * wire 层退回内置默认 (与旧行为等价)。
+   *
+   * 让 yaml 里的 skill.extraction.archiveBytes / skill.compress 生效不用改代码。
+   */
+  private buildSkillWireOverrides(): Pick<
+    Parameters<typeof wireConversationAdd>[0],
+    "thresholds" | "compressOptions" | "oversizeOptions"
+  > {
+    const cfg = this.core.getResolvedSkillConfig();
+    if (!cfg) return {};
+    return {
+      thresholds: {
+        toolCallThreshold: cfg.extraction.toolCallThreshold,
+        bytesThreshold: cfg.extraction.bytesThreshold,
+        requestCompressThresholdBytes: cfg.extraction.requestCompressThresholdBytes,
+      },
+      compressOptions: {
+        toolContentThresholdBytes: cfg.compress.toolContentThresholdBytes,
+        headBytes: cfg.compress.headBytes,
+        tailBytes: cfg.compress.tailBytes,
+      },
+      oversizeOptions: {
+        chunkMaxBytes: cfg.extraction.chunkMaxBytes,
+        headKeepBytes: cfg.extraction.headKeepBytes,
+        tailKeepBytes: cfg.extraction.tailKeepBytes,
+      },
+    };
+  }
+
+  private async buildConversationAddForInstance(instanceId: string): Promise<WiredConversationAdd> {
+    // 1) storage —— 复用 resolveSkillCoreForInstance 已经建好的 per-instance COS adapter
+    //    resolveSkillCoreForInstance 里已经把 skillCore 和 storage 关联并 cache 好,
+    //    这里再调一次仅是为了保证 cosStorageCache 里有对应 instance 的 adapter。
+    const skillCore = await this.resolveSkillCoreForInstance(instanceId);
+    const storage = this.cosStorageCache?.get(instanceId);
+    if (!storage) {
+      throw new Error(`[skill-conversation-add] storage missing for instance=${instanceId} after resolveSkillCore`);
+    }
+
+    // 2) redis —— 从 stateBackend 拿 ioredis (只有 RedisStateBackend 才有 getClient)
+    const redisClient = this.getSharedIoRedisClient();
+    if (!redisClient) {
+      // Local state backend 场景：降级到内存 queue（单节点可用）
+      this.logger.warn(
+        `[skill-conversation-add] no shared ioredis client available (deployMode=${this.config.deployMode}); ` +
+          `falling back to in-memory queue for instance=${instanceId} (single-node only)`,
+      );
+    }
+
+    // 3) extractor —— 复用 buildSkillExtractorForInstance
+    const rawExtractor = await this.buildSkillExtractorForInstance(skillCore, instanceId);
+    const extractor = createExtractorAdapter(rawExtractor, this.logger);
+
+    // 4) metadataService —— 兜底 asset 登记 (sink 只做这个)
+    const metadataService = await this.ensureMetadataService(instanceId).catch(() => undefined);
+
+    // 5) Redis key prefix
+    const memoryPrefix = this.config.redis?.keyPrefix ?? "tdai_memory";
+    const keyPrefix = `${memoryPrefix}:skill-conv`;
+
+    const wired = wireConversationAdd({
+      storage,
+      redis: redisClient as SkillAgentTaskQueueRedisLike | undefined,
+      redisKeyPrefix: keyPrefix,
+      metadataService,
+      extractor,
+      logger: this.logger,
+      workerId: `${this.config.instanceId ?? "gateway"}:${instanceId}:skill-conv-worker`,
+      // 归档 / 压缩 / 兜底 参数从 resolved skill config 派生，
+      // 让 skill.extraction.archiveBytes + skill.compress yaml 改动即时生效。
+      ...this.buildSkillWireOverrides(),
+    });
+
+    this.logger.info(
+      `[skill-conversation-add] wired instance=${instanceId} storage=${storage.type} ` +
+        `redis=${redisClient ? "shared-ioredis" : "in-memory-fallback"} prefix=${keyPrefix}`,
+    );
+    return wired;
+  }
+
+  /**
+   * Standalone 模式的 conversation-add wiring。
+   *
+   * 与 service 模式 (buildConversationAddForInstance) 的差异：
+   *   - skillCore/extractor：走 TdaiCore 全局单例（SqliteSkillStore + 单例 extractor），
+   *     不做 per-instance；standalone 本来就是单实例部署。
+   *   - storage：走 resolveStorageForInstance → LocalStorageBackend（COS 降级为 fs）。
+   *   - redis：不一定有；wire.ts 会自动降级到 LocalSkillAgentTaskQueue（单节点内存队列）。
+   *   - extractor：若 cfg.llm 不全导致 TdaiCore 没造出 skillExtractor，就 skipWorker
+   *     只挂 handler+buffer，Client 端能落 buffer，但归档触发不了（warn）。
+   */
+  private async buildConversationAddForStandalone(instanceId: string): Promise<WiredConversationAdd> {
+    // 1) skillCore —— 单例
+    const skillCore = this.core.getSkillCore();
+    if (!skillCore) {
+      throw new Error(`[skill-conversation-add] SkillCore not enabled (standalone) — check cfg.skill.enabled`);
+    }
+
+    // 2) storage —— 复用 resolveStorageForInstance；standalone 下会返回 LocalStorageBackend adapter
+    const storage = await this.resolveStorageForInstance(instanceId);
+
+    // 3) redis —— standalone 下通常没有；wire 层自动降级到 LocalSkillAgentTaskQueue
+    const redisClient = this.getSharedIoRedisClient();
+
+    // 4) extractor —— TdaiCore 单例，可能是 undefined（cfg.llm 未配全）
+    const rawExtractor = this.core.getSkillExtractor();
+    const skipWorker = !rawExtractor;
+    if (skipWorker) {
+      this.logger.warn(
+        `[skill-conversation-add] singleton SkillExtractor unavailable (check cfg.llm); ` +
+          `wiring handler+buffer only, skipping Worker for instance=${instanceId}. ` +
+          `Buffer will accumulate but archive won't fire until extractor is available.`,
+      );
+    }
+    // Worker 需要一个 extractor 实例；skipWorker=true 时占位不会被调用。
+    const noopExtractor: import("../core/skill/queue/types.js").ISkillExtractor = {
+      extract: async () => ({ candidates: [] }),
+    };
+    const extractor = rawExtractor
+      ? createExtractorAdapter(rawExtractor, this.logger)
+      : noopExtractor;
+
+    // 5) metadataService —— 兜底 asset 登记 (sink 只做这个)
+    const metadataService = await this.ensureMetadataService(instanceId).catch(() => undefined);
+
+    // 6) Redis key prefix (即便走内存队列, 命名保持一致以便后续接 redis 时无缝切换)
+    const memoryPrefix = this.config.redis?.keyPrefix ?? "tdai_memory";
+    const keyPrefix = `${memoryPrefix}:skill-conv`;
+
+    const wired = wireConversationAdd({
+      storage,
+      redis: redisClient as SkillAgentTaskQueueRedisLike | undefined,
+      redisKeyPrefix: keyPrefix,
+      metadataService,
+      extractor,
+      logger: this.logger,
+      workerId: `${this.config.instanceId ?? "gateway"}:${instanceId}:skill-conv-worker`,
+      skipWorker,
+      // 归档 / 压缩 / 兜底 参数由 resolved skill config 派生 (跟 service 模式一致)
+      ...this.buildSkillWireOverrides(),
+    });
+
+    this.logger.info(
+      `[skill-conversation-add] wired (standalone) instance=${instanceId} storage=${storage.type} ` +
+        `redis=${redisClient ? "shared-ioredis" : "in-memory-fallback"} ` +
+        `worker=${skipWorker ? "skipped" : "on"} prefix=${keyPrefix}`,
+    );
+    return wired;
+  }
+
+  /**
+   * Resolve per-instance StorageAdapter.
+   *
+   * Two paths (both cached in `cosStorageCache` — the name is historical; it
+   * also holds LocalStorageBackend adapters in standalone mode):
+   *   - Standalone (sharedCosClient == null && deployMode==='standalone'):
+   *     LocalStorageBackend rooted at data.baseDir.
+   *   - Service: per-instance CosStorageBackend with `${pathPrefix}/${instanceId}/`.
+   *
+   * Both `/v2/*` (memory) and `/v3/skill/conversation/add` need per-instance
+   * storage; keeping this in one method keeps the fallback semantics identical
+   * on both paths.
+   */
+  private async resolveStorageForInstance(instanceId: string): Promise<StorageAdapter> {
+    const cached = this.cosStorageCache?.get(instanceId);
+    if (cached) return cached;
+
+    // Standalone mode: fall back to local storage (no COS needed)
+    if (!this.sharedCosClient && this.config.deployMode === "standalone") {
+      const localDir = this.config.data.baseDir;
+      const backend = new LocalStorageBackend({ rootDir: localDir, logger: this.logger });
+      const adapter = new StorageAdapter(backend);
+      if (!this.cosStorageCache) this.cosStorageCache = new Map();
+      this.cosStorageCache.set(instanceId, adapter);
+      return adapter;
+    }
+
+    if (!this.sharedCosClient) {
+      throw new Error(`SharedCosClient not initialized for instance ${instanceId}`);
+    }
+    if (!this.configProvider) {
+      throw new Error(`configProvider not initialized for instance ${instanceId}`);
+    }
+
+    // Get current COS config to determine prefix
+    const cosConfig = await this.configProvider.resolveCos();
+    if (!cosConfig?.cosUrl) {
+      throw new Error(`COS config not available for instance ${instanceId} (Shark returned null or empty CosUrl)`);
+    }
+
+    // Per-instance CosStorageBackend: lightweight, only holds prefix
+    const { CosStorageBackend } = await import("../integrations/cos/cos-backend.js");
+    const prefix = `${cosConfig.pathPrefix.replace(/\/$/, '')}/${instanceId}/`;
+    const backend = new CosStorageBackend({
+      sharedClient: this.sharedCosClient,
+      prefix,
+      logger: this.logger,
+    });
+    const adapter = new StorageAdapter(backend);
+    if (!this.cosStorageCache) this.cosStorageCache = new Map();
+    this.cosStorageCache.set(instanceId, adapter);
+    return adapter;
+  }
+
+  /**
+   * 从 RedisStateBackend 取 ioredis 客户端；非 Redis backend 返回 null。
+   */
+  private getSharedIoRedisClient(): SkillAgentTaskQueueRedisLike | null {
+    if (!this.stateBackend) return null;
+    // duck-type：只 RedisStateBackend 有 getClient()
+    const maybe = this.stateBackend as unknown as { getClient?: () => unknown };
+    if (typeof maybe.getClient !== "function") return null;
+    try {
+      return maybe.getClient() as SkillAgentTaskQueueRedisLike;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -1429,6 +2387,8 @@ export class TdaiGateway {
       async executeL1(task: TaskPayload, signal?: AbortSignal) {
         const instanceId = typeof task.data?.instanceId === "string" ? task.data.instanceId : undefined;
         if (!instanceId) throw new Error(`L1 task ${task.id} missing instanceId`);
+        const teamId = task.teamId ?? (typeof task.data?.teamId === "string" ? task.data.teamId : undefined);
+        const agentId = task.agentId ?? (typeof task.data?.agentId === "string" ? task.data.agentId : undefined);
 
         // H-11 Step 2: early abort check — if pipeline-worker already lost its lock
         // before we even started, bail out without doing any work.
@@ -1436,7 +2396,7 @@ export class TdaiGateway {
 
         // Dedup: if triggered by timer but session already processed (count=0), skip
         if (task.data?.triggeredBy === "timer_scanner" && gateway.stateBackend) {
-          const state = await gateway.stateBackend.getSessionState(instanceId, task.sessionId);
+          const state = await gateway.stateBackend.getSessionState(instanceId, task.sessionId, teamId, agentId);
           if (state && state.conversation_count === 0) {
             gateway.logger.debug?.(`[executor] L1 skipped: session ${task.sessionId} already processed (count=0)`);
             return;
@@ -1460,11 +2420,15 @@ export class TdaiGateway {
         const storage = await resolveStorage(task);
         const result = await core.runL1WithStore(task.sessionId, store, embedding, storage ?? undefined);
 
+        (task as any)._l2ProfileScopes = result.profileScopes;
+
         // Report usage after L1: memory added + credit consumed
+        // provider=proxy 模式下 credit 由 context_proxy 上报，此处仅报 memory delta。
         if (gateway.quotaManager) {
           const { storedCount, creditUsed } = result;
-          if (storedCount > 0 || creditUsed > 0) {
-            gateway.quotaManager.reportUsage(instanceId, storedCount, creditUsed, "L1").catch(() => {});
+          const reportCredit = gateway.reportedCreditFor(creditUsed, "L1");
+          if (storedCount > 0 || reportCredit > 0) {
+            gateway.quotaManager.reportUsage(instanceId, storedCount, reportCredit, "L1").catch(() => {});
           }
         }
 
@@ -1477,11 +2441,11 @@ export class TdaiGateway {
         // See pipeline-factory.ts createL1Runner for the full state machine.
         if (gateway.statefulPipelineManager) {
           if (result.hasFullBacklog) {
-            gateway.statefulPipelineManager.enqueueL1Drain(task.sessionId, instanceId).catch((err) => {
+            gateway.statefulPipelineManager.enqueueL1Drain(task.sessionId, instanceId, teamId, agentId).catch((err) => {
               gateway.logger.warn(`[executor] L1 drain enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
             });
           } else if (result.hasMore) {
-            gateway.statefulPipelineManager.armL1IdleAfterDrain(task.sessionId, instanceId).catch((err) => {
+            gateway.statefulPipelineManager.armL1IdleAfterDrain(task.sessionId, instanceId, teamId, agentId).catch((err) => {
               gateway.logger.warn(`[executor] L1 idle arm failed: ${err instanceof Error ? err.message : String(err)}`);
             });
           }
@@ -1490,6 +2454,8 @@ export class TdaiGateway {
       async executeL2(task: TaskPayload, signal?: AbortSignal) {
         const instanceId = typeof task.data?.instanceId === "string" ? task.data.instanceId : undefined;
         if (!instanceId) throw new Error(`L2 task ${task.id} missing instanceId`);
+        const teamId = task.teamId ?? (typeof task.data?.teamId === "string" ? task.data.teamId : undefined);
+        const agentId = task.agentId ?? (typeof task.data?.agentId === "string" ? task.data.agentId : undefined);
 
         if (signal?.aborted) throw signal.reason ?? new Error("executeL2: aborted before start");
 
@@ -1506,7 +2472,7 @@ export class TdaiGateway {
         // This ensures L2 only processes L1 records created after the last extraction.
         let cursor: string | undefined;
         if (gateway.stateBackend) {
-          const state = await gateway.stateBackend.getSessionState(instanceId, task.sessionId);
+          const state = await gateway.stateBackend.getSessionState(instanceId, task.sessionId, teamId, agentId);
           if (state?.l2_last_extraction_time) {
             cursor = state.l2_last_extraction_time;
           }
@@ -1546,8 +2512,10 @@ export class TdaiGateway {
               if (idx) newScenes = Math.max(0, JSON.parse(idx).length - sceneCountBefore);
             } catch { /* ok */ }
           }
-          if (creditUsed > 0 || newScenes > 0) {
-            gateway.quotaManager.reportUsage(instanceId, newScenes, creditUsed, "L2").catch(() => {});
+          // provider=proxy 模式下 credit 由 context_proxy 上报，此处仅报 memory delta。
+          const reportCredit = gateway.reportedCreditFor(creditUsed, "L2");
+          if (reportCredit > 0 || newScenes > 0) {
+            gateway.quotaManager.reportUsage(instanceId, newScenes, reportCredit, "L2").catch(() => {});
           }
         }
       },
@@ -1583,11 +2551,13 @@ export class TdaiGateway {
         const result = await core.runL3WithStore(store, storage ?? undefined);
 
         // Report credit + memory (only +1 on first persona creation)
+        // provider=proxy 模式下 credit 由 context_proxy 上报，此处仅报 memory delta。
         if (gateway.quotaManager) {
           const { creditUsed } = result;
           const memoryDelta = (!personaExistedBefore && storage) ? 1 : 0;
-          if (creditUsed > 0 || memoryDelta > 0) {
-            gateway.quotaManager.reportUsage(instanceId, memoryDelta, creditUsed, "L3").catch(() => {});
+          const reportCredit = gateway.reportedCreditFor(creditUsed, "L3");
+          if (reportCredit > 0 || memoryDelta > 0) {
+            gateway.quotaManager.reportUsage(instanceId, memoryDelta, reportCredit, "L3").catch(() => {});
           }
         }
       },
@@ -1601,7 +2571,7 @@ export class TdaiGateway {
         const { OffloadTaskExecutor } = await import("../offload_server/offload-task-executor.js");
         const storage = await resolveStorage(task);
         if (!storage) return;
-        const llmClient = gateway.buildOffloadLlmClient();
+        const llmClient = gateway.buildOffloadLlmClient(task.instanceId);
         if (!llmClient) {
           gateway.logger.warn(`[executor] offload-l1 skipped: no LLM client available`);
           return;
@@ -1620,7 +2590,7 @@ export class TdaiGateway {
         const { OffloadTaskExecutor } = await import("../offload_server/offload-task-executor.js");
         const storage = await resolveStorage(task);
         if (!storage) return;
-        const llmClient = gateway.buildOffloadLlmClient();
+        const llmClient = gateway.buildOffloadLlmClient(task.instanceId);
         if (!llmClient) {
           gateway.logger.warn(`[executor] offload-l15 skipped: no LLM client available`);
           return;
@@ -1639,7 +2609,7 @@ export class TdaiGateway {
         const { OffloadTaskExecutor } = await import("../offload_server/offload-task-executor.js");
         const storage = await resolveStorage(task);
         if (!storage) return;
-        const llmClient = gateway.buildOffloadLlmClient();
+        const llmClient = gateway.buildOffloadLlmClient(task.instanceId);
         if (!llmClient) {
           gateway.logger.warn(`[executor] offload-l2 skipped: no LLM client available`);
           return;
@@ -1657,11 +2627,40 @@ export class TdaiGateway {
   }
 
   /**
-   * Build a simple LLM client for offload executors using gateway's LLM config.
+   * 应上报的 CreditDelta：provider=proxy 时归零（proxy 已上报，避免重复计费），
+   * 否则原样传递。见 quota-credit-policy.ts 详解。
    */
-  private buildOffloadLlmClient() {
+  private reportedCreditFor(rawCreditUsed: number, level: "L1" | "L2" | "L3"): number {
+    const reported = resolveReportedCredit(rawCreditUsed, this.config.llm.provider);
+    if (reported === 0 && rawCreditUsed > 0) {
+      this.logger.debug?.(
+        `[quota] ${level} creditUsed=${rawCreditUsed} 由 context_proxy 上报，内核跳过 credit 部分`,
+      );
+    }
+    return reported;
+  }
+
+  /**
+   * Build a simple LLM client for offload executors using gateway's LLM config.
+   *
+   * instanceId 用于 provider=proxy 场景把 baseUrl 拼成 /proxy/<iid>/v1；
+   * provider=openai 场景可以传 undefined。
+   */
+  private buildOffloadLlmClient(instanceId?: string) {
     const llmCfg = this.config.llm;
-    if (!llmCfg.baseUrl || !llmCfg.apiKey || !llmCfg.model) return null;
+    if (!llmCfg.baseUrl || !llmCfg.model) return null;
+    // provider=openai 时仍要求显式 apiKey；provider=proxy 时 apiKey 由 resolver 从 env 注入
+    if ((llmCfg.provider ?? "openai") === "openai" && !llmCfg.apiKey) return null;
+
+    let effective: StandaloneLLMConfig;
+    try {
+      effective = resolveStandaloneLlmForRuntime(llmCfg, instanceId);
+    } catch (err) {
+      this.logger.warn(
+        `[offload-llm] provider 解析失败, skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
     const logger = this.logger;
 
     return {
@@ -1675,14 +2674,14 @@ export class TdaiGateway {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), params.timeoutMs ?? 30000);
         try {
-          const response = await fetch(`${llmCfg.baseUrl}/chat/completions`, {
+          const response = await fetch(`${effective.baseUrl}/chat/completions`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${llmCfg.apiKey}`,
+              Authorization: `Bearer ${effective.apiKey}`,
             },
             body: JSON.stringify({
-              model: llmCfg.model || params.model,
+              model: effective.model || params.model,
               messages: params.messages,
               temperature: params.temperature,
               max_tokens: params.max_tokens,
@@ -1723,10 +2722,25 @@ export class TdaiGateway {
 async function main(): Promise<void> {
   const gateway = new TdaiGateway();
 
-  // Graceful shutdown
-  const shutdown = async () => {
-    await gateway.stop();
-    process.exit(0);
+  // Graceful shutdown. A *deliberate* second signal (impatient Ctrl+C) forces
+  // immediate exit. We debounce because a single Ctrl+C under `tsx` arrives
+  // twice (TTY delivers to the process group AND tsx forwards it), and those
+  // duplicates land within milliseconds — they must not be treated as "again".
+  const FORCE_EXIT_DEBOUNCE_MS = 1000;
+  let firstSignalAt = 0;
+  const shutdown = async (signal: NodeJS.Signals) => {
+    const now = Date.now();
+    if (firstSignalAt === 0) {
+      firstSignalAt = now;
+      await gateway.stop();
+      process.exit(0);
+    }
+    // Ignore duplicate deliveries of the same keypress; only a clearly separate
+    // signal (after the debounce window) forces an immediate exit.
+    if (now - firstSignalAt >= FORCE_EXIT_DEBOUNCE_MS) {
+      console.error(`Received ${signal} again — forcing exit.`);
+      process.exit(130);
+    }
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

@@ -8,7 +8,63 @@ import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 import type { Logger } from "../types.js";
 
-const PROFILE_SCOPE = "global";
+export const DEFAULT_PROFILE_SCOPE = "global";
+
+export type ProfileIsolation = { teamId?: string; userId?: string; agentId?: string; sessionId?: string };
+
+export interface ProfileScopeOptions {
+  scope?: string;
+  isolation?: ProfileIsolation;
+}
+
+export function buildProfileIsolationScope(ctx?: ProfileIsolation): string {
+  if (!ctx) return DEFAULT_PROFILE_SCOPE;
+  const teamId = ctx.teamId || ctx.userId || "default";
+  const agentId = ctx.agentId || "default";
+  // L2/L3 are team+agent-level memories. L0/L1 keep user/session/task-level
+  // isolation, but profiles intentionally ignore userId/sessionId/taskId so
+  // one team's agent memory can accumulate across multiple sessions/users.
+  return `team:${teamId}|agent:${agentId}`;
+}
+
+export function parseProfileIsolationScope(scope: string): ProfileIsolation | undefined {
+  const parts = scope.split("|");
+  const values: Record<string, string> = {};
+  for (const part of parts) {
+    const idx = part.indexOf(":");
+    if (idx <= 0) return undefined;
+    values[part.slice(0, idx)] = part.slice(idx + 1);
+  }
+  if (!values.agent) return undefined;
+  const sessionId = values.session ? safeDecodeURIComponent(values.session) : undefined;
+  if (values.team) return { teamId: values.team, agentId: values.agent, ...(sessionId ? { sessionId } : {}) };
+  if (values.user) return { userId: values.user, agentId: values.agent, ...(sessionId ? { sessionId } : {}) };
+  return undefined;
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function resolveProfileScope(options?: ProfileScopeOptions): { scope: string; isolation?: ProfileIsolation } {
+  const scope = options?.scope ?? buildProfileIsolationScope(options?.isolation);
+  return { scope, isolation: options?.isolation ?? parseProfileIsolationScope(scope) };
+}
+
+function profileMatchesScope(record: ProfileRecord, scope: string, isolation?: ProfileIsolation): boolean {
+  if (scope === DEFAULT_PROFILE_SCOPE && !isolation) return true;
+  if (record.id === buildProfileStableId(scope, record.type, record.filename)) return true;
+  if (!isolation) return false;
+  if (isolation.teamId) {
+    return record.teamId === isolation.teamId && record.agentId === isolation.agentId;
+  }
+  return record.userId === isolation.userId
+    && record.agentId === isolation.agentId;
+}
 
 /** Check if an error is a rename race condition (another concurrent pull won). */
 function isRenameRaceError(err: unknown): boolean {
@@ -77,8 +133,10 @@ async function refreshPersonaNavigation(dataDir: string, storage?: StorageAdapte
 export async function listLocalProfiles(
   dataDir: string,
   storage?: StorageAdapter,
+  options?: ProfileScopeOptions,
 ): Promise<ProfileRecord[]> {
   const profiles: ProfileRecord[] = [];
+  const { scope, isolation } = resolveProfileScope(options);
 
   // ── List L2 scene blocks ──
   if (storage) {
@@ -92,11 +150,15 @@ export async function listLocalProfiles(
         const createdAtMs = stat?.createdAt ?? now;
         const updatedAtMs = stat?.lastModified ?? now;
         profiles.push({
-          id: buildProfileStableId(PROFILE_SCOPE, "l2", filename),
+          id: buildProfileStableId(scope, "l2", filename),
           type: "l2",
           filename,
           content,
           contentMd5: md5(content),
+          teamId: isolation?.teamId,
+          userId: isolation?.userId,
+          agentId: isolation?.agentId,
+          sessionId: undefined,
           version: 0,
           createdAtMs,
           updatedAtMs,
@@ -114,11 +176,15 @@ export async function listLocalProfiles(
         const content = await fs.readFile(filePath, "utf-8");
         const { createdAtMs, updatedAtMs } = await statTimes(filePath);
         profiles.push({
-          id: buildProfileStableId(PROFILE_SCOPE, "l2", filename),
+          id: buildProfileStableId(scope, "l2", filename),
           type: "l2",
           filename,
           content,
           contentMd5: md5(content),
+          teamId: isolation?.teamId,
+          userId: isolation?.userId,
+          agentId: isolation?.agentId,
+          sessionId: undefined,
           version: 0,
           createdAtMs,
           updatedAtMs,
@@ -129,50 +195,60 @@ export async function listLocalProfiles(
     }
   }
 
-  // ── List L3 persona ──
+  // ── List L3 documents ──
+  const l3Files = [StoragePaths.persona];
   if (storage) {
-    try {
-      const rawPersona = await storage.readFile(StoragePaths.persona);
-      if (rawPersona) {
-        const body = stripSceneNavigation(rawPersona).trim();
-        if (body) {
-          const stat = await storage.stat(StoragePaths.persona);
-          const now = Date.now();
-          profiles.push({
-            id: buildProfileStableId(PROFILE_SCOPE, "l3", "persona.md"),
-            type: "l3",
-            filename: "persona.md",
-            content: body,
-            contentMd5: md5(body),
-            version: 0,
-            createdAtMs: stat?.createdAt ?? now,
-            updatedAtMs: stat?.lastModified ?? now,
-          });
-        }
-      }
-    } catch {
-      // ignore missing persona
-    }
-  } else {
-    const personaPath = path.join(dataDir, "persona.md");
-    try {
-      const rawPersona = await fs.readFile(personaPath, "utf-8");
-      const body = stripSceneNavigation(rawPersona).trim();
-      if (body) {
-        const { createdAtMs, updatedAtMs } = await statTimes(personaPath);
+    for (const filename of l3Files) {
+      try {
+        const raw = await storage.readFile(filename);
+        if (!raw) continue;
+        const body = stripSceneNavigation(raw).trim();
+        if (!body) continue;
+        const stat = await storage.stat(filename);
+        const now = Date.now();
         profiles.push({
-          id: buildProfileStableId(PROFILE_SCOPE, "l3", "persona.md"),
+          id: buildProfileStableId(scope, "l3", filename),
           type: "l3",
-          filename: "persona.md",
+          filename,
           content: body,
           contentMd5: md5(body),
+          teamId: isolation?.teamId,
+          userId: isolation?.userId,
+          agentId: isolation?.agentId,
+          sessionId: undefined,
+          version: 0,
+          createdAtMs: stat?.createdAt ?? now,
+          updatedAtMs: stat?.lastModified ?? now,
+        });
+      } catch {
+        // ignore missing L3 document
+      }
+    }
+  } else {
+    for (const filename of l3Files) {
+      const filePath = path.join(dataDir, filename);
+      try {
+        const raw = await fs.readFile(filePath, "utf-8");
+        const body = stripSceneNavigation(raw).trim();
+        if (!body) continue;
+        const { createdAtMs, updatedAtMs } = await statTimes(filePath);
+        profiles.push({
+          id: buildProfileStableId(scope, "l3", filename),
+          type: "l3",
+          filename,
+          content: body,
+          contentMd5: md5(body),
+          teamId: isolation?.teamId,
+          userId: isolation?.userId,
+          agentId: isolation?.agentId,
+          sessionId: undefined,
           version: 0,
           createdAtMs,
           updatedAtMs,
         });
+      } catch {
+        // ignore missing L3 document
       }
-    } catch {
-      // ignore missing persona file
     }
   }
 
@@ -184,10 +260,13 @@ export async function pullProfilesToLocal(
   store: IMemoryStore,
   logger: Logger,
   storage?: StorageAdapter,
+  options?: ProfileScopeOptions,
 ): Promise<Map<string, ProfileBaseline>> {
   if (!store.pullProfiles) return new Map();
 
-  const records = await store.pullProfiles();
+  const { scope, isolation } = resolveProfileScope(options);
+  const allRecords = await store.pullProfiles();
+  const records = allRecords.filter((record) => profileMatchesScope(record, scope, isolation));
   const baseline = new Map<string, ProfileBaseline>();
 
   // ── Storage-backed path (COS / abstracted backend) ──
@@ -378,8 +457,9 @@ export async function syncLocalProfilesToStore(
   baselineMap: Map<string, ProfileBaseline>,
   logger: Logger,
   storage?: StorageAdapter,
+  options?: ProfileScopeOptions,
 ): Promise<void> {
-  const localProfiles = await listLocalProfiles(dataDir, storage);
+  const localProfiles = await listLocalProfiles(dataDir, storage, options);
   const localIds = new Set(localProfiles.map((profile) => profile.id));
 
   const syncRecords: ProfileSyncRecord[] = localProfiles
@@ -406,7 +486,8 @@ export async function ensureL2L3Local(
   store: IMemoryStore,
   logger: Logger,
   storage?: StorageAdapter,
+  options?: ProfileScopeOptions,
 ): Promise<Map<string, ProfileBaseline>> {
   if (!store.pullProfiles) return new Map();
-  return pullProfilesToLocal(dataDir, store, logger, storage);
+  return pullProfilesToLocal(dataDir, store, logger, storage, options);
 }

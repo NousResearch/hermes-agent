@@ -36,6 +36,44 @@ const TAG = "[memory-tdai] [standalone-runner]";
 const MAX_TOOL_ITERATIONS = 20;
 
 // ============================
+// experimental_telemetry.metadata 组装
+// ============================
+
+/**
+ * 组装传给 Vercel AI SDK 的 experimental_telemetry.metadata。
+ *
+ * 字段策略：
+ *   - instanceId  : 始终写入（未传时降级为 "unknown"）
+ *   - traceName   : 存在时 → 写入 langfuseTraceName + langfuseUpdateParent=true
+ *                  （让 Langfuse 用业务语义命名 trace，覆盖默认的 Unnamed）
+ *   - tags        : 非空数组才写入（避免空 tag 污染 Langfuse 索引）
+ *   - sessionId   : 非空字符串才写入（Langfuse UI 顶级筛选字段）
+ *   - userId      : 非空字符串才写入（Langfuse UI 顶级筛选字段）
+ *
+ * 未传对应字段时，metadata 里也不出现该键 —— 保持与旧行为完全一致。
+ */
+function buildTelemetryMetadata(params: LLMRunParams): Record<string, unknown> {
+  const meta: Record<string, unknown> = {
+    instanceId: params.instanceId ?? "unknown",
+  };
+  if (params.traceName) {
+    meta.langfuseTraceName = params.traceName;
+    // langfuseUpdateParent=true 让子 span 的 name/attrs 传播到 Langfuse trace 根
+    meta.langfuseUpdateParent = true;
+  }
+  if (Array.isArray(params.tags) && params.tags.length > 0) {
+    meta.tags = params.tags;
+  }
+  if (typeof params.sessionId === "string" && params.sessionId.length > 0) {
+    meta.sessionId = params.sessionId;
+  }
+  if (typeof params.userId === "string" && params.userId.length > 0) {
+    meta.userId = params.userId;
+  }
+  return meta;
+}
+
+// ============================
 // Configuration
 // ============================
 
@@ -50,6 +88,18 @@ export interface StandaloneLLMConfig {
   maxTokens?: number;
   /** Request timeout in milliseconds (default: 120_000). */
   timeoutMs?: number;
+  /**
+   * LLM 访问模式（gateway 层解释；runner 拿到的是已解析后的 baseUrl/apiKey）：
+   *   - "openai": 直连通用 OpenAI 兼容服务（默认，向后兼容）
+   *   - "proxy":  走 context_proxy，运行时会自动把 baseUrl 拼成
+   *               `${baseUrl}/proxy/<instanceId>/v1`，apiKey 用 metadata.systemUser.memory.userKey
+   */
+  provider?: "openai" | "proxy";
+  /** provider=proxy 时的可选配置。 */
+  proxy?: {
+    /** 是否用 memory systemUser.userKey 作为 Authorization（默认 true）。 */
+    useMemorySystemUserKey?: boolean;
+  };
 }
 
 // ============================
@@ -217,10 +267,17 @@ export class StandaloneLLMRunner implements LLMRunner {
     const timeoutMs = params.timeoutMs ?? this.config.timeoutMs ?? 120_000;
     const maxTokens = params.maxTokens ?? this.config.maxTokens ?? 4096;
     const workspaceDir = params.workspaceDir ?? process.cwd();
+    // Per-call overrides — when the caller supplies their own tools (e.g.
+    // SkillExtractor's skill_list/skill_view/skill_manage), they trump the
+    // runner-level enableTools default. This lets one runner instance
+    // serve both pure-text L1 extraction and tool-driven skill review.
+    const callerProvidedTools = params.tools && Object.keys(params.tools).length > 0;
+    const effectiveEnableTools = params.enableTools ?? this.enableTools;
+    const maxIterations = params.maxIterations ?? MAX_TOOL_ITERATIONS;
 
     this.logger?.debug?.(
       `${TAG} run() start: taskId=${params.taskId}, model=${this.model}, ` +
-      `tools=${this.enableTools}, timeout=${timeoutMs}ms`,
+      `tools=${effectiveEnableTools}${callerProvidedTools ? "(caller)" : ""}, timeout=${timeoutMs}ms`,
     );
 
     // Create OpenAI-compatible provider via AI SDK
@@ -236,12 +293,17 @@ export class StandaloneLLMRunner implements LLMRunner {
     // Service mode (COS): use storage-backed tools → LLM reads/writes via StorageAdapter
     // Standalone mode (local FS): use sandboxed FS tools → LLM reads/writes local files
     // enableTools=false: omit tools entirely so the model cannot hallucinate calls.
+    // Caller-provided tools (params.tools) override the defaults — used by
+    // SkillExtractor to inject domain-specific tools (skill_list, etc.).
     let tools: Record<string, unknown> | undefined;
-    if (this.enableTools && params.storage) {
+    if (callerProvidedTools && effectiveEnableTools) {
+      tools = params.tools;
+      this.logger?.debug?.(`${TAG} Using caller-provided tools: [${Object.keys(tools!).join(", ")}]`);
+    } else if (effectiveEnableTools && params.storage) {
       const { createStorageTools } = await import("./storage-tools.js");
       tools = createStorageTools(params.storage, params.storagePrefix ?? "", this.logger);
       this.logger?.debug?.(`${TAG} Using storage-backed tools (prefix="${params.storagePrefix ?? ""}")`);
-    } else if (this.enableTools) {
+    } else if (effectiveEnableTools) {
       tools = createSandboxedTools(workspaceDir, this.logger);
     } else {
       tools = undefined; // pure-text task — never expose any tool to the model
@@ -264,14 +326,14 @@ export class StandaloneLLMRunner implements LLMRunner {
         // (or even a tools-only-with-`read`) makes some OpenAI-compatible
         // backends emit spurious tool calls on pure-text tasks.
         ...(tools && Object.keys(tools).length > 0
-          ? { tools, stopWhen: stepCountIs(MAX_TOOL_ITERATIONS) }
+          ? { tools, stopWhen: stepCountIs(maxIterations) }
           : {}),
         maxOutputTokens: maxTokens,
         abortSignal: combinedSignal,
         experimental_telemetry: {
           isEnabled: true,
           functionId: params.taskId,
-          metadata: { instanceId: params.instanceId ?? "unknown" },
+          metadata: buildTelemetryMetadata(params),
         },
       });
 

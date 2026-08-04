@@ -187,7 +187,6 @@ class TestDetectDangerousGitConfig:
             "git config user.name foo",
             "git config --global user.email bar@baz",
             "git config --local core.editor vim",
-            "git config --file .gitconfig foo.bar value",
             "git config --system foo.bar value",
             "git config --worktree foo.bar value",
         ):
@@ -230,6 +229,24 @@ class TestDetectDangerousGitConfig:
         cmd = "git config --rename-section old new"
         is_dangerous, _, _ = detect_dangerous_command(cmd)
         assert is_dangerous is True
+
+    def test_file_scoped_write_is_dangerous(self):
+        for cmd in (
+            "git config --file .gitconfig foo.bar value",
+            "git config --file .gitconfig --add foo.bar value",
+            "git config --file .gitconfig --unset foo.bar",
+        ):
+            is_dangerous, _, _ = detect_dangerous_command(cmd)
+            assert is_dangerous is True, f"{cmd!r} should be dangerous"
+
+    def test_file_scoped_read_is_safe(self):
+        for cmd in (
+            "git config --file .gitconfig user.name",
+            "git config --file .gitconfig --get user.name",
+            "git config --file .gitconfig --list",
+        ):
+            is_dangerous, _, _ = detect_dangerous_command(cmd)
+            assert is_dangerous is False, f"{cmd!r} should NOT be dangerous"
 
     def test_query_only_is_safe(self):
         for cmd in (

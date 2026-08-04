@@ -253,6 +253,22 @@ class TestCreateProfile:
             assert stat.S_IMODE(cloned.stat().st_mode) == 0o600
         assert not (profile_dir / "mem0.json").exists()
 
+    def test_clone_config_copies_source_plugins(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        plugin_dir = default_home / "plugins" / "example-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text("name: example-plugin\n")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (
+            profile_dir
+            / "plugins"
+            / "example-plugin"
+            / "plugin.yaml"
+        ).read_text() == "name: example-plugin\n"
+
     @pytest.mark.parametrize("provider", ["../outside", "a/b", "..", "hind sight"])
     def test_clone_config_ignores_unsafe_memory_provider_names(self, profile_env, provider):
         """A hand-edited ``memory.provider`` must never aim the copy outside the source profile."""

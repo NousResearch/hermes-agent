@@ -108,6 +108,8 @@ declare global {
         logout: () => Promise<DesktopCloudStatus & { ok: boolean }>
         discover: (org?: string) => Promise<DesktopCloudDiscoverResult>
         agentSignIn: (dashboardUrl: string) => Promise<DesktopCloudAgentSignInResult>
+        starredAgents: () => Promise<DesktopCloudStarredAgents>
+        setAgentStarred: (id: string, starred: boolean) => Promise<DesktopCloudStarredAgents>
       }
       profile: {
         get: () => Promise<DesktopActiveProfile>
@@ -532,6 +534,13 @@ export interface DesktopConnectionConfig {
   sshKeyPath: string
   sshRemoteHermesPath: string
   sshRemoteProfile: string
+  // Saved-target availability for the gateway switcher (global scope only,
+  // empty for per-profile scopes): the direct-remote URL / SSH host a
+  // mode-only apply would adopt — the live block when that kind is the current
+  // mode, else the snapshot stashed when the mode last moved away. Optional so
+  // fixtures/configs predating the field remain assignable.
+  savedRemoteUrl?: string
+  savedSshHost?: string
 }
 
 export interface DesktopConnectionConfigInput {
@@ -663,6 +672,10 @@ export interface DesktopCloudAgentSignInResult {
   baseUrl: string
   // Whether the agent's gateway session cookie landed (silent cascade done).
   connected: boolean
+}
+
+export interface DesktopCloudStarredAgents {
+  ids: string[]
 }
 
 export interface DesktopBootProgress {

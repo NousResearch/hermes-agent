@@ -49,11 +49,13 @@ import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from '
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
+import { setCloudAgentStarred, starredCloudAgentIds } from './cloud-agent-stars'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  connectionOverrideScopeKey,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
@@ -6796,6 +6798,45 @@ function decryptDesktopSecret(secret) {
   return value
 }
 
+// Validate a saved direct-remote snapshot ({ url, authMode, token }) read from
+// disk. Cloud blocks are never stashed (agents are rediscoverable), so a
+// snapshot with no URL is meaningless and drops to null.
+function sanitizeSavedRemoteBlock(raw: any) {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const url = String(raw.url || '').trim()
+
+  if (!url) {
+    return null
+  }
+
+  const block: { url: string; authMode: string; token?: object } = { url, authMode: normAuthMode(raw.authMode) }
+
+  if (raw.token && typeof raw.token === 'object') {
+    block.token = raw.token
+  }
+
+  return block
+}
+
+// Validate a saved SSH snapshot read from disk (same shape as an ssh remote
+// block, including an adopted dashboard token when present).
+function sanitizeSavedSshBlock(raw: any) {
+  const ssh = normalizeSshConfig(raw)
+
+  if (!ssh) {
+    return null
+  }
+
+  if (raw.token && typeof raw.token === 'object') {
+    ssh.token = raw.token
+  }
+
+  return ssh
+}
+
 // Validate + normalize the per-profile remote overrides map read from disk.
 // Drops malformed names/entries and keeps only the recognized fields so a
 // hand-edited or stale connection.json can't inject junk into resolution.
@@ -6811,7 +6852,12 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       continue
     }
 
-    if (name !== 'default' && !PROFILE_NAME_RE.test(name)) {
+    // 'default' is never a valid override scope (it always follows the global
+    // connection — see connectionOverrideScopeKey), so a stale entry under that
+    // key is dropped here. This self-heals configs wedged by the pre-fix cloud
+    // switcher, which wrote its cloud target to profiles['default'] where no UI
+    // could ever edit or clear it.
+    if (name === 'default' || !PROFILE_NAME_RE.test(name)) {
       continue
     }
 
@@ -6892,7 +6938,14 @@ function readDesktopConnectionConfig() {
     return connectionConfigCache
   }
 
-  let config = { mode: 'local', remote: {}, profiles: {} }
+  let config = {
+    mode: 'local',
+    remote: {},
+    profiles: {},
+    starredCloudAgentIds: [] as string[],
+    savedRemote: null as any,
+    savedSsh: null as any
+  }
 
   try {
     const raw = fs.readFileSync(DESKTOP_CONNECTION_CONFIG_PATH, 'utf8')
@@ -6910,7 +6963,15 @@ function readDesktopConnectionConfig() {
         // Per-profile remote overrides: each profile may point at its own
         // backend (local spawn or its own remote URL). Preserved verbatim so
         // profileRemoteOverride() can resolve them; normalized lazily on save.
-        profiles: sanitizeConnectionProfiles(parsed.profiles)
+        profiles: sanitizeConnectionProfiles(parsed.profiles),
+        // Cloud-star metadata is optional installation state. A malformed/missing
+        // list must never discard the legacy connection fields above.
+        starredCloudAgentIds: starredCloudAgentIds(parsed.starredCloudAgentIds),
+        // Saved-target snapshots: the last direct-remote and SSH blocks, stashed
+        // when the global mode moved away so the gateway switcher can offer them
+        // back without re-entry. Optional installation state, like stars.
+        savedRemote: sanitizeSavedRemoteBlock(parsed.savedRemote),
+        savedSsh: sanitizeSavedSshBlock(parsed.savedSsh)
       }
     }
   } catch {
@@ -6967,7 +7028,7 @@ function writeActiveDesktopProfile(name) {
 // behavior); with a `profile` it describes that profile's per-profile remote
 // override (or an empty "local/inherit" view when the profile has none).
 async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig(), profile = null) {
-  const key = connectionScopeKey(profile)
+  const key = connectionOverrideScopeKey(profile)
   const scoped = key ? config.profiles?.[key] || null : null
   const block = key ? scoped || {} : config.remote || {}
 
@@ -7016,6 +7077,11 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     sshKeyPath: (ssh || savedSsh)?.keyPath || '',
     sshRemoteHermesPath: (ssh || savedSsh)?.remoteHermesPath || '',
     sshRemoteProfile: (ssh || savedSsh)?.remoteProfile || '',
+    // Saved-target availability for the gateway switcher (global scope only):
+    // the direct-remote URL / SSH host that a mode-only apply would adopt —
+    // the live block when that kind is active, else the stashed snapshot.
+    savedRemoteUrl: key ? '' : String((mode === 'remote' ? block.url : config.savedRemote?.url) || ''),
+    savedSshHost: key ? '' : (ssh || savedSsh)?.host || config.savedSsh?.host || '',
     // The env override only forces the global/primary connection; a per-profile
     // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
     envOverride
@@ -7048,9 +7114,21 @@ function buildRemoteBlock(remoteUrl, authMode, token, org?: string) {
   return block
 }
 
+// Loose gateway-URL equality: scheme-insensitive trailing-slash/case noise
+// must not defeat the phantom-snapshot heal below.
+function sameGatewayUrl(left, right) {
+  const normalize = value =>
+    String(value || '')
+      .trim()
+      .replace(/\/+$/, '')
+      .toLowerCase()
+
+  return Boolean(left && right && normalize(left) === normalize(right))
+}
+
 function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopConnectionConfig(), options: any = {}) {
   const persistToken = options.persistToken !== false
-  const key = connectionScopeKey(input.profile)
+  const key = connectionOverrideScopeKey(input.profile)
   // 'cloud' and 'remote' both persist a remote-shaped block; 'cloud' is
   // remembered as its own provenance (Q6) and resolves to remote downstream.
   // Anything else collapses to local.
@@ -7068,7 +7146,29 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   const existingMode = key ? existing.profiles?.[key]?.mode : existing.mode
   const leavingCloud = existingMode === 'cloud' && mode !== 'cloud'
   const leavingSsh = rawExistingBlock.mode === 'ssh' && mode !== 'ssh' && mode !== 'local'
-  const existingBlock = leavingCloud || leavingSsh ? {} : rawExistingBlock
+  // Global saved-target snapshots: stash the outgoing direct-remote / SSH block
+  // so its target stays offerable (the gateway switcher lists it) after a mode
+  // change. Cloud blocks are never stashed — agents are rediscoverable through
+  // portal discovery. Refreshed below when the new global config sets that kind.
+  const globalBlock = existing.remote || {}
+  let savedRemote = (existing.mode === 'remote' && globalBlock.url ? globalBlock : null) || existing.savedRemote || null
+
+  const savedSsh =
+    ((existing.mode === 'ssh' || globalBlock.mode === 'ssh') && globalBlock.host ? globalBlock : null) ||
+    existing.savedSsh ||
+    null
+
+  // Re-entering GLOBAL remote mode with nothing to inherit — the outgoing
+  // block was cloud/SSH, or a local block whose url was cleared by an earlier
+  // cloud→local hop — re-adopts the stashed direct-remote target, so a
+  // mode-only apply from the gateway switcher restores URL + auth + token
+  // without re-entry. Per-profile scopes never inherit the global snapshot.
+  const clearedBlock = !key && mode === 'remote' ? savedRemote || {} : {}
+  const inheritedBlock = leavingCloud || leavingSsh ? clearedBlock : rawExistingBlock
+  const existingBlock =
+    !key && mode === 'remote' && !String(input.remoteUrl ?? '').trim() && !String(inheritedBlock.url ?? '').trim()
+      ? savedRemote || inheritedBlock
+      : inheritedBlock
   const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
   const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
@@ -7085,7 +7185,10 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     : existingBlock.token
 
   if (mode === 'ssh') {
-    const sshBlock = buildSshBlock(input, savedProfileSsh(existing, key) || rawExistingBlock)
+    // Global scope re-entering SSH after cloud/remote: the outgoing block has
+    // no host to inherit, so fall back to the stashed SSH snapshot.
+    const sshInheritBase = key || rawExistingBlock.host ? rawExistingBlock : savedSsh || {}
+    const sshBlock = buildSshBlock(input, savedProfileSsh(existing, key) || sshInheritBase)
 
     if (key) {
       const profiles = { ...(existing.profiles || {}), [key]: sshBlock }
@@ -7093,11 +7196,21 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
       return {
         mode: existing.mode === 'ssh' || modeIsRemoteLike(existing.mode) ? existing.mode : 'local',
         remote: existing.remote || {},
-        profiles
+        profiles,
+        starredCloudAgentIds: starredCloudAgentIds(existing.starredCloudAgentIds),
+        savedRemote: existing.savedRemote || null,
+        savedSsh: existing.savedSsh || null
       }
     }
 
-    return { mode: 'ssh', remote: sshBlock, profiles: existing.profiles || {} }
+    return {
+      mode: 'ssh',
+      remote: sshBlock,
+      profiles: existing.profiles || {},
+      starredCloudAgentIds: starredCloudAgentIds(existing.starredCloudAgentIds),
+      savedRemote,
+      savedSsh: sshBlock
+    }
   }
 
   if (key) {
@@ -7121,7 +7234,10 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     return {
       mode: existing.mode === 'ssh' || modeIsRemoteLike(existing.mode) ? existing.mode : 'local',
       remote: existing.remote || {},
-      profiles
+      profiles,
+      starredCloudAgentIds: starredCloudAgentIds(existing.starredCloudAgentIds),
+      savedRemote: existing.savedRemote || null,
+      savedSsh: existing.savedSsh || null
     }
   }
 
@@ -7131,8 +7247,28 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
       ? rawExistingBlock
       : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
 
+  // A direct-remote global config IS the freshest snapshot of itself.
+  if (mode === 'remote' && nextRemote?.url) {
+    savedRemote = nextRemote
+  }
+
+  // Selecting a Cloud agent whose URL matches the stashed "remote" target
+  // proves that snapshot was never a user-owned remote gateway — it is this
+  // same cloud instance, recorded as mode 'remote' by flows predating cloud
+  // provenance. Drop it so the phantom Remote target stops resurrecting.
+  if (mode === 'cloud' && savedRemote?.url && nextRemote?.url && sameGatewayUrl(savedRemote.url, nextRemote.url)) {
+    savedRemote = null
+  }
+
   // Preserve per-profile overrides when saving the global connection.
-  return { mode, remote: nextRemote, profiles: existing.profiles || {} }
+  return {
+    mode,
+    remote: nextRemote,
+    profiles: existing.profiles || {},
+    starredCloudAgentIds: starredCloudAgentIds(existing.starredCloudAgentIds),
+    savedRemote,
+    savedSsh
+  }
 }
 
 // Build an SSH connection block from a save payload, preserving an
@@ -7519,7 +7655,7 @@ function persistSshConnectionToken(profile, source, token) {
     const encrypted = encryptDesktopSecret(token)
 
     if (source === 'profile') {
-      const key = connectionScopeKey(profile)
+      const key = connectionOverrideScopeKey(profile)
 
       if (key && config.profiles?.[key]?.mode === 'ssh') {
         config.profiles[key].token = encrypted
@@ -7550,7 +7686,7 @@ async function resolveRemoteBackend(profile) {
   const sshOverride = profileSshOverride(config, profile)
 
   if (sshOverride) {
-    const reuseToken = decryptDesktopSecret(config.profiles?.[connectionScopeKey(profile)]?.token)
+    const reuseToken = decryptDesktopSecret(config.profiles?.[connectionOverrideScopeKey(profile)]?.token)
 
     return bootstrapSshConnection(profile, sshOverride, reuseToken, 'profile')
   }
@@ -7566,7 +7702,7 @@ async function resolveRemoteBackend(profile) {
       token,
       'profile',
       undefined,
-      config.profiles?.[connectionScopeKey(profile)]?.mode === 'cloud' ? 'cloud' : 'url'
+      config.profiles?.[connectionOverrideScopeKey(profile)]?.mode === 'cloud' ? 'cloud' : 'url'
     )
   }
 
@@ -7833,7 +7969,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
   }
 
   const config = coerceDesktopConnectionConfig(input, readDesktopConnectionConfig(), { persistToken: false })
-  const key = connectionScopeKey(input.profile)
+  const key = connectionOverrideScopeKey(input.profile)
   // The block under test: a per-profile entry or the global remote. Coerce has
   // already normalized the URL and resolved token inheritance for the scope.
   const block = key ? config.profiles?.[key] || null : config.remote
@@ -9792,6 +9928,15 @@ ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
+ipcMain.handle('hermes:cloud:starred-agents:get', async () => ({
+  ids: starredCloudAgentIds(readDesktopConnectionConfig().starredCloudAgentIds)
+}))
+ipcMain.handle('hermes:cloud:agent-star:set', async (_event, id, starred) => {
+  const config = setCloudAgentStarred(readDesktopConnectionConfig(), id, Boolean(starred))
+  writeDesktopConnectionConfig(config)
+
+  return { ids: starredCloudAgentIds(config.starredCloudAgentIds) }
+})
 ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
 ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
   const value = String(host || '').trim()
@@ -9955,7 +10100,7 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
-  const key = connectionScopeKey(payload?.profile)
+  const key = connectionOverrideScopeKey(payload?.profile)
   const scope = key || ''
 
   await applyConnectionChange({

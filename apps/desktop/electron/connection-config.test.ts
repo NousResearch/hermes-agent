@@ -19,6 +19,7 @@ import {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  connectionOverrideScopeKey,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
@@ -50,6 +51,40 @@ test('connectionScopeKey trims to a name or null for the global scope', () => {
   assert.equal(connectionScopeKey(''), null)
   assert.equal(connectionScopeKey(null), null)
   assert.equal(connectionScopeKey(undefined), null)
+})
+
+test("connectionOverrideScopeKey treats 'default' as the global scope", () => {
+  assert.equal(connectionOverrideScopeKey('coder'), 'coder')
+  assert.equal(connectionOverrideScopeKey('default'), null)
+  assert.equal(connectionOverrideScopeKey(' default '), null)
+  assert.equal(connectionOverrideScopeKey(''), null)
+  assert.equal(connectionOverrideScopeKey(null), null)
+})
+
+// The 'default' profile always follows the global connection: an override
+// stored under that key (written by the pre-fix cloud switcher) must be
+// invisible to resolution, or the desktop wedges on the override with no UI
+// able to clear it.
+test("profile override readers ignore a stale 'default' entry", () => {
+  const config = {
+    mode: 'local',
+    remote: {},
+    profiles: {
+      default: { mode: 'cloud', url: 'https://agent.example.com', authMode: 'oauth' },
+      coder: { mode: 'remote', url: 'https://coder.example.com', authMode: 'token', token: { v: 1 } }
+    }
+  }
+
+  assert.equal(profileRemoteOverride(config, 'default'), null)
+  assert.equal(profileSshOverride(config, 'default'), null)
+  assert.equal(savedProfileSsh(config, 'default'), null)
+  assert.equal(profileHasRemoteConnection(config, 'default'), false)
+  // Named profiles keep resolving their own overrides.
+  assert.deepEqual(profileRemoteOverride(config, 'coder'), {
+    url: 'https://coder.example.com',
+    authMode: 'token',
+    token: { v: 1 }
+  })
 })
 
 test('normAuthMode coerces to token unless explicitly oauth', () => {

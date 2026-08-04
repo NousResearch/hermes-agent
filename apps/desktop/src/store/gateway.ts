@@ -377,6 +377,29 @@ export function closeSecondaryGateways(): void {
   g.secondaries.clear()
 }
 
+// A profile-scoped connection apply restarts Electron's pooled backend, so its
+// renderer socket must be evicted before activation. Primary rehomes are owned
+// by use-gateway-boot and deliberately remain untouched here.
+export function resetGatewayForProfile(profile: string): void {
+  const key = normKey(profile)
+
+  if (key === g.primaryProfile) {
+    return
+  }
+
+  const entry = g.secondaries.get(key)
+
+  if (entry) {
+    disposeSecondary(entry)
+    g.secondaries.delete(key)
+  }
+
+  if (g.activeKey === key) {
+    g.$gateway.set(null)
+    setGatewayState('closed')
+  }
+}
+
 // Self-accept so editing this module (or a fan-out that lands here) is an
 // in-place hot update instead of a full page reload — the live sockets in `g`
 // survive the swap. Dev-only: production strips import.meta.hot.

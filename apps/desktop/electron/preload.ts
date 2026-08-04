@@ -98,7 +98,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     login: () => ipcRenderer.invoke('hermes:cloud:login'),
     logout: () => ipcRenderer.invoke('hermes:cloud:logout'),
     discover: org => ipcRenderer.invoke('hermes:cloud:discover', org),
-    agentSignIn: dashboardUrl => ipcRenderer.invoke('hermes:cloud:agent-sign-in', dashboardUrl)
+    agentSignIn: dashboardUrl => ipcRenderer.invoke('hermes:cloud:agent-sign-in', dashboardUrl),
+    starredAgents: () => ipcRenderer.invoke('hermes:cloud:starred-agents:get'),
+    setAgentStarred: (id, starred) => ipcRenderer.invoke('hermes:cloud:agent-star:set', id, starred)
   },
   profile: {
     get: () => ipcRenderer.invoke('hermes:profile:get'),

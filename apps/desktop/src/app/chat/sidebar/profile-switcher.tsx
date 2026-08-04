@@ -34,6 +34,7 @@ import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { Loader2, RefreshCw, Server, Star, StarFilled } from '@/lib/icons'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import {
   REORDER_DRAG_TRANSITION_CSS,
@@ -42,6 +43,22 @@ import {
   reorderStepHaptic
 } from '@/lib/reorder'
 import { cn } from '@/lib/utils'
+import {
+  $cloudAgentSwitching,
+  $cloudAgentTargets,
+  $cloudAgentTargetsLoading,
+  $gatewayConnectionConfig,
+  $gatewayModeSwitching,
+  $starredCloudAgentIds,
+  cloudAgentIsActive,
+  cloudAgentsStarredFirst,
+  type GatewayModeTarget,
+  offerableRemoteUrl,
+  refreshGatewaySwitcher,
+  setCloudAgentStarred,
+  switchToCloudAgent,
+  switchToGatewayMode
+} from '@/store/gateway-switcher'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -59,6 +76,7 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
+import { $connection } from '@/store/session'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -311,6 +329,8 @@ export function ProfileRail() {
           without first creating a throwaway second profile. */}
       <ProfilePill active={false} glyph="ellipsis" label={p.manageProfiles} onSelect={() => navigate(PROFILES_ROUTE)} />
 
+      <GatewaySwitcher />
+
       {/* Land in the new profile on a fresh chat (selectProfile triggers the
           new-session reset), not stuck on the session you were just in. */}
       <CreateProfileDialog
@@ -339,6 +359,236 @@ export function ProfileRail() {
 
       <EditSoulDialog onClose={() => setPendingSoul(null)} profileName={pendingSoul} />
     </div>
+  )
+}
+
+// Host label for a remote gateway entry — "host:port" reads better in a narrow
+// menu than the full URL (which stays as the detail line).
+function remoteHostLabel(url: string): string {
+  try {
+    return new URL(url).host || url
+  } catch {
+    return url
+  }
+}
+
+function GatewaySectionLabel({ children }: { children: string }) {
+  return (
+    <div className="px-1 pb-0.5 pt-2 text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground/80">
+      {children}
+    </div>
+  )
+}
+
+// One selectable gateway row. The ACTIVE entry stays enabled (clicking it just
+// dismisses the menu) and is emphasized in bold with a check — never greyed out.
+function GatewayRow({
+  active,
+  ariaLabel,
+  detail,
+  disabled,
+  label,
+  onSelect,
+  switching
+}: {
+  active: boolean
+  ariaLabel: string
+  detail?: string
+  disabled: boolean
+  label: string
+  onSelect: () => void
+  switching: boolean
+}) {
+  return (
+    <Button
+      aria-label={ariaLabel}
+      className="w-full min-w-0 flex-1 justify-start text-left"
+      disabled={disabled}
+      onClick={onSelect}
+      size="sm"
+      type="button"
+      variant="ghost"
+    >
+      <span className="min-w-0 flex-1">
+        <span className={cn('block truncate', active && 'font-semibold')}>{label}</span>
+        {detail ? <span className="block truncate text-[0.66rem] text-muted-foreground">{detail}</span> : null}
+      </span>
+      {switching ? <Loader2 className="animate-spin" /> : active ? <span className="text-[0.66rem] text-primary">✓</span> : null}
+    </Button>
+  )
+}
+
+function GatewaySwitcher() {
+  const { t } = useI18n()
+  const p = t.profiles
+  const connection = useStore($connection)
+  const config = useStore($gatewayConnectionConfig)
+  const targets = useStore($cloudAgentTargets)
+  const loading = useStore($cloudAgentTargetsLoading)
+  const starredIds = useStore($starredCloudAgentIds)
+  const agentSwitchingId = useStore($cloudAgentSwitching)
+  const modeSwitching = useStore($gatewayModeSwitching)
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      void refreshGatewaySwitcher().catch(() => undefined)
+    }
+  }, [open])
+
+  const orderedTargets = cloudAgentsStarredFirst(targets, starredIds)
+  const anySwitching = agentSwitchingId !== null || modeSwitching !== null
+  // The env override pins the connection app-wide; switching would silently
+  // not take effect, so the mode rows lock while it is set.
+  const envPinned = config?.envOverride === true
+
+  const localActive = connection?.mode === 'local'
+  const remoteActive = connection?.remoteKind === 'url'
+  const sshActive = connection?.remoteKind === 'ssh'
+  const remoteTargetUrl = offerableRemoteUrl(config, targets)
+  const sshTargetHost = config?.savedSshHost || ''
+
+  const selectAgent = async (target: (typeof orderedTargets)[number]) => {
+    try {
+      await switchToCloudAgent(target)
+      setOpen(false)
+    } catch {
+      // The shared store action surfaces the failure and keeps this popover open.
+    }
+  }
+
+  const selectMode = async (mode: GatewayModeTarget, active: boolean) => {
+    // Re-selecting the live gateway is a no-op: just dismiss the menu.
+    if (active) {
+      setOpen(false)
+
+      return
+    }
+
+    try {
+      await switchToGatewayMode(mode)
+      setOpen(false)
+    } catch {
+      // Failure is surfaced by the store action; keep the menu open.
+    }
+  }
+
+  const toggleStar = (id: string, starred: boolean) => {
+    void setCloudAgentStarred(id, !starred).catch(() => undefined)
+  }
+
+  return (
+    <Popover onOpenChange={setOpen} open={open}>
+      <Tip label={p.gatewaySwitcher}>
+        <PopoverAnchor asChild>
+          <Button
+            aria-label={p.gatewaySwitcher}
+            className="text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+            onClick={() => setOpen(current => !current)}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Server />
+          </Button>
+        </PopoverAnchor>
+      </Tip>
+      <PopoverContent align="end" className="w-72 p-2" collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }} side="top">
+        <div className="flex items-center justify-between gap-2 px-1 pb-1">
+          <span className="text-xs font-medium">{p.gatewaySwitcher}</span>
+          <Button aria-label={p.cloudAgentsRefresh} onClick={() => void refreshGatewaySwitcher().catch(() => undefined)} size="icon-xs" variant="ghost">
+            <RefreshCw className={loading ? 'animate-spin' : undefined} />
+          </Button>
+        </div>
+
+        <div className="max-h-80 overflow-y-auto">
+          <GatewaySectionLabel>{p.gatewayLocalHeading}</GatewaySectionLabel>
+          <GatewayRow
+            active={localActive}
+            ariaLabel={p.switchToGateway(p.gatewayThisDevice)}
+            disabled={anySwitching || envPinned}
+            label={p.gatewayThisDevice}
+            onSelect={() => void selectMode('local', localActive)}
+            switching={modeSwitching === 'local'}
+          />
+
+          {remoteTargetUrl ? (
+            <>
+              <GatewaySectionLabel>{p.gatewayRemoteHeading}</GatewaySectionLabel>
+              <GatewayRow
+                active={remoteActive}
+                ariaLabel={p.switchToGateway(remoteHostLabel(remoteTargetUrl))}
+                detail={remoteTargetUrl}
+                disabled={anySwitching || envPinned}
+                label={remoteHostLabel(remoteTargetUrl)}
+                onSelect={() => void selectMode('remote', remoteActive)}
+                switching={modeSwitching === 'remote'}
+              />
+            </>
+          ) : null}
+
+          {sshTargetHost ? (
+            <>
+              <GatewaySectionLabel>{p.gatewaySshHeading}</GatewaySectionLabel>
+              <GatewayRow
+                active={sshActive}
+                ariaLabel={p.switchToGateway(sshTargetHost)}
+                disabled={anySwitching || envPinned}
+                label={sshTargetHost}
+                onSelect={() => void selectMode('ssh', sshActive)}
+                switching={modeSwitching === 'ssh'}
+              />
+            </>
+          ) : null}
+
+          <GatewaySectionLabel>{p.cloudAgents}</GatewaySectionLabel>
+          {loading && targets.length === 0 ? (
+            <div className="flex items-center gap-2 px-1 py-3 text-xs text-muted-foreground">
+              <Loader2 className="animate-spin" />
+              {p.cloudAgentsLoading}
+            </div>
+          ) : orderedTargets.length === 0 ? (
+            <p className="px-1 py-3 text-xs text-muted-foreground">{p.cloudAgentsEmpty}</p>
+          ) : (
+            orderedTargets.map(target => {
+              const starred = starredIds.includes(target.agent.id)
+              const active = cloudAgentIsActive(target, connection?.baseUrl)
+              const switching = agentSwitchingId === target.agent.id
+
+              return (
+                <div className="flex items-center gap-1" key={`${target.org ?? 'default'}:${target.agent.id}`}>
+                  <Button
+                    aria-label={starred ? p.unstarCloudAgent(target.agent.name) : p.starCloudAgent(target.agent.name)}
+                    onClick={() => toggleStar(target.agent.id, starred)}
+                    size="icon-xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    {starred ? <StarFilled className="text-primary" /> : <Star />}
+                  </Button>
+                  <GatewayRow
+                    active={active}
+                    ariaLabel={p.switchToCloudAgent(target.agent.name)}
+                    disabled={!target.agent.dashboardUrl || anySwitching}
+                    label={target.agent.name}
+                    onSelect={() => {
+                      if (active) {
+                        setOpen(false)
+
+                        return
+                      }
+
+                      void selectAgent(target)
+                    }}
+                    switching={switching}
+                  />
+                </div>
+              )
+            })
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }
 

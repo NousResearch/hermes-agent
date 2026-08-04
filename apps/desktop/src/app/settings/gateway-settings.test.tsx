@@ -2,15 +2,25 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { DesktopCloudAgent } from '@/global'
 import type { ProfileInfo } from '@/types/hermes'
 
 const getConnectionConfig = vi.fn()
 const saveConnectionConfig = vi.fn()
 const profiles = atom<ProfileInfo[]>([])
+const starredCloudAgentIds = atom<string[]>([])
+const refreshCloudAgentStars = vi.fn()
+const setCloudAgentStarred = vi.fn()
 
 vi.mock('@/store/profile', () => ({
   $profiles: profiles,
   refreshActiveProfile: vi.fn()
+}))
+
+vi.mock('@/store/gateway-switcher', () => ({
+  $starredCloudAgentIds: starredCloudAgentIds,
+  refreshCloudAgentStars,
+  setCloudAgentStarred
 }))
 
 const localConnection = {
@@ -23,6 +33,14 @@ const localConnection = {
   remoteTokenSet: false,
   remoteUrl: ''
 }
+
+const cloudAgent = (id: string, name = id): DesktopCloudAgent => ({
+  dashboardGatewayState: 'active',
+  dashboardUrl: `https://${id}.example.com`,
+  id,
+  name,
+  status: 'running'
+})
 
 beforeEach(() => {
   profiles.set([
@@ -51,6 +69,9 @@ beforeEach(() => {
     configurable: true,
     value: { getConnectionConfig, saveConnectionConfig }
   })
+  starredCloudAgentIds.set([])
+  refreshCloudAgentStars.mockReset().mockResolvedValue([])
+  setCloudAgentStarred.mockReset().mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -73,9 +94,30 @@ describe('GatewaySettings', () => {
     await waitFor(() => expect(getConnectionConfig).toHaveBeenLastCalledWith('work'))
     expect(await screen.findByText('Use default gateway')).toBeTruthy()
     expect(screen.getByText("Remove this profile's override and use the default connection.")).toBeTruthy()
-    expect(
-      screen.queryByText('Start a private Hermes backend on localhost. This is the default and works offline.')
-    ).toBeNull()
+  })
+
+  it('stars and unstars a discovered Cloud agent without adding a separate saved-connection list', async () => {
+    const { GatewaySettings } = await import('./gateway-settings')
+    const agent = cloudAgent('prod', 'Production')
+    starredCloudAgentIds.set([])
+    setCloudAgentStarred.mockResolvedValue(['prod'])
+    Object.assign(window.hermesDesktop, {
+      cloud: {
+        discover: vi.fn().mockResolvedValue({ agents: [agent], org: { id: 'team', slug: 'team' } }),
+        login: vi.fn(),
+        logout: vi.fn(),
+        status: vi.fn().mockResolvedValue({ portalBaseUrl: 'https://portal.example', signedIn: true })
+      }
+    })
+
+    render(<GatewaySettings />)
+    await screen.findByText('Local gateway')
+    fireEvent.click(screen.getByRole('button', { name: /Hermes Cloud/ }))
+    expect(await screen.findByText('Production')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Star Production' }))
+
+    await waitFor(() => expect(setCloudAgentStarred).toHaveBeenCalledWith('prod', true))
+    expect(screen.queryByText('Gateway favorites')).toBeNull()
   })
 
   it('shows and clears an SSH remote-profile mapping for a named Desktop profile', async () => {

@@ -200,6 +200,18 @@ function connectionScopeKey(profile) {
   return String(profile ?? '').trim() || null
 }
 
+// Per-profile connection overrides exist only for NAMED profiles: the
+// 'default' profile always uses the global connection (Settings → Gateway
+// offers no 'default' scope chip). An override stored under 'default' would
+// outrank the global config in resolveRemoteBackend while being invisible and
+// uneditable in the UI — the "stuck on a cloud gateway" trap — so every
+// override read/write treats 'default' as the global scope.
+function connectionOverrideScopeKey(profile) {
+  const key = connectionScopeKey(profile)
+
+  return key === 'default' ? null : key
+}
+
 // Coerce a remote auth mode to one of the two supported values ('token' default).
 function normAuthMode(mode) {
   return mode === 'oauth' ? 'oauth' : 'token'
@@ -298,14 +310,14 @@ function normalizeSshConfig(entry) {
 }
 
 function profileSshOverride(config, profile) {
-  const key = connectionScopeKey(profile)
+  const key = connectionOverrideScopeKey(profile)
   const entry = key ? config?.profiles?.[key] : null
 
   return normalizeSshConfig(entry)
 }
 
 function savedProfileSsh(config, profile) {
-  const key = connectionScopeKey(profile)
+  const key = connectionOverrideScopeKey(profile)
   const entry = key ? config?.profiles?.[key] : null
 
   if (!entry || entry.mode !== 'local') {
@@ -357,7 +369,7 @@ function hostLabelFromBaseUrl(baseUrl) {
  * `{ url, authMode, token } | null`.
  */
 function profileRemoteOverride(config, profile) {
-  const key = connectionScopeKey(profile)
+  const key = connectionOverrideScopeKey(profile)
   const entry = key ? config?.profiles?.[key] : null
 
   if (!entry || typeof entry !== 'object' || !modeIsRemoteLike(entry.mode)) {
@@ -562,6 +574,7 @@ export {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  connectionOverrideScopeKey,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHavePrivySession,

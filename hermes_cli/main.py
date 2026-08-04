@@ -7561,6 +7561,7 @@ def cmd_gui(args: argparse.Namespace):
 # monkeypatches on hermes_cli.main.<name> keep resolving unchanged.
 from hermes_cli.dashboard_procs import (  # noqa: F401
     _detect_concurrent_hermes_instances,
+    _filter_dashboard_respawn_candidates,
     _kill_stale_dashboard_processes,
     _scan_dashboard_processes,
 )
@@ -7889,6 +7890,10 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
     Spawns each recovered argv detached (new session, output to the profile's
     ``logs/dashboard-restart.log``).  Returns the commands that failed to
     spawn; the caller prints the manual hint for those.
+
+    Callers must pre-filter via ``_filter_dashboard_respawn_candidates`` so
+    Desktop ``serve|dashboard --port 0`` backends are not replayed and
+    duplicates are capped per profile (#78821).
     """
     from hermes_constants import get_hermes_home
 

@@ -208,15 +208,28 @@ class HolographicMemoryProvider(MemoryProvider):
     # Tool handlers (self, args) -> str. KeyError from args[...] / Exception -> tool_error in handle_tool_call;
     # argument coercion order (and therefore which error surfaces first) mirrors the underlying call order.
 
+    def _bump_retrieval(self, results: list[dict]) -> None:
+        """Count retrieved facts so the memory janitor sees actual usage."""
+        if not results or self._store is None:
+            return
+        self._store.bump_retrieval(
+            [r["fact_id"] for r in results if r.get("fact_id") is not None]
+        )
+
+    def _wrap_retrieval(self, results: list[dict]) -> str:
+        """Wrap retriever output, counting the hits so the memory janitor sees actual usage."""
+        self._bump_retrieval(results)
+        return _results(results)
+
     def _entity_query(self, method: str, a: dict) -> str:
         """'probe' / 'related': single-entity retriever queries."""
-        return _results(getattr(self._retriever, method)(a["entity"], category=a.get("category"), limit=_limit(a)))
+        return self._wrap_retrieval(getattr(self._retriever, method)(a["entity"], category=a.get("category"), limit=_limit(a)))
 
     _TOOL_HANDLERS = {
         "fact_store": _tool_handler({
             "add": lambda self, a: json.dumps({"fact_id": self._store.add_fact(
                 a["content"], category=a.get("category", "general"), tags=a.get("tags", "")), "status": "added"}),
-            "search": lambda self, a: _results(self._retriever.search(
+            "search": lambda self, a: self._wrap_retrieval(self._retriever.search(
                 a["query"], category=a.get("category"), min_trust=float(a.get("min_trust", self._min_trust)), limit=_limit(a))),
             "probe": lambda self, a: self._entity_query("probe", a),
             "related": lambda self, a: self._entity_query("related", a),

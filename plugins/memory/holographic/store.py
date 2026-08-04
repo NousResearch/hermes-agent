@@ -188,6 +188,22 @@ class MemoryStore:
             self._rebuild_bank(row["category"])
             return True
 
+    def bump_retrieval(self, fact_ids: list[int]) -> None:
+        """Increment ``retrieval_count`` for the given facts.
+        Used by the agent tool path (search/probe/related), which retrieves
+        through ``FactRetriever`` rather than ``search_facts``.
+        """
+        if not fact_ids:
+            return
+        with self._lock:
+            placeholders = ", ".join("?" * len(fact_ids))
+            self._conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 "
+                f"WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            self._conn.commit()
+
     def list_facts(self, category: str | None = None, min_trust: float = 0.0, limit: int = 50) -> list[dict]:
         """Browse facts ordered by trust_score descending, optionally filtered by category / min trust."""
         with self._lock:

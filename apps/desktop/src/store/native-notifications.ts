@@ -206,7 +206,7 @@ export function dispatchNativeNotification(input: NativeNotificationInput): void
   })
 }
 
-// -- the plugin door (`ctx.notifyNative`) -------------------------------------
+// -- the plugin door (`ctx.os.notify`) ----------------------------------------
 
 export interface PluginNativeNotificationInput {
   title: string

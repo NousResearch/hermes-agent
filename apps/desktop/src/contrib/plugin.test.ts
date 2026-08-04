@@ -24,10 +24,39 @@ describe('createPluginContext.onDispose', () => {
   })
 })
 
-describe('createPluginContext.notifyNative', () => {
+describe('createPluginContext.os', () => {
   it('dispatches a native notification attributed to the plugin', () => {
     const ctx = createPluginContext('demo')
-    ctx.notifyNative({ body: 'b', title: 't' })
+    ctx.os.notify({ body: 'b', title: 't' })
     expect(dispatchPluginNativeNotification).toHaveBeenCalledWith('demo', { body: 'b', title: 't' })
+  })
+
+  it('resolves false (never throws) when the desktop bridge is missing', async () => {
+    const ctx = createPluginContext('demo')
+
+    // jsdom has no window.hermesDesktop — the exact older-shell/browser case.
+    await expect(ctx.os.openExternal('https://example.com')).resolves.toBe(false)
+    await expect(ctx.os.revealPath('/tmp')).resolves.toBe(false)
+    await expect(ctx.os.writeClipboard('hi')).resolves.toBe(false)
+  })
+
+  it('routes through the bridge and turns a bridge throw into false', async () => {
+    const bridge = {
+      openExternal: vi.fn().mockResolvedValue(undefined),
+      revealPath: vi.fn().mockResolvedValue(true),
+      writeClipboard: vi.fn().mockRejectedValue(new Error('nope'))
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+
+    try {
+      const ctx = createPluginContext('demo')
+      await expect(ctx.os.openExternal('https://example.com')).resolves.toBe(true)
+      expect(bridge.openExternal).toHaveBeenCalledWith('https://example.com')
+      await expect(ctx.os.revealPath('/tmp')).resolves.toBe(true)
+      await expect(ctx.os.writeClipboard('hi')).resolves.toBe(false)
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
   })
 })

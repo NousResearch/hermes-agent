@@ -35,6 +35,27 @@ export interface PluginStorage {
   remove(key: string): void
 }
 
+/** The curated OS door — every way a plugin reaches outside the app window,
+ *  in one attributed namespace instead of the raw `window.hermesDesktop`
+ *  bridge. Every member resolves a result instead of throwing when the
+ *  capability can't apply (no Electron shell, older desktop build), so
+ *  callers branch on the return value rather than sniffing the bridge. */
+export interface PluginOs {
+  /** Native OS notification (Electron), attributed to this plugin. Gated by
+   *  Settings ▸ Notifications ▸ "Plugin notifications" and fires only while
+   *  the user is away from Hermes — use `host.notify` for the in-app toast.
+   *  Throttled per plugin; reserve it for genuinely notable events. */
+  notify: (input: PluginNativeNotificationInput) => void
+  /** Open a URL with the OS default handler (browser, mail client, custom
+   *  schemes like `spotify:`). Resolves false when the shell can't. */
+  openExternal: (url: string) => Promise<boolean>
+  /** Reveal a path in the OS file manager (Finder / Explorer). Resolves
+   *  false when unavailable. */
+  revealPath: (path: string) => Promise<boolean>
+  /** Write text to the system clipboard. Resolves false when unavailable. */
+  writeClipboard: (text: string) => Promise<boolean>
+}
+
 export interface PluginContext {
   /** The resolved plugin source tag, e.g. `'plugin:cost-meter'`. */
   readonly source: string
@@ -56,10 +77,10 @@ export interface PluginContext {
    *  returned. Resolves to a no-op on OAuth remotes — treat it as an
    *  accelerator over your polling, never a replacement. */
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
-  /** Native OS notification (Electron), attributed to this plugin. Gated by
-   *  Settings ▸ Notifications ▸ "Plugin notifications" and fires only while
-   *  the user is away from Hermes — use `host.notify` for the in-app toast. */
-  notifyNative: (input: PluginNativeNotificationInput) => void
+  /** The curated OS door: native notification, open-external, reveal-in-file-
+   *  manager, clipboard — attributed to this plugin, result-shaped (never
+   *  throws for a missing capability). */
+  os: PluginOs
   /** Plugin-scoped persistence. */
   storage: PluginStorage
   /** Plugin-scoped i18n: ship + register locale bundles under this plugin,
@@ -102,6 +123,37 @@ function createPluginStorage(pluginId: string): PluginStorage {
   }
 }
 
+// Never throws for a missing capability: the renderer can outlive an older
+// Electron shell (or run in a plain browser), so every door degrades to a
+// false result the plugin can branch on.
+function createPluginOs(pluginId: string): PluginOs {
+  const attempt = async (run: (bridge: NonNullable<typeof window.hermesDesktop>) => Promise<boolean>) => {
+    const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
+
+    if (!bridge) {
+      return false
+    }
+
+    try {
+      return await run(bridge)
+    } catch {
+      return false
+    }
+  }
+
+  return {
+    notify: input => dispatchPluginNativeNotification(pluginId, input),
+    openExternal: url =>
+      attempt(async bridge => {
+        await bridge.openExternal(url)
+
+        return true
+      }),
+    revealPath: path => attempt(async bridge => (bridge.revealPath ? bridge.revealPath(path) : false)),
+    writeClipboard: text => attempt(bridge => bridge.writeClipboard(text))
+  }
+}
+
 /** Build the scoped context handed to a plugin's `register`. `onDispose`
  *  receives every registration's disposer (the loader's unload/reload hook). */
 export function createPluginContext(pluginId: string, onDispose?: (dispose: () => void) => void): PluginContext {
@@ -121,7 +173,7 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     onDispose: fn => void track(fn),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
-    notifyNative: input => dispatchPluginNativeNotification(pluginId, input),
+    os: createPluginOs(pluginId),
     storage: createPluginStorage(pluginId),
     i18n: createPluginI18n(pluginId, track)
   }

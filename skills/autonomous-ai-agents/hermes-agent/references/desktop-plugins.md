@@ -71,11 +71,14 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   (renders below Artifacts, lights up at the route) — and/or a
   `PALETTE_AREA` command calling `host.navigate('/my-page')`.
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
-- `ctx.notifyNative({ title, body?, silent? })` — native OS notification
-  attributed to your plugin. Fires only while the user is away from Hermes
-  (use `host.notify` for the in-app toast); gated by Settings ▸ Notifications ▸
-  "Plugin notifications" and throttled per plugin — reserve it for genuinely
-  notable events.
+- `ctx.os` — the curated OS door, attributed to your plugin:
+  `ctx.os.notify({ title, body?, silent? })` posts a native OS notification.
+  Fires only while the user is away from Hermes (use `host.notify` for the
+  in-app toast); gated by Settings ▸ Notifications ▸ "Plugin notifications"
+  and throttled per plugin — reserve it for genuinely notable events.
+  `ctx.os.openExternal(url)`, `ctx.os.revealPath(path)`, and
+  `ctx.os.writeClipboard(text)` resolve `false` (never throw) when the
+  capability isn't available.
 - `ctx.i18n.register({ en, ja, ... })` — ship your OWN locale bundles, scoped
   to your plugin (never edit core `en.ts`). Values are literal strings or
   interpolator functions; nested trees are addressed by dot-path. Read them

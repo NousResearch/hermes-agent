@@ -1604,6 +1604,19 @@ def restore_primary_runtime(agent) -> bool:
     agent._restore_wait_logged = False
 
     rt = agent._primary_runtime
+    fallback_route = getattr(agent, "_provider_fallback_route", None)
+    if (
+        isinstance(fallback_route, (list, tuple))
+        and len(fallback_route) == 2
+    ):
+        previous_model = str(fallback_route[0] or "unknown")
+        previous_provider = str(fallback_route[1] or "unknown")
+    else:
+        previous_model = str(getattr(agent, "model", "") or "unknown")
+        previous_provider = str(getattr(agent, "provider", "") or "unknown")
+    provider_fallback_active = bool(
+        getattr(agent, "_provider_fallback_active", False)
+    )
     try:
         # ── Core runtime state ──
         agent.model = rt["model"]
@@ -1792,6 +1805,18 @@ def restore_primary_runtime(agent) -> bool:
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
         )
+        agent._provider_fallback_active = False
+        agent._provider_fallback_route = None
+        if provider_fallback_active:
+            try:
+                agent._emit_status(
+                    f"✅ Primary model restored: {agent.model} via {agent.provider}; "
+                    f"fallback {previous_model} via {previous_provider} is no longer active."
+                )
+            except Exception:
+                # Notification surfaces are best-effort and must never undo a
+                # successful runtime restoration.
+                pass
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
@@ -3105,6 +3130,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     # ── Reset fallback state ──
     agent._fallback_activated = False
+    agent._provider_fallback_active = False
+    agent._provider_fallback_route = None
     agent._fallback_index = 0
 
     # When the user deliberately swaps primary providers (e.g. openrouter

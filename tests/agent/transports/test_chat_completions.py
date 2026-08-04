@@ -20,6 +20,23 @@ def transport():
 class TestChatCompletionsBasic:
 
 
+    def test_normalize_response_allows_missing_optional_tool_calls(self, transport):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="done"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+        normalized = transport.normalize_response(response)
+
+        assert normalized.content == "done"
+        assert normalized.tool_calls is None
+
+
 
     @pytest.mark.parametrize("provider", ["nous", "openrouter"])
     def test_gpt56_ultra_uses_max_wire_effort(self, transport, provider):

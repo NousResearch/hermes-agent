@@ -1167,7 +1167,8 @@ def _resolve_named_custom_runtime(
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
-        model_name = custom_provider.get("model")
+        # An explicit ``target_model`` wins (same rule as the non-pool path).
+        model_name = target_model or custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
         if isinstance(custom_provider.get("max_output_tokens"), int):
@@ -1228,7 +1229,13 @@ def _resolve_named_custom_runtime(
     }
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.
-    if custom_provider.get("model"):
+    # An explicit ``target_model`` wins over the provider's configured
+    # default (regression: auxiliary slots / background-review resolve a
+    # concrete model for a custom provider and must not silently fall back
+    # to ``default_model``).
+    if target_model:
+        result["model"] = target_model
+    elif custom_provider.get("model"):
         result["model"] = custom_provider["model"]
     if isinstance(custom_provider.get("max_output_tokens"), int):
         result["max_output_tokens"] = custom_provider["max_output_tokens"]

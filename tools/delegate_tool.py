@@ -731,14 +731,20 @@ _MIN_SUMMARY_CHARS = 2000
 # in via delegation.child_timeout_seconds.
 DEFAULT_CHILD_TIMEOUT: Optional[float] = None
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
-# Stale-heartbeat thresholds. A child with no API-call progress is either:
-#   - idle between turns (no current_tool) — probably stuck on a slow API call
+# Stale-heartbeat thresholds. A child with no observable progress is either:
+#   - idle between turns (no current_tool, frozen last_activity_ts) — wedged
 #   - inside a tool (current_tool set) — probably running a legitimately long
 #     operation (terminal command, web fetch, large file read)
-# The idle ceiling stays tight so genuinely stuck children don't mask the gateway
-# timeout. The in-tool ceiling is much higher so legit long-running tools get
-# time to finish; delegation.child_timeout_seconds (off by default) remains an
-# optional hard cap for users who want one.
+# An in-flight model wait is NOT idle: direct_api_call refreshes
+# last_activity_ts while the request is open, and the monitor treats that
+# timestamp advance as progress (same signal as streamed chunks / async
+# stall monitor). Slow local GGUF / long-prefill models must not be killed
+# for taking longer than the idle window on a single completion.
+# The idle ceiling stays tight so a child that is truly between turns with
+# no activity doesn't mask the gateway timeout. The in-tool ceiling is much
+# higher so legit long-running tools get time to finish;
+# delegation.child_timeout_seconds (off by default) remains an optional hard
+# cap for users who want one.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
@@ -2003,11 +2009,14 @@ def _run_single_child(
     # Without this, the parent's _last_activity_ts freezes when delegate_task
     # starts and the gateway eventually kills the agent for "no activity".
     _heartbeat_stop = threading.Event()
-    # Stale detection: track the child's (tool, iteration) pair across
-    # heartbeat cycles. If neither advances, count the cycle as stale.
+    # Stale detection: track the child's (tool, iteration, activity_ts) across
+    # heartbeat cycles. If none advances, count the cycle as stale.
     # Different thresholds for idle vs in-tool (see _HEARTBEAT_STALE_CYCLES_*).
+    # last_activity_ts is the same liveness signal the async stall monitor
+    # already uses (streamed chunks + direct_api_call mid-wait heartbeats).
     _last_seen_iter = [0]
     _last_seen_tool = [None]  # type: list
+    _last_seen_activity_ts = [None]  # type: list
     _stale_count = [0]
 
     def _heartbeat_loop():
@@ -2024,18 +2033,28 @@ def _run_single_child(
                 child_tool = child_summary.get("current_tool")
                 child_iter = child_summary.get("api_call_count", 0)
                 child_max = child_summary.get("max_iterations", 0)
+                child_activity_ts = child_summary.get("last_activity_ts")
 
-                # Stale detection: count cycles where neither the iteration
-                # count nor the current_tool advances. A child running a
-                # legitimately long-running tool (terminal command, web
-                # fetch) keeps current_tool set but doesn't advance
-                # api_call_count — we don't want that to look stale at the
-                # idle threshold.
+                # Stale detection: count cycles where iteration, current_tool,
+                # AND last_activity_ts are all frozen. A child running a
+                # legitimately long-running tool keeps current_tool set; a
+                # child waiting on a slow model refreshes last_activity_ts
+                # via direct_api_call's activity heartbeat — neither should
+                # look stale at the idle threshold.
                 iter_advanced = child_iter > _last_seen_iter[0]
                 tool_changed = child_tool != _last_seen_tool[0]
-                if iter_advanced or tool_changed:
+                activity_advanced = (
+                    child_activity_ts is not None
+                    and (
+                        _last_seen_activity_ts[0] is None
+                        or child_activity_ts > _last_seen_activity_ts[0]
+                    )
+                )
+                if iter_advanced or tool_changed or activity_advanced:
                     _last_seen_iter[0] = child_iter
                     _last_seen_tool[0] = child_tool
+                    if child_activity_ts is not None:
+                        _last_seen_activity_ts[0] = child_activity_ts
                     _stale_count[0] = 0
                 else:
                     _stale_count[0] += 1

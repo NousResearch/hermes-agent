@@ -765,3 +765,27 @@ class TestSearchFilesRgWindowsDrivePath:
         assert "os error" in result.error
         assert result.files == []
         assert result.total_count == 0
+
+    def test_zero_match_probe_commands_use_native_drive_path(self, monkeypatch):
+        """_zero_match_probe must route paths through _quote_rg_path too.
+
+        The three rg invocations inside _zero_match_probe (case-insensitive,
+        hidden/no-ignore, and fixed-string) use the same shell-command form
+        as _search_files_rg and _search_with_rg. If they keep using
+        _escape_shell_arg, a Windows-native rg.exe receives the MSYS /d/...
+        form and fails with os error 3 — the probe silently returns None (no
+        exit-code check) and the search loses its steering hints on exactly
+        the platform this fix targets. Regression guard.
+        """
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        env = self._make_env()
+        ops = ShellFileOperations(env)
+        ops._command_cache = {"rg": True}
+        # Use a pattern with regex metacharacters so probe runs all three
+        # rg invocations (CI → hidden → fixed-string).
+        ops._zero_match_probe("lookup[key+1]", "D:\\projects\\foo", None)
+        cmds = [call.args[0] for call in env.execute.call_args_list]
+        assert len(cmds) == 3
+        for cmd in cmds:
+            assert "D:/projects/foo" in cmd, f"Command lacks native path: {cmd!r}"
+            assert "/d/projects/foo" not in cmd, f"Command still has MSYS path: {cmd!r}"

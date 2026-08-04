@@ -203,6 +203,8 @@ VALID_HOOKS: Set[str] = {
     # break error classification. Cold path: fires only on API failure.
     # Privacy: error_message/error_body may carry an unredacted provider
     # error dump.
+    # Contract: the first-valid-wins mutating shape in
+    # docs/plugins/hook-taxonomy.md.
     "classify_api_error",
     "on_session_start",
     "on_session_end",
@@ -5830,6 +5832,10 @@ def get_plugin_error_classification(
     Privacy: ``error_message`` and ``error_body`` may carry an unredacted
     provider error dump; callbacks must not log or forward them without
     redaction.
+
+    Cold path: fires only on API failure, never on the request hot path.
+    Contract: the first-valid-wins mutating shape in
+    ``docs/plugins/hook-taxonomy.md``.
 
     Returns a sanitized dict (``reason`` coerced to ``FailoverReason``, hint
     fields coerced to ``bool``) or ``None`` when no plugin claimed the error.

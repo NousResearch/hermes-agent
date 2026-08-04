@@ -71,6 +71,126 @@ def _patch_managed_uv(request):
         yield
 
 
+@pytest.fixture(autouse=True)
+def _patch_pinned_git_update_helpers(monkeypatch, request, tmp_path):
+    """Isolate cmd_update tests while mocking the pinned Git primitives."""
+    from hermes_cli import main as hm
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    old_sha = "a" * 40
+    target_sha = "b" * 40
+    apply_calls = []
+    hm._test_pinned_apply_calls = apply_calls
+    empty_sync = {"copied": [], "updated": [], "user_modified": [], "cleaned": []}
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda *a, **kw: empty_sync)
+    if request.node.cls is None or request.node.cls.__name__ != "TestCmdUpdateProfileSkillSync":
+        monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda: [])
+
+    def capture(_git_cmd, _root):
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        branch = result.stdout.strip() or "main"
+        return {
+            "ref": None if branch == "HEAD" else f"refs/heads/{branch}",
+            "head": old_sha,
+            "error": None,
+        }
+
+    def commit_sha(_git_cmd, _root, ref):
+        if ref.startswith("refs/remotes/origin/"):
+            return None if ref.endswith("/nonexistent") else target_sha
+        if ref in {"refs/heads/main", "HEAD"}:
+            return old_sha
+        return None
+
+    def apply(*args, **kwargs):
+        apply_calls.append(args)
+        return {"success": True, "safe_to_restore_stash": True, "error": None}
+
+    monkeypatch.setattr(hm, "_capture_update_checkout_identity", capture)
+    monkeypatch.setattr(hm, "_git_update_commit_sha", commit_sha)
+    monkeypatch.setattr(
+        hm,
+        "_ensure_update_merge_base",
+        lambda *a, **kw: {"merge_base": old_sha, "error": None, "fetch_steps": []},
+    )
+    monkeypatch.setattr(hm, "_apply_pinned_default_update", apply)
+    monkeypatch.setattr(hm, "_rollback_pinned_default_update", lambda *a, **kw: True)
+    monkeypatch.setattr(hm, "_pinned_fast_forward_error", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        hm,
+        "_validate_critical_files_syntax_at_commit",
+        lambda *a, **kw: (True, None, None),
+    )
+    flow_classes = {
+        "TestCmdUpdateBranchFallback",
+        "TestCmdUpdateMigrationPrompt",
+        "TestCmdUpdateProfileSkillSync",
+        "TestCmdUpdateBranchFlag",
+    }
+    class_name = request.node.cls.__name__ if request.node.cls else ""
+    if class_name in flow_classes or request.node.name == "test_wsl_update_skips_windows_npm_build_paths":
+        from hermes_cli import update_cmd as update_module
+
+        monkeypatch.setattr(hm, "_run_pre_update_backup", lambda *a, **kw: None)
+        monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
+        monkeypatch.setattr(
+            hm, "_resume_windows_gateways_after_update", lambda _token: None
+        )
+        monkeypatch.setattr(
+            hm,
+            "_install_python_dependencies_with_optional_fallback",
+            lambda *a, **kw: None,
+        )
+        monkeypatch.setattr(hm, "_refresh_active_lazy_features", lambda *a, **kw: True)
+        monkeypatch.setattr(
+            hm, "_refresh_active_memory_provider_dependencies", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            hm,
+            "_validate_critical_modules_import",
+            lambda *a, **kw: (True, None, None),
+        )
+        monkeypatch.setattr(hm, "_desktop_packaged_executable", lambda *a: None)
+        monkeypatch.setattr(hm, "_desktop_dist_exists", lambda *a: False)
+        monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda *a, **kw: 0)
+        monkeypatch.setattr(hm, "_record_bytecode_fingerprint", lambda *a, **kw: None)
+        monkeypatch.setattr(hm, "_reload_updated_runtime_modules", lambda *a, **kw: None)
+        if request.node.name != "test_update_refreshes_repo_and_tui_node_dependencies":
+            monkeypatch.setattr(hm, "_update_node_dependencies", lambda *a, **kw: [])
+            monkeypatch.setattr(
+                update_module, "_update_node_dependencies", lambda *a, **kw: []
+            )
+            monkeypatch.setattr(hm, "_build_web_ui", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            update_module, "_write_update_incomplete_marker", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            update_module, "_write_lazy_refresh_incomplete_marker", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            update_module,
+            "_validate_critical_modules_import",
+            lambda *a, **kw: (True, None, None),
+        )
+        monkeypatch.setattr(
+            update_module, "_print_fts_optimize_available_notice", lambda: None
+        )
+        monkeypatch.setattr(
+            update_module, "_print_curator_first_run_notice", lambda: None
+        )
+        monkeypatch.setattr(
+            update_module, "_print_curator_recent_run_notice", lambda: None
+        )
+        monkeypatch.setattr(update_module, "_ensure_fhs_path_guard", lambda: None)
+        monkeypatch.setattr(update_module, "_ensure_acp_launcher", lambda: None)
+
+
 class TestCmdUpdateNpmLockfileCache:
     @staticmethod
     def _cache_file(hermes_root, project_root):
@@ -206,33 +326,43 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
-    def test_update_on_fork_checks_upstream_when_origin_up_to_date(
-        self, mock_run, _mock_which, mock_args, capsys
+    def test_update_on_fork_pins_upstream_before_apply_and_pushes_exact_sha(
+        self, mock_run, _mock_which, mock_args
     ):
-        """Regression for issue #26172: forks whose local HEAD already matches
-        origin/main must still consult upstream/main before printing
-        "Already up to date!" — otherwise a fork that's caught up to its own
-        origin but behind NousResearch/hermes-agent silently misses updates.
-        """
         from hermes_cli import main as hm
 
+        origin_sha = "a" * 40
+        upstream_sha = "c" * 40
         mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="0"
+            branch="main", verify_ok=True, commit_count="3"
         )
-
+        fork_plan = {
+            "target_sha": upstream_sha,
+            "origin_sha": origin_sha,
+            "sync_needed": True,
+            "error": None,
+        }
         with patch.object(
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
-        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+        ), patch.object(
+            hm, "_pin_fork_upstream_target", return_value=fork_plan
+        ) as pin_mock, patch.object(
+            hm, "_push_pinned_fork_target", return_value=True
+        ) as push_mock, patch.object(
+            hm, "_git_update_commit_sha", return_value=origin_sha
+        ):
             cmd_update(mock_args)
 
         expected_git_cmd = (
             ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
         )
-        sync_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT)
-        captured = capsys.readouterr()
-        assert "Already up to date!" in captured.out
+        pin_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT, origin_sha)
+        assert hm._test_pinned_apply_calls[0][4] == upstream_sha
+        push_mock.assert_called_once_with(
+            expected_git_cmd, PROJECT_ROOT, upstream_sha, origin_sha
+        )
 
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
@@ -462,7 +592,9 @@ class TestCmdUpdateBranchFlag:
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_branch_flag_pulls_against_named_branch(self, mock_run, _mock_which, capsys):
-        """--branch bb/gui makes rev-list and pull target origin/bb/gui."""
+        """--branch bb/gui pins and applies the named branch."""
+        from hermes_cli import main as hm
+
         mock_run.side_effect = self._branch_side_effect(
             current_branch="bb/gui", target_branch="bb/gui", commit_count="3"
         )
@@ -470,16 +602,9 @@ class TestCmdUpdateBranchFlag:
 
         cmd_update(args)
 
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-
-        # rev-list must compare against origin/bb/gui, not origin/main
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert any("origin/bb/gui" in c for c in rev_list_cmds), rev_list_cmds
-        assert not any("origin/main" in c for c in rev_list_cmds), rev_list_cmds
-
-        # the ff-only merge must target origin/bb/gui
-        merge_cmds = [c for c in commands if "merge --ff-only" in c]
-        assert any("origin/bb/gui" in c and "origin/main" not in c for c in merge_cmds), merge_cmds
+        call = hm._test_pinned_apply_calls[0]
+        assert call[2] == "refs/heads/bb/gui"
+        assert call[5] == "refs/heads/bb/gui"
 
 
     @patch("shutil.which", return_value=None)
@@ -500,7 +625,7 @@ class TestCmdUpdateBranchFlag:
         assert exc_info.value.code == 1
 
         out = capsys.readouterr().out
-        assert "does not exist locally or on origin" in out
+        assert "Could not resolve fetched target refs/remotes/origin/nonexistent" in out
         assert "nonexistent" in out
 
 

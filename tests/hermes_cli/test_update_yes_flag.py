@@ -12,6 +12,9 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
+from hermes_cli import main as hermes_main
 from hermes_cli.main import cmd_update
 
 
@@ -45,6 +48,97 @@ def _make_run_side_effect(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     return side_effect
+
+
+@pytest.fixture(autouse=True)
+def _patch_pinned_git_update_helpers(monkeypatch, tmp_path):
+    from hermes_cli import update_cmd as update_module
+
+    old_sha = "a" * 40
+    target_sha = "b" * 40
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        hermes_main, "_pause_windows_gateways_for_update", lambda: None
+    )
+    monkeypatch.setattr(
+        hermes_main, "_resume_windows_gateways_after_update", lambda _token: None
+    )
+    empty_sync = {"copied": [], "updated": [], "user_modified": [], "cleaned": []}
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda *a, **kw: empty_sync)
+    monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda: [])
+    monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", lambda **kw: None)
+    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda **kw: None)
+    monkeypatch.setattr(
+        hermes_main,
+        "_capture_update_checkout_identity",
+        lambda *a: {"ref": "refs/heads/main", "head": old_sha, "error": None},
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_git_update_commit_sha",
+        lambda _g, _r, ref: target_sha
+        if ref.startswith("refs/remotes/origin/")
+        else old_sha,
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_ensure_update_merge_base",
+        lambda *a, **kw: {"merge_base": old_sha, "error": None, "fetch_steps": []},
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_apply_pinned_default_update",
+        lambda *a, **kw: {
+            "success": True,
+            "safe_to_restore_stash": True,
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        hermes_main, "_rollback_pinned_default_update", lambda *a, **kw: True
+    )
+    monkeypatch.setattr(
+        hermes_main, "_pinned_fast_forward_error", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_install_python_dependencies_with_optional_fallback",
+        lambda *a, **kw: None,
+    )
+    monkeypatch.setattr(
+        hermes_main, "_refresh_active_lazy_features", lambda *a, **kw: True
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_refresh_active_memory_provider_dependencies",
+        lambda *a, **kw: None,
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_validate_critical_modules_import",
+        lambda *a, **kw: (True, None, None),
+    )
+    monkeypatch.setattr(hermes_main, "_update_node_dependencies", lambda *a, **kw: [])
+    monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **kw: None)
+    monkeypatch.setattr(update_module, "_update_node_dependencies", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        update_module, "_write_update_incomplete_marker", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(
+        update_module, "_write_lazy_refresh_incomplete_marker", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(
+        update_module,
+        "_validate_critical_modules_import",
+        lambda *a, **kw: (True, None, None),
+    )
+    monkeypatch.setattr(update_module, "_print_fts_optimize_available_notice", lambda: None)
+    monkeypatch.setattr(update_module, "_print_curator_first_run_notice", lambda: None)
+    monkeypatch.setattr(update_module, "_print_curator_recent_run_notice", lambda: None)
+    monkeypatch.setattr(update_module, "_ensure_fhs_path_guard", lambda: None)
+    monkeypatch.setattr(update_module, "_ensure_acp_launcher", lambda: None)
 
 
 class TestUpdateYesConfigMigration:

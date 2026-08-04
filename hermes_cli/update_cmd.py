@@ -249,6 +249,57 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
         return False, module, detail
     return True, None, None
 
+def _validate_critical_files_syntax_at_commit(
+    git_cmd: list[str], repo_root: Path, target_sha: str
+) -> tuple[bool, str | None, str | None]:
+    """Compile critical Python blobs from one immutable commit without checkout."""
+    for relpath in _UPDATE_CRITICAL_FILES:
+        listed = subprocess.run(
+            git_cmd + ["ls-tree", target_sha, "--", relpath],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        object_path = f"{target_sha}:{relpath}"
+        if listed.returncode != 0:
+            return False, object_path, _first_git_error(listed)
+        entries = [line for line in listed.stdout.splitlines() if line]
+        if not entries:
+            continue
+        if len(entries) != 1 or "\t" not in entries[0]:
+            return False, object_path, "unexpected git ls-tree output"
+        metadata, listed_path = entries[0].split("\t", 1)
+        metadata_parts = metadata.split()
+        if len(metadata_parts) != 3 or listed_path != relpath:
+            return False, object_path, "unexpected git ls-tree output"
+        mode, object_type, _object_sha = metadata_parts
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            return (
+                False,
+                object_path,
+                f"critical Python path is not a regular blob (mode={mode}, type={object_type})",
+            )
+        shown = subprocess.run(
+            git_cmd + ["show", object_path],
+            cwd=repo_root,
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+        if shown.returncode != 0:
+            error = (shown.stderr or b"").decode("utf-8", errors="replace").strip()
+            return False, f"{target_sha}:{relpath}", error or "could not read blob"
+        try:
+            compile(shown.stdout, f"{target_sha}:{relpath}", "exec")
+        except (SyntaxError, ValueError, TypeError) as exc:
+            return (
+                False,
+                f"{target_sha}:{relpath}",
+                f"{type(exc).__name__}: {exc}",
+            )
+    return True, None, None
+
 def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0) -> str:
     """File-based IPC prompt for gateway mode.
 
@@ -1171,64 +1222,41 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
 
     return stash_ref
 
-def _resolve_stash_selector(
-    git_cmd: list[str], cwd: Path, stash_ref: str
-) -> Optional[str]:
-    stash_list = subprocess.run(
-        git_cmd + ["stash", "list", "--format=%gd %H"],
-        cwd=cwd,
-        capture_output=True,
-        text=True, encoding="utf-8", errors="replace",
-        check=True,
-    )
-    for line in stash_list.stdout.splitlines():
-        selector, _, commit = line.partition(" ")
-        if commit.strip() == stash_ref:
-            return selector.strip()
-    return None
+def _pinned_checkout_matches(
+    git_cmd: list[str], cwd: Path, expected_identity: dict
+) -> bool:
+    """Verify symbolic ref, HEAD, and attached branch tip against one pin."""
+    actual = _capture_update_checkout_identity(git_cmd, cwd)
+    expected_ref = expected_identity.get("ref")
+    expected_head = expected_identity.get("head")
+    if (
+        actual["error"]
+        or actual["ref"] != expected_ref
+        or actual["head"] != expected_head
+    ):
+        return False
+    if expected_ref is not None:
+        return _git_update_commit_sha(git_cmd, cwd, expected_ref) == expected_head
+    return True
 
-def _print_stash_cleanup_guidance(
-    stash_ref: str, stash_selector: Optional[str] = None
-) -> None:
-    print(
-        "  Check `git status` first so you don't accidentally reapply the same change twice."
-    )
-    print("  Find the saved entry with: git stash list --format='%gd %H %s'")
-    if stash_selector:
-        print(f"  Remove it with: git stash drop {stash_selector}")
-    else:
-        print(
-            f"  Look for commit {stash_ref}, then drop its selector with: git stash drop stash@{{N}}"
-        )
 
 def _stash_apply_failed_only_on_existing_untracked(stderr: str) -> bool:
-    """True when a ``git stash apply`` failure is ONLY about untracked files
-    that already exist in the working tree.
-
-    This is the tail end of the permission-denied autostash class: ``git stash
-    push --include-untracked`` swept undeletable files (e.g. a root-owned
-    ``packaging/`` directory) into the stash but could not remove them from
-    disk.  On restore, git applies all tracked changes, then refuses to
-    overwrite those still-present files (``already exists, no checkout`` /
-    ``could not restore untracked files from stash``) and exits non-zero even
-    though nothing was lost.  Any other error line (e.g. ``would be
-    overwritten by merge`` / ``Aborting``) means the tracked apply itself
-    failed and this returns False.
-    """
+    """True when stash apply failed only on untracked files already present."""
     lines = [ln.strip() for ln in (stderr or "").splitlines() if ln.strip()]
     if not lines:
         return False
     saw_untracked_error = False
-    for ln in lines:
-        if "already exists, no checkout" in ln:
+    for line in lines:
+        if "already exists, no checkout" in line:
             saw_untracked_error = True
-        elif "could not restore untracked files from stash" in ln:
+        elif "could not restore untracked files from stash" in line:
             saw_untracked_error = True
-        elif ln.startswith(("warning:", "hint:")):
+        elif line.startswith(("warning:", "hint:")):
             continue
         else:
             return False
     return saw_untracked_error
+
 
 def _restore_stashed_changes(
     git_cmd: list[str],
@@ -1236,6 +1264,7 @@ def _restore_stashed_changes(
     stash_ref: str,
     prompt_user: bool = False,
     input_fn=None,
+    expected_identity: Optional[dict] = None,
 ) -> bool:
     if prompt_user:
         print()
@@ -1254,6 +1283,13 @@ def _restore_stashed_changes(
             print("Your changes are still preserved in git stash.")
             print(f"Restore manually with: git stash apply {stash_ref}")
             return False
+
+    if expected_identity is not None and not _pinned_checkout_matches(
+        git_cmd, cwd, expected_identity
+    ):
+        print("⚠ Checkout changed before stash restore; local changes remain preserved.")
+        print(f"  Stash ref: {stash_ref}")
+        return False
 
     print("→ Restoring local changes...")
     restore = subprocess.run(
@@ -1298,103 +1334,56 @@ def _restore_stashed_changes(
             for f in conflicted_files.splitlines():
                 print(f"  • {f}")
 
-        print("\nYour stashed changes are preserved — nothing is lost.")
+        print("\nThe stash remains preserved, and Hermes will not reset this worktree.")
         print(f"  Stash ref: {stash_ref}")
-
-        # Always reset to clean state — leaving conflict markers in source
-        # files makes hermes completely unrunnable (SyntaxError on import).
-        # The user's changes are safe in the stash for manual recovery.
-        subprocess.run(
-            git_cmd + ["reset", "--hard", "HEAD"],
-            cwd=cwd,
-            capture_output=True,
-        )
-        print("Working tree reset to clean state.")
-        print(f"Restore your changes later with: git stash apply {stash_ref}")
-        # Don't sys.exit — the code update itself succeeded, only the stash
-        # restore had conflicts.  Let cmd_update continue with pip install,
-        # skill sync, and gateway restart.
+        print("  Resolve or clean the working tree manually before retrying the update.")
         return False
 
-    stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
-    if stash_selector is None:
-        print(
-            "⚠ Local changes were restored, but Hermes couldn't find the stash entry to drop."
-        )
-        print(
-            "  The stash was left in place. You can remove it manually after checking the result."
-        )
-        _print_stash_cleanup_guidance(stash_ref)
-    else:
-        drop = subprocess.run(
-            git_cmd + ["stash", "drop", stash_selector],
-            cwd=cwd,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-        )
-        if drop.returncode != 0:
-            print(
-                "⚠ Local changes were restored, but Hermes couldn't drop the saved stash entry."
-            )
-            if drop.stdout.strip():
-                print(drop.stdout.strip())
-            if drop.stderr.strip():
-                print(drop.stderr.strip())
-            print(
-                "  The stash was left in place. You can remove it manually after checking the result."
-            )
-            _print_stash_cleanup_guidance(stash_ref, stash_selector)
+    if expected_identity is not None and not _pinned_checkout_matches(
+        git_cmd, cwd, expected_identity
+    ):
+        print("⚠ Checkout changed during stash restore; the stash will not be dropped.")
+        print(f"  Stash ref: {stash_ref}")
+        return False
 
     print("⚠ Local changes were restored on top of the updated codebase.")
-    print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
+    print("  The immutable autostash is retained as a recovery copy:")
+    print(f"  {stash_ref}")
+    print("  Remove it manually only after reviewing `git diff` / `git status`.")
     return True
+
 
 def _discard_stashed_changes(
     git_cmd: list[str],
     cwd: Path,
     stash_ref: str,
+    expected_identity: Optional[dict] = None,
 ) -> bool:
-    """Throw away a stash created before an update, without applying it.
+    """Archive changes removed for a configured non-interactive discard.
 
-    Used only on a NON-interactive update when the user has set
-    ``updates.non_interactive_local_changes: discard`` — i.e. they've opted out
-    of keeping local source edits on this machine. Drops the stash entry
-    instead of re-applying it, so the working tree stays clean at the freshly
-    pulled HEAD. Unlike ``git reset --hard`` + ``git clean -fd``, this only
-    affects what was stashed (tracked changes + the untracked files we
-    explicitly captured) — ignored paths like node_modules/venv/build outputs
-    are never touched, since they were never stashed.
+    The stash has already cleaned the worktree. It is deliberately retained as
+    a recovery copy because Git's ``stash@{N}`` selectors are mutable and offer
+    no compare-and-swap deletion. This preserves the requested clean worktree
+    without risking deletion of another concurrently-created stash.
 
-    Returns True if the stash was dropped, False on a git failure (in which
-    case the stash is left in place for safety).
+    Returns True while checkout identity still matches the pinned update;
+    otherwise returns False and leaves all stash state untouched.
     """
-    stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
-    if stash_selector is None:
-        print(
-            "⚠ Configured to discard local changes on non-interactive update, "
-            "but Hermes couldn't find the stash entry to drop."
-        )
-        _print_stash_cleanup_guidance(stash_ref)
+    if expected_identity is not None and not _pinned_checkout_matches(
+        git_cmd, cwd, expected_identity
+    ):
+        print("⚠ Checkout changed before stash archival; local changes remain preserved.")
+        print(f"  Stash ref: {stash_ref}")
         return False
-
-    drop = subprocess.run(
-        git_cmd + ["stash", "drop", stash_selector],
-        cwd=cwd,
-        capture_output=True,
-        text=True, encoding="utf-8", errors="replace",
-    )
-    if drop.returncode != 0:
-        print(
-            "⚠ Configured to discard local changes, but Hermes couldn't drop "
-            "the saved stash entry."
-        )
-        if drop.stderr.strip():
-            print(f"  {drop.stderr.strip().splitlines()[0]}")
-        _print_stash_cleanup_guidance(stash_ref, stash_selector)
-        return False
-
-    print("→ Discarded local source changes (updates.non_interactive_local_changes=discard).")
+    print("→ Local source changes remain removed from the updated worktree.")
+    print("  The autostash was retained as a recovery copy because stash selectors are mutable:")
+    print(f"  {stash_ref}")
     return True
+
+
+# =========================================================================
+# Fork detection and upstream management for `hermes update`
+# =========================================================================
 
 OFFICIAL_REPO_URLS = {
     "https://github.com/NousResearch/hermes-agent.git",
@@ -1402,10 +1391,9 @@ OFFICIAL_REPO_URLS = {
     "https://github.com/NousResearch/hermes-agent",
     "git@github.com:NousResearch/hermes-agent",
 }
-
 OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
-
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
+
 
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     """Get the URL of the origin remote, or None if not set."""
@@ -1494,136 +1482,112 @@ def _mark_skip_upstream_prompt():
     except Exception:
         pass
 
-def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
-    """Attempt to push updated main to origin (sync fork).
-
-    Returns True if push succeeded, False otherwise.
-    """
-    try:
-        result = subprocess.run(
-            git_cmd + ["push", "origin", "main", "--force-with-lease"],
-            cwd=cwd,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
-def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
-    """Check if fork is behind upstream and sync if safe.
-
-    This implements the fork upstream sync logic:
-    - If upstream remote doesn't exist, ask user if they want to add it
-    - Compare origin/main with upstream/main
-    - If origin/main is strictly behind upstream/main, pull from upstream
-    - Try to sync fork back to origin if possible
-    """
+def _pin_fork_upstream_target(
+    git_cmd: list[str], cwd: Path, origin_sha: str
+) -> dict:
+    """Pin a safe official-upstream target before any worktree mutation."""
+    outcome = {
+        "target_sha": origin_sha,
+        "origin_sha": origin_sha,
+        "sync_needed": False,
+        "error": None,
+    }
     has_upstream = _has_upstream_remote(git_cmd, cwd)
-
     if not has_upstream:
-        # Check if user previously declined
         if _should_skip_upstream_prompt():
-            return
-
-        # Ask user if they want to add upstream
+            return outcome
         print()
         print("ℹ Your fork is not tracking the official Hermes repository.")
-        print("  This means you may miss updates from NousResearch/hermes-agent.")
-        print()
         try:
-            response = (
-                input("Add official repo as 'upstream' remote? [Y/n]: ").strip().lower()
-            )
+            response = input("Add official repo as 'upstream' remote? [Y/n]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
             response = "n"
-
-        if response in {"", "y", "yes"}:
-            print("→ Adding upstream remote...")
-            if _add_upstream_remote(git_cmd, cwd):
-                print(
-                    "  ✓ Added upstream: https://github.com/NousResearch/hermes-agent.git"
-                )
-                has_upstream = True
-            else:
-                print("  ✗ Failed to add upstream remote. Skipping upstream sync.")
-                return
-        else:
-            print(
-                "  Skipped. Run 'git remote add upstream https://github.com/NousResearch/hermes-agent.git' to add later."
-            )
+        if response not in {"", "y", "yes"}:
             _mark_skip_upstream_prompt()
-            return
+            return outcome
+        print("→ Adding upstream remote...")
+        if not _add_upstream_remote(git_cmd, cwd):
+            outcome["error"] = "Failed to add the official upstream remote."
+            return outcome
 
-    # Fetch upstream main only. This sync compares upstream/main with
-    # origin/main, so there's no reason to pull every upstream ref — and a bare
-    # fetch drags in thousands of auto-generated branches.
+    upstream_ref = "refs/remotes/upstream/main"
     print()
     print("→ Fetching upstream...")
-    try:
-        subprocess.run(
-            git_cmd + ["fetch", "upstream", "main", "--quiet"],
-            cwd=cwd,
-            capture_output=True,
-            check=True,
-        )
-    except subprocess.CalledProcessError:
-        print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
-        return
-
-    # Compare origin/main with upstream/main
-    origin_ahead = _count_commits_between(git_cmd, cwd, "upstream/main", "origin/main")
-    upstream_ahead = _count_commits_between(
-        git_cmd, cwd, "origin/main", "upstream/main"
+    fetched = subprocess.run(
+        git_cmd
+        + ["fetch", "upstream", f"main:{upstream_ref}", "--quiet"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
     )
+    if fetched.returncode != 0:
+        outcome["error"] = f"Failed to fetch upstream: {_first_git_error(fetched)}"
+        return outcome
+    upstream_sha = _git_update_commit_sha(git_cmd, cwd, upstream_ref)
+    if not upstream_sha:
+        outcome["error"] = f"Could not resolve fetched target {upstream_ref}."
+        return outcome
 
+    preflight = _ensure_update_merge_base(
+        git_cmd,
+        cwd,
+        "main",
+        origin_sha,
+        upstream_sha,
+        remote="upstream",
+    )
+    if not preflight["merge_base"]:
+        outcome["error"] = preflight["error"]
+        return outcome
+
+    origin_ahead = _count_commits_between(
+        git_cmd, cwd, upstream_sha, origin_sha
+    )
+    upstream_ahead = _count_commits_between(
+        git_cmd, cwd, origin_sha, upstream_sha
+    )
     if origin_ahead < 0 or upstream_ahead < 0:
-        print("  ✗ Could not compare branches. Skipping upstream sync.")
-        return
-
-    # If origin/main has commits not on upstream, don't trample
+        outcome["error"] = "Could not compare pinned fork and upstream commits."
+        return outcome
     if origin_ahead > 0:
         print()
         print(f"ℹ Your fork has {origin_ahead} commit(s) not on upstream.")
         print("  Skipping upstream sync to preserve your changes.")
-        print("  If you want to merge upstream changes, run:")
-        print("    git pull upstream main")
-        return
-
-    # If upstream is not ahead, fork is up to date
+        return outcome
     if upstream_ahead == 0:
         print("  ✓ Fork is up to date with upstream")
-        return
+        return outcome
 
-    # origin/main is strictly behind upstream/main (can fast-forward)
     print()
     print(f"→ Fork is {upstream_ahead} commit(s) behind upstream")
-    print("→ Pulling from upstream...")
+    outcome["target_sha"] = upstream_sha
+    outcome["sync_needed"] = True
+    return outcome
 
+
+def _push_pinned_fork_target(
+    git_cmd: list[str], cwd: Path, target_sha: str, origin_sha: str
+) -> bool:
+    """Publish one verified target SHA if the fork ref still matches its pin."""
     try:
-        subprocess.run(
-            git_cmd + ["pull", "--ff-only", "upstream", "main"],
+        result = subprocess.run(
+            git_cmd
+            + [
+                "push",
+                "origin",
+                f"{target_sha}:refs/heads/main",
+                f"--force-with-lease=refs/heads/main:{origin_sha}",
+            ],
             cwd=cwd,
-            check=True,
+            capture_output=True,
+            text=True,
         )
-    except subprocess.CalledProcessError:
-        print(
-            "  ✗ Failed to pull from upstream. You may need to resolve conflicts manually."
-        )
-        return
+    except Exception:
+        return False
+    return result.returncode == 0
 
-    print("  ✓ Updated from upstream")
-
-    # Try to sync fork back to origin
-    print("→ Syncing fork...")
-    if _sync_fork_with_upstream(git_cmd, cwd):
-        print("  ✓ Fork synced with upstream")
-    else:
-        print(
-            "  ℹ Got updates from upstream but couldn't push to fork (no write access?)"
-        )
-        print("    Your local repo is updated, but your fork on GitHub may be behind.")
 
 def _invalidate_update_cache():
     """Delete the update-check cache for ALL profiles so no banner
@@ -3398,6 +3362,486 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
             f"  ✓ Restarting {unmapped_relaunched} unmapped Windows gateway process(es)"
         )
 
+def _git_update_commit_sha(
+    git_cmd: list[str], repo_root: Path, ref: str
+) -> Optional[str]:
+    """Resolve an explicit ref to a commit without escaping the update flow."""
+    result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", f"{ref}^{{commit}}"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _git_update_merge_base(
+    git_cmd: list[str], repo_root: Path, left: str, right: str
+) -> Optional[str]:
+    result = subprocess.run(
+        git_cmd + ["merge-base", left, right],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _first_git_error(result: subprocess.CompletedProcess) -> str:
+    text = (result.stderr or result.stdout or "").strip()
+    return text.splitlines()[0] if text else f"git exited {result.returncode}"
+
+
+def _pinned_fast_forward_error(
+    git_cmd: list[str], repo_root: Path, local_sha: str, target_sha: str
+) -> Optional[str]:
+    """Return an error unless updating local_sha to target_sha is fast-forward."""
+    result = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", local_sha, target_sha],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return None
+    if result.returncode == 1:
+        return (
+            "Pinned update is not a fast-forward; the local target branch has "
+            "commits that are not contained in the remote target. No mutation was attempted."
+        )
+    return f"Could not verify pinned fast-forward boundary: {_first_git_error(result)}"
+
+
+def _ensure_update_merge_base(
+    git_cmd: list[str],
+    repo_root: Path,
+    branch: str,
+    original_sha: str,
+    target_sha: str,
+    *,
+    remote: str = "origin",
+) -> dict:
+    """Prove ancestry, deepening a shallow clone without changing the target."""
+    outcome = {"merge_base": None, "error": None, "fetch_steps": []}
+    merge_base = _git_update_merge_base(git_cmd, repo_root, original_sha, target_sha)
+    if merge_base:
+        outcome["merge_base"] = merge_base
+        return outcome
+
+    shallow = subprocess.run(
+        git_cmd + ["rev-parse", "--is-shallow-repository"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if shallow.returncode != 0:
+        outcome["error"] = f"Could not inspect repository depth: {_first_git_error(shallow)}"
+        return outcome
+    if shallow.stdout.strip().lower() != "true":
+        outcome["error"] = (
+            "No merge base exists between the local checkout and the pinned "
+            "upstream target; histories are unrelated. No worktree mutation was attempted."
+        )
+        return outcome
+
+    remote_ref = f"refs/remotes/{remote}/{branch}"
+    steps: list[tuple[str, list[str]]] = [
+        ("--deepen=32", ["fetch", "--deepen=32", remote, branch]),
+        ("--deepen=128", ["fetch", "--deepen=128", remote, branch]),
+        ("--deepen=512", ["fetch", "--deepen=512", remote, branch]),
+        ("--deepen=2048", ["fetch", "--deepen=2048", remote, branch]),
+    ]
+    for label, args in steps:
+        fetched = subprocess.run(
+            git_cmd + args,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        outcome["fetch_steps"].append(label)
+        if fetched.returncode != 0:
+            outcome["error"] = f"History repair failed at {label}: {_first_git_error(fetched)}"
+            return outcome
+        if _git_update_commit_sha(git_cmd, repo_root, remote_ref) != target_sha:
+            outcome["error"] = (
+                f"UpdaterBoundaryChanged: {remote_ref} moved during history repair."
+            )
+            return outcome
+        merge_base = _git_update_merge_base(
+            git_cmd, repo_root, original_sha, target_sha
+        )
+        if merge_base:
+            outcome["merge_base"] = merge_base
+            return outcome
+        depth = subprocess.run(
+            git_cmd + ["rev-parse", "--is-shallow-repository"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if depth.returncode == 0 and depth.stdout.strip().lower() != "true":
+            break
+
+    depth = subprocess.run(
+        git_cmd + ["rev-parse", "--is-shallow-repository"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if depth.returncode == 0 and depth.stdout.strip().lower() == "true":
+        fetched = subprocess.run(
+            git_cmd + ["fetch", "--unshallow", remote, branch],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        outcome["fetch_steps"].append("--unshallow")
+        if fetched.returncode != 0:
+            outcome["error"] = f"History repair failed at --unshallow: {_first_git_error(fetched)}"
+            return outcome
+        if _git_update_commit_sha(git_cmd, repo_root, remote_ref) != target_sha:
+            outcome["error"] = (
+                f"UpdaterBoundaryChanged: {remote_ref} moved during history repair."
+            )
+            return outcome
+        merge_base = _git_update_merge_base(
+            git_cmd, repo_root, original_sha, target_sha
+        )
+        if merge_base:
+            outcome["merge_base"] = merge_base
+            return outcome
+
+    outcome["error"] = (
+        "No merge base exists after bounded history repair. "
+        "No worktree mutation was attempted."
+    )
+    return outcome
+
+
+def _capture_update_checkout_identity(git_cmd: list[str], repo_root: Path) -> dict:
+    """Capture the exact attached ref (if any) and HEAD commit."""
+    head = _git_update_commit_sha(git_cmd, repo_root, "HEAD")
+    if not head:
+        return {"ref": None, "head": None, "error": "Could not resolve HEAD."}
+    symbolic = subprocess.run(
+        git_cmd + ["symbolic-ref", "--quiet", "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if symbolic.returncode not in {0, 1}:
+        return {"ref": None, "head": head, "error": _first_git_error(symbolic)}
+    return {
+        "ref": symbolic.stdout.strip() if symbolic.returncode == 0 else None,
+        "head": head,
+        "error": None,
+    }
+
+
+def _restore_pinned_checkout(
+    git_cmd: list[str],
+    repo_root: Path,
+    detached_sha: str,
+    original_ref: Optional[str],
+    original_head: str,
+) -> bool:
+    """Restore a checkout only while it is still our known detached state."""
+    current = _capture_update_checkout_identity(git_cmd, repo_root)
+    if current["error"] or current["ref"] is not None or current["head"] != detached_sha:
+        return False
+    if original_ref is None:
+        command = ["checkout", "--quiet", "--detach", original_head]
+    else:
+        if not original_ref.startswith("refs/heads/"):
+            return False
+        if _git_update_commit_sha(git_cmd, repo_root, original_ref) != original_head:
+            return False
+        command = ["checkout", "--quiet", "--no-guess", original_ref.removeprefix("refs/heads/")]
+    restored = subprocess.run(
+        git_cmd + command,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if restored.returncode != 0:
+        return False
+    identity = _capture_update_checkout_identity(git_cmd, repo_root)
+    return (
+        identity["error"] is None
+        and identity["ref"] == original_ref
+        and identity["head"] == original_head
+    )
+
+
+def _git_update_worktree_is_clean(git_cmd: list[str], repo_root: Path) -> bool:
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain", "--untracked-files=all"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return status.returncode == 0 and not status.stdout.strip()
+
+
+def _recover_pinned_apply_failure(
+    git_cmd: list[str],
+    repo_root: Path,
+    branch_ref: str,
+    previous_sha: Optional[str],
+    target_sha: str,
+    detached_sha: str,
+    original_ref: Optional[str],
+    original_head: str,
+) -> bool:
+    """Undo our branch CAS only while checkout and ref still match our pins."""
+    current = _capture_update_checkout_identity(git_cmd, repo_root)
+    if current["error"] or _git_update_commit_sha(
+        git_cmd, repo_root, branch_ref
+    ) != target_sha:
+        return False
+
+    recovery_detached_sha = detached_sha
+    if current["ref"] is None and current["head"] == detached_sha:
+        pass
+    elif (
+        current["ref"] == branch_ref
+        and current["head"] == target_sha
+        and _git_update_worktree_is_clean(git_cmd, repo_root)
+    ):
+        detached = subprocess.run(
+            git_cmd + ["checkout", "--quiet", "--detach", target_sha],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if detached.returncode != 0:
+            return False
+        detached_identity = _capture_update_checkout_identity(git_cmd, repo_root)
+        if (
+            detached_identity["error"]
+            or detached_identity["ref"] is not None
+            or detached_identity["head"] != target_sha
+        ):
+            return False
+        recovery_detached_sha = target_sha
+    else:
+        return False
+
+    if previous_sha is None:
+        reverted = subprocess.run(
+            git_cmd + ["update-ref", "-d", branch_ref, target_sha],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    else:
+        reverted = subprocess.run(
+            git_cmd + ["update-ref", branch_ref, previous_sha, target_sha],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if reverted.returncode != 0:
+        return False
+    return _restore_pinned_checkout(
+        git_cmd, repo_root, recovery_detached_sha, original_ref, original_head
+    )
+
+
+def _apply_pinned_default_update(
+    git_cmd: list[str],
+    repo_root: Path,
+    branch_ref: str,
+    expected_old_sha: Optional[str],
+    target_sha: str,
+    original_ref: Optional[str],
+    original_head: str,
+) -> dict:
+    """Materialize a pinned target with detached worktree operations and ref CAS."""
+    outcome = {"success": False, "safe_to_restore_stash": False, "error": None}
+    if not branch_ref.startswith("refs/heads/"):
+        outcome["error"] = f"Invalid local branch ref: {branch_ref}"
+        return outcome
+    identity = _capture_update_checkout_identity(git_cmd, repo_root)
+    if (
+        identity["error"]
+        or identity["ref"] != original_ref
+        or identity["head"] != original_head
+    ):
+        outcome["error"] = "Checkout changed after the update boundary was pinned."
+        return outcome
+
+    actual_old_sha = _git_update_commit_sha(git_cmd, repo_root, branch_ref)
+    if actual_old_sha != expected_old_sha:
+        outcome["error"] = "Local target branch changed after it was pinned."
+        return outcome
+    detached_sha = expected_old_sha or original_head
+    detached = subprocess.run(
+        git_cmd + ["checkout", "--quiet", "--detach", detached_sha],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if detached.returncode != 0:
+        outcome["safe_to_restore_stash"] = _restore_pinned_checkout(
+            git_cmd, repo_root, detached_sha, original_ref, original_head
+        )
+        outcome["error"] = f"Could not detach the pinned checkout: {_first_git_error(detached)}"
+        return outcome
+    detached_identity = _capture_update_checkout_identity(git_cmd, repo_root)
+    if (
+        detached_identity["error"]
+        or detached_identity["ref"] is not None
+        or detached_identity["head"] != detached_sha
+    ):
+        outcome["safe_to_restore_stash"] = _restore_pinned_checkout(
+            git_cmd, repo_root, detached_sha, original_ref, original_head
+        )
+        outcome["error"] = "Checkout changed while preparing the pinned update."
+        return outcome
+
+    expected = expected_old_sha or ("0" * len(target_sha))
+    updated = subprocess.run(
+        git_cmd + ["update-ref", branch_ref, target_sha, expected],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if updated.returncode != 0:
+        outcome["safe_to_restore_stash"] = _restore_pinned_checkout(
+            git_cmd, repo_root, detached_sha, original_ref, original_head
+        )
+        outcome["error"] = (
+            "Local target branch changed during compare-and-swap; "
+            "the foreign tip was left untouched."
+        )
+        return outcome
+
+    def recover_after_cas() -> bool:
+        return _recover_pinned_apply_failure(
+            git_cmd,
+            repo_root,
+            branch_ref,
+            expected_old_sha,
+            target_sha,
+            detached_sha,
+            original_ref,
+            original_head,
+        )
+
+    if _git_update_commit_sha(git_cmd, repo_root, branch_ref) != target_sha:
+        outcome["safe_to_restore_stash"] = recover_after_cas()
+        outcome["error"] = "Target branch verification failed after compare-and-swap."
+        return outcome
+
+    current = _capture_update_checkout_identity(git_cmd, repo_root)
+    if current["error"] or current["ref"] is not None or current["head"] != detached_sha:
+        outcome["safe_to_restore_stash"] = recover_after_cas()
+        outcome["error"] = (
+            "Checkout changed after the target ref was updated; "
+            "the concurrent checkout was not overridden."
+        )
+        return outcome
+    branch_name = branch_ref.removeprefix("refs/heads/")
+    attached = subprocess.run(
+        git_cmd + ["checkout", "--quiet", "--no-guess", branch_name],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if attached.returncode != 0:
+        outcome["safe_to_restore_stash"] = recover_after_cas()
+        outcome["error"] = f"Target ref updated but checkout failed: {_first_git_error(attached)}"
+        return outcome
+    final = _capture_update_checkout_identity(git_cmd, repo_root)
+    if final["error"] or final["ref"] != branch_ref or final["head"] != target_sha:
+        outcome["safe_to_restore_stash"] = recover_after_cas()
+        outcome["error"] = "Target checkout identity changed during final verification."
+        return outcome
+
+    outcome["success"] = True
+    outcome["safe_to_restore_stash"] = original_ref == branch_ref
+    return outcome
+
+
+def _rollback_pinned_default_update(
+    git_cmd: list[str],
+    repo_root: Path,
+    branch_ref: str,
+    previous_sha: Optional[str],
+    target_sha: str,
+    original_ref: Optional[str],
+    original_head: str,
+) -> bool:
+    """CAS-roll back a bad target and restore the exact original checkout."""
+    identity = _capture_update_checkout_identity(git_cmd, repo_root)
+    if (
+        identity["error"]
+        or identity["ref"] != branch_ref
+        or identity["head"] != target_sha
+        or _git_update_commit_sha(git_cmd, repo_root, branch_ref) != target_sha
+    ):
+        return False
+    detached = subprocess.run(
+        git_cmd + ["checkout", "--quiet", "--detach", target_sha],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if detached.returncode != 0:
+        return False
+    current = _capture_update_checkout_identity(git_cmd, repo_root)
+    if current["error"] or current["ref"] is not None or current["head"] != target_sha:
+        return False
+    if previous_sha is None:
+        rolled_back = subprocess.run(
+            git_cmd + ["update-ref", "-d", branch_ref, target_sha],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    else:
+        rolled_back = subprocess.run(
+            git_cmd + ["update-ref", branch_ref, previous_sha, target_sha],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if rolled_back.returncode != 0:
+        return False
+    return _restore_pinned_checkout(
+        git_cmd,
+        repo_root,
+        target_sha,
+        original_ref,
+        original_head,
+    )
+
+
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore tracked ``package-lock.json`` files that npm dirtied locally.
 
@@ -3694,19 +4138,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Discard npm lockfile churn before any stash/branch logic. npm rewrites
-    # tracked package-lock.json files non-deterministically at install/build
-    # time (platform-specific optional deps, ideallyInert annotations, etc.),
-    # which is never an intentional edit on a managed install but leaves the
-    # tree dirty — forcing an autostash on every update and making branch
-    # switches fragile. Restoring them first lets the common case (only
-    # lockfile churn) update with a clean tree.
-    _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT)
-    # Same rationale, different generator: line-ending churn is machine-made
-    # dirt on a managed checkout, so clear it (and stop generating it) before
-    # the stash/branch logic rather than autostashing the entire tree.
-    _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT)
-
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
@@ -3733,6 +4164,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # minutes on a non-single-branch checkout. Fetch only what we update
         # against.
         branch = _m()._resolve_update_branch(args)
+        valid_branch = subprocess.run(
+            git_cmd + ["check-ref-format", "--branch", branch],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if valid_branch.returncode != 0:
+            print(f"✗ Invalid update branch: {branch!r}")
+            sys.exit(1)
+        original_identity = _m()._capture_update_checkout_identity(
+            git_cmd, _m().PROJECT_ROOT
+        )
+        if original_identity["error"]:
+            print(f"✗ {original_identity['error']}")
+            sys.exit(1)
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
@@ -3758,87 +4205,141 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
 
-        # Get current branch (returns literal "HEAD" when detached)
-        result = subprocess.run(
-            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            check=True,
+        remote_ref = f"refs/remotes/origin/{branch}"
+        branch_ref = f"refs/heads/{branch}"
+        pinned_target_sha = _m()._git_update_commit_sha(
+            git_cmd, _m().PROJECT_ROOT, remote_ref
         )
-        current_branch = result.stdout.strip()
-
-        # If user is on a different branch than the update target, switch
-        # to the target. When the target is "main" this is the historical
-        # "always update against main" behavior; for any other target it's
-        # the same thing — get HEAD onto the requested branch first, then
-        # fast-forward.
-        if current_branch != branch:
-            label = (
-                "detached HEAD"
-                if current_branch == "HEAD"
-                else f"branch '{current_branch}'"
+        if not pinned_target_sha:
+            print(f"✗ Could not resolve fetched target {remote_ref}.")
+            sys.exit(1)
+        pinned_origin_sha = pinned_target_sha
+        fork_sync_needed = False
+        if is_fork and branch == "main":
+            fork_plan = _m()._pin_fork_upstream_target(
+                git_cmd, _m().PROJECT_ROOT, pinned_origin_sha
             )
-            print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
-            # Stash before checkout so uncommitted work isn't lost
-            auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
-            checkout_result = subprocess.run(
-                git_cmd + ["checkout", branch],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-            )
-            if checkout_result.returncode != 0:
-                # Local checkout doesn't have this branch yet. Try to set
-                # it up as a tracking branch of origin/<branch>. This is
-                # the common case when the requested branch exists upstream
-                # but was never checked out locally.
-                track_result = subprocess.run(
-                    git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
-                    cwd=_m().PROJECT_ROOT,
-                    capture_output=True,
-                    text=True, encoding="utf-8", errors="replace",
+            if fork_plan["error"]:
+                print(f"✗ {fork_plan['error']}")
+                print(
+                    "  No lockfile discard, stash, checkout, reset, or ref update was attempted."
                 )
-                if track_result.returncode != 0:
-                    # Restore the user's prior branch + stash before bailing
-                    # so we don't leave them stranded in a weird state.
-                    if auto_stash_ref is not None:
-                        _m()._restore_stashed_changes(
-                            git_cmd,
-                            _m().PROJECT_ROOT,
-                            auto_stash_ref,
-                            prompt_user=False,
-                            input_fn=gw_input_fn,
-                        )
-                    print(f"✗ Branch '{branch}' does not exist locally or on origin.")
-                    if track_result.stderr.strip():
-                        print(f"  {track_result.stderr.strip().splitlines()[0]}")
-                    sys.exit(1)
-        else:
-            auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
+                sys.exit(1)
+            pinned_target_sha = fork_plan["target_sha"]
+            fork_sync_needed = fork_plan["sync_needed"]
 
-        prompt_for_restore = (
-            auto_stash_ref is not None
-            and not assume_yes
-            and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+        pinned_pre_update_sha = _m()._git_update_commit_sha(
+            git_cmd, _m().PROJECT_ROOT, branch_ref
         )
+        history_start_sha = pinned_pre_update_sha or original_identity["head"]
+        preflight = _m()._ensure_update_merge_base(
+            git_cmd,
+            _m().PROJECT_ROOT,
+            branch,
+            history_start_sha,
+            pinned_target_sha,
+        )
+        if not preflight["merge_base"]:
+            print(f"✗ {preflight['error']}")
+            print(
+                "  No lockfile discard, stash, checkout, reset, or ref update was attempted."
+            )
+            sys.exit(1)
+        if pinned_pre_update_sha is not None:
+            fast_forward_error = _m()._pinned_fast_forward_error(
+                git_cmd,
+                _m().PROJECT_ROOT,
+                pinned_pre_update_sha,
+                pinned_target_sha,
+            )
+            if fast_forward_error:
+                print(f"✗ {fast_forward_error}")
+                print(
+                    "  No lockfile discard, stash, checkout, or ref update was attempted."
+                )
+                sys.exit(1)
 
-        # Check if there are updates
-        result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+        after_preflight = _m()._capture_update_checkout_identity(
+            git_cmd, _m().PROJECT_ROOT
+        )
+        if after_preflight != original_identity:
+            print(
+                "✗ Checkout changed during update preflight; retry from the desired checkout."
+            )
+            sys.exit(1)
+
+        # Generated lockfile/EOL churn is the first permitted worktree mutation,
+        # only after the pinned history boundary has been proven.
+        _m()._discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT)
+        _m()._normalize_managed_eol(git_cmd, _m().PROJECT_ROOT)
+        after_cleanup = _m()._capture_update_checkout_identity(
+            git_cmd, _m().PROJECT_ROOT
+        )
+        if after_cleanup != original_identity:
+            print("✗ Checkout changed during generated-file cleanup; no stash was attempted.")
+            sys.exit(1)
+
+        count_result = subprocess.run(
+            git_cmd
+            + ["rev-list", f"{history_start_sha}..{pinned_target_sha}", "--count"],
             cwd=_m().PROJECT_ROOT,
             capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
-        commit_count = int(result.stdout.strip())
+        commit_count = int(count_result.stdout.strip())
+        auto_stash_ref = None
+        prompt_for_restore = False
+        exact_target = pinned_pre_update_sha == pinned_target_sha
+        if not exact_target:
+            if original_identity["ref"] != branch_ref:
+                label = (
+                    "detached HEAD"
+                    if original_identity["ref"] is None
+                    else f"branch '{original_identity['ref'].removeprefix('refs/heads/')}'"
+                )
+                print(
+                    f"  ⚠ Currently on {label} — updating {branch} through a pinned checkout..."
+                )
+            auto_stash_ref = _m()._stash_local_changes_if_needed(
+                git_cmd, _m().PROJECT_ROOT
+            )
+            prompt_for_restore = (
+                auto_stash_ref is not None
+                and not assume_yes
+                and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+            )
 
         if commit_count == 0:
             _invalidate_update_cache()
 
-            # Even if origin is up to date, the fork may be behind upstream
-            if is_fork and branch == "main":
-                _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
+            if fork_sync_needed:
+                syntax_ok, failing_path, syntax_error = (
+                    _m()._validate_critical_files_syntax_at_commit(
+                        git_cmd, _m().PROJECT_ROOT, pinned_target_sha
+                    )
+                )
+                if not syntax_ok:
+                    print(
+                        f"✗ Refusing to sync fork: critical syntax error in {failing_path}."
+                    )
+                    if syntax_error:
+                        print(f"  {syntax_error}")
+                    sys.exit(1)
+                print("→ Syncing verified target to fork...")
+                if _m()._push_pinned_fork_target(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    pinned_target_sha,
+                    pinned_origin_sha,
+                ):
+                    print("  ✓ Fork synced with upstream")
+                else:
+                    print(
+                        "  ℹ Fork changed concurrently or could not be updated; local checkout is unchanged."
+                    )
 
             # Restore stash and switch back to original branch if we moved
             if auto_stash_ref is not None:
@@ -3848,14 +4349,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     auto_stash_ref,
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
-                )
-            if current_branch not in {branch, "HEAD"}:
-                subprocess.run(
-                    git_cmd + ["checkout", current_branch],
-                    cwd=_m().PROJECT_ROOT,
-                    capture_output=True,
-                    text=True, encoding="utf-8", errors="replace",
-                    check=False,
+                    expected_identity=original_identity,
                 )
 
             # "No new commits" does not mean the managed interpreter is safe.
@@ -3936,117 +4430,104 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print(f"→ Found {commit_count} new commit(s)")
 
-        print("→ Pulling updates...")
-        update_succeeded = False
-        # Capture the pre-pull SHA so we can auto-roll-back if the new code
-        # has a syntax error in a critical-path file (PR #28452 incident:
-        # orphan merge-conflict markers in hermes_cli/config.py bricked
-        # every user who ran ``hermes update`` for the 7 minutes between
-        # the bad commit and the fix landing).
-        pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
-        try:
-            # Merge the ref we already fetched above (→ Fetching updates...)
-            # instead of `git pull`, which performs a SECOND network fetch of
-            # the same branch (~0.5-1.5 s of redundant round-trip per update).
-            # `merge --ff-only origin/<branch>` is byte-identical in effect to
-            # `pull --ff-only origin <branch>` given the fresh tracking ref;
-            # the divergence fallback below is unchanged.
-            pull_result = subprocess.run(
-                git_cmd + ["merge", "--ff-only", f"origin/{branch}"],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-            )
-            if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+        print("→ Applying pinned update...")
+        applied = _m()._apply_pinned_default_update(
+            git_cmd,
+            _m().PROJECT_ROOT,
+            branch_ref,
+            pinned_pre_update_sha,
+            pinned_target_sha,
+            original_identity["ref"],
+            original_identity["head"],
+        )
+        if not applied["success"]:
+            print(f"✗ {applied['error']}")
+            if auto_stash_ref is not None and applied["safe_to_restore_stash"]:
+                _m()._restore_stashed_changes(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    auto_stash_ref,
+                    prompt_user=False,
+                    input_fn=gw_input_fn,
+                    expected_identity=original_identity,
                 )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=_m().PROJECT_ROOT,
-                    capture_output=True,
-                    text=True, encoding="utf-8", errors="replace",
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
-                    )
-                    sys.exit(1)
+            elif auto_stash_ref is not None:
+                print(f"  Local changes remain preserved in stash {auto_stash_ref}.")
+            sys.exit(1)
 
-            # Post-pull syntax guard: validate critical-path files actually
-            # parse before declaring the update successful. If a bad commit
-            # made it through CI (e.g. admin-merge bypass of a failing
-            # ruff check), this catches it on the user side and rolls back
-            # so the CLI stays bootable. The user can then retry ``hermes
-            # update`` later once a fix lands upstream.
-            syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(
-                _m().PROJECT_ROOT
+        syntax_ok, failing_path, syntax_error = (
+            _m()._validate_critical_files_syntax(_m().PROJECT_ROOT)
+        )
+        if not syntax_ok:
+            print()
+            print("✗ Updated code has a syntax error in a critical file:")
+            print(f"  {failing_path}")
+            if syntax_error:
+                for line in str(syntax_error).splitlines()[:6]:
+                    print(f"    {line}")
+            rollback_sha = pinned_pre_update_sha or original_identity["head"]
+            print()
+            print(f"→ Rolling back to {rollback_sha[:10]}...")
+            rolled_back = _m()._rollback_pinned_default_update(
+                git_cmd,
+                _m().PROJECT_ROOT,
+                branch_ref,
+                pinned_pre_update_sha,
+                pinned_target_sha,
+                original_identity["ref"],
+                original_identity["head"],
             )
-            if not syntax_ok:
-                print()
-                print("✗ Pulled code has a syntax error in a critical file:")
-                print(f"  {failing_path}")
-                if syntax_error:
-                    # py_compile errors can be multi-line; show the first
-                    # ~6 lines so the user sees the actual SyntaxError text.
-                    for line in str(syntax_error).splitlines()[:6]:
-                        print(f"    {line}")
-                if pre_pull_sha:
-                    print()
-                    print(f"→ Rolling back to {pre_pull_sha[:10]}...")
-                    rollback_result = subprocess.run(
-                        git_cmd + ["reset", "--hard", pre_pull_sha],
-                        cwd=_m().PROJECT_ROOT,
-                        capture_output=True,
-                        text=True, encoding="utf-8", errors="replace",
-                    )
-                    if rollback_result.returncode == 0:
-                        print("  ✓ Rollback complete — your install is unchanged.")
-                        print("  Try ``hermes update`` again later once a fix lands.")
-                    else:
-                        print("  ✗ Rollback failed. Recover manually with:")
-                        print(f"    cd {_m().PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
-                        if rollback_result.stderr.strip():
-                            print(f"    ({rollback_result.stderr.strip().splitlines()[0]})")
-                else:
-                    print()
-                    print("  Could not capture pre-pull SHA — recover manually with:")
-                    print(f"    cd {_m().PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
-                sys.exit(1)
-
-            update_succeeded = True
-        finally:
-            if auto_stash_ref is not None:
-                # Don't attempt stash restore if the code update itself failed —
-                # working tree is in an unknown state.
-                if not update_succeeded:
-                    print(
-                        f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
-                    )
-                    print("  Restore manually with: git stash apply")
-                elif discard_local_changes:
-                    # Non-interactive update + user opted into discarding local
-                    # source edits (updates.non_interactive_local_changes:
-                    # discard). Throw the stash away instead of re-applying it.
-                    _m()._discard_stashed_changes(
+            if rolled_back:
+                print("  ✓ Code rollback complete.")
+                if auto_stash_ref is not None:
+                    restored = _m()._restore_stashed_changes(
                         git_cmd,
                         _m().PROJECT_ROOT,
                         auto_stash_ref,
-                    )
-                else:
-                    _m()._restore_stashed_changes(
-                        git_cmd,
-                        _m().PROJECT_ROOT,
-                        auto_stash_ref,
-                        prompt_user=prompt_for_restore,
+                        prompt_user=False,
                         input_fn=gw_input_fn,
+                        expected_identity=original_identity,
                     )
+                    if not restored:
+                        print(
+                            f"  Local changes remain preserved in stash {auto_stash_ref}."
+                        )
+            else:
+                print(
+                    "  ✗ Rollback stopped because checkout or branch identity changed."
+                )
+                if auto_stash_ref is not None:
+                    print(f"  Local changes remain preserved in stash {auto_stash_ref}.")
+            sys.exit(1)
+
+        if auto_stash_ref is not None:
+            stash_handled = None
+            target_identity = {"ref": branch_ref, "head": pinned_target_sha}
+            if discard_local_changes:
+                stash_handled = _m()._discard_stashed_changes(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    auto_stash_ref,
+                    expected_identity=target_identity,
+                )
+            elif applied["safe_to_restore_stash"]:
+                stash_handled = _m()._restore_stashed_changes(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    auto_stash_ref,
+                    prompt_user=prompt_for_restore,
+                    input_fn=gw_input_fn,
+                    expected_identity=target_identity,
+                )
+            else:
+                print(
+                    f"  Local changes from the previous checkout remain preserved in stash {auto_stash_ref}."
+                )
+            if stash_handled is False:
+                print(
+                    "✗ Stopping update because local-change recovery was not completed safely."
+                )
+                sys.exit(1)
 
         _invalidate_update_cache()
 
@@ -4060,9 +4541,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
         _m()._record_bytecode_fingerprint()
 
-        # Fork upstream sync logic (only for main branch on forks)
-        if is_fork and branch == "main":
-            _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
+        if fork_sync_needed:
+            syntax_ok, failing_path, syntax_error = (
+                _m()._validate_critical_files_syntax_at_commit(
+                    git_cmd, _m().PROJECT_ROOT, pinned_target_sha
+                )
+            )
+            if not syntax_ok:
+                print(
+                    f"✗ Refusing to sync fork: critical syntax error in {failing_path}."
+                )
+                if syntax_error:
+                    print(f"  {syntax_error}")
+                sys.exit(1)
+            print("→ Syncing verified target to fork...")
+            if _m()._push_pinned_fork_target(
+                git_cmd,
+                _m().PROJECT_ROOT,
+                pinned_target_sha,
+                pinned_origin_sha,
+            ):
+                print("  ✓ Fork synced with upstream")
+            else:
+                print(
+                    "  ℹ Fork changed concurrently or could not be updated; local checkout remains verified."
+                )
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras

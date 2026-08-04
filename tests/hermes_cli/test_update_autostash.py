@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 from subprocess import CalledProcessError
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -57,10 +58,44 @@ def _patch_managed_uv(request):
 
 def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
-    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git").mkdir(exist_ok=True)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        hermes_main, "_pause_windows_gateways_for_update", lambda: None
+    )
+    monkeypatch.setattr(
+        hermes_main, "_resume_windows_gateways_after_update", lambda _token: None
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_capture_update_checkout_identity",
+        lambda *a, **kw: {"ref": "refs/heads/main", "head": "old123", "error": None},
+    )
+
+    def _fake_sha(_git, _root, ref):
+        if ref.startswith("refs/remotes/origin/"):
+            return "target123"
+        if ref.startswith("refs/heads/") or ref == "HEAD":
+            return "old123"
+        return None
+
+    monkeypatch.setattr(hermes_main, "_git_update_commit_sha", _fake_sha)
+    monkeypatch.setattr(
+        hermes_main,
+        "_ensure_update_merge_base",
+        lambda *a, **kw: {"merge_base": "base123", "error": None, "fetch_steps": []},
+    )
+    monkeypatch.setattr(hermes_main, "_discard_lockfile_churn", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_normalize_managed_eol", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *a, **kw: True)
+    monkeypatch.setattr(
+        hermes_main,
+        "_apply_pinned_default_update",
+        lambda *a, **kw: {"success": True, "safe_to_restore_stash": True, "error": None},
+    )
+    monkeypatch.setattr(hermes_main, "_rollback_pinned_default_update", lambda *a, **kw: True)
+    monkeypatch.setattr(hermes_main, "_pinned_fast_forward_error", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_config, "get_missing_env_vars", lambda required_only=True: [])
     monkeypatch.setattr(hermes_config, "get_missing_config_fields", lambda: [])
     monkeypatch.setattr(hermes_config, "check_config_version", lambda: (5, 5))
@@ -166,8 +201,8 @@ def _make_update_side_effect(
 # reset --hard failure — don't attempt stash restore
 # ---------------------------------------------------------------------------
 
-def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, capsys):
-    """When reset --hard fails, stash restore is skipped with a helpful message."""
+def test_cmd_update_preserves_stash_when_pinned_apply_is_unsafe(monkeypatch, tmp_path, capsys):
+    """An unsafe pinned-apply failure leaves the immutable stash untouched."""
     _setup_update_mocks(monkeypatch, tmp_path)
     # Re-enable stash so it actually returns a ref
     monkeypatch.setattr(
@@ -180,7 +215,16 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
         lambda *a, **kw: restore_calls.append(1) or True,
     )
 
-    side_effect, _ = _make_update_side_effect(ff_only_fails=True, reset_fails=True)
+    monkeypatch.setattr(
+        hermes_main,
+        "_apply_pinned_default_update",
+        lambda *a, **kw: {
+            "success": False,
+            "safe_to_restore_stash": False,
+            "error": "checkout identity changed",
+        },
+    )
+    side_effect, _ = _make_update_side_effect()
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     with pytest.raises(SystemExit, match="1"):
@@ -337,3 +381,98 @@ def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
         assert (pkg / "hermes-agent.rb").read_text() == "formula\n"
     finally:
         os.chmod(pkg, 0o755)
+
+
+def test_cmd_update_uses_pinned_apply_without_merge_or_reset(monkeypatch, tmp_path):
+    """The orchestrator delegates to the pinned CAS path, never merge/reset."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    applied = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_apply_pinned_default_update",
+        lambda *args, **kwargs: applied.append(args)
+        or {"success": True, "safe_to_restore_stash": True, "error": None},
+    )
+    side_effect, recorded = _make_update_side_effect(ff_only_fails=True)
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert len(applied) == 1
+    assert applied[0][2:5] == ("refs/heads/main", "old123", "target123")
+    commands = [" ".join(command) for command in recorded]
+    assert not any("merge --ff-only" in command for command in commands)
+    assert not any("reset --hard" in command for command in commands)
+
+
+def test_pinned_default_update_uses_ref_cas_and_attaches_target(tmp_path):
+    """A real repository moves the branch only to the exact pinned commit."""
+    def git(*args):
+        return subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "tracked.txt").write_text("old\n")
+    git("add", "tracked.txt")
+    git("commit", "-qm", "old")
+    old_sha = git("rev-parse", "HEAD").stdout.strip()
+    git("checkout", "-qb", "upstream")
+    (tmp_path / "tracked.txt").write_text("target\n")
+    git("commit", "-qam", "target")
+    target_sha = git("rev-parse", "HEAD").stdout.strip()
+    git("checkout", "-q", "main")
+
+    result = hermes_main._apply_pinned_default_update(
+        ["git"],
+        tmp_path,
+        "refs/heads/main",
+        old_sha,
+        target_sha,
+        "refs/heads/main",
+        old_sha,
+    )
+
+    assert result == {"success": True, "safe_to_restore_stash": True, "error": None}
+    assert git("symbolic-ref", "HEAD").stdout.strip() == "refs/heads/main"
+    assert git("rev-parse", "HEAD").stdout.strip() == target_sha
+
+
+def test_pinned_default_update_rejects_stale_expected_tip(tmp_path):
+    """A stale compare-and-swap expectation cannot overwrite the live branch."""
+    def git(*args):
+        return subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "tracked.txt").write_text("live\n")
+    git("add", "tracked.txt")
+    git("commit", "-qm", "live")
+    live_sha = git("rev-parse", "HEAD").stdout.strip()
+
+    result = hermes_main._apply_pinned_default_update(
+        ["git"],
+        tmp_path,
+        "refs/heads/main",
+        "0" * 40,
+        live_sha,
+        "refs/heads/main",
+        live_sha,
+    )
+
+    assert result["success"] is False
+    assert "changed after it was pinned" in result["error"]
+    assert git("rev-parse", "HEAD").stdout.strip() == live_sha

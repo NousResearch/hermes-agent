@@ -30,6 +30,7 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
@@ -130,6 +131,44 @@ function SessionColorSwatches({ sessionId }: { sessionId: string }) {
       swatches={PROFILE_SWATCHES}
       value={overrides[durableId] ?? null}
     />
+  )
+}
+
+// The project list inside the session menu's "Move to project" submenu. Its own
+// component so only an OPEN submenu subscribes to the stores (same reasoning as
+// SessionColorSwatches). Re-homes the session's workspace at the target
+// project's root — the fix for a chat created in the wrong folder. The current
+// owner and folderless projects (the Home bucket) are excluded: there is
+// nothing to move into.
+function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; sessionId: string; profile?: string }) {
+  const { t } = useI18n()
+  const p = t.sidebar.projects
+  const tree = useStore($projectTree)
+  const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
+  const cwd = session?.cwd?.trim() || ''
+  const currentProjectId = cwd ? projectIdForCwd(cwd) : null
+  const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+
+  if (targets.length === 0) {
+    return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
+  }
+
+  return (
+    <>
+      {targets.map(node => (
+        <kit.Item
+          key={node.id}
+          onSelect={() => {
+            triggerHaptic('selection')
+            moveSessionToProject(sessionId, node.id, profile)
+              .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(node.label) }))
+              .catch(err => notifyError(err, p.moveFailed))
+          }}
+        >
+          {node.label}
+        </kit.Item>
+      ))}
+    </>
   )
 }
 
@@ -355,6 +394,15 @@ function useSessionActions({
       />
       <kit.Separator />
       {workItems.map(item => renderActionItem(kit, item))}
+      <kit.Sub>
+        <kit.SubTrigger disabled={!sessionId}>
+          <Codicon name="folder" size="0.875rem" />
+          <span>{t.sidebar.projects.moveToProject}</span>
+        </kit.SubTrigger>
+        <kit.SubContent>
+          <MoveToProjectItems kit={kit} profile={profile} sessionId={sessionId} />
+        </kit.SubContent>
+      </kit.Sub>
       {tabItems.length > 0 && (
         <>
           <kit.Separator />

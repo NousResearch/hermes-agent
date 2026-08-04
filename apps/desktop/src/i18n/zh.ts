@@ -2875,7 +2875,8 @@ export const zh: Translations = {
     layoutNamePlaceholder: fallback => `布局名称（${fallback}）`,
     saveApply: '保存并应用',
     notExpressible: '此排列互相咬合（风车形）——暂无法表示为嵌套拆分',
-    zoneCount: count => `${count} 个区域`
+    zoneCount: count => `${count} 个区域`,
+    tabCount: count => `${count} 个标签页`
   },
 
   assistant: {

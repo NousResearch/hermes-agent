@@ -11,6 +11,7 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
     COMPRESSED_SUMMARY_METADATA_KEY,
     HISTORICAL_TASK_HEADING,
+    MAX_ITERATIONS_SUMMARY_REQUEST,
     SUMMARY_PREFIX,
     ContextCompressor,
     _NO_USER_TASK_SENTINEL,
@@ -200,6 +201,40 @@ def test_zero_user_provenance_survives_iterative_compaction(compressor):
     ]
     assert len(second_handoffs) == 1
     assert second_handoffs[0][COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] is False
+
+
+def test_max_iterations_nudge_is_synthetic_not_actionable():
+    """#78580: the max-iteration runtime nudge is runtime scaffolding, not a
+    human turn. It is appended as ``role="user"`` and persisted verbatim in
+    state.db (metadata flags do not survive projection), so recognition must be
+    content-based — exactly like the continuation/todo markers."""
+    # The projected form: a bare role/content row with no internal metadata.
+    nudge = {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST}
+
+    assert ContextCompressor._is_synthetic_compression_user_turn(nudge) is True
+    # A real human turn with the same shape stays actionable.
+    human = {"role": "user", "content": "Ship the release notes for v2."}
+    assert ContextCompressor._is_synthetic_compression_user_turn(human) is False
+    assert ContextCompressor._transcript_has_real_user_turn([nudge]) is False
+    assert ContextCompressor._transcript_has_real_user_turn([human, nudge]) is True
+
+
+def test_real_task_wins_over_trailing_max_iterations_nudge(compressor):
+    """The tail anchor must resolve to the human task, not the nudge that the
+    runtime appended after it when iterations were exhausted."""
+    human = {"role": "user", "content": "Refactor the auth module and add tests."}
+    messages = [
+        human,
+        {"role": "assistant", "content": "Working on it.", "tool_calls": [
+            {"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST},
+    ]
+
+    idx = compressor._find_last_user_message_idx(messages, head_end=0)
+    assert idx == 0, "nudge was selected as the anchor instead of the human task"
+    assert messages[idx]["content"] == human["content"]
 
 
 def test_compress_context_todo_snapshot_stays_synthetic_across_two_boundaries(

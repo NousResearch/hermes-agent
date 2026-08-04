@@ -2317,11 +2317,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             defer_logical_completion=True,
         )
 
-    summary_request = (
-        "You've reached the maximum number of tool-calling iterations allowed. "
-        "Please provide a final response summarizing what you've found and accomplished so far, "
-        "without calling any more tools."
-    )
+    # Shared constant so compaction recognizers can identify this runtime nudge
+    # by its stable content after SessionDB projection strips metadata flags
+    # (see MAX_ITERATIONS_SUMMARY_REQUEST / _is_synthetic_compression_user_turn).
+    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+
+    summary_request = MAX_ITERATIONS_SUMMARY_REQUEST
     messages.append({"role": "user", "content": summary_request})
 
     try:

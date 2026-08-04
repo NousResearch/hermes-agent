@@ -168,6 +168,15 @@ _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT = (
     "This marker exists because the compacted transcript contained "
     "no preserved user turn."
 )
+# Runtime nudge appended by ``handle_max_iterations`` as a ``role="user"`` row.
+# SessionDB projection strips underscore-prefixed metadata, so a synthetic flag
+# would not survive persistence; the stable content string is the authoritative
+# marker for compaction recognizers (mirrors the continuation/todo markers).
+MAX_ITERATIONS_SUMMARY_REQUEST = (
+    "You've reached the maximum number of tool-calling iterations allowed. "
+    "Please provide a final response summarizing what you've found and accomplished so far, "
+    "without calling any more tools."
+)
 
 
 def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
@@ -4368,6 +4377,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT,
             _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
+            MAX_ITERATIONS_SUMMARY_REQUEST,
         } or text.startswith(
             TODO_INJECTION_HEADER + "\n"
         )

@@ -1455,14 +1455,20 @@ class DockerEnvironment(BaseEnvironment):
                             "unresponsive (fuse-overlayfs daemon likely died "
                             "with a prior gateway restart) — removing it and "
                             "starting fresh (task=%s, profile=%s).",
-                            container_id[:12], state, task_label, profile_name,
+                            container_id[:12],
+                            state,
+                            task_label,
+                            profile_name,
                         )
                         self._remove_container(container_id)
                         self._container_id = None
                     else:
                         logger.info(
                             "Reusing container %s (task=%s, profile=%s, prior state=%s)",
-                            container_id[:12], task_label, profile_name, state,
+                            container_id[:12],
+                            task_label,
+                            profile_name,
+                            state,
                         )
                         reused = True
 
@@ -1641,9 +1647,7 @@ class DockerEnvironment(BaseEnvironment):
     # fuse-overlayfs daemon backing the mount was killed with its parent
     # cgroup. The container must be removed before recreation, or label-based
     # reuse would pick the same corpse back up (#77301).
-    _DEAD_ROOTFS_PATTERNS = (
-        "transport endpoint is not connected",
-    )
+    _DEAD_ROOTFS_PATTERNS = ("transport endpoint is not connected",)
 
     def _is_container_gone(self, output: str) -> bool:
         """Return True if the output indicates the container no longer exists."""
@@ -1698,7 +1702,8 @@ class DockerEnvironment(BaseEnvironment):
                     "Recovery: container %s reports %s but its rootfs is "
                     "unresponsive (fuse-overlayfs daemon likely died) — "
                     "removing it and creating a fresh container",
-                    cid[:12], state,
+                    cid[:12],
+                    state,
                 )
                 self._remove_container(cid)
                 self._container_id = None
@@ -1870,8 +1875,12 @@ class DockerEnvironment(BaseEnvironment):
         try:
             result = subprocess.run(
                 [self._docker_exe, "exec", container_id, "true"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=5, check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                check=False,
                 stdin=subprocess.DEVNULL,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
@@ -1880,7 +1889,8 @@ class DockerEnvironment(BaseEnvironment):
         if result.returncode != 0:
             logger.warning(
                 "Liveness probe failed for container %s: %s — treating as dead",
-                container_id[:12], (result.stderr or result.stdout).strip()[:200],
+                container_id[:12],
+                (result.stderr or result.stdout).strip()[:200],
             )
             return False
         return True

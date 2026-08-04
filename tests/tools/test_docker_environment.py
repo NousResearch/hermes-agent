@@ -611,10 +611,13 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 # ── Cross-process container reuse (issue #20561) ──────────────────
 
 
-def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
-                                     start_succeeds: bool = True,
-                                     exec_alive: bool = True,
-                                     exec_error: str = ""):
+def _mock_subprocess_run_with_reuse(
+    monkeypatch,
+    ps_state: str | None,
+    start_succeeds: bool = True,
+    exec_alive: bool = True,
+    exec_error: str = "",
+):
     """Reuse-aware subprocess.run mock.
 
     ``ps_state`` controls what ``docker ps -a --filter ...`` returns:
@@ -661,8 +664,11 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
                 # Rootfs liveness probe (docker exec <cid> true, issue #77301).
                 if not exec_alive:
                     return subprocess.CompletedProcess(
-                        cmd, 125, stdout="",
-                        stderr=exec_error or (
+                        cmd,
+                        125,
+                        stdout="",
+                        stderr=exec_error
+                        or (
                             "Error: lstat .../overlay/<hash>/merged//etc/passwd: "
                             "transport endpoint is not connected"
                         ),
@@ -715,7 +721,8 @@ def test_reuse_probes_running_container(monkeypatch):
     env = _make_dummy_env(task_id="reuse-probe")
 
     exec_invocations = [
-        c for c in calls
+        c
+        for c in calls
         if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "exec"
     ]
     assert exec_invocations, "reuse must probe the container's rootfs liveness"
@@ -746,7 +753,8 @@ def test_reuse_detects_dead_rootfs_and_recreates(monkeypatch):
 
     # The dead container must be removed...
     rm_invocations = [
-        c for c in calls
+        c
+        for c in calls
         if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"
     ]
     assert rm_invocations, "the dead container must be removed"
@@ -755,7 +763,8 @@ def test_reuse_detects_dead_rootfs_and_recreates(monkeypatch):
     )
     # ...and a fresh container created in its place.
     run_invocations = [
-        c for c in calls
+        c
+        for c in calls
         if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
     ]
     assert run_invocations, "a fresh docker run must replace the dead container"
@@ -1544,7 +1553,8 @@ def test_execute_recovers_from_enotconn_dead_rootfs(monkeypatch):
     assert result.get("output") == "hello\n"
     assert len(exec_calls) == 2, "the command must be retried once after recreation"
     rm_invocations = [
-        c for c in subprocess_calls
+        c
+        for c in subprocess_calls
         if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"
     ]
     assert rm_invocations, "the dead container must be removed before recreation"

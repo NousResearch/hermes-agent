@@ -3548,6 +3548,47 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     print("    systemctl --user restart <unit>   # user-scope")
     print("    sudo systemctl restart <unit>     # system-scope")
 
+def _surviving_gateway_pids_after_failed_restart():
+    """Best-effort PIDs of gateways still running after the restart phase died.
+
+    Returns ``None`` when the answer cannot be determined — most importantly
+    when ``hermes_cli.gateway`` itself no longer imports, which is one of the
+    ways the restart phase aborts in the first place (the update replaced the
+    checkout under a process that already loaded the old modules). ``None`` and
+    a non-empty list are both treated as "assume stale" by the caller; only a
+    positive empty result is proof that nothing needs restarting.
+    """
+    try:
+        from hermes_cli.gateway import find_gateway_pids
+
+        return list(find_gateway_pids(all_profiles=True))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Could not probe for surviving gateways after update: %s", exc)
+        return None
+
+def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
+    """Print a recovery warning when the whole restart phase raised.
+
+    Issue #78574: the gateway auto-restart phase was wrapped in a blanket
+    ``except Exception`` that only logged at debug level, so an early failure
+    (e.g. importing ``hermes_cli.gateway`` from the freshly pulled checkout)
+    erased every drain/restart line from the update output. The update still
+    printed "Update complete!" and exited 0 while the running gateway kept
+    serving pre-update modules against replaced source files — the next turn
+    died with an ImportError.
+    """
+    print()
+    print(f"⚠ Update incomplete — gateway auto-restart failed: {exc}")
+    if pids:
+        listed = ", ".join(str(pid) for pid in pids)
+        print(f"  Gateway process(es) still running pre-update code: {listed}")
+    else:
+        print("  Any gateway still running is serving pre-update code")
+        print("  (mixed sys.modules) against the updated checkout.")
+    print("  Restart it manually, then verify:")
+    print("    hermes gateway restart")
+    print("    hermes gateway status")
+
 def _refresh_windows_gateway_launchers() -> None:
     """Regenerate installed Windows gateway launcher scripts after update.
 
@@ -5804,6 +5845,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         except Exception as e:
             logger.debug("Gateway restart during update failed: %s", e)
+            # An exception escaping the whole phase means the drain/restart
+            # output the user relies on never printed. Don't let that pass for
+            # a clean update: surface it and treat the fleet as stale unless we
+            # can positively prove no gateway is running (#78574).
+            _surviving = _surviving_gateway_pids_after_failed_restart()
+            if _surviving is None or _surviving:
+                gateway_fleet_restart_incomplete = True
+                _warn_gateway_restart_phase_aborted(e, _surviving)
+                if gateway_mode:
+                    _exit_code_path = get_hermes_home() / ".update_exit_code"
+                    try:
+                        _exit_code_path.write_text("1", encoding="utf-8")
+                    except OSError:
+                        pass
 
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 

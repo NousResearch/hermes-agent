@@ -19,8 +19,15 @@ def _write_auth_store(tmp_path, payload: dict) -> None:
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
 
 
-def _entry(error_code: int, *, age_seconds: float, cred_id: str = "cred-1", priority: int = 0) -> dict:
-    return {
+def _entry(
+    error_code: int,
+    *,
+    age_seconds: float,
+    cred_id: str = "cred-1",
+    priority: int = 0,
+    failure_reason: str | None = None,
+) -> dict:
+    entry = {
         "id": cred_id,
         "label": cred_id,
         "auth_type": "api_key",
@@ -32,6 +39,9 @@ def _entry(error_code: int, *, age_seconds: float, cred_id: str = "cred-1", prio
         "last_status_at": time.time() - age_seconds,
         "last_error_code": error_code,
     }
+    if failure_reason is not None:
+        entry["failure_reason"] = failure_reason
+    return entry
 
 
 def _load(tmp_path, monkeypatch, entries: list[dict]):
@@ -66,6 +76,44 @@ def test_sole_credential_403_recovers_after_short_cooldown(tmp_path, monkeypatch
     entry = pool.select()
     assert entry is not None
     assert entry.last_status == "ok"
+
+
+def test_sole_credential_billing_403_keeps_full_bench(tmp_path, monkeypatch):
+    """A 403 classified as BILLING must keep the full bench, not the 60s cooldown.
+
+    Providers overload 403: OpenRouter returns it for `key limit exceeded` and
+    xAI for a spending-limit block, both of which `error_classifier` maps to
+    FailoverReason.billing. Status alone can't tell those from an edge
+    throttle, so retrying a spent account every 60s just re-fails forever.
+    The classified reason rides along on the entry and wins over the status.
+    """
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(403, age_seconds=90, failure_reason="billing")],
+    )
+    assert pool.has_available() is False
+    assert pool.select() is None
+
+
+def test_sole_credential_billing_403_survives_reload(tmp_path, monkeypatch):
+    """The classified reason persists, so a restart can't downgrade the bench.
+
+    `failure_reason` is written to auth.json with the entry; without that, a
+    process restart would re-read a bare 403 and hand the spent key back after
+    60 seconds.
+    """
+    from agent.credential_pool import _exhausted_ttl
+
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(403, age_seconds=90, failure_reason="billing")],
+    )
+    entry = pool.entries()[0]
+    assert entry.failure_reason == "billing"
+    assert _exhausted_ttl(403, sole_credential=True, failure_reason="billing") == 60 * 60
+    assert _exhausted_ttl(403, sole_credential=True) == 60
 
 
 def test_sole_credential_402_keeps_full_bench(tmp_path, monkeypatch):

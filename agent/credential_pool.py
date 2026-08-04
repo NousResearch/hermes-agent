@@ -131,6 +131,11 @@ EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 # the short 401 cooldown above. Provider-supplied reset_at still overrides.
 EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS = 60   # 1 minute
 
+# ``FailoverReason.billing`` as a bare string. The pool stores classified
+# failure semantics as plain text (it persists to JSON and must not import
+# the classifier), so the value is duplicated here rather than referenced.
+FAILURE_REASON_BILLING = "billing"
+
 # Throttle window for the "no available entries" INFO line. Credential
 # selection runs on a hot path (every model call, plus auxiliary tasks like
 # compression/moa/titles), so when a pool is empty or fully exhausted the
@@ -156,6 +161,13 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
+    # Classified failure semantics for the last exhaustion, as decided by
+    # agent/error_classifier.py. The raw HTTP status is not enough to size a
+    # cooldown: providers return 403 for both an edge throttle (transient,
+    # seconds) and a spending/key limit (billing, needs a real fix). Persisted
+    # with the entry so a restart doesn't downgrade a billing bench back to a
+    # 60s transient cooldown.
+    "failure_reason",
 })
 
 
@@ -295,23 +307,37 @@ def _is_manual_source(source: str) -> bool:
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
 
 
-def _exhausted_ttl(error_code: Optional[int], *, sole_credential: bool = False) -> int:
+def _exhausted_ttl(
+    error_code: Optional[int],
+    *,
+    sole_credential: bool = False,
+    failure_reason: Optional[str] = None,
+) -> int:
     """Return cooldown seconds based on the HTTP status that caused exhaustion.
 
     When *sole_credential* is True the pool has no other entry to rotate to, so
     a long bench just blocks the only key. Transient throttles (429 and the
     catch-all default, which covers 403/5xx/unknown) are capped to a brief
     cooldown so the sole key can recover — mirroring the short 401 path. 401
-    keeps its own (already short) TTL; 402 (billing/quota) keeps the full bench
-    since a quick retry can't help.
+    keeps its own (already short) TTL.
+
+    *failure_reason* is the classified semantics from
+    ``agent/error_classifier.py``. The raw status alone can't size the
+    cooldown: an OpenRouter ``key limit exceeded`` and an xAI spending-limit
+    block both arrive as **403** but classify as ``billing``, and a 60s retry
+    on a spent account just re-fails every minute. Billing keeps the full
+    bench regardless of status; 402 does too, since it is billing by
+    definition even when nothing classified it.
     """
     if error_code == 401:
         return EXHAUSTED_TTL_401_SECONDS
     base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
     # Sole credential: shorten only TRANSIENT throttles (429 rate-limit, 403
-    # edge-throttle, 5xx server, or unknown). 402 (billing/quota) is a genuine
-    # exhaustion where a quick retry can't help, so it keeps the full bench.
-    if sole_credential and error_code != 402:
+    # edge-throttle, 5xx server, or unknown). Billing exhaustion — whether
+    # classified as such or self-evident from a 402 — is a genuine depletion
+    # where a quick retry can't help, so it keeps the full bench.
+    is_billing = error_code == 402 or failure_reason == FAILURE_REASON_BILLING
+    if sole_credential and not is_billing:
         return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
     return base
 
@@ -402,7 +428,9 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
         return reset_at
     if entry.last_status_at:
         return entry.last_status_at + _exhausted_ttl(
-            entry.last_error_code, sole_credential=sole_credential
+            entry.last_error_code,
+            sole_credential=sole_credential,
+            failure_reason=getattr(entry, "failure_reason", None),
         )
     return None
 
@@ -769,6 +797,7 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
         *,
         persist: bool = True,
+        failure_reason: Optional[str] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
@@ -782,6 +811,15 @@ class CredentialPool:
             terminal_status = STATUS_DEAD
         else:
             terminal_status = STATUS_EXHAUSTED
+        # Carry the classifier's verdict onto the entry so the cooldown can be
+        # sized by what actually failed, not just the HTTP status (a billing
+        # 403 must not get the sole-credential transient cooldown). Absent a
+        # classification, clear any stale verdict from a previous failure.
+        updated_extra = dict(entry.extra)
+        if failure_reason:
+            updated_extra["failure_reason"] = failure_reason
+        else:
+            updated_extra.pop("failure_reason", None)
         updated = replace(
             entry,
             last_status=terminal_status,
@@ -790,6 +828,7 @@ class CredentialPool:
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
             last_error_reset_at=normalized_error.get("reset_at"),
+            extra=updated_extra,
         )
         self._replace_entry(entry, updated)
         if persist:
@@ -1996,6 +2035,7 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
+        failure_reason: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             entry = None
@@ -2074,7 +2114,9 @@ class CredentialPool:
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
-            self._mark_exhausted(entry, status_code, error_context)
+            self._mark_exhausted(
+                entry, status_code, error_context, failure_reason=failure_reason
+            )
             # A 402/429/401 is an API-key–level failure: the account is out of
             # balance, rate-limited, or its key is rejected.  The same key can
             # back more than one pool entry (e.g. an explicit pool entry plus a
@@ -2094,7 +2136,11 @@ class CredentialPool:
                         continue
                     if sibling.runtime_api_key == failed_runtime_key:
                         self._mark_exhausted(
-                            sibling, status_code, error_context, persist=False
+                            sibling,
+                            status_code,
+                            error_context,
+                            persist=False,
+                            failure_reason=failure_reason,
                         )
                         siblings_marked = True
                 if siblings_marked:

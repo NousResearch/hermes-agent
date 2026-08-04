@@ -47,6 +47,7 @@ import type {
   PairingResponse,
   PairingUser,
   ProfileCreatePayload,
+  ProfileDesktopOverlay,
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
@@ -186,6 +187,7 @@ export type {
   PairingResponse,
   PairingUser,
   ProfileCreatePayload,
+  ProfileDesktopOverlay,
   ProfileInfo,
   ProfileSetupCommand,
   ProfileSoul,
@@ -1428,6 +1430,36 @@ export function updateProfileSoul(name: string, content: string): Promise<{ ok: 
 export function getProfileSetupCommand(name: string): Promise<ProfileSetupCommand> {
   return window.hermesDesktop.api<ProfileSetupCommand>({
     path: `/api/profiles/${encodeURIComponent(name)}/setup-command`
+  })
+}
+
+/** Export a profile to a shareable .tar.gz on the backend's filesystem.
+ *  `extraFiles` stages extra root-level files (desktop.json — the appearance/
+ *  interface overlay) into the archive alongside the profile's own artifacts. */
+export function exportProfileArchive(
+  name: string,
+  opts: { extraFiles?: Record<string, string>; output?: string } = {}
+): Promise<{ archive: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ archive: string; ok: boolean }>({
+    path: `/api/profiles/${encodeURIComponent(name)}/export`,
+    method: 'POST',
+    body: { extra_files: opts.extraFiles ?? {}, output: opts.output ?? '' },
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
+/** Import a profile .tar.gz as a new profile. Returns the bundled desktop
+ *  appearance overlay too (when the archive carried one) so the caller can
+ *  apply theme/layout without another round-trip. */
+export function importProfileArchive(
+  archive: string,
+  name?: string
+): Promise<{ desktop: null | ProfileDesktopOverlay; name: string; ok: boolean; path: string }> {
+  return window.hermesDesktop.api<{ desktop: null | ProfileDesktopOverlay; name: string; ok: boolean; path: string }>({
+    path: '/api/profiles/import',
+    method: 'POST',
+    body: { archive, name: name || null },
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

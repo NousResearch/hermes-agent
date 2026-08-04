@@ -66,10 +66,11 @@ def test_set_persists_the_skin_durably():
     ``write_text`` truncates and writes without ever calling ``fsync``, so a
     power loss or container kill right after the command "succeeds" can leave
     ``<skin>.yaml`` zero-length.  That is not transient: ``_skin_set`` is a
-    read-modify-write whose read half falls back to ``{}``, so the next tweak
-    rewrites the file from that empty state and the rest of the palette is
-    gone for good — and the gateway's skin watcher repaints every live
-    surface from this file within ~1s either way.
+    read-modify-write and ``safe_load("")`` returns ``None``, which its
+    ``or {}`` turns into an empty palette — so the next tweak rewrites the
+    file from that empty state and the rest of the palette is gone for good.
+    The gateway's skin watcher repaints every live surface from this file
+    within ~1s either way.
     """
     path = _skins() / "oasis.yaml"
     path.write_text(

@@ -76,11 +76,13 @@ def _skin_set(key: str, value: str, skin: str | None) -> int:
     # it creates the parent dir and keeps allow_unicode=True for the kaomoji
     # cursors and box-drawing tool prefixes). ``write_text`` truncates and
     # writes with no fsync and no atomic swap, so a crash or power loss can
-    # leave <skin>.yaml zero-length — and the read above falls back to ``{}``
-    # on a parse error, so the next ``hermes skin set`` rewrites from empty
-    # and permanently drops the rest of the palette. The gateway's skin
-    # watcher repaints live surfaces from this file within ~1s, so a
-    # half-written file is observable, not only a crash-window concern.
+    # leave <skin>.yaml zero-length — and ``safe_load("")`` returns ``None``,
+    # which the ``or {}`` above turns into an empty palette, so the next
+    # ``hermes skin set`` rewrites from empty and permanently drops every
+    # other color. (A file left with *invalid* YAML raises instead and
+    # aborts the command — loud, and not a loss.) The gateway's skin watcher
+    # repaints live surfaces from this file within ~1s, so a half-written
+    # file is observable, not only a crash-window concern.
     from utils import atomic_yaml_write
 
     atomic_yaml_write(path, data, sort_keys=False)

@@ -152,6 +152,15 @@ SERVICE_PROVIDER_NAMES: Dict[str, str] = {
 LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
 
 
+@dataclass(frozen=True)
+class CodexDeviceCodePrompt:
+    """Token-free Codex verification details for non-terminal callers."""
+
+    verification_url: str
+    user_code: str
+    expires_in_seconds: int
+
+
 # =============================================================================
 # Provider Registry
 # =============================================================================
@@ -8012,7 +8021,9 @@ def _xai_oauth_device_code_login(
     }
 
 
-def _codex_device_code_login() -> Dict[str, Any]:
+def _codex_device_code_login(
+    on_verification: Optional[Callable[[CodexDeviceCodePrompt], None]] = None,
+) -> Dict[str, Any]:
     """Run the OpenAI device code login flow and return credentials dict."""
     import time as _time
 
@@ -8081,6 +8092,10 @@ def _codex_device_code_login() -> Dict[str, Any]:
     user_code = device_data.get("user_code", "")
     device_auth_id = device_data.get("device_auth_id", "")
     poll_interval = max(3, int(device_data.get("interval", "5")))
+    try:
+        expires_in_seconds = max(1, int(device_data.get("expires_in") or 15 * 60))
+    except (TypeError, ValueError):
+        expires_in_seconds = 15 * 60
 
     if not user_code or not device_auth_id:
         raise AuthError(
@@ -8088,13 +8103,23 @@ def _codex_device_code_login() -> Dict[str, Any]:
             provider="openai-codex", code="device_code_incomplete",
         )
 
-    # Step 2: Show user the code
-    print("To continue, follow these steps:\n")
-    print("  1. Open this URL in your browser:")
-    print(f"     \033[94m{issuer}/codex/device\033[0m\n")
-    print("  2. Enter this code:")
-    print(f"     \033[94m{user_code}\033[0m\n")
-    print("Waiting for sign-in... (press Ctrl+C to cancel)")
+    # Step 2: Show the user the code. Non-terminal callers receive only this
+    # token-free prompt and must deliver it over their private response path
+    # before this function begins polling.
+    prompt = CodexDeviceCodePrompt(
+        verification_url=f"{issuer}/codex/device",
+        user_code=user_code,
+        expires_in_seconds=expires_in_seconds,
+    )
+    if on_verification is not None:
+        on_verification(prompt)
+    else:
+        print("To continue, follow these steps:\n")
+        print("  1. Open this URL in your browser:")
+        print(f"     \033[94m{prompt.verification_url}\033[0m\n")
+        print("  2. Enter this code:")
+        print(f"     \033[94m{prompt.user_code}\033[0m\n")
+        print("Waiting for sign-in... (press Ctrl+C to cancel)")
 
     # Step 3: Poll for authorization code
     max_wait = 15 * 60  # 15 minutes
@@ -8209,6 +8234,54 @@ def _codex_device_code_login() -> Dict[str, Any]:
         "auth_mode": "chatgpt",
         "source": "device-code",
     }
+
+
+def login_openai_codex_to_pool(
+    on_verification: Optional[Callable[[CodexDeviceCodePrompt], None]] = None,
+    *,
+    label: Optional[str] = None,
+):
+    """Authenticate one Codex account and append a distinct pooled credential.
+
+    This is the shared persistence seam for terminal and gateway device login.
+    It intentionally does not write the legacy singleton provider state, so a
+    second account cannot overwrite an existing account's token pair.
+    """
+    from agent.credential_pool import (
+        AUTH_TYPE_OAUTH,
+        SOURCE_MANUAL_DEVICE_CODE,
+        PooledCredential,
+        label_from_token,
+        load_pool,
+    )
+
+    creds = (
+        _codex_device_code_login(on_verification=on_verification)
+        if on_verification is not None
+        else _codex_device_code_login()
+    )
+    pool = load_pool("openai-codex")
+    access_token = creds["tokens"]["access_token"]
+    entry_label = (label or "").strip() or label_from_token(
+        access_token,
+        f"openai-codex-oauth-{len(pool.entries()) + 1}",
+    )
+    entry = PooledCredential(
+        provider="openai-codex",
+        id=uuid.uuid4().hex[:6],
+        label=entry_label,
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source=SOURCE_MANUAL_DEVICE_CODE,
+        access_token=access_token,
+        refresh_token=creds["tokens"].get("refresh_token"),
+        base_url=creds.get("base_url"),
+        last_refresh=creds.get("last_refresh"),
+    )
+    entry = pool.add_entry(entry)
+    unsuppress_credential_source("openai-codex", SOURCE_MANUAL_DEVICE_CODE)
+    mark_provider_active_if_unset("openai-codex")
+    return entry
 
 
 # ==================== MiniMax Portal OAuth ====================

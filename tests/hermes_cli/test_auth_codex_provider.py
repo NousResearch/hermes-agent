@@ -609,5 +609,68 @@ def _patch_httpx_post(monkeypatch, responses):
     monkeypatch.setattr("hermes_cli.auth.httpx.Client", lambda *a, **k: _FakeClient())
 
 
+def test_device_code_login_emits_prompt_before_poll_without_console_disclosure(
+    monkeypatch, capsys
+):
+    from hermes_cli import auth as auth_mod
+
+    events = []
+    monkeypatch.setattr(
+        "time.sleep",
+        lambda _seconds: events.append("poll"),
+    )
+    _patch_httpx_post(
+        monkeypatch,
+        [
+            _FakeResp(
+                200,
+                {
+                    "user_code": "PRIVATE-CODE",
+                    "device_auth_id": "device-auth-id",
+                    "interval": "5",
+                    "expires_in": 900,
+                },
+            ),
+            _FakeResp(
+                200,
+                {
+                    "authorization_code": "authorization-code",
+                    "code_verifier": "verifier",
+                },
+            ),
+            _FakeResp(
+                200,
+                {
+                    "access_token": "private-access-token",
+                    "refresh_token": "private-refresh-token",
+                },
+            ),
+        ],
+    )
+    prompts = []
+
+    def on_verification(prompt):
+        events.append("verification")
+        prompts.append(prompt)
+
+    creds = auth_mod._codex_device_code_login(
+        on_verification=on_verification,
+    )
+
+    assert events[:2] == ["verification", "poll"]
+    assert prompts == [
+        auth_mod.CodexDeviceCodePrompt(
+            verification_url="https://auth.openai.com/codex/device",
+            user_code="PRIVATE-CODE",
+            expires_in_seconds=900,
+        )
+    ]
+    output = capsys.readouterr().out
+    assert "PRIVATE-CODE" not in output
+    assert "private-access-token" not in output
+    assert creds["tokens"] == {
+        "access_token": "private-access-token",
+        "refresh_token": "private-refresh-token",
+    }
 
 

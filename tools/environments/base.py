@@ -52,6 +52,46 @@ _activity_callback_local = threading.local()
 _UNBOUNDED_CAPTURE_CHARS = 2**63 - 1
 
 
+def _build_process_tree_kill_command(
+    *,
+    root_pid: int,
+) -> str:
+    """Build a Bash command that stops and terminates one POSIX process tree.
+
+    The root is stopped before descendants are enumerated, and each descendant
+    is stopped before its own children are inspected. This closes the fork
+    race that otherwise lets killing only the wrapper orphan a still-running
+    child under PID 1. The ``ps`` form works on both Linux and macOS.
+    """
+    try:
+        normalized_pid = int(root_pid)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("root_pid must be an integer") from exc
+    if normalized_pid <= 1:
+        raise ValueError("root_pid must be greater than 1")
+
+    return (
+        f"__hermes_root={normalized_pid}; "
+        "__hermes_children() { "
+        "ps -eo pid=,ppid= 2>/dev/null | "
+        "awk -v parent=\"$1\" '$2 == parent { print $1 }'; "
+        "}; "
+        "__hermes_collect() { "
+        "kill -STOP \"$1\" 2>/dev/null || true; "
+        "for __hermes_child in $(__hermes_children \"$1\"); do "
+        "__hermes_collect \"$__hermes_child\"; done; "
+        "printf '%s\\n' \"$1\"; "
+        "}; "
+        "__hermes_pids=$(__hermes_collect \"$__hermes_root\"); "
+        "if [ -n \"$__hermes_pids\" ]; then "
+        "kill -TERM $__hermes_pids 2>/dev/null || true; "
+        "kill -CONT $__hermes_pids 2>/dev/null || true; "
+        "sleep 0.5; "
+        "kill -KILL $__hermes_pids 2>/dev/null || true; "
+        "fi"
+    )
+
+
 class _BoundedOutputCollector:
     """Retain a bounded 40/60 head-tail window of streamed text.
 
@@ -1226,6 +1266,23 @@ class BaseEnvironment(ABC):
             proc.kill()
         except (ProcessLookupError, PermissionError, OSError):
             pass
+
+    def terminate_process_tree(self, pid: int, *, timeout: int = 5) -> dict:
+        """Terminate a tracked process and every descendant inside this backend."""
+        command = _build_process_tree_kill_command(root_pid=pid)
+        result = self.execute(
+            command,
+            timeout=timeout,
+            rewrite_compound_background=False,
+        )
+        returncode = result.get("returncode")
+        if returncode not in (None, 0):
+            detail = str(result.get("output") or "").strip()
+            raise RuntimeError(
+                f"process-tree termination failed (rc={returncode})"
+                + (f": {detail}" if detail else "")
+            )
+        return result
 
     # ------------------------------------------------------------------
     # CWD extraction

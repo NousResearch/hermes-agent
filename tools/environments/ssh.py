@@ -9,7 +9,11 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from tools.environments.base import BaseEnvironment, _popen_bash
+from tools.environments.base import (
+    BaseEnvironment,
+    _build_process_tree_kill_command,
+    _popen_bash,
+)
 from tools.environments.file_sync import (
     FileSyncManager,
     iter_sync_files,
@@ -339,6 +343,33 @@ class SSHEnvironment(BaseEnvironment):
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
+
+    def terminate_process_tree(self, pid: int, *, timeout: int = 5) -> dict:
+        """Terminate a tracked remote tree over this SSH connection."""
+        cmd = self._build_ssh_command()
+        cmd.extend(
+            [
+                "bash",
+                "-c",
+                shlex.quote(_build_process_tree_kill_command(root_pid=pid)),
+            ]
+        )
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise RuntimeError(
+                f"SSH process-tree termination failed (rc={result.returncode})"
+                + (f": {detail}" if detail else "")
+            )
+        return {"output": result.stdout, "returncode": result.returncode}
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

@@ -2,11 +2,16 @@
 
 import json
 import os
+import signal
 import subprocess
+import time
+import uuid
 from unittest.mock import MagicMock
 
+import psutil
 import pytest
 
+from tools.environments.base import _build_process_tree_kill_command
 from tools.environments.ssh import SSHEnvironment
 from tools.environments import ssh as ssh_env
 
@@ -31,6 +36,22 @@ def _run(command, task_id="ssh_test", **kwargs):
 def _cleanup(task_id="ssh_test"):
     from tools.terminal_tool import cleanup_vm
     cleanup_vm(task_id)
+
+
+def _wait_until(predicate, timeout=5.0, interval=0.05):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
+
+
+def _pid_is_live(pid):
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return False
 
 
 class TestBuildSSHCommand:
@@ -172,6 +193,90 @@ class TestSSHPreflight:
         assert env.user == "alice"
 
 
+class TestSSHRemoteProcessCleanup:
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process-tree semantics")
+    def test_tree_cleanup_command_leaves_no_live_orphan(self):
+        root = subprocess.Popen(
+            [
+                "/bin/bash",
+                "-c",
+                "trap 'wait; exit 0' TERM; sleep 60 & wait",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        descendants = []
+        try:
+            def _capture_descendants():
+                try:
+                    descendants[:] = [
+                        child.pid
+                        for child in psutil.Process(root.pid).children(recursive=True)
+                    ]
+                except psutil.NoSuchProcess:
+                    descendants[:] = []
+                return bool(descendants)
+
+            assert _wait_until(_capture_descendants)
+
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    "-c",
+                    _build_process_tree_kill_command(root_pid=root.pid),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            assert result.returncode == 0, result.stderr
+            assert _wait_until(
+                lambda: root.poll() is not None
+                and all(not _pid_is_live(pid) for pid in descendants)
+            )
+        finally:
+            if root.poll() is None:
+                try:
+                    os.killpg(root.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            try:
+                root.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+
+    def test_tracked_tree_termination_uses_ssh_connection(self, monkeypatch):
+        env = object.__new__(SSHEnvironment)
+        env._build_ssh_command = MagicMock(return_value=["ssh", "u@h"])
+        run = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, "", "")
+        )
+        monkeypatch.setattr(ssh_env.subprocess, "run", run)
+
+        result = env.terminate_process_tree(82477, timeout=3)
+
+        assert result == {"output": "", "returncode": 0}
+        env._build_ssh_command.assert_called_once_with()
+        tree_kill_calls = [
+            call
+            for call in run.call_args_list
+            if call.args
+            and call.args[0][:2] == ["ssh", "u@h"]
+            and "__hermes_root=82477" in call.args[0][-1]
+        ]
+        assert len(tree_kill_calls) == 1
+        tree_kill_call = tree_kill_calls[0]
+        remote_command = tree_kill_call.args[0][-1]
+        assert "__hermes_root=82477" in remote_command
+        assert "ps -eo pid=,ppid=" in remote_command
+        assert "kill -TERM" in remote_command
+        assert "kill -KILL" in remote_command
+        assert tree_kill_call.kwargs["timeout"] == 3
+
+
 def _setup_ssh_env(monkeypatch, persistent: bool):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", _SSH_HOST)
@@ -223,6 +328,44 @@ class TestPersistentSSH:
         r = _run("echo $HERMES_PERSIST_TEST")
         assert r["output"].strip() == "works"
 
+
+    def test_background_registry_kill_kills_remote_child_tree(self):
+        from tools.process_registry import process_registry
+
+        marker = f"/tmp/hermes-background-child-{uuid.uuid4().hex}.pid"
+        session_id = ""
+        try:
+            started = _run(
+                f"sleep 999 & child=$!; echo $child > {marker}; wait $child",
+                background=True,
+            )
+            session_id = started["session_id"]
+            ready = _run(
+                f"for attempt in $(seq 1 50); do "
+                f"[ -s {marker} ] && exit 0; sleep 0.1; done; exit 1",
+                timeout=10,
+            )
+            assert ready["exit_code"] == 0
+
+            killed = process_registry.kill_process(session_id)
+            assert killed["status"] == "killed"
+
+            check = _run(
+                f"pid=$(cat {marker}); "
+                "state=$(ps -o stat= -p \"$pid\" 2>/dev/null); "
+                "case \"$state\" in ''|*Z*) echo dead ;; *) echo alive:$state ;; esac",
+                timeout=10,
+            )
+            assert check["output"].strip() == "dead"
+        finally:
+            if session_id:
+                process_registry.kill_process(session_id)
+            _run(
+                f"if [ -r {marker} ]; then "
+                f"pid=$(cat {marker}); kill -KILL \"$pid\" 2>/dev/null || true; fi; "
+                f"rm -f {marker}",
+                timeout=10,
+            )
 
     def test_large_output(self):
         r = _run("seq 1 1000")

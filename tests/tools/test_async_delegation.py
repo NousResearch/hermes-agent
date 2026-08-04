@@ -261,6 +261,103 @@ def test_interrupt_all_signals_running_children():
     assert evt["status"] == "interrupted"
 
 
+def test_interrupt_for_session_drops_completion_before_signalling_child(
+    tmp_path, monkeypatch
+):
+    """Session cancellation is durable before the child can finish.
+
+    Otherwise the child's interrupt handler can release the runner, whose
+    finalize path races the cancellation write and republishes a completion
+    that starts a fresh agent turn after /stop.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    gate = threading.Event()
+    durable_state_seen_by_interrupt = []
+
+    def runner():
+        gate.wait(timeout=60)
+        return {"status": "interrupted", "summary": None, "error": "cancelled"}
+
+    def interrupt_fn():
+        row = ad.get_durable_delegation(dispatched["delegation_id"])
+        durable_state_seen_by_interrupt.append(
+            (row["state"], row["delivery_state"])
+        )
+        gate.set()
+
+    dispatched = ad.dispatch_async_delegation(
+        goal="long session task",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="discord-thread-a",
+        parent_session_id="parent-a",
+        runner=runner,
+        interrupt_fn=interrupt_fn,
+    )
+
+    assert ad.interrupt_for_session(
+        session_key="discord-thread-a",
+        parent_session_id="parent-a",
+        reason="stop_command",
+    ) == 1
+    assert durable_state_seen_by_interrupt == [("cancelled", "dropped")]
+    assert ad.interrupt_for_session(
+        session_key="discord-thread-a",
+        parent_session_id="parent-a",
+        reason="repeated_stop",
+    ) == 0
+
+    deadline = time.monotonic() + 5
+    while ad.active_count() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ad.active_count() == 0
+    assert _drain_for(dispatched["delegation_id"], timeout=0.25) is None
+
+    durable = ad.get_durable_delegation(dispatched["delegation_id"])
+    assert durable["state"] == "cancelled"
+    assert durable["delivery_state"] == "dropped"
+    assert ad.mark_completion_delivered(dispatched["delegation_id"]) is False
+    assert ad.restore_undelivered_completions(queue.Queue()) == 0
+
+
+def test_interrupt_for_session_drops_completion_already_on_queue(
+    tmp_path, monkeypatch
+):
+    """A /stop racing a completed worker must drop its queued event."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    dispatched = ad.dispatch_async_delegation(
+        goal="fast session task",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="discord-thread-a",
+        parent_session_id="parent-a",
+        runner=lambda: {"status": "completed", "summary": "too late"},
+    )
+
+    deadline = time.monotonic() + 5
+    while ad.active_count() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ad.active_count() == 0
+
+    # The worker has published its event, but no consumer has claimed it yet.
+    assert ad.interrupt_for_session(
+        session_key="discord-thread-a",
+        parent_session_id="parent-a",
+        reason="stop_command",
+    ) == 1
+    evt = _drain_for(dispatched["delegation_id"])
+    assert evt is not None
+    assert ad.claim_event_delivery(evt, "late-consumer") is None
+    assert ad.restore_undelivered_completions(queue.Queue()) == 0
+    durable = ad.get_durable_delegation(dispatched["delegation_id"])
+    assert durable["state"] == "cancelled"
+    assert durable["delivery_state"] == "dropped"
+
+
 def _fast_stale_monitor(monkeypatch, *, idle=0.15, in_tool=0.3, grace=0.15):
     """Shrink the stale-monitor cadence so tests run in milliseconds."""
     monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.03)
@@ -623,6 +720,101 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text
 
 
+def test_cancelled_background_batch_does_not_wait_for_uncooperative_children(
+    monkeypatch,
+):
+    """Cancelling the registry must release its batch runner promptly.
+
+    Child workers are daemon threads and may be stuck inside an uncooperative
+    provider. The registry must become terminal without joining those
+    workers; their late results remain dropped.
+    """
+    from unittest.mock import MagicMock
+
+    import tools.delegate_tool as dt
+    from tools.approval import reset_current_session_key, set_current_session_key
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "parent-a"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = threading.Lock()
+
+    children = []
+
+    def build_child(**_kwargs):
+        child = MagicMock()
+        child._delegate_role = "leaf"
+        child.get_activity_summary.return_value = {
+            "api_call_count": 0,
+            "current_tool": None,
+            "last_activity_ts": time.time(),
+        }
+        children.append(child)
+        return child
+
+    gate = threading.Event()
+
+    def uncooperative_child(task_index, goal, child=None, parent_agent=None, **_kw):
+        gate.wait(timeout=60)
+        return {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": f"late: {goal}",
+            "api_calls": 1,
+            "duration_seconds": 60,
+            "model": "m",
+            "exit_reason": "completed",
+        }
+
+    creds = {
+        "model": "m",
+        "provider": None,
+        "base_url": None,
+        "api_key": None,
+        "api_mode": None,
+        "command": None,
+        "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", build_child)
+    monkeypatch.setattr(dt, "_run_single_child", uncooperative_child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+
+    approval_token = set_current_session_key("discord-thread-a")
+    try:
+        out = dt.delegate_task(
+            tasks=[{"goal": "a"}, {"goal": "b"}],
+            background=True,
+            parent_agent=parent,
+        )
+    finally:
+        reset_current_session_key(approval_token)
+
+    parsed = json.loads(out)
+    assert parsed["status"] == "dispatched"
+    try:
+        assert ad.interrupt_for_session(
+            session_key="discord-thread-a",
+            parent_session_id="parent-a",
+            reason="stop_command",
+        ) == 1
+
+        deadline = time.monotonic() + 5
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ad.active_count() == 0
+        assert _drain_for(parsed["delegation_id"], timeout=0.25) is None
+        durable = ad.get_durable_delegation(parsed["delegation_id"])
+        assert durable["state"] == "cancelled"
+        assert durable["delivery_state"] == "dropped"
+        assert all(child.interrupt.called for child in children)
+    finally:
+        # Let the abandoned daemon workers unwind before this test's patches
+        # and fixtures disappear.
+        gate.set()
+
+
 def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     """TUI async delegation must route to the live/compressed agent id.
 
@@ -760,4 +952,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-

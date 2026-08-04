@@ -118,6 +118,7 @@ class ProcessSession:
     watcher_message_id: str = ""                # Triggering message id — reply anchor for topic routing
     watcher_interval: int = 0                   # 0 = no watcher configured
     notify_on_complete: bool = False             # Queue agent notification on exit
+    completion_suppressed: bool = False          # Explicit session stop: never notify/re-enter
     # Watch patterns — trigger agent notification when output matches any pattern
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
@@ -156,6 +157,9 @@ class ProcessRegistry:
         "no job control in this shell",
         "cannot set terminal process group",
         "tcsetattr: Inappropriate ioctl for device",
+    )
+    _PROCESS_NOTIFICATION_TYPES = frozenset(
+        {"completion", "watch_match", "watch_disabled"}
     )
 
     def __init__(self):
@@ -233,6 +237,28 @@ class ProcessRegistry:
         except Exception:
             pass
 
+    def _queue_process_notification(
+        self,
+        session: ProcessSession,
+        event: Dict[str, Any],
+        *,
+        require_notify_on_complete: bool = False,
+    ) -> bool:
+        """Queue a process event unless an explicit session stop suppressed it.
+
+        ``cancel_for_session()`` and all process-owned producers share
+        ``self._lock`` as their notification admission boundary. This closes
+        the race where ``/stop`` drained the queue just before a reader thread
+        enqueued a late completion or watch event.
+        """
+        with self._lock:
+            if session.completion_suppressed:
+                return False
+            if require_notify_on_complete and not session.notify_on_complete:
+                return False
+            self.completion_queue.put(event)
+        return True
+
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
         """Scan new output for watch patterns and queue notifications.
 
@@ -246,7 +272,11 @@ class ProcessRegistry:
         notify_on_complete semantics — one notification when the process
         actually exits, no more mid-process spam.
         """
-        if not session.watch_patterns or session._watch_disabled:
+        if (
+            session.completion_suppressed
+            or not session.watch_patterns
+            or session._watch_disabled
+        ):
             return
         # Suppress-after-exit: once the reader loop has declared the process
         # exited, any late chunk we still see is post-exit noise. Dropping these
@@ -314,7 +344,7 @@ class ProcessRegistry:
             if should_disable:
                 # Emit exactly one "watch disabled, falling back to notify_on_complete"
                 # summary event so the agent/user sees why things went quiet.
-                self.completion_queue.put({
+                self._queue_process_notification(session, {
                     "session_id": session.id,
                     "session_key": session.session_key,
                     "command": session.command,
@@ -345,7 +375,7 @@ class ProcessRegistry:
         if not self._global_watch_admit(now):
             return
 
-        self.completion_queue.put({
+        self._queue_process_notification(session, {
             "session_id": session.id,
             "session_key": session.session_key,
             "command": session.command,
@@ -1194,29 +1224,41 @@ class ProcessRegistry:
         # Only enqueue completion notification on the FIRST move.  Without
         # this guard, kill_process() and the reader thread can both call
         # _move_to_finished(), producing duplicate [IMPORTANT: ...] messages.
-        if was_running and session.notify_on_complete:
+        if was_running:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
-            self.completion_queue.put({
-                "type": "completion",
-                "session_id": session.id,
-                "session_key": session.session_key,
-                "command": session.command,
-                "exit_code": session.exit_code,
-                "completion_reason": session.completion_reason,
-                "termination_source": session.termination_source,
-                "output": output_tail,
-                # Stable producer identity across checkpoint recovery; unlike
-                # a consumer-observed completion timestamp, this does not vary
-                # based on which watcher notices exit first.
-                "started_at": session.started_at,
-            })
+            self._queue_process_notification(
+                session,
+                {
+                    "type": "completion",
+                    "session_id": session.id,
+                    "session_key": session.session_key,
+                    "command": session.command,
+                    "exit_code": session.exit_code,
+                    "completion_reason": session.completion_reason,
+                    "termination_source": session.termination_source,
+                    "output": output_tail,
+                    # Stable producer identity across checkpoint recovery;
+                    # unlike a consumer-observed completion timestamp, this
+                    # does not vary based on which watcher notices exit first.
+                    "started_at": session.started_at,
+                },
+                require_notify_on_complete=True,
+            )
 
     # ----- Query Methods -----
 
     def is_completion_consumed(self, session_id: str) -> bool:
         """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
+
+    def is_completion_suppressed(self, session_id: str) -> bool:
+        """Whether ``/stop`` permanently suppressed this process incarnation."""
+        if not session_id:
+            return False
+        with self._lock:
+            session = self._running.get(session_id) or self._finished.get(session_id)
+            return bool(session and session.completion_suppressed)
 
     def is_session_waiting(self, session_id: str) -> bool:
         """Whether a goal loop parked on this session should still be parked.
@@ -1346,6 +1388,11 @@ class ProcessRegistry:
             # session owns (or legacy ownerless ordinary events). Routing must
             # happen first so a foreign session cannot drop the owner's event.
             _evt_sid = evt.get("session_id", "")
+            if (
+                evt.get("type", "completion") in self._PROCESS_NOTIFICATION_TYPES
+                and self.is_completion_suppressed(_evt_sid)
+            ):
+                continue
             if evt.get("type") == "completion" and self._drain_should_skip(
                 _evt_sid, skip_poll_observed=skip_poll_observed
             ):
@@ -1680,8 +1727,23 @@ class ProcessRegistry:
                 # shell wrapper and leaves Git Bash descendants behind.
                 self._terminate_host_pid(session.process.pid, session.host_start_time)
             elif session.env_ref and session.pid:
-                # Non-local -- kill inside sandbox
-                session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+                # Non-local -- terminate descendants before their tracked root.
+                # Killing only the wrapper reparents its still-running children
+                # to PID 1, which is especially visible through the SSH backend.
+                terminate_tree = getattr(
+                    session.env_ref,
+                    "terminate_process_tree",
+                    None,
+                )
+                if callable(terminate_tree):
+                    terminate_tree(session.pid, timeout=5)
+                else:
+                    # Compatibility for third-party environments that do not yet
+                    # inherit the BaseEnvironment tree-termination primitive.
+                    session.env_ref.execute(
+                        f"kill {session.pid} 2>/dev/null",
+                        timeout=5,
+                    )
             elif session.detached and session.pid_scope == "host" and session.pid:
                 # Identity check, not bare liveness: if the PID is gone OR was
                 # recycled onto an unrelated process, treat our process as
@@ -1890,6 +1952,122 @@ class ProcessRegistry:
 
     # ----- Session/Task Queries (for gateway integration) -----
 
+    def cancel_for_session(
+        self,
+        session_key: str,
+        reason: str = "session_stop",
+    ) -> int:
+        """Suppress notifications and terminate processes owned by one session.
+
+        Suppression is installed before any kill attempt. Therefore a failed
+        backend/OS termination cannot later revive the stopped conversation via
+        ``notify_on_complete``. Queued events and pending watcher registrations
+        for other sessions retain their order and remain untouched.
+
+        Returns the number of distinct active or pending process producers
+        affected. Repeating the call after a successful cancellation returns
+        zero.
+        """
+        session_key = str(session_key or "")
+        if not session_key:
+            return 0
+
+        affected_ids: set[str] = set()
+        kill_ids: list[str] = []
+        matched_sessions: Dict[str, ProcessSession] = {}
+
+        with self._lock:
+            for session in (
+                list(self._running.values()) + list(self._finished.values())
+            ):
+                if session.session_key == session_key:
+                    matched_sessions[session.id] = session
+
+            target_ids = set(matched_sessions)
+
+            retained_watchers = []
+            for watcher in self.pending_watchers:
+                watcher_id = str(watcher.get("session_id") or "")
+                if (
+                    watcher_id in target_ids
+                    or str(watcher.get("session_key") or "") == session_key
+                ):
+                    if watcher_id:
+                        affected_ids.add(watcher_id)
+                    continue
+                retained_watchers.append(watcher)
+            self.pending_watchers = retained_watchers
+
+            retained_events = []
+            while True:
+                try:
+                    event = self.completion_queue.get_nowait()
+                except Exception:
+                    break
+                event_type = (
+                    event.get("type", "completion")
+                    if isinstance(event, dict)
+                    else ""
+                )
+                event_id = (
+                    str(event.get("session_id") or "")
+                    if isinstance(event, dict)
+                    else ""
+                )
+                event_key = (
+                    str(event.get("session_key") or "")
+                    if isinstance(event, dict)
+                    else ""
+                )
+                if (
+                    event_type in self._PROCESS_NOTIFICATION_TYPES
+                    and (event_id in target_ids or event_key == session_key)
+                ):
+                    if event_id:
+                        affected_ids.add(event_id)
+                    continue
+                retained_events.append(event)
+            for event in retained_events:
+                self.completion_queue.put(event)
+
+            for session_id, session in matched_sessions.items():
+                if session_id in self._running and not session.exited:
+                    affected_ids.add(session_id)
+                    kill_ids.append(session_id)
+
+                # ``completion_suppressed`` is authoritative. Clear the legacy
+                # producer flags too so checkpoint recovery and already-running
+                # watcher tasks naturally stay quiet.
+                session.completion_suppressed = True
+                session.notify_on_complete = False
+                session.watcher_interval = 0
+                session.watch_patterns = []
+                session._watch_disabled = True
+
+        # Persist the suppression fence before touching the OS/backend. A kill
+        # can fail or the gateway can crash during it; neither may resurrect a
+        # completion on restart.
+        if matched_sessions:
+            self._write_checkpoint()
+
+        for session_id in kill_ids:
+            result = self.kill_process(
+                session_id,
+                source=reason,
+                consume_output=False,
+            )
+            if result.get("status") not in {"killed", "already_exited"}:
+                logger.warning(
+                    "Failed to terminate background process %s for session %s "
+                    "(%s): %s",
+                    session_id,
+                    session_key,
+                    reason,
+                    result.get("error") or result.get("status"),
+                )
+
+        return len(affected_ids)
+
     def has_active_processes(self, task_id: str) -> bool:
         """Check if there are active (running) processes for a task_id."""
         with self._lock:
@@ -2083,6 +2261,7 @@ class ProcessRegistry:
                             "watcher_message_id": s.watcher_message_id,
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
+                            "completion_suppressed": s.completion_suppressed,
                             "watch_patterns": s.watch_patterns,
                         })
             
@@ -2142,6 +2321,9 @@ class ProcessRegistry:
                     )
                 continue
 
+            completion_suppressed = bool(
+                entry.get("completion_suppressed", False)
+            )
             session = ProcessSession(
                 id=entry["session_id"],
                 command=entry.get("command", "unknown"),
@@ -2159,17 +2341,29 @@ class ProcessRegistry:
                 watcher_user_name=entry.get("watcher_user_name", ""),
                 watcher_thread_id=entry.get("watcher_thread_id", ""),
                 watcher_message_id=entry.get("watcher_message_id", ""),
-                watcher_interval=entry.get("watcher_interval", 0),
-                notify_on_complete=entry.get("notify_on_complete", False),
-                watch_patterns=entry.get("watch_patterns", []),
+                watcher_interval=(
+                    0 if completion_suppressed
+                    else entry.get("watcher_interval", 0)
+                ),
+                notify_on_complete=(
+                    False if completion_suppressed
+                    else entry.get("notify_on_complete", False)
+                ),
+                completion_suppressed=completion_suppressed,
+                watch_patterns=(
+                    [] if completion_suppressed
+                    else entry.get("watch_patterns", [])
+                ),
             )
+            if completion_suppressed:
+                session._watch_disabled = True
             with self._lock:
                 self._running[session.id] = session
             recovered += 1
             logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
 
             # Re-enqueue watcher so gateway can resume notifications
-            if session.watcher_interval > 0:
+            if session.watcher_interval > 0 and not session.completion_suppressed:
                 self.pending_watchers.append({
                     "session_id": session.id,
                     "check_interval": session.watcher_interval,

@@ -24,8 +24,9 @@ Scopes (placement follows where each dict is CLEARED today):
 - ``SessionState.conversation`` — reset at conversation boundaries
   (/new, /resume, auto-reset, expiry, compression-exhausted reset).
 - ``SessionState.persistent`` — own lifecycles (approval resolution, update
-  prompt answer, native-image consumption); ``run_generation`` is monotonic
-  and NEVER reset (#28686).
+  prompt answer, native-image consumption); ``run_generation`` and the
+  durable-completion cancellation epoch are monotonic and NEVER reset
+  (#28686).
 
 Entries in ``GatewayRunner._sessions`` are never evicted (matching the old
 dicts, most of which also leaked empty/stale entries for dead sessions —
@@ -148,6 +149,10 @@ class PersistentState:
     # Monotonic run-generation counter (#28686).  NEVER reset: clearing it
     # would break stale-run detection.
     run_generation: int = 0
+    # Monotonic /stop-/new cancellation epoch for durable completion
+    # admission. Unlike run_generation this changes only at an explicit
+    # cancellation boundary, so normal queued turns do not stale a completion.
+    completion_cancellation_epoch: int = 0
 
 
 @dataclass

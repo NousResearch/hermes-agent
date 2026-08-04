@@ -2597,6 +2597,16 @@ def run_conversation(
                         retryable=True,
                         reason="invalid_response",
                     )
+                    # Capture the provider's response on the invalid-response terminal so
+                    # paired request+response dumps are available when requested.
+                    if env_var_enabled("HERMES_DUMP_REQUESTS"):
+                        agent._dump_api_response_debug(
+                            response=response,
+                            status=getattr(getattr(response, "error", None), "code", None),
+                            headers=getattr(response, "headers", None),
+                            reason="invalid_response",
+                            error=Exception(", ".join(error_details)) if error_details else None,
+                        )
                     # Stop spinner silently — retry status is now buffered
                     # and only surfaced if every retry+fallback exhausts.
                     if thinking_spinner:

@@ -3606,3 +3606,71 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Sync-loop error classification regression
+# ---------------------------------------------------------------------------
+
+class TestSyncLoopAuthErrorClassification:
+    """Successful sync responses must never be classified as auth errors."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "message_body",
+        [
+            "probe returned HTTP 401 Unauthorized",
+            "probe returned HTTP 403 Forbidden",
+        ],
+    )
+    async def test_sync_response_with_auth_text_is_not_fatal(self, message_body):
+        """Timeline text must not make a successful sync response terminal.
+
+        A parsed /sync result is a dictionary. The timeline can legitimately
+        quote HTTP auth failures from a report or command result, so it must be
+        dispatched as data rather than scanned as an auth-error object.
+        """
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        poisoned_sync = {
+            "next_batch": "s2",
+            "rooms": {
+                "join": {
+                    "!room123:example.org": {
+                        "timeline": {
+                            "events": [
+                                {
+                                    "type": "m.room.message",
+                                    "content": {
+                                        "msgtype": "m.text",
+                                        "body": message_body,
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+        }
+        sync_responses = [poisoned_sync, {}]
+
+        async def fake_sync(**kwargs):
+            if len(sync_responses) == 1:
+                adapter._closing = True
+            return sync_responses.pop(0)
+
+        client = MagicMock()
+        client.sync = fake_sync
+        client.sync_store = MagicMock()
+        client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        client.sync_store.put_next_batch = AsyncMock()
+        adapter._client = client
+        adapter._dispatch_sync = AsyncMock()
+        adapter._schedule_pending_invite_joins = MagicMock()
+
+        await adapter._sync_loop()
+
+        adapter._dispatch_sync.assert_any_await(poisoned_sync)
+        client.sync_store.put_next_batch.assert_any_await("s2")
+        assert adapter._joined_rooms == {"!room123:example.org"}

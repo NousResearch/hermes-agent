@@ -3897,7 +3897,7 @@ class MediaSendHandler(ABC):
                 "[%s] %s.handle() failed: %s",
                 adapter.name, handler_name, exc, exc_info=True,
             )
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
 
 class ImageUrlHandler(MediaSendHandler):

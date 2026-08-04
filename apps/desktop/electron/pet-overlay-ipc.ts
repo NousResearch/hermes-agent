@@ -1,6 +1,8 @@
 // IPC surface for the pop-out pet overlay (mascot window). Extracted from
 // main.ts; window handles stay injected because main.ts owns their lifecycle.
-import { type BrowserWindow, ipcMain } from 'electron'
+import { type BrowserWindow, ipcMain, screen } from 'electron'
+
+import { resolvePetOverlayBounds } from './pet-overlay'
 
 export interface PetOverlayIpcDeps {
   getMainWindow: () => BrowserWindow | null
@@ -38,6 +40,26 @@ export function registerPetOverlayIpc({
       }
     } catch {
       // Fall back to raw bounds if the window geometry is unavailable.
+    }
+
+    // A remembered/dragged spot is only trusted while it still lands on a
+    // connected display — otherwise the transparent, non-activating overlay
+    // would open off-screen (e.g. saved on an external monitor that has since
+    // been unplugged) and the pet would be unfindable. Re-center on the main
+    // window's display instead, and echo the corrected bounds so the renderer
+    // persists the on-screen spot (self-healing).
+    if (screenBounds) {
+      let anchor = null
+
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          anchor = mainWindow.getContentBounds()
+        }
+      } catch {
+        // Resolve falls back to the primary display when the anchor is unknown.
+      }
+
+      screenBounds = resolvePetOverlayBounds(screenBounds, screen.getAllDisplays(), anchor) ?? screenBounds
     }
 
     openPetOverlay(screenBounds)

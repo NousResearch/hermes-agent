@@ -76,6 +76,30 @@ def test_sole_credential_402_keeps_full_bench(tmp_path, monkeypatch):
     assert pool.select() is None
 
 
+def test_sole_credential_next_available_at_uses_short_cooldown(tmp_path, monkeypatch):
+    """next_available_at must also honour the sole-credential short cooldown.
+
+    Without this, the fallback restore gate in agent_runtime_helpers waits an
+    hour for a 60s cooldown, keeping the agent on a fallback provider far
+    longer than necessary.
+    """
+    from agent.credential_pool import EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
+
+    pool = _load(tmp_path, monkeypatch, [_entry(429, age_seconds=10)])
+    next_at = pool.next_available_at()
+    assert next_at is not None
+    # Should be ~60s from exhaustion, not ~3600s.  The entry was exhausted 10s
+    # ago, so the remaining wait is ~50s.
+    remaining = next_at - time.time()
+    assert remaining < EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS, (
+        f"next_available_at returned {remaining:.0f}s remaining — expected < "
+        f"{EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS}s (sole-credential cooldown)"
+    )
+    assert remaining < 300, (
+        f"next_available_at returned {remaining:.0f}s — should be seconds, not hours"
+    )
+
+
 def test_multi_key_429_keeps_full_bench(tmp_path, monkeypatch):
     """With more than one non-DEAD entry there IS something to rotate to, so the
     short cooldown must not kick in — both recently-throttled keys stay benched."""

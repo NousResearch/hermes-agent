@@ -665,11 +665,18 @@ class CredentialPool:
             available, _pending = self._available_entries()
             if available:
                 return None
+            # Mirror _available_entries: if the pool has no other credential
+            # to rotate to, the sole entry's transient throttle cools down in
+            # seconds — next_available_at must report that shorter window too,
+            # or the fallback restore gate waits an hour for a 60s cooldown.
+            sole_credential = sum(
+                1 for e in self._entries if e.last_status != STATUS_DEAD
+            ) <= 1
             candidates: List[float] = []
             for entry in self._entries:
                 if entry.last_status != STATUS_EXHAUSTED:
                     continue
-                until = _exhausted_until(entry)
+                until = _exhausted_until(entry, sole_credential=sole_credential)
                 if until is not None:
                     candidates.append(until)
             return min(candidates) if candidates else None

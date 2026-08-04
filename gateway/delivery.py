@@ -405,11 +405,15 @@ class DeliveryRouter:
         """Best-effort Profile Activity Ledger hook for gateway delivery."""
         try:
             from hermes_cli.profile_activity_ledger import record_event_if_enabled
+            from hermes_cli.profiles import get_active_profile_name
 
+            severity = "info" if success else "error"
+            correlation_id = job_id
             record_event_if_enabled(
                 source="gateway-dispatcher",
+                actor_profile=get_active_profile_name(),
                 event_type="delivery_ok" if success else "delivery_error",
-                severity="info" if success else "error",
+                event_id=None,
                 summary=f"gateway delivery {'ok' if success else 'error'} to {target.to_string()}",
                 payload={
                     "target": target.to_string(),
@@ -420,9 +424,9 @@ class DeliveryRouter:
                     "job_name": job_name,
                     "metadata": metadata or {},
                     "error": error,
+                    "severity": severity,
+                    "correlation_id": correlation_id,
                 },
-                correlation_id=job_id,
-                idempotency_key=None,
             )
         except Exception:
             pass

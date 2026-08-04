@@ -543,16 +543,18 @@ def _record_cron_activity(event_type: str, job: Dict[str, Any], **extra: Any) ->
             "provider": job.get("provider"),
             "profile": job.get("profile"),
         }
+        severity = "error" if event_type.endswith("error") else "info"
+        correlation_id = job_id or None
         payload.update(extra)
+        payload["severity"] = severity
+        payload["correlation_id"] = correlation_id
         record_event_if_enabled(
             source="cron",
-            profile=job.get("profile"),
+            actor_profile=job.get("profile"),
             event_type=event_type,
-            severity="error" if event_type.endswith("error") else "info",
+            event_id=idempotency_key,
             summary=f"cron {event_type} for {job_id or job.get('name') or 'job'}",
             payload=payload,
-            correlation_id=job_id or None,
-            idempotency_key=idempotency_key,
         )
     except Exception:
         pass

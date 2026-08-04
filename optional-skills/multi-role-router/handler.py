@@ -22,12 +22,19 @@ import re
 import sys
 import tempfile
 import threading
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def datetime_utcnow() -> datetime:
+    """Return the current UTC time as a timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -157,44 +164,28 @@ def _save_meta(data: Dict[str, Any]) -> None:
         logger.warning("[multi-role-router] Could not write meta.yaml: %s", exc)
 
 
-def _update_meta_session(role: str, session_id: str, current_role: str, message: str, response: str) -> None:
-    """Update meta.yaml with the new current session and append to history.
-
-    Uses a threading lock + atomic write so concurrent hook invocations cannot
-    interleave their load/mutate/save cycles or leave a partial file on disk.
-    """
-    with _META_LOCK:
-        meta = _load_meta()
-        meta.setdefault("sessions", {})[role] = session_id
-        meta["current_role"] = role
-        # Rolling history — list of {role, user, assistant} dicts
-        history: List[Dict[str, str]] = meta.get("history", [])
-        history.append({"role": current_role, "user": message[:300], "assistant": response[:300]})
-        # Trim to window
-        meta["history"] = history[-(HISTORY_WINDOW * 2):]
-        _save_meta(meta)
-
-
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
 
 def _load_hermes_config() -> Dict[str, Any]:
-    """Load ~/.hermes/config.yaml, returning {} on any error."""
-    try:
-        # Use hermes_cli if available (running inside the gateway process)
-        from hermes_cli.config import get_hermes_home
-        config_path = get_hermes_home() / "config.yaml"
-    except ImportError:
-        config_path = Path.home() / ".hermes" / "config.yaml"
+    """Load the Hermes config, returning {} on any error.
 
-    if not config_path.exists():
-        return {}
+    Uses the canonical loader (``hermes_cli.config.load_config_readonly``)
+    rather than a raw ``yaml.safe_load`` of ``config.yaml`` so the read
+    honors the managed-scope overlay, ``${ENV_VAR}`` expansion, profile-aware
+    pathing, and root-model normalization — and so it stays inside the
+    config-read-guard allowlist (tests/hermes_cli/test_config_read_guard.py).
+    The hook runs inside the gateway process where hermes_cli is always
+    importable; if it is somehow unavailable we degrade to an empty config
+    rather than doing a raw file read.
+    """
     try:
-        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        from hermes_cli.config import load_config_readonly
+        data = load_config_readonly()
         return data if isinstance(data, dict) else {}
     except Exception as exc:
-        logger.warning("[multi-role-router] Could not read config.yaml: %s", exc)
+        logger.warning("[multi-role-router] Could not load config: %s", exc)
         return {}
 
 
@@ -277,12 +268,19 @@ Valid role names: {", ".join(roles.keys())}"""
 
 
 async def _call_auxiliary_llm(prompt: str, aux_cfg: Dict[str, Any], config: Dict[str, Any]) -> Optional[str]:
-    """Call the auxiliary LLM and return the raw text response, or None on failure."""
-    # Prefer the gateway-internal auxiliary_client (fast, handles all providers)
+    """Call the auxiliary LLM and return the raw text response, or None on failure.
+
+    Uses the async client (``async_call_llm``) so the hook never blocks the
+    gateway's event loop while waiting on the classifier. The task slot is
+    ``triage_specifier`` to match the config read in ``_get_auxiliary_config``
+    (a user who configures ``auxiliary.triage_specifier`` gets that model used,
+    not the ``compression`` slot).
+    """
+    # Prefer the gateway-internal async auxiliary_client (fast, handles all providers).
     try:
-        from agent.auxiliary_client import call_llm
-        resp = call_llm(
-            task="compression",  # use compression slot — cheap text, no vision
+        from agent.auxiliary_client import async_call_llm
+        resp = await async_call_llm(
+            task="triage_specifier",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=32,
@@ -412,7 +410,7 @@ async def handle(event_type: str, context: Dict[str, Any]) -> Optional[Dict[str,
     # ------------------------------------------------------------------
     config = _load_hermes_config()
 
-    # Respect the /role auto off flag
+    # Respect the multi_role_router.auto config toggle
     router_config = config.get("multi_role_router")
     if not isinstance(router_config, dict):
         router_config = {}
@@ -424,12 +422,13 @@ async def handle(event_type: str, context: Dict[str, Any]) -> Optional[Dict[str,
     # NOTE (TOCTOU): _load_meta() is called here without _META_LOCK.  This is a
     # deliberate trade-off: the gateway invokes message:pre_route hooks serially
     # (one hook at a time per turn), so concurrent writes to meta.yaml from this
-    # hook are not possible in normal operation.  The only writer is
-    # _update_meta_session(), which runs under _META_LOCK.  A concurrent turn on
-    # a different session could race, but hermes-agent's single-agent-per-session
-    # model means turns for the same user are also serialised.  If this hook is
-    # ever invoked from a multi-threaded context, load current_role and history
-    # inside _META_LOCK instead.
+    # hook are not possible in normal operation.  All writes go through
+    # _save_meta() (atomic temp+rename) and the decision block below runs under
+    # _META_LOCK.  A concurrent turn on a different session could race, but
+    # hermes-agent's single-agent-per-session model means turns for the same
+    # user are also serialised.  If this hook is ever invoked from a
+    # multi-threaded context, load current_role and history inside _META_LOCK
+    # instead.
     meta = _load_meta()
 
     current_role: str = meta.get("current_role", "default")
@@ -484,30 +483,26 @@ async def handle(event_type: str, context: Dict[str, Any]) -> Optional[Dict[str,
         target_session_id = sessions.get(target_role, "")
 
         if not target_session_id:
-            # KNOWN LIMITATION — first-turn isolation gap:
-            # When the classifier picks a new role that has no saved session_id
-            # yet, we cannot redirect this turn because there is no destination
-            # session to switch to.  We write the target_role to meta.yaml so
-            # the gateway's normal session-creation path runs under the new
-            # role label, and the NEXT turn will find a session_id here and
-            # route correctly.  The current (first) turn therefore stays in
-            # the existing inbound session — isolation only begins from the
-            # second message onward.  This is a deliberate trade-off: creating
-            # a new session preemptively and then redirecting would require an
-            # extra round-trip and risks orphaned sessions if the user does not
-            # follow up.  Hooks that need true first-turn isolation should
-            # pre-register a session_id for each role in meta.yaml during
-            # installation (see README.md § "Pre-seeding sessions").
+            # First-route isolation: the classifier picked a role that has no
+            # saved session yet.  Generate a fresh session id for it, record it
+            # in meta.yaml, and return a switch decision so THIS turn is
+            # delivered to the new (isolated) session rather than the shared
+            # inbound one.  The gateway's switch_session() creates the
+            # SessionEntry for the target id (it does not require the session
+            # to already exist — see gateway/session.py switch_session), so
+            # the first message for a role lands in its own context.
+            new_session_id = (f"{datetime_utcnow():%Y%m%d_%H%M%S}_"
+                              f"{uuid.uuid4().hex[:8]}")
+            sessions[target_role] = new_session_id
             meta["current_role"] = target_role
             _save_meta(meta)
             logger.info(
-                "[multi-role-router] Role switch to '%s' detected but no prior session exists "
-                "(first-turn isolation gap): current turn stays in session '%s'. "
-                "Target role written to meta.yaml — isolation begins on the next turn.",
+                "[multi-role-router] Role switch to '%s' — creating new isolated "
+                "session %s (first-route isolation).",
                 target_role,
-                current_session_id,
+                new_session_id,
             )
-            return None
+            return {"decision": "switch_session", "session_id": new_session_id}
 
         if target_session_id == current_session_id:
             _save_meta(meta)

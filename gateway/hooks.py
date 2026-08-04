@@ -44,7 +44,7 @@ Context dict passed to ``message:pre_route`` handlers:
   user_id      -- platform user id of the sender
   chat_id      -- platform chat id (group/DM identifier)
   thread_id    -- thread/topic id (string), or None when not in a thread
-  chat_type    -- "private" | "group" | "supergroup" | "channel" | "" (unknown)
+  chat_type    -- "dm" | "group" | "channel" | "thread" | "webhook" | "" (unknown)
   session_id   -- current resolved Hermes session id
   session_key  -- internal session routing key
   message      -- raw inbound message text

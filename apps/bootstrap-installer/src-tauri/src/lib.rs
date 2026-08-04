@@ -112,11 +112,50 @@ pub fn run() {
         let install_root = paths::hermes_home().join("hermes-agent");
         if bootstrap::hermes_is_installed(&install_root) {
             match bootstrap::spawn_installed_desktop(&install_root) {
-                Ok(()) => {
-                    tracing::info!(
-                        "hermes already installed — relaunched desktop; exiting installer"
-                    );
-                    return;
+                Ok(mut child) => {
+                    // Bounded hand-off grace: poll the spawned child instead of
+                    // sleeping a fixed duration. On macOS the child is normally
+                    // `/usr/bin/open`, so a successful early exit confirms
+                    // LaunchServices accepted the hand-off. A non-zero exit or
+                    // wait error is a failed hand-off and falls through to the
+                    // visible installer UI; a still-live child at the deadline
+                    // is also a successful in-progress hand-off.
+                    let deadline =
+                        std::time::Instant::now() + std::time::Duration::from_secs(15);
+                    let handoff_succeeded = loop {
+                        match child.try_wait() {
+                            Ok(Some(status)) if status.success() => break true,
+                            Ok(Some(status)) => {
+                                tracing::warn!(
+                                    ?status,
+                                    "installed desktop launcher exited unsuccessfully; showing installer UI"
+                                );
+                                break false;
+                            }
+                            Ok(None) if std::time::Instant::now() < deadline => {
+                                std::thread::sleep(std::time::Duration::from_millis(10));
+                            }
+                            Ok(None) => {
+                                tracing::info!(
+                                    "installed desktop launcher still running after hand-off grace"
+                                );
+                                break true;
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    ?err,
+                                    "could not observe installed desktop launcher; showing installer UI"
+                                );
+                                break false;
+                            }
+                        }
+                    };
+                    if handoff_succeeded {
+                        tracing::info!(
+                            "hermes already installed — relaunched desktop; exiting installer"
+                        );
+                        return;
+                    }
                 }
                 Err(err) => {
                     tracing::warn!(

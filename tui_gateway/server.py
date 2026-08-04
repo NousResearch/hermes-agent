@@ -7137,7 +7137,7 @@ def _fail_inflight_turn(session: dict, error: Any) -> None:
 
     Caller must hold ``session["history_lock"]``.
     """
-    message = str(error) if not isinstance(error, BaseException) else (str(error) or type(error).__name__)
+    message = _classify_turn_error_message(error, session.get("agent"))
     now = time.time()
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
@@ -7150,6 +7150,79 @@ def _fail_inflight_turn(session: dict, error: Any) -> None:
     turn["streaming"] = False
     turn["updated_at"] = now
     session["inflight_turn"] = turn
+
+
+def _classify_turn_error_message(error: Any, agent: Any = None) -> str:
+    """Build a human-readable turn-error summary for TUI/desktop frames.
+
+    Bare ``str(exc)`` / generic ``request failed`` strings hide the classified
+    detail that already exists in logs (provider, model, base_url, HTTP
+    status, fallback chain). Prefer agent._summarize_api_error when present,
+    then decorate with route context from the live agent. Never raises.
+    """
+    try:
+        if isinstance(error, dict):
+            # run_conversation result shape
+            parts: list[str] = []
+            err = error.get("error") or error.get("message") or error.get("final_response")
+            if err:
+                parts.append(str(err).strip())
+            reason = error.get("failure_reason")
+            if reason and str(reason) not in (parts[0] if parts else ""):
+                parts.append(f"reason={reason}")
+            # Prefer result-level route facts when present
+            for key, label in (
+                ("provider", "provider"),
+                ("model", "model"),
+                ("base_url", "endpoint"),
+            ):
+                val = error.get(key)
+                if val:
+                    parts.append(f"{label}={val}")
+            msg = " · ".join(p for p in parts if p) if parts else ""
+        elif isinstance(error, BaseException):
+            summarizer = getattr(agent, "_summarize_api_error", None) if agent is not None else None
+            if callable(summarizer):
+                try:
+                    msg = str(summarizer(error) or "").strip()
+                except Exception:
+                    msg = (str(error) or type(error).__name__).strip()
+            else:
+                msg = (str(error) or type(error).__name__).strip()
+            status = getattr(error, "status_code", None)
+            if status and f"HTTP {status}" not in msg:
+                msg = f"HTTP {status}: {msg}" if msg else f"HTTP {status}"
+        else:
+            msg = str(error or "").strip()
+
+        if not msg or msg.lower() in {"request failed", "error", "failed", "turn failed"}:
+            # Last-resort: still try to say something useful from the agent route
+            msg = msg or "request failed"
+
+        if agent is not None:
+            route_bits = []
+            for attr, label in (
+                ("provider", "provider"),
+                ("model", "model"),
+                ("base_url", "endpoint"),
+            ):
+                val = getattr(agent, attr, None)
+                if val and str(val) not in msg:
+                    route_bits.append(f"{label}={val}")
+            # Fallback chain if the agent exposed one
+            chain = getattr(agent, "_fallback_chain", None) or getattr(
+                agent, "fallback_model", None
+            )
+            if chain and "fallback" not in msg.lower():
+                route_bits.append(f"fallback={chain}")
+            if route_bits:
+                msg = f"{msg} ({', '.join(route_bits)})"
+        return msg or "turn failed"
+    except Exception:
+        try:
+            return str(error) or "turn failed"
+        except Exception:
+            return "turn failed"
 
 
 # ── Auto-continue: resume a turn killed by a process/machine death ────
@@ -9840,18 +9913,38 @@ def _run_prompt_submit(
                     # the failed turn for resume replay instead of clearing it.
                     # If this terminal frame is lost to a disconnect, resume's
                     # inflight payload is the only carrier of the failure.
+                    # Pass the full result dict so _classify_turn_error_message
+                    # can keep failure_reason / route facts when present.
                     _fail_inflight_turn(
                         session,
-                        result.get("error") if isinstance(result, dict) else raw,
+                        result if isinstance(result, dict) else raw,
                     )
                     turn_error_retained = True
                 else:
                     _clear_inflight_turn(session)
             if status == "error":
-                payload["error"] = str(
+                # Prefer the classified snapshot message (enriched with route
+                # facts) over a bare result["error"] string.
+                _classified = ""
+                with session["history_lock"]:
+                    _turn = session.get("inflight_turn") or {}
+                    _classified = str(_turn.get("error") or "")
+                payload["error"] = _classified or str(
                     (result.get("error") if isinstance(result, dict) else "") or raw
                 )
                 payload["recoverable"] = True
+                if isinstance(result, dict) and result.get("failure_reason"):
+                    payload["failure_reason"] = result.get("failure_reason")
+                # Keep visible text aligned with the classified error when the
+                # backend produced no assistant prose.
+                if payload.get("text", "").startswith("Error: ") or not payload.get("text"):
+                    payload["text"] = f"Error: {payload['error']}"
+                    try:
+                        rendered = render_message(payload["text"], cols)
+                        if rendered:
+                            payload["rendered"] = rendered
+                    except Exception:
+                        pass
             _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
 

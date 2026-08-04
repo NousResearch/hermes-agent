@@ -44,6 +44,26 @@ def _create(home: Path, rel: str | Path) -> Path:
 
 
 
+def test_execution_target_fingerprint_key_blocked_for_read_and_write(
+    fake_home, tmp_path,
+):
+    from agent.file_safety import build_write_denied_paths, get_read_block_error
+
+    key = _create(fake_home, ".execution-target-fingerprint-key")
+    err = get_read_block_error(str(key))
+    assert err is not None
+    assert "credential store" in err
+    assert str(key.resolve()) in build_write_denied_paths(str(tmp_path))
+
+
+def test_google_oauth_json_blocked(fake_home):
+    """Gemini OAuth tokens live under auth/google_oauth.json — blocked."""
+    from agent.file_safety import get_read_block_error
+
+    oauth = _create(fake_home, Path("auth") / "google_oauth.json")
+    err = get_read_block_error(str(oauth))
+    assert err is not None
+    assert "credential store" in err
 
 
 def test_arbitrary_hermes_home_file_not_blocked(fake_home):
@@ -139,7 +159,10 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
             )
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": FakeFileOps())
+    monkeypatch.setattr(
+        ft, "_get_file_ops",
+        lambda task_id="default", target=None, _resolution=None: FakeFileOps(),
+    )
     monkeypatch.setattr(
         terminal_tool, "_session_cwd", {}
     )

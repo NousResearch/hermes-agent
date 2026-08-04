@@ -113,6 +113,18 @@ def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return False
 
 
+def _named_execution_targets_enabled() -> bool:
+    """Return whether omitted file selectors route through a named default."""
+    try:
+        from tools.execution_targets import list_execution_targets
+
+        return any(target.named for target in list_execution_targets())
+    except Exception:
+        # The tools report malformed target config. The planner must still fail
+        # conservative rather than race path mutations before that happens.
+        return True
+
+
 def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> List[tuple]:
     """Split a tool-call batch into ordered ``(kind, calls)`` segments.
 
@@ -127,18 +139,10 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
 
     * ``_NEVER_PARALLEL_TOOLS`` (interactive tools) → barrier.
     * Unparseable / non-dict arguments → barrier.
-    * Path-scoped tools (``read_file``/``search_files``/``write_file``/
-      ``patch``) join a parallel run only when their target path(s) do not
-      CONFLICT with a path already reserved in the same run.  Reservations
-      carry a reader/writer role: reader↔reader overlap is harmless (two
-      reads of the same file commute) and stays parallel; any overlap
-      involving a writer closes the run so the conflicting call starts a
-      NEW run after the first completes.  ``search_files`` reserves its
-      search root (default ``.``) as a reader — a search batched after a
-      write into the searched subtree is ordered behind that write instead
-      of racing it.  For V4A ``patch(mode="patch")`` the reserved paths are
-      the file headers in the patch body, not a possibly-stale ``path=``
-      argument.
+    * Once named execution targets are enabled, stateful tools become
+      conservative barriers. Target-specific cwd/path identity is resolved
+      lazily by the tool layer and cannot be compared safely in this lexical
+      planner.
     * Anything not in ``_PARALLEL_SAFE_TOOLS`` and not an opted-in MCP
       tool → barrier.
 
@@ -150,6 +154,7 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
     current: list = []
     # (canonical_path, is_writer) reservations for the current parallel run.
     reserved_paths: list[tuple[Path, bool]] = []
+    named_default = _named_execution_targets_enabled()
 
     def _close_parallel() -> None:
         nonlocal current, reserved_paths
@@ -193,6 +198,14 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             continue
 
         if tool_name in _PATH_SCOPED_TOOLS:
+            target_selected = (
+                function_args.get("execution_target") is not None
+                if tool_name == "search_files"
+                else function_args.get("target") is not None
+            )
+            if named_default or target_selected:
+                _add_sequential(tool_call)
+                continue
             scoped_paths = _extract_parallel_scope_paths(
                 tool_name, function_args, execution_cwd=execution_cwd
             )

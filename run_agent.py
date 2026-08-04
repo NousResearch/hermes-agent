@@ -7659,12 +7659,17 @@ class AIAgent:
                 getattr(self, "session_id", None),
             )
             from agent.auxiliary_client import scoped_runtime_main
+            from tools.terminal_tool import logical_environment_turn
 
             # The outer token restores the caller's Context even though turn setup
             # replaces the value with the live runtime after fallback restoration.
             # Keep the scope local instead of storing ContextVar tokens on the agent,
             # which may be observed from another thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}):
+            with (
+                bind_subagent_parent(self),
+                scoped_runtime_main({}),
+                logical_environment_turn(effective_task_id),
+            ):
                 result = run_conversation(
                     self,
                     user_message,

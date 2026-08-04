@@ -231,3 +231,98 @@ class TestPersistentSSH:
         assert len(lines) == 1000
         assert lines[0] == "1"
         assert lines[-1] == "1000"
+
+
+def test_control_socket_identity_includes_key_scope_and_profile(monkeypatch, tmp_path):
+    monkeypatch.setattr(ssh_env, "_ensure_ssh_available", lambda: None)
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/u")
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+    monkeypatch.setattr(
+        ssh_env,
+        "FileSyncManager",
+        lambda **kw: type(
+            "M", (), {
+                "sync": lambda self, **k: None,
+                "sync_back": lambda self, **k: None,
+            },
+        )(),
+    )
+    key_a = tmp_path / "keys" / "a"
+    key_b = tmp_path / "keys" / "b"
+    key_a.parent.mkdir()
+    key_a.write_text("a")
+    key_b.write_text("b")
+
+    base = SSHEnvironment(
+        host="h", user="u", port=22, key_path=str(key_a),
+        runtime_scope="scope-a", profile_name="profile-a",
+    )
+    equivalent = SSHEnvironment(
+        host="h", user="u", port=22,
+        key_path=str(key_a.parent / ".." / "keys" / "a"),
+        runtime_scope="scope-a", profile_name="profile-a",
+    )
+    different_key = SSHEnvironment(
+        host="h", user="u", port=22, key_path=str(key_b),
+        runtime_scope="scope-a", profile_name="profile-a",
+    )
+    different_scope = SSHEnvironment(
+        host="h", user="u", port=22, key_path=str(key_a),
+        runtime_scope="scope-b", profile_name="profile-a",
+    )
+    different_profile = SSHEnvironment(
+        host="h", user="u", port=22, key_path=str(key_a),
+        runtime_scope="scope-a", profile_name="profile-b",
+    )
+
+    assert base.control_socket == equivalent.control_socket
+    assert len({
+        base.control_socket,
+        different_key.control_socket,
+        different_scope.control_socket,
+        different_profile.control_socket,
+    }) == 4
+
+
+def test_cleanup_of_one_scoped_ssh_socket_does_not_terminate_sibling(
+    monkeypatch, tmp_path,
+):
+    calls = []
+    monkeypatch.setattr(ssh_env, "_ensure_ssh_available", lambda: None)
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/u")
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+    monkeypatch.setattr(
+        ssh_env.subprocess,
+        "run",
+        lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    monkeypatch.setattr(
+        ssh_env,
+        "FileSyncManager",
+        lambda **kw: type(
+            "M", (), {
+                "sync": lambda self, **k: None,
+                "sync_back": lambda self, **k: None,
+            },
+        )(),
+    )
+    first = SSHEnvironment(
+        host="h", user="u", runtime_scope="one", profile_name="p",
+    )
+    second = SSHEnvironment(
+        host="h", user="u", runtime_scope="two", profile_name="p",
+    )
+    first.control_socket.touch()
+    second.control_socket.touch()
+
+    first.cleanup()
+
+    assert not first.control_socket.exists()
+    assert second.control_socket.exists()
+    assert len(calls) == 1
+    assert f"ControlPath={first.control_socket}" in calls[0]
+    assert f"ControlPath={second.control_socket}" not in calls[0]

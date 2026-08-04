@@ -21,6 +21,16 @@ from tools.environments.file_sync import (
 logger = logging.getLogger(__name__)
 
 
+def _active_profile_identity() -> str:
+    """Return the current Hermes profile without exposing it in socket paths."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return str(get_active_profile_name() or "default")
+    except Exception:
+        return str(os.environ.get("HERMES_PROFILE") or "default")
+
+
 def _ensure_ssh_available() -> None:
     """Fail fast with a clear error when the SSH client is unavailable."""
     if not shutil.which("ssh"):
@@ -43,12 +53,15 @@ class SSHEnvironment(BaseEnvironment):
     """
 
     def __init__(self, host: str, user: str, cwd: str = "~",
-                 timeout: int = 60, port: int = 22, key_path: str = ""):
+                 timeout: int = 60, port: int = 22, key_path: str = "",
+                 runtime_scope: str = "", profile_name: str | None = None):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host = host
         self.user = user
         self.port = port
         self.key_path = key_path
+        self.runtime_scope = str(runtime_scope or "")
+        self.profile_name = str(profile_name or _active_profile_identity())
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
@@ -58,10 +71,23 @@ class SSHEnvironment(BaseEnvironment):
         # IPv6 host — plus the 16-byte random suffix SSH appends in
         # ControlMaster mode easily exceeds the limit under macOS's
         # deeply-nested $TMPDIR (e.g. /var/folders/xx/yy/T/). Hashing the
-        # triple keeps the path stable across reconnects so ControlMaster
-        # reuse still works.
+        # connection identity keeps the path stable across reconnects so
+        # ControlMaster reuse still works. Credential, profile, and opaque target
+        # scope are included in the digest: OpenSSH reuses a master before
+        # authenticating later ``-i`` options, so sharing across any of those
+        # boundaries would silently execute with the wrong credential authority.
+        normalized_key = (
+            os.path.normcase(
+                os.path.abspath(os.path.expanduser(os.path.expandvars(key_path)))
+            )
+            if key_path else "<ssh-agent-or-default>"
+        )
+        socket_identity = "\0".join((
+            str(user), str(host), str(port), normalized_key,
+            self.profile_name, self.runtime_scope,
+        ))
         _socket_id = hashlib.sha256(
-            f"{user}@{host}:{port}".encode()
+            socket_identity.encode("utf-8", errors="surrogatepass")
         ).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
         _ensure_ssh_available()

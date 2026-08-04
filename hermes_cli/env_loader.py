@@ -547,6 +547,12 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
     loading (the historical env-driven behavior still applies).
     """
     try:
+        # ``hermes chat --ignore-user-config`` must not let the early dotenv
+        # bootstrap re-apply terminal settings from the very config being
+        # ignored. The classic CLI subsequently bridges its built-in/project
+        # defaults plus managed overlay, preserving that authority boundary.
+        if os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+            return
         if Path(home_path).resolve() != _process_hermes_home().resolve():
             return
         from hermes_cli.config import apply_terminal_config_to_env

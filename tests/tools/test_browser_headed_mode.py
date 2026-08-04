@@ -90,7 +90,9 @@ class TestCleanupTaskResourcesHeadedSkip:
             ),
         ):
             cleanup_task_resources(_make_agent(), "task-x")
-            mock_vm.assert_called_once_with("task-x")
+            mock_vm.assert_called_once_with(
+                "task-x", preserve_persistent=True, include_collapsed=True
+            )
 
 
 # ---------------------------------------------------------------------------

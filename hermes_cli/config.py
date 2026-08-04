@@ -3185,6 +3185,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "modal_mode": "TERMINAL_MODAL_MODE",
     "cwd": "TERMINAL_CWD",
     "timeout": "TERMINAL_TIMEOUT",
+    "home_mode": "TERMINAL_HOME_MODE",
     "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
     "docker_image": "TERMINAL_DOCKER_IMAGE",
     "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
@@ -3218,6 +3219,38 @@ def _terminal_env_value(value: Any) -> str:
     if isinstance(value, (list, dict)):
         return json.dumps(value)
     return str(value)
+
+
+def effective_terminal_config(terminal_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the flat settings represented by the configured default target.
+
+    Legacy/runtime-adjacent consumers still use ``TERMINAL_*`` variables to
+    describe the environment selected when a tool call omits ``target``. In
+    named-target mode those variables must mirror ``default_target`` rather
+    than the top-level inheritance defaults.
+
+    Invalid target configuration remains the strict resolver's responsibility;
+    this compatibility bridge stays fail-open so config loading retains its
+    historical behavior.
+    """
+    if not isinstance(terminal_cfg, dict):
+        return {}
+    targets = terminal_cfg.get("targets")
+    default_target = terminal_cfg.get("default_target")
+    flat = {
+        key: value for key, value in terminal_cfg.items()
+        if key not in {"targets", "default_target"}
+    }
+    if not isinstance(targets, dict) or not targets:
+        return dict(terminal_cfg)
+    if not isinstance(default_target, str):
+        return flat
+    selected = targets.get(default_target)
+    if not isinstance(selected, dict):
+        return flat
+    effective = dict(flat)
+    effective.update(selected)
+    return effective
 
 
 def terminal_config_env_var_for_key(key: str) -> Optional[str]:
@@ -3258,12 +3291,19 @@ def apply_terminal_config_to_env(
     terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
     if not isinstance(terminal_cfg, dict):
         return target
+    terminal_cfg = effective_terminal_config(terminal_cfg)
+    terminal_backend = str(
+        terminal_cfg.get("backend") or terminal_cfg.get("env_type") or "local"
+    ).strip().lower()
 
-    # A caller-supplied config is its own source of explicit keys.  For the
-    # normal merged-config path, only keys present in raw config.yaml may
-    # override existing env values; keys inherited from DEFAULT_CONFIG are
-    # backfill-only.
-    explicit_keys = terminal_cfg.keys() if config is not None else raw_terminal_cfg.keys()
+    # A caller-supplied config is its own source of explicit keys. For the
+    # normal merged-config path, include the selected raw target's keys so its
+    # backend/cwd overrides are as authoritative as legacy flat keys.
+    explicit_keys = (
+        terminal_cfg.keys()
+        if config is not None
+        else effective_terminal_config(raw_terminal_cfg).keys()
+    )
 
     for cfg_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
         if cfg_key not in terminal_cfg:
@@ -3273,7 +3313,9 @@ def apply_terminal_config_to_env(
             raw_cwd = str(value or "").strip()
             if raw_cwd in {".", "auto", "cwd"}:
                 continue
-            if isinstance(value, str):
+            if isinstance(value, str) and not (
+                terminal_backend == "ssh" and value.strip().startswith("~")
+            ):
                 value = os.path.expanduser(value)
         if (should_override and cfg_key in explicit_keys) or env_var not in target:
             target[env_var] = _terminal_env_value(value)

@@ -706,7 +706,10 @@ class TestRpcTokenAuthorization(unittest.TestCase):
     round-trips normally.
     """
 
-    def _drive_server(self, rpc_token, requests):
+    def _drive_server(
+        self, rpc_token, requests, execution_target=None,
+        execution_target_scope=None, execution_target_config=None,
+    ):
         """Run _rpc_server_loop against a real AF_UNIX socketpair.
 
         Sends each dict in *requests* as a newline-delimited JSON message
@@ -753,6 +756,9 @@ class TestRpcTokenAuthorization(unittest.TestCase):
                     allowed_tools=frozenset({"terminal"}),
                     stop_event=stop_event,
                     rpc_token=rpc_token,
+                    execution_target=execution_target,
+                    execution_target_scope=execution_target_scope,
+                    execution_target_config=execution_target_config,
                 )
 
         t = threading.Thread(target=_run, daemon=True)
@@ -788,6 +794,33 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         )
         self.assertEqual(len(resp), 1)
         self.assertIn("Unauthorized", resp[0].get("error", ""))
+
+    def test_rpc_inherits_bound_execution_target(self):
+        resp = self._drive_server(
+            "secret-token",
+            [{
+                "tool": "terminal",
+                "args": {"command": "echo hi"},
+                "token": "secret-token",
+            }],
+            execution_target="sandbox",
+        )
+        self.assertEqual(len(resp), 1)
+        self.assertNotIn("cannot select", json.dumps(resp[0]))
+
+    def test_rpc_rejects_cross_target_pivot(self):
+        resp = self._drive_server(
+            "secret-token",
+            [{
+                "tool": "terminal",
+                "args": {"command": "echo hi", "target": "host"},
+                "token": "secret-token",
+            }],
+            execution_target="sandbox",
+        )
+        self.assertEqual(len(resp), 1)
+        self.assertIn("bound to target", json.dumps(resp[0]))
+        self.assertIn("cannot select", json.dumps(resp[0]))
 
 
     def test_generated_module_sends_token(self):

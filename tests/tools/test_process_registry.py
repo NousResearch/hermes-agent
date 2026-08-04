@@ -582,6 +582,15 @@ class TestActiveQueries:
         assert registry.has_active_processes("t1") is True
         assert registry.has_active_processes("t2") is False
 
+    def test_has_active_environment_uses_object_identity(self, registry):
+        old_env = object()
+        new_env = object()
+        s = _make_session(task_id="t1")
+        s.env_ref = old_env
+        registry._running[s.id] = s
+        assert registry.has_active_environment(old_env) is True
+        assert registry.has_active_environment(new_env) is False
+
     def test_has_active_for_session_with_max_age_stale(self, registry):
         """Stale process (older than max_active_age) is ignored."""
         s = _make_session(started_at=time.time() - 90000)  # 25 hours ago
@@ -871,6 +880,22 @@ class TestSpawnRewriteCompoundBackground:
 # =========================================================================
 
 class TestCheckpoint:
+    def test_write_checkpoint_includes_execution_target_metadata(self, registry, tmp_path):
+        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
+            s = _make_session()
+            s.target = "alpha"
+            s.backend = "local"
+            s.runtime_scope = "scope-v1"
+            registry._running[s.id] = s
+            registry._write_checkpoint()
+
+            data = json.loads((tmp_path / "procs.json").read_text())
+            assert len(data) == 1
+            assert data[0]["session_id"] == s.id
+            assert data[0]["target"] == "alpha"
+            assert data[0]["backend"] == "local"
+            assert data[0]["runtime_scope"] == "scope-v1"
+
     def test_recover_dead_pid(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
         checkpoint.write_text(json.dumps([{
@@ -882,6 +907,41 @@ class TestCheckpoint:
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
+
+    def test_recover_enqueues_watchers_with_execution_target_metadata(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "sleep 999",
+            "pid": os.getpid(),  # current process — guaranteed alive
+            "task_id": "t1",
+            "session_key": "sk1",
+            "watcher_platform": "telegram",
+            "watcher_chat_id": "123",
+            "watcher_user_id": "u123",
+            "watcher_user_name": "alice",
+            "watcher_thread_id": "42",
+            "watcher_interval": 60,
+            "target": "alpha",
+            "backend": "local",
+            "runtime_scope": "scope-v1",
+        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            recovered = registry.recover_from_checkpoint()
+            assert recovered == 1
+            assert len(registry.pending_watchers) == 1
+            w = registry.pending_watchers[0]
+            assert w["session_id"] == "proc_live"
+            assert w["platform"] == "telegram"
+            assert w["chat_id"] == "123"
+            assert w["user_id"] == "u123"
+            assert w["user_name"] == "alice"
+            assert w["thread_id"] == "42"
+            assert w["check_interval"] == 60
+            session = registry.get("proc_live")
+            assert session.target == "alpha"
+            assert session.backend == "local"
+            assert session.runtime_scope == "scope-v1"
 
 
     def test_recovery_skips_explicit_sandbox_backed_entries(self, registry, tmp_path):

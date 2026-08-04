@@ -1,7 +1,9 @@
+import gc
 import logging
 import os
 from io import StringIO
 import subprocess
+import weakref
 
 import pytest
 
@@ -45,6 +47,8 @@ def _make_dummy_env(**kwargs):
         disk=kwargs.get("disk", 0),
         persistent_filesystem=kwargs.get("persistent_filesystem", False),
         task_id=kwargs.get("task_id", "test-task"),
+        storage_task_id=kwargs.get("storage_task_id"),
+        legacy_storage_task_id=kwargs.get("legacy_storage_task_id"),
         volumes=kwargs.get("volumes", []),
         forward_env=kwargs.get("forward_env"),
         network=kwargs.get("network", True),
@@ -99,6 +103,226 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert f"{project_dir}:/workspace" in run_args_str
+
+
+def test_persistent_storage_path_uses_stable_storage_task_id(
+    monkeypatch, tmp_path,
+):
+    from tools.environments import base as environment_base
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(environment_base, "get_sandbox_dir", lambda: tmp_path)
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        task_id="runtime-config-fingerprint",
+        storage_task_id="stable-target-owner",
+    )
+
+    assert env._home_dir == str(
+        tmp_path / "docker" / "stable-target-owner" / "home"
+    )
+    assert env._workspace_dir == str(
+        tmp_path / "docker" / "stable-target-owner" / "workspace"
+    )
+
+
+def test_legacy_named_target_storage_is_migrated(monkeypatch, tmp_path):
+    from tools.environments import base as environment_base
+
+    monkeypatch.setattr(environment_base, "get_sandbox_dir", lambda: tmp_path)
+    _mock_subprocess_run(monkeypatch)
+    legacy = tmp_path / "docker" / "legacy-runtime"
+    (legacy / "home").mkdir(parents=True)
+    (legacy / "home" / "marker.txt").write_text("kept", encoding="utf-8")
+
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        task_id="new-runtime",
+        storage_task_id="stable-owner",
+        legacy_storage_task_id="legacy-runtime",
+    )
+
+    migrated = tmp_path / "docker" / "stable-owner"
+    assert not legacy.exists()
+    assert (migrated / "home" / "marker.txt").read_text(encoding="utf-8") == "kept"
+    assert env._home_dir == str(migrated / "home")
+
+
+def test_persistent_storage_retires_prior_process_runtime_on_spec_change(
+    monkeypatch,
+):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[1] == "version":
+            return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+        if cmd[1] == "ps" and any(
+            "hermes-storage-id=" in part for part in cmd
+        ):
+            output = "old-container\told-runtime\tprior-process\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout=output, stderr="")
+        if cmd[1] == "ps":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[1] == "run":
+            return subprocess.CompletedProcess(cmd, 0, stdout="new-container\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        task_id="new-runtime",
+        storage_task_id="stable-owner",
+    )
+
+    removals = [cmd for cmd in calls if cmd[1:3] == ["rm", "-f"]]
+    assert removals == [["/usr/bin/docker", "rm", "-f", "old-container"]]
+    run_cmd = next(cmd for cmd in calls if cmd[1] == "run")
+    assert env._labels["hermes-storage-id"].startswith("storage-")
+    assert f"hermes-storage-id={env._labels['hermes-storage-id']}" in run_cmd
+    assert any("hermes-process-instance=" in part for part in run_cmd)
+
+
+def test_persistent_storage_refuses_to_remove_live_peer_runtime(
+    monkeypatch, tmp_path,
+):
+    from tools.environments import base as environment_base
+
+    monkeypatch.setattr(environment_base, "get_sandbox_dir", lambda: tmp_path)
+    env = object.__new__(docker_env.DockerEnvironment)
+    env._docker_exe = "/usr/bin/docker"
+    env._lease_root = tmp_path / "docker" / ".runtime-leases"
+    container_id = "live-peer-container"
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[1] == "ps":
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout=f"{container_id}\told-runtime\tpeer-process\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    docker_env._hold_container_lease(container_id, env._lease_root)
+    try:
+        with pytest.raises(RuntimeError, match="still used by another Hermes process"):
+            env._remove_superseded_storage_containers(
+                "stable-owner", "default", "new-runtime",
+                allow_exact_reuse=False,
+            )
+    finally:
+        docker_env._release_container_lease(container_id, env._lease_root)
+
+    assert not [cmd for cmd in calls if cmd[1:3] == ["rm", "-f"]]
+
+
+def test_persistent_storage_retires_exact_runtime_when_egress_changes(
+    monkeypatch, tmp_path,
+):
+    from tools.environments import base as environment_base
+
+    monkeypatch.setattr(environment_base, "get_sandbox_dir", lambda: tmp_path)
+    env = object.__new__(docker_env.DockerEnvironment)
+    env._docker_exe = "/usr/bin/docker"
+    env._lease_root = tmp_path / "leases"
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[1] == "ps":
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="stale-exact\tcurrent-runtime\tdead-process\told-egress\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    env._remove_superseded_storage_containers(
+        "stable-owner", "default", "current-runtime",
+        current_egress_label="new-egress",
+        allow_exact_reuse=True,
+    )
+
+    assert [cmd for cmd in calls if cmd[1:3] == ["rm", "-f"]] == [
+        ["/usr/bin/docker", "rm", "-f", "stale-exact"],
+    ]
+
+
+def test_runtime_lease_releases_when_environment_handle_is_dropped(
+    monkeypatch, tmp_path,
+):
+    from tools.environments import base as environment_base
+
+    monkeypatch.setattr(environment_base, "get_sandbox_dir", lambda: tmp_path)
+
+    class Holder:
+        pass
+
+    holder = Holder()
+    ref = weakref.ref(holder)
+    container_id = "gc-release-container"
+    docker_env._track_environment_container(holder, container_id)
+    assert any(key[1] == container_id for key in docker_env._CONTAINER_LEASES)
+
+    del holder
+    gc.collect()
+
+    assert ref() is None
+    assert not any(key[1] == container_id for key in docker_env._CONTAINER_LEASES)
+    assert container_id not in docker_env._CURRENT_PROCESS_CONTAINER_IDS
+
+
+def test_storage_owner_lock_serializes_runtime_creation(monkeypatch, tmp_path):
+    from tools.environments import base as environment_base
+
+    monkeypatch.setattr(environment_base, "get_sandbox_dir", lambda: tmp_path)
+    first = docker_env._acquire_storage_creation_lease("stable-owner")
+    try:
+        with pytest.raises(RuntimeError, match="Timed out waiting"):
+            docker_env._acquire_storage_creation_lease(
+                "stable-owner", timeout=0.01,
+            )
+    finally:
+        docker_env._close_storage_creation_lease(first)
+
+
+def test_persistent_storage_reconciles_exact_runtime_when_reuse_is_disabled(
+    monkeypatch, tmp_path,
+):
+    from tools.environments import base as environment_base
+
+    monkeypatch.setattr(environment_base, "get_sandbox_dir", lambda: tmp_path)
+    env = object.__new__(docker_env.DockerEnvironment)
+    env._docker_exe = "/usr/bin/docker"
+    env._lease_root = tmp_path / "docker" / ".runtime-leases"
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[1] == "ps":
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="stale-exact\tcurrent-runtime\tdead-process\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    env._remove_superseded_storage_containers(
+        "stable-owner", "default", "current-runtime",
+        allow_exact_reuse=False,
+    )
+
+    assert [cmd for cmd in calls if cmd[1:3] == ["rm", "-f"]] == [
+        ["/usr/bin/docker", "rm", "-f", "stale-exact"],
+    ]
 
 
 def test_non_persistent_cleanup_removes_container(monkeypatch):
@@ -605,6 +829,7 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-task-id": "abc",
         "hermes-profile": "default",
         "hermes-egress": "off",
+        "hermes-process-instance": docker_env._PROCESS_INSTANCE_ID,
     }
 
 
@@ -1488,3 +1713,99 @@ def test_extra_args_set_shm_size_helper():
     assert docker_env._extra_args_set_shm_size(None) is False
     # non-string entries must not crash (config.yaml can be malformed)
     assert docker_env._extra_args_set_shm_size([42, None, "--shm-size=1g"]) is True
+
+
+def test_force_cleanup_rm_failure_restores_identity_ownership_and_storage(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    _install_fake_thread(monkeypatch)
+    env = _make_dummy_env(task_id="transactional-cleanup")
+    container_id = env._container_id
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    env._workspace_dir = str(workspace)
+    restored = []
+    monkeypatch.setattr(
+        docker_env,
+        "_track_environment_container",
+        lambda owner, runtime_id: restored.append((owner, runtime_id)),
+    )
+
+    def failing_remove(cmd, **kwargs):
+        if cmd[1:3] == ["rm", "-f"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="denied")
+        if cmd[1:3] == ["container", "inspect"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=container_id, stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", failing_remove)
+    env.cleanup(force_remove=True)
+
+    with pytest.raises(RuntimeError, match="cleanup failed transactionally"):
+        env.wait_for_cleanup(timeout=1)
+    assert env._container_id == container_id
+    assert workspace.exists()
+    assert restored == [(env, container_id)]
+
+
+def test_force_cleanup_treats_verified_absent_container_as_success(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    _install_fake_thread(monkeypatch)
+    env = _make_dummy_env(task_id="already-absent-cleanup")
+
+    def already_absent(cmd, **kwargs):
+        if cmd[1:3] == ["rm", "-f"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="failed")
+        if cmd[1:3] == ["container", "inspect"]:
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="Error: No such container",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", already_absent)
+    env.cleanup(force_remove=True)
+
+    assert env.wait_for_cleanup(timeout=1) is True
+    assert env._container_id is None
+
+
+def test_cleanup_worker_start_failure_restores_runtime_ownership(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env(task_id="cleanup-thread-start-failure")
+    container_id = env._container_id
+    restored = []
+    monkeypatch.setattr(
+        docker_env,
+        "_track_environment_container",
+        lambda owner, runtime_id: restored.append((owner, runtime_id)),
+    )
+
+    class FailingThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        @staticmethod
+        def is_alive():
+            return False
+
+        @staticmethod
+        def start():
+            raise RuntimeError("thread unavailable")
+
+    monkeypatch.setattr(threading, "Thread", FailingThread)
+
+    with pytest.raises(RuntimeError, match="Could not start Docker cleanup worker"):
+        env.cleanup(force_remove=True)
+    assert env._container_id == container_id
+    assert restored == [(env, container_id)]
+    with pytest.raises(RuntimeError, match="cleanup failed transactionally"):
+        env.wait_for_cleanup(timeout=1)

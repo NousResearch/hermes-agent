@@ -208,6 +208,34 @@ class TestSmartModeFiresHooks:
             assert pre["pattern_keys"] == [pattern_key]
 
     @pytest.mark.parametrize("guard,value", [
+        (check_all_command_guards, "rm -rf /tmp/smart-target-hook"),
+        (check_execute_code_guard, "print('smart target hook')"),
+    ])
+    def test_smart_pre_hook_includes_target_before_aux_decision(
+        self, isolated_session, monkeypatch, guard, value,
+    ):
+        self._configure(monkeypatch, "approve")
+        captured = []
+
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            side_effect=lambda name, **kwargs: captured.append((name, kwargs)),
+        ):
+            result = guard(
+                value,
+                "local",
+                execution_target="alpha",
+                execution_backend="local",
+                execution_target_named=True,
+                execution_target_scope="scope-v1",
+            )
+
+        assert result["approved"] is True
+        pre = next(kwargs for name, kwargs in captured if name == "pre_approval_request")
+        assert pre["target"] == "alpha"
+        assert pre["backend"] == "local"
+
+    @pytest.mark.parametrize("guard,value", [
         (check_all_command_guards, "rm -rf /tmp/smart-order"),
         (check_execute_code_guard, "print('smart order')"),
     ])

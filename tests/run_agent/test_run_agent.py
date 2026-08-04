@@ -1765,6 +1765,61 @@ class TestConcurrentToolExecution:
 
 
 
+    def test_explicit_targeted_writes_are_sequential_barriers(self, agent):
+        tc1 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"src/a.py","content":"one","target":"beta"}',
+            call_id="c1",
+        )
+        tc2 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"src/b.py","content":"two","target":"beta"}',
+            call_id="c2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_named_default_writes_are_sequential_barriers(self, agent):
+        tc1 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"relative.txt","content":"one"}',
+            call_id="c1",
+        )
+        tc2 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"/remote/project/relative.txt","content":"two"}',
+            call_id="c2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch(
+            "agent.tool_dispatch_helpers._named_execution_targets_enabled",
+            return_value=True,
+        ):
+            with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+                with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                    agent._execute_tool_calls(mock_msg, messages, "task-1")
+                    mock_seq.assert_called_once()
+                    mock_con.assert_not_called()
+
+    def test_legacy_default_inventory_does_not_enable_named_barrier(self):
+        from agent import tool_dispatch_helpers as helpers
+
+        with patch(
+            "tools.execution_targets.list_execution_targets",
+            return_value=(SimpleNamespace(named=False),),
+        ):
+            assert helpers._named_execution_targets_enabled() is False
+        with patch(
+            "tools.execution_targets.list_execution_targets",
+            return_value=(SimpleNamespace(named=True),),
+        ):
+            assert helpers._named_execution_targets_enabled() is True
 
 
 
@@ -2673,6 +2728,41 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_logical_environment_turn_spans_final_cleanup(
+        self, agent, monkeypatch,
+    ):
+        """The outer AIAgent wrapper owns the lease through final cleanup."""
+        self._setup_agent(agent)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        import tools.terminal_tool as terminal_mod
+
+        monkeypatch.setattr(terminal_mod, "_active_turn_counts", {})
+        observed = {}
+
+        def observe_cleanup(task_id):
+            observed["before_release"] = terminal_mod.active_environment_turns(task_id)
+            observed["released"] = terminal_mod.release_logical_environment_turn_for_cleanup(
+                task_id
+            )
+            observed["after_release"] = terminal_mod.active_environment_turns(task_id)
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources", side_effect=observe_cleanup),
+        ):
+            result = agent.run_conversation("hello", task_id="logical-turn-test")
+
+        assert result["completed"] is True
+        assert observed == {
+            "before_release": 1,
+            "released": True,
+            "after_release": 0,
+        }
+        assert terminal_mod.active_environment_turns("logical-turn-test") == 0
 
     def test_prompt_cache_marks_static_system_prefix_on_wire(self, agent):
         self._setup_agent(agent)

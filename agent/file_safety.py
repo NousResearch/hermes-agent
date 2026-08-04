@@ -49,6 +49,10 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Bitwarden Secrets Manager encrypted disk cache.
             str(hermes_home / "cache" / "bws_cache.enc.json"),
             str(hermes_root / "cache" / "bws_cache.enc.json"),
+            # Keyed execution-target fingerprint secret. Exposing or replacing
+            # it would let an untrusted tool forge persisted target identities.
+            str(hermes_home / ".execution-target-fingerprint-key"),
+            str(hermes_root / ".execution-target-fingerprint-key"),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
@@ -276,6 +280,7 @@ def get_read_block_error(path: str) -> Optional[str]:
         "auth.lock",
         ".anthropic_oauth.json",
         ".env",
+        ".execution-target-fingerprint-key",
         "webhook_subscriptions.json",
         os.path.join("auth", "google_oauth.json"),
         # Bitwarden Secrets Manager disk cache: stores plaintext secret values

@@ -77,7 +77,7 @@ class TestFileToolIntegration:
         monkeypatch.setattr(
             file_tools,
             "_get_container_mirror_prefix_for_task",
-            lambda task_id: "/root/.hermes",
+            lambda task_id, execution_target=None, _resolution=None: "/root/.hermes",
         )
 
         warning = file_tools._check_cross_profile_path(

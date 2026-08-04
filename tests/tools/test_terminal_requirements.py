@@ -206,3 +206,20 @@ def test_vercel_backend_rejects_malformed_disk_without_raising(monkeypatch, capl
         "Invalid value for TERMINAL_CONTAINER_DISK" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_check_terminal_requirements_invalid_config_returns_false(monkeypatch):
+    import tools.execution_targets as targets_mod
+    from tools.terminal_tool import check_terminal_requirements
+
+    monkeypatch.setattr(
+        targets_mod,
+        "list_execution_targets",
+        lambda: (_ for _ in ()).throw(
+            targets_mod.ExecutionTargetError(
+                "terminal.targets must be a mapping of target names"
+            )
+        ),
+    )
+
+    assert check_terminal_requirements() is False

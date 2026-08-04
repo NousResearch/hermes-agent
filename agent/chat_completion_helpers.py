@@ -40,7 +40,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
 )
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
-from tools.terminal_tool import is_persistent_env
+from tools.terminal_tool import is_persistent_env  # Backward-compatible test/patch seam.
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
@@ -2413,9 +2413,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 def cleanup_task_resources(agent, task_id: str) -> None:
     """Clean up VM and browser resources for a given task.
 
-    Skips ``cleanup_vm`` when the active terminal environment is marked
-    persistent (``persistent_filesystem=True``) so that long-lived sandbox
-    containers survive between turns. The idle reaper in
+    Removes each non-persistent target while keeping persistent named sibling
+    environments live so long-lived containers survive between turns. The
+    idle reaper in
     ``terminal_tool._cleanup_inactive_envs`` still tears them down once
     ``terminal.lifetime_seconds`` is exceeded. Non-persistent backends are
     torn down per-turn as before to prevent resource leakage (the original
@@ -2427,14 +2427,26 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     idle sessions.
     """
     try:
-        if is_persistent_env(task_id):
-            if agent.verbose_logging:
-                logging.debug(
-                    f"Skipping per-turn cleanup_vm for persistent env {task_id}; "
-                    f"idle reaper will handle it."
-                )
-        else:
-            _ra().cleanup_vm(task_id)
+        from tools.terminal_tool import (
+            active_environment_turns,
+            defer_environment_turn_cleanup,
+            release_logical_environment_turn_for_cleanup,
+        )
+
+        # The current logical turn must stop counting itself before deciding
+        # whether it is the last user of the collapsed shared environment.
+        # The lease is idempotent, so duplicate finalization paths and the
+        # outer exception fallback cannot decrement another overlapping turn.
+        release_logical_environment_turn_for_cleanup(task_id)
+        remaining_turns = active_environment_turns(task_id)
+        include_collapsed = remaining_turns == 0
+        if not include_collapsed:
+            defer_environment_turn_cleanup(task_id)
+        _ra().cleanup_vm(
+            task_id,
+            preserve_persistent=True,
+            include_collapsed=include_collapsed,
+        )
     except Exception as e:
         if agent.verbose_logging:
             logger.warning("Failed to cleanup VM for task %s: %s", task_id, e)

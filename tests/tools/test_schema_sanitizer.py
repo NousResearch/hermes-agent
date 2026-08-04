@@ -346,3 +346,37 @@ def test_dependent_schemas_still_recursively_sanitized():
     assert dep_schemas["owner"] == {"type": "object", "properties": {}}, (
         f"dependentSchemas['owner'] was not fully sanitized: {dep_schemas['owner']!r}"
     )
+
+
+def test_list_and_object_default_values_preserved():
+    """``default`` / ``const`` hold literal instance values, not schemas.
+
+    A ``default`` of ``["read", "write"]`` must survive verbatim. Treating it
+    as a schema node walks each string element through the bare-string
+    replacement and turns the default into a list of ``{"type": "object"}``
+    dicts - silently corrupting the value the model sees for the tool.
+    """
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "perms": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": ["read", "write"],
+            },
+            "cfg": {
+                "type": "object",
+                "default": {"nested": ["a", "b"]},
+            },
+            "tier": {
+                "type": "string",
+                "const": "gold",
+            },
+        },
+        "required": ["perms"],
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert props["perms"]["default"] == ["read", "write"]
+    assert props["cfg"]["default"] == {"nested": ["a", "b"]}
+    assert props["tier"]["const"] == "gold"

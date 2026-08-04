@@ -6,6 +6,7 @@ import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
+import { Backdrop } from '@/components/Backdrop'
 import { IdleMount } from '@/components/idle-mount'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
@@ -720,9 +721,10 @@ export function ContribController() {
     >
       <ContribWiring>
         <div
-          className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
+          className="relative isolate flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
           style={{ '--titlebar-height': '0px' } as CSSProperties}
         >
+          <Backdrop />
           {/* Title bar: fixed chrome outside the grid, composable via slots.
               Layout contract (no contribution can break it):
                 - a full-bar DRAG BASE underneath (pointer-events-none, like

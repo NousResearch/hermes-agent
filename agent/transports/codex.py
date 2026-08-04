@@ -39,26 +39,14 @@ _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
 def _xai_prefers_native_web_search() -> bool:
     """True when xAI Responses should use Grok's native ``web_search`` built-in.
 
-    Honors explicit ``web.search_backend`` / ``web.backend`` first. Only falls
-    back to native when the resolved active provider is ``xai`` (or resolution
-    fails — preserve the incomplete-hang fix rather than risk reintroducing it).
+    Delegates to the web-search registry's provider resolution (which reads
+    ``web.search_backend`` / ``web.backend`` from config) and checks whether
+    the resolved provider is xAI. Falls back to the legacy ``_get_search_backend``
+    probe when the registry has no providers loaded. On any resolution failure,
+    returns True (fail-closed to native — preserves the #48108 incomplete-hang
+    fix rather than risk reintroducing it).
     """
     try:
-        from hermes_cli.config import load_config_readonly
-
-        cfg = load_config_readonly() or {}
-        web = cfg.get("web") if isinstance(cfg, dict) else None
-        if isinstance(web, dict):
-            explicit = (
-                str(web.get("search_backend") or "").strip().lower()
-                or str(web.get("backend") or "").strip().lower()
-            )
-            if explicit == "xai":
-                return True
-            if explicit:
-                # User asked for Firecrawl / Tavily / etc. — keep Hermes dispatch.
-                return False
-
         from agent.web_search_registry import get_active_search_provider
 
         provider = get_active_search_provider()
@@ -69,7 +57,7 @@ def _xai_prefers_native_web_search() -> bool:
 
         return (_get_search_backend() or "").strip().lower() == "xai"
     except Exception:
-        # Fail closed to native swap — same behavior as pre-fix main.
+        # Fail closed to native — same behavior as pre-fix main.
         return True
 
 

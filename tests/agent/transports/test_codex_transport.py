@@ -438,8 +438,8 @@ class TestXaiWebSearchBackendPreference:
         import agent.transports.codex as codex_mod
 
         monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
-            lambda: {"web": {"backend": "firecrawl"}},
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: SimpleNamespace(name="firecrawl"),
         )
         assert codex_mod._xai_prefers_native_web_search() is False
 
@@ -447,8 +447,8 @@ class TestXaiWebSearchBackendPreference:
         import agent.transports.codex as codex_mod
 
         monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
-            lambda: {"web": {"search_backend": "xai"}},
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: SimpleNamespace(name="xai"),
         )
         assert codex_mod._xai_prefers_native_web_search() is True
 
@@ -456,12 +456,36 @@ class TestXaiWebSearchBackendPreference:
         import agent.transports.codex as codex_mod
 
         monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
-            lambda: {"web": {}},
-        )
-        monkeypatch.setattr(
             "agent.web_search_registry.get_active_search_provider",
             lambda: SimpleNamespace(name="firecrawl"),
+        )
+        assert codex_mod._xai_prefers_native_web_search() is False
+
+    def test_no_provider_legacy_fallback_xai(self, monkeypatch):
+        """When no provider is registered, fall back to _get_search_backend."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._get_search_backend",
+            lambda: "xai",
+        )
+        assert codex_mod._xai_prefers_native_web_search() is True
+
+    def test_no_provider_legacy_fallback_non_xai(self, monkeypatch):
+        """When no provider is registered and backend isn't xai, keep client."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._get_search_backend",
+            lambda: "firecrawl",
         )
         assert codex_mod._xai_prefers_native_web_search() is False
 

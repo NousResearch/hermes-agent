@@ -693,6 +693,47 @@ class RelayRuntime:
         if failure:
             logger.warning("Hermes Relay session %s closed with errors: %s", session_id, failure)
 
+    def discard_session_tree(self, session_id: str) -> None:
+        """Forget a corrupted session stack without attempting more pops.
+
+        Relay scopes are strictly LIFO.  Once a turn pop is rejected, trying
+        to guess and close unknown nested scopes can corrupt the stack further.
+        Remove the affected session and its delegated children instead; the
+        next turn will create a fresh context while Hermes conversation state
+        remains untouched.
+        """
+        root_id = str(session_id or "")
+        if not root_id:
+            return
+
+        with self._sessions_lock:
+            discarded_ids = {root_id}
+            while True:
+                children = {
+                    child_id
+                    for child_id, parent_id in self._subagent_parents.items()
+                    if parent_id in discarded_ids
+                }
+                new_children = children - discarded_ids
+                if not new_children:
+                    break
+                discarded_ids.update(new_children)
+
+            discarded = [
+                session
+                for current_id in discarded_ids
+                if (session := self._sessions.pop(current_id, None)) is not None
+            ]
+            for current_id in discarded_ids:
+                self._subagent_parents.pop(current_id, None)
+                self._subagent_parent_handles.pop(current_id, None)
+
+        for session in discarded:
+            with session.lock:
+                session.closing = True
+                session.handle = None
+                session.context = None
+
     def shutdown(self) -> None:
         """Close core scopes and release process plugin configuration."""
         with self._sessions_lock:
@@ -971,7 +1012,9 @@ class RelaySessionCoordinator:
             host = lease.live_runtime()
             try:
                 if host is not None:
-                    self._close_turn_scope(host, turn, outcome=outcome)
+                    failure = self._close_turn_scope(host, turn, outcome=outcome)
+                    if failure:
+                        host.discard_session_tree(lease.session.session_id)
             finally:
                 if turn._active_registered and host is not None:
                     with contextlib.suppress(Exception), lease.session.lock:  # accounting never blocks
@@ -989,7 +1032,7 @@ class RelaySessionCoordinator:
                     self._reset_turn_context(turn)
                 self._consume_deferred_close(lease)
 
-    def _close_turn_scope(self, host: RelayRuntime, turn: RelayTurnContext, *, outcome: str) -> None:
+    def _close_turn_scope(self, host: RelayRuntime, turn: RelayTurnContext, *, outcome: str) -> str | None:
         """Pop the turn's logical LLM children, then the turn scope itself (LIFO)."""
         self._finish_logical_calls(turn, outcome=outcome)
         failure = host._close_scope_handle(
@@ -997,6 +1040,7 @@ class RelaySessionCoordinator:
         )
         if failure:
             logger.warning("Hermes Relay turn finalization failed: %s", failure)
+        return failure
 
     @_fail_open("deferred session close")
     def _consume_deferred_close(self, lease: ConversationLease) -> None:

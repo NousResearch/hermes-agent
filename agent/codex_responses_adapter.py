@@ -1030,7 +1030,7 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key",
-        "prompt_cache_retention", "service_tier",
+        "prompt_cache_retention", "service_tier", "user", "metadata",
         "extra_headers", "extra_body", "timeout",
     }
     normalized: Dict[str, Any] = {
@@ -1067,6 +1067,17 @@ def _preflight_codex_api_kwargs(
     temperature = api_kwargs.get("temperature")
     if isinstance(temperature, (int, float)):
         normalized["temperature"] = float(temperature)
+    user = api_kwargs.get("user")
+    if user is not None:
+        if not isinstance(user, str) or not user.strip():
+            raise ValueError("Codex Responses request 'user' must be a non-empty string.")
+        normalized["user"] = user
+    metadata = api_kwargs.get("metadata")
+    if metadata is not None:
+        if not isinstance(metadata, dict):
+            raise ValueError("Codex Responses request 'metadata' must be an object.")
+        normalized["metadata"] = dict(metadata)
+
 
     # Pass through cache routing/retention and tool-dispatch hints.
     for passthrough_key in (

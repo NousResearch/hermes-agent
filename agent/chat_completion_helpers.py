@@ -1125,6 +1125,35 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     if tools_for_api is None:
         tools_for_api = agent.tools
 
+    # Forward Hermes identity only after an explicit privacy opt-in and only
+    # for a user-selected custom OpenAI-compatible route (for example LiteLLM).
+    # Built-in providers must never receive platform identifiers implicitly.
+    # Keep this separate from inbound gateway headers and do not mutate the
+    # request_overrides mapping because it is reused across turns.
+    upstream_overrides = dict(agent.request_overrides or {})
+    _provider_norm = str(getattr(agent, "provider", "") or "").strip().lower()
+    _share_session_identity = bool(
+        getattr(agent, "_share_session_identity", False)
+        and (_provider_norm == "custom" or _provider_norm.startswith("custom:"))
+    )
+    if _share_session_identity:
+        upstream_user = getattr(agent, "_user_id", None) or getattr(
+            agent, "_gateway_session_key", None
+        )
+        if upstream_user and "user" not in upstream_overrides:
+            upstream_overrides["user"] = str(upstream_user)
+
+        upstream_metadata = dict(upstream_overrides.get("metadata") or {})
+        if getattr(agent, "session_id", None):
+            # LiteLLM uses metadata.session_id for Session-ID affinity.
+            upstream_metadata.setdefault("session_id", str(agent.session_id))
+        if getattr(agent, "_gateway_session_key", None):
+            upstream_metadata.setdefault(
+                "hermes_session_key", str(agent._gateway_session_key)
+            )
+        if upstream_metadata:
+            upstream_overrides["metadata"] = upstream_metadata
+
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
@@ -1225,7 +1254,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             base_url=agent.base_url,
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),
-            request_overrides=agent.request_overrides,
+            request_overrides=upstream_overrides,
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
@@ -1327,7 +1356,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             ephemeral_max_output_tokens=_ephemeral_out,
             max_tokens_param_fn=agent._max_tokens_param,
             reasoning_config=agent.reasoning_config,
-            request_overrides=agent.request_overrides,
+            request_overrides=upstream_overrides,
             session_id=getattr(agent, "session_id", None),
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
@@ -1359,7 +1388,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param,
         reasoning_config=agent.reasoning_config,
-        request_overrides=agent.request_overrides,
+        request_overrides=upstream_overrides,
         session_id=getattr(agent, "session_id", None),
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,

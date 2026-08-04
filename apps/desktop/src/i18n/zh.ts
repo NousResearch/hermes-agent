@@ -362,6 +362,8 @@ export const zh: Translations = {
       intro: '原生桌面通知，区别于应用内提示。设置按设备保存，每台电脑各自独立。',
       enableAll: '启用通知',
       enableAllDesc: '关闭后静音下方所有通知。',
+      closeToTray: '关闭时最小化到托盘',
+      closeToTrayDesc: '关闭窗口后 Hermes 会在系统托盘中继续运行，仍会通知你回复和批准请求。',
       focusedHint: '完成提醒仅在 Hermes 处于后台时触发。',
       kinds: {
         approval: {

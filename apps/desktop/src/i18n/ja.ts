@@ -244,6 +244,8 @@ export const ja = defineLocale({
       intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
       enableAll: '通知を有効にする',
       enableAllDesc: 'オフで以下の通知をすべて無効にします。',
+      closeToTray: '閉じるときにトレイに最小化',
+      closeToTrayDesc: 'ウィンドウを閉じても Hermes はシステムトレイで動作し続け、応答や承認リクエストを通知します。',
       focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
       kinds: {
         approval: {

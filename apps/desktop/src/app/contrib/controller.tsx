@@ -55,7 +55,7 @@ import {
 } from '@/store/layout'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import { $reviewOpen, closeReview, openReview, REVIEW_PANE_ID } from '@/store/review'
-import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
+import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, markSessionRead, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 
@@ -129,7 +129,15 @@ const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => vo
     return false
   }
 
-  startSessionDrag(payload, event, { double, onTap })
+  // Tapping the main tab means the user is looking at that session — clear
+  // its finished-turn marker like any other open/focus path.
+  startSessionDrag(payload, event, {
+    double,
+    onTap: () => {
+      markSessionRead(payload.id)
+      onTap()
+    }
+  })
 
   return true
 }

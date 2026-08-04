@@ -43,6 +43,7 @@ import {
   $gatewayState,
   $selectedStoredSessionId,
   $sessions,
+  markSessionRead,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
@@ -350,7 +351,11 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
     )
   }
 
-  return <TileChat runtimeId={runtimeId} storedSessionId={storedSessionId} view={view} />
+  return (
+    <div className="h-full" onPointerDownCapture={() => markSessionRead(storedSessionId)}>
+      <TileChat runtimeId={runtimeId} storedSessionId={storedSessionId} view={view} />
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -601,7 +606,13 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   // A tile's tab drags like a sidebar row — stack / split / drop-to-link — with
   // its tap (activate) + double-tap (hide bar) preserved. Always takes the drag.
   tabDrag: (storedSessionId, event, onTap, double) => {
-    startSessionDrag(tileDragPayload(storedSessionId), event, { double, onTap })
+    startSessionDrag(tileDragPayload(storedSessionId), event, {
+      double,
+      onTap: () => {
+        markSessionRead(storedSessionId)
+        onTap()
+      }
+    })
 
     return true
   },

@@ -50,6 +50,7 @@ import {
   setNewChatWorkspaceTarget,
   setResumeExhaustedSessionId,
   setResumeFailedSessionId,
+  markSessionRead,
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
@@ -558,6 +559,7 @@ export function useSessionActions({
       setFreshDraftReady(false)
       clearNotifications()
       resetViewSync()
+      markSessionRead(storedSessionId)
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
 

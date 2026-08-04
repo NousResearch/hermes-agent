@@ -41,6 +41,11 @@ from agent.message_sanitization import (
 )
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.stream_output_repetition_guard import (
+    StreamOutputRepetitionError,
+    StreamOutputRepetitionGuard,
+    truncate_repeated_tail,
+)
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -3237,6 +3242,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         content_parts: list = []
         tool_calls_acc: dict = {}
         tool_gen_notified: set = set()
+        repetition_guard = StreamOutputRepetitionGuard()
+        reasoning_repetition_guard = StreamOutputRepetitionGuard()
         # Ollama-compatible endpoints reuse index 0 for every tool call
         # in a parallel batch, distinguishing them only by id.  Track
         # the last seen id per raw index so we can detect a new tool
@@ -3439,12 +3446,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     reasoning_parts[-1] if reasoning_parts else "",
                     reasoning_text,
                 )
+                # Feed the guard the separated text, not the raw delta: the
+                # guard measures what actually accumulates into the stream.
+                reasoning_repetition_guard.feed(reasoning_text)
                 reasoning_parts.append(reasoning_text)
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
+                repetition_guard.feed(delta.content)
                 content_parts.append(delta.content)
                 if not tool_calls_acc:
                     _fire_first_delta()
@@ -3751,6 +3762,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         stream's socket without closing the shared client mid-flight (#67142).
         """
         has_tool_use = False
+        repetition_guard = StreamOutputRepetitionGuard()
+        reasoning_repetition_guard = StreamOutputRepetitionGuard()
         # Zero-event guard parity with the chat_completions path: track
         # whether the provider delivered ANY stream event. On an eventless
         # stream the real Anthropic SDK's get_final_message() raises
@@ -3866,6 +3879,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         delta_type = getattr(delta, "type", None)
                         if delta_type == "text_delta":
                             text = getattr(delta, "text", "")
+                            repetition_guard.feed(text)
                             if text and not has_tool_use:
                                 _fire_first_delta()
                                 agent._fire_stream_delta(text)
@@ -3873,6 +3887,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         elif delta_type == "thinking_delta":
                             thinking_text = getattr(delta, "thinking", "")
                             if thinking_text:
+                                reasoning_repetition_guard.feed(thinking_text)
                                 _fire_first_delta()
                                 agent._fire_reasoning_delta(thinking_text)
             if not agent._interrupt_requested:
@@ -3993,6 +4008,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     return  # success
                 except Exception as e:
                     _close_managed_stream()
+                    if isinstance(e, StreamOutputRepetitionError):
+                        logger.warning(
+                            "Stopping a degenerate streaming response before "
+                            "continuation (model=%s provider=%s): %s",
+                            getattr(agent, "model", None),
+                            getattr(agent, "provider", None),
+                            e,
+                        )
+                        result["error"] = e
+                        return
                     # If the main poll loop force-closed this request because
                     # of an interrupt, the resulting transport error is the
                     # expected consequence of our own close — NOT a transient
@@ -4479,7 +4504,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted during streaming API call (post-worker)")
     if result["error"] is not None:
-        if deltas_were_sent["yes"]:
+        _repetition_terminated = isinstance(
+            result["error"], StreamOutputRepetitionError
+        )
+        if deltas_were_sent["yes"] or _repetition_terminated:
             # Streaming failed AFTER some tokens were already delivered to
             # the platform.  Re-raising would let the outer retry loop make
             # Return a partial response stub with finish_reason="length"
@@ -4488,6 +4516,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _partial_text = (
                 getattr(agent, "_current_streamed_assistant_text", "") or ""
             ).strip() or None
+
+            if _repetition_terminated:
+                _partial_text = truncate_repeated_tail(
+                    _partial_text or "",
+                    result["error"].normalized_line,
+                )
+                try:
+                    agent._fire_stream_delta(
+                        "\n\n[Output stopped: repetitive generation detected.]"
+                    )
+                except Exception:
+                    pass
 
             # Append a user-visible warning if tool calls were dropped so
             # the user and model both know what was attempted.
@@ -4572,6 +4612,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             )
             if _content_filter_terminated:
                 _stub._content_filter_terminated = True
+            if _repetition_terminated:
+                _stub._repetition_loop_terminated = True
+                _stub._repetition_loop_detail = str(result["error"])
             # Partial-stream stub: chunks WERE received (deltas fired), so
             # the provider is demonstrably responsive — clear the circuit
             # breaker (#58962) just like the full-success return below.

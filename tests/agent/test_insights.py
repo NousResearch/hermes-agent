@@ -935,3 +935,43 @@ class TestInsightsCorruptedCost:
         engine = InsightsEngine(db)
         report = engine.generate(days=30)
         assert report["overview"]["total_input_tokens"] >= 0
+
+    def test_corrupted_message_count_does_not_crash(self, db):
+        """_safe_int guards message_count in platform breakdown and overview."""
+        now = time.time()
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 3600,)
+        )
+        db._conn.execute(
+            "UPDATE sessions SET message_count = ? WHERE id = 's1'",
+            ("corrupted",)
+        )
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        assert report["overview"]["total_messages"] >= 0
+        for platform in report.get("platform_breakdown", []):
+            assert platform["messages"] >= 0
+
+    def test_corrupted_tool_call_count_does_not_crash(self, db):
+        """_safe_int guards tool_call_count across platform and model breakdowns."""
+        now = time.time()
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 3600,)
+        )
+        db._conn.execute(
+            "UPDATE sessions SET tool_call_count = ? WHERE id = 's1'",
+            ("corrupted",)
+        )
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        assert report["overview"]["total_tool_calls"] >= 0
+        for platform in report.get("platform_breakdown", []):
+            assert platform["tool_calls"] >= 0
+        for model in report.get("model_breakdown", []):
+            assert model["tool_calls"] >= 0

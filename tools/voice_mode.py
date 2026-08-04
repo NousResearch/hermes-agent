@@ -1374,13 +1374,11 @@ def is_tts_echo(
         return True
     if len(a) < MIN_FRAGMENT_LENGTH_FOR_ECHO or len(a) >= len(b):
         return False
-    best_ratio = 0.0
     for start in range(0, len(b) - len(a) + 1):
         window = b[start : start + len(a)]
-        ratio = difflib.SequenceMatcher(None, a, window).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
-    return best_ratio >= threshold
+        if difflib.SequenceMatcher(None, a, window).ratio() >= threshold:
+            return True
+    return False
 
 
 def voice_stop_hint() -> str:

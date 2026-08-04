@@ -30,6 +30,8 @@ def _make_voice_cli(**overrides):
     cli._voice_tts_done.set()
     cli._voice_tts_stop = None
     cli._voice_barge_capture = threading.Event()
+    cli._voice_last_tts_text = ""
+    cli._voice_barge_phase = None
     cli._pending_input = queue.Queue()
     cli._app = None
     cli._attached_images = []

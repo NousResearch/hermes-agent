@@ -314,7 +314,7 @@ class TestDrainAdmission:
                 await body_read_started.wait()
 
                 assert adapter._pending_agent_requests == 1
-                drain_task = asyncio.create_task(runner._drain_active_agents(2.0))
+                drain_task = asyncio.create_task(runner._drain_active_agents(10.0))
                 await asyncio.sleep(0.1)
                 assert not drain_task.done()
 

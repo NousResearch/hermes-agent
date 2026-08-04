@@ -5,7 +5,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 
 from governance.approvals.ledger import ApprovalLedger, generate_fingerprint
-import _board_compat
+
+try:
+    import _board_compat
+except ModuleNotFoundError:
+    # Operational scripts historically placed ``scripts/`` directly on
+    # sys.path. Package imports and isolated test worktrees do not, so retain
+    # the same compatibility layer through the checkout-root namespace.
+    from scripts import _board_compat
 from hermes_cli import kanban_db
 
 class ApprovalWorkflowManager:

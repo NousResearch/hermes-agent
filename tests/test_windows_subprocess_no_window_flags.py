@@ -799,8 +799,9 @@ def test_copilot_acp_transport_hides_console_window(monkeypatch):
     except RuntimeError:
         pass
 
-    assert len(captured) == 1, captured
-    cmd, kwargs = captured[0]
+    acp_spawns = _spawns(captured, "copilot-acp-test")
+    assert len(acp_spawns) == 1, captured
+    cmd, kwargs = acp_spawns[0]
     assert cmd == ["copilot-acp-test", "--stdio"]
     assert kwargs["creationflags"] == _CREATE_NO_WINDOW
     # Hide-only: the ACP wire still needs its pipes.

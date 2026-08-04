@@ -17,7 +17,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-sys.path.insert(0, '/home/kensei/repos/KenseiAgent')
+# Resolve imports from the checkout containing this test.  The old absolute
+# path targeted a retired checkout and silently mixed implementations during
+# isolated shard runs.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from plugins.platforms.discord.ideabox.models import (
     ApprovalAction, ApprovalState, ApprovalStatus, AuditEvent, AuditEventType,

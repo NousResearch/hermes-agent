@@ -106,12 +106,12 @@ class TestInheritedFlagTable:
 class TestBuildRelaunchArgv:
     def test_uses_bin_when_available(self, monkeypatch):
         monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")
-        argv = relaunch_mod.build_relaunch_argv(["--resume", "abc"])
+        argv = relaunch_mod.build_relaunch_argv(["--resume", "abc"], original_argv=[])
         assert argv[0] == "/usr/bin/hermes"
 
     def test_falls_back_to_python_module(self, monkeypatch):
         monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: None)
-        argv = relaunch_mod.build_relaunch_argv(["--resume", "abc"])
+        argv = relaunch_mod.build_relaunch_argv(["--resume", "abc"], original_argv=[])
         assert argv == [sys.executable, "-m", "hermes_cli.main", "--resume", "abc"]
 
     def test_preserves_inherited_flags(self, monkeypatch):
@@ -150,7 +150,7 @@ class TestRelaunch:
         monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")
 
         with pytest.raises(SystemExit):
-            relaunch_mod.relaunch(["--resume", "abc"])
+            relaunch_mod.relaunch(["--resume", "abc"], original_argv=[])
 
         assert calls == [("/usr/bin/hermes", ["/usr/bin/hermes", "--resume", "abc"])]
 
@@ -184,7 +184,7 @@ class TestRelaunch:
         monkeypatch.setattr(relaunch_mod.os, "execvp", fake_execvp)
 
         with pytest.raises(SystemExit) as exc_info:
-            relaunch_mod.relaunch(["chat"])
+            relaunch_mod.relaunch(["chat"], original_argv=[])
 
         assert exc_info.value.code == 0
         assert execvp_calls == []
@@ -206,7 +206,7 @@ class TestRelaunch:
         monkeypatch.setattr(relaunch_mod.os, "execvp", lambda *a, **kw: None)
 
         with pytest.raises(SystemExit) as exc_info:
-            relaunch_mod.relaunch(["chat"])
+            relaunch_mod.relaunch(["chat"], original_argv=[])
         assert exc_info.value.code == 42
 
     def test_windows_surfaces_oserror_with_help(self, monkeypatch, capsys):
@@ -225,7 +225,7 @@ class TestRelaunch:
         monkeypatch.setattr(relaunch_mod.os, "execvp", lambda *a, **kw: None)
 
         with pytest.raises(SystemExit) as exc_info:
-            relaunch_mod.relaunch(["chat"])
+            relaunch_mod.relaunch(["chat"], original_argv=[])
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert "relaunch failed" in err

@@ -239,10 +239,23 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
 
+        # Intercept the hard-exit backstop so os._exit does not terminate
+        # pytest before JUnit output is written.  _hard_exit_after_gateway_teardown
+        # (a closure inside run_gateway) delegates to
+        # gateway.run._exit_after_graceful_shutdown, so patching that entry point
+        # is sufficient without removing the production hard-exit behaviour.
+        import gateway.run as _gr
+        hard_exit_calls = []
+        monkeypatch.setattr(
+            _gr, "_exit_after_graceful_shutdown",
+            lambda code: hard_exit_calls.append(code),
+        )
+
         gateway_cli.run_gateway()
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
+        assert hard_exit_calls == [0], "run_gateway should hard-exit with code 0 on clean success"
 
     def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
         self, tmp_path, monkeypatch

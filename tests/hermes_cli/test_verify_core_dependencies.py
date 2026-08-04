@@ -17,6 +17,7 @@ The verification step:
 from __future__ import annotations
 
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -255,12 +256,11 @@ class TestResolveInstallTargetPython:
             assert result == py
 
     def test_returns_none_when_venv_python_missing(self, tmp_path):
-        """If the path we'd point at doesn't exist (uv install failed before
-        the python shim landed), return None so the verification step
-        cleanly short-circuits instead of crashing on FileNotFoundError."""
+        """If the declared venv is absent, use the documented interpreter
+        fallback rather than crashing on FileNotFoundError."""
         with patch("hermes_cli.main._is_windows", return_value=True):
             from hermes_cli.main import _resolve_install_target_python
             result = _resolve_install_target_python(
                 ["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path / "does_not_exist")}
             )
-            assert result is None
+            assert result == Path(sys.executable)

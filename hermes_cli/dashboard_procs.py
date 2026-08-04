@@ -456,3 +456,188 @@ def _detect_concurrent_hermes_instances(
             matches.append((int(pid), str(name)))
 
     return matches
+
+
+def _is_desktop_local_serve_cmdline(command: str) -> bool:
+    """True for the Desktop-local serve spawn shape (loopback + ephemeral port).
+
+    Desktop primary/pool backends launch as::
+
+        hermes serve --host 127.0.0.1 --port 0
+        hermes serve --isolated --host 127.0.0.1 --port 0 ...
+
+    Intentional long-lived headless serves (e.g. ``--host <tailscale-ip>
+    --port 9119``) must never match — those are operator-managed remote
+    backends and may legitimately run with ppid 1 under launchd/nohup.
+    """
+    cmd = command.lower()
+    if "serve" not in cmd:
+        return False
+    if "hermes" not in cmd and "hermes_cli" not in cmd:
+        return False
+    # Ephemeral desktop bind: host loopback + port 0 (exact tokens).
+    has_loopback = (
+        "--host 127.0.0.1" in cmd
+        or "--host=127.0.0.1" in cmd
+        or "--host localhost" in cmd
+        or "--host=localhost" in cmd
+    )
+    has_ephemeral = "--port 0" in cmd or "--port=0" in cmd
+    if not (has_loopback and has_ephemeral):
+        return False
+    # Spare anything with a concrete non-zero port flag first (defensive).
+    # (port 0 already required above.)
+    return True
+
+
+def _process_ppid(pid: int) -> int | None:
+    """Best-effort parent pid lookup. None on failure."""
+    try:
+        if sys.platform == "win32":
+            return None  # Windows orphan reap is handled by desktop tree-kill.
+        result = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout:
+            return None
+        return int(result.stdout.strip().split()[0])
+    except (ValueError, FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _exclude_pids_from_env() -> set[int]:
+    """PIDs Desktop marks as live backends (HERMES_DESKTOP_CHILD_PID)."""
+    raw = os.environ.get("HERMES_DESKTOP_CHILD_PID", "")
+    out: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(int(part))
+        except ValueError:
+            continue
+    return out
+
+
+def _reap_orphaned_desktop_local_serves(
+    *,
+    reason: str = "orphaned desktop-local hermes serve",
+    signal_term=None,
+    signal_kill=None,
+    sleep_fn=None,
+) -> dict[str, list]:
+    """Kill leftover Desktop-local ``hermes serve`` backends with no parent.
+
+    When Electron dies uncleanly (crash / SIGKILL / update handoff), local
+    ``serve --host 127.0.0.1 --port 0`` children can be reparented to pid 1 and
+    keep their full MCP trees alive. The next Desktop boot then stacks a fresh
+    backend on top of the corpses until the machine hits EMFILE and the UI
+    loses tabs/sidebar.
+
+    The parent-death watchdog prevents *future* orphans once a backend is
+    running under HERMES_PARENT_PID; this helper clears *already* orphaned
+    corpses at the start of a new Desktop backend.
+
+    Safety:
+    - only the Desktop-local spawn shape (loopback + ``--port 0``)
+    - only processes whose current ppid is 1 (or 0 on some supervisors)
+    - never self / never HERMES_DESKTOP_CHILD_PID entries
+    - never fixed-port remote serves (e.g. ``--port 9119``)
+    - best-effort; failures never raise to the caller
+    """
+    import signal as _signal
+    import time as _time
+
+    if signal_term is None:
+        signal_term = _signal.SIGTERM
+    if signal_kill is None:
+        signal_kill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+    if sleep_fn is None:
+        sleep_fn = _time.sleep
+
+    if sys.platform == "win32":
+        # Windows desktop uses taskkill tree teardown; orphan scan here is POSIX.
+        return {"matched": [], "killed": [], "failed": []}
+
+    exclude = _exclude_pids_from_env()
+    exclude.add(os.getpid())
+    # Also spare our direct parent (the desktop / sshd wrapper).
+    try:
+        exclude.add(os.getppid())
+    except Exception:
+        pass
+
+    try:
+        scanned = _scan_dashboard_processes(exclude_pids=exclude)
+    except Exception:
+        return {"matched": [], "killed": [], "failed": []}
+
+    targets: list[tuple[int, str]] = []
+    for pid, cmd in scanned:
+        if not _is_desktop_local_serve_cmdline(cmd):
+            continue
+        ppid = _process_ppid(pid)
+        if ppid is None:
+            continue
+        # Orphaned under init/launchd.
+        if ppid not in (0, 1):
+            continue
+        targets.append((pid, cmd))
+
+    if not targets:
+        return {"matched": [], "killed": [], "failed": []}
+
+    matched = [pid for pid, _ in targets]
+    killed: list[int] = []
+    failed: list[int] = []
+
+    for pid, _cmd in targets:
+        try:
+            os.kill(pid, signal_term)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            failed.append(pid)
+            continue
+        except OSError:
+            failed.append(pid)
+            continue
+
+    # Brief grace, then SIGKILL survivors.
+    sleep_fn(1.5)
+    for pid, _cmd in targets:
+        if pid in failed:
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            killed.append(pid)
+            continue
+        except OSError:
+            killed.append(pid)
+            continue
+        try:
+            os.kill(pid, signal_kill)
+            killed.append(pid)
+        except ProcessLookupError:
+            killed.append(pid)
+        except OSError:
+            failed.append(pid)
+
+    if matched:
+        try:
+            print(
+                f"⟲ Reaped {len(killed)} orphaned desktop-local serve "
+                f"backend(s) ({reason}): {killed or matched}"
+            )
+        except Exception:
+            pass
+
+    return {"matched": matched, "killed": killed, "failed": failed}
+

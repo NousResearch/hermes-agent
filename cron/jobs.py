@@ -3078,6 +3078,33 @@ def save_job_output(job_id: str, output: str):
 # Skill reference rewriting (curator integration)
 # =============================================================================
 
+def _canonical_skill_ref(raw: Any) -> str:
+    """Reduce one job skill reference to the bare name the curator matches on.
+
+    A job may store an absolute path under ``HERMES_HOME/skills`` or an
+    external skills dir; the scheduler resolves those through
+    ``normalize_skill_lookup_name`` before handing them to ``skill_view``.
+    The curator compares this set against bare skill names, so it has to
+    resolve them the same way — otherwise a path-referencing job's skill
+    looks unreferenced and gets archived out from under it.
+
+    Best-effort: if the resolver is unavailable or rejects the value, fall
+    back to the plain cleanup so a broken import can never lose a name.
+    """
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    try:
+        from agent.skill_utils import normalize_skill_lookup_name
+        value = normalize_skill_lookup_name(value) or value
+    except Exception:
+        logger.debug(
+            "referenced_skill_names: could not normalize skill ref %r", raw,
+            exc_info=True,
+        )
+    return value.strip().lstrip("/")
+
+
 def referenced_skill_names() -> Set[str]:
     """Return the set of skill names referenced by ANY cron job.
 
@@ -3086,6 +3113,9 @@ def referenced_skill_names() -> Set[str]:
     resuming it must still find its skills present. The curator uses this
     set to protect referenced skills from inactivity archival — a skill a
     live job depends on is "in use" regardless of when it was last loaded.
+
+    Names are canonicalized the way the scheduler resolves them at load
+    time, so a job that stores an absolute skill path is protected too.
 
     Best-effort: a corrupt/unreadable jobs store returns an empty set
     rather than raising, so a cron issue can never break the curator.
@@ -3101,7 +3131,7 @@ def referenced_skill_names() -> Set[str]:
         if not isinstance(job, dict):
             continue
         for name in _normalize_skill_list(job.get("skill"), job.get("skills")):
-            cleaned = str(name).strip().lstrip("/")
+            cleaned = _canonical_skill_ref(name)
             if cleaned:
                 names.add(cleaned)
     return names

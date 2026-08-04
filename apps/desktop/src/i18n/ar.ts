@@ -2265,7 +2265,8 @@ export const ar = defineLocale({
     layoutNamePlaceholder: fallback => `اسم التخطيط (${fallback})`,
     saveApply: 'حفظ وتطبيق',
     notExpressible: 'هذا الترتيب متشابك — لا يمكن تمثيله كتقسيمات متداخلة بعد',
-    zoneCount: count => `${count} مناطق`
+    zoneCount: count => `${count} مناطق`,
+    tabCount: count => `${count} تبويبات`
   },
   assistant: {
     thread: {

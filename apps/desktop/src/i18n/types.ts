@@ -2293,6 +2293,7 @@ export interface Translations {
     saveApply: string
     notExpressible: string
     zoneCount: (count: number) => string
+    tabCount: (count: number) => string
   }
 
   assistant: {

@@ -2693,7 +2693,8 @@ export const en: Translations = {
     layoutNamePlaceholder: fallback => `Layout name (${fallback})`,
     saveApply: 'Save & apply',
     notExpressible: 'this arrangement interlocks (pinwheel) — not expressible as nested splits yet',
-    zoneCount: count => `${count} zones`
+    zoneCount: count => `${count} zones`,
+    tabCount: count => `${count} tabs`
   },
 
   assistant: {

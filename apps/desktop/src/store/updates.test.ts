@@ -537,6 +537,89 @@ describe('applyBackendUpdate recovery', () => {
     await promise
   })
 
+  it('keeps polling when the backend update runs past the old 45-second window', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    let polls = 0
+    getActionStatusSpy.mockImplementation(async () => {
+      polls += 1
+
+      if (polls <= 31) {
+        return {
+          exit_code: null,
+          lines: ['Installing dependencies...'],
+          name: 'update',
+          pid: 1,
+          running: true
+        }
+      }
+
+      return {
+        exit_code: 0,
+        lines: ['Update complete.'],
+        name: 'update',
+        pid: 1,
+        running: false
+      }
+    })
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.19.1',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(60000)
+    const result = await promise
+
+    expect(result.ok).toBe(true)
+    expect(polls).toBeGreaterThan(30)
+    expect($backendUpdateApply.get().stage).toBe('idle')
+  })
+
+  it('bounds slow status requests by a ten-minute wall-clock deadline', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockImplementation(
+      (_name: string, _lines: number, timeoutMs?: number) =>
+        new Promise((resolve, reject) => {
+          const requestBudgetMs = timeoutMs ?? 15_000
+          globalThis.setTimeout(() => {
+            if (requestBudgetMs < 15_000) {
+              reject(new Error('request timed out'))
+
+              return
+            }
+
+            resolve({
+              exit_code: null,
+              lines: ['Still running...'],
+              name: 'update',
+              pid: 1,
+              running: true
+            })
+          }, Math.min(15_000, requestBudgetMs))
+        })
+    )
+
+    let settled = false
+
+    const promise = applyBackendUpdate().then(result => {
+      settled = true
+
+      return result
+    })
+
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 1)
+
+    expect(settled).toBe(true)
+    expect((await promise).ok).toBe(false)
+    expect($backendUpdateApply.get().stage).toBe('error')
+    expect(getActionStatusSpy.mock.calls.every(call => Number(call[2]) > 0)).toBe(true)
+  })
+
   it('surfaces an error when the backend never comes back after the restart', async () => {
     updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
     getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))

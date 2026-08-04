@@ -37,10 +37,9 @@ def _scan_dashboard_processes(
     disk is updated, causing a silent frontend/backend mismatch (e.g. new
     auth headers the old backend doesn't recognise → every API call 401s).
 
-    The dashboard may be manually started or managed by the optional
-    ``hermes-dashboard.service`` systemd unit.  Managed units are restarted
-    through their owning systemd scope; only manually-started processes use
-    the kill path because we can't know their original launch args.
+    The dashboard may be manually started or managed by systemd/launchd.
+    Managed units are restarted through their owning service manager; only
+    manually-started processes use the raw argv respawn path.
 
     *exclude_pids* is an optional set of PIDs that must never be returned.
     This is used by the Hermes Desktop Electron app to protect its own
@@ -202,23 +201,27 @@ def _kill_stale_dashboard_processes(
     print()
     print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
 
-    # Before killing, snapshot systemd cgroup info for each PID so we can
-    # restart supervised services after the kill (the cgroup disappears
-    # along with the process).  Only meaningful on Linux, and only when the
-    # caller asked for restarts (the `hermes update` path) — `--stop` must
-    # stay a stop, not a restart.
+    # Before killing, snapshot service-manager ownership and argv for each PID
+    # so supervised services can be restarted without also raw-respawning an
+    # identical command. Only the update path requests restarts; `--stop` must
+    # stay a stop.
     pid_cgroup: dict[int, str | None] = {}
     pid_service: dict[int, str | None] = {}
+    pid_launchd_service: dict[int, str | None] = {}
+    pid_all_cmdline: dict[int, list[str]] = {}
     pid_cmdline: dict[int, list[str]] = {}
     if restart_managed and sys.platform != "win32":
         for pid in pids:
             cg_path = _m()._get_pid_cgroup_path(pid)
             pid_cgroup[pid] = cg_path
             pid_service[pid] = _m()._get_systemd_service_for_pid(pid)
-            if not pid_service[pid]:
+            pid_launchd_service[pid] = _m()._get_launchd_service_for_pid(pid)
+            cmdline = _m()._dashboard_cmdline_for_pid(pid)
+            if cmdline:
+                pid_all_cmdline[pid] = cmdline
+            if not pid_service[pid] and not pid_launchd_service[pid]:
                 # Manually-started process: preserve its exact argv so we
                 # can respawn it after the update (#40449, #68934).
-                cmdline = _m()._dashboard_cmdline_for_pid(pid)
                 if cmdline:
                     pid_cmdline[pid] = cmdline
 
@@ -299,9 +302,22 @@ def _kill_stale_dashboard_processes(
     if killed and restart_managed:
         failed_restarts: list[tuple[str, str]] = []
         seen_services: set[str] = set()
+        seen_launchd_services: set[str] = set()
+        seen_respawn_cmds: set[tuple[str, ...]] = set()
+
+        def _respawn_command_key(command: list[str]) -> tuple[str, ...]:
+            """Normalise argv differences introduced by our own respawner."""
+            return tuple(arg for arg in command if arg != "--no-open")
+
+        managed_cmds = {
+            _respawn_command_key(command)
+            for pid, command in pid_all_cmdline.items()
+            if pid_service.get(pid) or pid_launchd_service.get(pid)
+        }
         respawn_cmds: list[list[str]] = []
         for pid in killed:
             svc_name = pid_service.get(pid)
+            launchd_target = pid_launchd_service.get(pid)
             if svc_name:
                 if svc_name in seen_services:
                     continue
@@ -311,13 +327,31 @@ def _kill_stale_dashboard_processes(
                 else:
                     failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
                     unrecovered.append(pid)
+            elif launchd_target:
+                if launchd_target in seen_launchd_services:
+                    continue
+                seen_launchd_services.add(launchd_target)
+                if _m()._try_restart_launchd_service(launchd_target):
+                    restarted_services.append(launchd_target)
+                else:
+                    failed_restarts.append((launchd_target, "launchctl kickstart returned non-zero"))
+                    unrecovered.append(pid)
             elif pid in pid_cmdline:
-                respawn_cmds.append(pid_cmdline[pid])
+                command = pid_cmdline[pid]
+                command_key = _respawn_command_key(command)
+                # A stale raw duplicate may have been created by an older
+                # update beside an equivalent managed service. Restarting both
+                # recreates the port collision, so the managed copy wins.
+                if command_key in managed_cmds or command_key in seen_respawn_cmds:
+                    continue
+                seen_respawn_cmds.add(command_key)
+                respawn_cmds.append(command)
             else:
                 unrecovered.append(pid)
 
         for svc in restarted_services:
-            print(f"    ✓ restarted systemd service {svc}")
+            manager = "launchd" if svc.startswith(("gui/", "user/")) else "systemd"
+            print(f"    ✓ restarted {manager} service {svc}")
         for svc, err in failed_restarts:
             print(f"    ⚠ {svc}: {err}")
 

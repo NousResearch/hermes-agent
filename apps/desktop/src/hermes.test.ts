@@ -7,6 +7,7 @@ import {
   AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
   audioSpeakRequestTimeoutMs,
   audioTranscribeRequestTimeoutMs,
+  getActionStatus,
   getCronJobs,
   getGlobalModelInfo,
   getGlobalModelOptions,
@@ -48,6 +49,17 @@ describe('Hermes REST helpers', () => {
     setApiRequestProfile(null)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it('forwards the remaining action deadline to the API request', async () => {
+    await getActionStatus('update', 200, 12_345)
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/actions/update/status?lines=200',
+        timeoutMs: 12_345
+      })
+    )
   })
 
   it('uses a longer timeout for the single-profile session list', async () => {

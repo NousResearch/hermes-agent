@@ -323,6 +323,91 @@ class TestManualBackendRespawn:
     def _live(self):
         return sys.modules["hermes_cli.main"]
 
+    def test_launchd_pid_resolution_verifies_the_owning_job(self, monkeypatch):
+        live = self._live()
+        calls: list[list[str]] = []
+
+        def fake_run(args, *a, **kw):
+            calls.append(list(args))
+            if args == ["launchctl", "print", "pid/4321"]:
+                return MagicMock(
+                    returncode=0,
+                    stdout="""pid/4321 = {
+\tresource coalition = {
+\t\tname = com.hermes.dashboard
+\t}
+}\n""",
+                    stderr="",
+                )
+            if args == ["launchctl", "print", "gui/501/com.hermes.dashboard"]:
+                return MagicMock(returncode=0, stdout="\tpid = 4321\n", stderr="")
+            return MagicMock(returncode=1, stdout="", stderr="not found")
+
+        monkeypatch.setattr(live.sys, "platform", "darwin")
+        monkeypatch.setattr(live.os, "getuid", lambda: 501)
+        with patch.object(live.subprocess, "run", side_effect=fake_run):
+            target = live._get_launchd_service_for_pid(4321)
+
+        assert target == "gui/501/com.hermes.dashboard"
+        assert calls[:2] == [
+            ["launchctl", "print", "pid/4321"],
+            ["launchctl", "print", "gui/501/com.hermes.dashboard"],
+        ]
+
+    def test_launchd_owned_backend_restarts_service_without_raw_respawn(self, capsys):
+        """A launchd-owned PID is restarted through launchctl, not Popen."""
+        live = self._live()
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        command = ["hermes", "dashboard", "--host", "100.83.89.64", "--port", "9119"]
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(live, "_get_launchd_service_for_pid",
+                          return_value="gui/501/com.hermes.dashboard"), \
+             patch.object(live, "_dashboard_cmdline_for_pid", return_value=command), \
+             patch.object(live, "_try_restart_launchd_service", return_value=True) as restart, \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        restart.assert_called_once_with("gui/501/com.hermes.dashboard")
+        respawn.assert_not_called()
+        assert result["unrecovered"] == []
+        assert "restarted launchd service gui/501/com.hermes.dashboard" in capsys.readouterr().out
+
+    def test_duplicate_manual_command_is_not_respawned_beside_launchd(self):
+        """A stale raw duplicate must not race the equivalent managed job."""
+        live = self._live()
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        managed_command = ["hermes", "dashboard", "--host", "100.83.89.64", "--port", "9119"]
+        stale_command = [*managed_command, "--no-open"]
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321, 4322]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(live, "_get_launchd_service_for_pid",
+                          side_effect=lambda pid: "gui/501/com.hermes.dashboard" if pid == 4321 else None), \
+             patch.object(live, "_dashboard_cmdline_for_pid",
+                          side_effect=lambda pid: managed_command if pid == 4321 else stale_command), \
+             patch.object(live, "_try_restart_launchd_service", return_value=True), \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        respawn.assert_not_called()
+        assert result["unrecovered"] == []
+
 
     def test_argv_capture_failure_falls_back_to_hint(self, capsys):
         live = self._live()

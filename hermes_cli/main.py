@@ -7428,6 +7428,83 @@ def _get_systemd_service_for_pid(pid: int) -> str | None:
     return None
 
 
+def _get_launchd_service_for_pid(pid: int) -> str | None:
+    """Return the verified launchd service target that owns *pid* on macOS.
+
+    ``launchctl print pid/<pid>`` exposes the process's resource-coalition
+    name without requiring root. Coalition names alone are only hints, so the
+    candidate is accepted only when ``launchctl print <domain>/<label>``
+    reports the same live PID. The fully-qualified target can be passed
+    directly to ``launchctl kickstart``.
+    """
+    if sys.platform != "darwin" or not hasattr(os, "getuid"):
+        return None
+
+    try:
+        process = subprocess.run(
+            ["launchctl", "print", f"pid/{pid}"],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if process.returncode != 0:
+        return None
+
+    label: str | None = None
+    in_resource_coalition = False
+    for raw_line in (process.stdout or "").splitlines():
+        line = raw_line.strip()
+        if line == "resource coalition = {":
+            in_resource_coalition = True
+            continue
+        if in_resource_coalition and line.startswith("name = "):
+            label = line.removeprefix("name = ").strip()
+            break
+        if in_resource_coalition and line == "}":
+            break
+    if not label:
+        return None
+
+    uid = os.getuid()
+    for domain in (f"gui/{uid}", f"user/{uid}"):
+        target = f"{domain}/{label}"
+        try:
+            service = subprocess.run(
+                ["launchctl", "print", target],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if service.returncode != 0:
+            continue
+        if any(
+            raw_line.strip() == f"pid = {pid}"
+            for raw_line in (service.stdout or "").splitlines()
+        ):
+            return target
+    return None
+
+
+def _try_restart_launchd_service(target: str) -> bool:
+    """Restart a verified launchd *target* and return whether it succeeded."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        result = subprocess.run(
+            ["launchctl", "kickstart", "-k", target],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=15,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def _extract_scope_from_cgroup(cgroup_entry: str) -> str | None:
     """Extract the systemd scope (``user`` or ``system``) from a cgroup path.
 

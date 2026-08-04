@@ -489,6 +489,11 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 
 const BACKEND_RETURN_POLL_MS = 1500
 const BACKEND_RETURN_MAX_ATTEMPTS = 40
+const BACKEND_ACTION_POLL_MS = 1500
+// Dependency refreshes and native Desktop rebuilds can legitimately take
+// several minutes. The old 45-second budget produced a false failure while
+// the original action kept running, then invited a lock-rejected retry.
+const BACKEND_ACTION_TIMEOUT_MS = 10 * 60 * 1000
 
 async function waitForBackendReturn(): Promise<boolean> {
   for (let attempt = 0; attempt < BACKEND_RETURN_MAX_ATTEMPTS; attempt += 1) {
@@ -575,14 +580,26 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     })
 
     let last: Awaited<ReturnType<typeof getActionStatus>> | null = null
+    const actionDeadline = Date.now() + BACKEND_ACTION_TIMEOUT_MS
 
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      await new Promise(resolve => globalThis.setTimeout(resolve, 1500))
+    while (Date.now() < actionDeadline) {
+      const sleepMs = Math.min(BACKEND_ACTION_POLL_MS, actionDeadline - Date.now())
+      await new Promise(resolve => globalThis.setTimeout(resolve, sleepMs))
+
+      const requestTimeoutMs = actionDeadline - Date.now()
+
+      if (requestTimeoutMs <= 0) {
+        break
+      }
 
       try {
-        last = await getActionStatus(started.name, 200)
+        last = await getActionStatus(started.name, 200, requestTimeoutMs)
         ingestBackendActionStatus(last)
       } catch {
+        if (Date.now() >= actionDeadline) {
+          break
+        }
+
         // The dashboard restarts mid-update, dropping this connection — expected, not a failure.
         $backendUpdateApply.set({
           ...$backendUpdateApply.get(),

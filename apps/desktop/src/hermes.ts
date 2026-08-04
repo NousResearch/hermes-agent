@@ -1555,10 +1555,11 @@ export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResp
   })
 }
 
-export function getActionStatus(name: string, lines = 200): Promise<ActionStatusResponse> {
+export function getActionStatus(name: string, lines = 200, timeoutMs?: number): Promise<ActionStatusResponse> {
   return window.hermesDesktop.api<ActionStatusResponse>({
     ...profileScoped(),
-    path: `/api/actions/${encodeURIComponent(name)}/status?lines=${Math.max(1, lines)}`
+    path: `/api/actions/${encodeURIComponent(name)}/status?lines=${Math.max(1, lines)}`,
+    ...(timeoutMs === undefined ? {} : { timeoutMs })
   })
 }
 

@@ -27,6 +27,12 @@ try:
     from agent.tool_repair_stats import record_repair as _record_repair
     from agent.tool_repair_stats import RepairPattern as _RP
 except ImportError:
+    # Expected: stats module absent (minimal/stripped install) — observability is optional.
+    _record_repair = None  # type: ignore[assignment]
+    _RP = None  # type: ignore[assignment]
+except Exception:
+    # Unexpected: module present but broken — degrade to no-op, NEVER break repair.
+    logger.warning("tool_repair_stats import failed; repair stats disabled", exc_info=True)
     _record_repair = None  # type: ignore[assignment]
     _RP = None  # type: ignore[assignment]
 
@@ -189,30 +195,29 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
             break
         fixed = fixed[:-1]
 
-    try:
-        json.loads(fixed)
+    if _loads_ok(fixed):
         logger.warning(
             "Repaired malformed tool_call arguments for %s: %s → %s",
             tool_name, raw_stripped[:80], fixed[:80],
         )
         _stat("malformed_json_repair", tool_name)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        # Repair pass 4: escape unescaped control chars inside JSON strings,
-        # then retry. Catches cases where strict=False alone fails because
-        # other malformations are present too.
-        try:
-            escaped = _escape_invalid_chars_in_json_strings(fixed)
-            if escaped != fixed:
-                json.loads(escaped)
-                logger.warning(
-                    "Repaired control-char-laced tool_call arguments for %s: %s → %s",
-                    tool_name, raw_stripped[:80], escaped[:80],
-                )
-                _stat("control_char_escape", tool_name)
-                return escaped
-        except (json.JSONDecodeError, TypeError, ValueError):
-            pass
         return fixed
+
+    # Pass 4: escape unescaped control chars inside JSON strings,
+    # then retry. Catches cases where strict=False alone fails because
+    # other malformations are present too.
+    try:
+        escaped = _escape_invalid_chars_in_json_strings(fixed)
+        if escaped != fixed:
+            json.loads(escaped)
+            logger.warning(
+                "Repaired control-char-laced tool_call arguments for %s: %s → %s",
+                tool_name, raw_stripped[:80], escaped[:80],
+            )
+            _stat("control_char_escape", tool_name)
+            return escaped
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
 
     logger.warning(
         "Unrepairable tool_call arguments for %s — replaced with empty object (was: %s)",
@@ -220,6 +225,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     )
     _stat("unrepairable", tool_name)
     return "{}"
+
 
 
 def close_interrupted_tool_sequence(messages: list, final_response: Any = None) -> bool:

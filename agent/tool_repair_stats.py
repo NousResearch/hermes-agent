@@ -8,6 +8,7 @@ This is an operator-only module — no new model tools, no prompt impact.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import time
@@ -230,18 +231,53 @@ def get_stats() -> ToolRepairStats:
 
 
 # ---------------------------------------------------------------------------
+# Ambient model context
+# ---------------------------------------------------------------------------
+#
+# Repair events are emitted deep inside the repair pipeline (pure functions in
+# message_sanitization / agent_runtime_helpers / model_tools) where the active
+# model is not plumbed through.  Instead we bind the live model per turn as a
+# ContextVar — same pattern as ``auxiliary_client.set_runtime_main`` bound from
+# ``agent.turn_context`` — so ``record_repair`` can attribute events to the
+# model that produced the malformed tool calls without new call-site plumbing.
+# Thread/task-local by design: concurrent gateway sessions don't leak models
+# into each other's events.
+
+_current_model: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "repair_stats_current_model", default="unknown"
+)
+
+
+def set_current_model(model: str) -> None:
+    """Bind the active model for the current turn (per-turn context).
+
+    Called once per turn from ``agent.turn_context`` alongside
+    ``auxiliary_client.set_runtime_main``.  Empty/whitespace falls back to
+    the ``"unknown"`` placeholder.
+    """
+    _current_model.set((model or "").strip() or "unknown")
+
+
+# ---------------------------------------------------------------------------
 # Convenience function — the single call-site for all hook points
 # ---------------------------------------------------------------------------
 
 def record_repair(
     pattern: Any,
     tool_name: str = "?",
-    model_name: str = "unknown",
+    model_name: str = "",
     success: bool = True,
     detail: str = "",
 ) -> None:
-    """Record a repair event.  Silently no-ops on any failure."""
+    """Record a repair event.  Silently no-ops on any failure.
+
+    ``model_name`` is optional: when omitted (or empty) the model bound for
+    the current turn via :func:`set_current_model` is used, so repair call
+    sites don't need to plumb the model through.
+    """
     try:
-        get_stats().record(pattern, tool_name, model_name, success, detail)
+        get_stats().record(
+            pattern, tool_name, model_name or _current_model.get(), success, detail
+        )
     except Exception:
         pass

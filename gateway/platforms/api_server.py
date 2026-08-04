@@ -6305,6 +6305,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, str]] = []
+        conversation_history_provided = "conversation_history" in body
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -6347,7 +6348,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         requested_session_id = body.get("session_id")
-        if not conversation_history and requested_session_id:
+        if (
+            not conversation_history_provided
+            and not conversation_history
+            and requested_session_id
+        ):
             requested_session_id, session_id_err = self._parse_session_continuation_id(
                 requested_session_id
             )

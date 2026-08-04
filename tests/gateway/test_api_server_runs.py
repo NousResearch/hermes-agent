@@ -274,8 +274,17 @@ class TestStartRun:
         assert auth_adapter._run_statuses == {}
 
     @pytest.mark.asyncio
-    async def test_explicit_history_takes_precedence_over_session_db(self, auth_adapter):
-        explicit_history = [{"role": "user", "content": "client-provided history"}]
+    @pytest.mark.parametrize(
+        "explicit_history",
+        [
+            [{"role": "user", "content": "client-provided history"}],
+            [],
+        ],
+        ids=["populated", "empty"],
+    )
+    async def test_explicit_history_takes_precedence_over_session_db(
+        self, auth_adapter, explicit_history
+    ):
         app = _create_runs_app(auth_adapter)
         with (
             patch.object(

@@ -361,14 +361,13 @@ fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<ser
     Ok(marker)
 }
 
-const DESKTOP_HANDOFF_POLL_INTERVAL: std::time::Duration =
-    std::time::Duration::from_millis(10);
-const DESKTOP_HANDOFF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
 /// Spawn the already-built desktop app, detached. Returns Err if no built app
 /// exists or the spawn fails, so the caller can fall back to showing the
-/// installer UI.
-pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io::Result<()> {
+/// installer UI. The caller owns the bounded hand-off poll and decides whether
+/// an observed child exit represents a successful launch.
+pub(crate) fn spawn_installed_desktop(
+    install_root: &std::path::Path,
+) -> std::io::Result<std::process::Child> {
     let exe = resolve_hermes_desktop_exe(install_root).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "no built Hermes desktop app")
     })?;
@@ -382,15 +381,7 @@ pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io
         // Windows doesn't reintroduce the relaunch race.
         cmd.creation_flags(0x0000_0008);
     }
-    let mut child = cmd.spawn()?;
-    let start = std::time::Instant::now();
-    while start.elapsed() < DESKTOP_HANDOFF_TIMEOUT {
-        if child.try_wait()?.is_some() {
-            return Ok(());
-        }
-        std::thread::sleep(DESKTOP_HANDOFF_POLL_INTERVAL);
-    }
-    Ok(())
+    cmd.spawn()
 }
 
 #[cfg(target_os = "macos")]

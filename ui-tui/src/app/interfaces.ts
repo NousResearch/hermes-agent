@@ -7,14 +7,15 @@ import type {
   BillingCardInfo,
   BillingMutationResponse,
   BillingStateResponse,
-  ImageAttachResponse,
   SessionCloseResponse,
   SubscriptionPreviewResponse,
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
 } from '../gatewayTypes.js'
+import type { QueueItem } from '../hooks/useQueue.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
+import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
 import type {
   ApprovalReq,
@@ -36,6 +37,17 @@ export interface StateSetter<T> {
 }
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
+
+export type BatteryCategory = 'bad' | 'critical' | 'dim' | 'good' | 'warn'
+
+// A single battery reading pushed from the Python gateway (`system.battery`).
+// `available` is false on machines without a battery; `percent` is 0-100.
+export interface BatteryInfo {
+  available: boolean
+  category: BatteryCategory
+  percent: null | number
+  plugged: null | boolean
+}
 
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
@@ -76,6 +88,9 @@ export interface SelectionApi {
 
 export interface CompletionItem {
   display: string
+  /** Completion class from the gateway; `skill` is the only kind offered for
+   *  an inline `/skill` reference typed mid-message. */
+  kind?: string
   meta?: string
   text: string
 }
@@ -127,7 +142,7 @@ export interface BillingOverlayCtx {
    */
   charge: (amount: string, idempotencyKey?: string) => Promise<BillingChargeOutcome>
   /**
-   * Run the `billing.step_up` device flow (grant Remote Spending). Resolves
+   * Run the `billing.step_up` device flow (allow Remote Spending). Resolves
    * `true` when the grant lands. The browser opens via the gateway's
    * out-of-band `billing.step_up.verification` event — the overlay just awaits.
    */
@@ -176,15 +191,15 @@ export interface BillingOverlayState {
 //              scheduled at date / no-op / blocked) + the apply action.
 //   result   — the outcome, including an SCA/decline upgrade handed off to the
 //              portal.
-//   stepup   — reached when a mutation returns insufficient_scope: grants the
-//              terminal-billing scope in place, then auto-replays the held action.
+//   stepup   — reached when a mutation returns insufficient_scope: allows remote
+//              spending in place, then auto-replays the held action.
 export type SubscriptionScreen = 'confirm' | 'overview' | 'picker' | 'result' | 'stepup'
 
-// The action held while the stepup screen grants terminal billing, replayed on
-// grant: re-preview a tier, re-apply the confirmed pending change, or re-resume.
+// The action held while the stepup screen allows remote spending, replayed after
+// approval: re-preview a tier, re-apply the confirmed pending change, or re-resume.
 export type SubscriptionStepUpRetry = { kind: 'apply' } | { kind: 'preview'; tierId: string } | { kind: 'resume' }
 
-/** Outcome of a terminal-billing step-up: granted, plus the typed denial (for copy). */
+/** Outcome of a remote-spending step-up: granted, plus the typed denial (for copy). */
 export interface StepUpResult {
   granted: boolean
   error?: string
@@ -198,8 +213,11 @@ export interface SubscriptionOverlayCtx {
    * the server doesn't say (older NAS): the confirm keeps its generic line.
    */
   fetchCard: () => Promise<BillingCardInfo | null>
-  /** Build {portal}/manage-subscription?org_id=… locally and open it. Resolves ok/false. */
-  openManageLink: () => Promise<boolean>
+  /**
+   * Build {portal}/manage-subscription?org_id=… locally and open it. Resolves
+   * ok/false. Pass `tierId` to deep-link a specific plan via `?plan=`.
+   */
+  openManageLink: (tierId?: string) => Promise<boolean>
   /** Open an arbitrary portal recovery URL (e.g. an upgrade's SCA handoff). */
   openPortal: (url: string) => void
   /** Re-fetch subscription.state. */
@@ -215,7 +233,7 @@ export interface SubscriptionOverlayCtx {
   /** POST /upgrade: charge the card on the subscription + flip the plan now. */
   upgrade: (tierId: string, idempotencyKey?: string) => Promise<SubscriptionUpgradeResponse | null>
   /**
-   * Run the `billing.step_up` device flow (grant terminal billing / "Remote
+   * Run the `billing.step_up` device flow (allow remote spending / "Remote
    * Spending"). Resolves `{granted}` plus the typed denial (`error`/`message`) so
    * the stepup screen shows the right recovery. The browser opens via the
    * gateway's out-of-band verification event — the stepup screen just awaits.
@@ -269,6 +287,10 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
+  ambient: ActiveWidget[]
+  /** Modal widget app — owns input, blocks the composer. */
+  widget: ActiveWidget | null
   journey: boolean
   modelPicker: boolean | { refresh?: boolean }
   pager: null | PagerState
@@ -294,12 +316,17 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  battery: boolean
+  batteryStatus: BatteryInfo | null
   bgTasks: Set<string>
   busy: boolean
   busyInputMode: BusyInputMode
   compact: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
+  // Focus view (/focus) — display-only reduced-output mode. Drives the
+  // persistent `◉ focus` status-bar badge; never affects request payloads.
+  focusView: boolean
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
@@ -337,29 +364,36 @@ export interface ComposerPasteResult {
 export type MaybePromise<T> = Promise<T> | T
 
 export interface ComposerActions {
+  /** Pull an image off the system clipboard in as a token. */
+  attachClipboardImage: () => void
+  /** Attach an image by path in as a token. */
+  attachImagePath: (path: string) => void
   clearIn: () => void
   dequeue: () => string | undefined
-  enqueue: (text: string) => void
+  enqueue: (text: string, display?: string) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
+  prependQueue: (item: QueueItem) => void
   pushHistory: (text: string) => void
   removeQueue: (index: number) => void
-  replaceQueue: (index: number, text: string) => void
   setCompIdx: StateSetter<number>
+  setComposerTokens: StateSetter<ComposerToken[]>
   setHistoryIdx: StateSetter<null | number>
   setInput: StateSetter<string>
   setInputBuf: StateSetter<string[]>
-  setPasteSnips: StateSetter<PasteSnippet[]>
   setQueueEdit: (index: null | number) => void
-  syncQueue: () => void
+  takeQueue: (index: number, editedDisplay?: string) => QueueItem | undefined
+  /** Reconcile attached payloads against tokens still present in the text. */
+  syncTokens: (value: string) => void
 }
 
 export interface ComposerRefs {
   historyDraftRef: MutableRefObject<string>
   historyRef: MutableRefObject<string[]>
   queueEditRef: MutableRefObject<null | number>
-  queueRef: MutableRefObject<string[]>
+  queueRef: MutableRefObject<QueueItem[]>
   submitRef: MutableRefObject<(value: string) => void>
+  tokensRef: MutableRefObject<ComposerToken[]>
 }
 
 export interface ComposerState {
@@ -369,16 +403,15 @@ export interface ComposerState {
   historyIdx: null | number
   input: string
   inputBuf: string[]
-  pasteSnips: PasteSnippet[]
   queueEditIdx: null | number
   queuedDisplay: string[]
+  tokens: ComposerToken[]
 }
 
 export interface UseComposerStateOptions {
   gw: GatewayClient
-  onClipboardPaste: (quiet?: boolean) => Promise<void> | void
-  onImageAttached?: (info: ImageAttachResponse) => void
   submitRef: MutableRefObject<(value: string) => void>
+  sys: (text: string) => void
 }
 
 export interface UseComposerStateResult {
@@ -468,11 +501,12 @@ export interface GatewayEventHandlerContext {
 
 export interface SlashHandlerContext {
   composer: {
-    enqueue: (text: string) => void
+    attachClipboardImage: () => void
+    attachImagePath: (path: string) => void
+    enqueue: (text: string, display?: string) => void
     hasSelection: boolean
     openEditor: () => Promise<void>
-    paste: (quiet?: boolean) => void
-    queueRef: MutableRefObject<string[]>
+    queueRef: MutableRefObject<QueueItem[]>
     selection: SelectionApi
     setInput: StateSetter<string>
   }
@@ -499,7 +533,7 @@ export interface SlashHandlerContext {
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
-    send: (text: string) => void
+    send: (text: string, showUserMessage?: boolean, displayText?: string) => void
     setHistoryItems: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]
@@ -591,8 +625,14 @@ export interface AppOverlaysProps {
   pagerPageSize: number
 }
 
-export interface PasteSnippet {
-  label: string
-  path?: string
-  text: string
-}
+/**
+ * A `[[ … ]]` token sitting in the composer text, plus the payload it stands
+ * for. `paste` tokens expand back into their text at submit; `image` tokens
+ * are a receipt for a file the gateway already holds, and expand to nothing.
+ *
+ * `index` is the user-facing number in `[[ Image 2 ]]`; `path` is the gateway
+ * path, used to detach the image when its token is deleted.
+ */
+export type ComposerToken =
+  | { index: number; kind: 'image'; label: string; path: string; text?: undefined }
+  | { index?: undefined; kind: 'paste'; label: string; path?: string; text: string }

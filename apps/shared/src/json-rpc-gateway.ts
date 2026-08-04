@@ -54,6 +54,8 @@ export interface GatewayClientOptions {
   connectErrorMessage?: string
   connectTimeoutMs?: number
   createRequestId?: (nextId: number) => GatewayRequestId
+  /** Return true to intercept the default closed-state transition. */
+  onSocketClose?: (event: CloseEvent) => boolean | void
   requestIdPrefix?: string
   requestTimeoutMs?: number
   socketFactory?: (url: string) => WebSocketLike
@@ -84,6 +86,7 @@ export class JsonRpcGatewayClient {
       connectTimeoutMs: options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       notConnectedErrorMessage: options.notConnectedErrorMessage ?? 'gateway not connected',
+      onSocketClose: options.onSocketClose ?? (() => false),
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
       socketFactory: options.socketFactory
@@ -95,6 +98,30 @@ export class JsonRpcGatewayClient {
   }
 
   async connect(wsUrl: string): Promise<void> {
+    // Refuse garbage; WebSocket coerces non-strings into
+    // `ws://<origin>/[object%20Object]` (#68250 stale-emit boot loop).
+    const invalidUrl = () => {
+      const got = typeof wsUrl === 'string' ? JSON.stringify(wsUrl) : `type "${typeof wsUrl}"`
+
+      return new Error(`gateway connect() requires a ws:// or wss:// URL string, got ${got}`)
+    }
+
+    if (typeof wsUrl !== 'string') {
+      throw invalidUrl()
+    }
+
+    let url: URL
+
+    try {
+      url = new URL(wsUrl)
+    } catch {
+      throw invalidUrl()
+    }
+
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+      throw invalidUrl()
+    }
+
     if (this.socket?.readyState === WebSocket.OPEN || this.state === 'connecting') {
       return
     }
@@ -112,8 +139,12 @@ export class JsonRpcGatewayClient {
       this.handleMessage(message.data)
     })
 
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', event => {
       if (this.socket !== socket) {
+        return
+      }
+
+      if (this.options.onSocketClose(event)) {
         return
       }
 
@@ -274,7 +305,11 @@ export class JsonRpcGatewayClient {
         pending.timer = setTimeout(() => {
           if (this.pending.delete(id)) {
             detach()
-            reject(new Error(`request timed out: ${method}`))
+            // Include the configured timeout so a caller (or a user looking
+            // at an error toast) can tell whether the default 30s window
+            // fired or a per-call override — e.g. /compress opts into 120s.
+            const seconds = Math.round(timeoutMs / 1000)
+            reject(new Error(`request timed out after ${seconds}s: ${method}`))
           }
         }, timeoutMs)
       }

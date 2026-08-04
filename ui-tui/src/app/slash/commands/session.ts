@@ -1,11 +1,10 @@
 import { usageBarsText } from '../../../components/overlayPrimitives.js'
-import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
+import { introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
   ConfigSetResponse,
-  ImageAttachResponse,
   SessionBranchResponse,
   SessionCompressResponse,
   SessionUsageResponse,
@@ -15,6 +14,7 @@ import type {
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
+import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
@@ -103,10 +103,11 @@ export const sessionCommands: SlashCommand[] = [
     help: 'change or show model',
     name: 'model',
     run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('change models')) {
-        return
-      }
-
+      // No busy guard here (unlike session switching). A model change is a
+      // session-scoped config.set: idle it switches immediately; mid-turn the
+      // gateway QUEUES it and applies it at the next turn start (returning
+      // deferred:true) instead of rejecting. Either way the pick sticks without
+      // interrupting the stream or waiting on the swap.
       if (!arg.trim()) {
         return patchOverlayState({ modelPicker: true })
       }
@@ -144,7 +145,7 @@ export const sessionCommands: SlashCommand[] = [
                 return ctx.transcript.sys('error: invalid response: model switch')
               }
 
-              ctx.transcript.sys(`model → ${r.value}`)
+              ctx.transcript.sys(r.deferred ? `model → ${r.value} (applies next turn)` : `model → ${r.value}`)
               ctx.local.maybeWarn(r)
 
               patchUiState(state => ({
@@ -190,17 +191,7 @@ export const sessionCommands: SlashCommand[] = [
   {
     help: 'attach an image',
     name: 'image',
-    run: (arg, ctx) => {
-      ctx.gateway.rpc<ImageAttachResponse>('image.attach', { path: arg, session_id: ctx.sid }).then(
-        ctx.guarded<ImageAttachResponse>(r => {
-          ctx.transcript.sys(attachedImageNotice(r))
-
-          if (r.remainder) {
-            ctx.composer.setInput(r.remainder)
-          }
-        })
-      )
-    }
+    run: (arg, ctx) => ctx.composer.attachImagePath(arg)
   },
 
   {
@@ -379,6 +370,14 @@ export const sessionCommands: SlashCommand[] = [
             const tts = r.tts ? ' (TTS enabled)' : ''
             ctx.transcript.sys(`Voice mode enabled${tts}`)
             ctx.transcript.sys(`  ${recordKeyLabel} to start/stop recording`)
+
+            // Spoken-stop hint — backend-sourced from voice.stop_phrases so a
+            // custom phrase renders correctly; absent/empty means the feature
+            // is disabled (stop_phrases: []) and no hint is shown.
+            if (r.stop_hint) {
+              ctx.transcript.sys(`  ${r.stop_hint}`)
+            }
+
             ctx.transcript.sys('  /voice tts  to toggle speech output')
             ctx.transcript.sys('  /voice off  to disable voice mode')
           } else {
@@ -408,6 +407,43 @@ export const sessionCommands: SlashCommand[] = [
           ctx.guarded<SlashExecResponse>(r => {
             const body = r.output || '/pet: no output'
             ctx.transcript.sys(r.warning ? `warning: ${r.warning}\n${body}` : body)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'pin light/dark mode or trust auto-detection (usage: /theme [auto|light|dark])',
+    name: 'theme',
+    usage: '/theme [auto|light|dark]',
+    run: (arg, ctx) => {
+      const value = arg.trim().toLowerCase()
+
+      if (!value) {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'theme' })
+          .then(ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`theme: ${r.value || 'auto'}`)))
+      }
+
+      if (!['auto', 'light', 'dark'].includes(value)) {
+        return ctx.transcript.sys('usage: /theme [auto|light|dark]')
+      }
+
+      // Apply only after the write is confirmed (mirrors /indicator): a
+      // failed config.set must not leave the session showing a theme that
+      // reverts on restart. A few ms later than an optimistic flip, but the
+      // env/theme state and config.yaml never disagree.
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'theme', value })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (r.value === undefined) {
+              return
+            }
+
+            applyConfiguredTuiTheme(value)
+            ctx.transcript.sys(`theme → ${value}`)
           })
         )
         .catch(ctx.guardedErr)

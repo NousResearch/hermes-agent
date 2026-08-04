@@ -18,6 +18,7 @@ for invariants and PR review criteria.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -70,8 +71,8 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         "routed": False,
     }
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
     except Exception:
         return parent
     aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
@@ -209,7 +210,10 @@ _SKILL_REVIEW_PROMPT = (
     "conversation for skills the user loaded via /skill-name or you "
     "read via skill_view. If any of them covers the territory of the "
     "new learning, PATCH that one first. It is the skill that was in "
-    "play, so it's the right one to extend.\n"
+    "play, so it's the right one to extend — but only if it is "
+    "curator-managed. Bundled, hub, pinned, and user-owned skills are "
+    "off-limits to you no matter how relevant (see Protected skills "
+    "below); for those, fall through to the next option.\n"
     "  2. UPDATE AN EXISTING UMBRELLA (via skills_list + skill_view). "
     "If no loaded skill fits but an existing class-level skill does, "
     "patch it. Add a subsection, a pitfall, or broaden a trigger.\n"
@@ -251,10 +255,18 @@ _SKILL_REVIEW_PROMPT = (
     "Protected skills (DO NOT edit these):\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
-    "Pinned skills (marked via 'hermes curator pin') CAN be improved — "
-    "pin only blocks deletion/archive/consolidation by the curator, not "
-    "content updates. Patch them when a pitfall or missing step turns up, "
-    "same as any other agent-created skill.\n"
+    "  • Skills in skills.external_dirs (externally owned).\n"
+    "  • PINNED skills (marked via 'hermes curator pin'). You are an "
+    "autonomous no-user-present actor, so pin blocks your writes too — "
+    "content updates included. Only the user, in a foreground session, "
+    "can change a pinned skill.\n"
+    "  • USER-OWNED skills — anything not curator-managed. A skill the "
+    "user hand-wrote, installed by URL, or asked a foreground agent to "
+    "create is theirs, not yours; your writes to it WILL be refused. "
+    "This includes skills that were loaded or consulted this session: "
+    "being in play does not make one yours to edit. If such a skill is "
+    "wrong or outdated, say so in your reply and recommend "
+    "'hermes curator adopt <name>' — do not try to patch it.\n"
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture (these become persistent self-imposed constraints "
@@ -273,6 +285,15 @@ _SKILL_REVIEW_PROMPT = (
     "  • One-off task narratives. A user asking 'summarize today's "
     "market' or 'analyze this PR' is not a class of work that warrants "
     "a skill.\n\n"
+    "  • Unresolved failures: if the session ended WITHOUT actually "
+    "finding a working method — you tried several things, none worked, "
+    "and told the user to check manually — do NOT write those attempts "
+    "up as a 'reliable workflow' or 'recommended approach'. That presents "
+    "an untested sequence of failures as validated guidance a future "
+    "session will trust and repeat. Either say 'Nothing to save', or, "
+    "only if you are independently confident of a real working alternative "
+    "(not something you are merely guessing might work), capture ONLY that "
+    "alternative — never the dead ends, and never dressed up as best practice.\n\n"
     "If a tool failed because of setup state, capture the FIX (install "
     "command, config step, env var to set) under an existing setup or "
     "troubleshooting skill — never 'this tool does not work' as a "
@@ -309,7 +330,9 @@ _COMBINED_REVIEW_PROMPT = (
     "  1. UPDATE A CURRENTLY-LOADED SKILL. Check what skills were "
     "loaded via /skill-name or skill_view in the conversation. If one "
     "of them covers the learning, PATCH it first. It was in play; "
-    "it's the right place.\n"
+    "it's the right place — provided it is curator-managed. Protected "
+    "and user-owned skills are off-limits however relevant; fall "
+    "through when one of those is the best fit.\n"
     "  2. UPDATE AN EXISTING UMBRELLA (skills_list + skill_view to "
     "find the right one). Patch it.\n"
     "  3. ADD A SUPPORT FILE under an existing umbrella via "
@@ -337,10 +360,15 @@ _COMBINED_REVIEW_PROMPT = (
     "Protected skills (DO NOT edit these):\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
-    "Pinned skills (marked via 'hermes curator pin') CAN be improved — "
-    "pin only blocks deletion/archive/consolidation by the curator, not "
-    "content updates. Patch them when a pitfall or missing step turns up, "
-    "same as any other agent-created skill.\n"
+    "  • Skills in skills.external_dirs (externally owned).\n"
+    "  • PINNED skills (marked via 'hermes curator pin'). Pin blocks "
+    "autonomous writes entirely — content updates included — because no "
+    "user is present to consent. Only a foreground session can change one.\n"
+    "  • USER-OWNED skills — anything not curator-managed (hand-written, "
+    "URL-installed, or created by a foreground agent at the user's "
+    "request). Your writes to these WILL be refused, including to skills "
+    "loaded or consulted this session. If one is wrong, say so in your "
+    "reply and recommend 'hermes curator adopt <name>' instead.\n"
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture as skills (these become persistent self-imposed "
@@ -359,6 +387,15 @@ _COMBINED_REVIEW_PROMPT = (
     "  • One-off task narratives. A user asking 'summarize today's "
     "market' or 'analyze this PR' is not a class of work that warrants "
     "a skill.\n\n"
+    "  • Unresolved failures: if the session ended WITHOUT actually "
+    "finding a working method — you tried several things, none worked, "
+    "and told the user to check manually — do NOT write those attempts "
+    "up as a 'reliable workflow' or 'recommended approach'. That presents "
+    "an untested sequence of failures as validated guidance a future "
+    "session will trust and repeat. Either say 'Nothing to save', or, "
+    "only if you are independently confident of a real working alternative "
+    "(not something you are merely guessing might work), capture ONLY that "
+    "alternative — never the dead ends, and never dressed up as best practice.\n\n"
     "If a tool failed because of setup state, capture the FIX (install "
     "command, config step, env var to set) under an existing setup or "
     "troubleshooting skill — never 'this tool does not work' as a "
@@ -709,6 +746,43 @@ def _run_review_in_thread(
             # _cached_system_prompt below.
             if not _routed:
                 _fork_kwargs["reasoning_config"] = getattr(agent, "reasoning_config", None)
+                # Gateway session context is appended to the parent's cached
+                # system prompt at API-call time through this field.  Preserve
+                # it on same-model forks so the complete effective system
+                # prompt remains byte-identical and can reuse the warm prefix.
+                _fork_kwargs["ephemeral_system_prompt"] = getattr(
+                    agent, "ephemeral_system_prompt", None
+                )
+                # Prefill messages are inserted immediately after the system
+                # message at API-call time (chat_completion_helpers.py /
+                # conversation_loop.py), so a parent with prefill configured
+                # (gateway prefill_messages_file) would otherwise diverge
+                # from the warm prefix at message index 1 — same bug class
+                # as the ephemeral prompt above, one position later.
+                # Deep copy: the unicode-error recovery path mutates
+                # prefill entries IN PLACE (_sanitize_messages_surrogates
+                # via conversation_loop), so sharing dicts would let a
+                # fork-side sanitize rewrite the parent's prefill bytes.
+                _parent_prefill = copy.deepcopy(
+                    getattr(agent, "prefill_messages", None) or []
+                )
+                if _parent_prefill:
+                    _fork_kwargs["prefill_messages"] = _parent_prefill
+                # OpenRouter provider-routing pins: prompt caches live per
+                # UPSTREAM provider, so a fork without the parent's pins can
+                # be routed to a different upstream and miss the warm cache
+                # even with byte-identical prompt/tools bytes.
+                for _pref_attr in (
+                    "providers_allowed",
+                    "providers_ignored",
+                    "providers_order",
+                    "provider_sort",
+                    "provider_require_parameters",
+                    "provider_data_collection",
+                ):
+                    _pref_val = getattr(agent, _pref_attr, None)
+                    if _pref_val:
+                        _fork_kwargs[_pref_attr] = _pref_val
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
                 max_iterations=16,

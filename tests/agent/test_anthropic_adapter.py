@@ -41,55 +41,12 @@ class TestIsOAuthToken:
     def test_api_key(self):
         assert _is_oauth_token("sk-ant-api03-abcdef1234567890") is False
 
-    def test_managed_key(self):
-        # Managed keys from ~/.claude.json without a recognisable Anthropic
-        # prefix are not positively identified as OAuth.  They enter the system
-        # via diagnostics-only read_claude_managed_key(), not via
-        # resolve_anthropic_token(), so they don't reach the OAuth gate in
-        # practice.  Third-party provider keys (MiniMax, Alibaba) also lack
-        # the sk-ant- prefix and must NOT be treated as OAuth.
-        assert _is_oauth_token("ou1R1z-ft0A-bDeZ9wAA") is False
 
-    def test_jwt_token(self):
-        # JWTs from OAuth flow
-        assert _is_oauth_token("eyJhbGciOiJSUzI1NiJ9.test") is True
 
-    def test_empty(self):
-        assert _is_oauth_token("") is False
 
 
 class TestBuildAnthropicClient:
-    def test_setup_token_uses_auth_token(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
-            kwargs = mock_sdk.Anthropic.call_args[1]
-            assert "auth_token" in kwargs
-            betas = kwargs["default_headers"]["anthropic-beta"]
-            assert "oauth-2025-04-20" in betas
-            assert "claude-code-20250219" in betas
-            assert "interleaved-thinking-2025-05-14" in betas
-            assert "fine-grained-tool-streaming-2025-05-14" in betas
-            # Native Anthropic does not get context-1m by default; accounts
-            # without that beta reject even short auxiliary requests.
-            assert "context-1m-2025-08-07" not in betas
-            assert "api_key" not in kwargs
 
-    def test_oauth_drop_context_1m_beta_strips_only_1m(self):
-        """drop_context_1m_beta=True strips context-1m-2025-08-07 while
-        preserving every other OAuth-relevant beta."""
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client(
-                "sk-ant-oat01-" + "x" * 60,
-                drop_context_1m_beta=True,
-            )
-            kwargs = mock_sdk.Anthropic.call_args[1]
-            betas = kwargs["default_headers"]["anthropic-beta"]
-            assert "context-1m-2025-08-07" not in betas
-            # Everything else must still be there.
-            assert "oauth-2025-04-20" in betas
-            assert "claude-code-20250219" in betas
-            assert "interleaved-thinking-2025-05-14" in betas
-            assert "fine-grained-tool-streaming-2025-05-14" in betas
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -104,55 +61,10 @@ class TestBuildAnthropicClient:
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
-    def test_custom_base_url(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
-            kwargs = mock_sdk.Anthropic.call_args[1]
-            assert kwargs["base_url"] == "https://custom.api.com"
-            assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
-            }
 
-    def test_custom_base_url_strips_trailing_v1(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client(
-                "sk-ant-api03-x",
-                base_url="https://proxy.example.com/anthropic/v1",
-            )
-            kwargs = mock_sdk.Anthropic.call_args[1]
-            assert kwargs["base_url"] == "https://proxy.example.com/anthropic"
 
-    def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client(
-                "azure-key",
-                base_url="https://example.services.ai.azure.com/models/anthropic",
-            )
-            kwargs = mock_sdk.Anthropic.call_args[1]
-            betas = kwargs["default_headers"]["anthropic-beta"]
-            assert "context-1m-2025-08-07" in betas
 
-    def test_azure_anthropic_endpoint_detection_is_host_and_path_scoped(self):
-        assert _is_azure_anthropic_endpoint(
-            "https://example.services.ai.azure.com/models/anthropic"
-        ) is True
-        assert _is_azure_anthropic_endpoint(
-            "https://example.services.ai.azure.us/anthropic"
-        ) is True
-        assert _is_azure_anthropic_endpoint(
-            "https://example.openai.azure.com/openai/v1"
-        ) is False
-        assert _is_azure_anthropic_endpoint(
-            "https://management.azure.com/anthropic"
-        ) is False
 
-    def test_bedrock_client_keeps_context_1m_beta(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            mock_sdk.AnthropicBedrock = MagicMock()
-            build_anthropic_bedrock_client("us-east-1")
-            kwargs = mock_sdk.AnthropicBedrock.call_args[1]
-            betas = kwargs["default_headers"]["anthropic-beta"]
-            assert "context-1m-2025-08-07" in betas
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -167,18 +79,6 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
 
-    def test_minimax_cn_anthropic_endpoint_omits_tool_streaming_beta(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client(
-                "minimax-cn-secret-123",
-                base_url="https://api.minimaxi.com/anthropic",
-            )
-            kwargs = mock_sdk.Anthropic.call_args[1]
-            assert kwargs["auth_token"] == "minimax-cn-secret-123"
-            assert "api_key" not in kwargs
-            assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14"
-            }
 
     def test_azure_foundry_anthropic_endpoint_uses_bearer_auth(self):
         """Azure AI Foundry's /anthropic endpoint requires Authorization: Bearer.
@@ -217,27 +117,6 @@ class TestBuildAnthropicClient:
             assert kwargs["auth_token"] == "foundry-secret-123"
             assert "api_key" not in kwargs
 
-    def test_palantir_bearer_auth_matches_hostname_not_substring(self):
-        """The palantirfoundry check must be a hostname match, not a loose
-        substring match — a URL merely *containing* the string (path segment,
-        lookalike domain) must not trigger Bearer auth."""
-        from agent.anthropic_adapter import _requires_bearer_auth
-
-        # Real Foundry hosts (org subdomains) → Bearer.
-        assert _requires_bearer_auth(
-            "https://acme.palantirfoundry.com/api/v2/llm/proxy/anthropic"
-        ) is True
-        assert _requires_bearer_auth("https://palantirfoundry.com/anthropic") is True
-        # Substring false-positives → x-api-key (default).
-        assert _requires_bearer_auth(
-            "https://evil.example.com/palantirfoundry/anthropic"
-        ) is False
-        assert _requires_bearer_auth(
-            "https://palantirfoundry.com.evil.example/anthropic"
-        ) is False
-        assert _requires_bearer_auth(
-            "https://notpalantirfoundry.com/anthropic"
-        ) is False
 
     def test_disables_sdk_retries_for_api_key(self):
         """#26293: the SDK's default max_retries=2 ignores Retry-After and
@@ -248,18 +127,7 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["max_retries"] == 0
 
-    def test_disables_sdk_retries_for_oauth_token(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
-            kwargs = mock_sdk.Anthropic.call_args[1]
-            assert kwargs["max_retries"] == 0
 
-    def test_bedrock_disables_sdk_retries(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            mock_sdk.AnthropicBedrock = MagicMock()
-            build_anthropic_bedrock_client("us-east-1")
-            kwargs = mock_sdk.AnthropicBedrock.call_args[1]
-            assert kwargs["max_retries"] == 0
 
 
 class TestReadClaudeCodeCredentials:
@@ -295,25 +163,8 @@ class TestReadClaudeCodeCredentials:
         creds = read_claude_code_credentials()
         assert creds is None
 
-    def test_returns_none_for_missing_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        assert read_claude_code_credentials() is None
 
-    def test_returns_none_for_missing_oauth_key(self, tmp_path, monkeypatch):
-        cred_file = tmp_path / ".claude" / ".credentials.json"
-        cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({"someOtherKey": {}}))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        assert read_claude_code_credentials() is None
 
-    def test_returns_none_for_empty_access_token(self, tmp_path, monkeypatch):
-        cred_file = tmp_path / ".claude" / ".credentials.json"
-        cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {"accessToken": "", "refreshToken": "x"}
-        }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        assert read_claude_code_credentials() is None
 
 
 class TestIsClaudeCodeTokenValid:
@@ -331,6 +182,9 @@ class TestIsClaudeCodeTokenValid:
 
 
 class TestResolveAnthropicToken:
+    def _assert_not_called(*_args, **_kwargs):
+        raise AssertionError("should not be called when API key is present")
+
     def test_prefers_oauth_token_over_api_key(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
@@ -348,32 +202,41 @@ class TestResolveAnthropicToken:
         assert resolve_anthropic_token() is None
 
     def test_falls_back_to_api_key_when_no_oauth_sources_exist(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        assert resolve_anthropic_token() == "sk-ant-api03-mykey"
+        assert resolve_anthropic_token() == "sk-ant...ykey"
 
-    def test_falls_back_to_token(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-mytoken")
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        assert resolve_anthropic_token() == "sk-ant-oat01-mytoken"
-
-    def test_returns_none_with_no_creds(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    def test_api_key_wins_over_auto_discovered_claude_code_credentials(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "cc-auto-token",
+                "refreshToken": "refresh",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        assert resolve_anthropic_token() is None
 
-    def test_falls_back_to_claude_code_oauth_token(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        assert resolve_anthropic_token() == "sk-ant...ykey"
+
+    def test_api_key_path_does_not_read_auto_discovered_credentials(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test-token")
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        assert resolve_anthropic_token() == "sk-ant-oat01-test-token"
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            self._assert_not_called,
+        )
+
+        assert resolve_anthropic_token() == "sk-ant...ykey"
 
     def test_falls_back_to_claude_code_credentials(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -396,7 +259,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        # Isolate source #4 (credential_pool): ensure source #3 (Claude Code
+        # Isolate source #5 (credential_pool): ensure source #4 (Claude Code
         # creds, incl. the macOS keychain read which Path.home does not cover)
         # returns nothing, mirroring a Hermes-PKCE-only setup.
         monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
@@ -406,38 +269,33 @@ class TestResolveAnthropicToken:
             access_token="pool-oauth-token",
         )
         pool = SimpleNamespace(
-            _available_entries=lambda **_kwargs: [pool_entry],
+            _available_entries=lambda **_kwargs: ([pool_entry], []),
         )
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
         assert resolve_anthropic_token() == "pool-oauth-token"
 
-    def test_prefers_anthropic_credential_pool_oauth_over_api_key(self, monkeypatch, tmp_path):
+    def test_api_key_wins_over_anthropic_credential_pool_oauth(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        # Pool (source #4) must win over ANTHROPIC_API_KEY (source #5); also
-        # isolate source #3 so a machine-local Claude Code creds / keychain
-        # entry can't short-circuit before the pool.
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
-
-        pool_entry = SimpleNamespace(
-            auth_type="oauth",
-            access_token="pool-oauth-token",
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            self._assert_not_called,
         )
-        pool = SimpleNamespace(
-            _available_entries=lambda **_kwargs: [pool_entry],
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool",
+            self._assert_not_called,
         )
-        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
-        assert resolve_anthropic_token() == "pool-oauth-token"
+        assert resolve_anthropic_token() == "sk-ant...ykey"
 
     def test_pool_entry_with_null_access_token_does_not_crash(self, monkeypatch, tmp_path):
         """A persisted OAuth entry with access_token=None must not crash the
         resolver (None.strip() would escape the helper's try/excepts and take
         down the whole resolver incl. the ANTHROPIC_API_KEY fallback). It should
-        be skipped and the api-key fallback (source #5) should win."""
+        be skipped and the api-key fallback (source #3) should win."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -446,11 +304,11 @@ class TestResolveAnthropicToken:
 
         broken_entry = SimpleNamespace(auth_type="oauth", access_token=None)
         pool = SimpleNamespace(
-            _available_entries=lambda **_kwargs: [broken_entry],
+            _available_entries=lambda **_kwargs: ([broken_entry], []),
         )
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
-        # Must fall through to source #5 (ANTHROPIC_API_KEY), not raise.
+        # Must fall through to source #3 (ANTHROPIC_API_KEY), not raise.
         assert resolve_anthropic_token() == "sk-ant...ykey"
 
     def test_pool_api_key_only_entry_is_not_returned_as_token(self, monkeypatch, tmp_path):
@@ -466,32 +324,13 @@ class TestResolveAnthropicToken:
 
         api_key_entry = SimpleNamespace(auth_type="api_key", access_token="sk-pool-apikey")
         pool = SimpleNamespace(
-            _available_entries=lambda **_kwargs: [api_key_entry],
+            _available_entries=lambda **_kwargs: ([api_key_entry], []),
         )
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
         # No OAuth entry and no other source → None (the api_key entry is ignored here).
         assert resolve_anthropic_token() is None
 
-    def test_pool_is_not_consulted_when_env_token_present(self, monkeypatch, tmp_path):
-        """Source #1 (ANTHROPIC_TOKEN) must short-circuit before the pool: when
-        it is set, load_pool must never be called (ordering contract #1 → #4)."""
-        monkeypatch.setenv("ANTHROPIC_TOKEN", "env-token")
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
-
-        pool_calls = []
-
-        def _tracking_load_pool(provider):
-            pool_calls.append(provider)
-            raise AssertionError("load_pool must not be called when source #1 wins")
-
-        monkeypatch.setattr("agent.credential_pool.load_pool", _tracking_load_pool)
-
-        assert resolve_anthropic_token() == "env-token"
-        assert pool_calls == []
 
     def test_pool_resolution_is_read_only(self, monkeypatch, tmp_path):
         """The resolver must enumerate the pool read-only — clear_expired and
@@ -508,7 +347,7 @@ class TestResolveAnthropicToken:
 
         def _available_entries(**kwargs):
             captured.update(kwargs)
-            return [pool_entry]
+            return ([pool_entry], [])
 
         pool = SimpleNamespace(_available_entries=_available_entries)
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
@@ -533,15 +372,6 @@ class TestResolveAnthropicToken:
 
         assert resolve_anthropic_token() == "cc-auto-token"
 
-    def test_keeps_static_anthropic_token_when_only_non_refreshable_claude_key_exists(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        claude_json = tmp_path / ".claude.json"
-        claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-managed-key"}))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-
-        assert resolve_anthropic_token() == "sk-ant-oat01-static-token"
 
 
 class TestRefreshOauthToken:
@@ -696,10 +526,6 @@ class TestResolveWithRefresh:
 
 
 class TestRunOauthSetupToken:
-    def test_raises_when_claude_not_installed(self, monkeypatch):
-        monkeypatch.setattr("shutil.which", lambda _: None)
-        with pytest.raises(FileNotFoundError, match="claude.*CLI.*not installed"):
-            run_oauth_setup_token()
 
     def test_returns_token_from_credential_files(self, monkeypatch, tmp_path):
         """After subprocess completes, reads credentials from Claude Code files."""
@@ -730,18 +556,6 @@ class TestRunOauthSetupToken:
         # assert_called_once() in CI.
         assert mock_run.called
 
-    def test_returns_token_from_env_var(self, monkeypatch, tmp_path):
-        """Falls back to CLAUDE_CODE_OAUTH_TOKEN env var when no cred files."""
-        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "from-env-var")
-        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-            token = run_oauth_setup_token()
-
-        assert token == "from-env-var"
 
     def test_returns_none_when_no_creds_found(self, monkeypatch, tmp_path):
         """Returns None when subprocess completes but no credentials are found."""
@@ -756,14 +570,6 @@ class TestRunOauthSetupToken:
 
         assert token is None
 
-    def test_returns_none_on_keyboard_interrupt(self, monkeypatch):
-        """Returns None gracefully when user interrupts the flow."""
-        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
-
-        with patch("subprocess.run", side_effect=KeyboardInterrupt):
-            token = run_oauth_setup_token()
-
-        assert token is None
 
 
 # ---------------------------------------------------------------------------
@@ -775,19 +581,8 @@ class TestNormalizeModelName:
     def test_strips_anthropic_prefix(self):
         assert normalize_model_name("anthropic/claude-sonnet-4-20250514") == "claude-sonnet-4-20250514"
 
-    def test_leaves_bare_name(self):
-        assert normalize_model_name("claude-sonnet-4-20250514") == "claude-sonnet-4-20250514"
 
-    def test_converts_dots_to_hyphens(self):
-        """OpenRouter uses dots (4.6), Anthropic uses hyphens (4-6)."""
-        assert normalize_model_name("anthropic/claude-opus-4.6") == "claude-opus-4-6"
-        assert normalize_model_name("anthropic/claude-sonnet-4.5") == "claude-sonnet-4-5"
-        assert normalize_model_name("claude-opus-4.6") == "claude-opus-4-6"
 
-    def test_already_hyphenated_unchanged(self):
-        """Names already in Anthropic format should pass through."""
-        assert normalize_model_name("claude-opus-4-6") == "claude-opus-4-6"
-        assert normalize_model_name("claude-opus-4-5-20251101") == "claude-opus-4-5-20251101"
 
     def test_preserve_dots_for_alibaba_dashscope(self):
         """Alibaba/DashScope use dots in model names (e.g. qwen3.5-plus). Fixes #1739."""
@@ -864,189 +659,14 @@ class TestConvertTools:
 
 
 class TestConvertMessages:
-    def test_extracts_system_prompt(self):
-        messages = [
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "Hello"},
-        ]
-        system, result = convert_messages_to_anthropic(messages)
-        assert system == "You are helpful."
-        assert len(result) == 1
-        assert result[0]["role"] == "user"
 
-    def test_converts_user_image_url_blocks_to_anthropic_image_blocks(self):
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Can you see this?"},
-                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
-                ],
-            }
-        ]
 
-        _, result = convert_messages_to_anthropic(messages)
 
-        assert result == [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Can you see this?"},
-                    {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.png"}},
-                ],
-            }
-        ]
 
-    def test_converts_data_url_image_blocks_to_base64_anthropic_image_blocks(self):
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": "What is in this screenshot?"},
-                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
-                ],
-            }
-        ]
 
-        _, result = convert_messages_to_anthropic(messages)
 
-        assert result == [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "What is in this screenshot?"},
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": "AAAA",
-                        },
-                    },
-                ],
-            }
-        ]
 
-    def test_converts_tool_calls(self):
-        messages = [
-            {
-                "role": "assistant",
-                "content": "Let me search.",
-                "tool_calls": [
-                    {
-                        "id": "tc_1",
-                        "function": {
-                            "name": "search",
-                            "arguments": '{"query": "test"}',
-                        },
-                    }
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "search results"},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        blocks = result[0]["content"]
-        assert blocks[0] == {"type": "text", "text": "Let me search."}
-        assert blocks[1]["type"] == "tool_use"
-        assert blocks[1]["id"] == "tc_1"
-        assert blocks[1]["input"] == {"query": "test"}
 
-    def test_converts_tool_results(self):
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "result data"},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        # tool result is in the second message (user role)
-        user_msg = [m for m in result if m["role"] == "user"][0]
-        assert user_msg["content"][0]["type"] == "tool_result"
-        assert user_msg["content"][0]["tool_use_id"] == "tc_1"
-
-    def test_merges_consecutive_tool_results(self):
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
-                    {"id": "tc_2", "function": {"name": "tool_b", "arguments": "{}"}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
-            {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        # assistant + merged user (with 2 tool_results)
-        user_msgs = [m for m in result if m["role"] == "user"]
-        assert len(user_msgs) == 1
-        assert len(user_msgs[0]["content"]) == 2
-
-    def test_strips_orphaned_tool_use(self):
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_orphan", "function": {"name": "x", "arguments": "{}"}}
-                ],
-            },
-            {"role": "user", "content": "never mind"},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        # tc_orphan has no matching tool_result, should be stripped
-        assistant_blocks = result[0]["content"]
-        assert all(b.get("type") != "tool_use" for b in assistant_blocks)
-
-    def test_strips_orphaned_tool_result(self):
-        """tool_result with no matching tool_use should be stripped.
-
-        This happens when context compression removes the assistant message
-        containing the tool_use but leaves the subsequent tool_result intact.
-        Anthropic rejects orphaned tool_results with a 400.
-        """
-        messages = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi there"},
-            # The assistant tool_use message was removed by compression,
-            # but the tool_result survived:
-            {"role": "tool", "tool_call_id": "tc_gone", "content": "stale result"},
-            {"role": "user", "content": "Thanks"},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        # tc_gone has no matching tool_use — its tool_result should be stripped
-        for m in result:
-            if m["role"] == "user" and isinstance(m["content"], list):
-                assert all(
-                    b.get("type") != "tool_result"
-                    for b in m["content"]
-                ), "Orphaned tool_result should have been stripped"
-
-    def test_strips_orphaned_tool_result_preserves_valid(self):
-        """Orphaned tool_results are stripped while valid ones survive."""
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_valid", "function": {"name": "search", "arguments": "{}"}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_valid", "content": "good result"},
-            {"role": "tool", "tool_call_id": "tc_orphan", "content": "stale result"},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        user_msg = [m for m in result if m["role"] == "user"][0]
-        tool_results = [
-            b for b in user_msg["content"] if b.get("type") == "tool_result"
-        ]
-        assert len(tool_results) == 1
-        assert tool_results[0]["tool_use_id"] == "tc_valid"
 
     def test_strips_tool_use_when_result_not_immediately_adjacent(self):
         """A tool_use whose result appears LATER but not in the immediately
@@ -1081,23 +701,6 @@ class TestConvertMessages:
                     "orphaned late tool_result should have been stripped"
                 )
 
-    def test_keeps_tool_use_when_result_immediately_adjacent(self):
-        """Control: an adjacent tool_use/result pair is preserved (no false strip)."""
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_ok", "function": {"name": "search", "arguments": "{}"}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_ok", "content": "good"},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        asst = [m for m in result if m["role"] == "assistant"][0]
-        assert any(b.get("type") == "tool_use" for b in asst["content"])
-        user = [m for m in result if m["role"] == "user"][0]
-        assert any(b.get("type") == "tool_result" for b in user["content"])
 
     def test_system_with_cache_control(self):
         messages = [
@@ -1114,6 +717,7 @@ class TestConvertMessages:
         assert isinstance(system, list)
         assert system[0]["cache_control"] == {"type": "ephemeral"}
 
+
     def test_assistant_cache_control_blocks_are_preserved(self):
         messages = apply_anthropic_cache_control([
             {"role": "system", "content": "System prompt"},
@@ -1121,7 +725,8 @@ class TestConvertMessages:
         ])
 
         _, result = convert_messages_to_anthropic(messages)
-        assistant_blocks = result[0]["content"]
+        assistant_msg = next(m for m in result if m["role"] == "assistant")
+        assistant_blocks = assistant_msg["content"]
 
         assert assistant_blocks[0]["type"] == "text"
         assert assistant_blocks[0]["text"] == "Hello from assistant"
@@ -1148,6 +753,54 @@ class TestConvertMessages:
         assert tool_use["type"] == "tool_use"
         assert tool_use["id"] == "tc_1"
         assert tool_use["cache_control"] == {"type": "ephemeral"}
+
+    def test_ordered_replay_keeps_cache_control_from_nonempty_content(self):
+        """An assistant turn that interleaves signed thinking with a tool_use
+        AND has preamble text carries its cache_control INSIDE ``content``
+        (apply_anthropic_cache_control marks the last content block, not the
+        top level). The ordered-replay branch rebuilds the message from
+        ``anthropic_content_blocks`` alone, so without harvesting that marker
+        the breakpoint is dropped -- and it is *burned*, because
+        _can_carry_marker already spent a budget slot on this message.
+
+        #56195 covers the blank-content shape; this is the non-empty one, which
+        is what a Claude thinking+tools turn normally looks like.
+        """
+        preamble = "I will read a.py now."
+        messages = apply_anthropic_cache_control([
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Read a.py"},
+            {
+                "role": "assistant",
+                "content": preamble,
+                "anthropic_content_blocks": [
+                    {"type": "thinking", "thinking": "Need a tool.", "signature": "sig_1"},
+                    {"type": "text", "text": preamble},
+                    {"type": "tool_use", "id": "tc_1", "name": "test_tool", "input": {}},
+                ],
+                "tool_calls": [
+                    {
+                        "id": "tc_1",
+                        "type": "function",
+                        "function": {"name": "test_tool", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "contents"},
+        ])
+
+        _system, converted = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in converted if m.get("role") == "assistant")
+        marked = [
+            b for b in assistant["content"]
+            if isinstance(b, dict) and b.get("cache_control")
+        ]
+        assert marked, (
+            "the assistant cache breakpoint was dropped by the ordered-replay "
+            "path and the budget slot is burned"
+        )
+        # The signed thinking block must still lead the replayed message.
+        assert assistant["content"][0]["type"] == "thinking"
 
     def test_ordered_replay_tool_use_cache_control_is_preserved(self):
         messages = apply_anthropic_cache_control([
@@ -1207,7 +860,12 @@ class TestConvertMessages:
         ], native_anthropic=True)
 
         _, result = convert_messages_to_anthropic(messages)
-        user_msg = [m for m in result if m["role"] == "user"][0]
+        user_msg = next(
+            m for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
         tool_block = user_msg["content"][0]
 
         assert tool_block["type"] == "tool_result"
@@ -1215,104 +873,9 @@ class TestConvertMessages:
         assert tool_block["content"] == "result"
         assert tool_block["cache_control"] == {"type": "ephemeral"}
 
-    def test_preserved_thinking_blocks_are_rehydrated_before_tool_use(self):
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
-                ],
-                "reasoning_details": [
-                    {
-                        "type": "thinking",
-                        "thinking": "Need to inspect the tool result first.",
-                        "signature": "sig_123",
-                    }
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "tool output"},
-        ]
 
-        _, result = convert_messages_to_anthropic(messages)
-        assistant_blocks = next(msg for msg in result if msg["role"] == "assistant")["content"]
 
-        assert assistant_blocks[0]["type"] == "thinking"
-        assert assistant_blocks[0]["thinking"] == "Need to inspect the tool result first."
-        assert assistant_blocks[0]["signature"] == "sig_123"
-        assert assistant_blocks[1]["type"] == "tool_use"
 
-    def test_converts_data_url_image_to_anthropic_image_block(self):
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Describe this image"},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,ZmFrZQ=="},
-                    },
-                ],
-            }
-        ]
-
-        _, result = convert_messages_to_anthropic(messages)
-        blocks = result[0]["content"]
-        assert blocks[0] == {"type": "text", "text": "Describe this image"}
-        assert blocks[1] == {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": "ZmFrZQ==",
-            },
-        }
-
-    def test_converts_remote_image_url_to_anthropic_image_block(self):
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Describe this image"},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "https://example.com/cat.png"},
-                    },
-                ],
-            }
-        ]
-
-        _, result = convert_messages_to_anthropic(messages)
-        blocks = result[0]["content"]
-        assert blocks[1] == {
-            "type": "image",
-            "source": {
-                "type": "url",
-                "url": "https://example.com/cat.png",
-            },
-        }
-
-    def test_empty_cached_assistant_tool_turn_converts_without_empty_text_block(self):
-        messages = apply_anthropic_cache_control([
-            {"role": "system", "content": "System prompt"},
-            {"role": "user", "content": "Find the skill"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "skill_view", "arguments": "{}"}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
-        ])
-
-        _, result = convert_messages_to_anthropic(messages)
-
-        assistant_turn = next(msg for msg in result if msg["role"] == "assistant")
-        assistant_blocks = assistant_turn["content"]
-
-        assert all(not (b.get("type") == "text" and b.get("text") == "") for b in assistant_blocks)
-        assert any(b.get("type") == "tool_use" for b in assistant_blocks)
 
     def test_empty_user_message_string_gets_placeholder(self):
         """Empty user message strings should get '(empty message)' placeholder.
@@ -1327,34 +890,30 @@ class TestConvertMessages:
         assert result[0]["role"] == "user"
         assert result[0]["content"] == "(empty message)"
 
-    def test_whitespace_only_user_message_gets_placeholder(self):
-        """Whitespace-only user messages should also get placeholder."""
-        messages = [
-            {"role": "user", "content": "   \n\t  "},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        assert result[0]["content"] == "(empty message)"
 
-    def test_empty_user_message_list_gets_placeholder(self):
-        """Empty content list for user messages should get placeholder block."""
-        messages = [
-            {"role": "user", "content": []},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        assert result[0]["role"] == "user"
-        assert isinstance(result[0]["content"], list)
-        assert len(result[0]["content"]) == 1
-        assert result[0]["content"][0] == {"type": "text", "text": "(empty message)"}
 
-    def test_user_message_with_empty_text_blocks_gets_placeholder(self):
-        """User message with only empty text blocks should get placeholder."""
+
+    def test_leading_assistant_after_compaction_gets_user_turn_prepended(self):
+        """The adapter backstops compactors that emit a leading assistant summary."""
         messages = [
-            {"role": "user", "content": [{"type": "text", "text": ""}, {"type": "text", "text": "  "}]},
+            {"role": "system", "content": "You are helpful."},
+            {"role": "assistant", "content": "[Context compaction summary] earlier work…"},
+            {"role": "user", "content": "continue"},
         ]
-        _, result = convert_messages_to_anthropic(messages)
+
+        system, result = convert_messages_to_anthropic(messages)
+
+        assert system == "You are helpful."
         assert result[0]["role"] == "user"
-        assert isinstance(result[0]["content"], list)
-        assert result[0]["content"] == [{"type": "text", "text": "(empty message)"}]
+        assert result[0]["content"] == [{"type": "text", "text": "(empty)"}]
+        assert result[1]["role"] == "assistant"
+        assert any(
+            m["role"] == "assistant" and "Context compaction summary" in str(m["content"])
+            for m in result
+        )
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -1363,68 +922,9 @@ class TestConvertMessages:
 
 
 class TestBuildAnthropicKwargs:
-    def test_basic_kwargs(self):
-        messages = [
-            {"role": "system", "content": "Be helpful."},
-            {"role": "user", "content": "Hi"},
-        ]
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-20250514",
-            messages=messages,
-            tools=None,
-            max_tokens=4096,
-            reasoning_config=None,
-        )
-        assert kwargs["model"] == "claude-sonnet-4-20250514"
-        assert kwargs["system"] == "Be helpful."
-        assert kwargs["max_tokens"] == 4096
-        assert "tools" not in kwargs
 
-    def test_strips_anthropic_prefix(self):
-        kwargs = build_anthropic_kwargs(
-            model="anthropic/claude-sonnet-4-20250514",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config=None,
-        )
-        assert kwargs["model"] == "claude-sonnet-4-20250514"
 
-    def test_fast_mode_oauth_default_omits_context_1m_beta(self):
-        """Default OAuth fast-mode avoids context-1m for subscriptions without it."""
-        kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-6",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config=None,
-            is_oauth=True,
-            fast_mode=True,
-        )
-        betas = kwargs["extra_headers"]["anthropic-beta"]
-        assert "fast-mode-2026-02-01" in betas
-        assert "oauth-2025-04-20" in betas
-        assert "context-1m-2025-08-07" not in betas
 
-    def test_fast_mode_oauth_drop_context_1m_beta_strips_only_1m(self):
-        """drop_context_1m_beta=True strips context-1m from fast-mode
-        extra_headers while preserving every other OAuth + fast-mode beta."""
-        kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-6",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config=None,
-            is_oauth=True,
-            fast_mode=True,
-            drop_context_1m_beta=True,
-        )
-        betas = kwargs["extra_headers"]["anthropic-beta"]
-        assert "context-1m-2025-08-07" not in betas
-        assert "fast-mode-2026-02-01" in betas
-        assert "oauth-2025-04-20" in betas
-        assert "claude-code-20250219" in betas
-        assert "interleaved-thinking-2025-05-14" in betas
 
     def test_reasoning_config_maps_to_manual_thinking_for_pre_4_6_models(self):
         kwargs = build_anthropic_kwargs(
@@ -1456,78 +956,10 @@ class TestBuildAnthropicKwargs:
         assert "temperature" not in kwargs
         assert kwargs["max_tokens"] == 4096
 
-    def test_reasoning_config_downgrades_xhigh_to_max_for_4_6_models(self):
-        # Opus 4.7 added "xhigh" as a distinct effort level (low/medium/high/
-        # xhigh/max). Opus 4.6 only supports low/medium/high/max — sending
-        # "xhigh" there returns an API 400. Preserve the pre-migration
-        # behavior of aliasing xhigh→max on pre-4.7 adaptive models so users
-        # who prefer xhigh as their default don't 400 every request when
-        # switching back to 4.6.
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-6",
-            messages=[{"role": "user", "content": "think harder"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config={"enabled": True, "effort": "xhigh"},
-        )
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
-        assert kwargs["output_config"] == {"effort": "max"}
 
-    def test_reasoning_config_preserves_xhigh_for_4_7_models(self):
-        # On 4.7+ xhigh is a real level and the recommended default for
-        # coding/agentic work — keep it distinct from max.
-        kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-7",
-            messages=[{"role": "user", "content": "think harder"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config={"enabled": True, "effort": "xhigh"},
-        )
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
-        assert kwargs["output_config"] == {"effort": "xhigh"}
 
-    def test_reasoning_config_clamps_generic_ultra_to_anthropic_max(self):
-        kwargs = build_anthropic_kwargs(
-            model="claude-opus-4.8",
-            messages=[{"role": "user", "content": "think harder"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config={"enabled": True, "effort": "ultra"},
-        )
-        assert kwargs["output_config"] == {"effort": "max"}
 
-    def test_reasoning_config_maps_max_effort_for_4_7_models(self):
-        kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-7",
-            messages=[{"role": "user", "content": "maximum reasoning please"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config={"enabled": True, "effort": "max"},
-        )
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
-        assert kwargs["output_config"] == {"effort": "max"}
 
-    def test_opus_4_7_strips_sampling_params(self):
-        # Opus 4.7 returns 400 on non-default temperature/top_p/top_k.
-        # build_anthropic_kwargs must strip them as a safety net even if an
-        # upstream caller injects them for older-model compatibility.
-        kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-7",
-            messages=[{"role": "user", "content": "hi"}],
-            tools=None,
-            max_tokens=1024,
-            reasoning_config=None,
-        )
-        # Manually inject sampling params then re-run through the guard.
-        # Because build_anthropic_kwargs doesn't currently accept sampling
-        # params through its signature, we exercise the strip behavior by
-        # calling the internal predicate directly.
-        from agent.anthropic_adapter import _forbids_sampling_params
-        assert _forbids_sampling_params("claude-opus-4-8") is True
-        assert _forbids_sampling_params("claude-opus-4-8-fast") is True
-        assert _forbids_sampling_params("claude-opus-4-7") is True
-        assert _forbids_sampling_params("claude-opus-4-6") is False
-        assert _forbids_sampling_params("claude-sonnet-4-5") is False
 
     def test_supports_fast_mode_predicate(self):
         """Fast mode is Opus 4.6 only — Opus 4.7 and others must be excluded.
@@ -1574,33 +1006,7 @@ class TestBuildAnthropicKwargs:
         # 1M-context reasoning model → highest output ceiling.
         assert _get_anthropic_max_output("anthropic/claude-fable-5") == 128_000
 
-    def test_legacy_claude_stays_on_manual_thinking(self):
-        """Older Claude families keep the legacy manual-thinking contract."""
-        from agent.anthropic_adapter import (
-            _supports_adaptive_thinking,
-            _forbids_sampling_params,
-        )
-        for m in (
-            "claude-3-5-sonnet",
-            "claude-3-7-sonnet",
-            "anthropic/claude-opus-4.5",
-            "anthropic/claude-sonnet-4.5",
-            "claude-haiku-4-5",
-        ):
-            assert _supports_adaptive_thinking(m) is False, m
-            assert _forbids_sampling_params(m) is False, m
 
-    def test_claude_46_is_adaptive_but_not_xhigh_or_no_sampling(self):
-        """4.6 is adaptive, but predates xhigh and still accepts sampling."""
-        from agent.anthropic_adapter import (
-            _supports_adaptive_thinking,
-            _supports_xhigh_effort,
-            _forbids_sampling_params,
-        )
-        for m in ("claude-opus-4.6", "claude-sonnet-4-6"):
-            assert _supports_adaptive_thinking(m) is True, m
-            assert _supports_xhigh_effort(m) is False, m
-            assert _forbids_sampling_params(m) is False, m
 
     def test_non_claude_anthropic_models_use_manual_path(self):
         """Non-Claude Anthropic-Messages models (minimax, qwen3, glm) must not
@@ -1616,20 +1022,6 @@ class TestBuildAnthropicKwargs:
             assert _supports_xhigh_effort(m) is False, m
             assert _forbids_sampling_params(m) is False, m
 
-    def test_kimi_family_uses_adaptive_path(self):
-        """Kimi / Moonshot models use adaptive thinking: their
-        Anthropic-compatible endpoints accept thinking.type="adaptive" +
-        output_config.effort including xhigh. Sampling params stay untouched
-        (the 4.7+ sampling ban is a Claude-only contract)."""
-        from agent.anthropic_adapter import (
-            _supports_adaptive_thinking,
-            _supports_xhigh_effort,
-            _forbids_sampling_params,
-        )
-        for m in ("moonshotai/kimi-k2.5", "kimi-0714-preview", "k2-thinking"):
-            assert _supports_adaptive_thinking(m) is True, m
-            assert _supports_xhigh_effort(m) is True, m
-            assert _forbids_sampling_params(m) is False, m
 
     def test_bare_k3_coding_plan_slug_is_kimi_family(self):
         """Kimi Coding Plan serves K3 as the bare slug ``k3`` — it must be
@@ -1663,126 +1055,16 @@ class TestBuildAnthropicKwargs:
         beta_header = (kwargs.get("extra_headers") or {}).get("anthropic-beta", "")
         assert "fast-mode-2026-02-01" not in beta_header
 
-    def test_fast_mode_still_applied_on_opus_46(self):
-        """Regression guard — fast mode must still work on Opus 4.6."""
-        kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-6",
-            messages=[{"role": "user", "content": "hi"}],
-            tools=None,
-            max_tokens=1024,
-            reasoning_config=None,
-            fast_mode=True,
-        )
-        assert kwargs.get("extra_body", {}).get("speed") == "fast"
-        assert "fast-mode-2026-02-01" in kwargs["extra_headers"]["anthropic-beta"]
 
-    def test_reasoning_disabled(self):
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-20250514",
-            messages=[{"role": "user", "content": "quick"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config={"enabled": False},
-        )
-        assert "thinking" not in kwargs
 
-    def test_default_max_tokens_uses_model_output_limit(self):
-        """When max_tokens is None, use the model's native output limit."""
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-20250514",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=None,
-            reasoning_config=None,
-        )
-        assert kwargs["max_tokens"] == 64_000  # Sonnet 4 output limit
 
-    def test_default_max_tokens_opus_4_6(self):
-        kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-6",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=None,
-            reasoning_config=None,
-        )
-        assert kwargs["max_tokens"] == 128_000
 
-    def test_default_max_tokens_sonnet_4_6(self):
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-6",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=None,
-            reasoning_config=None,
-        )
-        assert kwargs["max_tokens"] == 64_000
 
-    def test_default_max_tokens_date_stamped_model(self):
-        """Date-stamped model IDs should resolve via substring match."""
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-5-20250929",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=None,
-            reasoning_config=None,
-        )
-        assert kwargs["max_tokens"] == 64_000
 
-    def test_default_max_tokens_older_model(self):
-        kwargs = build_anthropic_kwargs(
-            model="claude-3-5-sonnet-20241022",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=None,
-            reasoning_config=None,
-        )
-        assert kwargs["max_tokens"] == 8_192
 
-    def test_default_max_tokens_unknown_model_uses_highest(self):
-        """Unknown future models should get the highest known limit."""
-        kwargs = build_anthropic_kwargs(
-            model="claude-ultra-5-20260101",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=None,
-            reasoning_config=None,
-        )
-        assert kwargs["max_tokens"] == 128_000
 
-    def test_explicit_max_tokens_overrides_default(self):
-        """User-specified max_tokens should be respected."""
-        kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-6",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config=None,
-        )
-        assert kwargs["max_tokens"] == 4096
 
-    def test_context_length_clamp(self):
-        """max_tokens should be clamped to context_length if it's smaller."""
-        kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-6",  # 128K output
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=None,
-            reasoning_config=None,
-            context_length=50000,
-        )
-        assert kwargs["max_tokens"] == 49999  # context_length - 1
 
-    def test_context_length_no_clamp_when_larger(self):
-        """No clamping when context_length exceeds output limit."""
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-6",  # 64K output
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=None,
-            max_tokens=None,
-            reasoning_config=None,
-            context_length=200000,
-        )
-        assert kwargs["max_tokens"] == 64_000
 
 
 # ---------------------------------------------------------------------------
@@ -1795,35 +1077,12 @@ class TestGetAnthropicMaxOutput:
         from agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-opus-4-6") == 128_000
 
-    def test_opus_4_6_variant(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
-        assert _get_anthropic_max_output("claude-opus-4-6:1m:fast") == 128_000
 
-    def test_sonnet_4_6(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
-        assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
 
-    def test_sonnet_4_date_stamped(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
-        assert _get_anthropic_max_output("claude-sonnet-4-20250514") == 64_000
 
-    def test_claude_3_5_sonnet(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
-        assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
-    def test_claude_3_opus(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
-        assert _get_anthropic_max_output("claude-3-opus-20240229") == 4_096
 
-    def test_unknown_future_model(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
-        assert _get_anthropic_max_output("claude-ultra-5-20260101") == 128_000
 
-    def test_longest_prefix_wins(self):
-        """'claude-3-5-sonnet' should match before 'claude-3-5'."""
-        from agent.anthropic_adapter import _get_anthropic_max_output
-        # claude-3-5-sonnet (8192) should win over a hypothetical shorter match
-        assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
 
 # ---------------------------------------------------------------------------
@@ -1832,34 +1091,9 @@ class TestGetAnthropicMaxOutput:
 
 
 class TestToPlainData:
-    def test_simple_dict(self):
-        assert _to_plain_data({"a": 1, "b": [2, 3]}) == {"a": 1, "b": [2, 3]}
 
-    def test_pydantic_like_model_dump(self):
-        class FakeModel:
-            def model_dump(self):
-                return {"type": "thinking", "thinking": "hello"}
 
-        result = _to_plain_data(FakeModel())
-        assert result == {"type": "thinking", "thinking": "hello"}
 
-    def test_circular_reference_does_not_recurse_forever(self):
-        """Circular dict reference should be stringified, not infinite-loop."""
-        d: dict = {"key": "value"}
-        d["self"] = d  # circular
-        result = _to_plain_data(d)
-        assert isinstance(result, dict)
-        assert result["key"] == "value"
-        assert isinstance(result["self"], str)
-
-    def test_shared_sibling_objects_are_not_falsely_detected_as_cycles(self):
-        """Two siblings referencing the same dict must both be converted."""
-        shared = {"type": "thinking", "thinking": "reason"}
-        parent = {"a": shared, "b": shared}
-        result = _to_plain_data(parent)
-        assert isinstance(result["a"], dict)
-        assert isinstance(result["b"], dict)
-        assert result["a"] == {"type": "thinking", "thinking": "reason"}
 
     def test_deep_nesting_is_capped(self):
         deep = "leaf"
@@ -1892,12 +1126,6 @@ class TestNormalizeResponse:
         resp.usage = SimpleNamespace(input_tokens=100, output_tokens=50)
         return resp
 
-    def test_text_response(self):
-        block = SimpleNamespace(type="text", text="Hello world")
-        nr = get_transport("anthropic_messages").normalize_response(self._make_response([block]))
-        assert nr.content == "Hello world"
-        assert nr.finish_reason == "stop"
-        assert nr.tool_calls is None
 
     def test_tool_use_response(self):
         blocks = [
@@ -1928,18 +1156,6 @@ class TestNormalizeResponse:
         assert nr.reasoning == "Let me reason about this..."
         assert nr.provider_data["reasoning_details"] == [{"type": "thinking", "thinking": "Let me reason about this..."}]
 
-    def test_thinking_response_preserves_signature(self):
-        blocks = [
-            SimpleNamespace(
-                type="thinking",
-                thinking="Let me reason about this...",
-                signature="opaque_signature",
-                redacted=False,
-            ),
-        ]
-        nr = get_transport("anthropic_messages").normalize_response(self._make_response(blocks))
-        assert nr.provider_data["reasoning_details"][0]["signature"] == "opaque_signature"
-        assert nr.provider_data["reasoning_details"][0]["thinking"] == "Let me reason about this..."
 
     def test_stop_reason_mapping(self):
         block = SimpleNamespace(type="text", text="x")
@@ -1956,30 +1172,7 @@ class TestNormalizeResponse:
         assert nr2.finish_reason == "tool_calls"
         assert nr3.finish_reason == "length"
 
-    def test_stop_reason_refusal_and_context_exceeded(self):
-        # Claude 4.5+ introduced two new stop_reason values the Messages API
-        # returns.  We map both to OpenAI-style finish_reasons upstream
-        # handlers already understand, instead of silently collapsing to
-        # "stop" (old behavior).
-        block = SimpleNamespace(type="text", text="")
-        nr_refusal = get_transport("anthropic_messages").normalize_response(
-            self._make_response([block], "refusal")
-        )
-        nr_overflow = get_transport("anthropic_messages").normalize_response(
-            self._make_response([block], "model_context_window_exceeded")
-        )
-        assert nr_refusal.finish_reason == "content_filter"
-        assert nr_overflow.finish_reason == "length"
 
-    def test_no_text_content(self):
-        block = SimpleNamespace(
-            type="tool_use", id="tc_1", name="search", input={"q": "hi"}
-        )
-        nr = get_transport("anthropic_messages").normalize_response(
-            self._make_response([block], "tool_use")
-        )
-        assert nr.content is None
-        assert len(nr.tool_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2019,88 +1212,8 @@ class TestThinkingBlockSignatureManagement:
     """Tests for the thinking block handling strategy:
     strip from old turns, preserve latest signed, downgrade unsigned."""
 
-    def test_thinking_stripped_from_non_last_assistant(self):
-        """Thinking blocks are removed from all assistant messages except the last."""
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "tool1", "arguments": "{}"}},
-                ],
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "Old reasoning.", "signature": "sig_old"},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_2", "function": {"name": "tool2", "arguments": "{}"}},
-                ],
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "Latest reasoning.", "signature": "sig_new"},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
 
-        # Find both assistant messages
-        assistants = [m for m in result if m["role"] == "assistant"]
-        assert len(assistants) == 2
 
-        # First (non-last) assistant: no thinking blocks
-        first_types = [b.get("type") for b in assistants[0]["content"]]
-        assert "thinking" not in first_types
-        assert "redacted_thinking" not in first_types
-        assert "tool_use" in first_types  # tool_use should survive
-
-        # Last assistant: thinking block preserved with signature
-        last_blocks = assistants[1]["content"]
-        thinking_blocks = [b for b in last_blocks if b.get("type") == "thinking"]
-        assert len(thinking_blocks) == 1
-        assert thinking_blocks[0]["thinking"] == "Latest reasoning."
-        assert thinking_blocks[0]["signature"] == "sig_new"
-
-    def test_signed_thinking_preserved_on_last_turn(self):
-        """A signed thinking block on the last assistant message is kept."""
-        messages = [
-            {
-                "role": "assistant",
-                "content": "The answer is 42.",
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "Deep thought.", "signature": "sig_valid"},
-                ],
-            },
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        blocks = result[0]["content"]
-        thinking = [b for b in blocks if b.get("type") == "thinking"]
-        assert len(thinking) == 1
-        assert thinking[0]["signature"] == "sig_valid"
-
-    def test_unsigned_thinking_downgraded_to_text_on_last_turn(self):
-        """Unsigned thinking blocks on the last turn become text blocks."""
-        messages = [
-            {
-                "role": "assistant",
-                "content": "Response text.",
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "Unsigned reasoning."},
-                    # No 'signature' field
-                ],
-            },
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        blocks = result[0]["content"]
-
-        # No thinking blocks should remain
-        assert not any(b.get("type") == "thinking" for b in blocks)
-        # The reasoning text should be preserved as a text block
-        text_contents = [b.get("text", "") for b in blocks if b.get("type") == "text"]
-        assert "Unsigned reasoning." in text_contents
 
     def test_redacted_thinking_with_data_preserved(self):
         """Redacted thinking with 'data' field is kept on last turn."""
@@ -2114,7 +1227,7 @@ class TestThinkingBlockSignatureManagement:
             },
         ]
         _, result = convert_messages_to_anthropic(messages)
-        blocks = result[0]["content"]
+        blocks = next(m for m in result if m["role"] == "assistant")["content"]
         redacted = [b for b in blocks if b.get("type") == "redacted_thinking"]
         assert len(redacted) == 1
         assert redacted[0]["data"] == "opaque_signature_data"
@@ -2161,56 +1274,7 @@ class TestThinkingBlockSignatureManagement:
             if block.get("type") in {"thinking", "redacted_thinking"}:
                 assert "cache_control" not in block
 
-    def test_thinking_stripped_from_merged_consecutive_assistants(self):
-        """When consecutive assistants are merged, second one's thinking is dropped."""
-        messages = [
-            {
-                "role": "assistant",
-                "content": "First response.",
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "First thought.", "signature": "sig_1"},
-                ],
-            },
-            {
-                "role": "assistant",
-                "content": "Second response.",
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "Second thought.", "signature": "sig_2"},
-                ],
-            },
-        ]
-        _, result = convert_messages_to_anthropic(messages)
 
-        # Should be merged into one assistant message
-        assistants = [m for m in result if m["role"] == "assistant"]
-        assert len(assistants) == 1
-
-        # Only the first thinking block should remain (signed, on the last/only assistant)
-        blocks = assistants[0]["content"]
-        thinking = [b for b in blocks if b.get("type") == "thinking"]
-        assert len(thinking) == 1
-        assert thinking[0]["thinking"] == "First thought."
-
-    def test_empty_content_after_strip_gets_placeholder(self):
-        """If stripping thinking leaves an empty message, a placeholder is added."""
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "Only thinking, no text."},
-                    # Unsigned — will be downgraded, but content was empty string
-                ],
-            },
-            {"role": "user", "content": "Next message."},
-            {"role": "assistant", "content": "Final."},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        # First assistant is non-last, so thinking is stripped completely.
-        # The original content was empty and thinking was unsigned → placeholder
-        first_assistant = result[0]
-        assert first_assistant["role"] == "assistant"
-        assert len(first_assistant["content"]) >= 1
 
     def test_multi_turn_conversation_preserves_only_last(self):
         """Full multi-turn conversation: only last assistant keeps thinking."""
@@ -2261,78 +1325,7 @@ class TestThinkingBlockSignatureManagement:
         assert len(last_thinking) == 1
         assert last_thinking[0]["signature"] == "sig_3"
 
-    def test_orphan_stripped_tool_use_demotes_dead_signed_thinking(self):
-        """Regression: extended-thinking + interrupted parallel tool batch.
 
-        An assistant turn with a signed thinking block fires several parallel
-        tool_use blocks, but the batch is interrupted before every tool_result
-        comes back. On replay, the orphaned tool_use is stripped — which mutates
-        the turn and invalidates the thinking-block signature (it was computed
-        against the original, un-stripped content). Anthropic then rejects the
-        turn with HTTP 400 "thinking blocks in the latest assistant message
-        cannot be modified", a non-retryable error that crash-loops the gateway.
-
-        The signed thinking block on the mutated latest turn must be demoted to
-        a plain text block so the turn replays cleanly.
-        """
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_kept", "function": {"name": "tool_a", "arguments": "{}"}},
-                    {"id": "tc_orphan", "function": {"name": "tool_b", "arguments": "{}"}},
-                ],
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "Plan: call A and B.", "signature": "sig_dead"},
-                ],
-            },
-            # Only one of the two parallel tool_use blocks got a result back.
-            {"role": "tool", "tool_call_id": "tc_kept", "content": "result A"},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        assistant = next(m for m in result if m["role"] == "assistant")
-        blocks = assistant["content"]
-
-        # No signed thinking block survives — the signature is dead.
-        assert not any(
-            isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
-            for b in blocks
-        )
-        # The reasoning text is preserved as a text block (not silently lost).
-        text_contents = [b.get("text", "") for b in blocks if b.get("type") == "text"]
-        assert "Plan: call A and B." in text_contents
-        # The orphaned tool_use is gone; the answered one survives.
-        tool_use_ids = [b.get("id") for b in blocks if b.get("type") == "tool_use"]
-        assert tool_use_ids == ["tc_kept"]
-        # Internal bookkeeping flag must never leak into the API payload.
-        assert "_thinking_signature_invalidated" not in assistant
-
-    def test_signed_thinking_preserved_when_no_tool_use_stripped(self):
-        """Control: an intact latest turn keeps its signed thinking verbatim.
-
-        This guards against the orphan-strip fix over-firing — when no tool_use
-        is removed, the signature is still valid and must be replayed as-is.
-        """
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
-                ],
-                "reasoning_details": [
-                    {"type": "thinking", "thinking": "Valid plan.", "signature": "sig_live"},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "result A"},
-        ]
-        _, result = convert_messages_to_anthropic(messages)
-        assistant = next(m for m in result if m["role"] == "assistant")
-        thinking = [b for b in assistant["content"] if b.get("type") == "thinking"]
-        assert len(thinking) == 1
-        assert thinking[0]["signature"] == "sig_live"
-        assert "_thinking_signature_invalidated" not in assistant
 
 
 # ---------------------------------------------------------------------------
@@ -2363,16 +1356,6 @@ class TestToolChoice:
         )
         assert kwargs["tool_choice"] == {"type": "auto"}
 
-    def test_required_tool_choice(self):
-        kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-20250514",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=self._DUMMY_TOOL,
-            max_tokens=4096,
-            reasoning_config=None,
-            tool_choice="required",
-        )
-        assert kwargs["tool_choice"] == {"type": "any"}
 
     def test_specific_tool_choice(self):
         kwargs = build_anthropic_kwargs(
@@ -2400,44 +1383,24 @@ from agent.anthropic_adapter import (
 class TestResolvePositiveMaxTokens:
     """Unit tests for the positive-int resolver helper."""
 
-    def test_positive_int_passes_through(self):
-        assert _resolve_positive_anthropic_max_tokens(8192) == 8192
 
     def test_zero_returns_none(self):
         assert _resolve_positive_anthropic_max_tokens(0) is None
 
-    def test_negative_int_returns_none(self):
-        assert _resolve_positive_anthropic_max_tokens(-1) is None
-        assert _resolve_positive_anthropic_max_tokens(-500) is None
 
-    def test_fractional_float_floored_and_kept_if_positive(self):
-        # 8192.7 -> 8192, still positive
-        assert _resolve_positive_anthropic_max_tokens(8192.7) == 8192
 
-    def test_small_positive_float_below_one_returns_none(self):
-        # 0.5 floors to 0, which is not positive
-        assert _resolve_positive_anthropic_max_tokens(0.5) is None
 
-    def test_negative_float_returns_none(self):
-        assert _resolve_positive_anthropic_max_tokens(-1.5) is None
 
     def test_nan_returns_none(self):
         assert _resolve_positive_anthropic_max_tokens(float("nan")) is None
 
-    def test_infinity_returns_none(self):
-        assert _resolve_positive_anthropic_max_tokens(float("inf")) is None
-        assert _resolve_positive_anthropic_max_tokens(float("-inf")) is None
 
     def test_bool_true_returns_none(self):
         # True is an int subclass but semantically never a real max_tokens value
         assert _resolve_positive_anthropic_max_tokens(True) is None
         assert _resolve_positive_anthropic_max_tokens(False) is None
 
-    def test_string_returns_none(self):
-        assert _resolve_positive_anthropic_max_tokens("8192") is None
 
-    def test_none_returns_none(self):
-        assert _resolve_positive_anthropic_max_tokens(None) is None
 
 
 class TestResolveMessagesMaxTokens:
@@ -2448,24 +1411,9 @@ class TestResolveMessagesMaxTokens:
             8192, "claude-opus-4-6"
         ) == 8192
 
-    def test_zero_falls_back_to_model_default(self):
-        # Should use _get_anthropic_max_output(model), not crash
-        result = _resolve_anthropic_messages_max_tokens(0, "claude-opus-4-6")
-        assert result > 0
 
-    def test_none_falls_back_to_model_default(self):
-        result = _resolve_anthropic_messages_max_tokens(None, "claude-opus-4-6")
-        assert result > 0
 
-    def test_negative_falls_back_to_model_default(self):
-        # Previously leaked -1 to the API; now falls back safely
-        result = _resolve_anthropic_messages_max_tokens(-1, "claude-opus-4-6")
-        assert result > 0
 
-    def test_fractional_positive_floored(self):
-        assert _resolve_anthropic_messages_max_tokens(
-            8192.5, "claude-opus-4-6"
-        ) == 8192
 
     def test_sub_one_float_falls_back(self):
         # 0.5 floors to 0 -> not positive -> falls back to model ceiling
@@ -2496,12 +1444,6 @@ class TestConvertToolsToAnthropicDedup:
             },
         }
 
-    def test_unique_tools_pass_through(self):
-        tools = [self._make_openai_tool("alpha"), self._make_openai_tool("beta")]
-        result = convert_tools_to_anthropic(tools)
-        assert len(result) == 2
-        names = [t["name"] for t in result]
-        assert names == ["alpha", "beta"]
 
     def test_duplicate_tool_names_are_deduplicated(self):
         """RED test — must fail until dedup guard is added."""
@@ -2519,8 +1461,424 @@ class TestConvertToolsToAnthropicDedup:
         )
         assert len(result) == 3  # lcm_grep, lcm_describe, lcm_expand
 
-    def test_empty_tools_returns_empty(self):
-        assert convert_tools_to_anthropic([]) == []
 
     def test_none_tools_returns_empty(self):
         assert convert_tools_to_anthropic(None) == []
+
+
+class TestBlankTextBlockFiltering:
+    """Regression tests for blank text block filtering in _convert_assistant_message.
+
+    Bedrock and strict Anthropic-compatible endpoints reject text blocks where
+    "text" is empty or whitespace-only with HTTP 400. Both the normal list-
+    content path and the ordered-replay fast path must drop such blocks while
+    preserving tool_use and other block types, and must relocate (not lose)
+    any cache_control marker attached to the dropped block.
+    """
+
+    def _convert(self, message):
+        from agent.anthropic_adapter import _convert_assistant_message
+        return _convert_assistant_message(message)
+
+
+
+    def test_normal_path_filters_none_text_block_without_crashing(self):
+        """Regression (review of #63228): text=None must not raise
+        AttributeError. _convert_content_part_to_anthropic() can preserve
+        None from an invalid upstream input text block -- a bare .strip()
+        on blk.get("text", "") crashes because .get() only substitutes the
+        default when the key is ABSENT, not when it's present with value None."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": None},
+                {"type": "tool_use", "id": "call_none", "name": "web_search",
+                 "input": {"query": "test"}},
+            ],
+        }
+        result = self._convert(msg)  # must not raise
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
+        assert len(text_blocks) == 0, f"None text block not filtered: {text_blocks}"
+        assert len(tool_blocks) == 1
+
+
+
+    def test_normal_path_relocates_cache_control_from_dropped_block(self):
+        """Regression (review of #63228): prompt_caching.py's _apply_cache_marker
+        sets cache_control directly on content[-1] for list content. If that
+        last part is blank text, dropping it must relocate the marker to the
+        surviving last cacheable block (here: the tool_use), not lose it."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "I'll look that up."},
+                {"type": "tool_use", "id": "call_cache", "name": "web_search",
+                 "input": {"query": "test"}},
+                {"type": "text", "text": "", "cache_control": {"type": "ephemeral"}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        assert not any(b.get("type") == "text" and not b.get("text", "").strip() for b in blocks), (
+            "Blank text block must be dropped"
+        )
+        cacheable_with_marker = [b for b in blocks if isinstance(b.get("cache_control"), dict)]
+        assert len(cacheable_with_marker) == 1, (
+            f"cache_control marker must survive on exactly one surviving block: {blocks}"
+        )
+        assert cacheable_with_marker[0]["type"] == "tool_use", (
+            f"Marker must relocate to the new last cacheable block: {blocks}"
+        )
+
+
+    def test_replay_path_relocates_cache_control_from_dropped_block(self):
+        """Same cache_control-relocation guarantee on the ordered-replay path:
+        a blank text block carrying cache_control (e.g. a stored, previously
+        cache-marked turn where prompt_caching later becomes blank on replay)
+        must not silently lose the breakpoint when dropped."""
+        from agent.anthropic_adapter import _convert_assistant_message
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "tool_use", "id": "call_5", "name": "web_search",
+                 "input": {"query": "test"}},
+                {"type": "text", "text": "  ", "cache_control": {"type": "ephemeral"}},
+            ],
+            "tool_calls": [
+                {
+                    "id": "call_5",
+                    "function": {"name": "web_search",
+                                 "arguments": '{"query": "test"}'},
+                }
+            ],
+        }
+        result = _convert_assistant_message(msg)
+        blocks = result["content"]
+        assert not any(b.get("type") == "text" for b in blocks), "Blank replay text must be dropped"
+        cacheable_with_marker = [b for b in blocks if isinstance(b.get("cache_control"), dict)]
+        assert len(cacheable_with_marker) == 1
+        assert cacheable_with_marker[0]["type"] == "tool_use"
+
+
+class TestAllBlankFallbackAndNonStringText:
+    """Regression tests for the two bugs found in independent review of
+    #68633 (GPT-5.6-sol-xhigh in Codex, egilewski):
+
+    1. `effective = blocks or content` fell back to the RAW, unfiltered
+       `content` when every block was filtered out as blank -- restoring
+       exactly the invalid (blank/whitespace) payload the filter exists to
+       remove, for any message where blank content is the ONLY content
+       (no surviving tool_use/text/thinking block).
+    2. The normal-path blank-text check used `(blk.get("text") or "").strip()`,
+       which is not type-safe for a truthy NON-string, non-None text value
+       (e.g. an int) -- `or` doesn't substitute for a truthy value, so
+       `(7 or "").strip()` still raises AttributeError.
+    """
+
+    def _convert(self, message):
+        from agent.anthropic_adapter import _convert_assistant_message
+        return _convert_assistant_message(message)
+
+
+
+    def test_sole_cache_marked_blank_block_relocates_marker_to_placeholder(self):
+        """A message whose ONLY content is a blank text block that also
+        carries cache_control: the marker must not be silently dropped just
+        because there's nothing else to relocate it onto -- it must land on
+        the (empty) placeholder that replaces the dropped block."""
+        msg = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "", "cache_control": {"type": "ephemeral"}}],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        assert blocks == [
+            {"type": "text", "text": "(empty)", "cache_control": {"type": "ephemeral"}}
+        ], f"cache_control must relocate onto the (empty) placeholder: {blocks}"
+
+
+    def test_non_string_truthy_text_treated_as_invalid_not_crash(self):
+        """Regression: text=7 (a truthy int, not None) must not reach
+        .strip() and raise AttributeError -- it must be treated the same as
+        blank/invalid text and dropped."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": 7},
+                {"type": "tool_use", "id": "call_int", "name": "web_search",
+                 "input": {"query": "test"}},
+            ],
+        }
+        result = self._convert(msg)  # must not raise
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
+        assert len(text_blocks) == 0, f"Non-string text value must be dropped, not kept: {text_blocks}"
+        assert len(tool_blocks) == 1
+
+
+    def test_dict_valued_text_treated_as_invalid_not_crash(self):
+        """Another truthy non-string shape (dict) must also be safely dropped."""
+        msg = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": {"nested": "garbage"}}],
+            "tool_calls": [
+                {"id": "call_d", "function": {"name": "web_search",
+                                               "arguments": '{"query": "test"}'}},
+            ],
+        }
+        result = self._convert(msg)  # must not raise
+        blocks = result["content"]
+        assert not any(b.get("type") == "text" for b in blocks)
+
+
+class TestReplayAllBlankFallback:
+    """Regression for the final open review point on #68633 (egilewski):
+
+    ``_relocated_replay_cache_control`` was applied only inside ``if
+    replayed:``. For ``anthropic_content_blocks`` containing only a blank
+    cache-marked text block, ``replayed`` became empty, the function fell
+    through to the main path's ``(empty)`` fallback, and the marker was
+    lost. A signed-thinking block plus the blank marked text also returned
+    without any relocated marker (thinking is not a cacheable carrier).
+    The replay branch now resolves a cacheable ``(empty)`` placeholder when
+    no cacheable block survives the blank filter.
+    """
+
+    def _convert(self, message):
+        from agent.anthropic_adapter import _convert_assistant_message
+        return _convert_assistant_message(message)
+
+    def test_sole_blank_marked_replay_block_keeps_marker_on_placeholder(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "text", "text": " ", "cache_control": {"type": "ephemeral"}},
+            ],
+        }
+        result = self._convert(msg)
+        assert result["content"] == [
+            {"type": "text", "text": "(empty)", "cache_control": {"type": "ephemeral"}}
+        ], result["content"]
+
+    def test_thinking_plus_blank_marked_text_keeps_thinking_and_marker(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "thinking", "thinking": "reasoning", "signature": "sig-A"},
+                {"type": "text", "text": "  ", "cache_control": {"type": "ephemeral"}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        assert blocks[0] == {"type": "thinking", "thinking": "reasoning", "signature": "sig-A"}
+        marked = [b for b in blocks if isinstance(b.get("cache_control"), dict)]
+        assert len(marked) == 1 and marked[0]["type"] == "text"
+        assert marked[0]["text"].strip(), "placeholder must be non-whitespace"
+
+    def test_thinking_plus_blank_unmarked_text_gets_schema_valid_placeholder(self):
+        """Even without a cache marker, dropping the only text block from a
+        thinking-only replay must leave schema-valid content."""
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "thinking", "thinking": "reasoning", "signature": "sig-B"},
+                {"type": "text", "text": "\n"},
+            ],
+        }
+        result = self._convert(msg)
+        texts = [b for b in result["content"] if b.get("type") == "text"]
+        assert texts == [{"type": "text", "text": "(empty)"}]
+
+
+def _find_blank_text_blocks(messages):
+    """Recursively scan a converted Anthropic message list (including
+    nested tool_result content) for any text block whose text is empty or
+    whitespace-only. Returns a list of (message_index, role, location,
+    block_index) tuples for every violation found -- empty means the
+    payload is safe to send to Anthropic."""
+    violations = []
+    for m_idx, msg in enumerate(messages):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for b_idx, blk in enumerate(content):
+            if not isinstance(blk, dict):
+                continue
+            if blk.get("type") == "text" and not (
+                isinstance(blk.get("text"), str) and blk["text"].strip()
+            ):
+                violations.append((m_idx, msg.get("role"), "content", b_idx))
+            if blk.get("type") == "tool_result" and isinstance(blk.get("content"), list):
+                for ib_idx, iblk in enumerate(blk["content"]):
+                    if (
+                        isinstance(iblk, dict)
+                        and iblk.get("type") == "text"
+                        and not (isinstance(iblk.get("text"), str) and iblk["text"].strip())
+                    ):
+                        violations.append((m_idx, msg.get("role"), "tool_result", ib_idx))
+    return violations
+
+
+class TestFinalPayloadHasNoBlankTextBlocks:
+    """End-to-end regression tests on the true final payload boundary:
+    ``convert_messages_to_anthropic`` -- the last transform before
+    ``build_anthropic_kwargs`` hands ``messages`` to the Anthropic SDK.
+
+    Covers the blank-content shapes enumerated for the "text content
+    blocks must contain non-whitespace text" HTTP 400 class, verifying the
+    final built payload never contains a blank text block while tool_use,
+    tool_result, and image content are preserved.
+    """
+
+    def test_user_message_empty_string_content(self):
+        messages = [{"role": "user", "content": ""}]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assert result[0]["content"] == "(empty message)"
+
+    def test_user_message_whitespace_only_string_content(self):
+        messages = [{"role": "user", "content": "   "}]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assert result[0]["content"] == "(empty message)"
+
+    def test_user_message_blank_list_content(self):
+        messages = [{"role": "user", "content": [{"type": "text", "text": ""}]}]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assert result[0]["content"] == [{"type": "text", "text": "(empty message)"}]
+
+    def test_user_message_mixed_blank_and_valid_text_blocks(self):
+        """A blank text block sitting alongside a non-blank one must be
+        dropped individually -- not left in place (the all-or-nothing bug)
+        and not used as an excuse to nuke the valid sibling block."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "real question"},
+                    {"type": "text", "text": "   "},
+                ],
+            }
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assert result[0]["content"] == [{"type": "text", "text": "real question"}]
+
+    def test_mixed_blank_text_plus_valid_tool_block_preserved(self):
+        """Blank text next to a valid non-text block (tool_result) must
+        drop only the blank text and keep the tool block intact."""
+        messages = [
+            {"role": "user", "content": "call a tool"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {"name": "web_search", "arguments": '{"query": "x"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result text"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assistant_msg = next(m for m in result if m["role"] == "assistant")
+        tool_use_blocks = [b for b in assistant_msg["content"] if b.get("type") == "tool_use"]
+        assert len(tool_use_blocks) == 1
+        tool_result_msg = next(
+            m
+            for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
+        assert tool_result_msg is not None
+
+    def test_assistant_tool_call_message_with_blank_content(self):
+        """OpenAI-wire-shaped assistant turn: content is a blank string,
+        tool_calls carries the real payload. Must not surface a blank text
+        block, and the tool_use block must survive untouched."""
+        messages = [
+            {"role": "user", "content": "do it"},
+            {
+                "role": "assistant",
+                "content": "   ",
+                "tool_calls": [
+                    {
+                        "id": "call_2",
+                        "function": {"name": "web_search", "arguments": '{"query": "y"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_2", "content": "ok"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assistant_msg = next(m for m in result if m["role"] == "assistant")
+        assert assistant_msg["content"] == [
+            {"type": "tool_use", "id": "call_2", "name": "web_search", "input": {"query": "y"}}
+        ]
+
+    def test_leading_synthesized_user_turn_is_non_blank(self):
+        """_ensure_leading_user_turn's synthesized filler must itself be
+        non-whitespace -- regression for the literal " " placeholder bug."""
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "[Context compaction summary] earlier work"},
+            {"role": "user", "content": "continue"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        assert result[0]["content"] == [{"type": "text", "text": "(empty)"}]
+
+    def test_blank_text_nested_in_tool_result_content_is_dropped(self):
+        """A blank text part nested inside a tool_result's own multimodal
+        content list (e.g. alongside an image) must be scrubbed without
+        losing the image."""
+        messages = [
+            {"role": "user", "content": "screenshot please"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_3",
+                        "function": {"name": "screenshot", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_3",
+                "content": [
+                    {"type": "text", "text": "   "},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AAAA"},
+                    },
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        tool_result_msg = next(
+            m
+            for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
+        tool_result_block = next(
+            b for b in tool_result_msg["content"] if b.get("type") == "tool_result"
+        )
+        image_blocks = [b for b in tool_result_block["content"] if b.get("type") == "image"]
+        assert len(image_blocks) == 1

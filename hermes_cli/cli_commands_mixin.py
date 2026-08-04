@@ -142,6 +142,140 @@ class CLICommandsMixin:
         else:
             print(f"  ❌ {result['error']}")
 
+    def _handle_diff_command(self, command: str):
+        """Handle /diff — show git changes in the working directory.
+
+        Syntax:
+            /diff                  — unstaged changes + untracked files
+            /diff staged           — staged changes (git diff --cached)
+            /diff all              — staged + unstaged + untracked (vs HEAD)
+            /diff session          — everything Hermes changed (checkpoint baseline)
+            /diff [mode] --stat    — summary only (changed files + counts)
+            /diff [mode] <path...> — restrict to specific paths
+        """
+        import shlex
+
+        try:
+            parts = shlex.split(command)[1:]  # preserves quoted paths
+        except ValueError:
+            parts = command.split()[1:]
+
+        stat_only = False
+        mode = "working"
+        paths: list[str] = []
+        for arg in parts:
+            low = arg.lower()
+            if low in ("--stat", "stat"):
+                stat_only = True
+            elif low in ("staged", "--staged", "cached", "--cached"):
+                mode = "staged"
+            elif low in ("all", "--all", "head"):
+                mode = "all"
+            elif low == "session":
+                mode = "session"
+            else:
+                paths.append(arg)
+
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+
+        if mode == "session":
+            self._print_session_diff(cwd, stat_only)
+            return
+
+        from tools.working_diff import collect_working_diff
+
+        result = collect_working_diff(cwd, mode=mode, paths=paths or None)
+        if not result.get("success"):
+            print(f"  {result.get('error', 'Could not generate diff')}")
+            return
+
+        stat = result.get("stat", "")
+        diff = result.get("diff", "")
+        untracked = result.get("untracked", [])
+        if result.get("empty") or (not stat and not diff and not untracked):
+            print("  No changes.")
+            return
+
+        label = {"working": "Unstaged", "staged": "Staged", "all": "All (vs HEAD)"}[mode]
+        if stat:
+            print(f"\n  {label}:")
+            self._print_diff_text(stat)
+        if untracked and mode in ("working", "all"):
+            print("\n  Untracked:")
+            for rel in untracked[:20]:
+                print(f"    + {rel}")
+            if len(untracked) > 20:
+                print(f"    ... and {len(untracked) - 20} more")
+        if stat_only or not diff:
+            return
+
+        diff_lines = diff.splitlines()
+        print("")
+        if len(diff_lines) > 400:
+            self._print_diff_text("\n".join(diff_lines[:400]))
+            print(
+                f"\n  ... ({len(diff_lines) - 400} more lines — "
+                "run /diff --stat for a summary)"
+            )
+        else:
+            self._print_diff_text(diff)
+
+    def _print_session_diff(self, cwd: str, stat_only: bool):
+        """Print the cumulative checkpoint-baseline diff (/diff session)."""
+        if not hasattr(self, 'agent') or not self.agent:
+            print("  No active agent session.")
+            return
+
+        mgr = self.agent._checkpoint_mgr
+        if not mgr.enabled:
+            print("  Checkpoints are not enabled, so there's no session baseline.")
+            print("  Enable with: hermes --checkpoints")
+            print("  Or in config.yaml: checkpoints: { enabled: true }")
+            print("  (Plain /diff still works — it uses git directly.)")
+            return
+
+        result = mgr.session_diff(cwd)
+        if not result.get("success"):
+            print(f"  {result.get('error', 'Could not generate diff')}")
+            return
+
+        stat = result.get("stat", "")
+        diff = result.get("diff", "")
+        if result.get("empty") or (not stat and not diff):
+            print("  No changes — Hermes hasn't edited any files here yet.")
+            return
+
+        if stat:
+            self._print_diff_text(f"\n{stat}")
+        if stat_only or not diff:
+            return
+        diff_lines = diff.splitlines()
+        print("")
+        if len(diff_lines) > 400:
+            self._print_diff_text("\n".join(diff_lines[:400]))
+            print(
+                f"\n  ... ({len(diff_lines) - 400} more lines — "
+                "run /diff session --stat for a summary)"
+            )
+        else:
+            self._print_diff_text(diff)
+
+    def _print_diff_text(self, text: str) -> None:
+        """Render diff/stat text with color when a rich console is present.
+
+        Falls back to plain print when the console isn't available (e.g. unit
+        tests instantiating the mixin standalone).
+        """
+        console = getattr(self, "console", None)
+        if console is not None:
+            try:
+                from cli import _rich_text_from_ansi
+                console.print(_rich_text_from_ansi(text))
+                return
+            except Exception:
+                pass
+        print(text)
+
     def _handle_snapshot_command(self, command: str):
         """Handle /snapshot — lightweight state snapshots for Hermes config/state.
 
@@ -286,15 +420,44 @@ class CLICommandsMixin:
             delegations = list_async_delegations()
         except Exception:
             delegations = []
-        running_d = [d for d in delegations if d.get("status") == "running"]
+        running_d = [
+            d for d in delegations
+            if d.get("status") in ("running", "stalling")
+        ]
         if delegations:
             _cprint(f"  Background delegations: {len(running_d)} running")
             for d in delegations:
                 goal = (d.get("goal") or "")[:60]
-                _cprint(
+                status = d.get("status", "?")
+                line = (
                     f"    {d.get('delegation_id', '?')} · "
-                    f"{d.get('status', '?')} · {goal}"
+                    f"{status} · {goal}"
                 )
+                # Live-status detail for in-flight delegations (#51690).
+                if status == "stalling":
+                    quiet = d.get("stalled_after_quiet_seconds")
+                    if quiet is not None:
+                        line += (
+                            f" · no progress {quiet:.0f}s — interrupting"
+                        )
+                elif status in ("running",):
+                    quiet = d.get("seconds_since_progress")
+                    if quiet is not None and quiet >= 60:
+                        line += f" · quiet {quiet:.0f}s"
+                _cprint(line)
+                for i, child in enumerate(d.get("children_activity") or []):
+                    if not isinstance(child, dict):
+                        continue
+                    tool = child.get("current_tool")
+                    doing = f"in {tool}" if tool else "between turns"
+                    part = (
+                        f"      └ child {i + 1}: "
+                        f"{child.get('api_calls', '?')} api calls · {doing}"
+                    )
+                    idle = child.get("seconds_since_activity")
+                    if idle is not None:
+                        part += f" · last activity {idle:.0f}s ago"
+                    _cprint(part)
 
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
@@ -396,8 +559,30 @@ class CLICommandsMixin:
             return
 
         try:
+            from hermes_cli.clipboard import (
+                is_remote_shell_session,
+                write_clipboard_text,
+            )
+            if is_remote_shell_session():
+                # Over SSH, native tools would write the REMOTE clipboard
+                # (or an X-forwarded one) — OSC 52 reaches the terminal
+                # the user is actually sitting at. Fixes #31528.
+                self._write_osc52_clipboard(text)
+                _cprint(
+                    f"  Copied assistant response #{idx + 1} via OSC 52 "
+                    "(terminal support required)"
+                )
+                return
+            if write_clipboard_text(text):
+                _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+                return
+            # Native tools unavailable/failed — fall back to OSC 52 so
+            # SSH/tmux sessions can still copy via the terminal emulator.
             self._write_osc52_clipboard(text)
-            _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+            _cprint(
+                f"  Copied assistant response #{idx + 1} via OSC 52 "
+                "(terminal support required)"
+            )
         except Exception as e:
             _cprint(f"  Clipboard copy failed: {e}")
 
@@ -508,11 +693,11 @@ class CLICommandsMixin:
 
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
-        from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.slash_exec import CommandContext, execute_command
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        reply = execute_command("profile", CommandContext(surface="cli"))
+        profile_name = reply.data["profile"]
+        display = reply.data["home"]
 
         print()
         print(f"  Profile: {profile_name}")
@@ -569,8 +754,26 @@ class CLICommandsMixin:
 
         pcfg = gw_config.platforms.get(platform)
         if not pcfg or not pcfg.enabled:
-            _cprint(f"  Platform '{platform_name}' is not configured/enabled in the gateway.")
-            return True
+            # Relay aliasing: a relay-fronted gateway has no per-platform
+            # config block for the logical platform ("discord" etc.) — only a
+            # RELAY entry — yet /handoff discord is deliverable when the relay
+            # fronts it. The fronted set is deploy config
+            # (GATEWAY_RELAY_PLATFORMS), readable here without the live
+            # adapter; the gateway watcher re-checks against the authenticated
+            # transport (resolve_delivery_transport) before dispatch, so this
+            # is a UX pre-check, not the security gate.
+            relay_fronts = False
+            try:
+                from gateway.relay import relay_platform_identities
+                relay_cfg = gw_config.platforms.get(Platform.RELAY)
+                if relay_cfg and relay_cfg.enabled:
+                    fronted = {p for p, _ in relay_platform_identities()}
+                    relay_fronts = platform_name in fronted
+            except Exception:
+                relay_fronts = False
+            if not relay_fronts:
+                _cprint(f"  Platform '{platform_name}' is not configured/enabled in the gateway.")
+                return True
 
         home = gw_config.get_home_channel(platform)
         if not home or not home.chat_id:
@@ -758,7 +961,8 @@ class CLICommandsMixin:
         if self.agent:
             try:
                 self.agent._flush_messages_to_session_db(
-                    self.conversation_history
+                    self.conversation_history,
+                    conversation_history=self.conversation_history,
                 )
             except Exception:
                 pass
@@ -779,11 +983,20 @@ class CLICommandsMixin:
         # becomes ``self.conversation_history`` for subsequent turns. Heal a
         # durable ``user;user`` violation once here instead of re-firing the
         # pre-request repair on every request for the rest of the session.
-        restored = self._session_db.get_messages_as_conversation(
-            target_id, repair_alternation=True
+        #
+        # Both projections come from one lineage SELECT: model_history is
+        # alternation-repaired for live replay; display_history is the full
+        # lineage verbatim, used by _display_resumed_history() so timeline
+        # events and ancestor rows render correctly (matching the startup
+        # --resume path in _preload_resumed_session).
+        model_history, display_history = self._session_db.get_resume_conversations(
+            target_id
         )
-        restored = [m for m in (restored or []) if m.get("role") != "session_meta"]
+        restored = [m for m in (model_history or []) if m.get("role") != "session_meta"]
         self.conversation_history = restored
+        self._resume_display_history = [
+            m for m in (display_history or []) if m.get("role") != "session_meta"
+        ]
 
         # Re-open the target session so it's not marked as ended
         try:
@@ -823,7 +1036,7 @@ class CLICommandsMixin:
                 pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
-        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
+        msg_count = len([m for m in self._resume_display_history if m.get("role") == "user" and not m.get("display_kind")])
         if self.conversation_history:
             _cprint(
                 f"  ↻ Resumed session {target_id}{title_part}"
@@ -841,6 +1054,12 @@ class CLICommandsMixin:
         # relative-path resolution keep operating in the wrong repo. Idempotent
         # and a no-op when the session recorded no cwd. See #38562.
         self._restore_session_cwd(session_meta)
+
+        # Restore the target session's persisted YOLO bypass. Any bypass the
+        # PREVIOUS session had toggled on stops applying automatically because
+        # the approval session key just changed. Same contract as a startup
+        # --resume.
+        self._restore_session_yolo(session_meta)
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
@@ -919,7 +1138,8 @@ class CLICommandsMixin:
         if self.agent:
             try:
                 self.agent._flush_messages_to_session_db(
-                    self.conversation_history
+                    self.conversation_history,
+                    conversation_history=self.conversation_history,
                 )
             except Exception:
                 pass
@@ -951,24 +1171,32 @@ class CLICommandsMixin:
             _cprint(f"  Failed to create branch session: {e}")
             return
 
-        # Copy conversation history to the new session
-        for msg in self.conversation_history:
-            try:
-                self._session_db.append_message(
-                    session_id=new_session_id,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    tool_name=msg.get("tool_name") or msg.get("name"),
-                    tool_calls=msg.get("tool_calls"),
-                    tool_call_id=msg.get("tool_call_id"),
-                    reasoning=msg.get("reasoning"),
-                    # Keep the api_content sidecar so the branch's first turn
-                    # replays the parent's exact wire bytes (warm provider
-                    # prompt cache) instead of a full cold prefill.
-                    api_content=extract_api_content_sidecar(msg),
-                )
-            except Exception:
-                pass  # Best-effort copy
+        # Copy conversation history to the new session in bounded-chunk
+        # transactions (see #23254) instead of one txn per row. Best-effort
+        # like the old loop — a failed copy still yields a usable branch.
+        try:
+            self._session_db.append_messages_batch(
+                new_session_id,
+                [
+                    {
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content"),
+                        "tool_name": msg.get("tool_name") or msg.get("name"),
+                        "tool_calls": msg.get("tool_calls"),
+                        "tool_call_id": msg.get("tool_call_id"),
+                        "reasoning": msg.get("reasoning"),
+                        # Keep the api_content sidecar so the branch's first turn
+                        # replays the parent's exact wire bytes (warm provider
+                        # prompt cache) instead of a full cold prefill.
+                        "api_content": extract_api_content_sidecar(msg),
+                        "timestamp": msg.get("timestamp"),
+                    }
+                    for msg in self.conversation_history
+                ],
+                chunk_rows=500,
+            )
+        except Exception:
+            pass  # Best-effort copy
 
         # Set title on the branch
         try:
@@ -1583,6 +1811,32 @@ class CLICommandsMixin:
         else:  # pragma: no cover - defensive (no live input loop)
             print("  /learn needs an active chat session to run.")
 
+    def _handle_init_command(self, cmd: str):
+        """Handle /init — generate or update AGENTS.md from a project scan.
+
+        Mirrors /learn: build a guidance-laden prompt and inject it onto the
+        agent's input queue as a normal user turn. The live agent scans the
+        project with its own read-only tools and writes/updates AGENTS.md via
+        ``write_file``. No engine, no model-tool footprint, works on any
+        terminal backend, and preserves prompt-cache invariants (no system
+        prompt or history mutation).
+        """
+        from hermes_cli.init_command import build_init_prompt_for_cwd
+
+        # Everything after the command word is optional user emphasis.
+        parts = cmd.strip().split(None, 1)
+        extra = parts[1].strip() if len(parts) > 1 else ""
+
+        msg = build_init_prompt_for_cwd(extra=extra)
+        if "UPDATE the existing AGENTS.md" in msg:
+            print("\n⚡ Updating AGENTS.md from a project scan...")
+        else:
+            print("\n⚡ Generating AGENTS.md from a project scan...")
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+        else:  # pragma: no cover - defensive (no live input loop)
+            print("  /init needs an active chat session to run.")
+
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
@@ -1779,20 +2033,21 @@ class CLICommandsMixin:
         of their session. Bundles are loaded via ``/<bundle-name>``.
         """
         from cli import ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint
-        try:
-            from agent.skill_bundles import list_bundles, _bundles_dir
-        except Exception as exc:
-            _cprint(f"\033[1;31mBundle subsystem unavailable: {exc}{_RST}")
+        from hermes_cli.slash_exec import CommandContext, execute_command
+
+        reply = execute_command("bundles", CommandContext(surface="cli"))
+        if "error" in reply.data:
+            _cprint(f"\033[1;31mBundle subsystem unavailable: {reply.data['error']}{_RST}")
             return
 
-        bundles = list_bundles()
+        bundles = reply.data["bundles"]
         if not bundles:
             _cprint("  No skill bundles installed.")
             _cprint(
                 f"  {_DIM}Create one with: hermes bundles create "
                 f"<name> --skill <s1> --skill <s2>{_RST}"
             )
-            _cprint(f"  {_DIM}Directory: {_bundles_dir()}{_RST}")
+            _cprint(f"  {_DIM}Directory: {reply.data['dir']}{_RST}")
             return
 
         _cprint(f"\n  ▣ {_BOLD}Skill Bundles{_RST} ({len(bundles)} installed):")
@@ -2407,6 +2662,168 @@ class CLICommandsMixin:
         # right after process_command() returns (see cli.py main loop).
         self._pending_agent_seed = composed
 
+    def _handle_focus_command(self, cmd_original: str) -> None:
+        """Toggle or inspect focus view — the reduced-output display mode.
+
+        Usage:
+            /focus            → toggle
+            /focus on|off     → explicit
+            /focus status     → show current state
+
+        Focus view is a DISPLAY-ONLY mode.  It composes with the existing
+        ``/verbose`` tool-progress machinery rather than adding a second
+        suppression mechanism: turning it on snaps ``tool_progress_mode`` to
+        ``"off"`` (the same value ``/verbose off`` uses, honoured by
+        ``agent/tool_executor.py`` and ``_on_tool_progress``) after stashing
+        whatever mode the user had, and turning it off restores that mode
+        verbatim.  On top of that it adds the two things ``/verbose off``
+        lacks: a per-turn hidden-line count with a recovery hint, and a
+        persistent ``focus`` segment in the status bar.
+
+        Nothing here touches conversation history, the system prompt, or any
+        request payload — the model sees an identical turn either way.
+        """
+        from cli import _cprint, save_config_value
+        from hermes_cli.colors import Colors as _Colors
+        from hermes_cli.focus_view import (
+            FOCUS_CONFIG_KEY,
+            FOCUS_TOOL_PROGRESS_MODE,
+            format_focus_status,
+            format_focus_toggle_message,
+            normalize_tool_progress_mode,
+            resolve_focus_arg,
+        )
+
+        arg = ""
+        try:
+            parts = (cmd_original or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip()
+        except Exception:
+            arg = ""
+
+        current = bool(getattr(self, "_focus_view_enabled", False))
+        action, target = resolve_focus_arg(arg, current)
+
+        if action == "usage":
+            _cprint("  Usage: /focus [on|off|status]")
+            return
+
+        # The mode /focus off will restore. While focus is ON the live
+        # tool_progress_mode is "off", so the pre-focus mode is the stash.
+        restore_mode = normalize_tool_progress_mode(
+            getattr(self, "_focus_saved_tool_progress", None)
+            if current
+            else getattr(self, "tool_progress_mode", "all")
+        )
+
+        if action == "status":
+            body = format_focus_status(current, restore_mode)
+            head, _, tail = body.partition("\n")
+            label, _, rest = head.partition(":")
+            state_color = _Colors.GREEN if current else _Colors.DIM
+            _cprint(
+                f"  {_Colors.BOLD}{label}:{_Colors.RESET}"
+                f"{state_color}{rest}{_Colors.RESET}"
+                + (f"\n{_Colors.DIM}  {tail.strip()}{_Colors.RESET}" if tail else "")
+            )
+            return
+
+        if target == current:
+            # Idempotent explicit set — report without rewriting config.
+            _cprint(f"  {format_focus_toggle_message(current, restore_mode)}")
+            return
+
+        if target:
+            # Stash the user's configured mode, then reuse the EXISTING
+            # suppression path by snapping to "off".
+            self._focus_saved_tool_progress = restore_mode
+            self._set_tool_progress_mode(FOCUS_TOOL_PROGRESS_MODE)
+        else:
+            self._set_tool_progress_mode(restore_mode)
+            self._focus_saved_tool_progress = None
+
+        self._focus_view_enabled = bool(target)
+        self._focus_hidden_lines = 0
+        save_config_value(FOCUS_CONFIG_KEY, bool(target))
+
+        state = (
+            f"{_Colors.GREEN}enabled{_Colors.RESET}" if target
+            else f"{_Colors.DIM}disabled{_Colors.RESET}"
+        )
+        message = format_focus_toggle_message(bool(target), restore_mode)
+        # Re-colour just the enabled/disabled word so the line matches siblings.
+        for word in ("enabled", "disabled"):
+            if word in message:
+                message = message.replace(word, state, 1)
+                break
+        _cprint(f"  {message}")
+
+    def _set_tool_progress_mode(self, mode: str) -> None:
+        """Set the live tool-progress mode on both the CLI and the agent.
+
+        Extracted so ``/focus`` and ``/verbose`` share one write path — the
+        agent copy is what ``agent/tool_executor.py`` gates on, and forgetting
+        it means the new mode only takes effect after an agent rebuild.
+        """
+        from hermes_cli.focus_view import normalize_tool_progress_mode
+
+        normalized = normalize_tool_progress_mode(mode)
+        self.tool_progress_mode = normalized
+        agent = getattr(self, "agent", None)
+        if agent is not None:
+            try:
+                agent.tool_progress_mode = normalized
+            except Exception:
+                pass
+
+    def _note_focus_hidden_line(self, function_name: str) -> None:
+        """Count one tool line that focus view is suppressing this turn.
+
+        Counted against the mode the user had BEFORE focus snapped things to
+        "off", so a user who already ran ``/verbose off`` is never told that
+        focus hid lines it did not hide.
+        """
+        if not getattr(self, "_focus_view_enabled", False):
+            return
+        from hermes_cli.focus_view import would_display_tool_line
+
+        saved = getattr(self, "_focus_saved_tool_progress", None)
+        last = getattr(self, "_focus_last_counted_tool", None)
+        if not would_display_tool_line(saved, function_name, last):
+            return
+        self._focus_last_counted_tool = function_name
+        self._focus_hidden_lines = int(getattr(self, "_focus_hidden_lines", 0)) + 1
+
+    def _emit_focus_recovery_line(self) -> None:
+        """Print the dim post-turn recovery line and reset the counter."""
+        count = int(getattr(self, "_focus_hidden_lines", 0) or 0)
+        self._focus_hidden_lines = 0
+        self._focus_last_counted_tool = None
+        if not getattr(self, "_focus_view_enabled", False):
+            return
+        from hermes_cli.focus_view import format_hidden_line
+
+        line = format_hidden_line(count)
+        if not line:
+            return
+        try:
+            from cli import _DIM, _RST, _cprint
+
+            _cprint(f"  {_DIM}{line}{_RST}")
+        except Exception:
+            pass
+
+    def _handle_approvals_command(self, cmd_original: str) -> None:
+        """Show or persist the profile-wide dangerous-command approval mode."""
+        from cli import _cprint
+        from hermes_cli.approval_mode import run_approval_mode_command
+
+        parts = (cmd_original or "").strip().split(None, 1)
+        requested = parts[1] if len(parts) > 1 else None
+        result = run_approval_mode_command(requested)
+        _cprint(f"  {result.message}")
+
     def _handle_footer_command(self, cmd_original: str) -> None:
         """Toggle or inspect ``display.runtime_footer.enabled`` from the CLI.
 
@@ -2617,7 +3034,7 @@ class CLICommandsMixin:
             /busy status        Show current busy input mode
             /busy queue         Queue input for the next turn instead of interrupting
             /busy steer         Inject Enter mid-run via /steer (after next tool call)
-            /busy interrupt     Interrupt the current run on Enter (default)
+            /busy interrupt     Redirect the current run on Enter (default)
         """
         from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
         parts = cmd.strip().split(maxsplit=1)
@@ -2628,7 +3045,7 @@ class CLICommandsMixin:
             elif self.busy_input_mode == "steer":
                 _behavior = "steers into current run (after next tool call)"
             else:
-                _behavior = "interrupts current run"
+                _behavior = "redirects current run immediately"
             _cprint(f"  {_DIM}Enter while busy: {_behavior}{_RST}")
             _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}")
             return
@@ -2646,11 +3063,51 @@ class CLICommandsMixin:
             elif arg == "steer":
                 behavior = "Enter will steer your message into the current run (after the next tool call)."
             else:
-                behavior = "Enter will interrupt the current run while Hermes is busy."
+                behavior = "Enter will redirect the current run while Hermes is busy; /stop still cancels it."
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (saved to config){_RST}")
             _cprint(f"  {_DIM}{behavior}{_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
+
+    def _handle_indicator_command(self, cmd: str):
+        """Handle /indicator — pick the TUI busy-indicator style.
+
+        Usage:
+            /indicator              Show the current busy-indicator style
+            /indicator status       Show the current busy-indicator style
+            /indicator kaomoji      Animated kaomoji faces (default)
+            /indicator emoji        Emoji spinner
+            /indicator unicode      Braille spinner
+            /indicator ascii        Plain ASCII spinner
+
+        Persists to ``display.tui_status_indicator`` — the same config key the
+        TUI reads — so the change is picked up the next time the TUI renders.
+        """
+        from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
+        from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
+        styles = INDICATOR_STYLES
+        current = (
+            (self.config.get("display") or {}).get("tui_status_indicator", DEFAULT_INDICATOR_STYLE)
+        )
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
+            _cprint(f"  {_ACCENT}Busy-indicator style: {current}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [{'|'.join(styles)}]{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+        if arg not in styles:
+            _cprint(f"  {_DIM}(._.) Unknown indicator style: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [{'|'.join(styles)}]{_RST}")
+            return
+
+        self.config.setdefault("display", {})["tui_status_indicator"] = arg
+        if save_config_value("display.tui_status_indicator", arg):
+            _cprint(f"  {_ACCENT}✓ Busy-indicator style set to '{arg}' (saved to config){_RST}")
+            _cprint(f"  {_DIM}The TUI picks up the new style on its next render.{_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ Busy-indicator style set to '{arg}' (session only){_RST}")
 
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).
@@ -2808,3 +3265,49 @@ class CLICommandsMixin:
         else:
             _cprint(f"Unknown voice subcommand: {subcommand}")
             _cprint("Usage: /voice [on|off|tts|status]")
+
+    def _handle_wake_command(self, command: str):
+        """Handle /wake [on|off|status] — the 'Hey Hermes' hotword listener.
+
+        The toggle IS the config: an explicit on/off (or bare toggle) also
+        writes ``wake_word.enabled`` to config.yaml so the choice persists
+        across sessions. Startup auto-arm (_maybe_start_wake_word) only reads.
+        """
+        from cli import _cprint
+        parts = command.strip().split(maxsplit=1)
+        subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
+
+        if subcommand == "on":
+            if self._start_wake_word_listener(announce=True):
+                self._persist_wake_word_enabled(True)
+        elif subcommand == "off":
+            self._stop_wake_word_listener(announce=True)
+            self._persist_wake_word_enabled(False)
+        elif subcommand in ("", "status"):
+            if subcommand == "":
+                # Bare /wake toggles.
+                if getattr(self, "_wake_word_active", False):
+                    self._stop_wake_word_listener(announce=True)
+                    self._persist_wake_word_enabled(False)
+                elif self._start_wake_word_listener(announce=True):
+                    self._persist_wake_word_enabled(True)
+            else:
+                self._show_wake_word_status()
+        else:
+            _cprint(f"Unknown wake subcommand: {subcommand}")
+            _cprint("Usage: /wake [on|off|status]")
+
+    def _persist_wake_word_enabled(self, enabled: bool):
+        """Save ``wake_word.enabled`` so the /wake toggle sticks for future sessions."""
+        from cli import _cprint, _DIM, _RST, save_config_value
+
+        try:
+            from tools.wake_word import load_wake_word_config
+
+            if bool(load_wake_word_config().get("enabled")) == enabled:
+                return  # already persisted — don't rewrite config or re-announce
+        except Exception:
+            pass
+        if save_config_value("wake_word.enabled", enabled):
+            _cprint(f"{_DIM}Wake word {'enabled' if enabled else 'disabled'} in config "
+                    f"(wake_word.enabled: {str(enabled).lower()}).{_RST}")

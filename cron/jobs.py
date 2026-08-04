@@ -39,13 +39,27 @@ from typing import Optional, Dict, List, Any, Set, Tuple, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_replace, atomic_write_text
 
-try:
-    from croniter import croniter
-    HAS_CRONITER = True
-except ImportError:
-    HAS_CRONITER = False
+# ``croniter`` compiles ~15 ms of regexes at import and only matters for
+# 5-field cron expressions. Resolve lazily; ``HAS_CRONITER`` stays a module
+# attribute (tests monkeypatch it, and a monkeypatched value wins because
+# ``_ensure_croniter`` only probes while it's still None).
+croniter = None
+HAS_CRONITER: Optional[bool] = None
+
+
+def _ensure_croniter() -> bool:
+    """Import croniter on first use; honor a pre-set HAS_CRONITER override."""
+    global croniter, HAS_CRONITER
+    if HAS_CRONITER is None:
+        try:
+            from croniter import croniter as _croniter
+            croniter = _croniter
+            HAS_CRONITER = True
+        except ImportError:
+            HAS_CRONITER = False
+    return bool(HAS_CRONITER)
 
 # =============================================================================
 # Configuration
@@ -475,6 +489,44 @@ def _secure_file(path: Path):
         pass
 
 
+def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> None:
+    """Restore a rewritten file's previous owner (POSIX, privileged writer only).
+
+    The atomic-write pattern (mkstemp + replace) makes the rewritten file owned
+    by the *writer's* euid. When a root shell runs a state-writing cron CLI
+    command (``docker exec hermes hermes cron create ...`` — ``docker exec``
+    defaults to root) against a store owned by the unprivileged gateway user,
+    the replace flips ``jobs.json`` to ``root:root`` mode 600 and the gateway's
+    ticker (uid 1000) is silently locked out of every subsequent tick (#68483).
+
+    Root can always hand ownership back, so do exactly that: when the euid is 0
+    and the pre-replace owner differs, chown the new file to the previous
+    uid/gid. Unprivileged writers are a no-op (their own rewrite already heals
+    a root-owned file back to their uid, and they couldn't chown anyway).
+    No-op on Windows. Best-effort: a failure must never break the save.
+    """
+    if before is None or os.name != "posix":
+        return
+    geteuid = getattr(os, "geteuid", None)
+    getegid = getattr(os, "getegid", None)
+    if geteuid is None or getegid is None:
+        return
+    try:
+        euid = geteuid()
+        if euid != 0:
+            return  # unprivileged writer — nothing to (or we could) restore
+        if (before.st_uid, before.st_gid) == (euid, getegid()):
+            return  # already ours before the rewrite — nothing changed
+        os.chown(path, before.st_uid, before.st_gid)
+    except OSError as e:
+        logger.warning(
+            "Could not restore ownership of %s to uid=%s gid=%s after rewrite: %s "
+            "— if the gateway runs as a different user, its cron ticker may now "
+            "be locked out (see issue #68483).",
+            path, before.st_uid, before.st_gid, e,
+        )
+
+
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
     store = _current_cron_store()
@@ -547,7 +599,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     if len(parts) >= 5 and all(
         re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
     ):
-        if not HAS_CRONITER:
+        if not _ensure_croniter():
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
         # Validate cron expression
         try:
@@ -700,7 +752,7 @@ def _compute_grace_seconds(schedule: dict) -> int:
         grace = period_seconds // 2
         return max(MIN_GRACE, min(grace, MAX_GRACE))
 
-    if kind == "cron" and HAS_CRONITER:
+    if kind == "cron" and _ensure_croniter():
         expr = schedule.get("expr")
         if expr:
             try:
@@ -753,7 +805,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         expr = schedule.get("expr")
         if not expr:
             return None
-        if not HAS_CRONITER:
+        if not _ensure_croniter():
             logger.warning(
                 "Cannot compute next run for cron schedule %r: 'croniter' is "
                 "not installed. croniter is a core dependency as of v0.9.x; "
@@ -786,15 +838,22 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 def _atomic_write_epoch(path: Path) -> None:
     """Atomically write the current epoch time to ``path``.
 
-    Uses the same tmpfile + ``atomic_replace`` pattern as ``save_jobs`` so a
-    concurrent reader in another process (``hermes cron status``) never sees a
-    torn/truncated file. Best-effort: failures are swallowed by callers.
+    Delegates to :func:`utils.atomic_write_text` (tmpfile + fsync +
+    ``atomic_replace``, same pattern as ``save_jobs``) so a concurrent reader
+    in another process (``hermes cron status``) never sees a torn/truncated
+    file. Best-effort: failures are swallowed by callers.
     """
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".hb_")
+    atomic_write_text(path, str(time.time()), tmp_prefix=".hb_")
+
+
+def _atomic_write_counter(path: Path, value: int) -> None:
+    """Atomically persist a non-negative integer counter."""
+    ensure_dirs()
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".count_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
+            f.write(str(max(0, value)))
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, path)
@@ -816,15 +875,20 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     (both fresh) — a ticker stuck failing every tick would otherwise keep the
     plain heartbeat fresh and falsely report healthy (#32612, #32895).
 
+    Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
+    scoped to the active profile's store — critical under multiplex_profiles
+    where each profile needs its own liveness signal (#69377).
+
     Best-effort: a write failure must never disrupt the tick loop.
     """
+    store = _current_cron_store()
     try:
-        _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
+        _atomic_write_epoch(store.cron_dir / "ticker_heartbeat")
     except Exception:
         pass
     if success:
         try:
-            _atomic_write_epoch(TICKER_SUCCESS_FILE)
+            _atomic_write_epoch(store.cron_dir / "ticker_last_success")
         except Exception:
             pass
 
@@ -842,13 +906,104 @@ def get_ticker_heartbeat_age() -> Optional[float]:
 
     None = heartbeat file missing/unreadable (older build, never ran, or a
     torn read). Callers treat None as "cannot determine", not "dead".
+
+    Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
+    scoped to the active profile — critical under multiplex_profiles where
+    ``hermes cron status`` must report per-profile liveness (#69377).
     """
-    return _epoch_file_age(TICKER_HEARTBEAT_FILE)
+    store = _current_cron_store()
+    return _epoch_file_age(store.cron_dir / "ticker_heartbeat")
 
 
 def get_ticker_success_age() -> Optional[float]:
-    """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
-    return _epoch_file_age(TICKER_SUCCESS_FILE)
+    """Seconds since the ticker last completed a tick WITHOUT raising, or None.
+
+    Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
+    scoped to the active profile — critical under multiplex_profiles where
+    ``hermes cron status`` must report per-profile liveness (#69377).
+    """
+    store = _current_cron_store()
+    return _epoch_file_age(store.cron_dir / "ticker_last_success")
+
+
+def record_catch_up_occurrence() -> None:
+    """Increment the profile-local stale-schedule catch-up counter, best effort."""
+    path = _current_cron_store().cron_dir / "catch_up_occurrences"
+    try:
+        try:
+            value = int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            value = 0
+        _atomic_write_counter(path, max(0, value) + 1)
+    except Exception:
+        pass
+
+
+def record_ticker_error(message: str) -> None:
+    """Persist the most recent tick failure so other processes can surface it.
+
+    The ticker thread lives inside the gateway process; ``hermes cron
+    status``/``list`` run in a separate process and previously could only
+    infer "ticks may be failing" from marker staleness, with no clue WHY.
+    A root-owned ``jobs.json`` (#68483) failed every tick for ~14h with the
+    reason visible only in the gateway's errors.log. Writing the last error
+    next to the heartbeat markers gives the CLI something concrete to show.
+
+    Best-effort: a write failure must never disrupt the tick loop.
+    """
+    store = _current_cron_store()
+    path = store.cron_dir / "ticker_last_error"
+    try:
+        ensure_dirs()
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), suffix=".tmp", prefix=".terr_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(f"{time.time()}\n{message.strip()}\n")
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+
+
+def get_catch_up_occurrence_count() -> int:
+    """Return the profile-local stale-schedule catch-up count."""
+    path = _current_cron_store().cron_dir / "catch_up_occurrences"
+    try:
+        return max(0, int(path.read_text(encoding="utf-8").strip()))
+    except (OSError, ValueError):
+        return 0
+
+
+def clear_ticker_error() -> None:
+    """Remove the last-tick-error marker after a successful tick. Best-effort."""
+    store = _current_cron_store()
+    try:
+        (store.cron_dir / "ticker_last_error").unlink()
+    except OSError:
+        pass
+
+
+def get_ticker_last_error() -> Optional[str]:
+    """Return the most recent recorded tick error message, or None."""
+    store = _current_cron_store()
+    try:
+        raw = (store.cron_dir / "ticker_last_error").read_text(encoding="utf-8")
+    except Exception:
+        return None
+    lines = raw.splitlines()
+    if len(lines) < 2:
+        return None
+    message = "\n".join(lines[1:]).strip()
+    return message or None
 
 
 # =============================================================================
@@ -911,6 +1066,19 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage. Caller must hold _jobs_lock()."""
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
+    # Snapshot the current owner BEFORE the atomic replace so a privileged
+    # writer (root CLI in Docker) can hand ownership back to the gateway user
+    # afterwards instead of locking its ticker out (#68483). When the file is
+    # being created for the first time, inherit the cron dir's owner — in the
+    # Docker image that is the PUID/PGID gateway user who must be able to
+    # read the store on the next tick.
+    try:
+        _stat_before = os.stat(jobs_file)
+    except OSError:
+        try:
+            _stat_before = os.stat(jobs_file.parent)
+        except OSError:
+            _stat_before = None
     fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -919,6 +1087,7 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
             os.fsync(f.fileno())
         atomic_replace(tmp_path, jobs_file)
         _secure_file(jobs_file)
+        _preserve_file_ownership(jobs_file, _stat_before)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -979,20 +1148,25 @@ def _resolve_default_model_snapshot() -> Optional[str]:
     or resolution fails (fail-open — caller treats ``None`` as "no snapshot").
     """
     try:
-        import yaml
-        from hermes_cli.config import _expand_env_vars
+        from hermes_cli.config import _expand_env_vars, read_user_config_raw
 
         cfg_path = get_hermes_home() / "config.yaml"
         if not cfg_path.exists():
             return None
-        with cfg_path.open(encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+        cfg = read_user_config_raw(cfg_path)
         try:
             from hermes_cli import managed_scope
             cfg = managed_scope.apply_managed_overlay(cfg)
         except Exception:
             pass
         cfg = _expand_env_vars(cfg)
+        # Mirror run_job's precedence: the explicit cron-fleet default
+        # (cron.model) beats the global chat model for unpinned cron jobs.
+        cron_cfg = cfg.get("cron") or {}
+        if isinstance(cron_cfg, dict):
+            cron_model = cron_cfg.get("model")
+            if isinstance(cron_model, str) and cron_model.strip():
+                return cron_model.strip()
         model_cfg = cfg.get("model") or {}
         if isinstance(model_cfg, str):
             return model_cfg.strip() or None
@@ -1564,8 +1738,19 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
 
                     # Check if we've hit the repeat limit
                     if times is not None and times > 0 and completed >= times:
-                        # Remove the job (limit reached)
-                        jobs.pop(i)
+                        # Limit reached: retain the record as a terminal
+                        # completion instead of popping it. Deleting the job
+                        # here discarded the last_status / last_error /
+                        # last_delivery_error written above — a finished
+                        # one-shot vanished from `cronjob list` with no
+                        # inspectable outcome, and a failed delivery was
+                        # invisible. Mirror the terminal shape of the
+                        # next_run_at-is-None branch below; the retention
+                        # sweep prunes these after
+                        # COMPLETED_ONESHOT_RETENTION_DAYS.
+                        job["enabled"] = False
+                        job["state"] = "completed"
+                        job["next_run_at"] = None
                         save_jobs(jobs)
                         return
                 
@@ -1607,6 +1792,50 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
+def _write_wedged_oneshot_diagnostic(job: Dict[str, Any]) -> None:
+    """Leave an operator-visible trace when a wedged one-shot is removed.
+
+    A finite one-shot whose dispatch was claimed (``repeat.completed`` >=
+    ``repeat.times``) but which never reached ``mark_job_run`` (``last_run_at``
+    is null) was interrupted mid-run — scheduler restart, gateway kill, or a
+    non-Exception escape (#73973). The recovery guards remove such jobs so
+    they stop appearing due, but a silent removal leaves the user with no
+    output, no error, and no job record. Write a small diagnostic file into
+    the job's output directory so the removal is observable and debuggable.
+
+    Best-effort: diagnostics must never break the removal itself.
+    """
+    if job.get("last_run_at") is not None:
+        return  # a prior run was recorded — normal completion race, not a wedge
+    try:
+        repeat = job.get("repeat") or {}
+        claim = job.get("run_claim") or {}
+        text = (
+            "# Cron job removed without producing output\n\n"
+            f"- job id: {job.get('id')}\n"
+            f"- name: {job.get('name')}\n"
+            f"- dispatch claimed: {repeat.get('completed', '?')}/{repeat.get('times', '?')}\n"
+            f"- run claimed at: {claim.get('at', 'unknown')} by {claim.get('by', 'unknown')}\n"
+            f"- removed at: {_hermes_now().isoformat()}\n\n"
+            "This one-shot job's dispatch was claimed, but the run never "
+            "completed (`last_run_at` was never written) — the scheduler "
+            "process was most likely killed or restarted mid-execution. The "
+            "job has been removed to stop it re-firing; recreate it to run "
+            "again.\n"
+        )
+        save_job_output(job.get("id", ""), text)
+        logger.warning(
+            "Job '%s': removed without a completed run — diagnostic written to "
+            "its output directory",
+            job.get("name", job.get("id", "?")),
+        )
+    except Exception as e:
+        logger.debug(
+            "Failed to write wedged-oneshot diagnostic for job %r: %s",
+            job.get("id"), e,
+        )
+
+
 def claim_dispatch(job_id: str) -> bool:
     """Atomically claim a finite one-shot job dispatch BEFORE execution.
 
@@ -1639,11 +1868,30 @@ def claim_dispatch(job_id: str) -> bool:
                 return True  # infinite — always dispatch
             completed = repeat.get("completed", 0)
             if completed >= times:
-                # Already dispatched the max number of times (e.g. a prior
-                # tick claimed then died before mark_job_run could remove it).
-                # Clean up so it stops appearing as due on every tick.
+                # Already dispatched the max number of times.
+                if job.get("last_run_at") is not None:
+                    # A prior run completed normally (e.g. mark_job_run raced
+                    # with this tick). Retain the terminal record — same shape
+                    # as mark_job_run's repeat-limit branch — instead of
+                    # deleting the job and its final status/delivery error.
+                    job["enabled"] = False
+                    job["state"] = "completed"
+                    job["next_run_at"] = None
+                    save_jobs(jobs)
+                    logger.info(
+                        "Job '%s': dispatch limit reached (%d/%d) — marking completed",
+                        job.get("name", job.get("id", "?")),
+                        completed,
+                        times,
+                    )
+                    return False
+                # A prior tick claimed the dispatch then died before the run
+                # completed (#73973) — a genuinely wedged claim. Remove it so
+                # it stops appearing as due, and leave an operator-visible
+                # diagnostic instead of vanishing silently.
                 jobs.pop(i)
                 save_jobs(jobs)
+                _write_wedged_oneshot_diagnostic(job)
                 logger.info(
                     "Job '%s': dispatch limit reached (%d/%d) — removing",
                     job.get("name", job.get("id", "?")),
@@ -1702,6 +1950,43 @@ def heartbeat_run_claim(job_id: str, *, expected_owner: str) -> bool:
     return False
 
 
+def advance_next_runs(job_ids) -> int:
+    """Batch form of :func:`advance_next_run` for the due-dispatch loop.
+
+    One ``load_jobs()`` + at most one ``save_jobs()`` for the whole due
+    set, instead of one of each per job — the per-job form costs
+    O(N loads + N saves) for N due jobs (~110 ms at N=50, measured), the
+    batch form O(1 + 1) (~2 ms). ``job_ids`` may contain ids of one-shot
+    or unknown jobs; they are skipped exactly as the per-job form skips
+    them. Returns the number of jobs whose ``next_run_at`` was advanced.
+
+    Crash semantics: the batch persists once at the end, so a crash
+    mid-batch re-fires the whole set on restart (at-least-once burst)
+    rather than advancing a prefix — acceptable given the sub-10ms window,
+    and identical to the per-job form once the batch completes.
+    """
+    ids = set(job_ids)
+    if not ids:
+        return 0
+    with _jobs_lock():
+        jobs = load_jobs()
+        now = _hermes_now().isoformat()
+        advanced = 0
+        for job in jobs:
+            if job["id"] not in ids:
+                continue
+            kind = job.get("schedule", {}).get("kind")
+            if kind not in {"cron", "interval"}:
+                continue
+            new_next = compute_next_run(job["schedule"], now)
+            if new_next and new_next != job.get("next_run_at"):
+                job["next_run_at"] = new_next
+                advanced += 1
+        if advanced:
+            save_jobs(jobs)
+        return advanced
+
+
 def advance_next_run(job_id: str) -> bool:
     """Preemptively advance next_run_at for a recurring job before execution.
 
@@ -1714,21 +1999,9 @@ def advance_next_run(job_id: str) -> bool:
 
     Returns True if next_run_at was advanced, False otherwise.
     """
-    with _jobs_lock():
-        jobs = load_jobs()
-        for job in jobs:
-            if job["id"] == job_id:
-                kind = job.get("schedule", {}).get("kind")
-                if kind not in {"cron", "interval"}:
-                    return False
-                now = _hermes_now().isoformat()
-                new_next = compute_next_run(job["schedule"], now)
-                if new_next and new_next != job.get("next_run_at"):
-                    job["next_run_at"] = new_next
-                    save_jobs(jobs)
-                    return True
-                return False
-        return False
+    # >= 1 (not == 1): a corrupted jobs file with duplicate ids advances
+    # every matching record; the wrapper still reports the advance.
+    return advance_next_runs([job_id]) >= 1
 
 
 def _machine_id() -> str:
@@ -1801,6 +2074,82 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
             save_jobs(jobs)
             return True
         return False
+
+
+# Completed one-shot job records are retained in jobs.json (final status +
+# delivery error stay inspectable via `cronjob list`) instead of being deleted
+# at completion, then pruned by _sweep_completed_oneshots once they age out.
+COMPLETED_ONESHOT_RETENTION_DAYS = 7
+
+
+def _completed_oneshot_retention_days() -> float:
+    """Resolve the completed one-shot retention window from config.
+
+    ``cron.completed_retention_days`` (number, default
+    ``COMPLETED_ONESHOT_RETENTION_DAYS``). A non-positive value disables the
+    sweep, retaining completed one-shot records indefinitely.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        return float(
+            cron_cfg.get(
+                "completed_retention_days", COMPLETED_ONESHOT_RETENTION_DAYS
+            )
+        )
+    except Exception:
+        return float(COMPLETED_ONESHOT_RETENTION_DAYS)
+
+
+def _sweep_completed_oneshots(raw_jobs: List[Dict[str, Any]], now: datetime) -> bool:
+    """Prune terminal ``state == "completed"`` one-shot records past retention.
+
+    Mutates *raw_jobs* in place; returns True when anything was removed (the
+    caller persists). Only one-shot (``schedule.kind == "once"``) records in
+    the terminal completed state are candidates; recurring jobs and non-
+    terminal one-shots are never touched. Age is measured from
+    ``last_run_at`` — a completed record without a parseable ``last_run_at``
+    is kept (never guess a record into deletion).
+    """
+    retention_days = _completed_oneshot_retention_days()
+    if retention_days <= 0:
+        return False
+    cutoff = now - timedelta(days=retention_days)
+    removed = False
+    for rj in list(raw_jobs):
+        try:
+            if rj.get("state") != "completed":
+                continue
+            schedule = rj.get("schedule")
+            kind = schedule.get("kind") if isinstance(schedule, dict) else None
+            if kind != "once":
+                continue
+            last_run = rj.get("last_run_at")
+            if not isinstance(last_run, str):
+                continue
+            try:
+                last_run_dt = _ensure_aware(datetime.fromisoformat(last_run))
+            except Exception:
+                continue
+            if last_run_dt >= cutoff:
+                continue
+            raw_jobs.remove(rj)
+            removed = True
+            logger.info(
+                "Job '%s': pruning completed one-shot record "
+                "(finished %s, retention %.1f days)",
+                rj.get("name", rj.get("id", "?")),
+                last_run,
+                retention_days,
+            )
+        except Exception:
+            logger.debug(
+                "Retention sweep skipped malformed job record %r",
+                rj.get("id", "?"),
+                exc_info=True,
+            )
+    return removed
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:
@@ -1921,6 +2270,15 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     # Resolve the one-shot running-claim stale-recovery TTL once per scan
     # (derived from HERMES_CRON_TIMEOUT). See _oneshot_run_claim_ttl_seconds.
     _run_claim_ttl = _oneshot_run_claim_ttl_seconds()
+
+    # Retention sweep: completed one-shots are retained (so their final
+    # status / delivery error stay inspectable via `cronjob list`) instead of
+    # being deleted on completion, but they must not accumulate in jobs.json
+    # forever. Prune terminal one-shot records older than the retention
+    # window each scan.
+    if _sweep_completed_oneshots(raw_jobs, now):
+        needs_save = True
+        jobs = [j for j in jobs if any(rj.get("id") == j.get("id") for rj in raw_jobs)]
 
     for job in jobs:
         # Per-job containment (structural guard): one malformed or
@@ -2072,6 +2430,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 rj["next_run_at"] = new_next
                                 needs_save = True
                                 break
+                        record_catch_up_occurrence()
                         # Fall through to due.append(job) — execute once now
 
                 # One-shot dispatch-limit guard (issue #38758): a finite one-shot
@@ -2116,6 +2475,11 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                     raw_jobs.remove(rj)
                                     needs_save = True
                                     break
+                            # The claimed run never completed here by
+                            # definition (last_run_at unwritten is what made
+                            # the entry look due) — leave an operator-visible
+                            # diagnostic instead of vanishing silently (#73973).
+                            _write_wedged_oneshot_diagnostic(job)
                             continue
 
                 # Durably claim a one-shot for the DURATION of its run before

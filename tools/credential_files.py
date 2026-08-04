@@ -395,6 +395,11 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/screenshots", "browser_screenshots"),
     ("cache/web", "web_cache"),
     ("cache/delegation", "delegation_cache"),
+    # Desktop/clipboard/PDF uploads land in the flat top-level ``images/`` dir
+    # (tui_gateway attach RPCs), not under ``cache/``. Mount it so vision can
+    # reach uploads inside sandbox containers (#69575). No legacy alias exists,
+    # so both tuple slots are ``images``.
+    ("images", "images"),
 ]
 
 
@@ -481,7 +486,7 @@ def to_agent_visible_cache_path(
     translation (only Docker for now).
     """
     # Only Docker backend requires translation at this time.  Other backends
-    # (Modal, Daytona) use different mount semantics and will be
+    # (Modal, Daytona, Vercel) use different mount semantics and will be
     # addressed separately if needed.  Backend is identified by TERMINAL_ENV
     # (same env var tools/terminal_tool.py reads in _get_environment_config).
     if os.environ.get("TERMINAL_ENV", "local") != "docker":

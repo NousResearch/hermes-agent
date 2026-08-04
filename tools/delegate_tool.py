@@ -18,6 +18,7 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import contextvars
 import json
 import logging
 
@@ -26,12 +27,13 @@ import os
 import threading
 import time
 from concurrent.futures import (
-    ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from toolsets import TOOLSETS
+from agent.interrupt_compat import request_hard_interrupt
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -49,7 +51,6 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
-        "execute_code",  # children should reason step-by-step, not write scripts
         "cronjob",  # no scheduling more work in the parent's name
     ]
 )
@@ -196,7 +197,8 @@ def interrupt_subagent(subagent_id: str) -> bool:
     if agent is None:
         return False
     try:
-        agent.interrupt(f"Interrupted via TUI ({subagent_id})")
+        if not request_hard_interrupt(agent, f"Interrupted via TUI ({subagent_id})"):
+            return False
     except Exception as exc:
         logger.debug("interrupt_subagent(%s) failed: %s", subagent_id, exc)
         return False
@@ -297,6 +299,131 @@ def _stringify_tool_content(content: Any) -> str:
     if isinstance(content, dict):
         return json.dumps(content, ensure_ascii=False, default=str)
     return str(content)
+
+
+_TOOL_INPUT_TARGET_KEYS = frozenset({
+    "cwd",
+    "destination_path",
+    "directory",
+    "dst",
+    "endpoint",
+    "file_path",
+    "new_path",
+    "old_path",
+    "path",
+    "source_path",
+    "src",
+    "target_path",
+    "url",
+    "urls",
+})
+_TOOL_INPUT_URL_KEYS = frozenset({"endpoint", "url", "urls"})
+
+
+def _sanitize_tool_target(key: str, value: Any) -> Any:
+    """Keep bounded side-effect targets while dropping URL secrets."""
+    if isinstance(value, list):
+        cleaned = [
+            item for item in (_sanitize_tool_target(key, item) for item in value[:16])
+            if item is not None
+        ]
+        return cleaned or None
+    if not isinstance(value, str) or not value:
+        return None
+    bounded = value[:1024]
+    if key in _TOOL_INPUT_URL_KEYS:
+        try:
+            parsed = urlsplit(bounded)
+            if parsed.scheme and parsed.netloc:
+                hostname = parsed.hostname
+                if not hostname:
+                    return None
+                # ``SplitResult.netloc`` includes ``user:password@``. Rebuild
+                # the authority from parsed host/port so hook-visible history
+                # cannot carry URL credentials. Bracket IPv6 literals before
+                # appending a validated port.
+                host = f"[{hostname}]" if ":" in hostname else hostname
+                port = parsed.port
+                netloc = f"{host}:{port}" if port is not None else host
+                return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+        except ValueError:
+            return None
+    return bounded
+
+
+def _summarize_tool_arguments(arguments: Any) -> Dict[str, Any]:
+    """Summarize argument names and side-effect targets without raw payloads."""
+    if not isinstance(arguments, str):
+        return {"argument_keys": [], "targets": {}}
+    try:
+        parsed = json.loads(arguments)
+    except (TypeError, ValueError):
+        return {"argument_keys": [], "targets": {}}
+    if not isinstance(parsed, dict):
+        return {"argument_keys": [], "targets": {}}
+
+    keys = sorted(str(key)[:128] for key in parsed)[:64]
+    targets: Dict[str, Any] = {}
+    for raw_key, value in parsed.items():
+        key = str(raw_key).lower()
+        if key not in _TOOL_INPUT_TARGET_KEYS:
+            continue
+        cleaned = _sanitize_tool_target(key, value)
+        if cleaned is not None:
+            targets[key] = cleaned
+    return {"argument_keys": keys, "targets": targets}
+
+
+def _sanitize_tool_input_summary(summary: Any) -> Dict[str, Any]:
+    if not isinstance(summary, dict):
+        return {"argument_keys": [], "targets": {}}
+    keys = summary.get("argument_keys")
+    safe_keys = (
+        [str(key)[:128] for key in keys[:64]]
+        if isinstance(keys, list)
+        else []
+    )
+    targets = summary.get("targets")
+    safe_targets: Dict[str, Any] = {}
+    if isinstance(targets, dict):
+        for raw_key, value in targets.items():
+            key = str(raw_key).lower()
+            if key not in _TOOL_INPUT_TARGET_KEYS:
+                continue
+            cleaned = _sanitize_tool_target(key, value)
+            if cleaned is not None:
+                safe_targets[key] = cleaned
+    return {"argument_keys": safe_keys, "targets": safe_targets}
+
+
+def _subagent_stop_tool_call_history(tool_trace: Any) -> List[Dict[str, Any]]:
+    """Build a detached, metadata-only tool history for lifecycle hooks."""
+    if not isinstance(tool_trace, list):
+        return []
+
+    history: List[Dict[str, Any]] = []
+    for item in tool_trace:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool") or "unknown")[:256]
+        status = str(item.get("status") or "unknown").lower()
+        if status not in {"ok", "error"}:
+            status = "unknown"
+
+        def _byte_count(key: str) -> int:
+            value = item.get(key, 0)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                return 0
+            return max(0, int(value))
+
+        history.append({
+            "tool_name": tool_name,
+            "tool_input": _sanitize_tool_input_summary(item.get("input_summary")),
+            "input_bytes": _byte_count("args_bytes"),
+            "output_bytes": _byte_count("result_bytes"),
+            "status": status,
+        })
+    return history
 
 
 def _looks_like_error_output(content: Any) -> bool:
@@ -774,13 +901,14 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """
     # Composite toolsets that should never pass through to children, even
     # though their individual tools aren't all in DELEGATE_BLOCKED_TOOLS.
-    _COMPOSITE_BLOCKED_TOOLSETS = frozenset({"delegation", "code_execution"})
+    _COMPOSITE_BLOCKED_TOOLSETS = frozenset({"delegation"})
     blocked_toolset_names = {
         name
         for name, defn in TOOLSETS.items()
         if name in _COMPOSITE_BLOCKED_TOOLSETS
         or all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
     }
+    blocked_toolset_names.add("kanban")
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
@@ -1176,7 +1304,7 @@ def _build_child_agent(
         ]
     child_disabled_toolsets = list(
         dict.fromkeys(
-            inherited_disabled + _blocked_toolsets_for_role(effective_role)
+            inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"]
         )
     )
 
@@ -1251,9 +1379,20 @@ def _build_child_agent(
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
     # Inheriting the parent's mode causes 404 errors when the child routes to the
     # wrong endpoint.  Derive the mode from the target provider when it differs.
+    #
+    # Nous Portal is dual-wire within a single provider: anthropic/* → Messages,
+    # everything else → chat_completions. Same-provider inheritance would pin a
+    # child Hermes/Qwen subagent onto the parent's Claude Messages wire (or the
+    # reverse). agent_init honors an explicit api_mode above its nous branch, so
+    # re-derive here before construction.
     _parent_provider = getattr(parent_agent, "provider", None) or ""
+    _effective_provider_norm = (effective_provider or "").strip().lower()
     if override_api_mode is not None:
         effective_api_mode = override_api_mode
+    elif _effective_provider_norm in {"nous", "nous-portal", "nousresearch"}:
+        from hermes_cli.providers import nous_api_mode
+
+        effective_api_mode = nous_api_mode(effective_model)
     elif effective_provider != _parent_provider:
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
@@ -1361,47 +1500,50 @@ def _build_child_agent(
     if isinstance(child_max_tokens, int):
         child_optional_kwargs["max_tokens"] = child_max_tokens
 
-    child = AIAgent(
-        base_url=effective_base_url,
-        api_key=effective_api_key,
-        model=effective_model,
-        provider=effective_provider,
-        api_mode=effective_api_mode,
-        acp_command=effective_acp_command,
-        acp_args=effective_acp_args,
-        max_iterations=max_iterations,
+    from agent.delegation_context import delegated_child_context
 
-        reasoning_config=child_reasoning,
-        prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
-        enabled_toolsets=child_toolsets,
-        disabled_toolsets=child_disabled_toolsets,
-        quiet_mode=True,
-        ephemeral_system_prompt=child_prompt,
-        log_prefix=f"[subagent-{task_index}]",
-        platform="subagent",
-        skip_context_files=True,
-        skip_memory=True,
-        clarify_callback=None,
-        thinking_callback=child_thinking_cb,
-        session_db=getattr(parent_agent, "_session_db", None),
-        parent_session_id=getattr(parent_agent, "session_id", None),
-        providers_allowed=child_providers_allowed,
-        providers_ignored=child_providers_ignored,
-        providers_order=child_providers_order,
-        provider_sort=child_provider_sort,
-        provider_require_parameters=child_provider_require_parameters,
-        provider_data_collection=child_provider_data_collection,
-        request_overrides=(
-            dict(override_request_overrides or {})
-            if override_provider
-            else dict(getattr(parent_agent, "request_overrides", {}) or {})
-        ),
-        openrouter_min_coding_score=child_openrouter_min_coding_score,
-        tool_progress_callback=child_progress_cb,
-        iteration_budget=None,  # fresh budget per subagent
-        **child_optional_kwargs,
-    )
+    with delegated_child_context():
+        child = AIAgent(
+            base_url=effective_base_url,
+            api_key=effective_api_key,
+            model=effective_model,
+            provider=effective_provider,
+            api_mode=effective_api_mode,
+            acp_command=effective_acp_command,
+            acp_args=effective_acp_args,
+            max_iterations=max_iterations,
+
+            reasoning_config=child_reasoning,
+            prefill_messages=getattr(parent_agent, "prefill_messages", None),
+            fallback_model=parent_fallback,
+            enabled_toolsets=child_toolsets,
+            disabled_toolsets=child_disabled_toolsets,
+            quiet_mode=True,
+            ephemeral_system_prompt=child_prompt,
+            log_prefix=f"[subagent-{task_index}]",
+            platform="subagent",
+            skip_context_files=True,
+            skip_memory=True,
+            clarify_callback=None,
+            thinking_callback=child_thinking_cb,
+            session_db=getattr(parent_agent, "_session_db", None),
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            providers_allowed=child_providers_allowed,
+            providers_ignored=child_providers_ignored,
+            providers_order=child_providers_order,
+            provider_sort=child_provider_sort,
+            provider_require_parameters=child_provider_require_parameters,
+            provider_data_collection=child_provider_data_collection,
+            request_overrides=(
+                dict(override_request_overrides or {})
+                if override_provider
+                else dict(getattr(parent_agent, "request_overrides", {}) or {})
+            ),
+            openrouter_min_coding_score=child_openrouter_min_coding_score,
+            tool_progress_callback=child_progress_cb,
+            iteration_budget=None,  # fresh budget per subagent
+            **child_optional_kwargs,
+        )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
@@ -1452,7 +1594,7 @@ def _build_child_agent(
             logger.debug("spawn_requested relay failed: %s", exc)
 
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _invoke_hook(
             "subagent_start",
             parent_session_id=getattr(parent_agent, "session_id", None),
@@ -1494,6 +1636,7 @@ def _dump_subagent_timeout_diagnostic(
         import datetime as _dt
         import sys as _sys
         import traceback as _traceback
+        import threading as _threading
 
         hermes_home = get_hermes_home()
         logs_dir = hermes_home / "logs"
@@ -1598,6 +1741,37 @@ def _dump_subagent_timeout_diagnostic(
             _w("  <no worker thread handle>")
         else:
             _w("  <worker thread already exited>")
+        _w("")
+
+        # All other live threads. The conversation worker's own stack often
+        # shows it parked waiting on a nested helper thread (interrupt worker,
+        # daemon-pool sibling) — without the full picture, a pre-HTTP wedge
+        # (#60203/#62151) is indistinguishable from a slow provider. Best
+        # effort and bounded: names + stacks for up to 40 threads.
+        _w("## All thread stacks at timeout")
+        try:
+            frames = _sys._current_frames()
+            by_ident = {
+                th.ident: th for th in _threading.enumerate() if th.ident
+            }
+            worker_ident = worker_thread.ident if worker_thread else None
+            dumped = 0
+            for ident, frame in frames.items():
+                if ident == worker_ident:
+                    continue  # already dumped above
+                if dumped >= 40:
+                    _w(f"  <{len(frames) - dumped - 1} more threads omitted>")
+                    break
+                th = by_ident.get(ident)
+                name = th.name if th else f"ident={ident}"
+                daemon = " daemon" if (th and th.daemon) else ""
+                _w(f"  --- {name}{daemon} ---")
+                for frame_line in _traceback.format_stack(frame):
+                    for sub in frame_line.rstrip().split("\n"):
+                        _w(f"    {sub}")
+                dumped += 1
+        except Exception as exc:
+            _w(f"  <all-thread dump failed: {exc}>")
         _w("")
 
         _w("## Notes")
@@ -2002,21 +2176,27 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-                stream_callback=_relay_child_text,
-            )
+            from agent.delegation_context import delegated_child_context
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                    stream_callback=_relay_child_text,
+                )
+
+        _child_context = contextvars.copy_context()
+        _child_future = _timeout_executor.submit(
+            _child_context.run,
+            _run_with_thread_capture,
+        )
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
             # Signal the child to stop so its thread can exit cleanly.
             try:
-                if hasattr(child, "interrupt"):
-                    child.interrupt()
-                elif hasattr(child, "_interrupt_requested"):
+                interrupted = child is not None and request_hard_interrupt(child)
+                if not interrupted and child is not None and hasattr(child, "_interrupt_requested"):
                     child._interrupt_requested = True
             except Exception:
                 pass
@@ -2088,8 +2268,11 @@ def _run_single_child(
                     _err = (
                         f"Subagent timed out after {child_timeout}s with "
                         f"{child_api_calls} API call(s) completed — likely "
-                        f"stuck on a slow API call or unresponsive network request."
+                        f"stuck on a slow API call, tool call, or unresponsive "
+                        f"network request."
                     )
+                    if diagnostic_path:
+                        _err += f" Diagnostic: {diagnostic_path}"
             else:
                 _err = str(_timeout_exc)
 
@@ -2101,6 +2284,13 @@ def _run_single_child(
                 "exit_reason": "timeout" if is_timeout else "error",
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
+                "timeout_seconds": child_timeout if is_timeout else None,
+                "timed_out_after_seconds": duration if is_timeout else None,
+                "timeout_phase": (
+                    "before_first_llm_call" if is_timeout and child_api_calls == 0
+                    else "after_llm_calls" if is_timeout
+                    else None
+                ),
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
@@ -2152,9 +2342,11 @@ def _run_single_child(
                 if msg.get("role") == "assistant":
                     for tc in msg.get("tool_calls") or []:
                         fn = tc.get("function", {})
+                        arguments = fn.get("arguments", "")
                         entry_t = {
                             "tool": fn.get("name", "unknown"),
-                            "args_bytes": len(fn.get("arguments", "")),
+                            "args_bytes": len(arguments),
+                            "input_summary": _summarize_tool_arguments(arguments),
                         }
                         tool_trace.append(entry_t)
                         tc_id = tc.get("id")
@@ -2399,6 +2591,167 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
+        # The AIAgent turn boundary normally closes the child scope itself. This
+        # fallback covers failures before that boundary starts, but must not pop
+        # a scope while a timed-out child worker is still unwinding.
+        try:
+            from agent import relay_runtime
+
+            runtime = relay_runtime.get_runtime(create=False)
+            child_session_id = str(getattr(child, "session_id", "") or "")
+            child_turn_is_active = relay_runtime.SESSION_COORDINATOR.has_active_turn(
+                profile_key=relay_runtime.current_profile_key(),
+                session_id=child_session_id,
+            )
+            if runtime is not None and child_session_id and not child_turn_is_active:
+                runtime.unregister_subagent({"child_session_id": child_session_id})
+        except Exception:
+            logger.debug("Failed to close child Relay session after delegation")
+
+
+_PARENT_FINALIZATION_LOCK_GUARD = threading.Lock()
+_PARENT_FINALIZATION_FALLBACK_LOCK = threading.RLock()
+_CHILD_CONSTRUCTION_LOCK = threading.RLock()
+
+
+def _build_child_preserving_parent_tools(**kwargs):
+    """Build a child without leaking its resolved toolset into the parent."""
+    import model_tools
+
+    with _CHILD_CONSTRUCTION_LOCK:
+        parent_tool_names = list(model_tools._last_resolved_tool_names)
+        try:
+            child = _build_child_agent(**kwargs)
+        finally:
+            model_tools._last_resolved_tool_names = parent_tool_names
+    child._delegate_saved_tool_names = parent_tool_names
+    return child
+
+
+def _parent_finalization_lock(parent_agent) -> threading.RLock:
+    """Return the per-parent lock that serializes lifecycle side effects."""
+    if parent_agent is None:
+        return _PARENT_FINALIZATION_FALLBACK_LOCK
+    lock = getattr(parent_agent, "_subagent_finalization_lock", None)
+    if lock is not None:
+        return lock
+    with _PARENT_FINALIZATION_LOCK_GUARD:
+        lock = getattr(parent_agent, "_subagent_finalization_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            try:
+                setattr(parent_agent, "_subagent_finalization_lock", lock)
+            except Exception:
+                return _PARENT_FINALIZATION_FALLBACK_LOCK
+    return lock
+
+
+def _finalize_child_results(
+    results: List[Dict[str, Any]],
+    task_list: List[Dict[str, Any]],
+    children: List[tuple[int, Dict[str, Any], Any]],
+    parent_agent,
+) -> None:
+    """Apply host-owned summary, memory, hook, and cost contracts once."""
+    with _parent_finalization_lock(parent_agent):
+        _apply_summary_budget(results, parent_agent)
+        child_by_index = {index: child for index, _task, child in children}
+
+        if parent_agent and getattr(parent_agent, "_memory_manager", None):
+            for entry in results:
+                try:
+                    task_index = entry.get("task_index", -1)
+                    task_goal = (
+                        task_list[task_index]["goal"]
+                        if isinstance(task_index, int)
+                        and 0 <= task_index < len(task_list)
+                        else ""
+                    )
+                    child = child_by_index.get(task_index)
+                    parent_agent._memory_manager.on_delegation(
+                        task=task_goal,
+                        result=entry.get("summary", "") or "",
+                        child_session_id=getattr(child, "session_id", ""),
+                    )
+                except Exception:
+                    pass
+
+        parent_session_id = getattr(parent_agent, "session_id", None)
+        try:
+            from hermes_cli.plugins import invoke_hook as invoke_hook
+        except Exception:
+            invoke_hook = None
+
+        children_cost_total = 0.0
+        for entry in results:
+            child_role = entry.pop("_child_role", None)
+            child_cost = entry.pop("_child_cost_usd", 0.0)
+            try:
+                if child_cost:
+                    children_cost_total += float(child_cost)
+            except (TypeError, ValueError):
+                pass
+            if invoke_hook is None:
+                continue
+            try:
+                child_index = entry.get("task_index", -1)
+                child = child_by_index.get(child_index)
+                invoke_hook(
+                    "subagent_stop",
+                    parent_session_id=parent_session_id,
+                    parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+                    child_session_id=getattr(child, "session_id", None),
+                    child_role=child_role,
+                    child_summary=entry.get("summary"),
+                    child_status=entry.get("status"),
+                    tool_call_history=_subagent_stop_tool_call_history(
+                        entry.get("tool_trace")
+                    ),
+                    duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
+                )
+            except Exception:
+                logger.debug("subagent_stop hook invocation failed", exc_info=True)
+
+        if children_cost_total > 0.0:
+            try:
+                current = float(
+                    getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0
+                )
+                parent_agent.session_estimated_cost_usd = current + children_cost_total
+                if getattr(parent_agent, "session_cost_source", "none") in {
+                    None,
+                    "",
+                    "none",
+                }:
+                    parent_agent.session_cost_source = "subagent"
+                if getattr(parent_agent, "session_cost_status", "unknown") in {
+                    None,
+                    "",
+                    "unknown",
+                }:
+                    parent_agent.session_cost_status = "estimated"
+            except Exception:
+                logger.debug("Subagent cost rollup failed", exc_info=True)
+
+
+def _run_child_lifecycle(
+    task_index: int,
+    goal: str,
+    child=None,
+    parent_agent=None,
+) -> Dict[str, Any]:
+    """Run one child and apply the same host lifecycle used by delegate_task."""
+    result = _run_single_child(task_index, goal, child, parent_agent)
+    result.setdefault("task_index", task_index)
+    task = {"goal": goal}
+    _finalize_child_results(
+        [result],
+        [{"goal": ""} for _ in range(task_index)] + [task],
+        [(task_index, task, child)],
+        parent_agent,
+    )
+    return result
+
 
 def _recover_tasks_from_json_string(
     tasks: Any,
@@ -2475,16 +2828,12 @@ def delegate_task(
     depth = getattr(parent_agent, "_delegate_depth", 0)
     max_spawn = _get_max_spawn_depth()
     if depth >= max_spawn:
-        return json.dumps(
-            {
-                "error": (
-                    f"Delegation depth limit reached (depth={depth}, "
-                    f"max_spawn_depth={max_spawn}). Raise "
-                    f"delegation.max_spawn_depth in config.yaml if deeper "
-                    f"nesting is required (no hard ceiling, but each level "
-                    f"multiplies API cost)."
-                )
-            }
+        return tool_error(
+            f"Delegation depth limit reached (depth={depth}, "
+            f"max_spawn_depth={max_spawn}). Raise "
+            f"delegation.max_spawn_depth in config.yaml if deeper "
+            f"nesting is required (no hard ceiling, but each level "
+            f"multiplies API cost)."
         )
 
     # Load config
@@ -2570,62 +2919,63 @@ def delegate_task(
         task_list, context
     )
 
-    # Save parent tool names BEFORE any child construction mutates the global.
-    # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
-    # which overwrites model_tools._last_resolved_tool_names with child's toolset.
-    import model_tools as _model_tools
+    # Capture the ORIGINATING session's wake target BEFORE any child agent is
+    # constructed: _build_child_agent() -> AIAgent() -> agent_init calls
+    # set_current_session_id(child.session_id), which clobbers the
+    # HERMES_SESSION_ID ContextVar and os.environ with the subagent's internal
+    # id before the background-dispatch code below would read it. The
+    # request-scoped chat_id binding (the raw X-Hermes-Session-Id on
+    # api_server) is untouched by child construction, so read it here and
+    # thread it through the dispatch.
+    from tools.async_delegation import _current_origin_session_id
 
-    _parent_tool_names = list(_model_tools._last_resolved_tool_names)
+    _origin_wake_sid = _current_origin_session_id()
 
-    # Build all child agents on the main thread (thread-safe construction)
-    # Wrapped in try/finally so the global is always restored even if a
-    # child build raises (otherwise _last_resolved_tool_names stays corrupted).
+    # Build all child agents on the main thread (thread-safe construction).
+    # _build_child_preserving_parent_tools saves/restores the parent's
+    # resolved tool names around each construction under a lock, so child
+    # toolset resolution never leaks into the parent (shared with the plugin
+    # subagent-lifecycle API).
     children = []
-    try:
-        for i, t in enumerate(task_list):
-            # Per-task role beats top-level; normalise again so unknown
-            # per-task values warn and degrade to leaf uniformly.
-            effective_role = _normalize_role(t.get("role") or top_role)
-            child = _build_child_agent(
-                task_index=i,
-                goal=t["goal"],
-                context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
-                task_count=n_tasks,
-                parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
-                role=effective_role,
+    for i, t in enumerate(task_list):
+        # Per-task role beats top-level; normalise again so unknown
+        # per-task values warn and degrade to leaf uniformly.
+        effective_role = _normalize_role(t.get("role") or top_role)
+        child = _build_child_preserving_parent_tools(
+            task_index=i,
+            goal=t["goal"],
+            context=t.get("context"),
+            # Subagents always inherit the parent's toolsets; the model
+            # cannot choose or narrow them (no model-facing toolsets arg).
+            toolsets=None,
+            model=creds["model"],
+            max_iterations=effective_max_iter,
+            task_count=n_tasks,
+            parent_agent=parent_agent,
+            override_provider=creds["provider"],
+            override_base_url=creds["base_url"],
+            override_api_key=creds["api_key"],
+            override_api_mode=creds["api_mode"],
+            override_request_overrides=creds.get("request_overrides"),
+            override_max_tokens=creds.get("max_output_tokens"),
+            override_acp_command=creds.get("command"),
+            override_acp_args=creds.get("args"),
+            role=effective_role,
+        )
+        # Tee the child's progress events into its live transcript log.
+        # wrap_progress_callback preserves the inner callback contract
+        # (including the _flush attribute) and never lets writer failures
+        # reach the agent loop. When no parent display exists the inner
+        # callback is None and the wrapper still records events.
+        _writer = live_writers[i] if i < len(live_writers) else None
+        if _writer is not None:
+            child.tool_progress_callback = wrap_progress_callback(
+                getattr(child, "tool_progress_callback", None), _writer
             )
-            # Override with correct parent tool names (before child construction mutated global)
-            child._delegate_saved_tool_names = _parent_tool_names
-            # Tee the child's progress events into its live transcript log.
-            # wrap_progress_callback preserves the inner callback contract
-            # (including the _flush attribute) and never lets writer failures
-            # reach the agent loop. When no parent display exists the inner
-            # callback is None and the wrapper still records events.
-            _writer = live_writers[i] if i < len(live_writers) else None
-            if _writer is not None:
-                child.tool_progress_callback = wrap_progress_callback(
-                    getattr(child, "tool_progress_callback", None), _writer
-                )
-                child._live_transcript_path = str(_writer.path)
-            children.append((i, t, child))
-    finally:
-        # Authoritative restore: reset global to parent's tool names after all children built
-        _model_tools._last_resolved_tool_names = _parent_tool_names
+            child._live_transcript_path = str(_writer.path)
+        children.append((i, t, child))
 
-    def _execute_and_aggregate() -> dict:
+    def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
         fire subagent_stop hooks + cost rollup, and return the combined result
         dict. Used by BOTH the synchronous path and the background runner. In
@@ -2652,7 +3002,9 @@ def delegate_task(
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
+                    child_context = contextvars.copy_context()
                     future = executor.submit(
+                        child_context.run,
                         _run_single_child,
                         task_index=i,
                         goal=t["goal"],
@@ -2672,7 +3024,10 @@ def delegate_task(
 
                 pending = set(futures.keys())
                 while pending:
-                    if getattr(parent_agent, "_interrupt_requested", False) is True:
+                    if (
+                        honor_parent_interrupt
+                        and getattr(parent_agent, "_interrupt_requested", False) is True
+                    ):
                         # Parent interrupted — collect whatever finished and
                         # abandon the rest.  Children already received the
                         # interrupt signal; we just can't wait forever.
@@ -2767,101 +3122,7 @@ def delegate_task(
         # headroom (split across the batch) before they enter the parent's
         # conversation. Full text is spilled to disk so nothing is lost.
         # Covers both the single-task and batch paths. See PR #9126.
-        _apply_summary_budget(results, parent_agent)
-
-        # Notify parent's memory provider of delegation outcomes
-        if (
-            parent_agent
-            and hasattr(parent_agent, "_memory_manager")
-            and parent_agent._memory_manager
-        ):
-            for entry in results:
-                try:
-                    _task_goal = (
-                        task_list[entry["task_index"]]["goal"]
-                        if entry["task_index"] < len(task_list)
-                        else ""
-                    )
-                    parent_agent._memory_manager.on_delegation(
-                        task=_task_goal,
-                        result=entry.get("summary", "") or "",
-                        child_session_id=(
-                            getattr(children[entry["task_index"]][2], "session_id", "")
-                            if entry["task_index"] < len(children)
-                            else ""
-                        ),
-                    )
-                except Exception:
-                    pass
-
-        # Fire subagent_stop hooks once per child, serialised on the parent thread.
-        # This keeps Python-plugin and shell-hook callbacks off of the worker threads
-        # that ran the children, so hook authors don't need to reason about
-        # concurrent invocation.  Role was captured into the entry dict in
-        # _run_single_child (or the fabricated-entry branches above) before the
-        # child was closed.
-        _parent_session_id = getattr(parent_agent, "session_id", None)
-        try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-        except Exception:
-            _invoke_hook = None
-        # Aggregate child spend here so the parent's footer/UI reflect the true
-        # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
-        # child's cost was captured in _run_single_child before its AIAgent was
-        # closed; we fold them into the parent in one pass alongside the
-        # subagent_stop hook loop so we don't walk `results` twice.
-        _children_cost_total = 0.0
-        for entry in results:
-            child_role = entry.pop("_child_role", None)
-            child_cost = entry.pop("_child_cost_usd", 0.0)
-            try:
-                if child_cost:
-                    _children_cost_total += float(child_cost)
-            except (TypeError, ValueError):
-                pass
-            if _invoke_hook is None:
-                continue
-            try:
-                _child_index = entry.get("task_index", -1)
-                _child_agent = (
-                    children[_child_index][2]
-                    if isinstance(_child_index, int) and 0 <= _child_index < len(children)
-                    else None
-                )
-                _invoke_hook(
-                    "subagent_stop",
-                    parent_session_id=_parent_session_id,
-                    parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
-                    child_session_id=getattr(_child_agent, "session_id", None),
-                    child_role=child_role,
-                    child_summary=entry.get("summary"),
-                    child_status=entry.get("status"),
-                    duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
-                )
-            except Exception:
-                logger.debug("subagent_stop hook invocation failed", exc_info=True)
-
-        # Fold the aggregated child cost into the parent's session total.  This is
-        # additive — each delegate_task call contributes its own children — so
-        # nested orchestrator→worker trees roll up naturally: each layer's own
-        # delegate_task() folds its direct children in, and when the orchestrator
-        # itself finishes, its parent folds the orchestrator's now-inflated total
-        # on top.  Degrades silently if the parent lacks the counter (older test
-        # fixtures, etc.).
-        if _children_cost_total > 0.0:
-            try:
-                current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
-                parent_agent.session_estimated_cost_usd = current + _children_cost_total
-                # Upgrade the cost_source so the UI doesn't label a partially-real
-                # total as "none" when the parent itself hadn't billed any calls
-                # yet (rare but possible when the parent's only action this turn
-                # was delegate_task).
-                if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
-                    parent_agent.session_cost_source = "subagent"
-                if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:
-                    parent_agent.session_cost_status = "estimated"
-            except Exception:
-                logger.debug("Subagent cost rollup failed", exc_info=True)
+        _finalize_child_results(results, task_list, children, parent_agent)
 
         total_duration = round(time.monotonic() - overall_start, 2)
 
@@ -2904,32 +3165,54 @@ def delegate_task(
         from tools.async_delegation import dispatch_async_delegation_batch
         from tools.approval import get_current_session_key
 
-        # Stateless request/response sessions (the API server / WebUI path)
-        # cannot route a detached subagent result back to the agent after the
-        # turn ends — there is no persistent channel and the adapter's send()
-        # is a no-op, so a background dispatch would silently never re-enter the
-        # conversation (issue #10760). Fall back to SYNCHRONOUS execution: the
-        # work still runs and its result returns in this same response, which is
-        # strictly better than a handle that never resolves. Mirrors the
+        # Finite sessions cannot route a detached subagent result back to the
+        # agent after their turn/process ends. This includes stateless HTTP
+        # requests (#10760) and one-shot Kanban workers (#63169). Fall back to
+        # SYNCHRONOUS execution so the result returns in this same turn instead
+        # of handing out a handle with no durable consumer. Mirrors the
         # pool-at-capacity inline fallback below.
         try:
             from gateway.session_context import async_delivery_supported
             _async_ok = async_delivery_supported()
         except Exception:
             _async_ok = True
+
+        _wake_sid = ""
+        if not _async_ok:
+            # The adapter itself cannot push, but if a raw session id is
+            # bound (the API server always binds one — see
+            # ApiServerAdapter._bind_api_server_session), gateway.wake can
+            # still reach the session by self-POSTing /v1/chat/completions
+            # with that id in X-Hermes-Session-Id once the batch completes.
+            # Only fall back to forced-sync execution when there is truly no
+            # session id to wake. Uses the origin captured before child
+            # construction (see _origin_wake_sid above) — reading
+            # HERMES_SESSION_ID here would return the subagent's internal id.
+            _wake_sid = _origin_wake_sid
+            if _wake_sid:
+                logger.info(
+                    "delegate_task: async delivery unsupported on this "
+                    "session, but a session id is bound (%s) — dispatching "
+                    "in the background and waking the session via self-post "
+                    "when it completes instead of forcing synchronous "
+                    "execution.",
+                    _wake_sid,
+                )
+                _async_ok = True
+
         if not _async_ok:
             logger.info(
                 "delegate_task: async delivery unsupported on this session "
-                "(stateless HTTP API); running the batch synchronously instead."
+                "runtime; running the batch synchronously instead."
             )
             _sync_result = _execute_and_aggregate()
             if isinstance(_sync_result, dict):
                 _sync_result["note"] = (
                     "background=true is not available in this session — it cannot "
                     "receive a detached subagent result after the turn ends (a "
-                    "one-shot runner such as `hermes -z` or a cron job, or a "
-                    "stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY "
-                    "and the result is included above."
+                    "one-shot runner such as `hermes -z`, a cron job, a Kanban "
+                    "worker, or a stateless HTTP endpoint). The subagent(s) ran "
+                    "SYNCHRONOUSLY and the result is included above."
                 )
             return json.dumps(_sync_result, ensure_ascii=False)
 
@@ -2986,17 +3269,50 @@ def delegate_task(
                     pass
 
         def _batch_runner():
-            return _execute_and_aggregate()
+            # This batch is detached from the foreground turn. Its lifecycle is
+            # owned by the async registry and cancelled only via _batch_interrupt.
+            return _execute_and_aggregate(honor_parent_interrupt=False)
 
         def _batch_interrupt():
             for _c in _child_agents:
                 try:
-                    if hasattr(_c, "interrupt"):
-                        _c.interrupt("Async delegation cancelled")
-                    elif hasattr(_c, "_interrupt_requested"):
+                    interrupted = request_hard_interrupt(_c, "Async delegation cancelled")
+                    if not interrupted and hasattr(_c, "_interrupt_requested"):
                         _c._interrupt_requested = True
                 except Exception:
                     pass
+
+        def _batch_progress():
+            # Progress token for the async registry's stale monitor: the
+            # combined (api_call_count, current_tool, last_activity_ts) of
+            # every child. last_activity_ts is ticked by _touch_activity on
+            # every streamed chunk ("receiving stream response"), every tool
+            # transition, and every API-call start/completion — so a child
+            # streaming a long response is alive even though api_call_count
+            # only advances when the call completes (same liveness signal as
+            # the compaction inactivity budget, PR #71508). A fully frozen
+            # token past the stale threshold means the detached batch is
+            # wedged (e.g. stuck inside the first model API call — #60203).
+            # in_tool=True while ANY child is inside a tool so legitimately
+            # slow tools get the higher staleness ceiling, mirroring the
+            # sync-path heartbeat monitor.
+            parts = []
+            in_tool = False
+            for _c in _child_agents:
+                try:
+                    _summary = _c.get_activity_summary()
+                    _tool = _summary.get("current_tool")
+                    parts.append(
+                        (
+                            _summary.get("api_call_count", 0),
+                            _tool,
+                            _summary.get("last_activity_ts"),
+                        )
+                    )
+                    in_tool = in_tool or bool(_tool)
+                except Exception:
+                    parts.append(None)
+            return tuple(parts), in_tool
 
         _goals = [t["goal"] for t in task_list]
         dispatch = dispatch_async_delegation_batch(
@@ -3009,6 +3325,7 @@ def delegate_task(
             model=creds["model"],
             session_key=_session_key,
             origin_ui_session_id=_origin_ui_session_id,
+            origin_session_id=_wake_sid,
             parent_session_id=_parent_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
@@ -3016,6 +3333,7 @@ def delegate_task(
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.
             delegation_id=live_deleg_id,
+            progress_fn=_batch_progress,
         )
 
         if dispatch.get("status") == "dispatched":
@@ -3331,112 +3649,50 @@ def _load_config() -> dict:
 
 
 def _build_top_level_description() -> str:
-    """Compose the delegate_task tool description with current runtime limits.
+    """Compose the delegate_task tool description.
 
-    The model needs to know its actual ceilings (not the framework defaults),
-    otherwise it self-caps at "default 3" / "default 2" even when the user has
-    raised delegation.max_concurrent_children / max_spawn_depth. Called both
-    at module import (to seed DELEGATE_TASK_SCHEMA) and on every
-    get_definitions() call via dynamic_schema_overrides.
+    Deliberately carries ONLY guidance that exists nowhere else in the
+    schema. Batch/concurrency limits live in the 'tasks' parameter
+    description and the nesting clause lives in the 'role' parameter
+    description (both rebuilt per get_definitions() call with the user's
+    actual delegation.max_concurrent_children / max_spawn_depth), so the
+    top-level text stays static and duplication-free. If you add text
+    here, check it is not already stated in a parameter description.
     """
-    try:
-        max_children = _get_max_concurrent_children()
-    except Exception:
-        max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
-    try:
-        max_depth = _get_max_spawn_depth()
-    except Exception:
-        max_depth = MAX_DEPTH
-    try:
-        orchestrator_on = _get_orchestrator_enabled()
-    except Exception:
-        orchestrator_on = True
-
-    if max_depth >= 2 and orchestrator_on:
-        nesting_clause = (
-            f"Nested delegation IS enabled for this user "
-            f"(max_spawn_depth={max_depth}): pass role='orchestrator' on a "
-            f"child to let it spawn its own workers, up to {max_depth - 1} "
-            f"additional level(s) deep."
-        )
-    elif max_depth >= 2 and not orchestrator_on:
-        nesting_clause = (
-            f"Nested delegation is DISABLED on this install "
-            f"(delegation.orchestrator_enabled=false), even though "
-            f"max_spawn_depth={max_depth}. role='orchestrator' is silently "
-            f"forced to 'leaf'."
-        )
-    else:
-        nesting_clause = (
-            f"Nested delegation is OFF for this user "
-            f"(max_spawn_depth={max_depth}): every child is a leaf and "
-            f"cannot delegate further. Raise delegation.max_spawn_depth in "
-            f"config.yaml to enable nesting."
-        )
-
     return (
-        "Spawn one or more subagents to work on tasks in isolated contexts. "
-        "Each subagent gets its own conversation, terminal session, and toolset. "
-        "Only the final summary is returned -- intermediate tool results "
-        "never enter your context window.\n\n"
-        "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context and role).\n"
-        f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
-        f"items concurrently for this user (configured via "
-        f"delegation.max_concurrent_children in config.yaml). {nesting_clause}\n\n"
-        "BOTH MODES RUN IN THE BACKGROUND. delegate_task returns immediately — "
-        "you and the user keep working, and the completed result re-enters "
-        "the conversation as a new message. A "
-        "batch returns one handle, runs N subagents concurrently, and delivers "
-        "one consolidated result after ALL of them finish. Do NOT wait or poll; "
-        "just continue with other work after dispatching.\n\n"
-        "LIVE TRANSCRIPTS: the dispatch response includes 'live_transcripts' — "
-        "one append-only human-readable log file per task (under "
-        "cache/delegation/live/<delegation_id>/). Each child streams its "
-        "assistant text, tool calls, and tool results there while it runs. "
-        "Read (or `tail -f` in a terminal) those paths any time you or the "
-        "user want to see what a subagent is actually doing instead of "
-        "waiting for the final summary.\n\n"
-        "WHEN TO USE delegate_task:\n"
-        "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
-        "- Tasks that would flood your context with intermediate data\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
-        "WHEN NOT TO USE (use these instead):\n"
-        "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
-        "- Single tool call -> just call the tool directly\n"
-        "- Tasks needing user interaction -> subagents cannot use clarify\n"
-        "- Durable long-running work that must outlive the current turn -> "
-        "use cronjob (action='create') or terminal(background=True, "
-        "notify_on_complete=True) instead. Background delegations are NOT "
-        "durable: if the parent session is closed (/new) or the process exits "
-        "before a subagent finishes, that subagent's work is discarded, and "
-        "/stop cancels every running background subagent.\n\n"
-        "IMPORTANT:\n"
-        "- Subagents have NO memory of your conversation. Pass all relevant "
-        "info (file paths, error messages, constraints) via the 'context' field.\n"
-        "- If the user is writing in a non-English language, or asked for "
-        "output in a specific language / tone / style, say so in 'context' "
-        "(e.g. \"respond in Chinese\", \"return output in Japanese\"). "
-        "Otherwise subagents default to English and their summaries will "
-        "contaminate your final reply with the wrong language.\n"
-        "- Subagent summaries are SELF-REPORTS, not verified facts. A subagent "
-        "that claims \"uploaded successfully\" or \"file written\" may be wrong. "
-        "For operations with external side-effects (HTTP POST/PUT, remote "
-        "writes, file creation at shared paths, publishing), require the "
-        "subagent to return a verifiable handle (URL, ID, absolute path, HTTP "
-        "status) and verify it yourself — fetch the URL, stat the file, read "
-        "back the content — before telling the user the operation succeeded.\n"
-        "- Leaf subagents (role='leaf', the default) CANNOT call: "
-        "delegate_task, clarify, memory, send_message, execute_code.\n"
-        "- Orchestrator subagents (role='orchestrator') retain "
-        "delegate_task so they can spawn their own workers, but still "
-        "cannot use clarify, memory, send_message, or execute_code. "
-        f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
-        f"user and can be disabled globally via "
-        "delegation.orchestrator_enabled=false.\n"
-        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
-        "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "Spawn subagents in isolated contexts; each gets its own conversation, "
+        "terminal session, and toolset, and only its final summary returns to "
+        "you. Provide 'goal' for a single task or 'tasks' for a parallel batch "
+        "(limits and nesting rules are in the parameter descriptions).\n\n"
+        "Runs in the background: dispatch returns immediately with live "
+        "transcript paths, and the completed result (one consolidated message "
+        "for a batch) re-enters the conversation on its own. Do NOT wait or "
+        "poll; continue other work.\n\n"
+        "USE FOR: reasoning-heavy subtasks, work that would flood your context "
+        "with intermediate data, or independent parallel workstreams.\n"
+        "DO NOT USE FOR (use these instead):\n"
+        "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
+        "- A single tool call -> call the tool directly\n"
+        "- Tasks needing user interaction -> subagents cannot ask questions\n"
+        "- Durable work that must survive this session -> cronjob or "
+        "terminal(background=True, notify_on_complete=True); /stop, /new, or "
+        "process exit discards running subagents.\n\n"
+        "RULES:\n"
+        "- Children know nothing of this conversation: pass everything needed "
+        "via 'context', including any required output language, tone, or "
+        "style (e.g. \"respond in Chinese\").\n"
+        "- Child summaries are SELF-REPORTS, not verified facts: a child "
+        "claiming \"uploaded successfully\" or \"file written\" may be wrong. "
+        "For external side effects (uploads, remote writes, publishing), "
+        "require a verifiable handle (URL, ID, absolute path) and verify it "
+        "yourself — fetch the URL, stat the file, read back the content — "
+        "before telling the user the operation succeeded.\n"
+        "- Leaf children (the default) cannot call delegate_task, clarify, "
+        "memory, send_message, or cronjob; orchestrators regain only "
+        "delegate_task.\n"
+        "- Children inherit the parent model and fallback chain unless pinned "
+        "globally via delegation.provider / delegation.model in config.yaml. "
+        "Results are returned as an array, one entry per task."
     )
 
 

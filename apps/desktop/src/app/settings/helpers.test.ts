@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
+import { FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   enumOptionsFor,
@@ -15,18 +16,26 @@ import {
 } from './helpers'
 
 describe('settings helpers', () => {
-  it('lists the desktop memory provider options in their declared order', () => {
-    const options = enumOptionsFor('memory.provider', '', {})
+  it('surfaces repository discovery config in Workspace with user-facing copy', () => {
+    const workspace = SECTIONS.find(section => section.id === 'workspace')
 
-    // Built-in memory is not a provider plugin; the empty sentinel is the
-    // only built-in-shaped entry (#49513).
-    expect(options).toEqual(['', 'honcho', 'hindsight'])
+    expect(workspace?.keys).toEqual(
+      expect.arrayContaining([
+        'desktop.repo_scan_enabled',
+        'desktop.repo_scan_roots',
+        'desktop.repo_scan_exclude_paths'
+      ])
+    )
+    expect(fieldCopyForSchemaKey(FIELD_LABELS, 'desktop.repo_scan_enabled')).toBeTruthy()
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.repo_scan_exclude_paths')).toBeTruthy()
   })
 
-  it('keeps a legacy literal builtin value visible as the current selection', () => {
-    const options = enumOptionsFor('memory.provider', 'builtin', {})
-
-    expect(options).toEqual(['', 'honcho', 'hindsight', 'builtin'])
+  it('does not shadow the backend schema options for memory.provider', () => {
+    // memory.provider options are discovery-driven and served by the backend
+    // config schema (merged per-request); enumOptionsFor must return undefined
+    // so config-field consumes schema.options instead of a stale static list.
+    expect(enumOptionsFor('memory.provider', '', {})).toBeUndefined()
+    expect(enumOptionsFor('memory.provider', 'honcho', {})).toBeUndefined()
   })
 
   describe('isExternalMemoryProvider', () => {
@@ -198,6 +207,26 @@ describe('settings helpers', () => {
     it('renders a dropdown for the terminal execution backend', () => {
       const opts = enumOptionsFor('terminal.backend', 'local', config)
       expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'])
+    })
+
+    it('narrows OpenAI TTS voice suggestions to what the selected model supports', () => {
+      // gpt-4o-mini-tts (and unset/unknown models): full 13-voice set.
+      const full = enumOptionsFor('tts.openai.voice', 'alloy', { tts: { openai: { model: 'gpt-4o-mini-tts' } } })
+      expect(full).toContain('marin')
+      expect(full).toContain('cedar')
+      expect(full).toContain('ballad')
+      expect(full).toContain('verse')
+      expect(full).toHaveLength(13)
+
+      // tts-1 / tts-1-hd: the 9-voice set — no ballad/verse/marin/cedar.
+      for (const model of ['tts-1', 'tts-1-hd']) {
+        const narrowed = enumOptionsFor('tts.openai.voice', 'alloy', { tts: { openai: { model } } })
+        expect(narrowed).toEqual(['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'])
+      }
+
+      // A hand-typed custom voice still stays selectable on tts-1.
+      const custom = enumOptionsFor('tts.openai.voice', 'my-cloned-voice', { tts: { openai: { model: 'tts-1' } } })
+      expect(custom).toContain('my-cloned-voice')
     })
 
     it('appends a hand-typed value not in the known list so it stays selected', () => {

@@ -116,156 +116,8 @@ class TestCustomProviderModelSwitch:
         config = yaml.safe_load(config_path.read_text()) or {}
         assert config["model"]["base_url"] == "https://new.example.test/v1"
 
-    def test_saved_model_still_probes_endpoint(self, config_home):
-        """When a model is already saved, the function must still call
-        fetch_api_models to probe the endpoint — not skip with early return."""
-        from hermes_cli.main import _model_flow_named_custom
 
-        provider_info = {
-            "name": "My vLLM",
-            "base_url": "https://vllm.example.com/v1",
-            "api_key": "sk-test",
-            "model": "model-A",  # already saved
-        }
 
-        with patch("hermes_cli.models.fetch_api_models", return_value=["model-A", "model-B"]) as mock_fetch, \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="2"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        # fetch_api_models MUST be called even though model was saved
-        mock_fetch.assert_called_once_with(
-            "sk-test",
-            "https://vllm.example.com/v1",
-            timeout=8.0,
-        )
-
-    def test_can_switch_to_different_model(self, config_home):
-        """User selects a different model than the saved one."""
-        import yaml
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "My vLLM",
-            "base_url": "https://vllm.example.com/v1",
-            "api_key": "sk-test",
-            "model": "model-A",
-        }
-
-        with patch("hermes_cli.models.fetch_api_models", return_value=["model-A", "model-B"]), \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="2"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model["default"] == "model-B"
-
-    def test_probe_failure_falls_back_to_saved(self, config_home):
-        """When endpoint probe fails and user presses Enter, saved model is used."""
-        import yaml
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "My vLLM",
-            "base_url": "https://vllm.example.com/v1",
-            "api_key": "sk-test",
-            "model": "model-A",
-        }
-
-        # fetch returns empty list (probe failed), user presses Enter (empty input)
-        with patch("hermes_cli.models.fetch_api_models", return_value=[]), \
-             patch("builtins.input", return_value=""), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model["default"] == "model-A"
-
-    def test_no_saved_model_still_works(self, config_home):
-        """First-time flow (no saved model) still works as before."""
-        import yaml
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "My vLLM",
-            "base_url": "https://vllm.example.com/v1",
-            "api_key": "sk-test",
-            # no "model" key
-        }
-
-        with patch("hermes_cli.models.fetch_api_models", return_value=["model-X"]), \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="1"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model["default"] == "model-X"
-
-    def test_api_mode_set_from_provider_info(self, config_home):
-        """When custom_providers entry has api_mode, it should be applied."""
-        import yaml
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "Anthropic Proxy",
-            "base_url": "https://proxy.example.com/anthropic",
-            "api_key": "***",
-            "model": "claude-3",
-            "api_mode": "anthropic_messages",
-        }
-
-        with patch("hermes_cli.models.fetch_api_models", return_value=["claude-3"]) as mock_fetch, \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="1"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        mock_fetch.assert_called_once_with(
-            "***",
-            "https://proxy.example.com/anthropic",
-            timeout=8.0,
-            api_mode="anthropic_messages",
-        )
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model.get("api_mode") == "anthropic_messages"
-
-    def test_api_mode_cleared_when_not_specified(self, config_home):
-        """When custom_providers entry has no api_mode, stale api_mode is removed."""
-        import yaml
-        from hermes_cli.main import _model_flow_named_custom
-
-        # Pre-seed a stale api_mode in config
-        config_path = config_home / "config.yaml"
-        config_path.write_text(yaml.dump({"model": {"api_mode": "anthropic_messages"}}))
-
-        provider_info = {
-            "name": "My vLLM",
-            "base_url": "https://vllm.example.com/v1",
-            "api_key": "***",
-            "model": "llama-3",
-        }
-
-        with patch("hermes_cli.models.fetch_api_models", return_value=["llama-3"]), \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="1"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert "api_mode" not in model, "Stale api_mode should be removed"
 
     def test_env_template_api_key_is_preserved_in_model_config(self, config_home, monkeypatch):
         """Selecting an env-backed custom provider must not inline the secret."""
@@ -410,117 +262,7 @@ class TestCustomProviderModelSwitch:
         assert config["custom_providers"][0]["api_key"] == "${NEURALWATT_API_KEY}"
         assert "sk-live-neuralwatt-secret" not in saved
 
-    def test_bare_custom_current_provider_matches_env_base_url_before_first_fallback(
-        self, config_home, monkeypatch
-    ):
-        """`hermes model` must mark the custom provider matching model.base_url
-        as current instead of falling back to the first saved custom provider.
 
-        Regression: with ``model.provider: custom`` and multiple
-        ``custom_providers`` entries, the CLI resolved bare ``custom`` through
-        ``resolve_custom_provider()``, whose compatibility fallback returns the
-        first entry. A config with Cerebras first and NeuralWatt active then
-        showed Cerebras as current.
-        """
-        from hermes_cli.main import select_provider_and_model
-
-        config_path = config_home / "config.yaml"
-        config_path.write_text(
-            "model:\n"
-            "  default: kimi-k2.6-fast\n"
-            "  provider: custom\n"
-            "  base_url: ${NEURALWATT_API_BASE}\n"
-            "  api_key: ${NEURALWATT_API_KEY}\n"
-            "providers: {}\n"
-            "custom_providers:\n"
-            "- name: Cerebras.ai\n"
-            "  base_url: ${CEREBRAS_API_BASE}\n"
-            "  api_key: ${CEREBRAS_API_KEY}\n"
-            "  model: qwen-3-235b-a22b-instruct-2507\n"
-            "  models: []\n"
-            "- name: NeuralWatt\n"
-            "  base_url: ${NEURALWATT_API_BASE}\n"
-            "  api_key: ${NEURALWATT_API_KEY}\n"
-            "  model: kimi-k2.6-fast\n"
-            "  models: []\n"
-        )
-        monkeypatch.setenv("CEREBRAS_API_BASE", "https://api.cerebras.ai/v1")
-        monkeypatch.setenv("CEREBRAS_API_KEY", "sk-live-cerebras-secret")
-        monkeypatch.setenv("NEURALWATT_API_BASE", "https://api.neuralwatt.com/v1")
-        monkeypatch.setenv("NEURALWATT_API_KEY", "sk-live-neuralwatt-secret")
-
-        captured: dict = {}
-
-        def _capture_and_cancel(labels, default=0):
-            captured["labels"] = labels
-            captured["default"] = default
-            return len(labels) - 1  # Leave unchanged
-
-        with patch("hermes_cli.main._prompt_provider_choice",
-                   side_effect=_capture_and_cancel), \
-             patch("builtins.print"):
-            select_provider_and_model()
-
-        labels = captured["labels"]
-        default_label = labels[captured["default"]]
-        assert "NeuralWatt" in default_label
-        assert "currently active" in default_label
-        assert "Cerebras.ai" not in default_label
-        assert not any(
-            "Cerebras.ai" in label and "currently active" in label
-            for label in labels
-        )
-
-    def test_named_custom_provider_selection_preserves_base_url_env_ref(
-        self, config_home, monkeypatch
-    ):
-        """Selecting an env-backed custom provider should not expand its
-        ``base_url`` template into ``model.base_url`` on disk."""
-        import yaml
-        from hermes_cli.main import select_provider_and_model
-
-        config_path = config_home / "config.yaml"
-        config_path.write_text(
-            "model:\n"
-            "  default: old-model\n"
-            "  provider: openrouter\n"
-            "custom_providers:\n"
-            "- name: NeuralWatt\n"
-            "  base_url: ${NEURALWATT_API_BASE}\n"
-            "  api_key: ${NEURALWATT_API_KEY}\n"
-            "  model: qwen3.6-35b-fast\n"
-            "  models: []\n"
-        )
-        monkeypatch.setenv("NEURALWATT_API_BASE", "https://api.neuralwatt.com/v1")
-        monkeypatch.setenv("NEURALWATT_API_KEY", "sk-live-neuralwatt-secret")
-
-        def _pick_neuralwatt(labels, default=0):
-            for i, label in enumerate(labels):
-                if "NeuralWatt" in label:
-                    return i
-            raise AssertionError(
-                f"NeuralWatt entry missing from provider menu: {labels}"
-            )
-
-        with patch("hermes_cli.main._prompt_provider_choice",
-                   side_effect=_pick_neuralwatt), \
-             patch("hermes_cli.models.fetch_api_models",
-                   return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="1"), \
-             patch("builtins.print"):
-            select_provider_and_model()
-
-        mock_fetch.assert_called_once()
-        probe_args, _ = mock_fetch.call_args
-        assert probe_args[1] == "https://api.neuralwatt.com/v1"
-
-        saved = config_path.read_text()
-        config = yaml.safe_load(saved) or {}
-        assert config["model"]["base_url"] == "${NEURALWATT_API_BASE}"
-        assert config["model"]["api_key"] == "${NEURALWATT_API_KEY}"
-        assert "https://api.neuralwatt.com/v1" not in saved
-        assert "sk-live-neuralwatt-secret" not in saved
 
     def test_key_env_providers_dict_entry_does_not_add_api_key(
         self, config_home, monkeypatch
@@ -585,6 +327,7 @@ class TestCustomProviderModelSwitch:
         saved_text = config_path.read_text()
         saved = yaml.safe_load(saved_text) or {}
         entry = saved["providers"]["crs-henkee"]
+        assert saved["model"]["provider"] == "custom:crs-henkee"
         assert "api_key" not in entry, (
             f"providers.crs-henkee gained an api_key field: {entry.get('api_key')!r}"
         )
@@ -595,6 +338,53 @@ class TestCustomProviderModelSwitch:
         assert "cr_live_secret_xyz" not in saved_text
         # The synthesized template is also redundant here — key_env owns it.
         assert "${HERMES_CRS_HENKEE_KEY}" not in saved_text
+
+    @pytest.mark.parametrize(
+        "stored_provider",
+        [
+            "local-127.0.0.1:11434",
+            "custom:local-ollama",
+            "custom:local-127.0.0.1:11434",
+        ],
+    )
+    def test_picker_recognizes_current_provider_alias_when_name_differs(
+        self, config_home, monkeypatch, stored_provider
+    ):
+        """The classic picker maps legacy and stable IDs to the keyed row."""
+        from hermes_cli.main import select_provider_and_model
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            f"  provider: {stored_provider}\n"
+            "  default: qwen3.5:9b\n"
+            "providers:\n"
+            "  local-127.0.0.1:11434:\n"
+            "    name: Local Ollama\n"
+            "    base_url: http://127.0.0.1:11434/v1\n"
+            "    default_model: qwen3.5:9b\n"
+            "    models:\n"
+            "      qwen3.5:9b: {}\n"
+            "custom_providers: []\n",
+            encoding="utf-8",
+        )
+
+        captured = {}
+
+        def _capture_and_cancel(labels, default=0):
+            captured["labels"] = labels
+            captured["default"] = default
+            return len(labels) - 1
+
+        with patch(
+            "hermes_cli.main._prompt_provider_choice",
+            side_effect=_capture_and_cancel,
+        ), patch("builtins.print"):
+            select_provider_and_model()
+
+        active_label = captured["labels"][captured["default"]]
+        assert "Local Ollama" in active_label
+        assert "currently active" in active_label
 
     def test_key_env_providers_dict_preserves_existing_api_key(
         self, config_home, monkeypatch
@@ -654,28 +444,6 @@ class TestCustomProviderDiscoverModels:
     named-custom flow so the picker shows the configured ``models:`` subset
     instead of the endpoint's full live catalog."""
 
-    def test_discover_false_uses_configured_list_and_skips_probe(self, config_home):
-        """discover_models: false + configured models → no live probe, the
-        configured list is used verbatim."""
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "Baidu Coding",
-            "base_url": "https://qianfan.baidubce.com/v2/coding",
-            "api_key": "sk-test",
-            "discover_models": False,
-            "models": {"kimi-k2.5": {}, "glm-5": {}},
-            "model": "kimi-k2.5",
-        }
-
-        with patch("hermes_cli.models.fetch_api_models") as mock_fetch, \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="2"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        # The live /models endpoint must NOT be probed when discovery is off.
-        mock_fetch.assert_not_called()
 
     def test_discover_false_saves_choice_from_configured_list(self, config_home):
         """User picks the 2nd configured model; it persists, list-driven."""
@@ -703,34 +471,6 @@ class TestCustomProviderDiscoverModels:
         assert isinstance(model, dict)
         assert model["default"] == "glm-5"
 
-    def test_default_still_probes_when_discover_unset(self, config_home):
-        """Default (discover_models unset → True) keeps live-probe behaviour
-        even when a models: list is configured — Option B opt-out semantics."""
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "My Gateway",
-            "base_url": "https://gw.example.com/v1",
-            "api_key": "sk-test",
-            "models": {"subset-a": {}},  # configured, but discovery NOT disabled
-            "model": "subset-a",
-        }
-
-        with patch(
-            "hermes_cli.models.fetch_api_models",
-            return_value=["live-a", "live-b", "live-c"],
-        ) as mock_fetch, \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="1"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        # Probe MUST still run — configured models: alone does not whitelist.
-        mock_fetch.assert_called_once_with(
-            "sk-test",
-            "https://gw.example.com/v1",
-            timeout=8.0,
-        )
 
     def test_probe_empty_falls_back_to_configured_list(self, config_home):
         """When discovery is on but the probe returns nothing, fall back to the

@@ -2,17 +2,20 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $terminalFontFamily, setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
 import {
   $currentCwd,
   $currentFastMode,
   $currentReasoningEffort,
+  $defaultReasoningEffort,
   markComposerSelectionManual,
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModelSource,
-  setCurrentReasoningEffort
+  setCurrentReasoningEffort,
+  setDefaultReasoningEffort
 } from '@/store/session'
 
 import { useHermesConfig } from './use-hermes-config'
@@ -44,136 +47,63 @@ describe('useHermesConfig refreshHermesConfig', () => {
     setCurrentFastMode(false)
     setCurrentModelSource('')
     setCurrentReasoningEffort('')
+    setDefaultReasoningEffort('')
+    setTerminalFontFamilyFromConfig('')
     persistString(WORKSPACE_CWD_KEY, null)
   })
 
-  it('applies terminal.cwd from config even when localStorage has a stale value', async () => {
-    // Simulate a stale remembered workspace cwd
-    persistString(WORKSPACE_CWD_KEY, '/Users/old/stale-project')
-    setCurrentCwd('/Users/old/stale-project')
+  // Regression: the composer keeps a manual model pick sticky, which skips the
+  // composer reseed. The profile default must still be published, because the
+  // model picker resolves "the default effort" from it when applying a model's
+  // preset — otherwise selecting a model silently downgrades a configured
+  // `agent.reasoning_effort: high` to Hermes' built-in medium.
+  it('publishes the profile default effort even when a manual pick blocks the composer reseed', async () => {
+    setCurrentModelSource('manual')
+    setCurrentReasoningEffort('low')
+
+    mockConfig({ agent: { reasoning_effort: 'high' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($defaultReasoningEffort.get()).toBe('high')
+    // The manual pick itself is still respected.
+    expect($currentReasoningEffort.get()).toBe('low')
+  })
+
+  it('does not let terminal.cwd replace an inactive selected workspace', async () => {
+    setCurrentCwd('/Users/example/repo/.worktrees/feature')
 
     mockConfig({ terminal: { cwd: '/Users/example/new-workspace' } })
-
-    const { result } = renderHook(() =>
-      useHermesConfig({
-        activeSessionIdRef: { current: null },
-        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
-      })
-    )
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
 
     await act(async () => {
       await result.current.refreshHermesConfig()
     })
 
-    // The configured terminal.cwd must override the stale localStorage value
-    expect($currentCwd.get()).toBe('/Users/example/new-workspace')
+    expect($currentCwd.get()).toBe('/Users/example/repo/.worktrees/feature')
   })
 
-  it('keeps the active session workspace when a session is running', async () => {
-    setCurrentCwd('/workspace/attached-project')
+  it('does not let terminal.cwd replace an active session workspace', async () => {
+    setCurrentCwd('/Users/example/repo/.worktrees/attached')
 
     mockConfig({ terminal: { cwd: '/Users/example/new-workspace' } })
-
-    const { result } = renderHook(() =>
-      useHermesConfig({
-        activeSessionIdRef: { current: 'session-1' },
-        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
-      })
-    )
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: 'session-1' } }))
 
     await act(async () => {
       await result.current.refreshHermesConfig()
     })
 
-    // Config refreshes mid-session must not yank the workspace out from
-    // under the attached session.
-    expect($currentCwd.get()).toBe('/workspace/attached-project')
-  })
-
-  it('uses empty string when terminal.cwd is not set and localStorage is empty', async () => {
-    mockConfig({})
-
-    const { result } = renderHook(() =>
-      useHermesConfig({
-        activeSessionIdRef: { current: null },
-        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
-      })
-    )
-
-    await act(async () => {
-      await result.current.refreshHermesConfig()
-    })
-
-    expect($currentCwd.get()).toBe('')
-  })
-
-  it('ignores terminal.cwd when it is "."', async () => {
-    mockConfig({ terminal: { cwd: '.' } })
-
-    const { result } = renderHook(() =>
-      useHermesConfig({
-        activeSessionIdRef: { current: null },
-        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
-      })
-    )
-
-    await act(async () => {
-      await result.current.refreshHermesConfig()
-    })
-
-    expect($currentCwd.get()).toBe('')
-  })
-
-  it('calls refreshProjectBranch with the configured cwd', async () => {
-    const refreshProjectBranch = vi.fn().mockResolvedValue(undefined)
-    setCurrentCwd('')
-
-    mockConfig({ terminal: { cwd: '/workspace/project-a' } })
-
-    const { result } = renderHook(() =>
-      useHermesConfig({
-        activeSessionIdRef: { current: null },
-        refreshProjectBranch
-      })
-    )
-
-    await act(async () => {
-      await result.current.refreshHermesConfig()
-    })
-
-    expect(refreshProjectBranch).toHaveBeenCalledWith('/workspace/project-a')
-  })
-
-  it('refreshes the branch for the session cwd (not config) when a session is active', async () => {
-    const refreshProjectBranch = vi.fn().mockResolvedValue(undefined)
-    setCurrentCwd('/workspace/attached-project')
-
-    mockConfig({ terminal: { cwd: '/Users/example/new-workspace' } })
-
-    const { result } = renderHook(() =>
-      useHermesConfig({
-        activeSessionIdRef: { current: 'session-1' },
-        refreshProjectBranch
-      })
-    )
-
-    await act(async () => {
-      await result.current.refreshHermesConfig()
-    })
-
-    expect(refreshProjectBranch).toHaveBeenCalledWith('/workspace/attached-project')
+    expect($currentCwd.get()).toBe('/Users/example/repo/.worktrees/attached')
   })
 
   it('does not let a stale forced config refresh overwrite newer draft selector intent', async () => {
     const profileConfig = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
     vi.mocked(getHermesConfig).mockReturnValueOnce(profileConfig.promise)
 
-    const { result } = renderHook(() =>
-      useHermesConfig({
-        activeSessionIdRef: { current: null },
-        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
-      })
-    )
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
 
     let pendingRefresh!: Promise<void>
     act(() => {
@@ -203,12 +133,7 @@ describe('useHermesConfig refreshHermesConfig', () => {
     const profileC = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
     vi.mocked(getHermesConfig).mockReturnValueOnce(profileB.promise).mockReturnValueOnce(profileC.promise)
 
-    const { result } = renderHook(() =>
-      useHermesConfig({
-        activeSessionIdRef: { current: null },
-        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
-      })
-    )
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
 
     let refreshB!: Promise<void>
     let refreshC!: Promise<void>
@@ -228,5 +153,41 @@ describe('useHermesConfig refreshHermesConfig', () => {
 
     expect($currentReasoningEffort.get()).toBe('low')
     expect($currentFastMode.get()).toBe(false)
+  })
+
+  it('loads the profile terminal font for already-mounted terminal surfaces', async () => {
+    mockConfig({ terminal: { font_family: 'MesloLGS NF' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($terminalFontFamily.get()).toBe('MesloLGS NF')
+  })
+
+  it('does not let an older profile response restore its terminal font', async () => {
+    const profileB = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    const profileC = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    vi.mocked(getHermesConfig).mockReturnValueOnce(profileB.promise).mockReturnValueOnce(profileC.promise)
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    let refreshB!: Promise<void>
+    let refreshC!: Promise<void>
+    act(() => {
+      refreshB = result.current.refreshHermesConfig(true)
+      refreshC = result.current.refreshHermesConfig(true)
+    })
+
+    profileC.resolve({ terminal: { font_family: 'Hack Nerd Font' } })
+    await act(async () => {
+      await refreshC
+    })
+    profileB.resolve({ terminal: { font_family: 'MesloLGS NF' } })
+    await act(async () => {
+      await refreshB
+    })
+
+    expect($terminalFontFamily.get()).toBe('Hack Nerd Font')
   })
 })

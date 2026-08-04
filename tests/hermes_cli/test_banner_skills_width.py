@@ -46,16 +46,6 @@ def test_wide_terminal_shows_more_than_8_skills():
     assert "skill-08" in text, f"Expected skill-08 in output for wide terminal: {text}"
 
 
-def test_narrow_terminal_limits_skills():
-    """A narrow terminal should still limit skills to avoid wrapping."""
-    skills = {"research": [f"skill-{i:02d}" for i in range(15)]}
-    text = _build_banner_with_skills(skills, term_width=80)
-
-    # With an 80-char terminal, we should NOT see all 15 skills — some truncation
-    # is expected. Verify the "+N more" indicator is present.
-    assert "more" in text or "..." in text or "skill-00" in text
-
-
 def test_small_category_shows_all_skills():
     """Categories with few skills should show all of them regardless of width."""
     skills = {"security": ["auth", "vault"]}

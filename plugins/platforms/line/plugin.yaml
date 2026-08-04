@@ -32,7 +32,7 @@ optional_env:
     prompt: "Webhook port"
     password: false
   - name: LINE_HOST
-    description: "Webhook bind host (default: 0.0.0.0)"
+    description: "Webhook bind host (default: unset → dual-stack, all interfaces IPv4+IPv6)"
     prompt: "Webhook host"
     password: false
   - name: LINE_PUBLIC_URL

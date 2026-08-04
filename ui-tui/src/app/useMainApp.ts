@@ -1,6 +1,7 @@
 import {
   forceRedraw,
   type ScrollBoxHandle,
+  setDimFallbackColor,
   useApp,
   useHasSelection,
   useSelection,
@@ -11,17 +12,15 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { DASHBOARD_TUI_MODE, STARTUP_RESUME_ID } from '../config/env.js'
-import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
-import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
-  ClipboardPasteResponse,
   ConfigSetResponse,
   GatewayEvent,
   SessionActiveListResponse,
@@ -29,28 +28,30 @@ import type {
   TerminalResizeResponse
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
-import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
-import { appendTranscriptMessage } from '../lib/messages.js'
+import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
+import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
-import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
+import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
+import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
 import { useInputHandlers } from './useInputHandlers.js'
@@ -61,14 +62,6 @@ import { useSubmission } from './useSubmission.js'
 const BRACKET_PASTE_ON = '\x1b[?2004h'
 const BRACKET_PASTE_OFF = '\x1b[?2004l'
 const MAX_HEIGHT_CACHE_BUCKETS = 12
-
-const capHistory = (items: Msg[]): Msg[] => {
-  if (items.length <= MAX_HISTORY) {
-    return items
-  }
-
-  return items[0]?.kind === 'intro' ? [items[0]!, ...items.slice(-(MAX_HISTORY - 1))] : items.slice(-MAX_HISTORY)
-}
 
 const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
   if (status === 'ready') {
@@ -182,7 +175,17 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [stdout])
 
-  const [historyItems, setHistoryItems] = useState<Msg[]>(() => [{ kind: 'intro', role: 'system', text: '' }])
+  const [historyItems, setHistoryItemsState] = useState<Msg[]>(() => [{ kind: 'intro', role: 'system', text: '' }])
+  const [historyGeneration, setHistoryGeneration] = useState(0)
+
+  const setHistoryItems = useCallback<StateSetter<Msg[]>>(value => {
+    if (typeof value !== 'function') {
+      setHistoryGeneration(generation => generation + 1)
+    }
+
+    setHistoryItemsState(previous => capTranscriptHistory(typeof value === 'function' ? value(previous) : value))
+  }, [])
+
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [stickyPrompt, setStickyPrompt] = useState('')
   const [catalog, setCatalog] = useState<null | SlashCatalog>(null)
@@ -220,7 +223,7 @@ export function useMainApp(gw: GatewayClient) {
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
-  const clipboardPasteRef = useRef<(quiet?: boolean) => Promise<void> | void>(() => {})
+  const sysRef = useRef<(text: string) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
   const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
@@ -242,6 +245,14 @@ export function useMainApp(gw: GatewayClient) {
   useEffect(() => {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
+
+  // Terminals that ignore SGR 2 (Apple_Terminal) get a literal color for
+  // `dim` instead. Feed it the theme's muted tone so dimmed spans stay in
+  // the palette — a hardcoded gray renders as a foreign foreground next to
+  // themed text on the same line.
+  useEffect(() => {
+    setDimFallbackColor(ui.theme.color.muted)
+  }, [ui.theme.color.muted])
 
   // macOS Terminal.app does not forward Cmd+C to fullscreen TUIs that enable
   // mouse tracking, so the only reliable native-feeling path is iTerm-style
@@ -285,11 +296,8 @@ export function useMainApp(gw: GatewayClient) {
 
   const composer = useComposerState({
     gw,
-    onClipboardPaste: quiet => clipboardPasteRef.current(quiet),
-    onImageAttached: info => {
-      sys(attachedImageNotice(info))
-    },
-    submitRef
+    submitRef,
+    sys: text => sysRef.current(text)
   })
 
   const { actions: composerActions, refs: composerRefs, state: composerState } = composer
@@ -349,20 +357,20 @@ export function useMainApp(gw: GatewayClient) {
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
-  const heightCache = useMemo(() => {
-    let cache = heightCachesRef.current.get(heightCacheKey)
+  // Build a render-local snapshot. Registering/pruning the shared cache is a
+  // post-commit transition below, so an abandoned concurrent render cannot
+  // delete heights still owned by the committed transcript generation.
+  const activeHeightCache = useMemo(() => new Map(heightCachesRef.current.get(heightCacheKey)), [heightCacheKey])
 
-    if (!cache) {
-      cache = new Map()
-      heightCachesRef.current.set(heightCacheKey, cache)
+  useEffect(() => {
+    pruneVirtualHeightCache(activeHeightCache, virtualRows)
+    heightCachesRef.current.delete(heightCacheKey)
+    heightCachesRef.current.set(heightCacheKey, activeHeightCache)
 
-      if (heightCachesRef.current.size > MAX_HEIGHT_CACHE_BUCKETS) {
-        heightCachesRef.current.delete(heightCachesRef.current.keys().next().value!)
-      }
+    while (heightCachesRef.current.size > MAX_HEIGHT_CACHE_BUCKETS) {
+      heightCachesRef.current.delete(heightCachesRef.current.keys().next().value!)
     }
-
-    return cache
-  }, [heightCacheKey])
+  }, [activeHeightCache, heightCacheKey, historyGeneration, virtualRows])
 
   // Index of the first user-role message — separator-rendering in
   // appLayout.tsx skips this row, so the height estimator must skip it
@@ -408,16 +416,17 @@ export function useMainApp(gw: GatewayClient) {
         const h = heights.get(row.key)
 
         if (h) {
-          heightCache.set(row.key, h)
+          activeHeightCache.set(row.key, h)
         }
       }
     },
-    [heightCache, virtualRows]
+    [activeHeightCache, virtualRows]
   )
 
   const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols, {
     estimateHeight: estimateRowHeight,
-    initialHeights: heightCache,
+    generation: historyGeneration,
+    initialHeights: activeHeightCache,
     liveTailActive: turnLiveTailActive,
     onHeightsChange: syncHeightCache
   })
@@ -428,11 +437,31 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const appendMessage = useCallback(
-    (msg: Msg) => setHistoryItems(prev => capHistory(appendTranscriptMessage(prev, msg))),
-    []
+    (msg: Msg) => setHistoryItems(prev => appendTranscriptMessage(prev, msg)),
+    [setHistoryItems]
   )
 
   const sys = useCallback((text: string) => appendMessage({ role: 'system', text }), [appendMessage])
+
+  // Hot-loaded user widgets announce themselves — a silently-registered
+  // widget is indistinguishable from a failed one. Errors surface too.
+  useEffect(
+    () =>
+      onUserWidgets(({ added, errors, removed }) => {
+        for (const id of added) {
+          sys(`widget /${id} is live — type /${id} to open`)
+        }
+
+        for (const id of removed) {
+          sys(`widget /${id} removed (file deleted)`)
+        }
+
+        for (const err of errors) {
+          sys(`widget ${err.file} failed to load: ${err.message}`)
+        }
+      }),
+    [sys]
+  )
 
   const page = useCallback(
     (text: string, title?: string) => patchOverlayState({ pager: { lines: text.split('\n'), offset: 0, title } }),
@@ -537,6 +566,7 @@ export function useMainApp(gw: GatewayClient) {
   }, [ui.busy, turnStartedAt])
 
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
+  useBatteryPoll(gw)
 
   useEffect(() => {
     if (!ui.sid) {
@@ -594,7 +624,12 @@ export function useMainApp(gw: GatewayClient) {
   const tabCwd = ui.info?.cwd
 
   useTerminalTitle(
-    model ? composeTabTitle(marker, ui.sessionTitle, model, tabCwd ? shortCwd(tabCwd, 24) : '') : 'Hermes'
+    model
+      ? {
+          tab: composeTabTitle(marker, ui.sessionTitle, '', ''),
+          window: composeTabTitle(marker, ui.sessionTitle, model, tabCwd ? shortCwd(tabCwd, 24) : '')
+        }
+      : 'Hermes'
   )
 
   useEffect(() => {
@@ -674,27 +709,7 @@ export function useMainApp(gw: GatewayClient) {
     [appendMessage, overlay.clarify, rpc]
   )
 
-  const paste = useCallback(
-    (quiet = false) =>
-      rpc<ClipboardPasteResponse>('clipboard.paste', { session_id: getUiState().sid }).then(r => {
-        if (!r) {
-          return
-        }
-
-        if (r.attached) {
-          const meta = imageTokenMeta(r)
-
-          return sys(`📎 Image #${r.count} attached from clipboard${meta ? ` · ${meta}` : ''}`)
-        }
-
-        if (!quiet) {
-          sys(r.message || 'No image found in clipboard')
-        }
-      }),
-    [rpc, sys]
-  )
-
-  clipboardPasteRef.current = paste
+  sysRef.current = sys
 
   const { dispatchSubmission, send, sendQueued, submit } = useSubmission({
     appendMessage,
@@ -789,6 +804,7 @@ export function useMainApp(gw: GatewayClient) {
       session.newSession,
       session.resetSession,
       session.resumeById,
+      setHistoryItems,
       setVoiceEnabled,
       setVoiceProcessing,
       setVoiceRecording,
@@ -854,10 +870,11 @@ export function useMainApp(gw: GatewayClient) {
     () =>
       createSlashHandler({
         composer: {
+          attachClipboardImage: composerActions.attachClipboardImage,
+          attachImagePath: composerActions.attachImagePath,
           enqueue: composerActions.enqueue,
           hasSelection,
           openEditor: composerActions.openEditor,
-          paste,
           queueRef: composerRefs.queueRef,
           selection,
           setInput: composerActions.setInput
@@ -896,10 +913,10 @@ export function useMainApp(gw: GatewayClient) {
       maybeWarn,
       page,
       panel,
-      paste,
       selection,
       send,
       session,
+      setHistoryItems,
       sys
     ]
   )
@@ -1034,16 +1051,21 @@ export function useMainApp(gw: GatewayClient) {
           state.streamSegments.some(segment => {
             const hasThinking = Boolean(segment.thinking?.trim())
             const hasTrailTools = Boolean(segment.tools?.length)
+            // A MoA reference segment (segment.isMoaReference) is the
+            // user-facing mixture-of-agents process the user opted into, not
+            // private model reasoning — it must keep the live progress area
+            // (and therefore StreamingAssistant) up even when the thinking
+            // panel is hidden, matching shouldShowThinkingTrail's settled-
+            // transcript override in messageLine.tsx (#64657/#64701).
+            const thinkingVisible = thinkingPanelVisible || Boolean(segment.isMoaReference)
 
             if (segment.kind === 'trail' && !segment.text) {
-              return (
-                (thinkingPanelVisible && hasThinking) || ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
-              )
+              return (thinkingVisible && hasThinking) || ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
             }
 
             return (
               Boolean(segment.text?.trim()) ||
-              (thinkingPanelVisible && hasThinking) ||
+              (thinkingVisible && hasThinking) ||
               ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
             )
           }) ||
@@ -1095,6 +1117,24 @@ export function useMainApp(gw: GatewayClient) {
     ]
   )
 
+  /**
+   * Every keystroke lands here, so this is where attached payloads are
+   * reconciled against the tokens still in the text — deleting an
+   * `[[ Image N ]]` is how the user unattaches it.
+   */
+  const updateInput = useCallback<StateSetter<string>>(
+    next => {
+      composerActions.setInput(prev => {
+        const value = typeof next === 'function' ? next(prev) : next
+
+        composerActions.syncTokens(value)
+
+        return value
+      })
+    },
+    [composerActions]
+  )
+
   const appComposer = useMemo(
     () => ({
       cols,
@@ -1108,10 +1148,10 @@ export function useMainApp(gw: GatewayClient) {
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
       submit,
-      updateInput: composerActions.setInput,
+      updateInput,
       voiceRecordKey
     }),
-    [cols, composerActions, composerState, empty, pagerPageSize, submit, voiceRecordKey]
+    [cols, composerActions, composerState, empty, pagerPageSize, submit, updateInput, voiceRecordKey]
   )
 
   // Pass current progress through unfrozen — streaming update throttling

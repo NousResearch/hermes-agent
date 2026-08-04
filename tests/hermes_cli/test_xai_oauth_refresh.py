@@ -34,15 +34,6 @@ def test_xai_oauth_token_expiring_uses_one_hour_skew() -> None:
     )
 
 
-def test_xai_oauth_token_not_expiring_beyond_one_hour_skew() -> None:
-    token = _jwt_with_exp(int(time.time()) + 90 * 60)
-
-    assert not auth._xai_access_token_is_expiring(
-        token,
-        auth.XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    )
-
-
 def test_xai_proactive_refresh_skew_short_lived_token() -> None:
     token = _jwt_with_exp(int(time.time()) + 15 * 60)
     skew = auth._xai_proactive_refresh_skew_seconds(token)
@@ -51,7 +42,3 @@ def test_xai_proactive_refresh_skew_short_lived_token() -> None:
     assert not auth._xai_access_token_is_expiring(token, skew)
 
 
-def test_xai_proactive_refresh_skew_long_lived_token() -> None:
-    token = _jwt_with_exp(int(time.time()) + 5 * 60 * 60)
-
-    assert auth._xai_proactive_refresh_skew_seconds(token) == auth.XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS

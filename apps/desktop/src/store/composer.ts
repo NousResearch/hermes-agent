@@ -21,6 +21,24 @@ export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
 export const $composerTerminalSelections = atom<Record<string, string>>({})
 
+// Latched because opening a fresh session may remount the main composer before
+// it can start voice. Session-tile composers deliberately never consume this.
+export const $voiceConversationStartRequest = atom(0)
+let nextVoiceStartRequest = 0
+let handledVoiceStartRequest = 0
+
+export const requestVoiceConversationStart = (): void => $voiceConversationStartRequest.set(++nextVoiceStartRequest)
+
+export const takeVoiceConversationStart = (current: number): boolean => {
+  if (current <= handledVoiceStartRequest) {
+    return false
+  }
+
+  handledVoiceStartRequest = current
+
+  return true
+}
+
 // ---------------------------------------------------------------------------
 // Composer scopes — one live attachment set PER MOUNTED COMPOSER. The main
 // chat's scope wraps the module-level atom above (all existing readers keep
@@ -170,6 +188,41 @@ export function takeSessionDraft(scope: string | null | undefined): SessionDraft
 }
 
 export const clearSessionDraft = (scope: string | null | undefined) => stashSessionDraft(scope, '', [])
+
+/**
+ * Move a stashed composer draft from one session key onto another.
+ *
+ * Auto-compression rotates the live stored tip id (root → continuation) while
+ * the user may still be typing. Drafts keyed on the obsolete tip would otherwise
+ * vanish from the composer when selection follows the new tip. No-op unless both
+ * keys resolve, differ, and the source has content. Does not overwrite a
+ * non-empty destination draft.
+ */
+export function migrateSessionDraft(fromKey: string | null | undefined, toKey: string | null | undefined): boolean {
+  const from = draftKey(fromKey)
+  const to = draftKey(toKey)
+
+  if (!fromKey || !toKey || from === to) {
+    return false
+  }
+
+  const source = draftsBySession.get(from)
+
+  if (!source || (!source.text.trim() && source.attachments.length === 0)) {
+    return false
+  }
+
+  const dest = draftsBySession.get(to)
+
+  if (dest && (dest.text.trim() || dest.attachments.length > 0)) {
+    return false
+  }
+
+  stashSessionDraft(toKey, source.text, source.attachments)
+  clearSessionDraft(fromKey)
+
+  return true
+}
 
 export function setComposerDraft(value: string) {
   $composerDraft.set(value)

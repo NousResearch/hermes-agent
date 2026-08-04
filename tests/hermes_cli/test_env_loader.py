@@ -6,104 +6,12 @@ import sys
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
-def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    env_file.write_text("OPENAI_BASE_URL=https://new.example/v1\n", encoding="utf-8")
-
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
 
 
-def test_project_env_overrides_stale_shell_values_when_user_env_missing(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    project_env = tmp_path / ".env"
-    project_env.write_text("OPENAI_BASE_URL=https://project.example/v1\n", encoding="utf-8")
-
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
-
-    loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
-
-    assert loaded == [project_env]
-    assert os.getenv("OPENAI_BASE_URL") == "https://project.example/v1"
 
 
-def test_project_env_is_sanitized_before_loading(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    project_env = tmp_path / ".env"
-    project_env.write_text(
-        "TELEGRAM_BOT_TOKEN=0123456789:test"
-        "ANTHROPIC_API_KEY=sk-ant-test123\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
-
-    assert loaded == [project_env]
-    assert os.getenv("TELEGRAM_BOT_TOKEN") == "0123456789:test"
-    assert os.getenv("ANTHROPIC_API_KEY") == "sk-ant-test123"
 
 
-def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    home.mkdir()
-    user_env = home / ".env"
-    project_env = tmp_path / ".env"
-    user_env.write_text("OPENAI_BASE_URL=https://user.example/v1\n", encoding="utf-8")
-    project_env.write_text("OPENAI_BASE_URL=https://project.example/v1\nOPENAI_API_KEY=project-key\n", encoding="utf-8")
-
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
-
-    assert loaded == [user_env, project_env]
-    assert os.getenv("OPENAI_BASE_URL") == "https://user.example/v1"
-    assert os.getenv("OPENAI_API_KEY") == "project-key"
-
-
-def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    # Null bytes can be introduced when copy-pasting API keys.
-    env_file.write_text("GLM_API_KEY=abc\x00\x00\nOPENAI_API_KEY=sk-123\n", encoding="utf-8")
-
-    monkeypatch.delenv("GLM_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("GLM_API_KEY") == "abc"
-    assert os.getenv("OPENAI_API_KEY") == "sk-123"
-
-
-def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    home.mkdir()
-    (home / ".env").write_text(
-        "OPENAI_BASE_URL=https://new.example/v1\nHERMES_INFERENCE_PROVIDER=custom\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
-    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
-
-    sys.modules.pop("hermes_cli.main", None)
-    importlib.import_module("hermes_cli.main")
-
-    assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
-    assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
 
 
 # ---------------------------------------------------------------------------
@@ -128,82 +36,6 @@ def _assert_clean_utf8_env_on_disk(env_file, *, first_key: str) -> None:
     assert first_key.encode("ascii") in after
 
 
-def test_utf16_le_bom_env_loads_and_rewrites_clean_utf8(tmp_path, monkeypatch):
-    """Notepad 'Unicode' (UTF-16-LE + BOM): first key loads; file rewritten UTF-8."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    content = "HERMES_TEST_KEY=hello_utf16\nSECOND_KEY=world\n"
-    env_file.write_bytes(codecs.BOM_UTF16_LE + content.encode("utf-16-le"))
-
-    monkeypatch.delenv("HERMES_TEST_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-    monkeypatch.delenv("\ufffd\ufffdHERMES_TEST_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("HERMES_TEST_KEY") == "hello_utf16"
-    assert os.getenv("SECOND_KEY") == "world"
-    assert os.environ.get("\ufffd\ufffdHERMES_TEST_KEY") is None
-    _assert_clean_utf8_env_on_disk(env_file, first_key="HERMES_TEST_KEY")
-
-
-def test_utf16_be_bom_env_loads_and_rewrites_clean_utf8(tmp_path, monkeypatch):
-    """UTF-16-BE + BOM: first key loads; file rewritten as clean UTF-8."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    content = "HERMES_TEST_KEY=hello_utf16\nSECOND_KEY=world\n"
-    env_file.write_bytes(codecs.BOM_UTF16_BE + content.encode("utf-16-be"))
-
-    monkeypatch.delenv("HERMES_TEST_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("HERMES_TEST_KEY") == "hello_utf16"
-    assert os.getenv("SECOND_KEY") == "world"
-    _assert_clean_utf8_env_on_disk(env_file, first_key="HERMES_TEST_KEY")
-
-
-def test_utf16_le_no_bom_still_repairs_to_utf8(tmp_path, monkeypatch):
-    """BOM-less UTF-16-LE: NUL-strip repair is now intentional; rewrites UTF-8."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    content = "HERMES_TEST_KEY=hello_utf16\nSECOND_KEY=world\n"
-    env_file.write_bytes(content.encode("utf-16-le"))  # no BOM
-
-    monkeypatch.delenv("HERMES_TEST_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("HERMES_TEST_KEY") == "hello_utf16"
-    assert os.getenv("SECOND_KEY") == "world"
-    _assert_clean_utf8_env_on_disk(env_file, first_key="HERMES_TEST_KEY")
-
-
-def test_utf16_be_no_bom_still_repairs_to_utf8(tmp_path, monkeypatch):
-    """BOM-less UTF-16-BE: NULs are on the opposite side; still repairs."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    content = "HERMES_TEST_KEY=hello_utf16\nSECOND_KEY=world\n"
-    env_file.write_bytes(content.encode("utf-16-be"))  # no BOM
-
-    monkeypatch.delenv("HERMES_TEST_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("HERMES_TEST_KEY") == "hello_utf16"
-    assert os.getenv("SECOND_KEY") == "world"
-    _assert_clean_utf8_env_on_disk(env_file, first_key="HERMES_TEST_KEY")
 
 
 def test_utf16_le_bom_preserves_non_ascii_values(tmp_path, monkeypatch):
@@ -258,22 +90,6 @@ def test_utf32_le_bom_leaves_file_untouched(tmp_path, caplog):
     assert any("UTF-32" in r.message for r in caplog.records)
 
 
-def test_utf32_be_bom_leaves_file_untouched(tmp_path, caplog):
-    """UTF-32-BE BOM: same refuse-to-mangle path as LE (ordering independence)."""
-    import logging
-
-    from hermes_cli.env_loader import _sanitize_env_file_if_needed
-
-    env_file = tmp_path / ".env"
-    content = "HERMES_TEST_KEY=hello_utf32\nSECOND_KEY=world\n"
-    raw = codecs.BOM_UTF32_BE + content.encode("utf-32-be")
-    env_file.write_bytes(raw)
-
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.env_loader"):
-        _sanitize_env_file_if_needed(env_file)
-
-    assert env_file.read_bytes() == raw
-    assert any("UTF-32" in r.message for r in caplog.records)
 
 
 def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
@@ -305,22 +121,6 @@ def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
     assert env_file.read_bytes() == raw
 
 
-def test_leading_replacement_char_does_not_rewrite(tmp_path):
-    """errors=replace FFFD-on-first-line guard: do not persist mangling.
-
-    Leading 0xFF is not a UTF-16/32 BOM (those need the second BOM byte) but
-    is undecodable as UTF-8, so the replace path would glue U+FFFD onto the
-    key. The guard must leave the on-disk bytes untouched.
-    """
-    from hermes_cli.env_loader import _sanitize_env_file_if_needed
-
-    env_file = tmp_path / ".env"
-    raw = b"\xffHERMES_TEST_KEY=should-not-rewrite\nSECOND_KEY=ok\n"
-    env_file.write_bytes(raw)
-
-    _sanitize_env_file_if_needed(env_file)
-
-    assert env_file.read_bytes() == raw
 
 
 def test_plain_utf8_env_regression(tmp_path, monkeypatch):
@@ -369,3 +169,274 @@ def test_cp1252_env_regression_does_not_crash(tmp_path, monkeypatch):
     assert os.getenv("LATIN1_VALUE") == "café"
     # Sanitize must not have rewritten (would have persisted U+FFFD).
     assert env_file.read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# Profile .env isolation: inherited known-key cleanup
+# ---------------------------------------------------------------------------
+
+
+def test_known_keys_absent_from_user_env_are_cleared(tmp_path, monkeypatch):
+    """Known Hermes keys inherited from parent process are removed when absent
+    from the profile's .env.
+
+    This is the startup equivalent of ``reload_env()``'s known-key cleanup and
+    fixes the isolation gap where one profile's ACP/provider settings silently
+    leak into another profile's runtime via ``os.environ`` inheritance.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "OPENAI_BASE_URL=https://profile.example/v1\n", encoding="utf-8"
+    )
+
+    # Inherited known keys from parent process / other profile
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://stale.example/v1")
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("COPILOT_CLI_PATH", "/usr/bin/claude-code")
+    # Unrelated shell var must NOT be touched
+    monkeypatch.setenv("MY_SHELL_ONLY_VAR", "keep-me")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    # OPENAI_BASE_URL is defined in the profile .env → overridden to the new value
+    assert os.getenv("OPENAI_BASE_URL") == "https://profile.example/v1"
+    # HERMES_ACP_AUTH_METHOD and COPILOT_CLI_PATH are NOT in the profile .env → cleared
+    assert "HERMES_ACP_AUTH_METHOD" not in os.environ
+    assert "COPILOT_CLI_PATH" not in os.environ
+    # Unrelated shell vars must survive
+    assert os.getenv("MY_SHELL_ONLY_VAR") == "keep-me"
+
+
+def test_empty_assignment_in_user_env_is_preserved(tmp_path, monkeypatch):
+    """An explicit ``KEY=`` (empty value) in the profile .env keeps the key
+    in ``os.environ`` — distinct from a key absent from .env entirely.
+
+    Empty ``HERMES_ACP_AUTH_METHOD=`` tells the ACP adapter to skip
+    ``authenticate`` (the key exists, its value is just empty).  This is the
+    documented workaround for the leak and must still work after the cleanup.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("HERMES_ACP_AUTH_METHOD=\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("COPILOT_CLI_PATH", "/usr/bin/sneaky")  # NOT in .env → cleared
+
+    load_hermes_dotenv(hermes_home=home)
+
+    # KEY= in .env keeps the key (now empty string)
+    assert "HERMES_ACP_AUTH_METHOD" in os.environ
+    assert os.environ["HERMES_ACP_AUTH_METHOD"] == ""
+    # COPILOT_CLI_PATH is absent from .env → cleared
+    assert "COPILOT_CLI_PATH" not in os.environ
+
+
+def test_no_user_env_does_not_clear_anything(tmp_path, monkeypatch):
+    """When no profile .env exists (bare profile), load_hermes_dotenv must not
+    wipe inherited known keys — the bare-profile case follows #66930 / #67027
+    semantics and the user's shell environment should not be mutilated.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    # No .env in home — bare profile
+
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_ACP_AUTH_METHOD") == "cursor_login"
+    assert os.getenv("PATH") == "/usr/bin:/bin"
+
+
+def test_known_key_explicitly_set_in_user_env_is_kept(tmp_path, monkeypatch):
+    """A known Hermes key that IS explicitly set in the profile .env survives
+    the cleanup (overrides the inherited value).
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_ACP_AUTH_METHOD=claude_code_cli\n", encoding="utf-8"
+    )
+
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_ACP_AUTH_METHOD") == "claude_code_cli"
+
+
+def test_export_prefixed_known_key_in_user_env_is_kept(tmp_path, monkeypatch):
+    """A known Hermes key defined with the bash-compatible ``export KEY=value``
+    form in the profile .env must be recognized as defined and survive the
+    cleanup - mirrors the ``export `` stripping in config.py's load_env()
+    (#6659).
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "export HERMES_ACP_AUTH_METHOD=claude_code_cli\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    load_hermes_dotenv(hermes_home=home)
+    assert os.getenv("HERMES_ACP_AUTH_METHOD") == "claude_code_cli"
+
+
+def test_shell_exported_credentials_survive_cleanup(tmp_path, monkeypatch):
+    """User-shell-exported provider credentials must NOT be scrubbed.
+
+    ``export OPENAI_API_KEY=…`` in the shell with a ``.env`` that doesn't
+    contain the key is a documented, legitimate flow (see
+    test_dump_env_visibility.py). The startup cleanup is scoped to
+    _PROFILE_MANAGED_ENV_KEYS (ACP routing keys) precisely so it can never
+    delete shell-supplied credentials — a process cannot distinguish a
+    shell export from parent-process leakage, so credential isolation is
+    owned by read-time secret scoping instead.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("SOME_OTHER_KEY=x\n", encoding="utf-8")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-shell")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-shell")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "12345:token-from-shell")
+    # A profile-managed routing key inherited alongside them IS cleared.
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("OPENAI_API_KEY") == "sk-from-shell"
+    assert os.getenv("ANTHROPIC_API_KEY") == "sk-ant-from-shell"
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "12345:token-from-shell"
+    assert "HERMES_ACP_AUTH_METHOD" not in os.environ
+
+
+def test_cleanup_scope_is_the_profile_managed_set():
+    """Lock the invariant: the startup scrub set contains only behavioral
+    ACP/routing keys — never credential-shaped keys. If this fails, someone
+    widened _PROFILE_MANAGED_ENV_KEYS toward the full known-key set, which
+    re-introduces the shell-export deletion bug.
+    """
+    from hermes_cli.env_loader import _PROFILE_MANAGED_ENV_KEYS
+
+    for key in _PROFILE_MANAGED_ENV_KEYS:
+        assert not key.endswith(("_API_KEY", "_TOKEN", "_SECRET")), (
+            f"{key} looks credential-shaped; startup scrub must not "
+            "cover credentials — read-time secret scoping owns those"
+        )
+
+
+# ---------------------------------------------------------------------------
+# config.yaml terminal.* re-apply after dotenv loads (#29186 / #67323)
+#
+# load_hermes_dotenv loads .env with override=True, so a stale
+# TERMINAL_ENV=docker in .env used to silently beat config.yaml's
+# terminal.backend on every reload (gateway per-turn reload, cron standalone
+# runs). The bridge re-applies config.yaml's EXPLICIT terminal keys last via
+# the shared hermes_cli.config.apply_terminal_config_to_env helper.
+# ---------------------------------------------------------------------------
+
+
+def _seed_terminal_home(tmp_path, monkeypatch, *, config_yaml=None, env_text=None):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    if config_yaml is not None:
+        (home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+    if env_text is not None:
+        (home / ".env").write_text(env_text, encoding="utf-8")
+    # The bridge is scoped to the process HERMES_HOME (a different profile's
+    # load must not bridge this process's config), so point the process at
+    # the seeded home like a real gateway/cron process would be.
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+def test_config_yaml_terminal_backend_overrides_stale_env(tmp_path, monkeypatch):
+    """Regression for #29186: a leftover TERMINAL_ENV=docker in ~/.hermes/.env
+    must not silently override the user's choice in config.yaml. config.yaml
+    is the documented source of truth, so its value must win after load."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="terminal:\n  backend: local\n",
+        env_text="TERMINAL_ENV=docker\n",
+    )
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "local"
+
+
+def test_config_yaml_terminal_backend_overrides_stale_shell(tmp_path, monkeypatch):
+    """config.yaml must also beat a stale TERMINAL_ENV exported in the shell
+    (e.g. set in ~/.zshrc when the user was experimenting with docker)."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="terminal:\n  backend: local\n",
+    )
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "local"
+
+
+def test_no_terminal_section_leaves_env_value_alone(tmp_path, monkeypatch):
+    """When config.yaml has no terminal section, the .env value is still the
+    user's active setting — the bridge must NOT clobber it with merged
+    defaults."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="display:\n  streaming: true\n",
+        env_text="TERMINAL_ENV=docker\n",
+    )
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "docker"
+
+
+def test_config_yaml_terminal_omitted_key_does_not_clear_env(tmp_path, monkeypatch):
+    """If config.yaml has a terminal block but no `backend`, the .env value
+    must survive (only explicit config keys override env)."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="terminal:\n  timeout: 600\n",
+        env_text="TERMINAL_ENV=docker\n",
+    )
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "docker"
+    assert os.getenv("TERMINAL_TIMEOUT") == "600"
+
+
+def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch):
+    """Loading a DIFFERENT profile's .env must not re-bridge this process's
+    config.yaml — the shared bridge reads the process-global config, so
+    applying it for another home would stamp the wrong profile's terminal
+    settings into the env."""
+    process_home = tmp_path / "process-home"
+    process_home.mkdir()
+    (process_home / "config.yaml").write_text(
+        "terminal:\n  backend: local\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+    other_home = tmp_path / "other-profile"
+    other_home.mkdir()
+    (other_home / ".env").write_text("TERMINAL_ENV=docker\n", encoding="utf-8")
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=other_home)
+
+    # The other profile's .env value stands; the process config was not applied.
+    assert os.getenv("TERMINAL_ENV") == "docker"

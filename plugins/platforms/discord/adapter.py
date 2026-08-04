@@ -23,15 +23,38 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
+from urllib.parse import quote, urljoin
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
 )
+from agent.display import ToolPreview
 
 logger = logging.getLogger(__name__)
+
+_DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
+_DISCORD_URL_LABEL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _format_discord_markdown_link(label: str, url: str) -> str:
+    """Return a Discord Markdown link whose label is not itself a URL.
+
+    Discord gives URL-shaped link labels their own link behavior. A truncated
+    URL label can therefore win over the Markdown destination and remain a
+    broken link. Dropping only the scheme keeps the preview recognizable while
+    leaving one unambiguous click target.
+
+    The destination is wrapped in angle brackets (``<url>``) so Discord does
+    not unfurl an OG-preview embed under every tool progress bubble.
+    """
+    label = _DISCORD_URL_LABEL_SCHEME_RE.sub("", label, count=1)
+    escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
+    escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
+    return f"[{escaped_label}](<{escaped_url}>)"
 
 
 class _Snowflake:
@@ -67,6 +90,8 @@ _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational",
     "non_conversational_history",
 })
+_DISCORD_IMAGE_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_DISCORD_IMAGE_MAX_REDIRECTS = 10
 # Upgrade-bridge fallback only. The primary mechanism is the persisted
 # non-conversational message-ID set populated from explicitly marked sends
 # (metadata["non_conversational"]). These regexes exist solely to recognize
@@ -94,7 +119,6 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
     ),
     re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
 )
-
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -111,9 +135,18 @@ import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
+try:
+    from .ffmpeg_utils import resolve_ffmpeg_executable
+except ImportError:
+    from ffmpeg_utils import resolve_ffmpeg_executable
+
 from gateway.config import Platform, PlatformConfig
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
+from gateway.platforms.helpers import (
+    MessageDeduplicator,
+    ThreadParticipationTracker,
+    convert_table_to_bullets,
+)
 from utils import atomic_json_write, env_float, env_int
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -133,6 +166,43 @@ from gateway.platforms.base import (
     validate_inbound_media_size,
 )
 from tools.url_safety import is_safe_url
+
+
+async def _read_url_image_with_redirect_guard(
+    session: Any,
+    url: str,
+    *,
+    timeout: Any,
+    request_kwargs: Dict[str, Any],
+) -> Tuple[int, bytes, Dict[str, str]]:
+    """Read an image URL while re-checking every redirect target for SSRF."""
+    current_url = url
+    for _ in range(_DISCORD_IMAGE_MAX_REDIRECTS + 1):
+        if not is_safe_url(current_url):
+            raise ValueError("Blocked unsafe image URL redirect")
+
+        async with session.get(
+            current_url,
+            timeout=timeout,
+            allow_redirects=False,
+            **request_kwargs,
+        ) as resp:
+            raw_headers = getattr(resp, "headers", {}) or {}
+            headers = {str(key).lower(): value for key, value in dict(raw_headers).items()}
+            status = int(getattr(resp, "status", 0))
+            if status in _DISCORD_IMAGE_REDIRECT_STATUSES:
+                location = headers.get("location")
+                if not location:
+                    return status, b"", headers
+                next_url = urljoin(current_url, str(location))
+                if not is_safe_url(next_url):
+                    raise ValueError("Blocked redirect to private/internal address")
+                current_url = next_url
+                continue
+
+            return status, await resp.read(), headers
+
+    raise ValueError("Too many image URL redirects")
 
 
 def _truncate_discord_component_text(text: str, limit: int) -> str:
@@ -298,6 +368,68 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+# ── per-profile gate env reads (issue #72348) ────────────────────────────
+# Under gateway.multiplex_profiles, os.environ is process-global and the
+# YAML→env bridge in _apply_yaml_config is first-writer-wins, so a raw
+# os.getenv() on an allow/deny gate can return ANOTHER profile's value.
+# _scoped_gate_env reads the active profile's secret scope when one is
+# installed (secondary adapters connect — and their discord.py event tasks
+# are created — inside _profile_runtime_scope, so the contextvar propagates)
+# and falls back to os.getenv only outside multiplex.
+
+# Authorization/gate env vars snapshotted per-adapter at connect() time.
+_GATE_ENV_KEYS = (
+    "DISCORD_ALLOWED_USERS",
+    "DISCORD_ALLOWED_ROLES",
+    "DISCORD_ALLOWED_CHANNELS",
+    "DISCORD_IGNORED_CHANNELS",
+    "DISCORD_NO_THREAD_CHANNELS",
+    "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS",
+    "DISCORD_ALLOW_ALL_USERS",
+    "DISCORD_ALLOW_BOTS",
+    "GATEWAY_ALLOW_ALL_USERS",
+    "GATEWAY_ALLOWED_USERS",
+)
+
+
+def _scoped_gate_env(name: str, default: str = "") -> str:
+    """Scope-aware gate env read: profile secret scope first under multiplex."""
+    try:
+        from gateway.authz_mixin import _platform_gate_env
+
+        return _platform_gate_env(name, default)
+    except Exception:
+        return (os.getenv(name) or default).strip()
+
+
+def _multiplex_active() -> bool:
+    """True when the gateway is running in multiplex_profiles mode."""
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        return bool(is_multiplex_active())
+    except Exception:
+        return False
+
+
+def _profile_scoped_config_load() -> bool:
+    """True when the current config load belongs to a multiplexed profile.
+
+    Secondary profile configs load inside ``_profile_runtime_scope`` (secret
+    scope installed + multiplex active). In that case the YAML→env bridge in
+    ``_apply_yaml_config`` must NOT write process-global env vars: the values
+    belong to one profile only and the first-writer-wins guard would pin them
+    for every other profile (issue #72348).
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
 
 
 def check_discord_requirements() -> bool:
@@ -704,6 +836,26 @@ class VoiceReceiver:
 
         return completed
 
+    def flush_pending(self) -> list:
+        """Return buffered utterances that have not yet reached silence."""
+        completed = []
+
+        with self._lock:
+            ssrc_user_map = dict(self._ssrc_to_user)
+            for ssrc, buf in list(self._buffers.items()):
+                # 48kHz, 16-bit, stereo = 192000 bytes/sec
+                buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
+                if buf_duration >= self.MIN_SPEECH_DURATION:
+                    user_id = ssrc_user_map.get(ssrc, 0)
+                    if not user_id:
+                        user_id = self._infer_user_for_ssrc(ssrc)
+                    if user_id:
+                        completed.append((user_id, bytes(buf)))
+                self._buffers.pop(ssrc, None)
+                self._last_packet_time.pop(ssrc, None)
+
+        return completed
+
     # ------------------------------------------------------------------
     # PCM -> WAV conversion (for Whisper STT)
     # ------------------------------------------------------------------
@@ -711,34 +863,37 @@ class VoiceReceiver:
     @staticmethod
     def pcm_to_wav(pcm_data: bytes, output_path: str,
                    src_rate: int = 48000, src_channels: int = 2):
-        """Convert raw PCM to 16kHz mono WAV via ffmpeg."""
-        with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as f:
-            f.write(pcm_data)
-            pcm_path = f.name
-        try:
-            from hermes_cli._subprocess_compat import windows_hide_flags
+        """Convert raw PCM to 16kHz mono WAV via ffmpeg.
 
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-loglevel", "error",
-                    "-f", "s16le",
-                    "-ar", str(src_rate),
-                    "-ac", str(src_channels),
-                    "-i", pcm_path,
-                    "-ar", "16000",
-                    "-ac", "1",
-                    output_path,
-                ],
-                check=True,
-                timeout=10,
-                stdin=subprocess.DEVNULL,
-                creationflags=windows_hide_flags(),
-            )
-        finally:
-            try:
-                os.unlink(pcm_path)
-            except OSError:
-                pass
+        The PCM is fed straight to ffmpeg's stdin, which avoids staging it in a
+        temp file on every utterance. The WAV is still written to *output_path*
+        rather than captured from stdout: ffmpeg cannot seek on a pipe, so a
+        piped WAV carries placeholder (0xFFFFFFFF) RIFF/data sizes that make
+        strict readers misreport the length.
+        """
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        subprocess.run(
+            [
+                resolve_ffmpeg_executable(), "-y", "-loglevel", "error",
+                "-f", "s16le",
+                "-ar", str(src_rate),
+                "-ac", str(src_channels),
+                "-i", "pipe:0",
+                "-ar", "16000",
+                "-ac", "1",
+                output_path,
+            ],
+            input=pcm_data,
+            check=True,
+            timeout=10,
+            # Capture ffmpeg's -loglevel error output so a failure's
+            # CalledProcessError carries the actual message (parity with
+            # tools/transcription_tools' ffmpeg call sites) instead of
+            # "returned non-zero exit status N" with stderr detached.
+            stderr=subprocess.PIPE,
+            creationflags=windows_hide_flags(),
+        )
 
 
 def _read_dm_role_auth_guild() -> Optional[int]:
@@ -838,8 +993,21 @@ class DiscordAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
-    # Auto-disconnect from voice channel after this many seconds of inactivity
+    # Auto-disconnect from voice channel after this many seconds of inactivity.
+    # Config key: discord.voice_channel_inactivity_timeout_seconds (0 disables)
     VOICE_TIMEOUT = 300
+    # Minimum seconds to wait for a single voice playback. The effective limit
+    # scales with the probed clip duration so long readbacks are not cut off at
+    # a hard two-minute ceiling.
+    PLAYBACK_TIMEOUT = 120
+    PLAYBACK_TIMEOUT_PADDING = 30
+
+    def format_tool_preview(self, preview: ToolPreview) -> str:
+        """Keep a truncated URL preview clickable in Discord markdown."""
+        if not preview.url:
+            return preview.text
+
+        return _format_discord_markdown_link(preview.text, preview.url)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -847,6 +1015,10 @@ class DiscordAdapter(BasePlatformAdapter):
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
+        # Per-adapter snapshot of authorization gate env vars, captured inside
+        # the owning profile's runtime scope during connect(). None until then;
+        # accessors fall back to live scope-aware reads (issue #72348).
+        self._gate_env_snapshot: Optional[Dict[str, str]] = None
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
@@ -859,6 +1031,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
+        self._voice_timeout_seconds = self._load_voice_timeout()
+        self._playback_timeout_seconds = self._load_playback_timeout()
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
@@ -1037,6 +1211,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
+            self._set_fatal_error("missing_dependency", "discord.py not installed", retryable=False)
             return False
 
         # Load opus codec for voice channel support
@@ -1073,28 +1248,25 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
+            self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
             return False
 
         try:
             if not self._acquire_platform_lock('discord-bot-token', self.config.token, 'Discord bot token'):
                 return False
 
+            # Snapshot this profile's gate env vars (issue #72348): connect()
+            # runs inside the owning profile's runtime scope under multiplex,
+            # so the snapshot holds THIS adapter's values, immune to the
+            # first-writer-wins process-global env bridge.
+            self._snapshot_gate_env()
+
             # Parse allowed user entries (may contain usernames or IDs)
-            allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
-            if allowed_env:
-                self._allowed_user_ids = {
-                    _clean_discord_id(uid) for uid in allowed_env.split(",")
-                    if uid.strip()
-                }
+            self._allowed_user_ids = self._get_allowed_users()
 
             # Parse DISCORD_ALLOWED_ROLES — comma-separated role IDs.
             # Users with ANY of these roles can interact with the bot.
-            roles_env = os.getenv("DISCORD_ALLOWED_ROLES", "")
-            if roles_env:
-                self._allowed_role_ids = {
-                    int(rid.strip()) for rid in roles_env.split(",")
-                    if rid.strip().isdigit()
-                }
+            self._allowed_role_ids = self._get_allowed_roles()
 
             # Set up intents.
             # Message Content is required for normal text replies.
@@ -1266,7 +1438,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         role_authorized = False
         if getattr(message.author, "bot", False):
-            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+            allow_bots = self._get_allow_bots()
             if allow_bots == "none":
                 return False, False
             if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
@@ -1602,6 +1774,19 @@ class DiscordAdapter(BasePlatformAdapter):
         # Cancel the liveness probe first so it can't fire a spurious fatal
         # error / reconnect while we're intentionally tearing the adapter down.
         await self._cancel_liveness_task()
+        # Clean up all active voice connections *before* cancelling the bot task.
+        # leave_voice_channel() ends in `await vc.disconnect()`, and discord.py's
+        # VoiceClient.disconnect() sends a voice state update over the main
+        # gateway websocket and then waits for the voice socket to close.  The
+        # bot task is the loop running that gateway connection, so cancelling it
+        # first leaves the handshake with no transport: it can never complete and
+        # blocks until the caller's shutdown timeout fires.
+        for guild_id in list(self._voice_clients.keys()):
+            try:
+                await self.leave_voice_channel(guild_id)
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
+
         # Cancel the bot task before closing the client.  If connect() timed out
         # and returned False, the background client.start() task may still be
         # running; calling client.close() alone is not enough to stop it because
@@ -1609,12 +1794,6 @@ class DiscordAdapter(BasePlatformAdapter):
         # WebSocket handshake is in flight.  Explicitly cancelling the task here
         # ensures the zombie client cannot receive or dispatch any further events.
         await self._cancel_bot_task()
-        # Clean up all active voice connections before closing the client
-        for guild_id in list(self._voice_clients.keys()):
-            try:
-                await self.leave_voice_channel(guild_id)
-            except Exception as e:  # pragma: no cover - defensive logging
-                logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
 
         if self._client:
             try:
@@ -1698,18 +1877,24 @@ class DiscordAdapter(BasePlatformAdapter):
         if retry_after_until > now:
             remaining = max(1, int(retry_after_until - now))
             return f"Discord asked us to wait before syncing slash commands; retry in {remaining}s"
-        if entry.get("fingerprint") == fingerprint and entry.get("last_success_at"):
+        last_success_at = float(entry.get("last_success_at") or 0)
+        last_attempt_at = float(entry.get("last_attempt_at") or 0)
+        if (
+            entry.get("fingerprint") == fingerprint
+            and last_success_at
+            and last_success_at >= last_attempt_at
+        ):
             return "same slash-command fingerprint already synced"
         return None
 
     def _record_command_sync_attempt(self, app_id: Any, fingerprint: str) -> None:
         state = self._read_command_sync_state()
-        state[self._command_sync_state_key(app_id)] = {
-            **(
-                state.get(self._command_sync_state_key(app_id))
-                if isinstance(state.get(self._command_sync_state_key(app_id)), dict)
-                else {}
-            ),
+        key = self._command_sync_state_key(app_id)
+        entry = state.get(key) if isinstance(state.get(key), dict) else {}
+        entry.pop("last_success_at", None)
+        entry.pop("summary", None)
+        state[key] = {
+            **entry,
             "fingerprint": fingerprint,
             "last_attempt_at": time.time(),
         }
@@ -1935,13 +2120,9 @@ class DiscordAdapter(BasePlatformAdapter):
             raw = str(raw or "")
             if raw.strip():
                 return {item.strip() for item in raw.split(",") if item.strip()}
-        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "")
+        raw = self._gate_env("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS")
         if not raw.strip():
-            allowed = {
-                item.strip()
-                for item in os.getenv("DISCORD_ALLOWED_CHANNELS", "").split(",")
-                if item.strip()
-            }
+            allowed = self._get_allowed_channels()
             return allowed | self._discord_free_response_channels()
         return {item.strip() for item in raw.split(",") if item.strip()}
 
@@ -2813,6 +2994,36 @@ class DiscordAdapter(BasePlatformAdapter):
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
 
+    @staticmethod
+    def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":
+        """ids-built reply reference — no fetch_message round trip.
+
+        Discord resolves message_reference from the ids alone, and
+        fail_if_not_exists=False keeps sends to deleted targets working
+        exactly as the fetched form did (a dead target degrades to the
+        send-side 10008 retry instead of a fetch failure).
+        """
+        return discord.MessageReference(
+            message_id=int(message_id),
+            channel_id=getattr(channel, "id", None),
+            guild_id=getattr(getattr(channel, "guild", None), "id", None),
+            fail_if_not_exists=False,
+        )
+
+    def _reply_reference_for_send(self, reply_to, channel):
+        """Reply anchor for send paths, honoring reply_to_mode.
+
+        Mirrors telegram's _reply_to_message_id_for_send: raw reply_to in,
+        platform send-time anchor out, ``off`` mode suppressed.
+        """
+        if not reply_to or self._reply_to_mode == "off":
+            return None
+        try:
+            return self._message_reference_from_ids(reply_to, channel)
+        except (ValueError, TypeError) as e:
+            logger.debug("Could not build reply-to reference: %s", e)
+            return None
+
     async def send(
         self,
         chat_id: str,
@@ -2830,6 +3041,29 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
+        if not (content or "").strip():
+            logger.warning(
+                "[%s] Dropped empty message to chat=%s (caller bug). Call site:\n%s",
+                self.name,
+                chat_id,
+                "".join(traceback.format_stack(limit=12)[:-1]),
+            )
+            result = SendResult(
+                success=False,
+                error="Refusing to send empty message",
+            )
+            # Mirror the exception path's recovery bookkeeping. Missed-message
+            # backfill decides what to replay from this table, so a dropped
+            # final reply must be recorded as failed — otherwise the reply is
+            # both never sent and never retried.
+            await asyncio.to_thread(
+                self._record_discord_response,
+                reply_to=reply_to,
+                result=result,
+                content=content,
+                final=bool(metadata and metadata.get("notify")),
+            )
+            return result
 
         try:
             # Determine target channel: thread_id in metadata takes precedence.
@@ -2871,17 +3105,8 @@ class DiscordAdapter(BasePlatformAdapter):
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             message_ids = []
-            reference = None
-
-            if reply_to and self._reply_to_mode != "off":
-                try:
-                    ref_msg = await channel.fetch_message(int(reply_to))
-                    if hasattr(ref_msg, "to_reference"):
-                        reference = ref_msg.to_reference(fail_if_not_exists=False)
-                    else:
-                        reference = ref_msg
-                except Exception as e:
-                    logger.debug("Could not fetch reply-to message: %s", e)
+            # Build the reference from ids — no fetch_message round trip.
+            reference = self._reply_reference_for_send(reply_to, channel)
 
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
@@ -3064,6 +3289,30 @@ class DiscordAdapter(BasePlatformAdapter):
         starter_msg = getattr(thread, "message", None)
         message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
 
+        if file is not None or files:
+            attachments = getattr(starter_msg, "attachments", None) or []
+            if not attachments:
+                filename = ""
+                if file is not None:
+                    filename = getattr(file, "filename", "") or ""
+                elif files:
+                    filename = getattr(files[0], "filename", "") or ""
+                logger.warning(
+                    "[%s] Forum thread %s starter has no attachments for %s",
+                    self.name,
+                    thread_id,
+                    filename or "file",
+                )
+                return SendResult(
+                    success=False,
+                    error=(
+                        "Discord created the forum thread but attached no files"
+                        + (f" ({filename})" if filename else "")
+                    ),
+                    message_id=message_id or None,
+                    raw_response={"thread_id": thread_id},
+                )
+
         return SendResult(
             success=True,
             message_id=message_id,
@@ -3098,7 +3347,7 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(chat_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
-            msg = await channel.fetch_message(int(message_id))
+            msg = channel.get_partial_message(int(message_id))
             formatted = self.format_message(content)
 
             _preview_key = (str(chat_id), str(message_id))
@@ -3238,6 +3487,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     reference = prev_msg.to_reference(fail_if_not_exists=False)
                 except Exception:
                     reference = None
+            elif getattr(prev_msg, "id", None):
+                # Duck-typed prior message without to_reference (real
+                # discord.py PartialMessage HAS to_reference, so this is
+                # belt-and-suspenders): build the reference from ids so
+                # overflow continuations stay threaded.
+                reference = self._message_reference_from_ids(prev_msg.id, channel)
             try:
                 sent = await channel.send(content=chunk, reference=reference)
             except Exception as send_err:
@@ -3299,9 +3554,19 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Forum channels (type 15) get a new thread whose starter message
         carries the file — they reject direct POST /messages.
+
+        Uses a path-based ``discord.File`` (same pattern as
+        ``send_multiple_images``) rather than an open file handle. The
+        handle form can race with Discord's multipart encoder after an
+        earlier image batch on the same channel and produce a successful
+        message with zero attachments — a silent drop for video/document
+        MEDIA tags (#66797).
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
+
+        if not os.path.isfile(file_path):
+            return SendResult(success=False, error=f"File not found: {file_path}")
 
         channel = self._client.get_channel(int(chat_id))
         if not channel:
@@ -3310,15 +3575,45 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Channel {chat_id} not found")
 
         filename = file_name or os.path.basename(file_path)
-        with open(file_path, "rb") as fh:
-            file = discord.File(fh, filename=filename)
-            if self._is_forum_parent(channel):
-                return await self._forum_post_file(
-                    channel,
-                    content=(caption or "").strip(),
-                    file=file,
-                )
-            msg = await channel.send(content=caption if caption else None, file=file)
+        logger.info(
+            "[%s] Sending file attachment %s (%s) to %s",
+            self.name,
+            filename,
+            os.path.splitext(filename)[1].lower() or "no-ext",
+            chat_id,
+        )
+        # Path-based File: discord.py owns open/close for the upload, matching
+        # the working image-batch path. Prefer ``files=[...]`` over deprecated
+        # singular ``file=`` for the same reason.
+        discord_file = discord.File(file_path, filename=filename)
+        if self._is_forum_parent(channel):
+            result = await self._forum_post_file(
+                channel,
+                content=(caption or "").strip(),
+                files=[discord_file],
+            )
+            return result
+        msg = await channel.send(
+            content=caption if caption else None,
+            files=[discord_file],
+        )
+        attachments = getattr(msg, "attachments", None) or []
+        if not attachments:
+            # Discord accepted the message but attached nothing — the failure
+            # mode reported in #66797 (MEDIA video stripped from text, no
+            # attachment, no prior log line). Fail loud so the dispatch loop
+            # surfaces a warning instead of a silent drop.
+            logger.warning(
+                "[%s] Discord returned message %s with no attachments for %s",
+                self.name,
+                getattr(msg, "id", "?"),
+                filename,
+            )
+            return SendResult(
+                success=False,
+                error=f"Discord accepted the message but attached no files ({filename})",
+                message_id=str(getattr(msg, "id", "") or "") or None,
+            )
         return SendResult(success=True, message_id=str(msg.id))
 
     async def send_multiple_images(
@@ -3394,25 +3689,27 @@ class DiscordAdapter(BasePlatformAdapter):
                             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
                             if aiohttp_session is None:
                                 aiohttp_session = _aiohttp.ClientSession(**_sess_kw)
-                            async with aiohttp_session.get(
-                                image_url, timeout=_aiohttp.ClientTimeout(total=30), **_req_kw,
-                            ) as resp:
-                                if resp.status != 200:
-                                    logger.warning(
-                                        "[%s] Failed to download image (HTTP %d) in batch: %s",
-                                        self.name, resp.status, image_url[:80],
-                                    )
-                                    continue
-                                data = await resp.read()
-                                ct = resp.headers.get("content-type", "image/png")
-                                ext = "png"
-                                if "jpeg" in ct or "jpg" in ct:
-                                    ext = "jpg"
-                                elif "gif" in ct:
-                                    ext = "gif"
-                                elif "webp" in ct:
-                                    ext = "webp"
-                                files.append(_discord_mod.File(_io.BytesIO(data), filename=f"image_{len(files)}.{ext}"))
+                            status, data, headers = await _read_url_image_with_redirect_guard(
+                                aiohttp_session,
+                                image_url,
+                                timeout=_aiohttp.ClientTimeout(total=30),
+                                request_kwargs=_req_kw,
+                            )
+                            if status != 200:
+                                logger.warning(
+                                    "[%s] Failed to download image (HTTP %d) in batch: %s",
+                                    self.name, status, image_url[:80],
+                                )
+                                continue
+                            ct = headers.get("content-type", "image/png")
+                            ext = "png"
+                            if "jpeg" in ct or "jpg" in ct:
+                                ext = "jpg"
+                            elif "gif" in ct:
+                                ext = "gif"
+                            elif "webp" in ct:
+                                ext = "webp"
+                            files.append(_discord_mod.File(_io.BytesIO(data), filename=f"image_{len(files)}.{ext}"))
                         except Exception as dl_err:
                             logger.warning("[%s] Download failed for %s: %s", self.name, image_url[:80], dl_err)
                             continue
@@ -3491,6 +3788,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
             filename = os.path.basename(audio_path)
 
+            # ids-only reference — same no-fetch rationale as the text path.
+            reference = self._reply_reference_for_send(reply_to, channel)
+
             with open(audio_path, "rb") as f:
                 file_data = f.read()
 
@@ -3522,7 +3822,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 waveform_b64 = base64.b64encode(waveform_bytes).decode()
 
                 import json as _json
-                payload = _json.dumps({
+                payload_data = {
                     "flags": 8192,
                     "attachments": [{
                         "id": "0",
@@ -3530,7 +3830,13 @@ class DiscordAdapter(BasePlatformAdapter):
                         "duration_secs": round(duration_secs, 2),
                         "waveform": waveform_b64,
                     }],
-                })
+                }
+                if reference is not None:
+                    payload_data["message_reference"] = {
+                        "message_id": str(reply_to),
+                        "fail_if_not_exists": False,
+                    }
+                payload = _json.dumps(payload_data)
                 form = [
                     {"name": "payload_json", "value": payload},
                     {
@@ -3548,7 +3854,23 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as voice_err:
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
                 file = discord.File(io.BytesIO(file_data), filename=filename)
-                msg = await channel.send(file=file)
+                try:
+                    msg = await channel.send(file=file, reference=reference)
+                except Exception as send_err:
+                    err_text = str(send_err)
+                    if (
+                        reference is not None
+                        and (
+                            (
+                                "error code: 50035" in err_text
+                                and "Cannot reply to a system message" in err_text
+                            )
+                            or "error code: 10008" in err_text
+                        )
+                    ):
+                        msg = await channel.send(file=file, reference=None)
+                    else:
+                        raise
                 return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
@@ -3574,6 +3896,9 @@ class DiscordAdapter(BasePlatformAdapter):
             "ambient_gain": 0.18,    # idle bed loudness (0..1)
             "duck_gain": 0.06,       # ambient loudness while speech plays
             "speech_gain": 1.0,      # TTS / ack loudness
+            "lead_silence_ms": 200,  # silence prepended to each clip so the
+                                     # voice socket's warm-up doesn't clip
+                                     # the first word/syllable
             "ack_enabled": True,     # speak a short phrase before tool calls
             "ack_phrases": [
                 "Let me look into that.",
@@ -3594,6 +3919,83 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("Could not load discord.voice_fx config: %s", e)
         return defaults
+
+    def _load_discord_int_config(self, key: str, default: int, *, minimum: int = 0) -> int:
+        """Read a non-secret integer from the top-level ``discord`` config."""
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            raw = (cfg.get("discord") or {}).get(key, default)
+            value = int(raw)
+            return max(minimum, value)
+        except Exception as e:
+            logger.debug("Could not load discord.%s config: %s", key, e)
+            return default
+
+    def _load_voice_timeout(self) -> int:
+        """Return voice-channel inactivity timeout seconds; 0 disables it."""
+        return self._load_discord_int_config(
+            "voice_channel_inactivity_timeout_seconds",
+            self.VOICE_TIMEOUT,
+            minimum=0,
+        )
+
+    def _load_playback_timeout(self) -> int:
+        """Return minimum playback wait seconds for Discord VC audio."""
+        return self._load_discord_int_config(
+            "voice_playback_timeout_seconds",
+            self.PLAYBACK_TIMEOUT,
+            minimum=1,
+        )
+
+    def _voice_timeout_limit(self) -> int:
+        return int(getattr(self, "_voice_timeout_seconds", self.VOICE_TIMEOUT))
+
+    def _playback_timeout_limit(self) -> int:
+        return int(getattr(self, "_playback_timeout_seconds", self.PLAYBACK_TIMEOUT))
+
+    def _probe_audio_duration_seconds(self, audio_path: str) -> Optional[float]:
+        """Best-effort audio duration probe used to size playback timeouts."""
+        try:
+            import importlib
+            mutagen = importlib.import_module("mutagen")
+            audio = mutagen.File(audio_path)
+            length = getattr(getattr(audio, "info", None), "length", None)
+            if length:
+                return float(length)
+        except Exception:
+            pass
+
+        try:
+            proc = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    audio_path,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                stdin=subprocess.DEVNULL,
+            )
+            if proc.returncode == 0:
+                raw = (proc.stdout or "").strip()
+                if raw:
+                    return float(raw)
+        except Exception:
+            pass
+        return None
+
+    async def _playback_timeout_for_audio(self, audio_path: str) -> float:
+        """Return timeout for this clip: configured floor or duration+padding."""
+        floor = float(self._playback_timeout_limit())
+        duration = await asyncio.to_thread(self._probe_audio_duration_seconds, audio_path)
+        if not duration or duration <= 0:
+            return floor
+        return max(floor, duration + float(self.PLAYBACK_TIMEOUT_PADDING))
 
     def _get_ambient_pcm(self) -> Optional[bytes]:
         """Return decoded 48k/stereo/s16le PCM for the ambient idle bed.
@@ -3651,6 +4053,27 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_mixers[guild_id] = mixer
         logger.info("Voice mixer installed (guild=%d, ambient=%s)", guild_id, bool(ambient))
 
+    def _lead_silence_bytes(self) -> bytes:
+        """PCM silence prepended to speech clips on the mixer path.
+
+        Discord's voice socket needs a brief warm-up before receiving clients
+        actually hear audio; the first ~100-200ms is otherwise clipped, cutting
+        off the first word/syllable.  Returns b"" when ``lead_silence_ms`` is
+        unset or <= 0 so the behaviour is opt-out.
+        """
+        cfg = getattr(self, "_voice_fx_cfg", None) or {}
+        try:
+            lead_ms = int(cfg.get("lead_silence_ms", 0) or 0)
+        except (TypeError, ValueError):
+            return b""
+        if lead_ms <= 0:
+            return b""
+        try:
+            from voice_mixer import BYTES_PER_MS
+        except ImportError:
+            from .voice_mixer import BYTES_PER_MS
+        return b"\x00" * (BYTES_PER_MS * lead_ms)
+
     async def play_ack_in_voice(self, guild_id: int, phrase: Optional[str] = None) -> bool:
         """Speak a short acknowledgement over the ambient bed.
 
@@ -3692,7 +4115,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if not pcm:
                 return False
             mixer.play_speech(
-                pcm, gain=float(self._voice_fx_cfg.get("speech_gain", 1.0))
+                self._lead_silence_bytes() + pcm,
+                gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
             )
             self._reset_voice_timeout(guild_id)
             return True
@@ -3712,8 +4136,15 @@ class DiscordAdapter(BasePlatformAdapter):
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
-    async def join_voice_channel(self, channel) -> bool:
-        """Join a Discord voice channel. Returns True on success."""
+    async def join_voice_channel(self, channel, *, text_channel_id: int = None, source: dict = None) -> bool:
+        """Join a Discord voice channel. Returns True on success.
+
+        When ``text_channel_id`` is provided, the binding is stored so
+        voice transcriptions are routed to the correct text channel
+        (``_voice_text_channels``) without requiring `/voice join`.
+        This supports automatic/programmatic voice joins where the
+        command flow that normally establishes the binding is absent.
+        """
         if not self._client or not DISCORD_AVAILABLE:
             return False
         guild_id = channel.guild.id
@@ -3732,6 +4163,13 @@ class DiscordAdapter(BasePlatformAdapter):
             vc = await channel.connect()
             self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
+
+            # Store text-channel binding for automatic/programmatic joins
+            # so voice transcriptions can be routed without /voice join.
+            if text_channel_id is not None:
+                self._voice_text_channels[guild_id] = text_channel_id
+            if source is not None:
+                self._voice_sources[guild_id] = source
 
             # Start voice receiver (Phase 2: listen to users)
             try:
@@ -3760,11 +4198,18 @@ class DiscordAdapter(BasePlatformAdapter):
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
             # Stop voice receiver first
             receiver = self._voice_receivers.pop(guild_id, None)
+            pending_inputs = []
             if receiver:
+                pending_inputs = receiver.flush_pending()
                 receiver.stop()
             listen_task = self._voice_listen_tasks.pop(guild_id, None)
             if listen_task:
                 listen_task.cancel()
+
+            guild = self._client.get_guild(guild_id) if self._client is not None else None
+            for user_id, pcm_data in pending_inputs:
+                if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
+                    await self._process_voice_input(guild_id, user_id, pcm_data)
 
             # Tear down the mixer (stops the continuous outgoing stream).
             if getattr(self, "_voice_mixers", None) is not None:
@@ -3784,9 +4229,6 @@ class DiscordAdapter(BasePlatformAdapter):
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
 
-    # Maximum seconds to wait for voice playback before giving up
-    PLAYBACK_TIMEOUT = 120
-
     async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
         """Play an audio file in the connected voice channel.
 
@@ -3799,68 +4241,89 @@ class DiscordAdapter(BasePlatformAdapter):
         if not vc or not vc.is_connected():
             return False
 
-        # ── Mixer path (overlap + ducking) ──────────────────────────────
-        mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
-        if mixer is not None:
-            try:
-                from voice_mixer import decode_to_pcm
-            except ImportError:
-                from .voice_mixer import decode_to_pcm
-            pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
-            if pcm:
-                speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
-                mixer.play_speech(pcm, gain=speech_gain)
-                # Block until the speech child drains so callers serialise
-                # replies (mirrors legacy semantics) but the ambient keeps
-                # playing underneath the whole time.
-                wait_start = time.monotonic()
-                while mixer.speech_active:
-                    if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
-                        logger.warning("Mixer speech playback timed out after %ds", self.PLAYBACK_TIMEOUT)
-                        mixer.stop_speech()
-                        break
-                    await asyncio.sleep(0.05)
-                self._reset_voice_timeout(guild_id)
-                return True
-            logger.warning("Mixer decode failed for %s; falling back to legacy playback", audio_path)
-
-        # ── Legacy one-shot path (no mixer) ─────────────────────────────
-        # Pause voice receiver while playing (echo prevention)
-        receiver = self._voice_receivers.get(guild_id)
-        if receiver:
-            receiver.pause()
-
+        # Playback is activity. Do not let the inactivity timer disconnect the
+        # bot while duration probing, decoding, or speaking; re-arm it when this
+        # attempt finishes, even if decoding/playback raises.
+        self._cancel_voice_timeout(guild_id)
         try:
-            # Wait for current playback to finish (with timeout)
-            wait_start = time.monotonic()
-            while vc.is_playing():
-                if time.monotonic() - wait_start > self.PLAYBACK_TIMEOUT:
-                    logger.warning("Timed out waiting for previous playback to finish")
-                    vc.stop()
-                    break
-                await asyncio.sleep(0.1)
+            playback_timeout = await self._playback_timeout_for_audio(audio_path)
 
-            done = asyncio.Event()
-            loop = asyncio.get_running_loop()
+            # ── Mixer path (overlap + ducking) ──────────────────────────────
+            mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
+            if mixer is not None:
+                try:
+                    from voice_mixer import decode_to_pcm
+                except ImportError:
+                    from .voice_mixer import decode_to_pcm
+                pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
+                if pcm:
+                    speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
+                    mixer.play_speech(self._lead_silence_bytes() + pcm, gain=speech_gain)
+                    # Block until the speech child drains so callers serialise
+                    # replies (mirrors legacy semantics) but the ambient keeps
+                    # playing underneath the whole time.
+                    wait_start = time.monotonic()
+                    while mixer.speech_active:
+                        if time.monotonic() - wait_start > playback_timeout:
+                            logger.warning("Mixer speech playback timed out after %.1fs", playback_timeout)
+                            mixer.stop_speech()
+                            break
+                        await asyncio.sleep(0.05)
+                    return True
+                logger.warning("Mixer decode failed for %s; falling back to legacy playback", audio_path)
 
-            def _after(error):
-                if error:
-                    logger.error("Voice playback error: %s", error)
-                loop.call_soon_threadsafe(done.set)
-
-            source = discord.FFmpegPCMAudio(audio_path)
-            source = discord.PCMVolumeTransformer(source, volume=1.0)
-            vc.play(source, after=_after)
-            try:
-                await asyncio.wait_for(done.wait(), timeout=self.PLAYBACK_TIMEOUT)
-            except asyncio.TimeoutError:
-                logger.warning("Voice playback timed out after %ds", self.PLAYBACK_TIMEOUT)
-                vc.stop()
-            self._reset_voice_timeout(guild_id)
-            return True
-        finally:
+            # ── Legacy one-shot path (no mixer) ─────────────────────────
+            # Pause voice receiver while playing (echo prevention)
+            receiver = self._voice_receivers.get(guild_id)
             if receiver:
-                receiver.resume()
+                receiver.pause()
+
+            try:
+                # Wait for current playback to finish (with timeout)
+                wait_start = time.monotonic()
+                while vc.is_playing():
+                    if time.monotonic() - wait_start > playback_timeout:
+                        logger.warning("Timed out waiting for previous playback to finish")
+                        vc.stop()
+                        break
+                    await asyncio.sleep(0.1)
+
+                done = asyncio.Event()
+                loop = asyncio.get_running_loop()
+
+                def _after(error):
+                    if error:
+                        logger.error("Voice playback error: %s", error)
+                    loop.call_soon_threadsafe(done.set)
+
+                # Prepend a short lead of silence so the voice socket's warm-up
+                # doesn't clip the first word (mirrors the mixer path above).
+                ffmpeg_opts: Dict[str, Any] = {}
+                _fx_cfg = getattr(self, "_voice_fx_cfg", None) or {}
+                try:
+                    lead_ms = int(_fx_cfg.get("lead_silence_ms", 0) or 0)
+                except (TypeError, ValueError):
+                    lead_ms = 0
+                if lead_ms > 0:
+                    ffmpeg_opts["options"] = f"-af adelay={lead_ms}:all=1"
+                source = discord.FFmpegPCMAudio(
+                    audio_path,
+                    executable=resolve_ffmpeg_executable(),
+                    **ffmpeg_opts,
+                )
+                source = discord.PCMVolumeTransformer(source, volume=1.0)
+                vc.play(source, after=_after)
+                try:
+                    await asyncio.wait_for(done.wait(), timeout=playback_timeout)
+                except asyncio.TimeoutError:
+                    logger.warning("Voice playback timed out after %.1fs", playback_timeout)
+                    vc.stop()
+                return True
+            finally:
+                if receiver:
+                    receiver.resume()
+        finally:
+            self._reset_voice_timeout(guild_id)
 
     async def get_user_voice_channel(self, guild_id: int, user_id: str):
         """Return the voice channel the user is currently in, or None."""
@@ -3874,19 +4337,29 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
         return member.voice.channel
 
-    def _reset_voice_timeout(self, guild_id: int) -> None:
-        """Reset the auto-disconnect inactivity timer."""
+    def _cancel_voice_timeout(self, guild_id: int) -> None:
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
+
+    def _reset_voice_timeout(self, guild_id: int) -> None:
+        """Reset the auto-disconnect inactivity timer."""
+        self._cancel_voice_timeout(guild_id)
+        timeout = self._voice_timeout_limit()
+        if timeout <= 0:
+            logger.debug("Voice inactivity timeout disabled (guild=%d)", guild_id)
+            return
         self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
-            self._voice_timeout_handler(guild_id)
+            self._voice_timeout_handler(guild_id, timeout)
         )
 
-    async def _voice_timeout_handler(self, guild_id: int) -> None:
-        """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
+    async def _voice_timeout_handler(self, guild_id: int, timeout: Optional[int] = None) -> None:
+        """Auto-disconnect after the configured inactivity timeout."""
+        timeout = self._voice_timeout_limit() if timeout is None else int(timeout)
+        if timeout <= 0:
+            return
         try:
-            await asyncio.sleep(self.VOICE_TIMEOUT)
+            await asyncio.sleep(timeout)
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
@@ -4073,7 +4546,18 @@ class DiscordAdapter(BasePlatformAdapter):
                     transcript=transcript,
                 )
         except Exception as e:
-            logger.warning("Voice input processing failed: %s", e, exc_info=True)
+            # CalledProcessError from pcm_to_wav carries ffmpeg's captured
+            # stderr — surface it, or the log only says "exit status N".
+            _ff_err = getattr(e, "stderr", None)
+            if _ff_err:
+                if isinstance(_ff_err, bytes):
+                    _ff_err = _ff_err.decode("utf-8", "replace")
+                logger.warning(
+                    "Voice input processing failed: %s (ffmpeg: %s)",
+                    e, _ff_err.strip(), exc_info=True,
+                )
+            else:
+                logger.warning("Voice input processing failed: %s", e, exc_info=True)
         finally:
             try:
                 os.unlink(wav_path)
@@ -4084,10 +4568,9 @@ class DiscordAdapter(BasePlatformAdapter):
         """True when *channel_ids* intersect ``DISCORD_ALLOWED_CHANNELS``."""
         if not channel_ids:
             return False
-        allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip()
-        if not allowed_raw:
+        allowed = self._get_allowed_channels()
+        if not allowed:
             return False
-        allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
         if "*" in allowed:
             return True
         return bool(channel_ids & allowed)
@@ -4153,9 +4636,9 @@ class DiscordAdapter(BasePlatformAdapter):
             return True
 
         if not has_users and not has_roles:
-            if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+            if self._discord_allow_all_users():
                 return True
-            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+            if self._gateway_allow_all_users():
                 return True
             # Channel-scoped guild access requires validated channel context.
             # Do not treat DISCORD_ALLOWED_CHANNELS alone as a user-wide bypass
@@ -4228,11 +4711,11 @@ class DiscordAdapter(BasePlatformAdapter):
         allowed_roles = getattr(self, "_allowed_role_ids", set()) or set()
         if allowed_users or allowed_roles:
             return
-        if os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip():
+        if self._get_allowed_channels():
             return
-        if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+        if self._discord_allow_all_users():
             return
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+        if self._gateway_allow_all_users():
             return
         self._warned_fail_closed_default = True
         logger.warning(
@@ -4311,9 +4794,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 else None,
             )
 
-            allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_raw:
-                allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
+            allowed = self._get_allowed_channels()
+            if allowed:
                 if "*" not in allowed:
                     if not channel_ids:
                         # Channel policy is configured but the interaction
@@ -4328,9 +4810,8 @@ class DiscordAdapter(BasePlatformAdapter):
             # Ignored beats allowed: even when a thread's parent channel
             # is on the allowlist, an explicit DISCORD_IGNORED_CHANNELS
             # entry on the thread or its parent rejects the interaction.
-            ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            if ignored_raw and channel_ids:
-                ignored = {c.strip() for c in ignored_raw.split(",") if c.strip()}
+            ignored = self._get_ignored_channels()
+            if ignored and channel_ids:
                 if "*" in ignored or (channel_keys & ignored):
                     return (False, "channel in DISCORD_IGNORED_CHANNELS")
 
@@ -4529,37 +5010,40 @@ class DiscordAdapter(BasePlatformAdapter):
             _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
             async with aiohttp.ClientSession(**_sess_kw) as session:
-                async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=30), **_req_kw) as resp:
-                    if resp.status != 200:
-                        raise Exception(f"Failed to download image: HTTP {resp.status}")
+                status, image_data, headers = await _read_url_image_with_redirect_guard(
+                    session,
+                    image_url,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                    request_kwargs=_req_kw,
+                )
+                if status != 200:
+                    raise Exception(f"Failed to download image: HTTP {status}")
 
-                    image_data = await resp.read()
+                # Determine filename from URL or content type
+                content_type = headers.get("content-type", "image/png")
+                ext = "png"
+                if "jpeg" in content_type or "jpg" in content_type:
+                    ext = "jpg"
+                elif "gif" in content_type:
+                    ext = "gif"
+                elif "webp" in content_type:
+                    ext = "webp"
 
-                    # Determine filename from URL or content type
-                    content_type = resp.headers.get("content-type", "image/png")
-                    ext = "png"
-                    if "jpeg" in content_type or "jpg" in content_type:
-                        ext = "jpg"
-                    elif "gif" in content_type:
-                        ext = "gif"
-                    elif "webp" in content_type:
-                        ext = "webp"
+                import io
+                file = discord.File(io.BytesIO(image_data), filename=f"image.{ext}")
 
-                    import io
-                    file = discord.File(io.BytesIO(image_data), filename=f"image.{ext}")
-
-                    if self._is_forum_parent(channel):
-                        return await self._forum_post_file(
-                            channel,
-                            content=(caption or "").strip(),
-                            file=file,
-                        )
-
-                    msg = await channel.send(
-                        content=caption if caption else None,
+                if self._is_forum_parent(channel):
+                    return await self._forum_post_file(
+                        channel,
+                        content=(caption or "").strip(),
                         file=file,
                     )
-                    return SendResult(success=True, message_id=str(msg.id))
+
+                msg = await channel.send(
+                    content=caption if caption else None,
+                    file=file,
+                )
+                return SendResult(success=True, message_id=str(msg.id))
 
         except ImportError:
             logger.warning(
@@ -4608,27 +5092,30 @@ class DiscordAdapter(BasePlatformAdapter):
             _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
             async with aiohttp.ClientSession(**_sess_kw) as session:
-                async with session.get(animation_url, timeout=aiohttp.ClientTimeout(total=30), **_req_kw) as resp:
-                    if resp.status != 200:
-                        raise Exception(f"Failed to download animation: HTTP {resp.status}")
+                status, animation_data, _headers = await _read_url_image_with_redirect_guard(
+                    session,
+                    animation_url,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                    request_kwargs=_req_kw,
+                )
+                if status != 200:
+                    raise Exception(f"Failed to download animation: HTTP {status}")
 
-                    animation_data = await resp.read()
+                import io
+                file = discord.File(io.BytesIO(animation_data), filename="animation.gif")
 
-                    import io
-                    file = discord.File(io.BytesIO(animation_data), filename="animation.gif")
-
-                    if self._is_forum_parent(channel):
-                        return await self._forum_post_file(
-                            channel,
-                            content=(caption or "").strip(),
-                            file=file,
-                        )
-
-                    msg = await channel.send(
-                        content=caption if caption else None,
+                if self._is_forum_parent(channel):
+                    return await self._forum_post_file(
+                        channel,
+                        content=(caption or "").strip(),
                         file=file,
                     )
-                    return SendResult(success=True, message_id=str(msg.id))
+
+                msg = await channel.send(
+                    content=caption if caption else None,
+                    file=file,
+                )
+                return SendResult(success=True, message_id=str(msg.id))
 
         except ImportError:
             logger.warning(
@@ -4851,9 +5338,19 @@ class DiscordAdapter(BasePlatformAdapter):
         if to_resolve:
             print(f"[{self.name}] Could not resolve usernames: {', '.join(to_resolve)}")
 
-        # Update internal set and env var so gateway auth checks use IDs
+        # Update the internal set. Keep the resolved IDs adapter-local first:
+        # under multiplex_profiles, writing os.environ here would clobber
+        # every OTHER profile's DISCORD_ALLOWED_USERS after this adapter's
+        # on_ready — an unguarded runtime mutation of process-global state
+        # (issue #72348). Refresh this adapter's own snapshot instead.
         self._allowed_user_ids = numeric_ids
-        os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
+        snap = getattr(self, "_gate_env_snapshot", None)
+        if snap is not None:
+            snap["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
+        if not _multiplex_active():
+            # Single-profile: preserve the legacy env rewrite so the gateway's
+            # env-based auth checks match the resolved numeric IDs.
+            os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
         if resolved_count:
             print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
 
@@ -5697,6 +6194,99 @@ class DiscordAdapter(BasePlatformAdapter):
             and getattr(att, "waveform", None) is not None
         )
 
+    # ── per-adapter authorization gates (issue #72348) ───────────────────
+    # Under gateway.multiplex_profiles every Discord adapter must enforce
+    # ITS OWN profile's allow/deny lists. os.environ is process-global and
+    # the YAML→env bridge is first-writer-wins, so raw os.getenv reads here
+    # would leak profile A's gates into profile B. Each accessor reads, in
+    # order: the per-adapter env snapshot taken inside the owning profile's
+    # runtime scope at connect() (authoritative under multiplex), then this
+    # adapter's PlatformConfig.extra (per-profile YAML), with the live
+    # scope-aware env read as the pre-connect fallback. Single-profile
+    # deployments resolve to plain os.getenv, unchanged.
+
+    def _snapshot_gate_env(self) -> None:
+        """Capture authorization env vars for THIS adapter's profile.
+
+        Must be called inside the owning profile's runtime scope (connect()
+        runs there under multiplex) so the snapshot holds the profile's own
+        values, not whichever profile bridged os.environ first.
+        """
+        self._gate_env_snapshot = {
+            key: _scoped_gate_env(key) for key in _GATE_ENV_KEYS
+        }
+
+    def _gate_env(self, name: str, default: str = "") -> str:
+        """Read a gate env var from this adapter's snapshot (scope fallback)."""
+        snap = getattr(self, "_gate_env_snapshot", None)
+        if snap is not None and name in snap:
+            return snap[name] or default
+        return _scoped_gate_env(name, default)
+
+    def _gate_raw(self, extra_key: str, env_key: str):
+        """Resolve one gate value: env/snapshot first (legacy precedence), then extra."""
+        val = self._gate_env(env_key)
+        if val:
+            return val
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        if isinstance(extra, dict):
+            return extra.get(extra_key)
+        return None
+
+    @staticmethod
+    def _gate_csv_set(raw) -> set:
+        if raw is None:
+            return set()
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _get_allowed_channels(self) -> set:
+        """This adapter's DISCORD_ALLOWED_CHANNELS gate (per-profile)."""
+        return self._gate_csv_set(self._gate_raw("allowed_channels", "DISCORD_ALLOWED_CHANNELS"))
+
+    def _get_ignored_channels(self) -> set:
+        """This adapter's DISCORD_IGNORED_CHANNELS gate (per-profile)."""
+        return self._gate_csv_set(self._gate_raw("ignored_channels", "DISCORD_IGNORED_CHANNELS"))
+
+    def _get_no_thread_channels(self) -> set:
+        """This adapter's DISCORD_NO_THREAD_CHANNELS list (per-profile)."""
+        return self._gate_csv_set(self._gate_raw("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS"))
+
+    def _get_allowed_users(self) -> set:
+        """This adapter's DISCORD_ALLOWED_USERS entries (per-profile, cleaned)."""
+        raw = self._gate_raw("allow_from", "DISCORD_ALLOWED_USERS")
+        if raw is None:
+            extra = getattr(getattr(self, "config", None), "extra", None)
+            if isinstance(extra, dict):
+                raw = extra.get("allowed_users")
+        return {
+            _clean_discord_id(str(entry))
+            for entry in self._gate_csv_set(raw)
+            if _clean_discord_id(str(entry))
+        }
+
+    def _get_allowed_roles(self) -> set:
+        """This adapter's DISCORD_ALLOWED_ROLES role IDs (per-profile)."""
+        raw = self._gate_raw("allowed_roles", "DISCORD_ALLOWED_ROLES")
+        return {
+            int(str(entry).strip()) for entry in self._gate_csv_set(raw)
+            if str(entry).strip().isdigit()
+        }
+
+    def _discord_allow_all_users(self) -> bool:
+        """Per-profile DISCORD_ALLOW_ALL_USERS flag."""
+        raw = self._gate_raw("allow_all_users", "DISCORD_ALLOW_ALL_USERS")
+        return str(raw or "").strip().lower() in {"true", "1", "yes"}
+
+    def _gateway_allow_all_users(self) -> bool:
+        """Per-profile GATEWAY_ALLOW_ALL_USERS flag."""
+        return self._gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}
+
+    def _get_allow_bots(self) -> str:
+        """Per-profile DISCORD_ALLOW_BOTS mode (none|mentions|all)."""
+        return self._gate_env("DISCORD_ALLOW_BOTS", "none").lower().strip() or "none"
+
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs/names where no bot mention is required.
 
@@ -5706,7 +6296,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
-            raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+            raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         # Coerce non-list scalars (str/int/float) to str before splitting.
@@ -5906,7 +6496,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return ""
 
         # Determine which bot messages to include in context
-        allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+        allow_bots_raw = self._get_allow_bots()
         include_other_bots = allow_bots_raw != "none"
 
         # Use the in-memory cache to narrow the fetch window on hot paths.
@@ -6454,6 +7044,7 @@ class DiscordAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """
@@ -6529,6 +7120,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 require_admin=require_admin,
                 admin_user_ids=admin_user_ids,
                 allow_permanent=allow_permanent,
+                allow_session=allow_session,
                 smart_denied=smart_denied,
             )
 
@@ -7112,16 +7704,14 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_keys = self._discord_channel_keys(message, parent_channel_id)
 
             # Check allowed channels - if set, only respond in these channels
-            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw:
-                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
+            allowed_channels = self._get_allowed_channels()
+            if allowed_channels:
                 if "*" not in allowed_channels and not (channel_keys & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
                     return False
 
             # Check ignored channels - never respond even when mentioned
-            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
+            ignored_channels = self._get_ignored_channels()
             if "*" in ignored_channels or (channel_keys & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
                 return False
@@ -7160,8 +7750,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
-            no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
+            no_thread_channels = self._get_no_thread_channels()
             skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
@@ -7671,15 +8260,20 @@ def _component_check_auth(
     if user is None or getattr(user, "id", None) is None:
         return False
 
-    if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+    # Scope-aware reads (issue #72348): component interactions are dispatched
+    # from discord.py tasks descended from the task created inside the owning
+    # profile's runtime scope, so the profile's secret-scope contextvar is
+    # inherited here. Under multiplex a raw os.getenv could return ANOTHER
+    # profile's allow-all flag and authorize a click on this profile's bot.
+    if _scoped_gate_env("DISCORD_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}:
         return True
-    if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+    if _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}:
         return True
 
     user_set = {str(uid).strip() for uid in (allowed_user_ids or set()) if str(uid).strip()}
     global_allowed = {
         uid.strip()
-        for uid in os.getenv("GATEWAY_ALLOWED_USERS", "").split(",")
+        for uid in _scoped_gate_env("GATEWAY_ALLOWED_USERS").split(",")
         if uid.strip()
     }
     user_set.update(global_allowed)
@@ -7793,6 +8387,7 @@ def _define_discord_view_classes() -> None:
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
             allow_permanent: bool = True,
+            allow_session: bool = True,
             smart_denied: bool = False,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
@@ -7807,7 +8402,7 @@ def _define_discord_view_classes() -> None:
                 str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()
             }
             self.resolved = False
-            if smart_denied:
+            if smart_denied or not allow_session:
                 self.remove_item(self.allow_session)
                 self.remove_item(self.allow_always)
             elif not allow_permanent:
@@ -7865,19 +8460,9 @@ def _define_discord_view_classes() -> None:
 
             self.resolved = True
 
-            # Update the embed with the decision
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
-            if embed:
-                embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
-
-            # Disable all buttons
-            for child in self.children:
-                child.disabled = True
-
-            await interaction.response.edit_message(embed=embed, view=self)
-
-            # Unblock the waiting agent thread via the gateway approval queue
+            # Unblock the waiting agent thread FIRST, then render the outcome.
+            # A click that lands after the approval wait timed out (count == 0)
+            # must not claim "Approved" — the command was already denied.
             try:
                 from tools.approval import resolve_gateway_approval
                 count = resolve_gateway_approval(self.session_key, choice)
@@ -7887,6 +8472,24 @@ def _define_discord_view_classes() -> None:
                 )
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
+                count = 0
+
+            if not count:
+                color = discord.Color.dark_grey()
+                label = "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)"
+
+            # Update the embed with the decision
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                footer = f"{label} by {interaction.user.display_name}" if count else label
+                embed.set_footer(text=footer)
+
+            # Disable all buttons
+            for child in self.children:
+                child.disabled = True
+
+            await interaction.response.edit_message(embed=embed, view=self)
 
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
         async def allow_once(
@@ -8103,7 +8706,7 @@ def _define_discord_view_classes() -> None:
                 home = get_hermes_home()
                 response_path = home / ".update_response"
                 tmp = response_path.with_suffix(".tmp")
-                tmp.write_text(answer)
+                tmp.write_text(answer, encoding="utf-8")
                 tmp.replace(response_path)
                 logger.info(
                     "Discord update prompt answered '%s' by %s",
@@ -8959,7 +9562,14 @@ async def _standalone_send(
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
 
-    token = (getattr(pconfig, "token", None) or os.getenv("DISCORD_BOT_TOKEN", "")).strip()
+    token = (getattr(pconfig, "token", None) or "").strip()
+    if not token:
+        # Profile-scoped read: under multiplex the process env may hold a
+        # different profile's bot token, so honor the secret scope's verdict
+        # (scoped miss ⇒ no token; unscoped multiplex ⇒ UnscopedSecretError).
+        from agent.secret_scope import get_secret
+
+        token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
         return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
 
@@ -9211,7 +9821,7 @@ def interactive_setup() -> None:
     the plugin's import surface stays small, prompts for the bot token,
     captures an allowlist, and offers to set a home channel.
     """
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt,
         prompt_yes_no,
@@ -9275,9 +9885,12 @@ def interactive_setup() -> None:
     print_info("   To get a channel ID: right-click a channel → Copy Channel ID")
     print_info("   (requires Developer Mode in Discord settings)")
     print_info("   You can also set this later by typing /set-home in a Discord channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
     if home_channel:
         save_env_value("DISCORD_HOME_CHANNEL", home_channel)
+    else:
+        if remove_env_value("DISCORD_HOME_CHANNEL"):
+            print_info("Home channel cleared.")
 
 
 def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
@@ -9320,14 +9933,42 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             candidate_extra = discord_platform_cfg.get("extra")
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
+    seeded_extra = {}
+    # Authorization gate keys are ALWAYS seeded into PlatformConfig.extra so
+    # every adapter carries its own profile's allow/deny lists (issue #72348).
+    # The os.environ writes below remain first-writer-wins for legacy env-only
+    # consumers, but are skipped for profile-scoped loads under multiplex —
+    # a secondary profile's gates must never land in process-global env where
+    # they'd become another profile's policy.
+    _skip_env_bridge = _profile_scoped_config_load()
     allowed_users_cfg = (
         discord_cfg["allow_from"] if "allow_from" in discord_cfg
         else platform_extra_cfg.get("allow_from")
     )
-    if allowed_users_cfg is not None and not os.getenv("DISCORD_ALLOWED_USERS"):
+    if allowed_users_cfg is not None:
         if isinstance(allowed_users_cfg, list):
             allowed_users_cfg = ",".join(str(v) for v in allowed_users_cfg)
-        os.environ["DISCORD_ALLOWED_USERS"] = str(allowed_users_cfg)
+        seeded_extra["allow_from"] = str(allowed_users_cfg)
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOWED_USERS"):
+            os.environ["DISCORD_ALLOWED_USERS"] = str(allowed_users_cfg)
+    allowed_roles_cfg = (
+        discord_cfg["allowed_roles"] if "allowed_roles" in discord_cfg
+        else platform_extra_cfg.get("allowed_roles")
+    )
+    if allowed_roles_cfg is not None:
+        if isinstance(allowed_roles_cfg, list):
+            allowed_roles_cfg = ",".join(str(v) for v in allowed_roles_cfg)
+        seeded_extra["allowed_roles"] = str(allowed_roles_cfg)
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOWED_ROLES"):
+            os.environ["DISCORD_ALLOWED_ROLES"] = str(allowed_roles_cfg)
+    allow_all_cfg = (
+        discord_cfg["allow_all_users"] if "allow_all_users" in discord_cfg
+        else platform_extra_cfg.get("allow_all_users")
+    )
+    if allow_all_cfg is not None:
+        seeded_extra["allow_all_users"] = str(allow_all_cfg).lower()
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOW_ALL_USERS"):
+            os.environ["DISCORD_ALLOW_ALL_USERS"] = str(allow_all_cfg).lower()
     approval_mentions_cfg = (
         discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
         else platform_extra_cfg.get("approval_mentions")
@@ -9335,36 +9976,43 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if approval_mentions_cfg is not None and not os.getenv("DISCORD_APPROVAL_MENTIONS"):
         os.environ["DISCORD_APPROVAL_MENTIONS"] = str(approval_mentions_cfg).lower()
     frc = discord_cfg.get("free_response_channels")
-    if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
+    if frc is not None:
         if isinstance(frc, list):
             frc = ",".join(str(v) for v in frc)
-        os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+        seeded_extra["free_response_channels"] = str(frc)
+        if not _skip_env_bridge and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
+            os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
-    seeded_extra = {}
     backfill_cfg = discord_cfg.get("missed_message_backfill")
     if isinstance(backfill_cfg, dict):
         seeded_extra["missed_message_backfill"] = dict(backfill_cfg)
     # ignored_channels: channels where bot never responds (even when mentioned)
     ic = discord_cfg.get("ignored_channels")
-    if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):
+    if ic is not None:
         if isinstance(ic, list):
             ic = ",".join(str(v) for v in ic)
-        os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
+        seeded_extra["ignored_channels"] = str(ic)
+        if not _skip_env_bridge and not os.getenv("DISCORD_IGNORED_CHANNELS"):
+            os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
     # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
     ac = discord_cfg.get("allowed_channels")
-    if ac is not None and not os.getenv("DISCORD_ALLOWED_CHANNELS"):
+    if ac is not None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
-        os.environ["DISCORD_ALLOWED_CHANNELS"] = str(ac)
+        seeded_extra["allowed_channels"] = str(ac)
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOWED_CHANNELS"):
+            os.environ["DISCORD_ALLOWED_CHANNELS"] = str(ac)
     # no_thread_channels: channels where bot responds directly without creating thread
     ntc = discord_cfg.get("no_thread_channels")
-    if ntc is not None and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
+    if ntc is not None:
         if isinstance(ntc, list):
             ntc = ",".join(str(v) for v in ntc)
-        os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+        seeded_extra["no_thread_channels"] = str(ntc)
+        if not _skip_env_bridge and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
+            os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
     # history_backfill: recover missed channel messages for shared sessions
     # when require_mention is active.  Fetches messages between bot turns
     # and prepends them to the user message for context.
@@ -9461,7 +10109,7 @@ def register(ctx) -> None:
         check_fn=check_discord_requirements,
         is_connected=_is_connected,
         required_env=["DISCORD_BOT_TOKEN"],
-        install_hint="pip install 'hermes-agent[messaging]'",
+        install_hint="Run `hermes setup` to install Discord support.",
         # Interactive setup wizard — replaces the central
         # hermes_cli/setup.py::_setup_discord function.  Same shape as Teams.
         setup_fn=interactive_setup,

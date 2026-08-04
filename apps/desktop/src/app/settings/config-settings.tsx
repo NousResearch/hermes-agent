@@ -2,13 +2,25 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ChangeEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { triggerHaptic } from '@/lib/haptics'
+import {
+  $dataUrlReadMaxMb,
+  clampDataUrlReadMaxMb,
+  DATA_URL_READ_DEFAULT_MAX_MB,
+  DATA_URL_READ_MAX_MAX_MB,
+  DATA_URL_READ_MIN_MAX_MB,
+  refreshDataUrlReadMaxMb,
+  setDataUrlReadMaxMb
+} from '@/store/data-url-read-max'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
+import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -20,7 +32,8 @@ import { enumOptionsFor, getNested, isExternalMemoryProvider, sectionFieldEntrie
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
-import { EmptyState, LoadingState, SettingsContent, ToggleRow } from './primitives'
+import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { QuickEntrySettings } from './quick-entry-settings'
 
 // On the Voice page, only surface the sub-fields of the *selected* TTS/STT
 // provider — otherwise every provider's options render at once (the "totally
@@ -76,15 +89,18 @@ export function ConfigSettings({
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const saveVersionRef = useRef(0)
+  const savedDiscoverySignatureRef = useRef<string | undefined>(undefined)
   const [saveVersion, setSaveVersion] = useState(0)
 
   // Seed the local draft once, the first time the shared record lands.
   // Background refetches thereafter must not clobber in-progress edits.
   const configSeeded = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (loadedConfig && !configSeeded.current) {
       configSeeded.current = true
+      savedDiscoverySignatureRef.current = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(loadedConfig))
       setConfig(loadedConfig)
     }
   }, [loadedConfig])
@@ -95,6 +111,7 @@ export function ConfigSettings({
   // the pending debounced autosave is cancelled by its effect cleanup.
   useOnProfileSwitch(() => {
     configSeeded.current = false
+    savedDiscoverySignatureRef.current = undefined
     setConfig(null)
     saveVersionRef.current = 0
     setSaveVersion(0)
@@ -122,6 +139,7 @@ export function ConfigSettings({
     return () => void (cancelled = true)
   }, [])
 
+  // eslint-disable-next-line no-restricted-syntax -- autosave bookkeeping refs, not an atom mirror
   useEffect(() => {
     if (!config || saveVersion === 0) {
       return
@@ -132,12 +150,24 @@ export function ConfigSettings({
     const t = window.setTimeout(() => {
       void (async () => {
         try {
-          await saveHermesConfig(config)
+          const result = await saveHermesConfig(config)
+
+          if (!result.ok) {
+            throw new Error(c.autosaveFailed)
+          }
+
           // Mirror the saved record into the shared cache so MCP/model surfaces
           // reflect the edit without their own refetch.
           setHermesConfigCache(config)
 
           if (saveVersionRef.current === v) {
+            const discoverySignature = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(config))
+
+            if (savedDiscoverySignatureRef.current !== discoverySignature) {
+              savedDiscoverySignatureRef.current = discoverySignature
+              await scanAndRecordRepos(true)
+            }
+
             onConfigSaved?.()
           }
         } catch (err) {
@@ -248,8 +278,8 @@ export function ConfigSettings({
       )
     }
 
-    // Model keeps its shape via a skeleton (its catalog fetch is the slow part);
-    // other sections are quick config/schema reads, so a light loader is fine.
+    // Every section keeps its shape via a skeleton; model gets its bespoke one
+    // (its catalog fetch is the slow part), the rest the shared field rhythm.
     if (activeSectionId === 'model') {
       return (
         <SettingsContent>
@@ -260,7 +290,7 @@ export function ConfigSettings({
       )
     }
 
-    return <LoadingState label={c.loading} />
+    return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
   const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
@@ -272,14 +302,27 @@ export function ConfigSettings({
           <ModelSettings onMainModelChanged={onMainModelChanged} />
         </div>
       )}
-      {/* Device-local desktop pref (not config.yaml) — lives here since keeping
-          the machine awake is a power-user knob. */}
+      {/* Device-local desktop prefs (not config.yaml) — they live here since
+          keeping the machine awake and the global Quick Entry chord are both
+          power-user, this-computer-only knobs. */}
       {activeSectionId === 'advanced' && (
-        <ToggleRow checked={keepAwake} description={c.keepAwakeDesc} label={c.keepAwakeTitle} onChange={setKeepAwake} />
+        <>
+          <ToggleRow
+            checked={keepAwake}
+            description={c.keepAwakeDesc}
+            label={c.keepAwakeTitle}
+            onChange={setKeepAwake}
+          />
+          <QuickEntrySettings />
+        </>
       )}
-      {visibleFields.length === 0 ? (
+      {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
+          where image-attachment behavior already lives, so this sits above the
+          schema fields for that section. */}
+      {activeSectionId === 'chat' ? <AttachmentSizeSetting /> : null}
+      {visibleFields.length === 0 && activeSectionId !== 'chat' ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
-      ) : (
+      ) : visibleFields.length === 0 ? null : (
         <div className="grid gap-1">
           {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
@@ -315,5 +358,75 @@ export function ConfigSettings({
         type="file"
       />
     </SettingsContent>
+  )
+}
+
+/** Free-form MB cap for Desktop's data-URL attach/preview path (main-process). */
+function AttachmentSizeSetting() {
+  const { t } = useI18n()
+  const c = t.settings.config
+  const stored = useStore($dataUrlReadMaxMb)
+  const [draft, setDraft] = useState(String(stored))
+
+  useEffect(() => {
+    void refreshDataUrlReadMaxMb()
+  }, [])
+
+  useEffect(() => {
+    setDraft(String(stored))
+  }, [stored])
+
+  const commit = () => {
+    // An empty draft means "reset to the default", not the 1 MB floor
+    // (Number('') === 0 would otherwise clamp down to the floor).
+    const applied = draft.trim() === '' ? DATA_URL_READ_DEFAULT_MAX_MB : clampDataUrlReadMaxMb(draft)
+
+    // Unchanged: snap the draft back to the stored value and skip the
+    // pointless IPC write + haptic.
+    if (applied === stored) {
+      setDraft(String(stored))
+
+      return
+    }
+
+    void setDataUrlReadMaxMb(applied).then(next => {
+      setDraft(String(next))
+
+      // On a bridge write failure the store keeps the old value; only
+      // celebrate when the new cap actually landed.
+      if (next === applied) {
+        triggerHaptic('selection')
+      }
+    })
+  }
+
+  return (
+    <ListRow
+      action={
+        <div className="flex items-center gap-2">
+          <Input
+            aria-label={c.attachmentSizeLabel}
+            className="w-20"
+            inputMode="numeric"
+            max={DATA_URL_READ_MAX_MAX_MB}
+            min={DATA_URL_READ_MIN_MAX_MB}
+            onBlur={commit}
+            onChange={event => setDraft(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.currentTarget.blur()
+              }
+            }}
+            type="number"
+            value={draft}
+          />
+          <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {c.attachmentSizeUnit}
+          </span>
+        </div>
+      }
+      description={c.attachmentSizeDesc}
+      title={c.attachmentSizeTitle}
+    />
   )
 }

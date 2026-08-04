@@ -71,6 +71,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.media_cache import ext_for_mime
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,31 @@ def _coerce_list(value: Any) -> List[str]:
     return _coerce_list_impl(value)
 
 
+def _resolve_qq_secret(name: str, default: str = "") -> str:
+    """Resolve a per-profile ``QQ_*`` setting honoring the active secret scope.
+
+    When a profile secret scope is installed — every secondary multiplex
+    profile is constructed and handled inside ``_profile_runtime_scope``
+    (``gateway/run.py``), as is each per-turn inbound message — read from it so
+    profiles never see each other's ``os.environ`` values. This is the
+    cross-profile credential collision fixed for the WeChat adapter in #59662.
+
+    The primary/active profile is constructed without a scope and legitimately
+    owns ``os.environ``, so fall back to it there instead of failing closed: a
+    bare ``get_secret`` would raise ``UnscopedSecretError`` on the active
+    profile's ``__init__`` and break its startup. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway.platforms.whatsapp_common._get_wsecret``.
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret
+
+    try:
+        val = get_secret(name, default)
+    except UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
 # ---------------------------------------------------------------------------
 # QQAdapter
 # ---------------------------------------------------------------------------
@@ -201,9 +227,11 @@ class QQAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.QQBOT)
 
         extra = config.extra or {}
-        self._app_id = str(extra.get("app_id") or os.getenv("QQ_APP_ID", "")).strip()
+        self._app_id = str(
+            extra.get("app_id") or _resolve_qq_secret("QQ_APP_ID", "")
+        ).strip()
         self._client_secret = str(
-            extra.get("client_secret") or os.getenv("QQ_CLIENT_SECRET", "")
+            extra.get("client_secret") or _resolve_qq_secret("QQ_CLIENT_SECRET", "")
         ).strip()
         self._markdown_support = bool(extra.get("markdown_support", True))
 
@@ -312,7 +340,8 @@ class QQAdapter(BasePlatformAdapter):
             # Tighter keepalive pool so idle CLOSE_WAIT sockets drain
             # faster behind proxies like Cloudflare Warp (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(
+            from tools.url_safety import create_ssrf_safe_async_client
+            self._http_client = create_ssrf_safe_async_client(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
@@ -1201,7 +1230,7 @@ class QQAdapter(BasePlatformAdapter):
             home = get_hermes_home()
             response_path = home / ".update_response"
             tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer)
+            tmp.write_text(answer, encoding="utf-8")
             tmp.replace(response_path)
             logger.info(
                 "QQ update prompt answered %r by %s",
@@ -1790,7 +1819,14 @@ class QQAdapter(BasePlatformAdapter):
             return None
 
         if content_type.startswith("image/"):
-            ext = mimetypes.guess_extension(content_type) or ".jpg"
+            # preserves historical qqbot mapping: trust mimetypes'
+            # guess (never the shared table) and fall back to .jpg.
+            ext = ext_for_mime(
+                content_type,
+                use_defaults=False,
+                use_mimetypes=True,
+                fallback=".jpg",
+            ) or ".jpg"
             return cache_image_from_bytes(data, ext)
         elif content_type == "voice" or content_type.startswith("audio/"):
             # QQ voice messages are typically .amr or .silk format.
@@ -1811,16 +1847,14 @@ class QQAdapter(BasePlatformAdapter):
         fn = filename.strip().lower()
         if ct == "voice" or ct.startswith("audio/"):
             return True
+        # QQ file uploads have content_type="file".  Without this guard,
+        # any uploaded audio file (e.g. .wav, .mp3) would be misrouted into
+        # the STT pipeline and never be received as a normal file attachment.
+        if ct == "file":
+            return False
         _VOICE_EXTENSIONS = (
-            ".silk",
-            ".amr",
-            ".mp3",
-            ".wav",
-            ".ogg",
-            ".m4a",
-            ".aac",
-            ".speex",
-            ".flac",
+            ".silk", ".amr", ".mp3", ".wav", ".ogg",
+            ".m4a", ".aac", ".speex", ".flac",
         )
         if any(fn.endswith(ext) for ext in _VOICE_EXTENSIONS):
             return True
@@ -1937,15 +1971,15 @@ class QQAdapter(BasePlatformAdapter):
                     )
                     return None
 
-            # 4. Call STT API
+            # 4. Call STT API and always clean up the temp WAV afterward.
             logger.debug("[%s] STT: calling ASR on %s", self._log_tag, wav_path)
-            transcript = await self._call_stt(wav_path)
-
-            # 5. Cleanup temp file
             try:
-                os.unlink(wav_path)
-            except OSError:
-                pass
+                transcript = await self._call_stt(wav_path)
+            finally:
+                try:
+                    os.unlink(wav_path)
+                except OSError:
+                    pass
 
             if transcript:
                 logger.debug("[%s] STT success: %r", self._log_tag, transcript[:100])
@@ -2195,13 +2229,13 @@ class QQAdapter(BasePlatformAdapter):
                     }
 
         # 2. QQ-specific env vars (set by `hermes setup gateway` / `hermes gateway`)
-        qq_stt_key = os.getenv("QQ_STT_API_KEY", "")
+        qq_stt_key = _resolve_qq_secret("QQ_STT_API_KEY", "")
         if qq_stt_key:
-            base_url = os.getenv(
+            base_url = _resolve_qq_secret(
                 "QQ_STT_BASE_URL",
                 "https://open.bigmodel.cn/api/coding/paas/v4",
             )
-            model = os.getenv("QQ_STT_MODEL", "glm-asr")
+            model = _resolve_qq_secret("QQ_STT_MODEL", "glm-asr")
             return {
                 "base_url": base_url.rstrip("/"),
                 "api_key": qq_stt_key,
@@ -2672,6 +2706,7 @@ class QQAdapter(BasePlatformAdapter):
             description: str = "dangerous command",
             metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Send a button-based exec-approval prompt for a dangerous command.
@@ -2682,6 +2717,7 @@ class QQAdapter(BasePlatformAdapter):
         adapter's interaction callback (:meth:`_default_interaction_dispatch`).
         """
         del metadata  # QQ doesn't have thread_id / DM targeting overrides.
+        del allow_session  # QQ's 3-button keyboard has no session tier (once/always/deny).
         if smart_denied:
             description += " Owner override applies to this one operation only."
 
@@ -3161,7 +3197,7 @@ class QQAdapter(BasePlatformAdapter):
     def _open_dm_opted_in(self) -> bool:
         if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
             return True
-        return os.getenv("QQ_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        return _resolve_qq_secret("QQ_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
     def _is_dm_allowed(self, user_id: str) -> bool:
         if self._dm_policy == "disabled":

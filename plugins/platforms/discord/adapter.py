@@ -170,6 +170,10 @@ _DISCORD_SELECT_MAX_ROWS = 5
 # Model-select capacity: keep 2 rows for Back/Cancel, fill the rest with selects.
 _DISCORD_MODEL_SELECT_CAPACITY = (_DISCORD_SELECT_MAX_ROWS - 2) * _DISCORD_SELECT_MAX_OPTIONS
 _DISCORD_BUTTON_LABEL_LIMIT = 80
+# Default Discord attachment cap for DMs / channels without a guild boost
+# context. Guild channels expose the effective limit via
+# ``guild.filesize_limit`` (boost tier may raise it). See issue #50846.
+_DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024
 _DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational", "non_conversational_history",
@@ -3157,7 +3161,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids),
         )
 
+    @staticmethod
+    def _discord_upload_limit_bytes(channel: Any) -> int:
+        """Return the effective Discord attachment size limit for *channel*.
 
+        Prefer the guild's boost-aware ``filesize_limit`` when present; fall
+        back to the platform default for DMs / group DMs without a guild.
+        """
+        guild = getattr(channel, "guild", None)
+        if guild is not None:
+            limit = getattr(guild, "filesize_limit", None)
+            if isinstance(limit, int) and limit > 0:
+                return limit
+        return _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
 
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
         """Play auto-TTS audio: in the guild's VC if joined, else as a file attachment."""

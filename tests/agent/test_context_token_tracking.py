@@ -86,6 +86,49 @@ def test_anthropic_cache_read_and_creation_added(monkeypatch):
     assert agent.session_prompt_tokens == 17003
 
 
+def test_usage_updated_callback_runs_after_each_tool_loop_response(monkeypatch):
+    observed = []
+    responses = iter(
+        [
+            SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="call_1",
+                        name="t",
+                        input={},
+                    )
+                ],
+                stop_reason="tool_use",
+                usage=SimpleNamespace(input_tokens=400, output_tokens=20),
+                model="claude-sonnet-4-6",
+            ),
+            _anthropic_resp(600, 20),
+        ]
+    )
+    agent = _make_agent(
+        monkeypatch,
+        "anthropic_messages",
+        "anthropic",
+        lambda: next(responses),
+    )
+
+    def on_usage_updated():
+        observed.append(
+            (
+                agent.context_compressor.last_prompt_tokens,
+                agent.session_prompt_tokens,
+                agent.session_api_calls,
+            )
+        )
+
+    agent._usage_updated_callback = on_usage_updated
+
+    agent.run_conversation("hi")
+
+    assert observed == [(400, 400, 1), (600, 1000, 2)]
+
+
 def test_anthropic_no_cache_fields(monkeypatch):
     agent = _make_agent(monkeypatch, "anthropic_messages", "anthropic",
                         lambda: _anthropic_resp(500, 20))

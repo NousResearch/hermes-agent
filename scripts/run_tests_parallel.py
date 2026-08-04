@@ -795,13 +795,25 @@ def _pytest_value_flags(argv: list[str] | None = None) -> tuple[set[str], set[st
             i += 1
         for group in config._parser._groups:
             for option in group.options:
-                attrs = option._attrs
-                action = attrs.get("action", "store")
-                if action not in {"store", "append", "extend"} or attrs.get("nargs") == 0:
-                    continue
-                target = optional if attrs.get("nargs") == "?" else required
-                target.update(option._short_opts)
-                target.update(option._long_opts)
+                # pytest 9 moved option metadata from private ``_attrs`` /
+                # ``_short_opts`` / ``_long_opts`` fields onto the argparse
+                # Action and a public-ish ``names()`` helper. Keep the older
+                # path for pytest 8 and earlier.
+                parser_action = getattr(option, "_action", None)
+                if parser_action is not None:
+                    nargs = parser_action.nargs
+                    if nargs == 0:
+                        continue
+                    names = option.names()
+                else:
+                    attrs = option._attrs
+                    action = attrs.get("action", "store")
+                    if action not in {"store", "append", "extend"} or attrs.get("nargs") == 0:
+                        continue
+                    nargs = attrs.get("nargs")
+                    names = [*option._short_opts, *option._long_opts]
+                target = optional if nargs == "?" else required
+                target.update(names)
     except Exception:
         pass
     finally:

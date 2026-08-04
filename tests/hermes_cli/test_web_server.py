@@ -1475,6 +1475,28 @@ class TestWebServerEndpoints:
         assert first_id == second_id
         assert "secret" not in first_id
 
+    def test_legacy_endpoint_response_strips_url_credentials_and_fragment(self):
+        from hermes_cli.config import load_config, save_config
+
+        raw_url = "https://user:secret@llm.acme.test/v1?tenant=one#private"
+        save_config({
+            "custom_providers": [{
+                "name": "Acme",
+                "base_url": raw_url,
+                "model": "acme/m1",
+            }],
+        })
+
+        response = self.client.get("/api/providers/custom-endpoints")
+
+        assert response.status_code == 200
+        endpoint = response.json()["endpoints"][0]
+        assert endpoint["base_url"] == "https://llm.acme.test/v1?tenant=one"
+        assert "user" not in response.text
+        assert "secret" not in response.text
+        assert "private" not in response.text
+        assert load_config()["custom_providers"][0]["base_url"] == raw_url
+
     def test_custom_endpoint_identity_preserves_url_path_and_model_case(self):
         from hermes_cli.config import load_config, save_config
 

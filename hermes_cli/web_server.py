@@ -7214,6 +7214,31 @@ def _canonical_endpoint_url(raw_url: str) -> str:
         return value.rstrip("/")
 
 
+def _display_endpoint_url(raw_url: str) -> str:
+    """Remove URL credentials and fragments before returning a UI value."""
+    value = raw_url.strip()
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        if not parsed.netloc:
+            return value.split("#", 1)[0]
+
+        # Keep the configured host/port spelling, but remove userinfo without
+        # touching the raw URL used for endpoint identity and deletion.
+        host = parsed.netloc.rsplit("@", 1)[-1]
+        return urllib.parse.urlunsplit((
+            parsed.scheme,
+            host,
+            parsed.path,
+            parsed.query,
+            "",
+        ))
+    except ValueError:
+        # ``urlsplit`` can defer malformed-port errors until a component is
+        # accessed; the netloc fallback still removes any obvious userinfo.
+        prefix = value.split("#", 1)[0]
+        return prefix.rsplit("@", 1)[-1]
+
+
 def _custom_endpoint_signature(name: str, base_url: str, model: str) -> Tuple[str, str, str]:
     """Return the compatibility identity used to deduplicate endpoint rows."""
     return (
@@ -7265,8 +7290,9 @@ def _legacy_custom_endpoint_rows(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
         rows.append({
             "id": _legacy_custom_endpoint_id(index, name, base_url, model),
             "_config_index": index,
+            "_raw_base_url": base_url,
             "name": name,
-            "base_url": base_url,
+            "base_url": _display_endpoint_url(base_url),
             "model": model,
             "models": models,
             "context_length": entry.get("context_length"),
@@ -7331,10 +7357,10 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
         endpoint = {
             key: value
             for key, value in legacy_row.items()
-            if key != "_config_index"
+            if key not in {"_config_index", "_raw_base_url"}
         }
         signature = _custom_endpoint_signature(
-            endpoint["name"], endpoint["base_url"], endpoint["model"]
+            endpoint["name"], legacy_row["_raw_base_url"], endpoint["model"]
         )
         current_provider_lower = current_provider.strip().lower()
         endpoint["is_current"] = (
@@ -7345,7 +7371,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
             }
             or (
                 current_provider_lower == "custom"
-                and _endpoint_url_matches(current_base_url, endpoint["base_url"])
+                and _endpoint_url_matches(current_base_url, legacy_row["_raw_base_url"])
             )
         )
         if signature in modern_by_signature:
@@ -7631,7 +7657,7 @@ def delete_custom_endpoint(endpoint_id: str, source: Optional[str] = None):
             _detach_main_model_from_provider(
                 cfg,
                 custom_provider_slug(matched_row["name"]),
-                base_urls=(matched_row["base_url"],),
+                base_urls=(matched_row["_raw_base_url"],),
                 provider_aliases=(matched_row["name"],),
             )
         save_config(cfg)

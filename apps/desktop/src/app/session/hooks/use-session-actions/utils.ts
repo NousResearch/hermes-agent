@@ -6,10 +6,14 @@ import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-ima
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import {
+  $cronSessions,
   $currentCwd,
+  $messagingSessions,
   $sessions,
   sessionMatchesStoredId,
+  setCronSessions,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -19,6 +23,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setMessagingSessions,
   setSessions,
   setYoloActive
 } from '@/store/session'
@@ -839,8 +844,107 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
+/** Which sidebar slice currently lists a stored session. */
+export type ListedSessionSlice = 'cron' | 'messaging' | 'sessions'
+
+/**
+ * Find a session across the three sidebar caches (recents, cron, messaging).
+ *
+ * Messaging / cron rows are NOT in `$sessions` — they live in their own slices
+ * after the batched sidebar fetch. Delete/archive/resume must look here or a
+ * QQ/Telegram row's owning `profile` is invisible and REST mutates the wrong
+ * profile backend (#78836).
+ */
+export function findListedSession(
+  storedSessionId: string
+): { session: SessionInfo; slice: ListedSessionSlice } | undefined {
+  const match = (session: SessionInfo) => sessionMatchesStoredId(session, storedSessionId)
+
+  const fromSessions = $sessions.get().find(match)
+
+  if (fromSessions) {
+    return { session: fromSessions, slice: 'sessions' }
+  }
+
+  const fromMessaging = $messagingSessions.get().find(match)
+
+  if (fromMessaging) {
+    return { session: fromMessaging, slice: 'messaging' }
+  }
+
+  const fromCron = $cronSessions.get().find(match)
+
+  if (fromCron) {
+    return { session: fromCron, slice: 'cron' }
+  }
+
+  return undefined
+}
+
+/** Optimistically drop a row from every sidebar slice it might occupy. */
+export function dropListedSession(storedSessionId: string): void {
+  const keep = (session: SessionInfo) => !sessionMatchesStoredId(session, storedSessionId)
+
+  setSessions(prev => prev.filter(keep))
+  setMessagingSessions(prev => prev.filter(keep))
+  setCronSessions(prev => prev.filter(keep))
+}
+
+/** Put a row back into the slice it was deleted/archived from. */
+export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
+  const target: ListedSessionSlice =
+    slice ??
+    (isMessagingSource(session.source)
+      ? 'messaging'
+      : normalizeSessionSource(session.source) === 'cron'
+        ? 'cron'
+        : 'sessions')
+
+  const prepend = (prev: SessionInfo[]) => [
+    session,
+    ...prev.filter(existing => !sessionMatchesStoredId(existing, session.id))
+  ]
+
+  if (target === 'messaging') {
+    setMessagingSessions(prepend)
+
+    return
+  }
+
+  if (target === 'cron') {
+    setCronSessions(prepend)
+
+    return
+  }
+
+  setSessions(prepend)
+}
+
+/**
+ * Profile a DELETE/archive REST call must target.
+ *
+ * Prefer the stamped profile on any listed row; when missing (uncached id, or
+ * an older aggregator that omitted it), fall through the same ownership ladder
+ * as resume (`resolveSessionProfile`) so the mutation hits the owning profile's
+ * backend instead of the primary/default one (#78836).
+ */
+export async function resolveSessionMutationProfile(
+  storedSessionId: string,
+  listed?: SessionInfo | null
+): Promise<string | undefined> {
+  const fromListed = listed?.profile?.trim()
+
+  if (fromListed) {
+    return fromListed
+  }
+
+  return resolveSessionProfile(storedSessionId)
+}
+
 export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  // Recents, messaging, and cron are three caches — messaging/cron rows never
+  // appear in `$sessions`, but they DO carry the owning profile stamp.
+  const cached = findListedSession(storedSessionId)?.session
 
   // A row with no owning profile can't route a resume when more than one
   // profile exists — a resume without a profile lands on whichever gateway is

@@ -228,6 +228,26 @@ describe('refreshSessions batches slices into one request', () => {
     )
   })
 
+  it('honors delete tombstones for messaging and cron slices (#78836)', async () => {
+    removed.ids = new Set(['tg-gone', 'cron-gone'])
+    listSidebarSessions.mockResolvedValue(
+      sidebar(
+        { sessions: [row('a')] },
+        [row('cron-keep', { source: 'cron' }), row('cron-gone', { source: 'cron' })],
+        [row('tg-keep', { source: 'telegram' }), row('tg-gone', { source: 'telegram' })]
+      )
+    )
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($cronSessions.get().map(s => s.id)).toEqual(['cron-keep'])
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['tg-keep'])
+  })
+
   it('scopes the cron-jobs fetch to the active profile (all → unified view)', async () => {
     const { getCronJobs } = await import('@/hermes')
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))

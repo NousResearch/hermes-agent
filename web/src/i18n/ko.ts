@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const ko: Translations = {
+export const ko: TranslationOverlay = {
   common: {
     save: "저장",
     saving: "저장 중...",

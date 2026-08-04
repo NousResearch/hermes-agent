@@ -1,8 +1,9 @@
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { StatusRule } from '../components/appChrome.js'
+import { StatusRuleView } from '../components/appChrome.js'
 import type * as EnvModule from '../config/env.js'
+import { getThinkingVerbs, getToolVerb, type I18nApi, translate, translateStatus } from '../i18n/index.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 // DEV_CREDITS_MODE is a module-load-time constant (config/env.ts reads
@@ -18,6 +19,14 @@ vi.mock('../config/env.js', async importOriginal => {
 })
 
 type ReactNodeLike = React.ReactNode
+
+const enI18n: I18nApi = {
+  locale: 'en',
+  t: (key, vars) => translate('en', key, vars),
+  tStatus: status => translateStatus('en', status),
+  toolVerb: name => getToolVerb('en', name),
+  verbs: getThinkingVerbs('en')
+}
 
 const textContent = (node: ReactNodeLike): string => {
   if (node === null || node === undefined || typeof node === 'boolean') {
@@ -49,16 +58,21 @@ const baseProps = {
   sessionStartedAt: null,
   status: 'ready',
   statusColor: DEFAULT_THEME.color.ok,
+  i18n: enI18n,
   t: DEFAULT_THEME,
   turnStartedAt: null,
   usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
-  voiceLabel: ''
+  voiceEnabled: false,
+  voiceProcessing: false,
+  voiceRecording: false,
+  voiceTts: false
 }
 
 describe('StatusRule dev-credits banner (HERMES_DEV_CREDITS on)', () => {
   it('keeps the dev-credits banner visible alongside a notice', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
+      i18n: enI18n,
       notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' },
       usage: { ...baseProps.usage, dev_credits_spent_micros: 12_345 }
     })

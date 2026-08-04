@@ -9,6 +9,8 @@ import {
   normalizeIndicatorStyle,
   normalizeMouseTracking,
   normalizeStatusBar,
+  syncChangedConfig,
+  syncConfigRevision,
   syncMcpReload
 } from '../app/useConfigSync.js'
 
@@ -143,15 +145,27 @@ describe('applyDisplay', () => {
     expect($uiState.get().sections).toEqual({ activity: 'hidden' })
   })
 
-  it('treats a null config like an empty display block', () => {
+  it('preserves the last-good display state when config loading fails', () => {
     const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { language: 'zh', streaming: false } } }, setBell)
 
     applyDisplay(null, setBell)
 
     const s = $uiState.get()
-    expect(setBell).toHaveBeenCalledWith(false)
-    expect(s.inlineDiffs).toBe(true)
-    expect(s.streaming).toBe(true)
+    expect(setBell).toHaveBeenCalledTimes(1)
+    expect(s.locale).toBe('zh')
+    expect(s.streaming).toBe(false)
+  })
+
+  it('preserves the last-good locale when the config RPC fails', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { language: 'zh' } } }, setBell)
+    expect($uiState.get().locale).toBe('zh')
+
+    applyDisplay(null, setBell)
+    expect($uiState.get().locale).toBe('zh')
   })
 
   it('accepts the new string statusBar modes', () => {
@@ -368,9 +382,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
     applyDisplay(null, setBell, setVoiceRecordKey)
 
     expect(setVoiceRecordKey).not.toHaveBeenCalled()
-    // bell is still applied (defaults to false on null), so the setter
-    // runs — we specifically only skip voiceRecordKey.
-    expect(setBell).toHaveBeenCalledWith(false)
+    expect(setBell).not.toHaveBeenCalled()
   })
 })
 
@@ -500,7 +512,7 @@ describe('hydrateFullConfig', () => {
     expect(setBell).toHaveBeenCalledWith(false)
   })
 
-  it('reapplies the latest value on each invocation (mtime-reload semantics)', async () => {
+  it('reapplies the latest value on each invocation (mtime refresh semantics)', async () => {
     const gw = makeFakeGw({ config: { display: {}, voice: { record_key: 'ctrl+b' } } })
     const setBell = vi.fn()
     const setVoiceRecordKey = vi.fn()
@@ -517,6 +529,18 @@ describe('hydrateFullConfig', () => {
     )
   })
 
+  it('refreshes display config without rebuilding MCP tools', async () => {
+    const gw = makeFakeGw({ config: { display: { language: 'zh' } } })
+    const setBell = vi.fn()
+
+    await syncChangedConfig(gw, setBell)
+
+    expect(gw.request).toHaveBeenCalledTimes(1)
+    expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
+    expect(gw.request).not.toHaveBeenCalledWith('reload.mcp', expect.anything())
+    expect($uiState.get().locale).toBe('zh')
+  })
+
   it('leaves cached voiceRecordKey untouched when the RPC fails', async () => {
     const gw = { request: vi.fn(() => Promise.reject(new Error('boom'))), on: vi.fn(), off: vi.fn() } as any
     const setBell = vi.fn()
@@ -524,13 +548,11 @@ describe('hydrateFullConfig', () => {
 
     const result = await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
 
-    // quietRpc() swallows the error and returns null; applyDisplay
-    // sees cfg=null and skips the voice setter (Copilot round-8).
+    // quietRpc() swallows the error and returns null. Hydration must preserve
+    // the entire last-good display state until the next successful poll.
     expect(result).toBeNull()
     expect(setVoiceRecordKey).not.toHaveBeenCalled()
-    // bell setter still fires — applyDisplay's null-cfg path applies
-    // the documented bell default (false).
-    expect(setBell).toHaveBeenCalledWith(false)
+    expect(setBell).not.toHaveBeenCalled()
   })
 
   it('threads through without a voice setter (back-compat call sites)', async () => {
@@ -541,5 +563,34 @@ describe('hydrateFullConfig', () => {
     // display flags (round-2 / round-8 invariant).
     await expect(hydrateFullConfig(gw, setBell)).resolves.toBeTruthy()
     expect(setBell).toHaveBeenCalledWith(true)
+  })
+})
+
+describe('syncConfigRevision', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  it('retries the same mtime after a transient full-config read failure', async () => {
+    const gw = {
+      request: vi
+        .fn()
+        .mockResolvedValueOnce({ mtime: 42 })
+        .mockRejectedValueOnce(new Error('transient'))
+        .mockResolvedValueOnce({ mtime: 42 })
+        .mockResolvedValueOnce({ config: { display: { language: 'zh' } } }),
+      on: vi.fn(),
+      off: vi.fn()
+    } as any
+    const setBell = vi.fn()
+
+    const afterFailure = await syncConfigRevision(gw, 41, setBell)
+    expect(afterFailure).toBe(41)
+    expect(setBell).not.toHaveBeenCalled()
+
+    const afterRetry = await syncConfigRevision(gw, afterFailure, setBell)
+    expect(afterRetry).toBe(42)
+    expect($uiState.get().locale).toBe('zh')
+    expect(gw.request).toHaveBeenNthCalledWith(4, 'config.get', { key: 'full' })
   })
 })

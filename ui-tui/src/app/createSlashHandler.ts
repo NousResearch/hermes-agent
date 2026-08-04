@@ -1,5 +1,6 @@
 import { parseSlashCommand } from '../domain/slash.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
+import { translate } from '../i18n/index.js'
 import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
@@ -33,7 +34,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
     const guardedErr = (e: unknown) => {
       if (!stale()) {
-        sys(`error: ${rpcErrorMessage(e)}`)
+        sys(translate(getUiState().locale, 'errors.rpc', { message: rpcErrorMessage(e) }))
       }
     }
 
@@ -82,7 +83,11 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         }
 
         if (matches.length > 1) {
-          sys(`ambiguous command: ${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`)
+          sys(
+            translate(ui.locale, 'command.ambiguous', {
+              commands: `${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`
+            })
+          )
 
           return true
         }
@@ -93,11 +98,11 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       const d = asCommandDispatch(raw)
 
       if (!d) {
-        return sys('error: invalid response: command.dispatch')
+        return sys(translate(ui.locale, 'errors.invalidResponse', { method: 'command.dispatch' }))
       }
 
       if (d.type === 'exec' || d.type === 'plugin') {
-        return sys(d.output || '(no output)')
+        return sys(d.output || translate(ui.locale, 'command.noOutputParen'))
       }
 
       if (d.type === 'alias') {
@@ -119,7 +124,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       if (d.type === 'skill') {
         return d.message?.trim()
           ? sendDispatch(d.display, d.message)
-          : sys(`/${parsed.name}: skill payload missing message`)
+          : sys(translate(ui.locale, 'command.skillPayloadMissing', { command: parsed.name }))
       }
 
       if (d.type === 'send') {
@@ -127,7 +132,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           sys(d.notice)
         }
 
-        return d.message?.trim() ? sendDispatch(d.display, d.message) : sys(`/${parsed.name}: empty message`)
+        return d.message?.trim()
+          ? sendDispatch(d.display, d.message)
+          : sys(translate(ui.locale, 'command.emptyMessage', { command: parsed.name }))
       }
 
       if (d.type === 'prefill') {
@@ -154,8 +161,8 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           return handleDispatch(r)
         }
 
-        const body = r?.output || `/${parsed.name}: no output`
-        const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+        const body = r?.output || translate(ui.locale, 'command.noOutput', { command: parsed.name })
+        const text = r?.warning ? `${translate(ui.locale, 'common.warning')}: ${r.warning}\n${body}` : body
         const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
         long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)

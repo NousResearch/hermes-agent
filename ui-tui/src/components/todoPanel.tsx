@@ -1,6 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 import { memo, useState } from 'react'
 
+import { useI18n } from '../i18n/index.js'
 import { countPendingTodos } from '../lib/liveProgress.js'
 import { todoGlyph, todoTone } from '../lib/todo.js'
 import type { Theme } from '../theme.js'
@@ -33,6 +34,7 @@ export const TodoPanel = memo(function TodoPanel({
   const [localCollapsed, setLocalCollapsed] = useState(defaultCollapsed)
   const isControlled = typeof collapsed === 'boolean'
   const effectiveCollapsed = isControlled ? collapsed : localCollapsed
+  const { t: ti } = useI18n()
 
   const handleToggle = () => {
     if (onToggle) {
@@ -59,7 +61,7 @@ export const TodoPanel = memo(function TodoPanel({
         <Text color={t.color.muted}>
           <Text color={t.color.accent}>{effectiveCollapsed ? '▸ ' : '▾ '}</Text>
           <Text bold color={t.color.text}>
-            Todo
+            {ti('section.todo')}
           </Text>{' '}
           <Text color={t.color.statusFg} dim>
             ({done}/{todos.length})
@@ -67,7 +69,11 @@ export const TodoPanel = memo(function TodoPanel({
           {incomplete && pending > 0 && (
             <Text color={t.color.muted} dim>
               {' '}
-              · incomplete · {pending} still {pending === 1 ? 'pending' : 'pending/in_progress'}
+              · {ti('todo.incomplete')} ·{' '}
+              {ti('todo.still', {
+                count: String(pending),
+                status: pending === 1 ? ti('todo.pending') : ti('todo.inProgress')
+              })}
             </Text>
           )}
         </Text>

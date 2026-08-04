@@ -55,6 +55,17 @@ describe('toTranscriptMessages', () => {
     ])
   })
 
+  it('projects auto_continue as a localized event', () => {
+    const rows = [{ role: 'user', text: '[System note: interrupted]', display_kind: 'auto_continue' }]
+
+    expect(toTranscriptMessages(rows, 'en')[0]).toMatchObject({
+      kind: 'event',
+      role: 'system',
+      text: 'resumed interrupted turn'
+    })
+    expect(toTranscriptMessages(rows, 'zh')[0]?.text).toBe('已恢复中断的轮次')
+  })
+
   it('projects async_delegation_complete with task_count metadata', () => {
     const rows = [
       { role: 'user', text: 'do work' },

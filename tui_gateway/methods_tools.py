@@ -264,6 +264,7 @@ def _(rid, params: dict) -> dict:
 
         all_pairs: list[list[str]] = []
         canon: dict[str, str] = {}
+        description_keys: dict[str, str] = {}
         categories: list[dict] = []
         cat_map: dict[str, list[list[str]]] = {}
         cat_order: list[str] = []
@@ -279,6 +280,7 @@ def _(rid, params: dict) -> dict:
 
             desc = _build_description(cmd)
             all_pairs.append([c, desc])
+            description_keys[c] = cmd.name
 
             cat = cmd.category
             if cat not in cat_map:
@@ -295,6 +297,7 @@ def _(rid, params: dict) -> dict:
                 continue
             canon[name.lower()] = name
             all_pairs.append([name, desc])
+            description_keys[name] = name.lstrip("/")
             if cat not in cat_map:
                 cat_map[cat] = []
                 cat_order.append(cat)
@@ -349,7 +352,13 @@ def _(rid, params: dict) -> dict:
             warning = f"skill discovery unavailable: {e}"
 
         for cat in cat_order:
-            categories.append({"name": cat, "pairs": cat_map[cat]})
+            categories.append(
+                {
+                    "name": cat,
+                    "key": _command_category_key(cat),
+                    "pairs": cat_map[cat],
+                }
+            )
 
         sub = {k: v[:] for k, v in SUBCOMMANDS.items()}
         return _ok(
@@ -359,6 +368,7 @@ def _(rid, params: dict) -> dict:
                 "sub": sub,
                 "canon": canon,
                 "categories": categories,
+                "description_keys": description_keys,
                 "skills": skills,
                 "skill_count": skill_count,
                 "warning": warning,

@@ -136,10 +136,14 @@ export interface HermesPluginSDK {
 
   utils: {
     cn: (...classes: Array<string | false | null | undefined>) => string;
-    /** Relative-time formatter. Accepts an epoch-ms number. */
-    timeAgo: (ts: number) => string;
+    /** Relative-time formatter. Accepts a Unix epoch timestamp in seconds. */
+    timeAgo: (ts: number, locale?: import("@/i18n").Locale) => string;
     /** Relative-time formatter for an ISO-8601 string. */
-    isoTimeAgo: (iso: string) => string;
+    isoTimeAgo: (
+      iso: string,
+      locale?: import("@/i18n").Locale,
+      unknown?: string,
+    ) => string;
   };
 
   /**

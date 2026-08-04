@@ -1,6 +1,6 @@
-import { defineLocale } from "./define-locale";
+import type { TranslationOverlay } from "./types";
 
-export const ar = defineLocale({
+export const ar = {
   common: {
     save: "حفظ",
     saving: "جاري الحفظ...",
@@ -704,4 +704,4 @@ export const ar = defineLocale({
     logTruncated: "(عرض آخر 100 كيلوبايت — السجل الكامل في ",
     logAt: ")",
   },
-});
+} satisfies TranslationOverlay;

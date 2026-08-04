@@ -320,7 +320,11 @@ async def handle_ws(ws: Any) -> None:
                     # change_events: this backend broadcasts pet.changed /
                     # cron.changed / sessions.changed, so clients can demote
                     # their legacy polls to slow backstops.
-                    "payload": {"skin": skin_payload, "change_events": True},
+                    "payload": {
+                        "language": server.resolve_language(),
+                        "skin": skin_payload,
+                        "change_events": True,
+                    },
                 },
             }
         )

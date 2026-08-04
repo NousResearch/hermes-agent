@@ -1,10 +1,19 @@
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { StatusRule } from '../components/appChrome.js'
+import { StatusRuleView } from '../components/appChrome.js'
+import { getThinkingVerbs, getToolVerb, type I18nApi, translate, translateStatus } from '../i18n/index.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type ReactNodeLike = React.ReactNode
+
+const enI18n: I18nApi = {
+  locale: 'en',
+  t: (key, vars) => translate('en', key, vars),
+  tStatus: status => translateStatus('en', status),
+  toolVerb: name => getToolVerb('en', name),
+  verbs: getThinkingVerbs('en')
+}
 
 const textContent = (node: ReactNodeLike): string => {
   if (node === null || node === undefined || typeof node === 'boolean') {
@@ -98,15 +107,19 @@ const baseProps = {
   sessionStartedAt: null,
   status: 'ready',
   statusColor: DEFAULT_THEME.color.ok,
+  i18n: enI18n,
   t: DEFAULT_THEME,
   turnStartedAt: null,
   usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
-  voiceLabel: ''
+  voiceEnabled: false,
+  voiceProcessing: false,
+  voiceRecording: false,
+  voiceTts: false
 }
 
 describe('StatusRule background-subagent indicator', () => {
   it('renders ⛓ N on a wide terminal when subagents are running', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
       usage: { ...baseProps.usage, active_subagents: 3 }
     })
@@ -115,7 +128,7 @@ describe('StatusRule background-subagent indicator', () => {
   })
 
   it('omits the segment when no subagents are running', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
       usage: { ...baseProps.usage, active_subagents: 0 }
     })
@@ -124,13 +137,13 @@ describe('StatusRule background-subagent indicator', () => {
   })
 
   it('omits the segment when the field is absent', () => {
-    const element = StatusRule({ ...baseProps })
+    const element = StatusRuleView({ ...baseProps })
 
     expect(textContent(element)).not.toContain('⛓')
   })
 
   it('spells out the auto-resume hint when idle with subagents in flight', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
       usage: { ...baseProps.usage, active_subagents: 1 }
     })
@@ -139,7 +152,7 @@ describe('StatusRule background-subagent indicator', () => {
   })
 
   it('pluralizes the resume hint for multiple in-flight subagents', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
       usage: { ...baseProps.usage, active_subagents: 3 }
     })
@@ -148,7 +161,7 @@ describe('StatusRule background-subagent indicator', () => {
   })
 
   it('hides the resume hint mid-turn (a busy turn owns the indicator)', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
       busy: true,
       turnStartedAt: Date.now(),
@@ -159,7 +172,7 @@ describe('StatusRule background-subagent indicator', () => {
   })
 
   it('omits the resume hint when no subagents are running', () => {
-    const element = StatusRule({ ...baseProps })
+    const element = StatusRuleView({ ...baseProps })
 
     expect(textContent(element)).not.toContain('resumes when')
   })
@@ -168,7 +181,7 @@ describe('StatusRule background-subagent indicator', () => {
     // cols=44 is below the subagents breakpoint (92) but the bg breakpoint
     // (88) too — both gone. Assert the lower-priority subagent indicator is
     // not shown when space is tight even with a live count.
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
       cols: 44,
       bgCount: 1,
@@ -183,7 +196,7 @@ describe('StatusRule session count click target', () => {
   it('makes the live session count itself clickable', () => {
     const openSwitcher = vi.fn()
 
-    const element = StatusRule({
+    const element = StatusRuleView({
       bgCount: 0,
       busy: false,
       cols: 100,
@@ -194,10 +207,14 @@ describe('StatusRule session count click target', () => {
       sessionStartedAt: null,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
+      i18n: enI18n,
       t: DEFAULT_THEME,
       turnStartedAt: null,
       usage: { total: 0 },
-      voiceLabel: ''
+      voiceEnabled: false,
+      voiceProcessing: false,
+      voiceRecording: false,
+      voiceTts: false
     })
 
     const clickableSessionCount = findClickableWithText(element, '1 session')
@@ -208,7 +225,7 @@ describe('StatusRule session count click target', () => {
   })
 
   it('keeps status + model and drops the low-value tail on a narrow terminal', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       bgCount: 0,
       busy: false,
       cols: 44,
@@ -219,6 +236,7 @@ describe('StatusRule session count click target', () => {
       sessionStartedAt: Date.now() - 60_000,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
+      i18n: enI18n,
       t: DEFAULT_THEME,
       turnStartedAt: null,
       usage: {
@@ -230,7 +248,10 @@ describe('StatusRule session count click target', () => {
         output: 0,
         total: 50_000
       },
-      voiceLabel: 'voice off'
+      voiceEnabled: false,
+      voiceProcessing: false,
+      voiceRecording: false,
+      voiceTts: false
     })
 
     const rendered = textContent(element)
@@ -245,8 +266,9 @@ describe('StatusRule session count click target', () => {
 
 describe('StatusRule credits notice render priority', () => {
   it('replaces the idle status with the notice text and keeps model + context', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
+      i18n: enI18n,
       notice: { key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ credits exhausted' }
     })
 
@@ -261,9 +283,10 @@ describe('StatusRule credits notice render priority', () => {
   })
 
   it('busy wins: the FaceTicker shows, the notice is hidden mid-turn', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
       busy: true,
+      i18n: enI18n,
       notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' },
       turnStartedAt: Date.now()
     })
@@ -277,16 +300,18 @@ describe('StatusRule credits notice render priority', () => {
   })
 
   it('colours the notice by level (error → theme error, success → statusGood)', () => {
-    const errEl = StatusRule({
+    const errEl = StatusRuleView({
       ...baseProps,
+      i18n: enI18n,
       notice: { key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ exhausted' }
     })
 
     const errText = findElementWithText(errEl, '✕ exhausted')
     expect(errText?.props.color).toBe(DEFAULT_THEME.color.error)
 
-    const okEl = StatusRule({
+    const okEl = StatusRuleView({
       ...baseProps,
+      i18n: enI18n,
       notice: { key: 'credits.restored', kind: 'ttl', level: 'success', text: '✓ restored', ttl_ms: 8000 }
     })
 
@@ -295,8 +320,9 @@ describe('StatusRule credits notice render priority', () => {
   })
 
   it('does NOT add a glyph — the notice text is rendered verbatim', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
+      i18n: enI18n,
       notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' }
     })
 
@@ -309,9 +335,10 @@ describe('StatusRule credits notice render priority', () => {
   it('the notice text is the shrinkable element (flexShrink=1 + truncate-end) so a long notice ellipsizes', () => {
     const longText = '⚠ ' + 'x'.repeat(200)
 
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
       cols: 50,
+      i18n: enI18n,
       notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: longText }
     })
 
@@ -335,7 +362,7 @@ describe('StatusRule credits notice render priority', () => {
         return null
       }
 
-      if (node.props.flexShrink === 1 && textContent(node).includes('xxxxx') && node.type !== StatusRule) {
+      if (node.props.flexShrink === 1 && textContent(node).includes('xxxxx') && node.type !== StatusRuleView) {
         // Prefer the closest shrink box that wraps the notice text.
         const deeper = findShrinkBoxContaining(node.props.children)
 
@@ -434,8 +461,9 @@ describe('StatusRule idle-since read-out', () => {
   it('shows time since the last final agent response when idle', () => {
     const endedAt = Date.now() - 42_000
 
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
+      i18n: enI18n,
       lastTurnEndedAt: endedAt,
       sessionStartedAt: Date.now() - 60_000
     })
@@ -447,9 +475,10 @@ describe('StatusRule idle-since read-out', () => {
   })
 
   it('is hidden while a turn is busy', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
       busy: true,
+      i18n: enI18n,
       lastTurnEndedAt: Date.now() - 42_000,
       turnStartedAt: Date.now()
     })
@@ -458,8 +487,9 @@ describe('StatusRule idle-since read-out', () => {
   })
 
   it('is hidden before the first turn completes', () => {
-    const element = StatusRule({
+    const element = StatusRuleView({
       ...baseProps,
+      i18n: enI18n,
       lastTurnEndedAt: null,
       sessionStartedAt: Date.now() - 60_000
     })

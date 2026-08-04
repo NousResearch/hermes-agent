@@ -19,7 +19,7 @@ describe('constants', () => {
     }
   })
 
-  it('HOTKEYS are [key, desc] pairs', () => {
+  it('HOTKEYS are [key, TranslationKey] pairs', () => {
     HOTKEYS.forEach(([k, d]) => {
       expect(typeof k).toBe('string')
       expect(typeof d).toBe('string')
@@ -29,7 +29,7 @@ describe('constants', () => {
   it('documents Ctrl/Cmd+L as non-destructive redraw', () => {
     const hotkey = HOTKEYS.find(([k]) => k.endsWith('+L'))
     expect(hotkey).toBeDefined()
-    expect(hotkey?.[1]).toBe('redraw / repaint')
+    expect(hotkey?.[1]).toBe('hotkey.redraw')
   })
 
   it('TOOL_VERBS maps known tools (verb-only, no emoji)', () => {

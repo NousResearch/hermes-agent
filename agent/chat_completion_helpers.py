@@ -44,6 +44,11 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
 )
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
+from agent.stream_repetition_guard import (
+    FAILED_REPETITION_LOOP,
+    StreamRepetitionLoopError,
+    StreamingRepetitionGuard,
+)
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -3883,6 +3888,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         content_parts: list = []
         tool_calls_acc: dict = {}
         tool_gen_notified: set = set()
+        repetition_guard = StreamingRepetitionGuard.from_env()
+        # Separate guard for the reasoning channel: a thinking loop burns the
+        # whole output budget with zero visible content (finish_reason=length,
+        # content empty), so the content guard never sees it.  Distinct
+        # instance — the two channels interleave and must not pollute each
+        # other's line counts.
+        reasoning_repetition_guard = StreamingRepetitionGuard.reasoning_from_env()
         # Ollama-compatible endpoints reuse index 0 for every tool call
         # in a parallel batch, distinguishing them only by id.  Track
         # the last seen id per raw index so we can detect a new tool
@@ -4135,6 +4147,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     reasoning_parts[-1] if reasoning_parts else "",
                     reasoning_text,
                 )
+                # Feed the guard the separated text, not the raw delta: the
+                # guard measures what actually accumulates into the stream.
+                if reasoning_repetition_guard is not None:
+                    reasoning_repetition_guard.feed(reasoning_text)
                 reasoning_parts.append(reasoning_text)
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
@@ -4142,6 +4158,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Accumulate text content — fire callback only when no tool calls
             delta_content = getattr(delta, "content", None)
             if delta_content:
+                if repetition_guard is not None:
+                    repetition_guard.feed(delta_content)
                 content_parts.append(delta_content)
                 if not tool_calls_acc:
                     if pending_text_parts or _provider_stream_text_may_be_sse(delta.content):
@@ -5227,7 +5245,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted during streaming API call (post-worker)")
     if result["error"] is not None:
-        if deltas_were_sent["yes"]:
+        _repetition_terminated = isinstance(
+            result["error"], StreamRepetitionLoopError
+        )
+        # Repetition termination is stub-worthy even when NO content deltas
+        # were sent: a reasoning-channel loop produces zero visible text
+        # (content empty, budget burned thinking).  Re-raising it as a
+        # generic error would make the outer retry loop re-run the same
+        # poisoned context and loop again — return the tagged stub so the
+        # conversation loop fails the turn cleanly instead.
+        if deltas_were_sent["yes"] or _repetition_terminated:
             # Streaming failed AFTER some tokens were already delivered to
             # the platform.  Re-raising would let the outer retry loop make
             # Return a partial response stub with finish_reason="length"
@@ -5240,7 +5267,27 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Append a user-visible warning if tool calls were dropped so
             # the user and model both know what was attempted.
             _partial_names = list(result.get("partial_tool_names") or [])
-            if _partial_names:
+            if _repetition_terminated:
+                _err = result["error"]
+                _warn = (
+                    f"\n\n[{FAILED_REPETITION_LOOP}: streaming stopped because "
+                    f"a non-trivial line repeated "
+                    f"{getattr(_err, 'repeat_count', '?')} times. Treat the "
+                    "response above as partial and do not continue the same tail.]"
+                )
+                _partial_text = (_partial_text or "") + _warn
+                try:
+                    agent._fire_stream_delta(_warn)
+                except Exception:
+                    pass
+                logger.warning(
+                    "Streaming repetition guard returned partial response with "
+                    "%s chars of recovered content: %s",
+                    len(_partial_text or ""),
+                    result["error"],
+                )
+                _stub_finish_reason = FINISH_REASON_LENGTH
+            elif _partial_names:
                 _name_str = ", ".join(_partial_names[:3])
                 if len(_partial_names) > 3:
                     _name_str += f", +{len(_partial_names) - 3} more"

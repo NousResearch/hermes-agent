@@ -26,6 +26,11 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.stream_repetition_guard import (
+    FAILED_REPETITION_LOOP,
+    find_repeated_line_from_env,
+    truncate_at_repetition,
+)
 from agent.conversation_compression import (
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -1339,6 +1344,17 @@ def _content_policy_blocked_result(
         "failed": True,
         "error": f"content_policy_blocked: {error_detail}",
     }
+
+
+def _replace_assistant_content(assistant_message, content: str) -> None:
+    """Best-effort content replacement across message shapes (obj or dict)."""
+    try:
+        setattr(assistant_message, "content", content)
+        return
+    except Exception:
+        pass
+    if isinstance(assistant_message, dict):
+        assistant_message["content"] = content
 
 
 def _compression_deferred_result(
@@ -3569,6 +3585,100 @@ def run_conversation(
 
                     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
                     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+
+                    # ── Degenerate-truncation gate ─────────────────────
+                    # A response that hit the output-length cap by REPEATING
+                    # ITSELF (content or reasoning channel) must not be
+                    # continued: the synthetic "[System: … continue]" prompt
+                    # re-runs generation on the poisoned context and the model
+                    # loops again, burning full output budgets.  Detect it
+                    # here, cut the degenerate tail from what gets stored, and
+                    # fail the turn cleanly instead.  (Incident 2026-07-02:
+                    # 3 successive 8K-token repetition loops, each blindly
+                    # continued.  Re-ported 2026-08-04 after the v0.20 reset.)
+                    if assistant_message is not None:
+                        _degen_reasoning_text = (
+                            getattr(_trunc_msg, "reasoning_content", None)
+                            or getattr(_trunc_msg, "reasoning", None)
+                            or ""
+                        )
+                        _degen_exc = find_repeated_line_from_env(
+                            _trunc_content
+                        ) or find_repeated_line_from_env(
+                            _degen_reasoning_text
+                        )
+                        if _degen_exc is not None:
+                            agent._vprint(
+                                f"{agent.log_prefix}🔁 Truncated response "
+                                f"degenerated into repetition "
+                                f"(line repeated "
+                                f"{_degen_exc.repeat_count}x) — cutting "
+                                f"instead of continuing.",
+                                force=True,
+                            )
+                            if isinstance(_trunc_content, str) and _trunc_content:
+                                _replace_assistant_content(
+                                    assistant_message,
+                                    truncate_at_repetition(
+                                        _trunc_content,
+                                        _degen_exc.repeated_line,
+                                    ),
+                                )
+                            # Degenerate reasoning is poison too: it is
+                            # replayed to reasoning-hungry providers on later
+                            # turns.  Drop it from the stored turn.  NB: on
+                            # NormalizedResponse, ``reasoning_content``/
+                            # ``reasoning_details`` are read-only properties
+                            # backed by provider_data — purge the dict, don't
+                            # setattr the property.
+                            try:
+                                setattr(_trunc_msg, "reasoning", None)
+                            except Exception:
+                                pass
+                            _degen_pd = getattr(
+                                _trunc_msg, "provider_data", None
+                            )
+                            if isinstance(_degen_pd, dict):
+                                _degen_pd.pop("reasoning_content", None)
+                                _degen_pd.pop("reasoning_details", None)
+                            _degen_msg = agent._build_assistant_message(
+                                assistant_message, finish_reason
+                            )
+                            # If this was a tool-call response, never persist
+                            # executable tool_calls from a response we just
+                            # classified as a repetition loop.
+                            _degen_msg.pop("tool_calls", None)
+                            _degen_msg.pop("reasoning", None)
+                            _degen_msg.pop("reasoning_content", None)
+                            _degen_msg.pop("reasoning_details", None)
+                            messages.append(_degen_msg)
+                            partial_response = agent._strip_think_blocks(
+                                getattr(assistant_message, "content", "")
+                                or ""
+                            ).strip()
+                            detail = (
+                                f"{FAILED_REPETITION_LOOP}: output-length "
+                                f"truncation was a repetition loop "
+                                f"({_degen_exc}); continuation suppressed"
+                            )
+                            final_response = partial_response or (
+                                f"{FAILED_REPETITION_LOOP}: the model "
+                                "repeated itself until the output limit; "
+                                "no usable response was produced."
+                            )
+                            agent._cleanup_task_resources(effective_task_id)
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": final_response,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "failed": True,
+                                "partial": True,
+                                "error": detail,
+                                "failure_reason": FAILED_REPETITION_LOOP,
+                                "guardrail_code": FAILED_REPETITION_LOOP,
+                            }
 
                     # ── Detect thinking-budget exhaustion ──────────────
                     # When the model spends ALL output tokens on reasoning

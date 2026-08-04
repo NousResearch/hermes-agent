@@ -8565,15 +8565,50 @@ def _release_sync_semaphore_after_stream(
     stream: Any, semaphore: threading.BoundedSemaphore,
 ):
     """Release a permit only after a streaming response is consumed or closed."""
-    try:
-        yield from stream
-    finally:
+    return _SemaphoreOwnedStream(stream, semaphore)
+
+
+class _SemaphoreOwnedStream:
+    """Iterator that releases its permit even when closed before iteration."""
+
+    def __init__(self, stream: Any, semaphore: threading.BoundedSemaphore):
+        self._stream = stream
+        self._iterator = iter(stream)
+        self._semaphore = semaphore
+        self._closed = False
+        self._close_lock = threading.Lock()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
         try:
-            close = getattr(stream, "close", None)
+            return next(self._iterator)
+        except BaseException:
+            self.close()
+            raise
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
+        return False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+    def close(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        try:
+            close = getattr(self._stream, "close", None)
             if callable(close):
                 close()
         finally:
-            semaphore.release()
+            self._semaphore.release()
 
 
 def _call_llm_impl(

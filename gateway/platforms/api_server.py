@@ -2655,7 +2655,6 @@ class APIServerAdapter(BasePlatformAdapter):
             runtime_kwargs = _resolve_runtime_agent_kwargs()
         except RuntimeError as exc:
             raise _ProviderAuthResolutionError(str(exc)) from exc
-        reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
 
         # When the primary provider's auth fails (expired token / 429 quota
@@ -2671,8 +2670,6 @@ class APIServerAdapter(BasePlatformAdapter):
             model = runtime_model
 
         request_reasoning_config = _request_reasoning_config(model_options)
-        if request_reasoning_config is not None:
-            reasoning_config = request_reasoning_config
         request_service_tier = _request_service_tier(model_options)
 
         request_model = _clean_request_string(requested_model)
@@ -2875,6 +2872,20 @@ class APIServerAdapter(BasePlatformAdapter):
             None
             if confirmed_runtime_lock
             else GatewayRunner._load_fallback_model()
+        )
+
+        # Resolve reasoning against the model this request will actually
+        # run. Per-model ``agent.reasoning_overrides`` key off that model,
+        # and it is only settled after the precedence chain above (browser
+        # lock -> session /model -> session row -> route -> per-request ->
+        # defaults). Resolving at function entry keyed them off
+        # ``model.default`` instead — the defect e81d18dfb removed from the
+        # native gateway paths. An explicit per-request reasoning parameter
+        # still wins over config.
+        reasoning_config = (
+            request_reasoning_config
+            if request_reasoning_config is not None
+            else GatewayRunner._load_reasoning_config(model)
         )
 
         agent_kwargs = {

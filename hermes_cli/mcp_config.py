@@ -646,16 +646,24 @@ def cmd_mcp_add(args):
 
     # Footgun guard: `--env` typed after `--args` is eaten by REMAINDER and
     # never reaches the env: block (issue #68944).  `--args` is documented as
-    # "must be the last option", so warn instead of silently misfiling it.
-    # Fires even when a correct `--env` precedes `--args`: appending a second
-    # one at the end of the line loses it just the same.
+    # "must be the last option", so surface it instead of misfiling it
+    # silently.  Fires even when a correct `--env` precedes `--args`:
+    # appending a second one at the end of the line loses it just the same.
+    #
+    # The wording states only what is observably true — where the token went —
+    # and leaves the intent to the user.  The shape is genuinely ambiguous: a
+    # child command that legitimately ends in `--env KEY=VALUE` is
+    # indistinguishable from the footgun, so asserting the user "meant" a
+    # Hermes env var would be wrong in that case.  Nothing is rewritten
+    # either way; this is a diagnostic, not a correction.
     if _trailing_env_in_args(cmd_args):
         _warning(
-            "'--env' after '--args' was captured as a command argument, "
-            "not an environment variable."
+            "'--env' after '--args' is passed through to the command, "
+            "not set as a Hermes environment variable."
         )
         _info(
-            "Put --env before --args, e.g. "
+            "If the command takes its own --env, this is fine. If you meant "
+            "to set the server's environment, put --env before --args: "
             "hermes mcp add NAME --command CMD --env KEY=VALUE --args ..."
         )
 

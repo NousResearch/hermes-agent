@@ -307,6 +307,34 @@ class TestGetConnectedPlatforms:
         assert Platform.DINGTALK not in config.get_connected_platforms()
 
 
+class TestDiscordTokenEnvOverride:
+    def test_discord_token_is_trimmed_before_storage(self, monkeypatch):
+        token = "D" * 60
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", f"  {token}  \n")
+
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        assert config.platforms[Platform.DISCORD].token == token
+
+    def test_short_discord_token_warning_uses_trimmed_length(self, monkeypatch, caplog):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "  short-token  ")
+        caplog.set_level(logging.WARNING)
+
+        _apply_env_overrides(GatewayConfig())
+
+        assert any("11 chars" in record.message for record in caplog.records)
+
+    def test_compromised_discord_token_prefix_is_reported(self, monkeypatch, caplog):
+        token = "MTUwNjAyNDQyMTEwNDgxMjI3NA" + ("X" * 40)
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", f"  {token}  ")
+        caplog.set_level(logging.ERROR)
+
+        _apply_env_overrides(GatewayConfig())
+
+        assert any("known compromised token" in record.message for record in caplog.records)
+
+
 class TestSessionResetPolicy:
     def test_roundtrip(self):
         policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120,

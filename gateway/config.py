@@ -1884,7 +1884,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 "(leaked in commit a66ec2ce02). Rotate immediately."
             )
         discord_config = _enable_from_env(Platform.DISCORD)
-        discord_config.token = discord_token
+        discord_config.token = _discord_token_stripped
     
     discord_home = getenv("DISCORD_HOME_CHANNEL")
     if discord_home and Platform.DISCORD in config.platforms:

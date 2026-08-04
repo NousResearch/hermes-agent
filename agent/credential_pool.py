@@ -2084,6 +2084,14 @@ class CredentialPool:
         chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
+            # Mirror select(): if nothing was leasable but we just refreshed
+            # deferred single-use-token entries, retry now that they are back
+            # in rotation. Without this, a pool whose only entries all needed
+            # a refresh returns None even though the refresh succeeded — the
+            # caller sees "no credentials available" and fails a request that
+            # should have gone through.
+            if chosen_id is None:
+                chosen_id, _ = self._acquire_lease_under_lock(credential_id)
         return chosen_id
 
     def _acquire_lease_under_lock(

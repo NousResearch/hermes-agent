@@ -747,6 +747,80 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, info)
 
 
+@method("session.workspace.move")
+def _(rid, params: dict) -> dict:
+    """Re-home a STORED session's workspace into another folder/project.
+
+    Unlike ``session.cwd.set`` (which acts on a live runtime session by its UI
+    id), this targets a persisted row by ``session_key`` so the desktop can fix
+    a session that was created in the wrong directory — no live agent required.
+    The git branch/root columns are REPLACED (not merely enriched), because the
+    whole point of the move is to change which project claims the session; a
+    stale ``git_repo_root`` would keep it grouped under the project it left.
+
+    A live agent bound to the row follows through the runtime path too, so its
+    terminal/file tools re-anchor immediately; a mid-turn session refuses the
+    move rather than yanking the workspace out from under its tools.
+    """
+    target = str(params.get("session_key") or "").strip()
+    if not target:
+        return _err(rid, 4007, "session_key required")
+    raw = str(params.get("cwd", "") or "").strip()
+    if not raw:
+        return _err(rid, 4016, "cwd required")
+    from hermes_constants import translate_cwd_for_wsl_backend
+
+    resolved = os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(raw)))
+    if not os.path.isdir(resolved):
+        return _err(rid, 4017, f"working directory does not exist: {raw}")
+
+    # Snapshot under the lock — concurrent RPCs mutate _sessions (same pattern
+    # as _cwd_for_session_key).
+    live = None
+    live_sid = ""
+    with _sessions_lock:
+        for sid, sess in list(_sessions.items()):
+            if sess.get("session_key") == target:
+                live, live_sid = sess, sid
+                break
+    if live is not None and live.get("running"):
+        return _err(rid, 4009, "session busy")
+
+    branch = _git_branch_for_cwd(resolved)
+    root = _git_common_repo_root_for_cwd(resolved)
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        # A brand-new draft has no persisted row yet; the live re-home below
+        # still applies and the row inherits the cwd when it is first written.
+        row_exists = bool(db.get_session(target))
+        if not row_exists and live is None:
+            return _err(rid, 4007, "session not found")
+        if row_exists:
+            try:
+                db.update_session_cwd(
+                    target, resolved, branch, root, replace_git_meta=True
+                )
+            except Exception as e:
+                return _err(rid, 5007, f"move failed: {e}")
+
+    if live is not None:
+        try:
+            _set_session_cwd(live, resolved)
+        except ValueError as e:
+            return _err(rid, 4017, str(e))
+        agent = live.get("agent")
+        info = _session_info(agent, live) if agent is not None else {
+            "cwd": resolved,
+            "branch": branch,
+            "project": _project_info_for_cwd(resolved),
+            "lazy": True,
+        }
+        _emit("session.info", live_sid, info)
+
+    return _ok(rid, {"cwd": resolved, "branch": branch, "git_repo_root": root})
+
+
 @method("session.active_list")
 def _(rid, params: dict) -> dict:
     """Return live TUI sessions in this gateway process.

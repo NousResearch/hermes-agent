@@ -58,6 +58,11 @@ from agent.message_sanitization import (
     _strip_images_from_messages,
     _strip_non_ascii,
 )
+# Must mirror _STALE_TOOL_CALL_MARKER_RE in hermes_state.py — kept local
+# to avoid importing hermes_state at module load time (its module-level
+# DEFAULT_DB_PATH = get_hermes_home() / "state.db" breaks tests that
+# monkeypatch get_hermes_home to return a str).
+_STALE_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     _estimate_tools_tokens_rough,
@@ -6127,7 +6132,7 @@ def run_conversation(
                 # post-tool fallback replay that token forever after compaction (#78148).
                 if (
                     assistant_message.tool_calls
-                    and re.fullmatch(r"\[[A-Za-z_][A-Za-z0-9_.-]*\]", turn_content.strip())
+                    and _STALE_MARKER_RE.fullmatch(turn_content.strip())
                 ):
                     logger.warning(
                         "Discarding bare tool-call marker from assistant content: %s",

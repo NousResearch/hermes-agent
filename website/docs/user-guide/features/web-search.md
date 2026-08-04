@@ -37,7 +37,11 @@ When Anthropic is selected, Hermes maps its existing `web_search` and
 `web_fetch` tools. The tools run inside the Messages API request, use the same
 Anthropic credential as the model, and return source citations in Claude's
 response. Compatible third-party Anthropic endpoints are not assumed to host
-these tools; on those endpoints Hermes keeps the normal client-side web tools.
+these tools, so Hermes omits them from those requests entirely. They cannot
+fall back to client-side execution either — these tools only ever run inside
+Anthropic's API. With `anthropic` selected on such an endpoint, `web_search`
+and `web_extract` report that the tool is unavailable; pick another backend
+to keep web access there.
 
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. New installs can run `hermes setup --portal` to log in and turn on all gateway tools at once; existing installs can flip just web via `hermes tools`.

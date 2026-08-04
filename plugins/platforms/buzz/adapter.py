@@ -1124,7 +1124,7 @@ class BuzzAdapter(BasePlatformAdapter):
         if not p_tagged_to_self:
             return False
         content = event.get("content")
-        return isinstance(content, str) and not self._is_mentioned(content)
+        return isinstance(content, str) and not self._content_references_self(content)
 
     def _maybe_latch_dm(self, channel_id: str, state: dict, event: dict) -> None:
         """Latch a group conversation to chat_type="dm" once any direct
@@ -1136,18 +1136,58 @@ class BuzzAdapter(BasePlatformAdapter):
         self._channel_names.setdefault(channel_id, "DM")
         logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
 
-    def _is_mentioned(self, content: str) -> bool:
-        """True when the message addresses this agent (npub, hex, or name)."""
+    def _matches_self(self, content: str, *, require_at: bool) -> bool:
+        """Shared identity match. See the two callers below for the semantics.
+
+        npub and hex pubkeys are matched literally either way: they are
+        explicit identity strings that never turn up in incidental prose. Only
+        the display-name branch varies, because a display name is also just a
+        word people say.
+        """
         lowered = content.lower()
         if self._self_pubkey and self._self_pubkey in lowered:
             return True
         if self._self_npub and self._self_npub in lowered:
             return True
         if self._display_name:
-            pattern = rf"(?<!\w)@?{re.escape(self._display_name.lower())}(?!\w)"
+            at = "@" if require_at else "@?"
+            pattern = rf"(?<!\w){at}{re.escape(self._display_name.lower())}(?!\w)"
             if re.search(pattern, lowered):
                 return True
         return False
+
+    def _is_mentioned(self, content: str) -> bool:
+        """True when the message *addresses* this agent — the wake gate.
+
+        The display name requires a literal ``@``. ``require_mention: true``
+        reads as "only respond when addressed", but with an optional ``@`` it
+        behaved as "respond when named": "waiting on Chip" or "the Chip
+        migration" woke a full turn — model calls, tool calls, context — for a
+        message that asked the agent for nothing. In an active shared channel
+        agents get discussed in the third person constantly, so this fired on
+        status updates, handoffs and retrospectives (#78798).
+
+        DMs never reach here (the dispatch site short-circuits on ``is_dm``),
+        and picker-inserted mentions carry a literal ``@Name``, so UI-driven
+        mentions still match.
+        """
+        return self._matches_self(content, require_at=True)
+
+    def _content_references_self(self, content: str) -> bool:
+        """True when the text visibly refers to this agent, ``@`` or not.
+
+        Deliberately looser than :meth:`_is_mentioned`, and answering a
+        different question: DM classification asks whether a ``p`` tag is
+        *explained* by something visible in the text. Any visible reference
+        explains it.
+
+        Requiring an ``@`` here would be a worse bug than the one
+        :meth:`_is_mentioned` fixes: a p-tagged bare-name channel post would
+        read as structural DM addressing, latch the whole conversation to
+        ``chat_type="dm"`` via :meth:`_maybe_latch_dm`, and from then on every
+        message in it would dispatch with no mention gate at all.
+        """
+        return self._matches_self(content, require_at=False)
 
     def _strip_mention(self, content: str) -> str:
         """Remove a leading @mention of this agent so the remaining text can be

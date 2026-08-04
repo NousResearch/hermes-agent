@@ -6214,10 +6214,13 @@ class TurnRunner:
                                         log_message="Delegation text-send error",
                                     )
                                     if _admin_fut is not None:
-                                        _admin_fut.result(timeout=15)
-                                    _sent = True
+                                        _admin_result = _admin_fut.result(timeout=15)
+                                        _sent = bool(_admin_result.success) if _admin_result else False
+                                    else:
+                                        _sent = False
                                 except Exception as _txt_err:
                                     logger.warning("[approval-delegation] Text send also failed: %s", _txt_err)
+                                    _sent = False
 
                             if _sent:
                                 register_delegation(

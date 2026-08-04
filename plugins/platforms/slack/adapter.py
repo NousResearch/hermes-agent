@@ -6980,7 +6980,7 @@ class SlackAdapter(BasePlatformAdapter):
                 team_id = self._metadata_team_id(metadata)
                 key = self._workspace_message_marker(team_id, msg_ts)
                 self._approval_resolved[key] = False
-                _admin_uid = str(kwargs.get("admin_user_id", ""))
+                _admin_uid = str(admin_user_id or "")
                 self._approval_admin[key] = (chat_id, _admin_uid)
                 self._trim_oldest_dict_entries(
                     self._approval_resolved, self._APPROVAL_RESOLVED_MAX

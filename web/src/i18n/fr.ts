@@ -325,8 +325,8 @@ export const fr: Translations = {
     disableRuntime: "Désactiver",
     enableAfterInstall: "Activer après l'installation",
     enableRuntime: "Activer",
-    toggleTakesEffectNextSession:
-      "Enregistré — prend effet pour les nouvelles sessions. Redémarrez la passerelle pour l'appliquer partout.",
+    toggleTakesEffectAfterRestart:
+      "Enregistré — redémarrez la passerelle pour appliquer la modification.",
     forceReinstall: "Forcer la réinstallation (supprimer d'abord le dossier existant)",
     headline:
       "Découvrez, installez, activez et mettez à jour les plugins Hermes (parité avec `hermes plugins`).",

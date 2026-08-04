@@ -25,10 +25,12 @@ class _FakeRelay:
         self.initialize_error = initialize_error
         self.dynamic_initialize_error = dynamic_initialize_error
         self.activation_close_error = activation_close_error
+        self.dynamic_plugin_specs: list[dict[str, Any]] = []
         self.ScopeType = SimpleNamespace(Agent="agent")
         self.plugin = SimpleNamespace(
             initialize=self._initialize_plugins,
             initialize_with_dynamic_plugins=self._initialize_dynamic_plugins,
+            load_dynamic_plugin_activation_specs=self._load_dynamic_plugin_specs,
             clear=self._clear_plugins,
         )
         self.scope = SimpleNamespace(
@@ -64,6 +66,10 @@ class _FakeRelay:
                     raise relay.activation_close_error
 
         return _Activation()
+
+    def _load_dynamic_plugin_specs(self, config_path: Any) -> list[dict[str, Any]]:
+        self.events.append(("plugin.load_dynamic_specs", str(config_path)))
+        return self.dynamic_plugin_specs
 
     def _clear_plugins(self) -> None:
         self.events.append(("plugin.clear",))
@@ -570,10 +576,9 @@ manifest_ref = "relay-plugin.toml"
         host.shutdown()
 
 
-def test_gateway_dynamic_records_are_not_activated_without_cli_lifecycle_state(
+def test_standard_dynamic_records_use_relay_toml_loader(
     tmp_path,
     monkeypatch,
-    caplog,
 ):
     config = tmp_path / "plugins.toml"
     config.write_text(
@@ -585,13 +590,22 @@ manifest = "relay-plugin.toml"
     )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
     relay = _FakeRelay()
+    relay.dynamic_plugin_specs = [
+        {
+            "plugin_id": "native.policy",
+            "kind": "rust_dynamic",
+            "manifest_ref": str(tmp_path / "relay-plugin.toml"),
+            "config": {},
+        }
+    ]
 
-    with caplog.at_level("WARNING"):
-        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
         assert host.managed_execution_enabled()
-        assert relay.events == [("plugin.initialize", {})]
-        assert "require lifecycle state" in caplog.text
+        assert relay.events == [
+            ("plugin.load_dynamic_specs", str(config)),
+            ("plugin.initialize_dynamic", {}, relay.dynamic_plugin_specs),
+        ]
     finally:
         host.shutdown()
 
@@ -633,6 +647,51 @@ manifest_ref = "worker/relay-plugin.toml"
         host.shutdown()
 
 
+def test_real_binding_loads_standard_dynamic_specs_from_explicit_toml(
+    tmp_path,
+    monkeypatch,
+):
+    relay = pytest.importorskip("nemo_relay")
+    manifest = tmp_path / "plugins" / "relay-plugin.toml"
+    manifest.parent.mkdir()
+    manifest.write_text(
+        """
+manifest_version = 1
+
+[plugin]
+id = "fixture.native"
+kind = "rust_dynamic"
+""".strip(),
+        encoding="utf-8",
+    )
+    config = tmp_path / "plugins.toml"
+    config.write_text(
+        """
+version = 1
+
+[[plugins.dynamic]]
+manifest = "plugins/relay-plugin.toml"
+
+[plugins.dynamic.config]
+mode = "strict"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+
+    plugin_config, specs = relay_runtime._configured_plugin_inputs(relay)
+
+    assert plugin_config == {"version": 1}
+    assert [spec.to_dict() for spec in specs] == [
+        {
+            "plugin_id": "fixture.native",
+            "kind": "rust_dynamic",
+            "manifest_ref": str(manifest.resolve()),
+            "config": {"mode": "strict"},
+        }
+    ]
+
+
 def test_real_binding_discovers_project_config_and_exports_native_activity(
     tmp_path,
     monkeypatch,
@@ -658,7 +717,7 @@ kind = "observability"
 enabled = true
 
 [components.config]
-version = 2
+version = 3
 
 [components.config.atof]
 enabled = true

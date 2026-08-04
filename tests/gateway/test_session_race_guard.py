@@ -132,6 +132,7 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
         text="first follow-up",
         message_type=MessageType.TEXT,
         source=source,
+        message_id="approved-1",
     )
     photo_event = MessageEvent(
         text="see screenshot",
@@ -139,6 +140,7 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
         source=source,
         media_urls=["/tmp/test.png"],
         media_types=["image/png"],
+        message_id="later-2",
     )
 
     merge_pending_message_event(pending, session_key, text_event, merge_text=True)
@@ -149,6 +151,7 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
     assert merged.text == "first follow-up\n\nsee screenshot"
     assert merged.media_urls == ["/tmp/test.png"]
     assert merged.media_types == ["image/png"]
+    assert merged.metadata["source_identity_ambiguous"] is True
 
 
 @pytest.mark.asyncio

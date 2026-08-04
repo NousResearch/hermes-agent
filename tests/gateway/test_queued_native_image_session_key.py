@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.turn_context import current_turn_source_identity
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
@@ -51,6 +52,7 @@ class CaptureAdapter(BasePlatformAdapter):
 
 class CaptureQueuedNativeImageAgent:
     calls = []
+    source_identities = []
 
     def __init__(self, **kwargs):
         self.tools = []
@@ -58,6 +60,7 @@ class CaptureQueuedNativeImageAgent:
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
         type(self).calls.append(message)
+        type(self).source_identities.append(current_turn_source_identity())
         return {
             "final_response": f"done-{len(type(self).calls)}",
             "messages": [],
@@ -91,8 +94,18 @@ def _make_runner(adapter):
 
 
 @pytest.mark.asyncio
-async def test_queued_followup_uses_pending_event_session_key_for_native_images(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("event_metadata", "expected_source_identity"),
+    [
+        ({}, ("queued-1", True)),
+        ({"source_identity_ambiguous": True}, ("", False)),
+    ],
+)
+async def test_queued_followup_uses_pending_event_session_key_for_native_images(
+    monkeypatch, tmp_path, event_metadata, expected_source_identity
+):
     CaptureQueuedNativeImageAgent.calls = []
+    CaptureQueuedNativeImageAgent.source_identities = []
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -131,6 +144,7 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
         media_urls=[str(image_path)],
         media_types=["image/png"],
         message_id="queued-1",
+        metadata=event_metadata,
     )
 
     result = await runner._run_agent(
@@ -149,3 +163,7 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
     assert queued_message[0]["type"] == "text"
     assert queued_message[0]["text"].startswith("describe this")
     assert any(part.get("type") == "image_url" for part in queued_message)
+    assert CaptureQueuedNativeImageAgent.source_identities == [
+        ("", False),
+        expected_source_identity,
+    ]

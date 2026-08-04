@@ -539,6 +539,12 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
 | `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+| `source_message_id` | `str` | Current inbound message ID accepted by the local gateway adapter. Empty when no adapter-proven ID is available. |
+| `source_identity_trusted` | `bool` | `True` only when `source_message_id` was bound from the current local gateway event. Empty IDs always force this to `False`. |
+
+:::warning Authorization
+Never authorize a privileged action from `source_message_id` alone. Require `source_identity_trusted is True` and validate the expected platform, sender, session, freshness, and replay state. CLI, direct API-server, remote proxy-agent, internal synthetic events, nested synthetic agents such as background review and delegated children, composite merged turns, and turns enriched with content from other messages fail closed with an empty, untrusted source identity because no single adapter-proven ID represents the entire turn. Queued and `/background` turns preserve the accepted local gateway identity when the turn contains exactly one source event.
+:::
 
 **Fires:** In `run_agent.py`, inside `run_conversation()`, after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 

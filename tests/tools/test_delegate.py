@@ -17,6 +17,7 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
+from agent.turn_context import bind_turn_source_identity, current_turn_source_identity
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -286,6 +287,33 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+    def test_child_run_clears_inherited_source_identity(self):
+        parent = _make_mock_parent(depth=0)
+        observed = []
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+
+            def capture_identity(**kwargs):
+                observed.append(current_turn_source_identity())
+                return {
+                    "final_response": "ok",
+                    "completed": True,
+                    "api_calls": 1,
+                }
+
+            mock_child.run_conversation.side_effect = capture_identity
+            MockAgent.return_value = mock_child
+
+            with bind_turn_source_identity("adapter-parent-id"):
+                delegate_task(goal="Test identity isolation", parent_agent=parent)
+                self.assertEqual(
+                    current_turn_source_identity(),
+                    ("adapter-parent-id", True),
+                )
+
+        self.assertEqual(observed, [("", False)])
 
     def test_nous_child_rederives_api_mode_from_model(self):
         """Portal is dual-wire — same provider + different model prefix must

@@ -28,6 +28,8 @@ import logging
 import threading
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -48,6 +50,33 @@ from agent.model_metadata import (
 )
 
 logger = logging.getLogger(__name__)
+
+_source_message_id_context: ContextVar[str] = ContextVar(
+    "source_message_id", default=""
+)
+_source_identity_trusted_context: ContextVar[bool] = ContextVar(
+    "source_identity_trusted", default=False
+)
+
+
+@contextmanager
+def bind_turn_source_identity(source_message_id: Optional[str]):
+    """Bind adapter provenance to one invocation and restore it afterward."""
+    normalized = str(source_message_id).strip() if source_message_id is not None else ""
+    message_token = _source_message_id_context.set(normalized)
+    trusted_token = _source_identity_trusted_context.set(bool(normalized))
+    try:
+        yield
+    finally:
+        _source_identity_trusted_context.reset(trusted_token)
+        _source_message_id_context.reset(message_token)
+
+
+def current_turn_source_identity() -> tuple[str, bool]:
+    """Return the source identity bound to the current invocation context."""
+    source_message_id = _source_message_id_context.get()
+    trusted = bool(source_message_id and _source_identity_trusted_context.get())
+    return source_message_id, trusted
 
 
 def compose_user_api_content(
@@ -1052,6 +1081,7 @@ def build_turn_context(
     plugin_user_context = ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        source_message_id, source_identity_trusted = current_turn_source_identity()
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -1064,6 +1094,8 @@ def build_turn_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            source_message_id=source_message_id,
+            source_identity_trusted=source_identity_trusted,
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin

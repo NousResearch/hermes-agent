@@ -10,7 +10,7 @@ which prior message the user is referencing.
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, trusted_source_message_id
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -58,6 +58,7 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
         '[Replying to: "Japan is great for culture, food, and efficiency."]'
     )
     assert result.endswith("What's the best time to go?")
+    assert trusted_source_message_id(event) is None
 
 
 @pytest.mark.asyncio
@@ -97,5 +98,26 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result is not None
     assert result.startswith(f'[Replying to: "{quoted}"]')
     assert result.endswith("What's the best time to go?")
+
+
+@pytest.mark.asyncio
+async def test_channel_history_context_downgrades_source_identity():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="What changed?",
+        source=source,
+        message_id="current-message",
+        channel_context="Alice: earlier message\nBob: later message",
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result.startswith("Alice: earlier message")
+    assert trusted_source_message_id(event) is None
 
 

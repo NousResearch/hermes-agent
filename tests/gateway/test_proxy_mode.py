@@ -159,11 +159,14 @@ class TestRunAgentProxyDispatch:
             session_id="test-session-123",
             session_key="test-key",
             run_generation=7,
+            source_message_id="local-adapter-event",
         )
 
         assert result["final_response"] == "Hello from remote!"
         runner._run_agent_via_proxy.assert_called_once()
-        assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
+        proxy_kwargs = runner._run_agent_via_proxy.call_args.kwargs
+        assert proxy_kwargs["run_generation"] == 7
+        assert "source_message_id" not in proxy_kwargs
 
 
 class TestRunAgentViaProxy:

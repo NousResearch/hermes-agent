@@ -285,6 +285,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    mark_source_identity_ambiguous,
     classify_send_error,
     cache_image_from_bytes,
     cache_audio_from_bytes,
@@ -8533,6 +8534,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event.text,
             f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
         )
+        mark_source_identity_ambiguous(event)
         logger.info("[Telegram] Cached replied-to %s at %s", cached.kind, cached.path)
 
     def _observed_media_source(self, msg: Message):
@@ -8934,6 +8936,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._pending_text_batches[key] = event
         else:
             # Append text from the follow-up chunk
+            mark_source_identity_ambiguous(existing)
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
@@ -9041,6 +9044,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if existing is None:
             self._pending_photo_batches[batch_key] = event
         else:
+            mark_source_identity_ambiguous(existing)
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:
@@ -9368,6 +9372,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if existing is None:
             self._media_group_events[media_group_id] = event
         else:
+            mark_source_identity_ambiguous(existing)
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:

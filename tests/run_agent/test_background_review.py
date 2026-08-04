@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import run_agent as run_agent_module
+from agent.turn_context import bind_turn_source_identity, current_turn_source_identity
 from run_agent import AIAgent
 
 
@@ -74,6 +75,37 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
         "shutdown_memory_provider",
         "close",
     ]
+
+
+def test_background_review_clears_inherited_source_identity(monkeypatch):
+    observed = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            observed.append(current_turn_source_identity())
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    with bind_turn_source_identity("adapter-parent-id"):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+        )
+        assert current_turn_source_identity() == ("adapter-parent-id", True)
+
+    assert observed == [("", False)]
 
 
 def test_background_review_fork_opts_out_of_session_finalization(monkeypatch):

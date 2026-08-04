@@ -65,6 +65,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    mark_source_identity_ambiguous,
 )
 
 logger = logging.getLogger(__name__)
@@ -681,6 +682,7 @@ class SimplexAdapter(BasePlatformAdapter):
         if existing is None:
             self._pending_text_batches[key] = event
         else:
+            mark_source_identity_ambiguous(existing)
             if event.text:
                 existing.text = (
                     f"{existing.text}\n{event.text}" if existing.text else event.text

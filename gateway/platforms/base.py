@@ -2158,6 +2158,26 @@ class MessageEvent:
         return args
 
 
+SOURCE_IDENTITY_AMBIGUOUS = "source_identity_ambiguous"
+
+
+def trusted_source_message_id(event: Optional[MessageEvent]) -> Optional[str]:
+    """Return an event ID only when it represents the entire inbound turn."""
+    if event is None or getattr(event, "internal", False):
+        return None
+    metadata = getattr(event, "metadata", None) or {}
+    if metadata.get(SOURCE_IDENTITY_AMBIGUOUS):
+        return None
+    return getattr(event, "message_id", None)
+
+
+def mark_source_identity_ambiguous(event: MessageEvent) -> None:
+    """Fail closed after content from more than one event is combined."""
+    if event.metadata is None:
+        event.metadata = {}
+    event.metadata[SOURCE_IDENTITY_AMBIGUOUS] = True
+
+
 @dataclass
 class TextDebounceState:
     event: MessageEvent
@@ -2461,6 +2481,7 @@ def merge_pending_message_event(
         incoming_has_media = bool(event.media_urls)
 
         if existing_is_photo and incoming_is_photo:
+            mark_source_identity_ambiguous(existing)
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:
@@ -2469,6 +2490,7 @@ def merge_pending_message_event(
             return
 
         if existing_has_media or incoming_has_media:
+            mark_source_identity_ambiguous(existing)
             if incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
@@ -2492,6 +2514,7 @@ def merge_pending_message_event(
             and getattr(existing, "message_type", None) == MessageType.TEXT
             and event.message_type == MessageType.TEXT
         ):
+            mark_source_identity_ambiguous(existing)
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             return
@@ -5232,6 +5255,7 @@ class BasePlatformAdapter(ABC):
             )
             store[session_key] = state
         else:
+            mark_source_identity_ambiguous(state.event)
             if event.text:
                 state.event.text = (
                     f"{state.event.text}\n{event.text}"

@@ -219,6 +219,7 @@ async def test_debounce_resets_timer_on_new_arrival():
     await asyncio.sleep(0.2)
     assert session_key not in adapter._text_debounce
     assert adapter._pending_messages[session_key].text == "one\ntwo\nthree"
+    assert adapter._pending_messages[session_key].metadata["source_identity_ambiguous"] is True
 
 
 @pytest.mark.asyncio

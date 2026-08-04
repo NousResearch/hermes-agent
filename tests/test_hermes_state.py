@@ -492,6 +492,25 @@ class TestMessageStorage:
 
 
 
+    def test_internal_system_marker_survives_persistence_rewrites(self, db):
+        marker_key = "_hermes_internal_system_marker"
+        db.create_session(session_id="marker-session", source="tui")
+        db.append_message(
+            "marker-session",
+            role="system",
+            content="[System: model changed]",
+            internal_system_marker=True,
+        )
+        assert db.get_messages("marker-session")[0]["internal_system_marker"] == 1
+
+        loaded = db.get_messages_as_conversation("marker-session")
+        assert loaded[0]["role"] == "system"
+        assert loaded[0][marker_key] is True
+
+        db.replace_messages("marker-session", loaded)
+        reloaded = db.get_messages_as_conversation("marker-session")
+        assert reloaded[0]["role"] == "system"
+        assert reloaded[0][marker_key] is True
 
     def test_get_messages_as_conversation_strips_leaked_memory_context(self, db):
         db.create_session(session_id="s1", source="cli")

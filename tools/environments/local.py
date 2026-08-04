@@ -1364,12 +1364,13 @@ def _is_path_under(child: Path, parent: Path) -> bool:
 #: the interpreter is actually inside a venv (``sys.prefix != sys.base_prefix``).
 _hermes_venv_root: Path = Path(sys.prefix)
 
-#: The Hermes repository root - two levels up from this file
-#: (``tools/environments/local.py`` -> ``tools/`` -> repo root).  This is the
-#: directory the Electron app prepends to PYTHONPATH so the backend can do
-#: ``import tools``, ``import hermes_cli``, etc.  Subprocesses that are NOT
-#: the Hermes backend don't need it and it can shadow local packages.
-_hermes_repo_root: Path = Path(__file__).resolve().parents[1]
+#: The Hermes repository root - three levels up from this file
+#: (``tools/environments/local.py`` -> ``tools/environments`` -> ``tools``
+#: -> repo root).  This is the directory the Electron app prepends to
+#: PYTHONPATH so the backend can do ``import tools``, ``import hermes_cli``,
+#: etc.  Subprocesses that are NOT the Hermes backend don't need it and it
+#: can shadow local packages.
+_hermes_repo_root: Path = Path(__file__).resolve().parents[2]
 
 #: Whether the current interpreter is running inside a venv.  On Python 3.3+
 #: ``sys.base_prefix != sys.prefix`` indicates a venv (or virtualenv).

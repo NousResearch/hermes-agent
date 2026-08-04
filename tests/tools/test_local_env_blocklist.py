@@ -10,6 +10,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 
 import os
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -532,16 +533,31 @@ class TestPythonpathSelectiveStrip:
         assert "/home/user/my-lib" in entries
 
     def test_repo_root_stripped(self):
-        """The Hermes repo root entry is stripped from PYTHONPATH."""
-        from tools.environments.local import _strip_mismatched_site_packages, _hermes_repo_root
-        repo_root = str(_hermes_repo_root)
+        """The Hermes repo root entry is stripped from PYTHONPATH.
+
+        Electron prepends the *actual* repository root (the directory
+        containing ``tools/``, ``hermes_cli/``, etc.) to PYTHONPATH so the
+        backend can ``import tools``.  This test independently computes that
+        real repo root from the source-file location - three levels up from
+        ``tools/environments/local.py`` - rather than reusing the module
+        constant under test.  That way an off-by-one in ``_hermes_repo_root``
+        (e.g. ``parents[1]`` resolving to ``tools/``) would cause this test
+        to fail instead of silently passing.
+        """
+        from tools.environments.local import _strip_mismatched_site_packages
+
+        # Independently compute the real repo root: local.py lives at
+        # tools/environments/local.py, so the repo root is parents[2].
+        local_file = Path(__import__("tools.environments.local", fromlist=["__file__"]).__file__).resolve()
+        real_repo_root = str(local_file.parents[2])
+
         env = {
-            "PYTHONPATH": os.pathsep.join([repo_root, "/home/user/my-lib"]),
+            "PYTHONPATH": os.pathsep.join([real_repo_root, "/home/user/my-lib"]),
         }
         _strip_mismatched_site_packages(env)
         pp = env.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
-        assert repo_root not in entries
+        assert real_repo_root not in entries
         assert "/home/user/my-lib" in entries
 
 

@@ -1291,6 +1291,14 @@ def run_conversation(
     agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
 
+    # Adopt any ~/.hermes/.env credential/base-url edits made since the last
+    # turn — a Settings save updates .env but not this worker's client, which
+    # was built at agent init (#67821). No-op when .env is unchanged.
+    try:
+        agent._try_refresh_env_client_credentials()
+    except Exception:
+        logger.debug("per-turn env credential refresh failed", exc_info=True)
+
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-

@@ -3400,6 +3400,12 @@ class OptionalSkillSource(SkillSource):
             name=name,
             files=files,
             source="official",
+            # as_posix() here is load-bearing, not cosmetic: an f-string
+            # interpolates a Path via str(), yielding "official/a\\b\\c" on
+            # Windows. That identifier is persisted to the lock file, disagrees
+            # with the one _scan_all() builds (which already uses as_posix), and
+            # breaks fetch()'s own `rel.rsplit("/", 1)` fallback because there
+            # is no "/" left to split on.
             identifier=f"official/{skill_dir.resolve().relative_to(self._optional_dir.resolve()).as_posix()}",
             trust_level="builtin",
         )

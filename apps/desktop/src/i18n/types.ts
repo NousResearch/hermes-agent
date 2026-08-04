@@ -1573,6 +1573,11 @@ export interface Translations {
       menuAddFolder: string
       menuSetActive: string
       menuDelete: string
+      moveToProject: string
+      movedTo: (name: string) => string
+      moveFailed: string
+      moveNoFolder: string
+      moveNoProjects: string
       reveal: string
       copyPath: string
       removeFromSidebar: string

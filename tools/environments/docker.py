@@ -1899,7 +1899,7 @@ class DockerEnvironment(BaseEnvironment):
         """Best-effort ``docker rm -f`` of *container_id*; logs and swallows
         failures so callers can fall through to a fresh container."""
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [self._docker_exe, "rm", "-f", container_id],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=30, check=False,
@@ -1907,6 +1907,13 @@ class DockerEnvironment(BaseEnvironment):
             )
         except (subprocess.TimeoutExpired, OSError) as e:
             logger.warning("Failed to remove container %s: %s", container_id[:12], e)
+            return
+        if result.returncode != 0:
+            logger.warning(
+                "Failed to remove container %s (rc=%d): %s",
+                container_id[:12], result.returncode,
+                (result.stderr or result.stdout).strip()[:200] or "<no output>",
+            )
 
     def _find_reusable_container(
         self,

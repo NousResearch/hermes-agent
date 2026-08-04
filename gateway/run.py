@@ -46,6 +46,15 @@ from pathlib import Path
 from datetime import datetime
 from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
 
+# ``python gateway/run.py`` bypasses gateway.__init__, so make its direct-script
+# path run the same redaction bootstrap before importing any agent modules.
+_gateway_project_root = str(Path(__file__).resolve().parents[1])
+if _gateway_project_root not in sys.path:
+    sys.path.insert(0, _gateway_project_root)
+from gateway._startup import bootstrap_gateway_redaction
+
+bootstrap_gateway_redaction()
+
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_compression import (
     COMPACTION_STATUS,
@@ -2108,8 +2117,12 @@ if _config_path.exists():
         _security_cfg = _cfg.get("security", {})
         if isinstance(_security_cfg, dict):
             _redact = _security_cfg.get("redact_secrets")
-            if _redact is not None:
+            if _redact is not None and "HERMES_REDACT_SECRETS" not in os.environ:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+            if "HERMES_REDACT_LEVEL" not in os.environ:
+                _level = _security_cfg.get("redact_level")
+                if _level is not None:
+                    os.environ["HERMES_REDACT_LEVEL"] = str(_level).lower()
         # Gateway settings (media delivery allowlist + recency trust + strict mode)
         _gateway_cfg = _cfg.get("gateway", {})
         if isinstance(_gateway_cfg, dict):

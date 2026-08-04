@@ -2129,8 +2129,9 @@ DEFAULT_CONFIG = {
 
     # Pre-exec security scanning via tirith
     "security": {
-        "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
+        "allow_private_urls": False,
         "redact_secrets": True,
+        "redact_level": "basic",
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,

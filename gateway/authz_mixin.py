@@ -104,6 +104,91 @@ def _coerce_allow_set(raw) -> set[str]:
     return {part.strip() for part in str(raw).split(",") if part.strip()}
 
 
+# ---------------------------------------------------------------------------
+# Nostr npub → hex normalization (Buzz and future Nostr-based platforms).
+#
+# ``BUZZ_ALLOWED_USERS`` accepts either a 64-char hex pubkey or an ``npub1…``
+# bech32 string, but inbound event pubkeys are always hex.  Without decoding,
+# the central allowlist comparison string-matches the raw npub against the
+# hex pubkey and an operator who listed only their npub sees every message
+# rejected ("Unauthorized user: <hex pubkey>", #78428).  Pure stdlib; mirrors
+# the decoder in plugins/platforms/buzz/adapter.py.
+# ---------------------------------------------------------------------------
+
+_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+
+def _bech32_polymod(values):
+    chk = 1
+    generator = [0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3]
+    for value in values:
+        top = chk >> 25
+        chk = (chk & 0x1FFFFFF) << 5 ^ value
+        for i in range(5):
+            chk ^= generator[i] if ((top >> i) & 1) else 0
+    return chk
+
+
+def _bech32_hrp_expand(hrp: str):
+    return [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+
+
+def _convertbits(data, frombits: int, tobits: int, pad: bool = True):
+    acc = 0
+    bits = 0
+    ret = []
+    maxv = (1 << tobits) - 1
+    for value in data:
+        if value < 0 or (value >> frombits):
+            return None
+        acc = (acc << frombits) | value
+        bits += frombits
+        while bits >= tobits:
+            bits -= tobits
+            ret.append((acc >> bits) & maxv)
+    if pad:
+        if bits:
+            ret.append((acc << (tobits - bits)) & maxv)
+    elif bits >= frombits or ((acc << (tobits - bits)) & maxv):
+        return None
+    return ret
+
+
+def _npub_to_hex(npub: str) -> Optional[str]:
+    """Decode an ``npub1…`` bech32 string to a 64-char hex pubkey, else None."""
+    npub = npub.strip().lower()
+    if not npub.startswith("npub1"):
+        return None
+    data_part = npub[len("npub1"):]
+    try:
+        data = [_BECH32_CHARSET.index(c) for c in data_part]
+    except ValueError:
+        return None
+    if _bech32_polymod(_bech32_hrp_expand("npub") + data) != 1:
+        return None
+    decoded = _convertbits(data[:-6], 5, 8, pad=False)
+    if decoded is None or len(decoded) != 32:
+        return None
+    return bytes(decoded).hex()
+
+
+def _normalize_nostr_allow_entries(entries: set) -> set:
+    """Expand npub entries in an allowlist set to their hex pubkey form.
+
+    Hex entries pass through unchanged; each valid ``npub1…`` entry is decoded
+    and its 64-char hex form added, so either form authorizes the same
+    identity (#78428).  Invalid entries are kept as-is (they simply never
+    match an inbound hex pubkey).
+    """
+    expanded = set(entries)
+    for entry in entries:
+        if entry.lower().startswith("npub1"):
+            hex_key = _npub_to_hex(entry)
+            if hex_key:
+                expanded.add(hex_key)
+    return expanded
+
+
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
@@ -863,6 +948,18 @@ class GatewayAuthorizationMixin:
             and source.user_name
         ):
             check_ids.add(source.user_name)
+
+        # Buzz (Nostr-based): BUZZ_ALLOWED_USERS accepts npub or hex, but
+        # inbound event pubkeys are always 64-char hex. Decode npub entries
+        # to hex so an operator who listed only their npub authorizes the
+        # same identity as the hex form (#78428). Hex entries pass through
+        # unchanged, so existing hex-only allowlists keep working.
+        if source.platform is not None and source.platform.value == "buzz":
+            allowed_ids = _normalize_nostr_allow_entries(allowed_ids)
+            if user_id.startswith("npub"):
+                hex_user = _npub_to_hex(user_id)
+                if hex_user:
+                    check_ids.add(hex_user)
 
         return bool(check_ids & allowed_ids)
 

@@ -160,6 +160,46 @@ class TestSubdirectoryHintTracker:
         assert "CLI contributor guide" in result
 
 
+    @pytest.mark.parametrize(
+        ("session_root", "expect_hint"),
+        [("home", False), ("hermes-agent", True)],
+    )
+    def test_agent_init_scopes_tui_install_tree_opt_in_to_session_root(
+        self, tmp_path, monkeypatch, session_root, expect_hint
+    ):
+        """TUI hint authority follows its effective session root, not platform."""
+        from agent import runtime_cwd
+        from run_agent import AIAgent
+
+        home = tmp_path / "home"
+        install_tree = home / "hermes-agent"
+        subdir = install_tree / "agent"
+        subdir.mkdir(parents=True)
+        (subdir / "AGENTS.md").write_text("Install-tree contributor guide")
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        monkeypatch.setenv("TERMINAL_CWD", str(home / session_root))
+
+        agent = AIAgent(
+            model="test-model",
+            base_url="http://localhost:9/v1",
+            api_key="test-key",
+            platform="tui",
+            skip_context_files=True,
+            skip_memory=True,
+            quiet_mode=True,
+        )
+        hint_tracker = getattr(agent, "_subdirectory_hints")
+        result = hint_tracker.check_tool_call(
+            "read_file", {"path": str(subdir / "loop.py")}
+        )
+
+        assert hint_tracker.allow_install_tree is expect_hint
+        assert (result is not None) is expect_hint
+        if expect_hint:
+            assert "Install-tree contributor guide" in result
+
+
     def test_allows_hints_when_developing_inside_install_tree(self, tmp_path, monkeypatch):
         """An explicit Hermes checkout remains a valid workspace."""
         from agent import runtime_cwd

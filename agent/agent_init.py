@@ -27,7 +27,6 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
@@ -42,7 +41,7 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.process_bootstrap import _install_safe_stdio
-from agent.runtime_cwd import _is_install_tree
+from agent.runtime_cwd import _is_install_tree, resolve_agent_cwd
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
@@ -2653,15 +2652,13 @@ def init_agent(
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
 
-    _terminal_cwd = os.getenv("TERMINAL_CWD") or None
-    _configured_install_tree = bool(
-        _terminal_cwd and _is_install_tree(Path(_terminal_cwd).expanduser())
-    )
+    _session_cwd = resolve_agent_cwd()
     agent._subdirectory_hints = SubdirectoryHintTracker(
-        working_dir=_terminal_cwd,
-        allow_install_tree=(
-            _configured_install_tree or agent.platform in ("cli", "tui")
-        ),
+        working_dir=str(_session_cwd),
+        # Only a session actually rooted in the installation tree may treat
+        # its contributor files as workspace instructions. Platform identity
+        # alone is not authority: a TUI rooted at $HOME can visit this tree.
+        allow_install_tree=_is_install_tree(_session_cwd),
     )
     agent._user_turn_count = 0
     # Copilot x-initiator flag: first API call of a user turn sends "user" (#3040).

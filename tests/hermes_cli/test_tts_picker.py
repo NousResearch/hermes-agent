@@ -69,10 +69,12 @@ class TestPluginTTSProviders:
         ``display_name`` and ``name`` only."""
         tts_registry.register_provider(_FakeTTSProvider(name="minimal"))
         rows = tools_config._plugin_tts_providers()
-        assert len(rows) == 1
-        assert rows[0]["name"] == "Minimal"  # display_name default
-        assert rows[0]["tts_provider"] == "minimal"
-        assert rows[0]["env_vars"] == []
+        # Bundled TTS backends (e.g. plugins/tts/mimo) may also surface
+        # here; pin only the row this test registers.
+        minimal_rows = [r for r in rows if r.get("tts_provider") == "minimal"]
+        assert len(minimal_rows) == 1
+        assert minimal_rows[0]["name"] == "Minimal"  # display_name default
+        assert minimal_rows[0]["env_vars"] == []
 
 
 
@@ -94,8 +96,9 @@ class TestVisibleProvidersInjectsTTSPlugins:
 
         # Plugin row has tts_provider key for write-path compat
         plugin_rows = [r for r in visible if r.get("tts_plugin_name")]
-        assert len(plugin_rows) == 1
-        assert plugin_rows[0]["tts_provider"] == "cartesia"
+        cartesia_rows = [r for r in plugin_rows if r.get("tts_plugin_name") == "cartesia"]
+        assert len(cartesia_rows) == 1
+        assert cartesia_rows[0]["tts_provider"] == "cartesia"
 
     def test_other_categories_unaffected_by_tts_plugins(self):
         """Registering a TTS plugin must not leak into the Image Generation

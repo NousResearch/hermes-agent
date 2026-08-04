@@ -327,7 +327,7 @@ export interface Translations {
     disableRuntime: string;
     enableAfterInstall: string;
     enableRuntime: string;
-    toggleTakesEffectNextSession: string;
+    toggleTakesEffectAfterRestart: string;
     forceReinstall: string;
     headline: string;
     identifierLabel: string;

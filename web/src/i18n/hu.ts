@@ -324,8 +324,8 @@ export const hu: Translations = {
     disableRuntime: "Letiltás",
     enableAfterInstall: "Engedélyezés a telepítés után",
     enableRuntime: "Engedélyezés",
-    toggleTakesEffectNextSession:
-      "Mentve — az új munkamenetekre érvényes. Indítsa újra az átjárót, hogy mindenhol érvénybe lépjen.",
+    toggleTakesEffectAfterRestart:
+      "Mentve — indítsa újra az átjárót a módosítás alkalmazásához.",
     forceReinstall: "Kényszerített újratelepítés (a meglévő mappa előbb törlődik)",
     headline:
       "Hermes-bővítmények felfedezése, telepítése, engedélyezése és frissítése (a `hermes plugins` paritás).",

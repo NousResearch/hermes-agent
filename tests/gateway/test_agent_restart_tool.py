@@ -1504,3 +1504,285 @@ async def test_claimed_ack_pre_launch_not_started_sends_failure_notification(
     assert runner._draining is False
     assert len(sent) == 1
     assert "did not begin" in sent[0][2]
+
+
+# ---------------------------------------------------------------------------
+# P2-A / P2-B #71876: notification target decoupled from marker lifecycle
+# ---------------------------------------------------------------------------
+
+
+class _CaptureTransport:
+    """Test transport that records sends; optionally hangs or raises."""
+
+    def __init__(self, sent, *, hang=False, raise_exc=None, success=True):
+        self.sent = sent
+        self.hang = hang
+        self.raise_exc = raise_exc
+        self.success = success
+        self.adapter = MagicMock()
+
+    async def send(self, platform, chat_id, message, **kwargs):
+        if self.hang:
+            await asyncio.Event().wait()  # never returns
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        self.sent.append((str(platform), str(chat_id), message))
+        return MagicMock(success=self.success)
+
+
+@pytest.mark.asyncio
+async def test_claimed_drain_exception_notifies_original_chat_after_rollback(
+    monkeypatch, tmp_path
+):
+    """P2-A #71876: PHASE-A drain exception — after the marker is rolled back
+    (removed), the failure notification must still reach the ORIGINAL chat
+    (target captured before rollback; never re-reads the marker).
+    """
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    runner, _ = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+    sent = []
+
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def gated_drain():
+        entered.set()
+        await gate.wait()
+        raise RuntimeError("drain boom")
+
+    runner._await_active_work_before_restart = gated_drain
+    runner._running_agents["telegram:p2a-chat"] = MagicMock()
+    source = make_restart_source(chat_id="p2a-chat")
+
+    with patch("gateway.run._hermes_home", tmp_path), patch(
+        "gateway.run.resolve_delivery_transport",
+        return_value=_CaptureTransport(sent),
+    ):
+        success, _ = await runner.dispatch_gateway_restart(
+            source=source, reason="test", origin="agent_tool"
+        )
+        await asyncio.wait_for(entered.wait(), timeout=3.0)
+        assert success is True
+        txn = runner._restart_transaction
+        assert txn is not None
+        gate.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(txn.restart_task), timeout=3.0)
+        except (RuntimeError, asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+
+    from gateway.slash_commands import _RestartStage
+
+    assert txn.stage is _RestartStage.ABORTED
+    assert runner._restart_transaction is None
+    assert runner._restart_requested is False
+    assert runner._draining is False
+    # Marker rolled back (removed)...
+    assert not (tmp_path / ".restart_notify.json").exists()
+    # ...but the notification still went to the ORIGINAL chat.
+    assert len(sent) == 1
+    assert sent[0][1] == "p2a-chat"
+    assert "did not begin" in sent[0][2]
+
+
+@pytest.mark.asyncio
+async def test_rollback_restored_old_marker_notifies_current_request(
+    monkeypatch, tmp_path
+):
+    """P2-A #71876: when rollback restores a PREVIOUS request's marker
+    (redelivery case), the failure notification must go to the CURRENT
+    request's chat — never to the restored old marker's chat.
+    """
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    runner, _ = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+    sent = []
+
+    # Pre-existing OLD marker (restored by rollback at the end).
+    old = tmp_path / ".restart_notify.json"
+    old.write_text(
+        json.dumps(
+            {
+                "request_id": "req-OLD",
+                "platform": "telegram",
+                "chat_id": "old-chat",
+                "chat_type": "dm",
+                "message_id": "m-old",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def gated_drain():
+        entered.set()
+        await gate.wait()
+        raise RuntimeError("drain boom")
+
+    runner._await_active_work_before_restart = gated_drain
+    runner._running_agents["telegram:cur-chat"] = MagicMock()
+    source = make_restart_source(chat_id="cur-chat")
+
+    with patch("gateway.run._hermes_home", tmp_path), patch(
+        "gateway.run.resolve_delivery_transport",
+        return_value=_CaptureTransport(sent),
+    ):
+        success, _ = await runner.dispatch_gateway_restart(
+            source=source, reason="test", origin="agent_tool"
+        )
+        await asyncio.wait_for(entered.wait(), timeout=3.0)
+        txn = runner._restart_transaction
+        assert txn is not None
+        # Dispatch overwrote the marker with the current request.
+        cur_marker = json.loads(
+            (tmp_path / ".restart_notify.json").read_text(encoding="utf-8")
+        )
+        assert cur_marker["request_id"] == txn.request_id
+        assert cur_marker["chat_id"] == "cur-chat"
+        gate.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(txn.restart_task), timeout=3.0)
+        except (RuntimeError, asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+
+    # Rollback restored the OLD marker...
+    restored = json.loads(
+        (tmp_path / ".restart_notify.json").read_text(encoding="utf-8")
+    )
+    assert restored["request_id"] == "req-OLD"
+    # ...but the notification went to the CURRENT chat, not old-chat.
+    assert len(sent) == 1
+    assert sent[0][1] == "cur-chat"
+
+
+@pytest.mark.asyncio
+async def test_successor_marker_not_notified_by_old_transaction(monkeypatch, tmp_path):
+    """P2-A #71876: if the marker is replaced by a SUCCESSOR request, an old
+    transaction's finalizer must NOT read or notify the successor's target.
+    """
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    runner, _ = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+    sent = []
+
+    (tmp_path / ".restart_notify.json").write_text(
+        json.dumps(
+            {
+                "request_id": "req-SUCCESSOR",
+                "platform": "telegram",
+                "chat_id": "succ-chat",
+                "chat_type": "dm",
+                "message_id": "m-s",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    txn = MagicMock()
+    txn.request_id = "req-ORIG"
+    txn.backup = None
+
+    with patch("gateway.run._hermes_home", tmp_path), patch(
+        "gateway.run.resolve_delivery_transport",
+        return_value=_CaptureTransport(sent),
+    ):
+        target = runner._capture_restart_notify_target(txn)
+        await runner._send_restart_outcome_notification(target, "msg")
+
+    assert target is None
+    assert len(sent) == 0
+
+
+@pytest.mark.asyncio
+async def test_not_started_hanging_transport_does_not_block_cleanup(
+    monkeypatch, tmp_path
+):
+    """P2-B #71876: detached NOT_STARTED with a transport that NEVER returns —
+    core cleanup (terminal stage, flags, pointer) must already be done while
+    the notification hangs, the helper must exit bounded (finite timeout),
+    and the gateway must accept a later restart.
+    """
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    runner, _ = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+    # Fast timeout so the test is not slow.
+    runner._RESTART_OUTCOME_NOTIFY_TIMEOUT_S = 0.5
+
+    async def fake_launch_fail():
+        return False  # NOT_STARTED
+
+    runner._launch_detached_restart_command = fake_launch_fail  # type: ignore
+
+    hang_started = asyncio.Event()
+
+    class _HangTransport:
+        adapter = MagicMock()
+
+        async def send(self, *args, **kwargs):
+            hang_started.set()
+            await asyncio.Event().wait()  # never returns
+
+    source = make_restart_source(chat_id="hang")
+    with patch("gateway.run._hermes_home", tmp_path), patch(
+        "gateway.run.resolve_delivery_transport",
+        return_value=_HangTransport(),
+    ):
+        success, _ = await runner.dispatch_gateway_restart(
+            source=source, reason="test", origin="agent_tool"
+        )
+        assert success is True
+        # The notification is hanging RIGHT NOW; core cleanup must already be
+        # done (cleanup runs before the notification send in NOT_STARTED).
+        await asyncio.wait_for(hang_started.wait(), timeout=3.0)
+        assert runner._restart_transaction is None
+        assert runner._restart_requested is False
+        assert runner._draining is False
+
+        # Helper must exit bounded (notification times out at 0.5s).
+        await asyncio.sleep(0.8)
+        # Gateway is usable again: a later restart is accepted.
+        s2, _ = await runner.dispatch_gateway_restart(
+            source=make_restart_source(chat_id="hang-r"),
+            reason="retry",
+            origin="agent_tool",
+        )
+        assert s2 is True
+
+
+@pytest.mark.asyncio
+async def test_notification_exception_and_success_false_do_not_break_cleanup(
+    monkeypatch, tmp_path
+):
+    """P2-B #71876: transport.send raising and returning success=False are
+    log-only — core cleanup and gateway usability are unaffected.
+    """
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    for name, transport in (
+        ("raise", _CaptureTransport([], raise_exc=RuntimeError("adapter boom"))),
+        ("false", _CaptureTransport([], success=False)),
+    ):
+        runner, _ = make_restart_runner()
+        runner._gateway_loop = asyncio.get_running_loop()
+
+        async def fake_launch_fail():
+            return False
+
+        runner._launch_detached_restart_command = fake_launch_fail  # type: ignore
+
+        source = make_restart_source(chat_id=f"err-{name}")
+        with patch("gateway.run._hermes_home", tmp_path), patch(
+            "gateway.run.resolve_delivery_transport",
+            return_value=transport,
+        ):
+            success, _ = await runner.dispatch_gateway_restart(
+                source=source, reason="test", origin="agent_tool"
+            )
+            assert success is True
+            await asyncio.sleep(0.2)  # let the helper finish (immediate path)
+            assert runner._restart_transaction is None
+            assert runner._restart_requested is False
+            assert runner._draining is False

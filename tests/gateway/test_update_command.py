@@ -5,6 +5,7 @@ the _send_update_notification startup hook (sends results after restart).
 """
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -138,7 +139,14 @@ class TestHandleUpdateCommand:
 
     @pytest.mark.asyncio
     async def test_fallback_when_no_setsid(self, tmp_path):
-        """Falls back to start_new_session=True when setsid is not available."""
+        """Falls back to start_new_session=True when setsid is not available.
+
+        ``setsid``/``bash``/``start_new_session`` are the POSIX spawn branch of
+        ``_handle_update_command``; Windows takes a separate ``sys.executable -c``
+        helper branch.  Pin ``sys.platform`` so the POSIX argv construction is
+        asserted on every host (the code under test is pure string/argv building,
+        nothing is actually executed — ``subprocess.Popen`` is mocked).
+        """
         runner = _make_runner()
         event = _make_event()
 
@@ -162,6 +170,7 @@ class TestHandleUpdateCommand:
 
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
+             patch.object(sys, "platform", "linux"), \
              patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)

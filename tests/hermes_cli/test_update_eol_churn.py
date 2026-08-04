@@ -13,6 +13,7 @@ the whole tree as modified. These tests pin down that coupling.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,33 @@ from hermes_cli.update_cmd import _normalize_managed_eol
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
 GIT_CMD = ["git"]
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_git_env(monkeypatch):
+    """Run every git here — ours and the one under test — with no ambient config.
+
+    These tests build the broken state by hand and depend on ``git checkout``
+    actually writing CRLF under ``core.autocrlf=true``. Ambient config can
+    silently defeat that. A developer whose ``~/.gitconfig`` sets
+    ``core.attributesFile`` to a global attributes file containing
+    ``* text=auto eol=lf`` gets an LF working tree out of that checkout — the
+    ``eol`` attribute outranks ``core.autocrlf`` — so the fixture hands the
+    subject a clean tree and the churn assertions fail for a reason that has
+    nothing to do with the code under test.
+
+    Same isolation the checkpoint store uses (``_git_env`` in
+    ``tools/checkpoint_manager.py``), plus ``GIT_ATTR_NOSYSTEM``: config
+    isolation does not cover the system ``gitattributes``. Every ``core.autocrlf``
+    value these tests care about is written into the repo-local config, so
+    dropping the system config that Git for Windows ships only removes a
+    machine-dependent fallback. ``_normalize_managed_eol`` spawns git
+    inheriting ``os.environ``, so setting this here covers the subject too.
+    """
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_ATTR_NOSYSTEM", "1")
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:

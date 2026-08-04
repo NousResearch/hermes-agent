@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import socket
+import sys
 import tempfile
 import time
 import unittest
@@ -20,6 +21,51 @@ try:
     _HAS_LARK_OAPI = True
 except ImportError:
     _HAS_LARK_OAPI = False
+
+
+# ``patch.dict(os.environ, {}, clear=True)`` is how these tests prove that no
+# developer FEISHU_*/gateway setting leaks into adapter config resolution.
+# A *literally empty* environment is only a viable process environment on
+# POSIX, though: there the platform recovers the essentials from elsewhere —
+# ``Path.home()`` falls back to the passwd database and OpenSSL finds its
+# config at fixed paths. Windows has no such fallbacks, so with the
+# environment gone:
+#
+#   * ``Path.home()`` raises ``RuntimeError: Could not determine home
+#     directory`` — which ``FeishuAdapter.__init__`` hits through
+#     ``get_hermes_home()`` when neither LOCALAPPDATA nor HERMES_HOME is set;
+#   * ``ssl.SSLContext()`` fails with ``SSLError: [SSL] unknown error``
+#     without SystemRoot — and aiohttp builds a default SSL context at
+#     *import* time, so merely importing the adapter blows up.
+#
+# ``_cleared_env()`` keeps exactly those OS-owned vars on Windows and nothing
+# else, giving the platform the same floor POSIX gets for free. On POSIX it
+# returns the empty dict these call sites already pass. No Feishu, gateway,
+# or Hermes setting survives on either platform, so what each test isolates
+# is unchanged.
+_WINDOWS_OS_FLOOR_VARS = (
+    "SystemRoot",    # OpenSSL context construction + system DLL resolution
+    "SystemDrive",
+    "windir",
+    "USERPROFILE",   # Path.home()
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",  # %LOCALAPPDATA%\hermes — the default Hermes home
+)
+
+
+def _cleared_env(**overrides: str) -> Dict[str, str]:
+    """Environment for ``patch.dict(os.environ, ..., clear=True)`` call sites.
+
+    Everything configurable is dropped; only the OS-owned vars Windows cannot
+    synthesize are retained (see the comment above). ``overrides`` are the
+    vars the test wants to set explicitly.
+    """
+    env: Dict[str, str] = {}
+    if sys.platform == "win32":
+        env = {name: os.environ[name] for name in _WINDOWS_OS_FLOOR_VARS if name in os.environ}
+    env.update(overrides)
+    return env
 
 
 class _FakeRequestContent:
@@ -242,7 +288,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                          "extra_ua_tags must be ['channel'] to enable group event routing")
 
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, _cleared_env(), clear=True)
     def test_edit_message_falls_back_to_text_when_post_update_is_rejected(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

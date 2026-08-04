@@ -18,14 +18,16 @@ These tests exercise REAL SQLite files, in WAL mode, with a genuinely hot
 sidecar.
 """
 
-import ast
 import shutil
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from hermes_cli.update_cmd import _clear_stale_sqlite_sidecars
+from hermes_cli.update_cmd import (
+    _clear_stale_sqlite_sidecars,
+    _restore_state_db_from_snapshot,
+)
 
 OLD_ROWS = 201
 SNAPSHOT_ROWS = 400
@@ -174,61 +176,38 @@ def test_clear_removes_every_sidecar_suffix_and_spares_the_database(tmp_path):
     assert db_path.read_bytes() == b"main-db"
 
 
-def test_both_auto_restore_call_sites_clear_sidecars_first():
-    """Bind the fix to the production call sites, not just the helper.
+def test_restore_helper_serves_snapshot_rows_over_a_hot_wal(
+    live_db_with_hot_wal, snapshot_db
+):
+    """The shared restore helper is what both update paths call.
 
-    Both auto-restore blocks (the ZIP-update path and the git-pull path) copy
-    the snapshot with ``_shutil.copy2(_snap_state, _state_path)``. Each one must
-    be immediately preceded by the sidecar clear, or the helper is dead code.
+    It must clear, copy and verify as one unit: after it returns, the database
+    has to hold the SNAPSHOT's rows even though the destination still owned a
+    hot WAL from the corrupt database.
     """
-    source = Path(__file__).resolve().parents[2] / "hermes_cli" / "update_cmd.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"))
+    assert _restore_state_db_from_snapshot(live_db_with_hot_wal, snapshot_db) is True
 
-    guarded = 0
-    for node in ast.walk(tree):
-        body = getattr(node, "body", None)
-        if not isinstance(body, list):
-            continue
-        for previous, statement in zip(body, body[1:]):
-            if not _is_snapshot_copy(statement):
-                continue
-            assert _is_sidecar_clear(previous), (
-                "auto-restore at line "
-                f"{statement.lineno} copies the snapshot without clearing the "
-                "destination's stale SQLite sidecars first"
-            )
-            guarded += 1
-
-    assert guarded == 2, f"expected 2 auto-restore call sites, found {guarded}"
+    assert _row_count(live_db_with_hot_wal) == SNAPSHOT_ROWS
+    for suffix in ("-wal", "-shm", "-journal"):
+        assert not _sidecar(live_db_with_hot_wal, suffix).exists()
 
 
-def _is_snapshot_copy(statement) -> bool:
-    call = _expression_call(statement)
-    if call is None:
-        return False
-    func = call.func
-    return (
-        isinstance(func, ast.Attribute)
-        and func.attr == "copy2"
-        and isinstance(func.value, ast.Name)
-        and func.value.id == "_shutil"
-        and bool(call.args)
-        and isinstance(call.args[0], ast.Name)
-        and call.args[0].id == "_snap_state"
-    )
+def test_restore_helper_reports_failure_when_the_restored_copy_is_corrupt(tmp_path):
+    """A snapshot that does not survive the copy must return False, so the
+    caller prints the failure branch instead of claiming success."""
+    state_path = tmp_path / "state.db"
+    state_path.write_bytes(b"whatever")
+    bad_snapshot = tmp_path / "bad-snapshot.db"
+    bad_snapshot.write_bytes(b"\x00" * 4096)
+
+    assert _restore_state_db_from_snapshot(state_path, bad_snapshot) is False
 
 
-def _is_sidecar_clear(statement) -> bool:
-    call = _expression_call(statement)
-    if call is None:
-        return False
-    return (
-        isinstance(call.func, ast.Name)
-        and call.func.id == "_clear_stale_sqlite_sidecars"
-    )
+def test_restore_helper_propagates_copy_errors(tmp_path):
+    """A missing snapshot raises OSError, which both call sites already catch
+    and report as 'Auto-restore file copy failed'."""
+    state_path = tmp_path / "state.db"
+    state_path.write_bytes(b"whatever")
 
-
-def _expression_call(statement):
-    if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
-        return statement.value
-    return None
+    with pytest.raises(OSError):
+        _restore_state_db_from_snapshot(state_path, tmp_path / "does-not-exist.db")

@@ -743,6 +743,27 @@ def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
         db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
 
 
+def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
+    """Replace *state_path* with the snapshot image at *snap_state*.
+
+    Shared by both post-update auto-restore paths (the ZIP update and the git
+    pull). The destination's stale sidecars are cleared before the copy, so the
+    restored image cannot be silently overwritten by the corrupt database's WAL
+    replay — see :func:`_clear_stale_sqlite_sidecars`.
+
+    Returns ``True`` when the restored file passes an integrity check. Raises
+    ``OSError`` if the copy itself fails, which callers already report.
+    """
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    _clear_stale_sqlite_sidecars(state_path)
+    shutil.copy2(snap_state, state_path)
+    restored = verify_sqlite_integrity(
+        state_path, check_header=True, run_pragma=True
+    )
+    return bool(restored.get("valid"))
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -1052,16 +1073,9 @@ def _update_via_zip(args):
                             )
                             if _snap_ok.get("valid"):
                                 try:
-                                    import shutil as _shutil
-
-                                    _clear_stale_sqlite_sidecars(_state_path)
-                                    _shutil.copy2(_snap_state, _state_path)
-                                    _restored_ok = verify_sqlite_integrity(
-                                        _state_path,
-                                        check_header=True,
-                                        run_pragma=True,
-                                    )
-                                    if _restored_ok.get("valid"):
+                                    if _restore_state_db_from_snapshot(
+                                        _state_path, _snap_state
+                                    ):
                                         print(
                                             "  ✓ Auto-restored from snapshot "
                                             f"{_snap_dir.name}"
@@ -4324,16 +4338,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             )
                             if _snap_ok.get("valid"):
                                 try:
-                                    import shutil as _shutil
-
-                                    _clear_stale_sqlite_sidecars(_state_path)
-                                    _shutil.copy2(_snap_state, _state_path)
-                                    _restored_ok = verify_sqlite_integrity(
-                                        _state_path,
-                                        check_header=True,
-                                        run_pragma=True,
-                                    )
-                                    if _restored_ok.get("valid"):
+                                    if _restore_state_db_from_snapshot(
+                                        _state_path, _snap_state
+                                    ):
                                         print(
                                             "  ✓ Auto-restored from pre-update "
                                             f"snapshot ({_pre_snap_id})"

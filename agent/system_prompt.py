@@ -149,6 +149,65 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
     return hint + _TUI_EMBEDDED_PANE_CLARIFIER
 
 
+def _build_topic_detection_block(agent: Any) -> str:
+    """Build the session topic index and auto-detection instruction.
+
+    Returns an empty string if topic segmentation is not active or no
+    topics exist yet. Placed at the end of the system prompt so changes
+    only invalidate the last few lines of the prefix cache.
+    """
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if not db or not session_id:
+        return ""
+
+    try:
+        topics = db.get_topics(session_id)
+    except Exception:
+        return ""
+
+    active_topic = None
+    topic_rows = []
+    for t in topics:
+        if t["state"] == "active":
+            active_topic = t
+        # Show at most 5 most recent topics
+        if len(topic_rows) < 5:
+            topic_rows.append(t)
+
+    lines = []
+
+    # Topic index table
+    if topic_rows:
+        lines.append("## Session Topics")
+        lines.append("")
+        lines.append("| # | Topic | Msgs | State |")
+        lines.append("|---|-------|------|-------|")
+        for t in topic_rows:
+            state_marker = "**active**" if t["state"] == "active" else t["state"]
+            lines.append(
+                f"| {t['id']} | {t['title']} | {t['message_count']} | {state_marker} |"
+            )
+        total = len(topics)
+        if total > 5:
+            lines.append(f"")
+            lines.append(f"... and {total - 5} more archived topics.")
+        lines.append("")
+
+    # Ask agent to classify the topic as part of its response
+    lines.append(
+        "Append exactly one line to every response: TOPIC: <name>"
+    )
+    lines.append(
+        "For brief asides or one-off questions, stay on the"
+        " current topic name. Only introduce a new name when"
+        " the conversation shifts to a sustained new subject."
+        " Same name for follow-ups on the same subject."
+    )
+
+    return "\n".join(lines)
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers.
 
@@ -550,6 +609,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if agent.platform:
         timestamp_line += f"\nPlatform: {agent.platform}"
     volatile_parts.append(timestamp_line)
+
+    # ── Session Topic Index (auto-detection enabled) ───────────────
+    _topic_detection = _build_topic_detection_block(agent)
+    if _topic_detection:
+        volatile_parts.append(_topic_detection)
 
     return {
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),

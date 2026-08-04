@@ -409,6 +409,52 @@ class _StreamErrorEvent(Exception):
         }
 
 
+# ── Topic Signal Parser ───────────────────────────────────────────
+_TOPIC_RE = re.compile(r"^TOPIC:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _parse_topic(content: str) -> tuple[str, Optional[str]]:
+    """Extract TOPIC: <name> from content. Returns (cleaned_content, topic_name)."""
+    m = _TOPIC_RE.search(content)
+    if m:
+        name = m.group(1).strip()
+        content = content[: m.start()] + content[m.end() :]
+        return content.strip(), name
+    return content.strip(), None
+
+
+class _TopicDriftTracker:
+    """Hysteresis for topic switching — prevents oscillation on brief digressions.
+
+    Requires ``threshold`` consecutive signals for the same new topic before
+    confirming a genuine shift.  A single stray TOPIC doesn't switch.
+    """
+
+    __slots__ = ("_pending_name", "_pending_count", "_threshold")
+
+    def __init__(self, threshold: int = 2):
+        self._pending_name: Optional[str] = None
+        self._pending_count: int = 0
+        self._threshold: int = threshold
+
+    def feed(self, name: str) -> Optional[str]:
+        """Return the topic name to switch to, or ``None`` to stay."""
+        if self._pending_name is not None and name == self._pending_name:
+            self._pending_count += 1
+            if self._pending_count >= self._threshold:
+                self._pending_name = None
+                self._pending_count = 0
+                return name
+        else:
+            self._pending_name = name
+            self._pending_count = 1
+        return None
+
+    def reset(self) -> None:
+        self._pending_name = None
+        self._pending_count = 0
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -774,6 +820,10 @@ class AIAgent:
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+
+        # Topic segmentation state
+        self._active_topic_id: Optional[int] = None
+        self._topic_drift: _TopicDriftTracker = _TopicDriftTracker()
 
         # Copilot x-initiator: True for the first API call of a user turn,
         # False for tool-loop follow-ups (#3040).
@@ -1690,6 +1740,109 @@ class AIAgent:
             return True
         return False
 
+    def _process_topic_signals(self, content: str) -> str:
+        """Parse TOPIC: <name> from assistant content.
+
+        Uses hysteresis: a new topic name must appear in two consecutive
+        responses before switching.  Matches name against existing topics
+        (fuzzy): switch if match, create if new.  Returns cleaned content.
+        """
+        cleaned, name = _parse_topic(content)
+        if not name:
+            return cleaned
+
+        db = getattr(self, "_session_db", None)
+        sid = getattr(self, "session_id", None)
+        if not db or not sid:
+            return cleaned
+
+        # Feed the drift tracker — only act when hysteresis confirms the shift
+        drift = getattr(self, "_topic_drift", None)
+        confirmed = name  # no tracker? fall back to immediate switch
+        if drift is not None and hasattr(drift, "feed"):
+            confirmed = drift.feed(name)
+        if confirmed is None:
+            return cleaned  # not enough signal yet
+
+        try:
+            existing = db.get_topics(sid)
+            name_lower = confirmed.lower()
+            for t in existing:
+                t_lower = t["title"].lower()
+                # Exact match or one contains the other
+                if t_lower == name_lower or t_lower in name_lower or name_lower in t_lower:
+                    if t["id"] != self._active_topic_id:
+                        self._switch_to_topic(t["id"])
+                    return cleaned
+            # No match: create new topic
+            self._create_topic_from_shift(confirmed)
+        except Exception:
+            pass
+
+        return cleaned
+
+    def _create_topic_from_shift(self, name: str) -> None:
+        """Create a new topic from TOPIC: <name> signal."""
+        db = getattr(self, "_session_db", None)
+        sid = getattr(self, "session_id", None)
+        if not db or not sid:
+            return
+        try:
+            if self._active_topic_id is not None:
+                db.set_active_topic(sid, 0)
+            topic_id = db.create_topic(sid, name)
+            self._active_topic_id = topic_id
+        except Exception:
+            pass
+
+    def _switch_to_topic(self, topic_id: int) -> None:
+        """Switch active topic to an existing one."""
+        db = getattr(self, "_session_db", None)
+        sid = getattr(self, "session_id", None)
+        if not db or not sid or topic_id is None:
+            return
+        try:
+            if db.set_active_topic(sid, topic_id):
+                self._active_topic_id = topic_id
+                self._invalidate_system_prompt()
+        except Exception:
+            pass
+
+    def _auto_create_first_topic(self, first_message: str) -> Optional[int]:
+        """Create initial topic on first user message if none exists."""
+        db = getattr(self, "_session_db", None)
+        sid = getattr(self, "session_id", None)
+        if not db or not sid:
+            return None
+        try:
+            existing = db.get_topics(sid)
+            if existing:
+                return existing[0]["id"] if existing[0]["state"] == "active" else None
+            name = first_message[:40].strip() if first_message else "new session"
+            if not name:
+                name = "new session"
+            topic_id = db.create_topic(sid, name)
+            self._active_topic_id = topic_id
+            return topic_id
+        except Exception:
+            return None
+
+    def _ensure_topic_for_session(self) -> None:
+        """Create first topic if none exists. Called outside write lock."""
+        if getattr(self, "_active_topic_id", None) is not None:
+            return
+        db = getattr(self, "_session_db", None)
+        sid = getattr(self, "session_id", None)
+        if not db or not sid:
+            return
+        try:
+            existing = db.get_topics(sid)
+            if not existing:
+                topic_id = db.create_topic(sid, "new session")
+                self._active_topic_id = topic_id
+        except Exception:
+            pass
+
     def _is_ollama_glm_backend(self) -> bool:
         """Detect Ollama-hosted GLM models affected by stop misreports.
 
@@ -1894,6 +2047,9 @@ class AIAgent:
         never mutating the live message list used by the API call (#48677 is
         thus closed for every persist caller, not just this one).
         """
+
+        # Ensure a topic exists before persisting messages
+        self._ensure_topic_for_session()
         # Scaffolding removal mutates the live list (desired — ephemeral
         # retry/failure sentinels must not survive into the real transcript).
         # Close and turn-start persistence can run on separate CLI threads; the
@@ -2218,9 +2374,18 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
+                _row_topic_id = getattr(self, "_active_topic_id", None)
+                if _row_topic_id is None and role == "user":
+                    _row_topic_id = self._auto_create_first_topic(
+                        msg.get("content", "")
+                    )
                 _batch_rows.append({
                     "role": role,
-                    "content": content,
+                    "content": (
+                        self._process_topic_signals(content)
+                        if role == "assistant" and isinstance(content, str)
+                        else content
+                    ),
                     "tool_name": msg.get("tool_name"),
                     "tool_calls": tool_calls_data,
                     "tool_call_id": msg.get("tool_call_id"),
@@ -2234,6 +2399,7 @@ class AIAgent:
                     "codex_message_items": msg.get("codex_message_items"),
                     "timestamp": _row_timestamp,
                     "api_content": _row_api_content,
+                    "topic_id": _row_topic_id,
                     "display_kind": (
                         "hidden"
                         if msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
@@ -2260,6 +2426,12 @@ class AIAgent:
                 )
                 for _written in _batch_msgs:
                     _written[_DB_PERSISTED_MARKER] = True
+                # Update topic message count
+                if _row_topic_id is not None:
+                    try:
+                        self._session_db.update_topic_message_count(_row_topic_id, 1)
+                    except Exception:
+                        pass
             # The intrinsic markers are now the sole source of truth. Reset the
             # one-shot seed so no id() outlives this flush to alias a message
             # allocated next turn at a recycled address.

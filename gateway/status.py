@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -154,6 +155,63 @@ def _same_hermes_home(left: Path | str, right: Path | str) -> bool:
     return os.path.normcase(str(_canonical_hermes_home(left))) == os.path.normcase(
         str(_canonical_hermes_home(right))
     )
+
+
+# Mirrors hermes_cli.profiles._PROFILE_ID_RE — duplicated here because gateway
+# identity code must stay import-light (hermes_constants + stdlib only).
+_PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _profile_label_for_home(home: Path | str) -> Optional[str]:
+    """Best-effort profile label for a HERMES_HOME path.
+
+    Returns the profile name for ``<root>/profiles/<name>`` layouts (both
+    ``~/.hermes/profiles/coder`` and Docker ``/opt/data/profiles/coder``),
+    ``"default"`` for the deployment's root home, and ``None`` when no label
+    can be inferred.  Never raises — this feeds diagnostics only.
+    """
+    try:
+        canonical = _canonical_hermes_home(home)
+    except Exception:
+        return None
+    if canonical.parent.name == "profiles" and _PROFILE_LABEL_RE.match(canonical.name):
+        return canonical.name
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        if _same_hermes_home(canonical, get_default_hermes_root()):
+            return "default"
+    except Exception:
+        pass
+    try:
+        if _same_hermes_home(canonical, _get_platform_default_hermes_home()):
+            return "default"
+    except Exception:
+        pass
+    return None
+
+
+def scoped_lock_owner_label(record: Optional[dict[str, Any]]) -> Optional[str]:
+    """Profile label for the gateway that owns a scoped credential lock.
+
+    Scoped locks are machine-global, so the holder may belong to a different
+    HERMES_HOME profile than the caller.  Prefers the explicit ``profile``
+    field stamped by :func:`acquire_scoped_lock`; falls back to inferring the
+    label from the persisted ``hermes_home`` for locks written before the
+    profile field existed.  Returns ``None`` for legacy or malformed records
+    so callers keep their PID-only wording.
+    """
+    if not isinstance(record, dict):
+        return None
+    profile = record.get("profile")
+    if isinstance(profile, str) and _PROFILE_LABEL_RE.match(profile.strip()):
+        # Validate the persisted label — lock files are plain JSON on disk,
+        # and this string flows into log lines and a suggested CLI command.
+        return profile.strip()
+    home = record.get("hermes_home")
+    if isinstance(home, str) and home.strip():
+        return _profile_label_for_home(home)
+    return None
 
 
 def _get_pid_path() -> Path:
@@ -1387,6 +1445,15 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         "metadata": metadata or {},
         "updated_at": _utc_now_iso(),
     }
+    # Human-readable profile label for cross-profile conflict diagnostics
+    # (OOF-3): "Telegram bot token already in use (PID 559)" gives an
+    # operator no way to tell WHICH profile owns the credential.  Stamped
+    # only on scoped-lock records (they're machine-global; PID/runtime
+    # status files are per-home and don't need it).  Omitted when no label
+    # is inferable; readers fall back to deriving it from hermes_home.
+    profile = _profile_label_for_home(_get_process_hermes_home())
+    if profile:
+        record["profile"] = profile
 
     existing = _read_json_file(lock_path)
     if existing is None and lock_path.exists():

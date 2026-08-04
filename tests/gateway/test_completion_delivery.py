@@ -494,6 +494,54 @@ def test_coalesced_format_bounds_details_and_reports_omitted_count():
     assert "and 2 more completion(s)" in text
 
 
+def test_coalesced_format_force_redacts_output_when_redaction_disabled(monkeypatch):
+    """A user setting cannot disable the gateway's outbound secret floor."""
+    import agent.redact as redact_module
+
+    secret = "abc123randomopaquetokenvalue999"
+    monkeypatch.setattr(redact_module, "_REDACT_ENABLED", False)
+
+    async def _format():
+        loop = asyncio.get_running_loop()
+        first = _completion_event(started_at=1.0, session_id="proc_secret")
+        first["output"] = (
+            f"MY_SERVICE_TOKEN={secret}\n"
+            "HOME=/home/user\n"
+        )
+        second = _completion_event(started_at=2.0, session_id="proc_control")
+        return GatewayRunner._format_coalesced_process_completions([
+            ("first", first, loop.create_future()),
+            ("second", second, loop.create_future()),
+        ])
+
+    text = asyncio.run(_format())
+
+    assert secret not in text
+    assert "HOME=/home/user" in text
+
+
+def test_coalesced_format_redacts_before_truncating_output(monkeypatch):
+    """Truncation cannot remove the prefix needed to recognize a secret."""
+    import agent.redact as redact_module
+
+    marker = "SHOULD_NOT_SURVIVE"
+    monkeypatch.setattr(redact_module, "_REDACT_ENABLED", False)
+
+    async def _format():
+        loop = asyncio.get_running_loop()
+        first = _completion_event(started_at=1.0, session_id="proc_long_secret")
+        first["output"] = f"MY_SERVICE_TOKEN={'x' * 900}{marker}\n"
+        second = _completion_event(started_at=2.0, session_id="proc_control")
+        return GatewayRunner._format_coalesced_process_completions([
+            ("first", first, loop.create_future()),
+            ("second", second, loop.create_future()),
+        ])
+
+    text = asyncio.run(_format())
+
+    assert marker not in text
+
+
 def test_duplicate_primary_does_not_discard_fresh_batch_sibling():
     adapter = SimpleNamespace(handle_message=AsyncMock())
     runner = _runner(adapter)

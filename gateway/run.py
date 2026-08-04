@@ -24015,7 +24015,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_id = str(evt.get("session_id") or "unknown")
             exit_code = evt.get("exit_code")
             reason = str(evt.get("completion_reason") or "exited")
-            output = str(evt.get("output") or "").strip()
+            # Completion-event output is normally passed through the terminal
+            # redactor at the producer seam, but that redactor is deliberately
+            # configurable.  This synthetic turn is gateway user-facing input,
+            # so keep the unconditional gateway floor here as defence in depth.
+            # Redact before slicing: truncating first can leave a credential
+            # fragment that no longer matches the authoritative patterns.
+            output = _redact_gateway_user_facing_secrets(
+                str(evt.get("output") or "")
+            ).strip()
             if len(output) > 800:
                 output = f"[… truncated …]\n{output[-800:]}"
             lines.append(

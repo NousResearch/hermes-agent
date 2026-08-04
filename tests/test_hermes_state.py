@@ -1121,6 +1121,35 @@ class TestPruneSessionFilters:
         assert {r["id"] for r in db.list_prune_candidates(title_like="smoke")} == {"smoke"}
         assert {r["id"] for r in db.list_prune_candidates(title_like=r"c:\tmp")} == {"winpath"}
 
+    def test_cwd_prefix_underscore_is_literal_not_a_wildcard(self, db):
+        """``_`` is a LIKE wildcard but an ordinary character in a path, so an
+        unescaped prefix also matched a same-length sibling directory — and
+        prune_sessions deletes what it matches."""
+        self._mk(db, "target", cwd="/home/me/my_project/src")
+        self._mk(db, "sibling", cwd="/home/me/myXproject/src")
+
+        rows = db.list_prune_candidates(cwd_prefix="/home/me/my_project")
+        assert {r["id"] for r in rows} == {"target"}
+
+        pruned = db.prune_sessions(older_than_days=None, cwd_prefix="/home/me/my_project")
+        assert pruned == 1
+        assert db.get_session("sibling") is not None
+
+    def test_cwd_prefix_percent_does_not_select_everything(self, db):
+        self._mk(db, "a", cwd="/home/me/one")
+        self._mk(db, "b", cwd="/home/me/two")
+
+        assert db.list_prune_candidates(cwd_prefix="/home/me/%") == []
+
+    def test_cwd_prefix_still_matches_the_directory_and_its_children(self, db):
+        """Control: the prefix must keep matching itself and anything under it."""
+        self._mk(db, "root", cwd="/home/me/proj")
+        self._mk(db, "child", cwd="/home/me/proj/src")
+        self._mk(db, "outside", cwd="/home/me/other")
+
+        rows = db.list_prune_candidates(cwd_prefix="/home/me/proj")
+        assert {r["id"] for r in rows} == {"root", "child"}
+
     def test_unknown_filter_rejected(self, db):
         import pytest as _pytest
         with _pytest.raises(TypeError):

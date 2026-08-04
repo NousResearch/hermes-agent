@@ -312,7 +312,11 @@ class TestBridgeRuntimeFailure:
 class TestKillPortProcess:
     """Verify _kill_port_process uses platform-appropriate commands."""
 
+    @pytest.mark.windows_only
     def test_uses_netstat_and_taskkill_on_windows(self):
+        """``windows_only``: netstat/taskkill are Windows binaries. The old
+        ``_IS_WINDOWS`` patch selected this branch on Linux, where neither
+        exists, so the mocked argv was the only thing under test."""
         from plugins.platforms.whatsapp.adapter import _kill_port_process
 
         netstat_output = (
@@ -330,8 +334,7 @@ class TestKillPortProcess:
                 return mock_taskkill
             return MagicMock()
 
-        with patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", True), \
-             patch("plugins.platforms.whatsapp.adapter.subprocess.run", side_effect=run_side_effect) as mock_run:
+        with patch("plugins.platforms.whatsapp.adapter.subprocess.run", side_effect=run_side_effect) as mock_run:
             _kill_port_process(3000)
 
         # netstat called
@@ -345,6 +348,7 @@ class TestKillPortProcess:
         )
 
 
+    @pytest.mark.linux_only
     def test_kills_only_listeners_on_linux(self):
         """POSIX path SIGTERMs only LISTENer PIDs (never clients) — the #43846 fix.
 
@@ -352,12 +356,14 @@ class TestKillPortProcess:
         matched client sockets sharing the port number, which closed unrelated
         processes (a browser tab on the same port). The implementation now
         resolves listeners via ``_listener_pids_on_port`` and signals only those.
+
+        ``linux_only``: asserts the POSIX ``os.kill``/SIGTERM path, which is
+        genuinely selected here without patching ``_IS_WINDOWS``.
         """
         from plugins.platforms.whatsapp import adapter as wa
 
         kills = []
-        with patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", False), \
-             patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
+        with patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
                    return_value=[55555]) as mock_listeners, \
              patch("plugins.platforms.whatsapp.adapter.os.kill",
                    side_effect=lambda pid, sig: kills.append((pid, sig))):
@@ -375,8 +381,13 @@ class TestHttpSessionLifecycle:
     """Verify persistent aiohttp.ClientSession is created and cleaned up."""
 
     @pytest.mark.asyncio
+    @pytest.mark.windows_only
     async def test_disconnect_uses_taskkill_tree_on_windows(self):
-        """Windows disconnect should target the bridge process tree, not just the parent PID."""
+        """Windows disconnect should target the bridge process tree, not just the parent PID.
+
+        ``windows_only``: ``taskkill /T`` is the Windows tree-kill primitive;
+        on Linux the branch was reachable only by faking ``_IS_WINDOWS``.
+        """
         adapter = _make_adapter()
         mock_proc = MagicMock()
         mock_proc.pid = 12345
@@ -387,8 +398,7 @@ class TestHttpSessionLifecycle:
         adapter._running = True
         adapter._session_lock_identity = None
 
-        with patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", True), \
-             patch("plugins.platforms.whatsapp.adapter.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run, \
+        with patch("plugins.platforms.whatsapp.adapter.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run, \
              patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
             await adapter.disconnect()
 

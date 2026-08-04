@@ -196,8 +196,12 @@ class TestKillStaleDashboardPosix:
 class TestKillStaleDashboardWindows:
     """Kill path on Windows: taskkill /F."""
 
-    def test_taskkill_invoked_for_each_pid(self, monkeypatch, capsys):
-        monkeypatch.setattr(sys, "platform", "win32")
+    @pytest.mark.windows_only
+    def test_taskkill_invoked_for_each_pid(self, capsys):
+        """``windows_only``: ``taskkill.exe`` only exists on Windows, and the
+        faked platform also silently skipped the POSIX-only cgroup/argv
+        snapshot the real Windows path must not take.
+        """
 
         def fake_run(args, *a, **kw):
             # taskkill returns 0 on success
@@ -249,11 +253,16 @@ class TestWindowsWmicEncoding:
     `hermes update` on non-UTF-8 system locales (e.g. cp936 on zh-CN).
     """
 
-    def test_wmic_invoked_with_utf8_ignore_errors(self, monkeypatch):
+    @pytest.mark.windows_only
+    def test_wmic_invoked_with_utf8_ignore_errors(self):
         """The wmic subprocess.run call must pass encoding='utf-8' and
         errors='ignore' so the subprocess reader thread cannot raise
-        UnicodeDecodeError on non-UTF-8 wmic output."""
-        monkeypatch.setattr(sys, "platform", "win32")
+        UnicodeDecodeError on non-UTF-8 wmic output.
+
+        ``windows_only``: the branch also imports ``windows_hide_flags()`` and
+        the crash it guards is a real cp936/wmic decode — neither reproducible
+        with a patched ``sys.platform`` on Linux.
+        """
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
@@ -421,7 +430,11 @@ class TestCmdlineCapture:
 
         assert argv == ["hermes", "serve", "--port", "8300"]
 
-    def test_returns_none_on_windows(self, monkeypatch):
+    @pytest.mark.windows_only
+    def test_returns_none_on_windows(self):
+        """``windows_only``: the contract is "no graceful-argv capture on a
+        real Windows host" — asserting it against a faked platform only
+        restated the branch condition.
+        """
         live = self._live()
-        monkeypatch.setattr(live.sys, "platform", "win32")
         assert live._dashboard_cmdline_for_pid(123) is None

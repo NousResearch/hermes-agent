@@ -12,23 +12,42 @@ Currently:
   Windows path that works.
 """
 
+import pytest
+
 
 class TestMatrixHiddenOnWindows:
-    def test_matrix_present_on_linux(self, monkeypatch):
-        """Sanity: matrix is still in the picker on Linux/macOS."""
+    @pytest.mark.linux_only
+    def test_matrix_present_on_linux(self):
+        """Sanity: matrix is still in the picker on Linux.
+
+        Linux-gated because the assertion is the negative of the Windows
+        gate — it only means anything when the host really is not Windows.
+        """
         import hermes_cli.gateway as gateway_mod
 
-        monkeypatch.setattr(gateway_mod.sys, "platform", "linux")
         platforms = gateway_mod._all_platforms()
         keys = {p["key"] for p in platforms}
         assert "matrix" in keys, "matrix must be available on Linux"
 
+    @pytest.mark.windows_only
+    def test_matrix_absent_on_windows(self):
+        """The gate itself: matrix must be dropped on a real Windows host.
 
-    def test_other_platforms_unaffected_on_windows(self, monkeypatch):
+        A patched ``sys.platform`` proved only that the ``if`` branch runs;
+        on native Windows this also proves the picker the user actually sees
+        omits the platform whose dependency cannot build here.
+        """
+        import hermes_cli.gateway as gateway_mod
+
+        platforms = gateway_mod._all_platforms()
+        keys = {p["key"] for p in platforms}
+        assert "matrix" not in keys, "matrix must be hidden on Windows"
+
+    @pytest.mark.windows_only
+    def test_other_platforms_unaffected_on_windows(self):
         """Gating must only drop matrix, not collateral damage."""
         import hermes_cli.gateway as gateway_mod
 
-        monkeypatch.setattr(gateway_mod.sys, "platform", "win32")
         platforms = gateway_mod._all_platforms()
         keys = {p["key"] for p in platforms}
         # A representative sample of platforms that have no Windows

@@ -6,6 +6,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 
 def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
@@ -153,11 +155,18 @@ class TestPromptToolkitTerminalCompatibility:
 
         On a bare local POSIX TTY (no SSH/WSL/WT/Ghostty) we keep c-j → submit so
         Enter works on thin PTYs (docker exec, certain ssh configurations).
-        On Windows, WSL, SSH sessions, Windows Terminal, and Ghostty we leave c-j
+        In WSL, SSH sessions, Windows Terminal, and Ghostty we leave c-j
         unbound here so it can be used as the Ctrl+Enter newline keystroke
         without conflicting with submit. See issue #22379.
+
+        The native-Windows arm of this behaviour is
+        ``test_windows_leaves_ctrl_j_unbound`` below — it has to run on a real
+        Windows host, because ``_bind_prompt_submit_keys`` delegates to
+        ``_preserve_ctrl_enter_newline()``, which short-circuits on
+        ``sys.platform == "win32"``. Faking that here would assert the literal
+        in the ``if`` and nothing about how prompt_toolkit actually delivers
+        keys on a Windows console.
         """
-        import sys as _sys
         import os as _os
         from unittest.mock import patch as _patch
         from prompt_toolkit.key_binding import KeyBindings
@@ -168,8 +177,7 @@ class TestPromptToolkitTerminalCompatibility:
             return None
 
         # Bare local POSIX (no SSH/WSL markers): both enter and c-j submit.
-        with _patch.object(_sys, "platform", "linux"), \
-             _patch.dict(_os.environ, {}, clear=True), \
+        with _patch.dict(_os.environ, {}, clear=True), \
              _patch("builtins.open", side_effect=OSError("no /proc")):
             kb = KeyBindings()
             _bind_prompt_submit_keys(kb, submit_handler)
@@ -179,8 +187,7 @@ class TestPromptToolkitTerminalCompatibility:
 
         # POSIX over SSH: c-j stays free so Ctrl+Enter (sent as LF by
         # Windows Terminal / Kitty / mintty over SSH) inserts a newline.
-        with _patch.object(_sys, "platform", "linux"), \
-             _patch.dict(_os.environ, {"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22"}, clear=True), \
+        with _patch.dict(_os.environ, {"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22"}, clear=True), \
              _patch("builtins.open", side_effect=OSError("no /proc")):
             kb = KeyBindings()
             _bind_prompt_submit_keys(kb, submit_handler)
@@ -190,8 +197,7 @@ class TestPromptToolkitTerminalCompatibility:
 
         # Ghostty through tmux: TERM_PROGRAM is tmux, but Ghostty exports a
         # stable env marker. Keep c-j free so Ctrl+J inserts a newline.
-        with _patch.object(_sys, "platform", "linux"), \
-             _patch.dict(_os.environ, {"TERM": "tmux-256color", "TERM_PROGRAM": "tmux", "GHOSTTY_RESOURCES_DIR": "/usr/share/ghostty"}, clear=True), \
+        with _patch.dict(_os.environ, {"TERM": "tmux-256color", "TERM_PROGRAM": "tmux", "GHOSTTY_RESOURCES_DIR": "/usr/share/ghostty"}, clear=True), \
              _patch("builtins.open", side_effect=OSError("no /proc")):
             kb = KeyBindings()
             _bind_prompt_submit_keys(kb, submit_handler)
@@ -199,14 +205,22 @@ class TestPromptToolkitTerminalCompatibility:
             assert bindings[("c-m",)] is submit_handler
             assert ("c-j",) not in bindings
 
-        # Windows: only enter submits; c-j is free for the newline binding
-        # added separately in the prompt setup.
-        with _patch.object(_sys, "platform", "win32"):
-            kb = KeyBindings()
-            _bind_prompt_submit_keys(kb, submit_handler)
-            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
-            assert bindings[("c-m",)] is submit_handler
-            assert ("c-j",) not in bindings
+    @pytest.mark.windows_only
+    def test_windows_leaves_ctrl_j_unbound(self):
+        """On native Windows only enter submits; c-j is free for the newline
+        binding added separately in the prompt setup."""
+        from prompt_toolkit.key_binding import KeyBindings
+
+        from cli import _bind_prompt_submit_keys
+
+        def submit_handler(event):
+            return None
+
+        kb = KeyBindings()
+        _bind_prompt_submit_keys(kb, submit_handler)
+        bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+        assert bindings[("c-m",)] is submit_handler
+        assert ("c-j",) not in bindings
 
     def test_cpr_warning_callback_is_disabled(self):
         from cli import _disable_prompt_toolkit_cpr_warning
@@ -220,25 +234,20 @@ class TestPromptToolkitTerminalCompatibility:
 
 
 
-    def test_cpr_gating_posix_local_and_windows_preserve(self, monkeypatch):
-        """POSIX suppresses CPR without SSH; native Windows keeps PT default.
+    def test_cpr_gating_posix_suppresses_without_ssh(self, monkeypatch):
+        """POSIX suppresses CPR without SSH.
 
-        Broader coverage (Application wiring + delayed-CPR PTY repro) lives in
-        ``tests/cli/test_cpr_local_leak.py``.
+        The native-Windows arm (``_terminal_may_leak_cpr() is False``, plus
+        the ``PROMPT_TOOLKIT_NO_CPR`` override that outranks it) lives in
+        ``tests/cli/test_cpr_local_leak.py`` under ``windows_only``, where it
+        runs against a real Windows console.
         """
-        import sys as _sys
-
         from cli import _terminal_may_leak_cpr
 
         for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "PROMPT_TOOLKIT_NO_CPR"):
             monkeypatch.delenv(var, raising=False)
 
-        monkeypatch.setattr(_sys, "platform", "linux")
         assert _terminal_may_leak_cpr() is True
-        monkeypatch.setattr(_sys, "platform", "darwin")
-        assert _terminal_may_leak_cpr() is True
-        monkeypatch.setattr(_sys, "platform", "win32")
-        assert _terminal_may_leak_cpr() is False
 
         monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "1")
         assert _terminal_may_leak_cpr() is True

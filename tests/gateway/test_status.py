@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from gateway import status
 
 
@@ -310,9 +312,12 @@ class TestGetProcessStartTime:
 
 
 class TestTerminatePid:
+    @pytest.mark.windows_only
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
+        # Faking _IS_WINDOWS on POSIX could not reproduce the real
+        # CREATE_NO_WINDOW creationflags value that windows_hide_flags()
+        # returns only on Windows (it is 0 elsewhere).
         calls = []
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
 
         def fake_run(cmd, capture_output=False, text=False, timeout=None, creationflags=0, **kwargs):
             calls.append((cmd, capture_output, text, timeout, creationflags))
@@ -324,8 +329,6 @@ class TestTerminatePid:
 
         # taskkill is spawned with the no-window flag so the windowless
         # pythonw.exe backend doesn't flash a conhost window on force-kill.
-        # windows_hide_flags() is 0 on the POSIX test host (a valid no-op
-        # creationflags value); on real Windows it is CREATE_NO_WINDOW.
         from hermes_cli._subprocess_compat import windows_hide_flags
 
         assert calls == [
@@ -334,7 +337,11 @@ class TestTerminatePid:
 
 
 class TestScopedLocks:
+    @pytest.mark.windows_only
     def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
+        # Faking _IS_WINDOWS on POSIX could not reproduce the msvcrt
+        # byte-range locking path at all: msvcrt does not exist off Windows,
+        # so the stub below had to invent the module as well as the host.
         lock_path = tmp_path / "gateway.lock"
         handle = open(lock_path, "a+", encoding="utf-8")
         fd = handle.fileno()
@@ -343,7 +350,6 @@ class TestScopedLocks:
         def fake_locking(fd, mode, size):
             calls.append((fd, mode, size, handle.tell()))
 
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
         monkeypatch.setattr(
             status,
             "msvcrt",
@@ -865,7 +871,6 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
-        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="/usr/libexec/bluetoothuserd\n"),

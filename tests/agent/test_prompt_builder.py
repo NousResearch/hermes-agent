@@ -749,11 +749,14 @@ class TestEnvironmentHints:
 
 
     def test_build_environment_hints_suppresses_host_on_docker_backend(self, monkeypatch):
-        """Docker/remote backends must hide host info — the agent can only touch the backend."""
+        """Docker/remote backends must hide host info — the agent can only touch the backend.
+
+        Host-independent: suppression is a property of the remote-backend
+        branch, so instead of faking a Windows host we assert no host line of
+        any kind is emitted.
+        """
         import agent.prompt_builder as _pb
-        import sys
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
-        monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         # Force the probe to fail so we exercise the static fallback path
         # deterministically (the live probe would try to spin up docker).
@@ -761,7 +764,7 @@ class TestEnvironmentHints:
         _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
         # Host suppression: none of the local-backend lines should appear.
-        assert "Host: Windows" not in result
+        assert "Host:" not in result
         assert "User home directory:" not in result
         assert "PowerShell" not in result
         # Backend info must appear instead.

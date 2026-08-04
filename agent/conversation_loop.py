@@ -467,21 +467,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 agent.session_id, exc,
             )
 
-    # ``_stored_prompt_matches_runtime`` only rejects Model/Provider/cwd/
-    # Platform drift, so identity CONTENT drift — SOUL.md edited, created or
-    # deleted since the prompt was persisted — was reused verbatim for the rest
-    # of the session (issue #68563). ``stored_identity_is_stale`` answers that
-    # question next to the resolver it compares against, and only runs once the
-    # runtime check has already passed. The rebuild it triggers is the same
-    # one-shot, user-initiated path the runtime-drift branch below takes.
-    from agent.system_prompt import stored_identity_is_stale
-
-    runtime_ok = bool(stored_prompt) and _stored_prompt_matches_runtime(
-        agent, stored_prompt
-    )
-    identity_stale = runtime_ok and stored_identity_is_stale(agent, stored_prompt)
-
-    if runtime_ok and not identity_stale:
+    if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
@@ -500,14 +486,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
         reconstruct_static_prefix(agent, system_message=system_message)
         return
-    if identity_stale:
-        stored_state = "stale_identity"
-        logger.info(
-            "Stored system prompt for session %s has a stale identity "
-            "block (SOUL.md changed since it was persisted); rebuilding.",
-            agent.session_id,
-        )
-    elif stored_prompt:
+    if stored_prompt:
         stored_state = "stale_runtime"
         logger.info(
             "Stored system prompt for session %s has stale runtime identity; "
@@ -537,20 +516,16 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
     # to initialise session-scoped state (e.g. warm a memory cache).
-    # A stale-prompt fallthrough (runtime identity or SOUL.md drift) is a
-    # CONTINUING session getting its prompt rebuilt — firing here again
-    # would duplicate session-scoped plugin work, so those states skip it.
-    if stored_state not in ("stale_runtime", "stale_identity"):
-        try:
-            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-            _invoke_hook(
-                "on_session_start",
-                session_id=agent.session_id,
-                model=agent.model,
-                platform=getattr(agent, "platform", None) or "",
-            )
-        except Exception as exc:
-            logger.warning("on_session_start hook failed: %s", exc)
+    try:
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_start",
+            session_id=agent.session_id,
+            model=agent.model,
+            platform=getattr(agent, "platform", None) or "",
+        )
+    except Exception as exc:
+        logger.warning("on_session_start hook failed: %s", exc)
 
     # Cold-start credits seed (L3) — fallback for the first-turn path. The TUI/
     # desktop build seeds at session OPEN (see seed_credits_at_session_start in

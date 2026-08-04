@@ -173,14 +173,16 @@ def resolve_identity_block(agent: Any) -> Dict[str, Any]:
     provenance, not text comparison — a user's SOUL.md that happens to equal
     ``DEFAULT_AGENT_IDENTITY`` still counts as loaded.
 
-    ``checkable`` is for staleness judgements on session restore (#68563):
+    ``checkable`` is for staleness judgements at the compaction keep-prompt
+    gate (#68563, see ``stored_identity_is_stale``):
     ``load_soul_md`` returns None for an absent SOUL.md, for a readable but
     empty one, AND for one that exists but cannot be read (it swallows
     IO/decoding errors). The first two are legitimate "use the default
     personality" states (emptying SOUL.md is the documented way to reset —
-    see default_soul.py); only a failed read is no basis to declare the
-    stored prompt stale, so exactly that case sets ``checkable`` False and
-    callers must fail open to reuse."""
+    see default_soul.py); a failed SOUL.md read, or HERMES_HOME itself being
+    absent/unmounted, is no basis to declare the stored prompt stale, so
+    those two cases set ``checkable`` False and callers must fail open to
+    reuse."""
     text = None
     from_soul = False
     checkable = True
@@ -191,12 +193,20 @@ def resolve_identity_block(agent: Any) -> Dict[str, Any]:
             from_soul = True
         else:
             try:
-                _soul_path = get_hermes_home() / "SOUL.md"
-                if _soul_path.exists():
-                    # Distinguish readable-empty from unreadable: a read
-                    # that succeeds here means the None above was the
-                    # deliberate empty-file state, which IS checkable.
-                    _soul_path.read_text(encoding="utf-8")
+                _hermes_home = get_hermes_home()
+                if not _hermes_home.exists():
+                    # HERMES_HOME itself is absent/unmounted: nothing here
+                    # can confirm what identity applies, so this is NOT
+                    # checkable (distinct from HERMES_HOME existing with no
+                    # SOUL.md inside it, handled in the branch below).
+                    checkable = False
+                else:
+                    _soul_path = _hermes_home / "SOUL.md"
+                    if _soul_path.exists():
+                        # Distinguish readable-empty from unreadable: a read
+                        # that succeeds here means the None above was the
+                        # deliberate empty-file state, which IS checkable.
+                        _soul_path.read_text(encoding="utf-8")
             except Exception:
                 checkable = False
     if text is None:
@@ -235,8 +245,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     stable_parts: List[str] = []
 
     # Identity (SOUL.md or the hardcoded fallback) via the shared resolver —
-    # the restore-time staleness check (#68563) uses the same function, so
-    # the two can never disagree about what identity a fresh build would use.
+    # the compaction keep-prompt gate's staleness check (#68563, see
+    # stored_identity_is_stale) uses the same function, so the two can never
+    # disagree about what identity a fresh build would use.
     _identity = resolve_identity_block(agent)
     stable_parts.append(_identity["text"])
     _soul_loaded = _identity["from_soul"]
@@ -630,11 +641,17 @@ def stored_identity_is_stale(agent: Any, stored_prompt: str) -> bool:
     """Return True when ``stored_prompt`` no longer opens with this agent's
     identity block.
 
-    The restore path's runtime check only rejects Model/Provider/cwd/Platform
+    Session restore's runtime check only rejects Model/Provider/cwd/Platform
     drift, so identity CONTENT drift — SOUL.md edited, created or deleted
-    since the prompt was persisted — kept being reused verbatim for the rest
-    of the session (issue #68563). This lives next to ``resolve_identity_block``
-    so the comparison and the resolver it compares against stay in step.
+    since the prompt was persisted — used to keep being reused verbatim for
+    the rest of the session (issue #68563). Restore itself never rebuilds on
+    identity drift (AGENTS.md:19-23 only exempts context compression from
+    the "no mid-conversation system-prompt rewrite" rule), so this function's
+    only caller is the Hermes-native compaction keep-prompt gate in
+    agent/conversation_compression.py — the boundary where a rebuild is
+    actually allowed to happen and to persist. This lives next to
+    ``resolve_identity_block`` so the comparison and the resolver it
+    compares against stay in step.
 
     The comparison is anchored: identity is slot #1 and
     ``HERMES_AGENT_HELP_GUIDANCE`` always follows it in the stable tier, so
@@ -644,9 +661,10 @@ def stored_identity_is_stale(agent: Any, stored_prompt: str) -> bool:
     assembly.
 
     Fails open to reuse: ``checkable=False`` (SOUL.md exists but is
-    temporarily unreadable) or a resolver crash is no basis to call the stored
-    identity stale — rebuilding then would persist a DEFAULT_AGENT_IDENTITY
-    downgrade over a healthy custom identity.
+    temporarily unreadable, or HERMES_HOME itself is absent/unmounted) or a
+    resolver crash is no basis to call the stored identity stale —
+    rebuilding then would persist a DEFAULT_AGENT_IDENTITY downgrade over a
+    healthy custom identity.
     """
     try:
         identity = resolve_identity_block(agent)
@@ -655,7 +673,7 @@ def stored_identity_is_stale(agent: Any, stored_prompt: str) -> bool:
         anchored = identity["text"].strip() + "\n\n" + HERMES_AGENT_HELP_GUIDANCE.strip()
         return not stored_prompt.startswith(anchored)
     except Exception:
-        logger.debug("identity staleness check failed on restore", exc_info=True)
+        logger.debug("identity staleness check failed", exc_info=True)
         return False
 
 

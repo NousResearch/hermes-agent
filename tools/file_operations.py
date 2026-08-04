@@ -353,6 +353,39 @@ class ExecuteResult:
 _SEARCH_TIMEOUT_MARKER_RE = re.compile(r"\n?\[Command timed out after \d+s\]\s*$")
 
 
+def _native_path(path: str) -> str:
+    """Return *path* in the form a Windows-native executable accepts.
+
+    ``_escape_shell_arg`` rewrites ``D:\\...`` / ``D:/...`` to the Git Bash
+    ``/d/...`` form via ``_bash_safe_path`` — correct for MSYS-built
+    programs (bash builtins, ``find``, ``grep``) but wrong for any
+    Windows-native executable (``node.exe``, ``python.exe``, ``rg.exe``,
+    ``go``, ``rustfmt``, ...): Hermes disables MSYS argv conversion by
+    default (``MSYS2_ARG_CONV_EXCL=*`` + ``MSYS_NO_PATHCONV=1``, set in
+    ``tools/environments/local.py``), so a literal ``/d/...`` reaches the
+    native exe and is resolved as ``C:\\d\\...`` — "system cannot find the
+    path specified" (os error 3). Windows-native exes accept ``D:/...``
+    directly, so commands invoking them must use that form on Windows and
+    skip the MSYS rewrite. No-op off Windows and for relative / non-drive
+    paths.
+    """
+    from tools.environments.local import _IS_WINDOWS
+
+    if not _IS_WINDOWS or not path:
+        return path
+    # MSYS drive form "/d/rest" -> "D:/rest" (also covers bare "/d").
+    m = re.match(r"^/([A-Za-z])(?:/(.*))?$", path)
+    if m:
+        drive = m.group(1).upper()
+        rest = m.group(2) or ""
+        return f"{drive}:/{rest}" if rest else f"{drive}:/"
+    # Native Windows forms: normalize backslashes, keep forward slashes.
+    path = path.replace("\\", "/")
+    if re.match(r"^[A-Za-z]:/", path):
+        return path
+    return path
+
+
 def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]:
     """Return stdout cleaned for parsing and a limit reason for search timeouts."""
     if result.exit_code == 124:
@@ -1000,6 +1033,19 @@ class ShellFileOperations(FileOperations):
         arg = _bash_safe_path(arg)
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+    def _quote_native_path(self, path: str) -> str:
+        """Quote *path* for a Windows-native executable invocation.
+
+        Like :meth:`_escape_shell_arg` but keeps Windows drive paths in the
+        ``D:/...`` form a Windows-native executable (``node``, ``python``,
+        ``rg``, ...) understands instead of rewriting them to the MSYS
+        ``/d/...`` form (which only MSYS-built tools accept — see
+        :func:`_native_path`).
+        """
+        import shlex
+
+        return shlex.quote(_native_path(path))
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
@@ -1861,8 +1907,12 @@ class ShellFileOperations(FileOperations):
         if not self._has_command(base_cmd):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
 
-        # Run linter
-        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
+        # Run linter. The linters are Windows-native executables on Windows
+        # (node, python, npx, go, rustfmt), so the path must use the native
+        # D:/... form — the MSYS /d/... rewrite makes them fail with
+        # "cannot find the path" (os error 3), turning every write into a
+        # phantom lint error.
+        cmd = linter_cmd.replace("{file}", self._quote_native_path(path))
         result = self._exec(cmd, timeout=30)
 
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):

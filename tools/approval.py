@@ -1041,8 +1041,13 @@ DANGEROUS_PATTERNS = [
     # git config mutating forms write repo/system identity silently (#72556).
     # Query-only forms (--list, --get, --get-all, --get-regexp, bare key)
     # are not matched — only mutations require approval.
+    # --file differs from other scope flags: it consumes a path argument.
     (r'\bgit\s+config\s+'
-     r'(?:--(?:local|global|system|file|worktree)\s+)?'
+     r'(?:'
+     r'--file\s+\S+\s+'
+     r'|'
+     r'(?:--(?:local|global|system|worktree)\s+)?'
+     r')'
      r'(?:'
      r'--(?:add|replace-all|unset-all|unset|remove-section|rename-section)\b'
      r'|'

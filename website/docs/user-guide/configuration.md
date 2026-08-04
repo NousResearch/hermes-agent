@@ -1833,7 +1833,7 @@ Notes:
 - `underline: true` prepends a short separator line before the footer.
 - `quota` only renders windows a provider actually returns; providers without usage APIs stay silent for that field.
 - Account/quota lookups use the exact runtime credential that served the turn, so credential-pool rotation does not show another account's limits.
-- Quota results are cached briefly per credential so footer rendering does not hit provider usage APIs on every message.
+- Quota results are cached per profile and credential. Cold or stale entries refresh in the background; a cold cache omits quota on the first reply rather than delaying final-message delivery, while a transient refresh failure keeps the last valid snapshot.
 - `reasoning` shows the live turn effort from the agent runtime (including `/reasoning` overrides), abbreviated for mobile footers.
 - Unknown field names are ignored.
 - Per-platform overrides live under `display.platforms.<platform>.runtime_footer`.

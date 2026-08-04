@@ -2461,10 +2461,16 @@ from gateway.whatsapp_identity import (
 )
 
 
-# Short-lived runtime-footer quota cache: keyed by provider/base_url/credential
-# fingerprint so credential-pool rotation never reuses another account's snapshot.
-_FOOTER_ACCOUNT_USAGE_CACHE: dict[tuple[str, str, str], tuple[float, object]] = {}
+# Short-lived runtime-footer quota cache. The final-message path never waits for
+# provider usage APIs: cold/stale entries schedule a profile-scoped daemon
+# refresh and immediately return the last known snapshot (or None on first use).
+_FOOTER_ACCOUNT_USAGE_CACHE: dict[
+    tuple[str, str, str, str], tuple[float, object]
+] = {}
+_FOOTER_ACCOUNT_USAGE_REFRESHING: set[tuple[str, str, str, str]] = set()
+_FOOTER_ACCOUNT_USAGE_LOCK = threading.Lock()
 _FOOTER_ACCOUNT_USAGE_TTL_SECONDS = 90.0
+_FOOTER_ACCOUNT_USAGE_CACHE_MAX_ENTRIES = 64
 
 
 def _footer_account_usage_cache_key(
@@ -2472,28 +2478,83 @@ def _footer_account_usage_cache_key(
     *,
     base_url: str | None = None,
     api_key: str | None = None,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     import hashlib
 
     token = str(api_key or "").strip()
     digest = hashlib.sha256(token.encode()).hexdigest()[:16] if token else ""
     return (
+        str(get_hermes_home()),
         str(provider or "").strip().lower(),
         str(base_url or "").strip().rstrip("/").lower(),
         digest,
     )
 
 
+def _refresh_footer_account_usage(
+    key: tuple[str, str, str, str],
+    provider: str | None,
+    base_url: str | None,
+    api_key: str | None,
+) -> None:
+    snapshot = None
+    try:
+        snapshot = fetch_account_usage(
+            provider,
+            base_url=base_url,
+            api_key=api_key,
+        )
+    except Exception:
+        snapshot = None
+    finally:
+        with _FOOTER_ACCOUNT_USAGE_LOCK:
+            previous = _FOOTER_ACCOUNT_USAGE_CACHE.get(key)
+            # True stale-while-revalidate: a transient miss must not blank a
+            # previously valid quota footer. Bump the timestamp to avoid an
+            # immediate retry storm against a failing usage endpoint.
+            if snapshot is None and previous is not None:
+                snapshot = previous[1]
+            if (
+                key not in _FOOTER_ACCOUNT_USAGE_CACHE
+                and len(_FOOTER_ACCOUNT_USAGE_CACHE)
+                >= _FOOTER_ACCOUNT_USAGE_CACHE_MAX_ENTRIES
+            ):
+                oldest = min(
+                    _FOOTER_ACCOUNT_USAGE_CACHE,
+                    key=lambda cached_key: _FOOTER_ACCOUNT_USAGE_CACHE[cached_key][0],
+                )
+                _FOOTER_ACCOUNT_USAGE_CACHE.pop(oldest, None)
+            _FOOTER_ACCOUNT_USAGE_CACHE[key] = (time.monotonic(), snapshot)
+            _FOOTER_ACCOUNT_USAGE_REFRESHING.discard(key)
+
+
+def _start_footer_account_usage_refresh(
+    key: tuple[str, str, str, str],
+    provider: str | None,
+    base_url: str | None,
+    api_key: str | None,
+) -> None:
+    try:
+        ctx = copy_context()
+        threading.Thread(
+            target=ctx.run,
+            args=(
+                _refresh_footer_account_usage,
+                key,
+                provider,
+                base_url,
+                api_key,
+            ),
+            name=f"runtime-footer-usage-{key[1] or 'unknown'}",
+            daemon=True,
+        ).start()
+    except Exception:
+        with _FOOTER_ACCOUNT_USAGE_LOCK:
+            _FOOTER_ACCOUNT_USAGE_REFRESHING.discard(key)
 
 
 def _footer_reasoning_effort_from_agent(agent) -> str | None:
-    """Return the active reasoning effort label for footer display.
-
-    Prefer the live agent runtime config (includes /reasoning overrides and
-    per-model clamps already applied on the agent). Fall back to nothing when
-    the agent is missing or has no reasoning config — the footer field is then
-    silently omitted.
-    """
+    """Return the active reasoning effort label for footer display."""
     if agent is None:
         return None
     rc = getattr(agent, "reasoning_config", None)
@@ -2507,27 +2568,41 @@ def _footer_reasoning_effort_from_agent(agent) -> str | None:
     label = str(effort).strip().lower()
     return label or None
 
+
 def _fetch_footer_account_usage_cached(
     provider: str | None,
     *,
     base_url: str | None = None,
     api_key: str | None = None,
 ):
-    """Fetch account usage for footer rendering with a short per-credential cache."""
-    import time
-
-    key = _footer_account_usage_cache_key(provider, base_url=base_url, api_key=api_key)
+    """Return cached usage and schedule refresh without blocking the caller."""
+    normalized = str(provider or "").strip().lower()
+    if normalized in {"", "auto"}:
+        return None
+    key = _footer_account_usage_cache_key(
+        provider,
+        base_url=base_url,
+        api_key=api_key,
+    )
     now = time.monotonic()
-    cached = _FOOTER_ACCOUNT_USAGE_CACHE.get(key)
-    if cached is not None:
-        expires_at, snapshot = cached
-        if now < expires_at:
-            return snapshot
-    try:
-        snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
-    except Exception:
-        snapshot = None
-    _FOOTER_ACCOUNT_USAGE_CACHE[key] = (now + _FOOTER_ACCOUNT_USAGE_TTL_SECONDS, snapshot)
+    should_refresh = False
+    with _FOOTER_ACCOUNT_USAGE_LOCK:
+        cached = _FOOTER_ACCOUNT_USAGE_CACHE.get(key)
+        snapshot = cached[1] if cached is not None else None
+        fresh = bool(
+            cached
+            and now - cached[0] < _FOOTER_ACCOUNT_USAGE_TTL_SECONDS
+        )
+        if not fresh and key not in _FOOTER_ACCOUNT_USAGE_REFRESHING:
+            _FOOTER_ACCOUNT_USAGE_REFRESHING.add(key)
+            should_refresh = True
+    if should_refresh:
+        _start_footer_account_usage_refresh(
+            key,
+            provider,
+            base_url,
+            api_key,
+        )
     return snapshot
 
 logger = logging.getLogger(__name__)
@@ -4793,6 +4868,27 @@ class TurnRunner:
         _skip_context = _plat_gw_cfg.get("skip_context_files")
         skip_context_files = bool(_skip_context) if _skip_context is not None else False
 
+        # Resolve footer config while the routed profile scope is active. This
+        # avoids reading the default profile after _run_agent() returns in a
+        # multiplexed gateway.
+        _footer_cfg: dict[str, Any] = {}
+        _want_footer_usage = False
+        try:
+            from gateway.runtime_footer import resolve_footer_config
+
+            _footer_cfg = resolve_footer_config(ctx.user_config, platform_key)
+            _footer_fields = {
+                str(field).strip().lower()
+                for field in (_footer_cfg.get("fields") or ())
+            }
+            _want_footer_usage = bool(
+                _footer_cfg.get("enabled")
+                and _footer_fields.intersection({"quota", "account"})
+            )
+        except Exception:
+            _footer_cfg = {}
+            _want_footer_usage = False
+
         # Check agent cache — reuse the AIAgent from the previous message
         # in this session to preserve the frozen system prompt and tool
         # schemas for prompt cache hits.
@@ -5690,6 +5786,15 @@ class TurnRunner:
             _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
         _resolved_model = getattr(_agent, "model", None) if _agent else None
+        _resolved_provider = getattr(_agent, "provider", None) if _agent else None
+        _resolved_base_url = getattr(_agent, "base_url", None) if _agent else None
+        _resolved_footer_usage = None
+        if _want_footer_usage and _agent:
+            _resolved_footer_usage = _fetch_footer_account_usage_cached(
+                _resolved_provider,
+                base_url=_resolved_base_url,
+                api_key=getattr(_agent, "api_key", None),
+            )
 
         # Sync session_id immediately after run_conversation(). Compression
         # can rotate before a follow-up model call fails; the failure return
@@ -5825,9 +5930,10 @@ class TurnRunner:
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
-                "provider": getattr(agent, "provider", None) if agent else None,
-                "base_url": getattr(agent, "base_url", None) if agent else None,
-                "api_key": getattr(agent, "api_key", None) if agent else None,
+                "provider": _resolved_provider,
+                "base_url": _resolved_base_url,
+                "account_usage": _resolved_footer_usage,
+                "runtime_footer_config": _footer_cfg,
                 "reasoning_effort": _footer_reasoning_effort_from_agent(agent),
                 "context_length": _context_length,
             }
@@ -5906,9 +6012,10 @@ class TurnRunner:
             "input_tokens": _input_toks,
             "output_tokens": _output_toks,
             "model": _resolved_model,
-            "provider": getattr(agent, "provider", None) if agent else None,
-            "base_url": getattr(agent, "base_url", None) if agent else None,
-            "api_key": getattr(agent, "api_key", None) if agent else None,
+            "provider": _resolved_provider,
+            "base_url": _resolved_base_url,
+            "account_usage": _resolved_footer_usage,
+            "runtime_footer_config": _footer_cfg,
             "reasoning_effort": _footer_reasoning_effort_from_agent(agent),
             "context_length": _context_length,
             "session_id": effective_session_id,
@@ -18323,47 +18430,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # text, so we fire a separate trailing send below.
             _footer_line = ""
             try:
-                from gateway.runtime_footer import build_footer_line as _bfl, resolve_footer_config as _rfc
-                _footer_user_config = _load_gateway_config()
-                _footer_platform_key = _platform_config_key(source.platform)
-                _footer_cfg = _rfc(_footer_user_config, _footer_platform_key)
-                _footer_fields = {
-                    str(field).strip().lower()
-                    for field in (_footer_cfg.get("fields") or [])
-                }
-                _footer_provider = agent_result.get("provider")
-                _footer_base_url = agent_result.get("base_url")
-                _footer_api_key = agent_result.get("api_key")
-                _footer_account_usage = None
+                from gateway.runtime_footer import build_footer_line as _bfl
+
+                _footer_account_usage = agent_result.get("account_usage")
                 _footer_account_label = None
-                if "quota" in _footer_fields or "account" in _footer_fields:
-                    try:
-                        _footer_account_usage = await asyncio.to_thread(
-                            _fetch_footer_account_usage_cached,
-                            _footer_provider,
-                            base_url=_footer_base_url,
-                            api_key=_footer_api_key,
-                        )
-                    except Exception as _footer_usage_err:
-                        logger.debug("runtime_footer usage lookup failed: %s", _footer_usage_err)
-                        _footer_account_usage = None
-                    if _footer_account_usage is not None:
-                        _footer_account_label = (
-                            getattr(_footer_account_usage, "account_label", None)
-                            or getattr(_footer_account_usage, "plan", None)
-                        )
+                if _footer_account_usage is not None:
+                    _footer_account_label = (
+                        getattr(_footer_account_usage, "account_label", None)
+                        or getattr(_footer_account_usage, "plan", None)
+                    )
                 _footer_line = _bfl(
-                    user_config=_footer_user_config,
-                    platform_key=_footer_platform_key,
+                    user_config=_load_gateway_config(),
+                    platform_key=_platform_config_key(source.platform),
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
                     turn_seconds=_turn_seconds,
-                    provider=_footer_provider,
+                    provider=agent_result.get("provider"),
                     account_label=_footer_account_label,
                     account_usage=_footer_account_usage,
                     reasoning_effort=agent_result.get("reasoning_effort"),
+                    resolved_config=agent_result.get("runtime_footer_config"),
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

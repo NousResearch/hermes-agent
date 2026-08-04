@@ -423,6 +423,20 @@ def test_build_footer_passes_extended_runtime_metadata():
     assert out == "──────────────\nopenai-codex · team-main · gpt-5.5 · ctx 18.2K/400K · 5h 80% · 7d 70%"
 
 
+def test_build_footer_prefers_profile_scoped_resolved_config():
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": False}}},
+        platform_key="telegram",
+        resolved_config={"enabled": True, "fields": ["model"], "underline": False},
+        model="openai/gpt-5.5",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+    )
+
+    assert out == "gpt-5.5"
+
+
 def test_build_footer_per_platform_off_suppresses():
     user = {
         "display": {

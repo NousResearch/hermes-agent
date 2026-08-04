@@ -4274,6 +4274,21 @@ class AIAgent:
         except Exception:
             pass
 
+        # 6c. Close the Codex app-server session. The runtime already drops
+        # it on turn crash / retirement (agent/codex_runtime.py), but hard
+        # teardown had no owner — a /new, /reset, or session expiry left the
+        # app-server child process running until interpreter exit. Clear the
+        # attribute BEFORE close() so a concurrent reader can't grab a
+        # half-closed session, and so a raising close() can't strand a stale
+        # reference behind.
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                self._codex_session = None
+                codex_session.close()
+        except Exception:
+            pass
+
         # 7. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
         # boundaries (/new, /reset, session expiry), so the message list won't

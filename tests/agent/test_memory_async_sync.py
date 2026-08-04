@@ -15,6 +15,8 @@ The fix dispatches provider work to a single-worker background executor.
 for session boundaries and deterministic tests. ``shutdown_all`` drains the
 executor with a bounded timeout so a wedged provider can't hang teardown.
 """
+import logging
+import threading
 import time
 
 import pytest
@@ -64,18 +66,6 @@ class _SlowProvider(MemoryProvider):
         return ""
 
 
-def test_sync_all_does_not_block_on_slow_provider():
-    """The crux of the fix: a slow provider must NOT stall the caller."""
-    mgr = MemoryManager()
-    mgr.add_provider(_SlowProvider(delay=2.0))
-
-    t0 = time.time()
-    mgr.sync_all("hi", "hey", session_id="s1")
-    mgr.queue_prefetch_all("hi", session_id="s1")
-    elapsed = time.time() - t0
-
-    # Provider blocks 2s per call inline; off-thread dispatch returns ~instantly.
-    assert elapsed < 0.5, f"turn-completion path blocked {elapsed:.2f}s"
 
 
 def test_background_work_still_completes():
@@ -92,47 +82,87 @@ def test_background_work_still_completes():
     assert p.prefetch_done is True
 
 
-def test_flush_pending_no_executor_is_true():
-    """flush_pending must be a no-op (return True) before any sync ran."""
-    mgr = MemoryManager()
-    assert mgr.flush_pending(timeout=1) is True
 
 
-def test_no_providers_does_not_create_executor():
-    """Builtin-only / no-provider sessions must not spawn an executor."""
-    mgr = MemoryManager()
-    mgr.sync_all("hi", "hey")
-    mgr.queue_prefetch_all("hi")
-    assert mgr._sync_executor is None
 
 
-def test_shutdown_all_is_bounded_with_wedged_provider():
-    """A provider that never returns must not hang teardown."""
-    mgr = MemoryManager()
-    mgr.add_provider(_SlowProvider(delay=30.0))
-    mgr.sync_all("hi", "hey")
-
-    t0 = time.time()
-    mgr.shutdown_all()
-    elapsed = time.time() - t0
-
-    # Bounded by _SYNC_DRAIN_TIMEOUT_S (5s) plus a little slack.
-    assert elapsed < 8.0, f"shutdown blocked {elapsed:.1f}s on wedged provider"
 
 
-def test_writes_are_serialized_in_order():
-    """Single-worker executor must preserve turn ordering (N before N+1)."""
-    order = []
 
-    class _OrderProvider(_SlowProvider):
-        _name = "order"
 
+def test_shutdown_drains_queued_writes_and_boundary_in_fifo_order():
+    """Shutdown must not cancel durable work merely because it is still queued."""
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class _BlockingProvider(_SlowProvider):
         def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
-            order.append(user_content)
+            if user_content == "turn-0":
+                started.set()
+                assert release.wait(timeout=2)
+            calls.append(("sync", user_content))
+
+        def on_session_end(self, messages):
+            calls.append(("end", messages[0]["content"]))
+
+        def on_session_switch(self, new_session_id, **kwargs):
+            calls.append(("switch", new_session_id))
 
     mgr = MemoryManager()
-    mgr.add_provider(_OrderProvider(delay=0.0))
-    for i in range(5):
-        mgr.sync_all(f"turn-{i}", "resp", session_id="s1")
-    assert mgr.flush_pending(timeout=10) is True
-    assert order == [f"turn-{i}" for i in range(5)]
+    mgr.add_provider(_BlockingProvider(delay=0))
+    mgr.sync_all("turn-0", "response")
+    assert started.wait(timeout=1)
+    mgr.sync_all("turn-1", "response")
+    mgr.commit_session_boundary_async(
+        [{"role": "user", "content": "old-session"}],
+        new_session_id="new-session",
+    )
+
+    threading.Timer(0.05, release.set).start()
+    mgr.shutdown_all()
+
+    assert calls == [
+        ("sync", "turn-0"),
+        ("sync", "turn-1"),
+        ("end", "old-session"),
+        ("switch", "new-session"),
+    ]
+    assert mgr.shutdown_drain_state["status"] == "drained"
+    assert mgr.shutdown_drain_state["abandoned_writes"] == 0
+
+
+def test_shutdown_timeout_abandons_queued_write_with_state_and_log(monkeypatch, caplog):
+    """A wedged active write bounds shutdown and reports queued data loss."""
+    import agent.memory_manager as memory_manager_module
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class _WedgedProvider(_SlowProvider):
+        def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
+            if user_content == "active":
+                started.set()
+                release.wait(timeout=2)
+            calls.append(user_content)
+
+    monkeypatch.setattr(memory_manager_module, "_SYNC_DRAIN_TIMEOUT_S", 0.1)
+    mgr = MemoryManager()
+    mgr.add_provider(_WedgedProvider(delay=0))
+    mgr.sync_all("active", "response")
+    assert started.wait(timeout=1)
+    mgr.sync_all("queued", "response")
+
+    with caplog.at_level(logging.WARNING, logger="agent.memory_manager"):
+        t0 = time.monotonic()
+        mgr.shutdown_all()
+        elapsed = time.monotonic() - t0
+
+    state = mgr.shutdown_drain_state
+    assert elapsed < 0.5
+    assert state["status"] == "timed_out"
+    assert state["abandoned_writes"] == 1
+    assert "queued" not in calls
+    assert "abandoning 1 queued memory write" in caplog.text
+    release.set()

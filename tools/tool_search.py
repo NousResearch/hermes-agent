@@ -9,9 +9,19 @@ for the full rationale):
 
 * Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` are *never* deferred.
   Always-load means always-load. No exceptions.
-* The threshold gate runs every assembly: when deferrable tools would consume
-  less than ``threshold_pct`` of the model's context window (default 10%),
-  tool search is a no-op and the tools array passes through unchanged.
+* Tiered disclosure (July 2026 plan): the moment ANY deferrable (MCP/plugin)
+  tools are present, they hide behind the bridge. What scales with catalog
+  size is the *listing*, not the activation decision:
+    - Tier 0 — no MCP/plugin tools: pure passthrough, everything eager.
+    - Tier 1 — deferred tools whose catalog listing fits the listing budget
+      (``min(threshold_pct`` of context — default 5% — ``, listing_max_tokens)``):
+      bridge + skills-style listing (name + short description per tool),
+      degrading to a names-only listing when the full form is over budget.
+    - Tier 2 — per-tool listing over budget even names-only (e.g.
+      Cloudflare's flat API surface, ~3,300 tools whose names alone are
+      ~32K tokens): bare bridge + a one-line-per-server summary (server
+      name + tool count) so the model still knows WHICH domains are
+      reachable; individual tools are discoverable only via ``tool_search``.
 * The catalog is stateless across turns and tools-array assemblies. It is
   rebuilt from the current tool-defs list every time. This is the lesson
   from OpenClaw's cron regression (openclaw/openclaw#84141): a session-keyed
@@ -33,6 +43,8 @@ import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from tools.registry import tool_error
 
 logger = logging.getLogger("tools.tool_search")
 
@@ -65,9 +77,25 @@ class ToolSearchConfig:
     """Resolved, validated tool-search configuration for a single assembly."""
 
     enabled: str  # "auto" | "on" | "off"
-    threshold_pct: float  # 0..100 — only used when enabled == "auto"
+    # Listing budget as a percentage of the model's context window. Under
+    # tiered disclosure this no longer gates *activation* (any deferrable
+    # tool activates the bridge) — it bounds how much context the embedded
+    # catalog listing may consume before disclosure degrades:
+    # full listing -> names-only -> bare bridge (tier 2).
+    threshold_pct: float  # 0..100
     search_default_limit: int
     max_search_limit: int
+    # Catalog listing ("skills-style" progressive disclosure): when active,
+    # a grouped name + short-description manifest of every deferred tool is
+    # embedded in the tool_search bridge description, so capabilities stay
+    # DISCOVERABLE (like the skills listing in the system prompt) while full
+    # schemas stay deferred.  "auto" = include when it fits the listing
+    # budget (falls back to names-only, then to none = bare bridge);
+    # "on" = same rendering, explicit intent; "off" = always bare bridge.
+    listing: str = "auto"  # "auto" | "on" | "off"
+    # Absolute cap on the embedded listing, regardless of context size.
+    # Effective budget = min(listing_max_tokens, threshold_pct% of context).
+    listing_max_tokens: int = 4000
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -80,13 +108,13 @@ class ToolSearchConfig:
         break the agent.
         """
         if raw is True:
-            return cls(enabled="auto", threshold_pct=10.0,
+            return cls(enabled="auto", threshold_pct=5.0,
                        search_default_limit=5, max_search_limit=20)
         if raw is False:
-            return cls(enabled="off", threshold_pct=10.0,
+            return cls(enabled="off", threshold_pct=5.0,
                        search_default_limit=5, max_search_limit=20)
         if not isinstance(raw, dict):
-            return cls(enabled="auto", threshold_pct=10.0,
+            return cls(enabled="auto", threshold_pct=5.0,
                        search_default_limit=5, max_search_limit=20)
 
         enabled_raw = str(raw.get("enabled", "auto")).strip().lower()
@@ -99,18 +127,31 @@ class ToolSearchConfig:
         else:
             enabled = "auto"
 
-        threshold_pct = _safe_float(raw.get("threshold_pct"), 10.0)
+        threshold_pct = _safe_float(raw.get("threshold_pct"), 5.0)
         threshold_pct = max(0.0, min(100.0, threshold_pct))
 
         max_search_limit = max(1, min(50, _safe_int(raw.get("max_search_limit"), 20)))
         search_default_limit = max(1, min(max_search_limit,
                                           _safe_int(raw.get("search_default_limit"), 5)))
 
+        listing_raw = str(raw.get("listing", "auto")).strip().lower()
+        if listing_raw in ("true", "1", "yes"):
+            listing = "on"
+        elif listing_raw in ("false", "0", "no"):
+            listing = "off"
+        elif listing_raw in ("auto", "on", "off"):
+            listing = listing_raw
+        else:
+            listing = "auto"
+        listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 4000)))
+
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
+            listing=listing,
+            listing_max_tokens=listing_max_tokens,
         )
 
 
@@ -238,24 +279,37 @@ def should_activate(
 ) -> bool:
     """Decide whether tool search should activate for the current assembly.
 
-    ``"off"`` skips unconditionally. ``"on"`` activates unconditionally
-    (as long as there is at least one deferrable tool — there's no point
-    swapping a no-op). ``"auto"`` activates when the deferrable schemas
-    would consume ``threshold_pct`` of context or more.
+    ``"off"`` skips unconditionally. ``"on"`` and ``"auto"`` activate whenever
+    at least one deferrable tool exists (there's no point swapping a no-op).
+
+    Tiered-disclosure semantics (July 2026): the presence of ANY MCP/plugin
+    tool activates the bridge — schemas always defer. What the threshold now
+    controls is the *listing budget* (see :func:`listing_token_budget`), not
+    activation. ``context_length`` is retained in the signature for
+    backward compatibility with existing callers.
     """
     if config.enabled == "off":
         return False
     if deferrable_tokens <= 0:
         return False
-    if config.enabled == "on":
-        return True
-    # auto
-    if not context_length or context_length <= 0:
-        # Without a known context size, fall back to a fixed 20K-token cutoff
-        # — the cliff above which Anthropic and OpenAI both saw quality drops.
-        return deferrable_tokens >= 20_000
-    threshold_tokens = int(context_length * (config.threshold_pct / 100.0))
-    return deferrable_tokens >= threshold_tokens
+    return True
+
+
+def listing_token_budget(
+    config: ToolSearchConfig,
+    context_length: Optional[int],
+) -> int:
+    """Effective token budget for the embedded catalog listing.
+
+    ``min(listing_max_tokens, threshold_pct% of context)``. Without a known
+    context size, the percentage leg falls back to a fixed 10K cutoff
+    (5% of a typical 200K window).
+    """
+    if context_length and context_length > 0:
+        pct_leg = int(context_length * (config.threshold_pct / 100.0))
+    else:
+        pct_leg = 10_000
+    return max(0, min(config.listing_max_tokens, pct_leg))
 
 
 # ---------------------------------------------------------------------------
@@ -423,12 +477,173 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
 # ---------------------------------------------------------------------------
 
 
-def bridge_tool_schemas(deferred_count: int) -> List[Dict[str, Any]]:
+_SENTENCE_END_RE = re.compile(r"[.!?\n]")
+
+
+def _short_desc(description: str, max_chars: int = 60) -> str:
+    """First sentence of a tool description, clipped to ``max_chars``.
+
+    Mirrors the skills-listing convention: one terse line per capability.
+    Whitespace is collapsed; a hard clip never cuts mid-word unless the
+    first word itself exceeds the budget.
+    """
+    text = " ".join((description or "").split())
+    if not text:
+        return ""
+    m = _SENTENCE_END_RE.search(text)
+    if m:
+        text = text[:m.start() + (1 if text[m.start()] == "." else 0)]
+    if len(text) <= max_chars:
+        return text
+    clipped = text[:max_chars]
+    if " " in clipped:
+        clipped = clipped.rsplit(" ", 1)[0]
+    return clipped.rstrip(",;: ") + "…"
+
+
+def _listing_group_label(source_name: str) -> str:
+    """Human-facing group heading for a toolset, e.g. ``mcp-github`` -> ``github``."""
+    label = source_name or "other"
+    if label.startswith("mcp-"):
+        label = label[4:]
+    return label
+
+
+def build_catalog_listing(
+    deferrable: List[Dict[str, Any]],
+    *,
+    max_tokens: int = 4000,
+) -> Optional[str]:
+    """Render a skills-style manifest of the deferred catalog.
+
+    One line per tool — ``name: short description`` — grouped under a
+    heading per source (MCP server / plugin toolset), exactly like the
+    bundled-skills listing in the system prompt:
+
+        github tools: (44)
+        - create_issue: Open a new issue in a GitHub repository.
+        - merge_pull_request: Merge an open pull request.
+        ...
+
+    Ordering is deterministic (groups and tools sorted by name) so the
+    rendered block is byte-stable across assemblies of the same catalog —
+    this keeps the request prefix cacheable across turns.
+
+    Token-budget fallbacks (cheap chars/4 estimate, same rule as the
+    activation gate):
+      1. full listing (names + short descriptions)
+      2. names-only listing, still grouped
+      3. server-level summary — one line per MCP server / plugin toolset
+         (name + tool count), so the model always knows WHICH domains are
+         reachable through the bridge even when per-tool names don't fit
+      4. ``None`` — only when the summary itself exceeds the budget
+    """
+    text, _form = build_catalog_listing_with_form(deferrable, max_tokens=max_tokens)
+    return text
+
+
+def build_catalog_listing_with_form(
+    deferrable: List[Dict[str, Any]],
+    *,
+    max_tokens: int = 4000,
+) -> Tuple[Optional[str], str]:
+    """Like :func:`build_catalog_listing` but also reports the form used.
+
+    Returns ``(text, form)`` where ``form`` is ``"full"`` (names + short
+    descriptions), ``"names"`` (names-only fallback), ``"mixed"`` (per-server
+    degradation: small servers keep per-tool lines, oversized servers
+    collapse to a name + tool-count summary line), ``"groups"`` (every
+    server summarized), or ``"none"`` (over budget in every form).
+
+    Degradation is PER SERVER, not global: one huge server (Cloudflare's
+    3,320 flat tools) must not cost a small co-attached server (Linear's 24)
+    its listing. Greedy fit, smallest rendered group first, is deterministic
+    for a given catalog — byte-stable across assemblies, cache-safe.
+    """
+    if not deferrable:
+        return None, "none"
+
+    groups: Dict[str, List[Tuple[str, str]]] = {}
+    for td in deferrable:
+        fn = td.get("function") or {}
+        name = fn.get("name", "")
+        if not name:
+            continue
+        source, source_name = _classify_source(name)
+        label = _listing_group_label(source_name if source != "other" else "other")
+        groups.setdefault(label, []).append((name, _short_desc(fn.get("description", ""))))
+
+    if not groups:
+        return None, "none"
+
+    def render_group(label: str, mode: str) -> str:
+        """Render one server's block. mode: 'full' | 'names' | 'summary'."""
+        tools = sorted(groups[label])
+        if mode == "summary":
+            return (f"{label} ({len(tools)} tools — names not listed; "
+                    f"discover via `{TOOL_SEARCH_NAME}`)")
+        lines = [f"{label} tools ({len(tools)}):"]
+        if mode == "full":
+            for name, desc in tools:
+                lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+        else:
+            lines.append(", ".join(name for name, _ in tools))
+        return "\n".join(lines)
+
+    header = ("Deferred tool catalog (call schemas via "
+              f"`{TOOL_DESCRIBE_NAME}`, invoke via `{TOOL_CALL_NAME}`):")
+
+    def assemble(modes: Dict[str, str]) -> str:
+        return "\n".join([header] + [render_group(lbl, modes[lbl])
+                                     for lbl in sorted(groups)])
+
+    def fits(text: str) -> bool:
+        return math.ceil(len(text) / CHARS_PER_TOKEN) <= max_tokens
+
+    # 1. Everything full.
+    modes = {lbl: "full" for lbl in groups}
+    if fits(assemble(modes)):
+        return assemble(modes), "full"
+
+    # 2. Everything names-only.
+    modes = {lbl: "names" for lbl in groups}
+    if fits(assemble(modes)):
+        return assemble(modes), "names"
+
+    # 3. Per-server degradation: collapse the LARGEST rendered groups to
+    #    summary lines first, keeping per-tool names for small servers.
+    #    Deterministic: size then label. One oversized server (Cloudflare)
+    #    must not cost a small co-attached server (Linear) its listing.
+    by_size = sorted(groups, key=lambda lbl: (-len(render_group(lbl, "names")), lbl))
+    for lbl in by_size:
+        modes[lbl] = "summary"
+        if fits(assemble(modes)):
+            form = "groups" if all(m == "summary" for m in modes.values()) else "mixed"
+            return assemble(modes), form
+
+    # 4. Even the all-summary form is over budget.
+    return None, "none"
+
+
+def bridge_tool_schemas(
+    deferred_count: int,
+    listing: Optional[str] = None,
+    listing_form: str = "",
+) -> List[Dict[str, Any]]:
     """Build the bridge tool schemas to inject in place of deferred tools.
 
     The schemas are intentionally short — every byte added here is a byte
     the user pays on every turn. Descriptions are tuned to be unambiguous
     about the call sequence the model should follow.
+
+    When ``listing`` is provided (see :func:`build_catalog_listing`), it is
+    embedded in the ``tool_search`` description so every deferred capability
+    stays *visible* by name — the skills-listing pattern — closing the
+    "model doesn't know what it doesn't know" gap while full parameter
+    schemas remain deferred. ``listing_form`` selects the framing: per-tool
+    forms ("full"/"names") tell the model it may skip the search when it
+    sees the exact name; the server-summary form ("groups") tells it which
+    DOMAINS are reachable and that search is mandatory for tool discovery.
     """
     desc_search = (
         f"Search {deferred_count} additional tools that are loaded on demand. "
@@ -437,6 +652,28 @@ def bridge_tool_schemas(deferred_count: int) -> List[Dict[str, Any]]:
         f"then `{TOOL_CALL_NAME}` to invoke it. Tools listed at the top of this "
         "system prompt are already available and do not need to be searched."
     )
+    if listing and listing_form == "groups":
+        desc_search += (
+            "\n\nThe servers below are connected and their tools ARE available "
+            "through this bridge. For any request in these domains, search "
+            "here FIRST — do not claim the capability is unavailable and do "
+            "not substitute a generic tool (terminal/browser) without "
+            "searching.\n\n" + listing
+        )
+    elif listing:
+        desc_search += (
+            "\n\nEvery deferred capability is listed below. If a tool name "
+            "appears here, do NOT claim it is unavailable — load it with "
+            f"`{TOOL_DESCRIBE_NAME}` (skip `{TOOL_SEARCH_NAME}` when you "
+            "already see the exact name)."
+        )
+        if listing_form == "mixed":
+            desc_search += (
+                " For servers marked 'names not listed', the tools exist "
+                f"too — find them with `{TOOL_SEARCH_NAME}` before "
+                "concluding anything is missing."
+            )
+        desc_search += "\n\n" + listing
     desc_describe = (
         f"Load the full JSON schema for one tool returned by `{TOOL_SEARCH_NAME}`. "
         f"Required before `{TOOL_CALL_NAME}` if the tool's parameters are unknown."
@@ -524,6 +761,12 @@ class AssemblyResult:
     deferred_count: int = 0
     deferred_tokens: int = 0
     threshold_tokens: int = 0
+    # Disclosure tier actually applied:
+    #   0 = passthrough (no deferrable tools, or tool_search off)
+    #   1 = bridge + catalog listing (full or names-only)
+    #   2 = bare bridge — catalog too large for any listing form
+    tier: int = 0
+    listing_form: str = "none"  # "full" | "names" | "none"
 
 
 def assemble_tool_defs(
@@ -563,15 +806,29 @@ def assemble_tool_defs(
             deferred_count=len(deferrable),
             deferred_tokens=deferrable_tokens,
             threshold_tokens=int((context_length or 0) * (config.threshold_pct / 100.0)),
+            tier=0,
         )
 
-    bridge = bridge_tool_schemas(len(deferrable))
+    listing = None
+    listing_form = "none"
+    listing_budget = listing_token_budget(config, context_length)
+    if config.listing != "off":
+        listing, listing_form = build_catalog_listing_with_form(
+            deferrable, max_tokens=listing_budget)
+    bridge = bridge_tool_schemas(len(deferrable), listing=listing,
+                                 listing_form=listing_form)
     result = visible + bridge
-    threshold_tokens = int((context_length or 0) * (config.threshold_pct / 100.0))
+    # Tier 1 = per-tool listing for at least part of the catalog (full,
+    # names, or mixed). Tier 2 = search-only discovery; the server-level
+    # "groups" summary keeps domains visible but individual tools are only
+    # reachable via tool_search.
+    tier = 1 if listing_form in ("full", "names", "mixed") else 2
 
     logger.info(
-        "tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
-        len(visible), len(deferrable), deferrable_tokens, threshold_tokens,
+        "tool_search activated (tier %d): %d core/visible tools kept, %d deferred "
+        "(~%d tokens), listing %s (budget ~%d tokens)",
+        tier, len(visible), len(deferrable), deferrable_tokens,
+        listing_form, listing_budget,
     )
 
     return AssemblyResult(
@@ -579,7 +836,9 @@ def assemble_tool_defs(
         activated=True,
         deferred_count=len(deferrable),
         deferred_tokens=deferrable_tokens,
-        threshold_tokens=threshold_tokens,
+        threshold_tokens=listing_budget,
+        tier=tier,
+        listing_form=listing_form,
     )
 
 
@@ -602,6 +861,26 @@ def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
     }
 
 
+def _available_source_summary(catalog: List[CatalogEntry]) -> List[Dict[str, Any]]:
+    """Return a compact, deterministic summary of connected deferred sources.
+
+    Included only when search returns no matches. This gives the model enough
+    evidence to retry with a source/action query instead of treating a lexical
+    miss as proof that the capability is unavailable, without adding anything
+    to the fixed per-turn prompt.
+    """
+    counts: Dict[str, int] = {}
+    for entry in catalog:
+        # _listing_group_label already falls back to "other" for empty
+        # source names, matching the listing path's grouping.
+        label = _listing_group_label(entry.source_name)
+        counts[label] = counts.get(label, 0) + 1
+    return [
+        {"name": name, "tool_count": counts[name]}
+        for name in sorted(counts)
+    ]
+
+
 def dispatch_tool_search(args: Dict[str, Any],
                          *,
                          current_tool_defs: List[Dict[str, Any]],
@@ -611,7 +890,7 @@ def dispatch_tool_search(args: Dict[str, Any],
         config = load_config()
     query = str(args.get("query") or "").strip()
     if not query:
-        return json.dumps({"error": "query is required"}, ensure_ascii=False)
+        return tool_error("query is required")
 
     raw_limit = args.get("limit")
     if raw_limit is None:
@@ -622,11 +901,20 @@ def dispatch_tool_search(args: Dict[str, Any],
     _, deferrable = classify_tools(current_tool_defs)
     catalog = build_catalog(deferrable)
     hits = search_catalog(catalog, query, limit=limit)
-    return json.dumps({
+    result: Dict[str, Any] = {
         "query": query,
         "total_available": len(catalog),
         "matches": [_format_search_hit(h) for h in hits],
-    }, ensure_ascii=False)
+    }
+    if not hits and catalog:
+        result["available_sources"] = _available_source_summary(catalog)
+        result["hint"] = (
+            "No lexical match was found, but the sources above are connected "
+            "and their tools remain available. Retry tool_search with the "
+            "service name plus a concrete action or object before concluding "
+            "the capability is unavailable."
+        )
+    return json.dumps(result, ensure_ascii=False)
 
 
 def dispatch_tool_describe(args: Dict[str, Any],
@@ -635,14 +923,12 @@ def dispatch_tool_describe(args: Dict[str, Any],
     """Execute the ``tool_describe`` bridge tool. Returns a JSON string."""
     name = str(args.get("name") or "").strip()
     if not name:
-        return json.dumps({"error": "name is required"}, ensure_ascii=False)
+        return tool_error("name is required")
     if not is_deferrable_tool_name(name):
-        return json.dumps({
-            "error": (
-                f"'{name}' is not a deferrable tool. If you see it in the tools list "
-                "already, call it directly; otherwise check the spelling against tool_search."
-            ),
-        }, ensure_ascii=False)
+        return tool_error(
+            f"'{name}' is not a deferrable tool. If you see it in the tools list "
+            "already, call it directly; otherwise check the spelling against tool_search."
+        )
     _, deferrable = classify_tools(current_tool_defs)
     for td in deferrable:
         fn = td.get("function") or {}
@@ -652,9 +938,9 @@ def dispatch_tool_describe(args: Dict[str, Any],
                 "description": fn.get("description", ""),
                 "parameters": fn.get("parameters", {}),
             }, ensure_ascii=False)
-    return json.dumps({
-        "error": f"'{name}' is not currently available. Re-run tool_search to refresh.",
-    }, ensure_ascii=False)
+    return tool_error(
+        f"'{name}' is not currently available. Re-run tool_search to refresh."
+    )
 
 
 def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
@@ -675,6 +961,59 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
         if name and is_deferrable_tool_name(name):
             names.add(name)
     return frozenset(names)
+
+
+def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
+    """Probe-validate ``tool_call`` arguments against the deferred tool's schema.
+
+    A deferred tool's parameter schema is invisible to the model until it
+    calls ``tool_describe`` — so models routinely invoke deferred tools
+    "blind" by name alone, omitting required arguments. Dispatching such a
+    call produces an opaque downstream failure (``KeyError: 'document_id'``)
+    that tells the model nothing about what the tool expects, and cheap
+    models loop on it until the iteration budget dies.
+
+    Port of the describe-first probe-validation fix from nearai/ironclaw#5149:
+    when required arguments are missing, return the tool's parameter schema
+    instead of dispatching blind — the model repairs the call in one
+    round-trip. Valid calls (and any call we can't confidently validate)
+    dispatch untouched, so this can never block a legitimate invocation.
+
+    Only *key absence* of schema-``required`` fields counts as invalid.
+    No type checking, no null rejection — nullable/typed edge cases are the
+    tool's own business, and ``coerce_tool_args`` already handles type repair
+    downstream. Returns a JSON error string when invalid, ``None`` when the
+    call should dispatch.
+    """
+    try:
+        from tools.registry import registry as _registry
+        schema = _registry.get_schema(name)
+        if not isinstance(schema, dict):
+            return None
+        fn = schema.get("function") if schema.get("type") == "function" else schema
+        if not isinstance(fn, dict):
+            return None
+        params = fn.get("parameters")
+        if not isinstance(params, dict):
+            return None
+        required = params.get("required")
+        if not isinstance(required, list) or not required:
+            return None
+        missing = [r for r in required if isinstance(r, str) and r not in args]
+        if not missing:
+            return None
+        return tool_error(
+            f"tool_call to '{name}' is missing required argument(s): "
+            f"{', '.join(missing)}. The tool was NOT invoked.",
+            parameters=params,
+            hint=(
+                "Retry tool_call with 'arguments' matching the parameters "
+                "schema above."
+            ),
+        )
+    except Exception:  # pragma: no cover — never block dispatch on validator bugs
+        logger.debug("validate_deferred_call_args failed for %s", name, exc_info=True)
+        return None
 
 
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
@@ -724,6 +1063,9 @@ __all__ = [
     "estimate_tokens_from_schemas",
     "should_activate",
     "build_catalog",
+    "build_catalog_listing",
+    "build_catalog_listing_with_form",
+    "listing_token_budget",
     "search_catalog",
     "bridge_tool_schemas",
     "assemble_tool_defs",
@@ -732,4 +1074,5 @@ __all__ = [
     "dispatch_tool_describe",
     "resolve_underlying_call",
     "scoped_deferrable_names",
+    "validate_deferred_call_args",
 ]

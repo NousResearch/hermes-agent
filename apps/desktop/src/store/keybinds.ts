@@ -141,24 +141,3 @@ export function beginCapture(actionId: string): void {
 export function endCapture(): void {
   $capture.set(null)
 }
-
-// ── Panel ───────────────────────────────────────────────────────────────────
-
-export const $keybindPanelOpen = atom(false)
-
-export function openKeybindPanel(): void {
-  $keybindPanelOpen.set(true)
-}
-
-export function closeKeybindPanel(): void {
-  $keybindPanelOpen.set(false)
-  $capture.set(null)
-}
-
-export function toggleKeybindPanel(): void {
-  if ($keybindPanelOpen.get()) {
-    closeKeybindPanel()
-  } else {
-    openKeybindPanel()
-  }
-}

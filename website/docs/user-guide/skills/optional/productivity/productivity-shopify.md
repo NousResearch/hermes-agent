@@ -1,14 +1,14 @@
 ---
-title: "Shopify — Shopify Admin & Storefront GraphQL APIs via curl"
+title: "Shopify — Query Shopify Admin/Storefront GraphQL APIs via curl"
 sidebar_label: "Shopify"
-description: "Shopify Admin & Storefront GraphQL APIs via curl"
+description: "Query Shopify Admin/Storefront GraphQL APIs via curl"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Shopify
 
-Shopify Admin & Storefront GraphQL APIs via curl. Products, orders, customers, inventory, metafields.
+Query Shopify Admin/Storefront GraphQL APIs via curl.
 
 ## Skill metadata
 

@@ -1,7 +1,7 @@
 ---
-title: "P5Js — p5"
+title: "P5Js — p5.js sketches: gen art, shaders, interactive, 3D"
 sidebar_label: "P5Js"
-description: "p5"
+description: "p5.js sketches: gen art, shaders, interactive, 3D"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}

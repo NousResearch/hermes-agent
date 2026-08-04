@@ -74,12 +74,121 @@ from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start
+from agent.context_compressor import (
+    COMPRESSED_SUMMARY_METADATA_KEY,
+    ContextCompressor,
+)
+from agent.interrupt_compat import request_hard_interrupt
 from tools.approval import (
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """Return ``(slug, label, [(model_id, description), ...])`` for named endpoints.
+
+    Covers both the v12 ``providers:`` mapping and the legacy
+    ``custom_providers:`` list.  These endpoints never appear in canonical
+    provider enumeration, so without this the ACP model selector hides every
+    named endpoint that the TUI ``/model`` picker already renders (#47039
+    implemented named-endpoint rows for the TUI surface only).
+
+    Model lists come from the entry's declared models (``default_model`` +
+    ``models``), refreshed from the endpoint's live ``/models`` listing when a
+    credential is available and ``discover_models`` is not disabled.  Declared
+    models are kept even when live discovery fails — some OpenAI-compatible
+    endpoints (e.g. Bedrock Mantle Responses) expose no ``/models`` route at
+    all yet serve the declared models fine.
+
+    Slugs use the ``custom:<name>`` shape that ``parse_model_input`` and
+    ``resolve_runtime_provider`` already resolve, so encoded choice ids
+    (``custom:<name>:<model>``) round-trip through ``set_session_model``
+    unchanged.
+    """
+    try:
+        from hermes_cli.config import (
+            get_compatible_custom_providers,
+            is_provider_enabled,
+            load_config,
+        )
+        from hermes_cli.models import fetch_api_models
+        from hermes_cli.providers import custom_provider_slug
+    except ImportError:
+        return []
+
+    try:
+        cfg = load_config()
+        entries = get_compatible_custom_providers(cfg)
+    except Exception:
+        logger.debug("Could not load named custom providers", exc_info=True)
+        return []
+
+    # ``get_compatible_custom_providers`` drops the ``enabled`` flag during
+    # normalization, so collect explicitly disabled provider keys from the
+    # raw config and skip their entries below.
+    disabled_keys: set[str] = set()
+    raw_providers = cfg.get("providers") if isinstance(cfg, dict) else None
+    if isinstance(raw_providers, dict):
+        for raw_key, raw_entry in raw_providers.items():
+            if isinstance(raw_entry, dict) and not is_provider_enabled(raw_entry):
+                disabled_keys.add(str(raw_key).strip().lower())
+
+    catalogs: list[tuple[str, str, list[tuple[str, str]]]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        provider_key = str(entry.get("provider_key", "") or "").strip()
+        if provider_key.lower() in disabled_keys:
+            continue
+        name = str(entry.get("name", "") or "").strip()
+        base_url = str(entry.get("base_url", "") or "").strip()
+        if not name or not base_url:
+            continue
+        slug = custom_provider_slug(name, provider_key)
+
+        api_key = str(entry.get("api_key", "") or "").strip()
+        if not api_key:
+            key_env = str(entry.get("key_env", "") or "").strip()
+            api_key = os.environ.get(key_env, "").strip() if key_env else ""
+
+        declared: list[str] = []
+        default_model = str(entry.get("model", "") or "").strip()
+        if default_model:
+            declared.append(default_model)
+        models_cfg = entry.get("models")
+        if isinstance(models_cfg, dict):
+            for mid in models_cfg:
+                mid = str(mid or "").strip()
+                if mid and mid not in declared:
+                    declared.append(mid)
+
+        if not api_key and not declared:
+            # No credential to discover with and nothing declared:
+            # not addressable from the selector.
+            continue
+
+        model_ids = list(declared)
+        discover = entry.get("discover_models", True)
+        if isinstance(discover, str):
+            discover = discover.lower() not in {"false", "no", "0"}
+        if discover and api_key:
+            try:
+                live = fetch_api_models(
+                    api_key, base_url, api_mode=entry.get("api_mode")
+                )
+            except Exception:
+                live = None
+            if live:
+                model_ids = declared + [m for m in live if m not in declared]
+
+        if not model_ids:
+            continue
+        catalogs.append((slug, name, [(mid, "") for mid in model_ids]))
+
+    return catalogs
 
 try:
     from hermes_cli import __version__ as HERMES_VERSION
@@ -93,6 +202,13 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 # does not expose a client-side limit, so this is a fixed cap that clients
 # paginate against using `cursor` / `next_cursor`.
 _LIST_SESSIONS_PAGE_SIZE = 50
+# Per-provider cap for the ACP model selector. ACP clients (Zed, Buzz) render
+# the whole `availableModels` array in one dropdown, so an unbounded
+# cross-provider catalog degrades the picker. Mirrors the cap the MoA picker
+# already uses (`hermes_cli/moa_cmd.py`). This bounds each provider's row, not
+# the total; aggregator providers stay intentionally uncapped inside the shared
+# inventory, and the current model is always kept via the fallback insert below.
+ACP_MAX_MODELS_PER_PROVIDER = 200
 _MAX_ACP_RESOURCE_BYTES = 512 * 1024
 _TEXT_RESOURCE_MIME_PREFIXES = ("text/",)
 _TEXT_RESOURCE_MIME_TYPES = {
@@ -456,7 +572,7 @@ class HermesACPAgent(acp.Agent):
         "tools": "List available tools",
         "context": "Show conversation context info",
         "reset": "Clear conversation history",
-        "compact": "Compress conversation context",
+        "compress": "Compress conversation context",
         "steer": "Inject guidance into the currently running agent turn",
         "queue": "Queue a prompt to run after the current turn finishes",
         "version": "Show Hermes version",
@@ -485,7 +601,7 @@ class HermesACPAgent(acp.Agent):
             "description": "Clear conversation history",
         },
         {
-            "name": "compact",
+            "name": "compress",
             "description": "Compress conversation context",
         },
         {
@@ -581,46 +697,108 @@ class HermesACPAgent(acp.Agent):
         return f"{raw_provider}:{raw_model}"
 
     def _build_model_state(self, state: SessionState) -> SessionModelState | None:
-        """Return the ACP model selector payload for editors like Zed."""
+        """Return authenticated providers and their models for ACP clients.
+
+        The shared Hermes inventory is also used by ``hermes model``, the TUI,
+        and the dashboard. Keeping ACP on that substrate prevents its selector
+        from silently collapsing to the current provider's curated list.
+        """
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
         provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
 
         try:
-            from hermes_cli.models import curated_models_for_provider, normalize_provider, provider_label
+            from hermes_cli.inventory import build_models_payload, load_picker_context
+            from hermes_cli.models import normalize_provider, provider_label
 
             normalized_provider = normalize_provider(provider)
-            provider_name = provider_label(normalized_provider)
+            context = load_picker_context().with_overrides(
+                current_provider=normalized_provider,
+                current_model=model,
+                current_base_url=str(getattr(state.agent, "base_url", "") or ""),
+            )
+            payload = build_models_payload(
+                context,
+                explicit_only=True,
+                include_unconfigured=False,
+                picker_hints=False,
+                canonical_order=True,
+                pricing=False,
+                capabilities=False,
+                refresh=False,
+                probe_custom_providers=False,
+                probe_current_custom_provider=False,
+                max_models=ACP_MAX_MODELS_PER_PROVIDER,
+            )
+
             available_models: list[ModelInfo] = []
             seen_ids: set[str] = set()
-
-            for model_id, description in curated_models_for_provider(normalized_provider):
-                rendered_model = str(model_id or "").strip()
-                if not rendered_model:
+            for row in payload.get("providers") or []:
+                row_provider = normalize_provider(str(row.get("slug") or "").strip())
+                if not row_provider:
                     continue
-                choice_id = self._encode_model_choice(normalized_provider, rendered_model)
-                if choice_id in seen_ids:
-                    continue
-                desc_parts = [f"Provider: {provider_name}"]
-                if description:
-                    desc_parts.append(str(description).strip())
-                if rendered_model == model:
-                    desc_parts.append("current")
-                available_models.append(
-                    ModelInfo(
-                        model_id=choice_id,
-                        name=rendered_model,
-                        description=" • ".join(part for part in desc_parts if part),
-                    )
+                provider_name = str(row.get("name") or "").strip() or provider_label(
+                    row_provider
                 )
-                seen_ids.add(choice_id)
+                for model_entry in row.get("models") or []:
+                    if isinstance(model_entry, dict):
+                        rendered_model = str(
+                            model_entry.get("id")
+                            or model_entry.get("model")
+                            or model_entry.get("name")
+                            or ""
+                        ).strip()
+                    else:
+                        rendered_model = str(model_entry or "").strip()
+                    if not rendered_model:
+                        continue
+                    choice_id = self._encode_model_choice(row_provider, rendered_model)
+                    if choice_id in seen_ids:
+                        continue
+                    is_current = (
+                        row_provider == normalized_provider and rendered_model == model
+                    )
+                    description = f"Provider: {provider_name}"
+                    if is_current:
+                        description += " • current"
+                    available_models.append(
+                        ModelInfo(
+                            model_id=choice_id,
+                            name=f"{provider_name} · {rendered_model}",
+                            description=description,
+                        )
+                    )
+                    seen_ids.add(choice_id)
+
+            # Named user-defined endpoints (providers: / custom_providers:)
+            # are invisible to canonical provider enumeration — append them
+            # so editor clients can select them like the TUI /model picker.
+            for named_slug, named_label, named_catalog in _named_custom_provider_catalogs():
+                for named_model, named_desc in named_catalog:
+                    named_choice = self._encode_model_choice(named_slug, named_model)
+                    if not named_choice or named_choice in seen_ids:
+                        continue
+                    named_parts = [f"Provider: {named_label}"]
+                    if named_desc:
+                        named_parts.append(str(named_desc).strip())
+                    if named_slug == normalized_provider and named_model == model:
+                        named_parts.append("current")
+                    available_models.append(
+                        ModelInfo(
+                            model_id=named_choice,
+                            name=named_model,
+                            description=" • ".join(part for part in named_parts if part),
+                        )
+                    )
+                    seen_ids.add(named_choice)
 
             current_model_id = self._encode_model_choice(normalized_provider, model)
             if current_model_id and current_model_id not in seen_ids:
+                provider_name = provider_label(normalized_provider)
                 available_models.insert(
                     0,
                     ModelInfo(
                         model_id=current_model_id,
-                        name=model,
+                        name=f"{provider_name} · {model}",
                         description=f"Provider: {provider_name} • current",
                     ),
                 )
@@ -860,6 +1038,102 @@ class HermesACPAgent(acp.Agent):
                 exc_info=True,
             )
 
+    def _schedule_mcp_late_refresh(self, state: SessionState) -> None:
+        """Refresh the agent's tool snapshot when background MCP discovery lands late.
+
+        ACP entry.py starts MCP tool discovery in a background daemon thread so a
+        slow/dead configured server can't block ``asyncio.run()``.  ``_make_agent``
+        briefly joins that thread (``wait_for_mcp_discovery``, bounded ~1.5s) so
+        already-spawning fast servers land in the snapshot — but a server slower
+        than the bound lands *after* the agent is built, leaving its tools absent
+        for the whole session.
+
+        This schedules an off-critical-path daemon that waits for discovery to
+        finish (bounded 30s), then rebuilds the snapshot via the shared
+        ``refresh_agent_mcp_tools`` helper — the same rebuild ``/reload-mcp``
+        performs, but automatic.  Mirrors the TUI late-refresh (PR #48403).
+
+        Cache safety: the rebuild only runs while the session is still
+        pre-first-turn (no API call made yet → nothing cached to invalidate).
+        Once the user has sent a message we leave the snapshot frozen rather
+        than break the cached prompt prefix mid-conversation; servers that land
+        later are picked up cache-safely by the between-turns prologue refresh
+        (``agent/turn_context.py``) at the next turn boundary.  The marginal
+        value of this pre-first-turn daemon is therefore freshness in the
+        window [session created → first message] — e.g. the "Available tools"
+        listing a client may request before the first prompt.
+        No-op when discovery already finished, when the join times out, when the
+        registry was unchanged, or when the session was closed while waiting.
+        """
+        try:
+            from hermes_cli.mcp_startup import mcp_discovery_in_flight
+        except Exception:
+            return
+        if not mcp_discovery_in_flight():
+            return
+
+        import threading
+
+        agent = state.agent
+        session_id = state.session_id
+
+        def _wait_then_refresh() -> None:
+            try:
+                from hermes_cli.mcp_startup import join_mcp_discovery
+
+                if not join_mcp_discovery(timeout=30.0):
+                    return
+
+                # Session may have been closed while we waited.  In-memory-only
+                # lookup on purpose: ``get_session()`` falls through to a DB
+                # restore that builds a whole new AIAgent as a side effect just
+                # to decide "no-op" here (the TUI equivalent also checks its
+                # in-memory dict only).
+                with self.session_manager._lock:
+                    current = self.session_manager._sessions.get(session_id)
+                if current is None or current.agent is not agent:
+                    return
+
+                # Cache safety: never rebuild the tool list once the conversation
+                # has started — that would invalidate the cached prompt prefix.
+                # Serialized with turn start: ``prompt()`` flips ``is_running``
+                # under ``runtime_lock`` before dispatching, so holding it here
+                # (and bailing when a turn is already running) closes the window
+                # where the guard passes but the first prompt starts before the
+                # refresh publishes — which would swap ``tools=`` mid-turn and
+                # break the just-created cache prefix.
+                with current.runtime_lock:
+                    if current.is_running:
+                        return
+                    if (
+                        int(getattr(agent, "_user_turn_count", 0) or 0) > 0
+                        or int(getattr(agent, "_api_call_count", 0) or 0) > 0
+                    ):
+                        return
+
+                    from tools.mcp_tool import refresh_agent_mcp_tools
+
+                    added = refresh_agent_mcp_tools(agent, quiet_mode=True)
+                if added:
+                    logger.info(
+                        "Session %s: late MCP refresh added %d tools: %s",
+                        session_id,
+                        len(added),
+                        ", ".join(sorted(added)),
+                    )
+            except Exception:
+                logger.debug(
+                    "Session %s: late MCP refresh failed",
+                    session_id,
+                    exc_info=True,
+                )
+
+        threading.Thread(
+            target=_wait_then_refresh,
+            name=f"acp-mcp-late-refresh-{session_id}",
+            daemon=True,
+        ).start()
+
     # ---- ACP lifecycle ------------------------------------------------------
 
     async def initialize(
@@ -970,10 +1244,48 @@ class HermesACPAgent(acp.Agent):
         return ""
 
     @staticmethod
+    def _history_summary_meta(message: dict[str, Any], text: str) -> dict[str, Any] | None:
+        """Build the ``_meta`` payload for a replayed compaction summary.
+
+        Compaction summaries are persisted as ordinary history messages —
+        standalone handoffs under ``role="user"`` OR ``role="assistant"``
+        (the compressor picks whichever role keeps alternation valid), and
+        merge-into-tail messages where the summary is appended after the
+        first preserved tail message's real content. Without a wire flag,
+        ACP frontends render all of these as ordinary turns.
+
+        Two distinct keys under ``_meta.hermes`` (ACP's extensibility
+        channel), so clients cannot accidentally hide real content:
+
+        * ``compactionSummary: true`` — the entire chunk is the handoff
+          summary. Safe to restyle or collapse wholesale.
+        * ``containsCompactionSummary: true`` — a merged-tail message: real
+          preserved turn content followed by the summary. Clients may style
+          it, but collapsing the whole chunk would hide the preserved
+          content, hence the separate key.
+
+        Detection honors the in-process ``_compressed_summary`` flag and
+        falls back to content classification, so it also works for a
+        DB-reloaded session that lost the in-memory flag.
+        """
+        kind = ContextCompressor.classify_summary_content(text)
+        if kind is None and message.get(COMPRESSED_SUMMARY_METADATA_KEY):
+            # Flagged in-process but content didn't classify (e.g. future
+            # prefix drift): treat as a standalone summary — the flag is only
+            # ever set on summary-bearing messages.
+            kind = "standalone"
+        if kind == "standalone":
+            return {"hermes": {"compactionSummary": True}}
+        if kind == "merged":
+            return {"hermes": {"containsCompactionSummary": True}}
+        return None
+
+    @staticmethod
     def _history_message_update(
         *,
         role: str,
         text: str,
+        field_meta: dict[str, Any] | None = None,
     ) -> UserMessageChunk | AgentMessageChunk | None:
         """Build an ACP history replay update for a user/assistant message."""
         block = TextContentBlock(type="text", text=text)
@@ -981,11 +1293,13 @@ class HermesACPAgent(acp.Agent):
             return UserMessageChunk(
                 session_update="user_message_chunk",
                 content=block,
+                field_meta=field_meta,
             )
         if role == "assistant":
             return AgentMessageChunk(
                 session_update="agent_message_chunk",
                 content=block,
+                field_meta=field_meta,
             )
         return None
 
@@ -1056,7 +1370,11 @@ class HermesACPAgent(acp.Agent):
             if role == "user":
                 text = self._history_message_text(message)
                 if text:
-                    update = self._history_message_update(role=role, text=text)
+                    update = self._history_message_update(
+                        role=role,
+                        text=text,
+                        field_meta=self._history_summary_meta(message, text),
+                    )
                     if update is not None and not await _send(update):
                         return
                 continue
@@ -1068,7 +1386,11 @@ class HermesACPAgent(acp.Agent):
 
                 text = self._history_message_text(message)
                 if text:
-                    update = self._history_message_update(role=role, text=text)
+                    update = self._history_message_update(
+                        role=role,
+                        text=text,
+                        field_meta=self._history_summary_meta(message, text),
+                    )
                     if update is not None and not await _send(update):
                         return
 
@@ -1118,6 +1440,7 @@ class HermesACPAgent(acp.Agent):
     ) -> NewSessionResponse:
         state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._schedule_mcp_late_refresh(state)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
@@ -1142,6 +1465,7 @@ class HermesACPAgent(acp.Agent):
             logger.warning("load_session: session %s not found", session_id)
             return None
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._schedule_mcp_late_refresh(state)
         logger.info("Loaded session %s", session_id)
         # Per ACP spec, `session/load` must stream the prior conversation back
         # to the client via `session/update` notifications BEFORE responding,
@@ -1189,6 +1513,7 @@ class HermesACPAgent(acp.Agent):
             logger.warning("resume_session: session %s not found, creating new", session_id)
             state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._schedule_mcp_late_refresh(state)
         logger.info("Resumed session %s", state.session_id)
         # See `load_session` above for the spec rationale — replay must
         # complete before the response so clients receive the full transcript
@@ -1218,12 +1543,19 @@ class HermesACPAgent(acp.Agent):
             with state.runtime_lock:
                 if state.is_running and state.current_prompt_text:
                     state.interrupted_prompt_text = state.current_prompt_text
-            state.cancel_event.set()
-            try:
-                if getattr(state, "agent", None) and hasattr(state.agent, "interrupt"):
-                    state.agent.interrupt()
-            except Exception:
-                logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
+                # Publish cancellation and hard-stop the agent before another
+                # prompt can acquire this lock and mistake the turn for
+                # redirectable work.
+                state.cancel_event.set()
+                try:
+                    if getattr(state, "agent", None):
+                        request_hard_interrupt(state.agent)
+                except Exception:
+                    logger.debug(
+                        "Failed to interrupt ACP session %s",
+                        session_id,
+                        exc_info=True,
+                    )
             logger.info("Cancelled session %s", session_id)
 
     async def fork_session(
@@ -1352,6 +1684,26 @@ class HermesACPAgent(acp.Agent):
             elif rewrite_idle:
                 user_text = steer_text
                 user_content = steer_text
+        elif (
+            text_only_prompt
+            and isinstance(user_content, str)
+            and not user_text.startswith("/")
+        ):
+            # Some ACP clients implement "stop and send" as two protocol calls:
+            # cancel the active prompt, then submit plain correction text. Keep
+            # the cancelled request attached so deictic follow-ups ("not that
+            # file") still have an explicit target.
+            interrupted_prompt = ""
+            with state.runtime_lock:
+                if not state.is_running and state.interrupted_prompt_text:
+                    interrupted_prompt = state.interrupted_prompt_text
+                    state.interrupted_prompt_text = ""
+            if interrupted_prompt:
+                user_text = (
+                    f"{interrupted_prompt}\n\n"
+                    f"User correction/guidance after interrupt: {user_text}"
+                )
+                user_content = user_text
 
         # Intercept slash commands — handle locally without calling the LLM.
         # Slash commands are text-only; if the client included images/resources,
@@ -1366,23 +1718,54 @@ class HermesACPAgent(acp.Agent):
                     await self._send_usage_update(state)
                 return PromptResponse(stop_reason="end_turn")
 
-        # If Zed sends another regular prompt while the same ACP session is
-        # still running, queue it instead of racing two AIAgent loops against
-        # the same state.history. /steer and /queue are handled above and can
-        # land immediately.
+        # If the client sends another regular text prompt while this ACP session
+        # is running, route it through the core active-turn redirect. Rich media
+        # and older runtimes retain the proven next-turn queue fallback.
+        redirected = False
+        queued_depth: int | None = None
         with state.runtime_lock:
             if state.is_running:
-                queued_text = user_text or "[Image attachment]"
-                state.queued_prompts.append(queued_text)
-                depth = len(state.queued_prompts)
-                if self._conn:
-                    update = acp.update_agent_message_text(
-                        f"Queued for the next turn. ({depth} queued)"
+                if (
+                    text_only_prompt
+                    and isinstance(user_content, str)
+                    and getattr(
+                        state.agent,
+                        "_supports_active_turn_redirect",
+                        False,
                     )
-                    await self._conn.session_update(session_id, update)
-                return PromptResponse(stop_reason="end_turn")
-            state.is_running = True
-            state.current_prompt_text = user_text or "[Image attachment]"
+                    is True
+                    and hasattr(state.agent, "redirect")
+                ):
+                    try:
+                        redirected = bool(state.agent.redirect(user_content))
+                    except Exception:
+                        logger.debug(
+                            "ACP active-turn redirect failed for %s",
+                            session_id,
+                            exc_info=True,
+                        )
+                if not redirected:
+                    queued_text = user_text or "[Image attachment]"
+                    state.queued_prompts.append(queued_text)
+                    queued_depth = len(state.queued_prompts)
+            else:
+                state.is_running = True
+                state.current_prompt_text = user_text or "[Image attachment]"
+
+        if redirected:
+            if self._conn:
+                update = acp.update_agent_message_text(
+                    "Redirected the active turn with your correction."
+                )
+                await self._conn.session_update(session_id, update)
+            return PromptResponse(stop_reason="end_turn")
+        if queued_depth is not None:
+            if self._conn:
+                update = acp.update_agent_message_text(
+                    f"Queued for the next turn. ({queued_depth} queued)"
+                )
+                await self._conn.session_update(session_id, update)
+            return PromptResponse(stop_reason="end_turn")
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 
@@ -1478,7 +1861,19 @@ class HermesACPAgent(acp.Agent):
                     clear_session_vars,
                     set_session_vars,
                 )
-                session_tokens = set_session_vars(session_key=session_id)
+                # ``cwd`` pins the logical working directory for this context,
+                # which is what the system prompt's "Current working directory"
+                # line reports (agent/prompt_builder.py -> resolve_agent_cwd).
+                # Without it the prompt advertises the global Hermes workspace
+                # while the tools are rooted at the client's project, so the
+                # model emits absolute paths under ~/.hermes/workspace and the
+                # edit silently lands outside the editor's workspace.
+                # cron_session="" explicitly marks this as a non-cron context,
+                # masking any leaked process-global HERMES_CRON_SESSION (#37968).
+                session_tokens = set_session_vars(
+                    session_key=session_id, session_id=session_id, cwd=state.cwd,
+                    cron_session="",
+                )
             except Exception:
                 session_tokens = None
                 clear_session_vars = None  # type: ignore[assignment]
@@ -1617,12 +2012,28 @@ class HermesACPAgent(acp.Agent):
                             self._send_session_info_update(session_id),
                         )
 
+                # Snapshot the runtime identity; the validator lets the
+                # background titler skip its LLM call if the session's model
+                # changed before it fires (#19027).
+                _title_model = getattr(state.agent, "model", None)
+                _title_provider = getattr(state.agent, "provider", None)
                 maybe_auto_title(
                     self.session_manager._get_db(),
                     session_id,
                     user_text,
                     final_response,
                     state.history,
+                    main_runtime={
+                        "model": getattr(state.agent, "model", None),
+                        "provider": getattr(state.agent, "provider", None),
+                        "base_url": getattr(state.agent, "base_url", None),
+                        "api_key": getattr(state.agent, "api_key", None),
+                        "api_mode": getattr(state.agent, "api_mode", None),
+                    },
+                    runtime_validator=lambda: (
+                        getattr(state.agent, "model", None) == _title_model
+                        and getattr(state.agent, "provider", None) == _title_provider
+                    ),
                     title_callback=_notify_title_update,
                 )
             except Exception:
@@ -1740,7 +2151,7 @@ class HermesACPAgent(acp.Agent):
             "tools": self._cmd_tools,
             "context": self._cmd_context,
             "reset": self._cmd_reset,
-            "compact": self._cmd_compact,
+            "compress": self._cmd_compress,
             "steer": self._cmd_steer,
             "queue": self._cmd_queue,
             "version": self._cmd_version,
@@ -1749,8 +2160,26 @@ class HermesACPAgent(acp.Agent):
         if handler is None:
             return None  # not a known command — let the LLM handle it
 
-        try:
+        # Slash handlers run on the event-loop thread, OUTSIDE the per-turn
+        # contextvars.copy_context() that pins the session cwd for the agent
+        # call. ``/compress`` and ``/model`` reach code that REBUILDS the
+        # system prompt (agent._build_system_prompt -> resolve_agent_cwd), so
+        # an unpinned handler bakes the Hermes install tree into the session's
+        # cached prompt — persisted, and therefore poisoning every later turn
+        # even though the turn itself is pinned. Pin inside a fresh context so
+        # the write can't leak into other concurrent ACP sessions and needs no
+        # teardown.
+        def _dispatch() -> str | None:
+            try:
+                from agent.runtime_cwd import set_session_cwd
+
+                set_session_cwd(state.cwd)
+            except Exception:
+                logger.debug("Could not pin ACP session cwd for slash command", exc_info=True)
             return handler(args, state)
+
+        try:
+            return contextvars.copy_context().run(_dispatch)
         except Exception as e:
             logger.error("Slash command /%s error: %s", cmd, e, exc_info=True)
             return f"Error executing /{cmd}: {e}"
@@ -1810,8 +2239,8 @@ class HermesACPAgent(acp.Agent):
                 return "No tools available."
             lines = [f"Available tools ({len(tools)}):"]
             for t in tools:
-                name = t.get("function", {}).get("name", "?")
-                desc = t.get("function", {}).get("description", "")
+                name = (t.get("function") or {}).get("name", "?")
+                desc = (t.get("function") or {}).get("description", "")
                 # Truncate long descriptions
                 if len(desc) > 80:
                     desc = desc[:77] + "..."
@@ -1882,7 +2311,7 @@ class HermesACPAgent(acp.Agent):
                     lines.append(
                         f"Compression: due now (threshold ~{threshold_tokens:,}"
                         + (f", {threshold_pct:.0f}%" if threshold_pct else "")
-                        + "). Run /compact."
+                        + "). Run /compress."
                     )
                 else:
                     lines.append(
@@ -1895,9 +2324,12 @@ class HermesACPAgent(acp.Agent):
                 lines.append(f"Compression threshold: ~{threshold_tokens:,} tokens")
 
         if getattr(agent, "compression_enabled", True) is False:
-            lines.append("Compression is disabled for this agent.")
+            lines.append(
+                "Auto-compaction is disabled (compression.enabled: false); "
+                "/compress still compresses manually."
+            )
         else:
-            lines.append("Tip: run /compact to compress manually before the threshold.")
+            lines.append("Tip: run /compress to compress manually before the threshold.")
 
         return "\n".join(lines)
 
@@ -1917,13 +2349,14 @@ class HermesACPAgent(acp.Agent):
             return "Conversation history cleared. Agent session state reset failed; see logs."
         return "Conversation history cleared."
 
-    def _cmd_compact(self, args: str, state: SessionState) -> str:
+    def _cmd_compress(self, args: str, state: SessionState) -> str:
         if not state.history:
             return "Nothing to compress — conversation is empty."
         try:
             agent = state.agent
-            if not getattr(agent, "compression_enabled", True):
-                return "Context compression is disabled for this agent."
+            # No compression_enabled gate: the flag disables *automatic*
+            # compaction only; manual /compress must keep working (matches
+            # the CLI /compress and gateway handlers).
             if not hasattr(agent, "_compress_context"):
                 return "Context compression not available for this agent."
 
@@ -1948,6 +2381,7 @@ class HermesACPAgent(acp.Agent):
                     getattr(agent, "_cached_system_prompt", "") or "",
                     approx_tokens=approx_tokens,
                     task_id=state.session_id,
+                    force=True,
                 )
             finally:
                 agent._session_db = original_session_db

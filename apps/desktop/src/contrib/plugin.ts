@@ -13,6 +13,7 @@
  */
 
 import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
+import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
 
 import { registry } from './registry'
@@ -39,6 +40,10 @@ export interface PluginContext {
   register: (c: PluginContribution) => () => void
   /** Register several at once; the returned disposer removes all of them. */
   registerMany: (cs: PluginContribution[]) => () => void
+  /** Register an arbitrary cleanup to run on unload/disable — for side effects
+   *  that aren't contributions or sockets (store subscriptions, timers). Runs
+   *  alongside every other disposer when the plugin deactivates. */
+  onDispose: (fn: () => void) => void
   /** REST to this plugin's own backend namespace (`/api/plugins/<id>`); `path`
    *  is relative ('/board'). The sanctioned door for a plugin that ships a
    *  `plugin_api.py` — profile-aware, namespace-scoped by construction. Use
@@ -51,6 +56,9 @@ export interface PluginContext {
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
   /** Plugin-scoped persistence. */
   storage: PluginStorage
+  /** Plugin-scoped i18n: ship + register locale bundles under this plugin,
+   *  resolved against the app's active locale — no core `en.ts` edit. */
+  i18n: PluginI18n
 }
 
 export interface HermesPlugin {
@@ -104,8 +112,10 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     source,
     register: c => track(registry.register(scope(c))),
     registerMany: cs => track(registry.registerMany(cs.map(scope))),
+    onDispose: fn => void track(fn),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
-    storage: createPluginStorage(pluginId)
+    storage: createPluginStorage(pluginId),
+    i18n: createPluginI18n(pluginId, track)
   }
 }

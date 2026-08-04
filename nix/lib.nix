@@ -18,12 +18,45 @@
 # root to update the lockfile, then `npm ci` if the lockfile changed.
 {
   lib,
-  pkgs,
   npm-lockfile-fix,
-  nodejs,
+  importNpmLock,
+  writeShellScriptBin,
+  writeShellScript,
+  coreutils,
+  callPackage,
+  nodejs_26,
+  symlinkJoin,
+  buildNpmPackage,
+  runCommand,
 }:
 let
   repoRoot = ./..;
+
+  npm12 = callPackage ./npm-12-0-2.nix { };
+  node_gyp_11_4_0 = callPackage ./node-gyp-11-4-0.nix { };
+  nodejs_26_npm_12 = symlinkJoin {
+    name = "nodejs-26-npm-12";
+    paths = [
+      npm12
+      nodejs_26
+    ];
+    inherit (nodejs_26) meta passthru;
+  };
+
+  nodejs = nodejs_26_npm_12;
+
+  # Patched hook: just a new derivation that copies and patches the script
+  patchedNpmConfigHook = runCommand "npm-config-hook-patched" { } ''
+    mkdir -p $out/nix-support
+    # Copy all support files from the original hook
+    cp -r ${importNpmLock.npmConfigHook}/nix-support/* $out/nix-support/
+
+    # Change the node gyp config var to avoid the warning with npm12
+    # Replace the node-gyp path with the newer one that supports the new config var
+    substituteInPlace $out/nix-support/setup-hook \
+      --replace-fail 'npm_config_nodedir' 'npm_package_config_node_gyp_nodedir' \
+      --replace-fail 'npm_config_node_gyp' 'npm_config_node_gyp=${node_gyp_11_4_0}/bin/node-gyp'
+  '';
 
   # ── npm workspace discovery ────────────────────────────────────────
   # Single source of truth: the `workspaces` field of the root
@@ -62,7 +95,9 @@ let
   # Top-level directory of each workspace member, deduplicated.  Used to
   # exclude JS/TS workspace trees from the Python source filter.  E.g.
   # apps/desktop + apps/shared + ui-tui + web → [ "apps" "ui-tui" "web" ].
-  jsWorkspaceTopDirs = lib.unique (map (d: builtins.head (lib.splitString "/" d)) workspaceMemberDirs);
+  jsWorkspaceTopDirs = lib.unique (
+    map (d: builtins.head (lib.splitString "/" d)) workspaceMemberDirs
+  );
 
   # ── Source filters for reducing rebuild scope ──────────────────────
   # Changing a .tsx/.mjs file should NOT trigger a Python venv rebuild,
@@ -82,8 +117,7 @@ let
           # JS/TS workspace directories — derived from the npm workspaces
           # so a new workspace member is excluded from the Python source
           # without touching this list.
-          jsWorkspaceTopDirs
-          ++ [
+          jsWorkspaceTopDirs ++ [
             # Documentation
             "docs"
             "website"
@@ -106,10 +140,14 @@ let
             # wheel's data_files — setup.py's _data_file_tree returns []
             # for a missing dir, so the wheel builds fine without them.
             # This keeps SKILL.md edits from rebuilding the Python venv.
-            # NOTE: optional-mcps must stay — pyproject.toml lists its
-            # manifests as explicit data-files, which error when missing.
             "skills"
             "optional-skills"
+            # locales/ and optional-mcps/ are bare data dirs (no
+            # __init__.py) shipped via symlinks + HERMES_BUNDLED_LOCALES
+            # / HERMES_OPTIONAL_MCPS, not via the wheel. Excluding them
+            # keeps catalog edits from rebuilding the Python venv.
+            "locales"
+            "optional-mcps"
           ];
         excludedFiles = [
           # JS root manifests
@@ -169,7 +207,9 @@ let
   # resolves each package from the lockfile's own `integrity` hashes, so the
   # lockfile is the single source of truth — no separate dependency hash to
   # keep in sync with it.
-  npmDeps = pkgs.importNpmLock.importNpmLock { npmRoot = npmDepsSrc; };
+  npmDeps = importNpmLock.importNpmLock {
+    npmRoot = npmDepsSrc;
+  };
 
   # Build a per-package npm source: workspace resolution files + the
   # package's own directory tree(s).  Source ROOT is always the repo
@@ -184,16 +224,70 @@ let
         lib.fileset.unions (map (d: repoRoot + "/${d}") dirs)
       );
     };
+
+  # Returns a buildNpmPackage-compatible function.
+
+  # `dirs` is the single source of truth for what the package contains:
+  # its first entry is the package's own folder (→ packageJsonPath), and
+  # all entries scope the filtered src.  Packages that import source from
+  # another workspace member (file: deps) must list that member's dir too,
+  # e.g. apps/desktop depends on apps/shared.
+  #
+  # Usage:
+  #   hermesNpmLib.buildNpmPackage {
+  #     dirs = [ "apps/desktop" "apps/shared" ];
+  #     buildPhase = '' ... '';
+  #     installPhase = '' ... '';
+  #   }
+  customBuildNpmPackage =
+    { dirs, ... }@attrs:
+    let
+      # The package's own folder is the first dir; it carries the
+      # package.json that buildNpmPackage reads.
+      folder = builtins.head dirs;
+
+      # Read package.json from the repo (the filtered src is a store path, but we can read the original)
+      packageJson = builtins.fromJSON (builtins.readFile (repoRoot + "/${folder}/package.json"));
+      defaultPname = packageJson.name or "unknown";
+      defaultVersion = packageJson.version or "0.0.0";
+
+      common = {
+        inherit nodejs npmDeps;
+        # No sourceRoot — the workspace root (with the single package-lock.json)
+        # is auto-detected as sourceRoot by nix. npmRoot stays at "."
+        # so npmConfigHook finds the lockfile there.
+        src = mkNpmSrc dirs;
+        npmConfigHook = patchedNpmConfigHook;
+        npmRoot = ".";
+        ELECTRON_SKIP_BINARY_DOWNLOAD = 1;
+        passthru = {
+          packageJsonPath = "${folder}/package.json";
+        };
+      };
+
+      # Remove `dirs` from the passed attrs (buildNpmPackage doesn't need it)
+      attrsWithoutDirs = removeAttrs attrs [ "dirs" ];
+
+      finalAttrs =
+        common
+        // attrsWithoutDirs
+        // {
+          pname = attrs.pname or defaultPname;
+          version = attrs.version or defaultVersion;
+        };
+    in
+    buildNpmPackage finalAttrs;
 in
 {
-  inherit pythonSrc;
+  inherit pythonSrc nodejs;
+  node-gyp = node_gyp_11_4_0;
 
   # Regenerate the shared root lockfile from scratch and verify all npm
   # packages still build.  Exposed as a runnable package — `nix run
   # .#update-npm-lockfile` — so it's actually usable, unlike a bin buried
   # in a build sandbox's PATH.  All workspace packages share one lockfile,
   # so there's a single script (not one per package).
-  updateNpmLockfile = pkgs.writeShellScriptBin "update-npm-lockfile" ''
+  updateNpmLockfile = writeShellScriptBin "update-npm-lockfile" ''
     set -euo pipefail
     # DEBUG=1 nix run .#update-npm-lockfile — trace every command
     [ -n "''${DEBUG:-}" ] && set -x
@@ -202,9 +296,9 @@ in
     cd "$REPO_ROOT"
 
     rm -rf node_modules/
-    ${pkgs.lib.getExe' nodejs "npm"} cache clean --force
-    CI=true ${pkgs.lib.getExe' nodejs "npm"} install --workspaces
-    ${pkgs.lib.getExe npm-lockfile-fix} ./package-lock.json
+    ${lib.getExe' nodejs "npm"} cache clean --force
+    CI=true ${lib.getExe' nodejs "npm"} install --workspaces
+    ${lib.getExe npm-lockfile-fix} ./package-lock.json
 
     # importNpmLock reads hashes from the lockfile itself — rebuild every
     # npm package to verify the new lockfile resolves offline.
@@ -212,53 +306,7 @@ in
     echo "Lockfile updated and all npm packages built."
   '';
 
-  # Returns a buildNpmPackage-compatible attrs set that provides:
-  #   src, npmDeps, npmRoot      — filtered workspace source + importNpmLock dep set
-  #   npmConfigHook              — importNpmLock's offline `npm install` hook
-  #   passthru.packageJsonPath   — relative path to this workspace's package.json
-  #   nodejs                     — fixed nodejs version for all packages we use in the repo
-  #
-  # `dirs` is the single source of truth for what the package contains:
-  # its first entry is the package's own folder (→ packageJsonPath), and
-  # all entries scope the filtered src.  Packages that import source from
-  # another workspace member (file: deps) must list that member's dir too,
-  # e.g. apps/desktop depends on apps/shared.
-  #
-  # Usage:
-  #   npm = hermesNpmLib.mkNpmPassthru { dirs = [ "ui-tui" ]; };
-  #   npm = hermesNpmLib.mkNpmPassthru { dirs = [ "apps/desktop" "apps/shared" ]; };
-  #   pkgs.buildNpmPackage (npm // {
-  #     pname = "hermes-tui";
-  #     inherit version;
-  #     buildPhase = '' ... '';
-  #     installPhase = '' ... '';
-  #   })
-  mkNpmPassthru =
-    { dirs }:
-    let
-      # The package's own folder is the first dir; it carries the
-      # package.json that buildNpmPackage reads.
-      folder = builtins.head dirs;
-      # No sourceRoot — the workspace root (with the single package-lock.json)
-      # is auto-detected as sourceRoot by nix.  npmRoot stays at "."
-      # so npmConfigHook finds the lockfile there.
-    in
-    {
-      inherit nodejs npmDeps;
-      src = mkNpmSrc dirs;
-      # importNpmLock's hook installs the rewritten lockfile (every `resolved`
-      # rewritten to a /nix/store file: path) into the unpacked workspace and
-      # runs `npm install` offline, so every workspace member's dependencies
-      # resolve without network access.
-      npmConfigHook = pkgs.importNpmLock.npmConfigHook;
-      npmRoot = ".";
-
-      ELECTRON_SKIP_BINARY_DOWNLOAD = 1;
-
-      passthru = {
-        packageJsonPath = "${folder}/package.json";
-      };
-    };
+  buildNpmPackage = customBuildNpmPackage;
 
   # Single devshell hook for all npm workspace packages.
   #
@@ -268,23 +316,23 @@ in
   #   2. If the lockfile changed, runs `npm ci`
   mkNpmDevShellHook =
     packageJsonPaths:
-    pkgs.writeShellScript "npm-dev-hook" ''
+    writeShellScript "npm-dev-hook" ''
       REPO_ROOT=$(git rev-parse --show-toplevel)
 
       # Stamp all workspace package.jsons into one file.
       STAMP_DIR=".nix-stamps"
       STAMP="$STAMP_DIR/npm-package-jsons"
       STAMP_VALUE=$(
-        ${pkgs.coreutils}/bin/sha256sum ${
-          pkgs.lib.concatMapStringsSep " " (p: "\"$REPO_ROOT/${p}\"") packageJsonPaths
-        } 2>/dev/null | ${pkgs.coreutils}/bin/sort | ${pkgs.coreutils}/bin/sha256sum | awk '{print $1}'
+        ${coreutils}/bin/sha256sum ${
+          lib.concatMapStringsSep " " (p: "\"$REPO_ROOT/${p}\"") packageJsonPaths
+        } 2>/dev/null | ${coreutils}/bin/sort | ${coreutils}/bin/sha256sum | awk '{print $1}'
       )
 
       PKG_CHANGED=false
       if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
         PKG_CHANGED=true
         echo "npm: package.json changed, updating lockfile..."
-        ( cd "$REPO_ROOT" && ${pkgs.lib.getExe' nodejs "npm"} i --package-lock-only --silent --no-fund --no-audit 2>/dev/null )
+        ( cd "$REPO_ROOT" && ${lib.getExe' nodejs "npm"} i --package-lock-only --silent --no-fund --no-audit 2>/dev/null )
         mkdir -p "$STAMP_DIR"
         echo "$STAMP_VALUE" > "$STAMP"
       fi
@@ -295,7 +343,7 @@ in
       LOCK_STAMP_VALUE=$(sha256sum "$REPO_ROOT/package-lock.json" 2>/dev/null | awk '{print $1}')
       if [ ! -f "$LOCK_STAMP" ] || [ "$(cat "$LOCK_STAMP")" != "$LOCK_STAMP_VALUE" ]; then
         echo "npm: package-lock.json changed, running npm ci..."
-        ( cd "$REPO_ROOT" && CI=true ${pkgs.lib.getExe' nodejs "npm"} ci --silent --no-fund --no-audit 2>/dev/null )
+        ( cd "$REPO_ROOT" && CI=true ${lib.getExe' nodejs "npm"} ci --silent --no-fund --no-audit 2>/dev/null )
         mkdir -p "$STAMP_DIR"
         echo "$LOCK_STAMP_VALUE" > "$LOCK_STAMP"
       fi

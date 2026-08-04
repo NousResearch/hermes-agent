@@ -1,0 +1,349 @@
+from types import SimpleNamespace
+
+import pytest
+
+pytest.importorskip("nemo_relay")
+
+from agent import auxiliary_client, relay_llm, relay_runtime
+
+
+@pytest.fixture()
+def relay_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    relay_runtime._reset_for_tests()
+    lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id="session-1",
+        platform="cli",
+    )
+    turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+        lease,
+        turn_id="turn-1",
+        task_id="task-1",
+    )
+    try:
+        yield lease.host.relay, turn
+    finally:
+        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+        relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
+        relay_runtime._reset_for_tests()
+
+
+def test_auxiliary_retries_share_logical_relay_identity(monkeypatch):
+    attempts = []
+    logical_completions = []
+    responses = iter([
+        SimpleNamespace(choices=[]),
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        ),
+    ])
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: next(responses),
+            )
+        )
+    )
+
+    def execute_current(request, callback, **kwargs):
+        attempts.append(kwargs)
+        return callback(request)
+
+    monkeypatch.setattr(relay_llm, "execute_current", execute_current)
+    monkeypatch.setattr(
+        relay_llm,
+        "complete_logical_call",
+        lambda request_id, *, outcome: logical_completions.append(
+            (request_id, outcome)
+        ),
+    )
+
+    @auxiliary_client._relay_auxiliary_call
+    def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "openrouter",
+            "test-model",
+            "chat_completions",
+        )
+        with pytest.raises(RuntimeError, match="invalid response"):
+            auxiliary_client._validate_llm_response(
+                auxiliary_client._relay_sync_completion(
+                    client,
+                    {"model": "test-model", "messages": []},
+                ),
+                task,
+            )
+        return auxiliary_client._validate_llm_response(
+            auxiliary_client._relay_sync_completion(
+                client,
+                {"model": "test-model", "messages": []},
+            ),
+            task,
+        )
+
+    result = run("compression")
+
+    assert result.choices[0].message.content == "ok"
+    assert attempts[0]["metadata"]["api_request_id"] == (
+        attempts[1]["metadata"]["api_request_id"]
+    )
+    assert [attempt["metadata"]["retry_count"] for attempt in attempts] == [0, 1]
+    assert attempts[0]["metadata"]["call_role"] == "auxiliary:compression"
+    assert all(attempt["defer_logical_completion"] is True for attempt in attempts)
+    assert logical_completions == [
+        (attempts[0]["metadata"]["api_request_id"], "success")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_auxiliary_attempt_uses_inherited_relay_adapter(monkeypatch):
+    captured = {}
+    logical_completions = []
+
+    async def create(**kwargs):
+        return SimpleNamespace(
+            request=kwargs,
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+        )
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    async def execute_current_async(request, callback, **kwargs):
+        captured.update(kwargs)
+        return await callback(request)
+
+    monkeypatch.setattr(
+        relay_llm,
+        "execute_current_async",
+        execute_current_async,
+    )
+    monkeypatch.setattr(
+        relay_llm,
+        "complete_logical_call",
+        lambda request_id, *, outcome: logical_completions.append(
+            (request_id, outcome)
+        ),
+    )
+
+    @auxiliary_client._relay_auxiliary_call_async
+    async def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "anthropic",
+            "claude-test",
+            "chat_completions",
+        )
+        return auxiliary_client._validate_llm_response(
+            await auxiliary_client._relay_async_completion(
+                client,
+                {"model": "claude-test", "messages": []},
+            ),
+            task,
+        )
+
+    result = await run("title_generation")
+
+    assert result.request["model"] == "claude-test"
+    assert captured["name"] == "anthropic"
+    assert captured["metadata"]["call_role"] == "auxiliary:title_generation"
+    assert captured["defer_logical_completion"] is True
+    assert logical_completions == [
+        (captured["metadata"]["api_request_id"], "success")
+    ]
+
+
+
+
+
+
+
+
+def test_partial_auxiliary_stream_failure_closes_before_recovery(
+    relay_turn, monkeypatch
+):
+    _relay, turn = relay_turn
+    consumer = "test.partial-auxiliary-stream-failure"
+    turn.lease.host.retain_managed_execution(consumer)
+    outcomes = []
+    original_pop = turn.lease.host.relay.scope.pop
+
+    def record_pop(*args, **kwargs):
+        outcomes.append((kwargs.get("output") or {}).get("outcome"))
+        return original_pop(*args, **kwargs)
+
+    monkeypatch.setattr(turn.lease.host.relay.scope, "pop", record_pop)
+
+    class ProviderError(Exception):
+        pass
+
+    provider_error = ProviderError("stream failed")
+    partial_chunk = SimpleNamespace(
+        model="test-model",
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content="partial", tool_calls=None),
+                finish_reason=None,
+            )
+        ],
+        usage=None,
+    )
+
+    def partial_stream():
+        yield partial_chunk
+        raise provider_error
+
+    stream_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: partial_stream(),
+            )
+        )
+    )
+    recovery_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(message=SimpleNamespace(content="recovered"))
+                    ]
+                ),
+            )
+        )
+    )
+
+    @auxiliary_client._relay_auxiliary_call
+    def start_stream(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "openrouter",
+            "test-model",
+            "chat_completions",
+        )
+        return auxiliary_client._relay_sync_stream(
+            stream_client,
+            {"model": "test-model", "messages": [], "stream": True},
+        )
+
+    @auxiliary_client._relay_auxiliary_call
+    def recover(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "openrouter",
+            "test-model",
+            "chat_completions",
+        )
+        return auxiliary_client._validate_llm_response(
+            auxiliary_client._relay_sync_completion(
+                recovery_client,
+                {"model": "test-model", "messages": []},
+            ),
+            task,
+        )
+
+    try:
+        stream = start_stream("moa")
+        assert next(stream) is partial_chunk
+
+        with pytest.raises(ProviderError) as caught:
+            next(stream)
+
+        assert caught.value is provider_error
+        assert outcomes == ["failed"]
+        assert turn.logical_llm_calls == {}
+
+        result = recover("moa")
+
+        assert result.choices[0].message.content == "recovered"
+        assert outcomes == ["failed", "success"]
+        assert turn.logical_llm_calls == {}
+    finally:
+        turn.lease.host.release_managed_execution(consumer)
+
+
+
+
+def test_auxiliary_stream_unwraps_completed_response(relay_turn):
+    """MoA aggregator on an Anthropic-protocol provider: the client returns a
+    completed response for ``stream=True`` (the adapter ignores the flag), so
+    ``_relay_sync_stream`` must surface it raw for the consumer's
+    ``hasattr(stream, "choices")`` handling — regression of #11732/#55933 via
+    the Relay integration (SimpleNamespace is not iterable)."""
+    _relay, _turn = relay_turn
+    completed = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="aggregated"),
+                finish_reason="stop",
+            )
+        ],
+        model="kimi-k3",
+    )
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: completed)
+        )
+    )
+
+    @auxiliary_client._relay_auxiliary_call
+    def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "kimi-coding",
+            "kimi-k3",
+            "chat_completions",
+        )
+        return auxiliary_client._relay_sync_stream(
+            client,
+            {"model": "kimi-k3", "messages": [], "stream": True},
+        )
+
+    assert run("moa_aggregator") is completed
+
+
+
+def test_call_llm_stream_unwraps_completed_response(relay_turn, monkeypatch):
+    """Outermost seam: ``call_llm(stream=True)`` — decorated with
+    ``@_relay_auxiliary_call`` in production, so the Relay context is always
+    set — with an Anthropic-shaped client that ignores ``stream=True`` and
+    returns a completed response (the MoA aggregator on kimi-coding /
+    MiniMax / ZAI / any /anthropic gateway). Must return the raw response for
+    the consumer's ``hasattr(stream, "choices")`` handling, not crash with
+    ``TypeError: 'types.SimpleNamespace' object is not iterable``."""
+    _relay, _turn = relay_turn
+    captured = {}
+    completed = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="aggregated"),
+                finish_reason="stop",
+            )
+        ],
+        model="kimi-k3",
+    )
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return completed
+
+    client = SimpleNamespace(
+        base_url="https://api.kimi.com/coding/v1",
+        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)),
+    )
+    monkeypatch.setattr(
+        auxiliary_client,
+        "_get_cached_client",
+        lambda *args, **kwargs: (client, "kimi-k3"),
+    )
+
+    result = auxiliary_client.call_llm(
+        "moa_aggregator",
+        provider="kimi-coding",
+        model="kimi-k3",
+        api_key="sk-test",
+        messages=[{"role": "user", "content": "q"}],
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+
+    assert result is completed
+    assert captured["stream"] is True
+    assert captured["stream_options"] == {"include_usage": True}

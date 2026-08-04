@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   configureDetectedTerminalKeybindings,
@@ -8,6 +8,19 @@ import {
   shouldPromptForTerminalSetup,
   stripJsonComments
 } from '../lib/terminalSetup.js'
+
+// Tests run from developer shells as well as CI. An inherited SSH_* variable
+// must not silently force every configure call down the remote-session reject
+// path; remote behavior is tested explicitly with per-call env objects below.
+beforeEach(() => {
+  vi.stubEnv('SSH_CONNECTION', '')
+  vi.stubEnv('SSH_TTY', '')
+  vi.stubEnv('SSH_CLIENT', '')
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
 
 describe('terminalSetup helpers', () => {
   it('detects VS Code family terminals from environment', () => {

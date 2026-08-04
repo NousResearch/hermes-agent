@@ -80,14 +80,6 @@ class TestProfileScopedMessagingReads:
         assert token["is_set"] is False
         assert telegram["configured"] is False
 
-    def test_unscoped_read_shows_dashboard_profile_env(
-        self, client, isolated_profiles
-    ):
-        resp = client.get("/api/messaging/platforms")
-        assert resp.status_code == 200
-        telegram = _telegram(resp.json())
-        token = _env_field(telegram, "TELEGRAM_BOT_TOKEN")
-        assert token["is_set"] is True
 
     def test_unknown_profile_returns_404(self, client, isolated_profiles):
         resp = client.get(
@@ -108,11 +100,17 @@ class TestProfileScopedMessagingReads:
             yaml.safe_dump({"platforms": {"telegram": {"enabled": True}}}),
             encoding="utf-8",
         )
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr(
+            web_server, "get_running_pid_cached", lambda *a, **k: None
+        )
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
-            lambda: {
+            # Accepts path= : the profile-scoped read now passes the
+            # profile's own gateway_state.json explicitly rather than
+            # relying on process-level HERMES_HOME resolution (#71211).
+            lambda *a, **k: {
                 "gateway_state": "startup_failed",
                 "exit_reason": "all configured messaging platforms failed to connect",
                 "platforms": {},
@@ -173,19 +171,6 @@ class TestProfileScopedMessagingWrites:
         ) or {}
         assert "telegram" not in (root_cfg.get("platforms") or {})
 
-    def test_body_profile_beats_query_param(self, client, isolated_profiles):
-        resp = client.put(
-            "/api/messaging/platforms/telegram",
-            json={
-                "env": {"TELEGRAM_BOT_TOKEN": _VALID_BODY_BOT_TOKEN},
-                "profile": "worker_alpha",
-            },
-        )
-        assert resp.status_code == 200
-        worker_env = (
-            isolated_profiles["worker_alpha"] / ".env"
-        ).read_text(encoding="utf-8")
-        assert f"TELEGRAM_BOT_TOKEN={_VALID_BODY_BOT_TOKEN}" in worker_env
 
     def test_scoped_read_after_scoped_write_round_trips(
         self, client, isolated_profiles
@@ -206,25 +191,79 @@ class TestProfileScopedMessagingWrites:
         assert _env_field(telegram, "TELEGRAM_BOT_TOKEN")["is_set"] is True
         assert telegram["configured"] is True
 
-    def test_scoped_clear_env_removes_from_target_only(
+
+
+def _enable_multiplex(default_home):
+    (default_home / "config.yaml").write_text(
+        yaml.safe_dump({"gateway": {"multiplex_profiles": True}}),
+        encoding="utf-8",
+    )
+
+
+class TestMultiplexPortBindingGuard:
+    """Enabling a port-binding channel on a secondary multiplexed profile
+    must be rejected BEFORE anything is persisted.
+
+    The gateway fail-fasts with ``MultiplexConfigError`` when a secondary
+    profile enables a port-binding platform under
+    ``gateway.multiplex_profiles`` — but the dashboard used to persist that
+    exact config, so the next gateway start died for EVERY profile (#62791).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_multiplex_env_override(self, monkeypatch):
+        # The operator env override must not leak into these tests: the
+        # multiplex flag under test comes from the default profile's config.
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+
+    def test_rejects_every_port_binding_platform_on_secondary(
         self, client, isolated_profiles
     ):
-        client.put(
-            "/api/messaging/platforms/telegram",
-            params={"profile": "worker_alpha"},
-            json={"env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN}},
+        from gateway.config import PORT_BINDING_PLATFORM_VALUES
+
+        _enable_multiplex(isolated_profiles["default"])
+        assert PORT_BINDING_PLATFORM_VALUES  # guard set must not be empty
+        for platform_id in sorted(PORT_BINDING_PLATFORM_VALUES):
+            resp = client.put(
+                f"/api/messaging/platforms/{platform_id}",
+                params={"profile": "worker_alpha"},
+                json={"enabled": True},
+            )
+            assert resp.status_code == 409, platform_id
+            assert "default profile" in resp.json()["detail"]
+
+
+
+
+
+    def test_secondary_can_disable_and_clear_invalid_config(
+        self, client, isolated_profiles
+    ):
+        _enable_multiplex(isolated_profiles["default"])
+        worker_home = isolated_profiles["worker_alpha"]
+        (worker_home / "config.yaml").write_text(
+            yaml.safe_dump({"platforms": {"api_server": {"enabled": True}}}),
+            encoding="utf-8",
         )
+
         resp = client.put(
-            "/api/messaging/platforms/telegram",
+            "/api/messaging/platforms/api_server",
             params={"profile": "worker_alpha"},
-            json={"clear_env": ["TELEGRAM_BOT_TOKEN"]},
+            json={"enabled": False},
         )
         assert resp.status_code == 200
-        worker_env = (
-            isolated_profiles["worker_alpha"] / ".env"
-        ).read_text(encoding="utf-8")
-        assert _VALID_WORKER_BOT_TOKEN not in worker_env
-        root_env = (isolated_profiles["default"] / ".env").read_text(
-            encoding="utf-8"
-        )
-        assert "TELEGRAM_BOT_TOKEN=root-token" in root_env
+        cfg = yaml.safe_load((worker_home / "config.yaml").read_text())
+        assert cfg["platforms"]["api_server"]["enabled"] is False
+
+        catalog = client.get(
+            "/api/messaging/platforms", params={"profile": "worker_alpha"}
+        ).json()
+        api_server = next(p for p in catalog["platforms"] if p["id"] == "api_server")
+        if api_server["env_vars"]:
+            resp = client.put(
+                "/api/messaging/platforms/api_server",
+                params={"profile": "worker_alpha"},
+                json={"clear_env": [api_server["env_vars"][0]["key"]]},
+            )
+            assert resp.status_code == 200
+

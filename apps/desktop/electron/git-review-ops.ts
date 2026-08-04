@@ -14,6 +14,7 @@ import { resolveRequestedPathForIpc } from './hardening'
 
 const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
+const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 
@@ -43,7 +44,20 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
 }
 
 function gitFor(cwd, gitBin) {
-  return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
+  // `gitBin` is resolved inside the Electron main process from known install
+  // locations or PATH — never renderer/user input. simple-git's custom-binary
+  // validation rejects paths containing spaces (the default Windows install is
+  // `C:\Program Files\Git\cmd\git.exe`), which silently broke the Review pane.
+  // For spaced paths, opt into simple-git's trusted-binary escape hatch instead
+  // of falling back to PATH (often absent in GUI-launched apps, and PATH lookup
+  // could resolve a repo-local git.exe).
+  return simpleGit({
+    baseDir: cwd,
+    binary: gitBin || 'git',
+    maxConcurrentProcesses: 4,
+    trimmed: false,
+    ...(gitBin && /\s/.test(gitBin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+  })
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -240,7 +254,7 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
       const range = scope === 'branch' ? `${base}...HEAD` : base
       const summary = await git.diffSummary([range])
 
-      const files = summary.files.map(file => ({
+      const files = summary.files.slice(0, REVIEW_FILE_CAP).map(file => ({
         path: resolveRenamePath(file.file),
         added: 'insertions' in file ? file.insertions : 0,
         removed: 'deletions' in file ? file.deletions : 0,
@@ -249,12 +263,22 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
       }))
 
       // "Last turn" also surfaces files created since the baseline (untracked).
-      if (scope === 'lastTurn') {
-        const status = await git.status()
+      if (scope === 'lastTurn' && files.length < REVIEW_FILE_CAP) {
+        // Keep untracked directories compact. A recursive status can produce
+        // hundreds of thousands of rows for browser profiles, generated
+        // artifacts, or dependency trees before the response reaches the
+        // renderer.
+        const status = await git.status(['--untracked-files=normal'])
+        const knownPaths = new Set(files.map(file => file.path))
 
         for (const path of status.not_added) {
-          if (!files.some(f => f.path === path)) {
+          if (files.length >= REVIEW_FILE_CAP) {
+            break
+          }
+
+          if (!knownPaths.has(path)) {
             files.push({ path, added: 0, removed: 0, status: '?', staged: false })
+            knownPaths.add(path)
           }
         }
       }
@@ -267,7 +291,10 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
 
     // Default: uncommitted (staged + unstaged + untracked), one row per path.
     const [status, staged, unstaged] = await Promise.all([
-      git.status(),
+      // `normal` reports an untracked directory as one row instead of walking
+      // every descendant. The result is also capped before per-file stat/read
+      // work and before crossing the Electron IPC boundary.
+      git.status(['--untracked-files=normal']),
       git.diffSummary(['--cached']),
       git.diffSummary([])
     ])
@@ -275,7 +302,7 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
     const stagedCounts = countsByPath(staged)
     const unstagedCounts = countsByPath(unstaged)
 
-    const files = status.files.map(file => {
+    const files = status.files.slice(0, REVIEW_FILE_CAP).map(file => {
       const filePath = resolveRenamePath(file.path)
       const sc = stagedCounts.get(filePath) || { added: 0, removed: 0 }
       const uc = unstagedCounts.get(filePath) || { added: 0, removed: 0 }
@@ -610,7 +637,11 @@ async function repoStatus(repoPath, gitBin) {
   let status
 
   try {
-    status = await git.status()
+    // The coding rail needs compact change truth, not every generated file.
+    // `simple-git` defaults bare `-u` to recursive `all`, which can make a
+    // generated workspace consume gigabytes before the 200-row UI cap is
+    // applied. `normal` reports each untracked directory as one entry.
+    status = await git.status(['--untracked-files=normal'])
   } catch {
     // Not a repo / git unavailable / remote backend.
     return null
@@ -652,11 +683,10 @@ async function repoStatus(repoPath, gitBin) {
   }
 
   // `git diff HEAD` ignores untracked files, so a turn that only creates new
-  // files (the common case — a fresh module, a demo dir) showed +0 in the rail
-  // while the review pane counted them. Fold untracked insertions into `added`
-  // so the rail matches reality. Bounded (size cap + concurrency) like the
-  // review tree; only the capped file slice is counted so a huge untracked tree
-  // can't stall the probe.
+  // files (the common case — a fresh module) showed +0 in the rail while the
+  // review pane counted them. Fold top-level untracked file insertions into
+  // `added`; directories reported by the compact `normal` scan intentionally
+  // remain at zero rather than recursively walking their contents.
   try {
     const untracked = status.not_added.slice(0, 500)
 
@@ -677,8 +707,10 @@ async function repoStatus(repoPath, gitBin) {
 export {
   branchBase,
   fileDiffVsHead,
+  gitFor,
   repoStatus,
   resolveRenamePath,
+  REVIEW_FILE_CAP,
   reviewCommit,
   reviewCommitContext,
   reviewCreatePr,

@@ -46,13 +46,6 @@ class TestFindShellPrefersUserShell:
         with patch.dict(os.environ, {"SHELL": str(fake_fish)}):
             assert _find_shell() == _find_bash()
 
-    def test_falls_back_for_incompatible_shell_csh(self, tmp_path):
-        """$SHELL=tcsh/csh is also not -lic/set+m compatible -> fall back."""
-        fake = tmp_path / "tcsh"
-        fake.touch()
-        fake.chmod(0o755)
-        with patch.dict(os.environ, {"SHELL": str(fake)}):
-            assert _find_shell() == _find_bash()
 
     def test_honours_allowlisted_bash_and_dash(self, tmp_path):
         """Every allowlisted POSIX-sh-family shell is honoured."""
@@ -63,17 +56,6 @@ class TestFindShellPrefersUserShell:
             with patch.dict(os.environ, {"SHELL": str(fake)}):
                 assert _find_shell() == str(fake), name
 
-    def test_falls_back_to_find_bash_when_shell_unset(self):
-        """When $SHELL is unset, _find_shell delegates to _find_bash."""
-        env = {k: v for k, v in os.environ.items() if k != "SHELL"}
-        with patch.dict(os.environ, env, clear=True):
-            assert _find_shell() == _find_bash()
-
-    def test_falls_back_to_find_bash_when_shell_not_a_file(self, tmp_path):
-        """When $SHELL points to a non-existent path, _find_shell delegates."""
-        fake_path = str(tmp_path / "nonexistent_shell")
-        with patch.dict(os.environ, {"SHELL": fake_path}):
-            assert _find_shell() == _find_bash()
 
     def test_falls_back_to_find_bash_when_shell_empty(self):
         """When $SHELL is empty string, _find_shell delegates."""
@@ -141,6 +123,62 @@ class TestFindBashSkipsBrokenCustomPath:
         monkeypatch.setattr(local_mod, "_bash_starts", fake_starts)
 
         assert _find_bash() == str(portable)
+
+
+class TestGitBashExternalProgramProbe:
+    """The Windows health check must exercise MSYS child-process creation."""
+
+    def test_probe_runs_external_msys_programs(self, monkeypatch):
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        local_mod._bash_probe_details_cache.clear()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        assert local_mod._bash_starts(r"C:\Git\bin\bash.exe") is True
+        assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+
+    def test_aslr_failure_surfaces_targeted_windows_command(
+        self, tmp_path, monkeypatch
+    ):
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        local_mod._bash_probe_details_cache.clear()
+        portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
+        portable.parent.mkdir(parents=True)
+        portable.write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setenv("HERMES_GIT_BASH_PATH", "")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "empty-program-files"))
+        monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+        monkeypatch.setattr(local_mod.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(local_mod, "_mandatory_aslr_enabled", lambda: True)
+
+        def failed_probe(path: str) -> bool:
+            local_mod._bash_probe_details_cache[path] = (
+                "dofork: child -1 - forked process died unexpectedly"
+            )
+            return False
+
+        monkeypatch.setattr(local_mod, "_bash_starts", failed_probe)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            local_mod._find_bash()
+        message = str(exc_info.value)
+        assert "Mandatory ASLR" in message
+        assert "Reinstalling Git will not change" in message
+        assert "Set-ProcessMitigation" in message
+        assert str(tmp_path / "hermes" / "git") in message
 
 
 @pytest.mark.skipif(

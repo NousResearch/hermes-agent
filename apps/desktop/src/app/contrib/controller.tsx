@@ -1,42 +1,48 @@
 import { useStore } from '@nanostores/react'
-import { computed } from 'nanostores'
+import { atom, computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
 
 import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
-import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+import { SessionStatusDot } from '@/app/chat/session-status-dot'
+import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
-import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
-import { allPaneIds, group, split } from '@/components/pane-shell/tree/model'
+import { IdleMount } from '@/components/idle-mount'
+import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
+import { allPaneIds, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
 import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
 import {
   $layoutTree,
+  bindPaneVisibility,
+  bindToolPaneCollapse,
   bindTreeSideVisibility,
   declareDefaultTree,
   dismissTreePane,
   dockPaneBeside,
+  isPaneVisible,
   markCollapsePane,
   mirrorLayoutTree,
   paneRootSide,
   registerLayoutResetHandler,
   registerPaneCloser,
   registerPaneOpener,
+  removeTreePane,
   resetLayoutTree,
   revealTreePane,
-  setPaneCollapsed,
-  setTreePaneHidden,
+  togglePaneVisible,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { LayoutDashboard } from '@/lib/icons'
+import { FileText, LayoutDashboard, PanelBottom, Terminal, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
-import { Codecs, persistentAtom } from '@/lib/persisted'
-import { toggleKeybindPanel } from '@/store/keybinds'
+import { setYoloEnabled } from '@/lib/yolo-session'
+import { pruneComposerPopoutZones } from '@/store/composer-popout'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -49,9 +55,11 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
-import { $filePreviewTarget, $previewTarget, closeRightRail } from '@/store/preview'
-import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
-import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
+import { $previewOpenRequest, $previewTabs, closeRightRail } from '@/store/preview'
+import { $reviewOpen, closeReview, openReview, REVIEW_PANE_ID } from '@/store/review'
+import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
+import { watchSessionPins } from '@/store/session-pin-sync'
+import { $statusbarVisible } from '@/store/statusbar-prefs'
 
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchRouteTiles } from '../chat/route-tile'
@@ -90,6 +98,10 @@ import { ContribWiring, WiredPane } from './wiring'
 // ONE render identity for the workspace pane — syncWorkspaceTitle re-registers
 // the contribution (new title) and a fresh closure would remount the chat.
 const renderWorkspacePane = () => <WiredPane part="chatRoutes" />
+
+// Boot-hidden panes mount behind display:none (instant-toggle contract) — defer
+// them to idle so they're off the first-paint path, warm before reveal.
+const idle = (node: ReactElement) => <IdleMount>{node}</IdleMount>
 // The main tab carries the same session context menu as tile tabs (targets
 // the loaded primary session; no menu on a fresh draft).
 const wrapWorkspaceTab = (tab: ReactElement) => <WorkspaceTabMenu>{tab}</WorkspaceTabMenu>
@@ -165,7 +177,11 @@ registry.registerMany([
     // staying collapsed behind the ⌃` toggle. height sizes the fixed track (a
     // single-pane zone declaring a height is a fixed track — the preset weight
     // is moot): a short deck, not a third of the window.
-    data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
+    //
+    // NO minHeight: a tool panel drags all the way down to its collapsed
+    // header (the sash floors it at COLLAPSED_ZONE_PX and folds the zone to
+    // its rail there). A real floor left a sliver of unusable terminal.
+    data: { placement: 'bottom', height: '20vh', maxHeight: '80vh', revealOnPreset: true },
     render: () => <WiredPane part="terminal" />
   },
   {
@@ -182,7 +198,7 @@ registry.registerMany([
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
-    render: () => <FilesPane />
+    render: () => idle(<FilesPane />)
   },
   {
     id: 'preview',
@@ -200,7 +216,7 @@ registry.registerMany([
       minWidth: PREVIEW_RAIL_MIN_WIDTH,
       maxWidth: PREVIEW_RAIL_MAX_WIDTH
     },
-    render: () => <PreviewRailPane />
+    render: () => idle(<PreviewRailPane />)
   },
   {
     id: 'review',
@@ -216,18 +232,7 @@ registry.registerMany([
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
-    render: () => <ReviewPaneContent />
-  },
-  {
-    // Optional chrome — in NO default layout. Adoption stacks it with the
-    // terminal; $logsOpen (default off, ⌘K "Toggle logs") reveals it.
-    id: 'logs',
-    area: 'panes',
-    title: 'logs',
-    // revealOnPreset: the Quad layout places logs, so applying it turns the
-    // logs pane on (like a ⌘K "Toggle logs") instead of leaving it collapsed.
-    data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
-    render: () => <LogsPane />
+    render: () => idle(<ReviewPaneContent />)
   }
 ])
 
@@ -256,18 +261,15 @@ registry.registerMany([
       run: toggleLayoutEditMode
     } satisfies KeybindContribution
   },
-  {
+  paletteToggle({
     id: 'layout.editMode',
-    area: PALETTE_AREA,
-    data: {
-      id: 'layout.editMode',
-      label: 'Toggle layout edit mode',
-      action: 'layout.editMode',
-      icon: LayoutDashboard,
-      keywords: ['layout', 'zones', 'panes', 'edit', 'rearrange'],
-      run: toggleLayoutEditMode
-    } satisfies PaletteContribution
-  },
+    label: 'Toggle layout edit mode',
+    action: 'layout.editMode',
+    icon: LayoutDashboard,
+    keywords: ['layout', 'zones', 'panes', 'edit', 'rearrange'],
+    get: () => $layoutEditMode.get(),
+    set: enabled => $layoutEditMode.set(enabled)
+  }),
   // The agent's write -> see loop: rescan <hermes home>/desktop-plugins
   // without relaunching (same-id reloads dispose the previous incarnation).
   {
@@ -291,6 +293,17 @@ registry.registerMany([
       run: resetLayoutTree
     } satisfies PaletteContribution
   },
+  // Hiding the bar removes the surface that would otherwise offer it back, so
+  // ⌘K is the guaranteed door in (alongside the rebindable ⌘⇧S).
+  paletteToggle({
+    id: 'view.toggleStatusbar',
+    label: 'Toggle status bar',
+    action: 'view.toggleStatusbar',
+    icon: PanelBottom,
+    keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
+    get: () => $statusbarVisible.get(),
+    set: enabled => $statusbarVisible.set(enabled)
+  }),
   // The keybind panel's non-titlebar door (the keyboard icon is gone).
   {
     id: 'keybinds.panel',
@@ -299,7 +312,7 @@ registry.registerMany([
       id: 'keybinds.panel',
       label: 'Keyboard shortcuts',
       keywords: ['keybinds', 'shortcuts', 'hotkeys', 'keyboard'],
-      run: toggleKeybindPanel
+      run: () => window.dispatchEvent(new CustomEvent('hermes:open-keybinds'))
     } satisfies PaletteContribution
   }
 ])
@@ -363,7 +376,7 @@ const QUAD_TREE = split(
   'column',
   [
     split('row', [group(['sessions', 'files']), group(['workspace'])], [1, 3]),
-    split('row', [group(['terminal']), group(['preview', 'review', 'logs'])], [1.4, 1])
+    split('row', [group(['terminal']), group(['preview', 'review'])], [1.4, 1])
   ],
   [3, 1]
 )
@@ -391,6 +404,19 @@ watchContributedPanes()
 watchSessionTiles()
 watchRouteTiles()
 
+// Composer pop-out state is keyed by layout zone, so drop entries for zones the
+// user has since closed or merged away — otherwise a long-lived install keeps a
+// row for every split it has ever had.
+$layoutTree.subscribe(tree => {
+  if (tree) {
+    pruneComposerPopoutZones(groupLeafIds(tree))
+  }
+})
+
+// Mirror sidebar pins into the backend keep-flag so the auto-archive sweep
+// never hides a pinned chat (and pre-existing pins migrate transparently).
+watchSessionPins()
+
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.
 // register() replaces same-id in place; the render fn is the shared constant
@@ -404,6 +430,10 @@ const syncWorkspaceTitle = () => {
     area: 'panes',
     title: stored ? storedSessionTitle(stored) : 'New session',
     data: {
+      // The tab's status dot — the SAME primitive the sidebar row and session
+      // tiles render, so the main tab never disagrees with its sidebar row. No
+      // dot on a fresh draft (no session yet).
+      tabLead: selected ? () => <SessionStatusDot session={stored} storedSessionId={selected} /> : undefined,
       // Pages aren't tab-able: the main zone's bar stands down while one shows.
       headerVeto: $workspaceIsPage.get(),
       placement: 'main',
@@ -431,44 +461,13 @@ registerLayoutResetHandler(stackSessionTilesIntoMain)
 // toggle mirrors the root row.
 // ---------------------------------------------------------------------------
 
-function bindPaneVisibility(
-  paneId: string,
-  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
-  close?: () => void,
-  open?: () => void
-) {
-  setTreePaneHidden(paneId, !$open.get())
-  $open.listen(isOpen => setTreePaneHidden(paneId, !isOpen))
+// HIDE-STYLE PANES (files, review, preview): the binding lives in the tree
+// store — bindPaneVisibility — alongside bindToolPaneCollapse, so both are
+// testable against the real function instead of a copy.
 
-  // The tab menu's Close routes through the owning store (never dismissal),
-  // so the pane's toggle buttons stay truthful.
-  if (close) {
-    registerPaneCloser(paneId, close)
-  }
-
-  // The opener is the mirror: preset application (revealOnPreset) shows the
-  // pane through the same store, so the toggle stays truthful.
-  if (open) {
-    registerPaneOpener(paneId, open)
-  }
-}
-
-// TOOL PANELS (terminal, logs): like bindPaneVisibility but the toggle COLLAPSES
-// the zone to a persistent rail (tab stays) instead of hiding it — the
-// IntelliJ/VS-Code tool-window model. Restore routes back through `open` (rail
-// click / chevron) so ⌃`/the button stay truthful; the tab's ✕ removes it.
-function bindPaneCollapse(
-  paneId: string,
-  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
-  close: () => void,
-  open: () => void
-) {
-  markCollapsePane(paneId)
-  setPaneCollapsed(paneId, !$open.get())
-  $open.listen(isOpen => setPaneCollapsed(paneId, !isOpen))
-  registerPaneCloser(paneId, close)
-  registerPaneOpener(paneId, open)
-}
+// TOOL PANELS (terminal, logs): the binding lives in the tree store —
+// bindToolPaneCollapse — so the boot rule it encodes is testable against the
+// real function instead of a copy. See its docblock for the semantics.
 
 // SIDES have one source of truth: the TREE. The legacy $panesFlipped flag is
 // DERIVED from where the sessions zone actually sits (TitlebarControls maps
@@ -518,51 +517,146 @@ bindTreeSideVisibility('right', $fileBrowserOpen, setFileBrowserOpen)
 // rode the rail's row and vanished with it), its zone stands on its own.
 const $hasWorkspace = computed($currentCwd, cwd => Boolean(cwd.trim()))
 
-bindPaneVisibility('files', $hasWorkspace)
+// The tree pane's own presence tracks ⌘J directly, not just the column's
+// collapse — otherwise revealing a preview (which opens that shared column)
+// would drag the tree along with it. See revealPreview.
+//
+// Both get a CLOSER and an OPENER. The closer keeps ⌘J/⌘G truthful when the
+// pane is closed from the tab menu; the opener is its mirror, so bringing the
+// pane back through the tree (the toggle's reveal path, the rail, a preset)
+// writes the store too. Without the opener the boolean went stale the moment
+// anything but the toggle showed the pane — the divergence this whole change
+// is about.
+bindPaneVisibility(
+  'files',
+  computed([$hasWorkspace, $fileBrowserOpen], (workspace, open) => workspace && open),
+  () => setFileBrowserOpen(false),
+  () => setFileBrowserOpen(true)
+)
 // ⌘G — the review sidebar appears/disappears (and comes to the front).
 bindPaneVisibility(
   'review',
   computed([$reviewOpen, $hasWorkspace], (open, workspace) => open && workspace),
-  closeReview
+  closeReview,
+  openReview
 )
 // ⌃` / statusbar toggle — the terminal COLLAPSES to a rail (tab stays), not
 // hides; PTYs stay alive while collapsed (see PersistentTerminal).
-bindPaneCollapse(
+bindToolPaneCollapse(
   'terminal',
   $terminalTakeover,
   () => setTerminalTakeover(false),
   () => setTerminalTakeover(true)
 )
+// ⌘K door onto the same pane the keybind and statusbar pill flip — was a
+// one-way "open" row under Go to, so it never showed on/off and couldn't hide.
+// Reads the TREE like every other pane toggle: `$terminalTakeover` stays true
+// behind a stacked sibling tab or a minimized zone, which would light the row
+// "on" for a terminal that isn't on screen.
+registry.register(
+  paletteToggle({
+    id: 'view.showTerminal',
+    label: 'Toggle terminal',
+    action: 'view.showTerminal',
+    icon: Terminal,
+    keywords: ['terminal', 'shell', 'console', 'pty'],
+    get: () => isPaneVisible('terminal'),
+    set: () => togglePaneVisible('terminal')
+  })
+)
 
 // Preview EXISTS only while something is previewed (old-shell semantics:
 // closing the last preview tab closes the pane; a new target opens + fronts
 // it). Same visibility binding as every other self-managed surface, driven
-// by the live targets instead of a toggle.
-const $previewVisible = computed([$previewTarget, $filePreviewTarget], (target, fileTarget) =>
-  Boolean(target || fileTarget)
-)
+// by the open tabs instead of a toggle.
+const $previewVisible = computed($previewTabs, tabs => tabs.length > 0)
 
 bindPaneVisibility('preview', $previewVisible, closeRightRail)
 
-// Logs are optional chrome: off by default, toggled from ⌘K, persisted.
-const $logsOpen = persistentAtom('hermes.desktop.logsOpen', false, Codecs.bool)
+// Logs are ⌘K-ONLY chrome: the pane contribution EXISTS only while $logsOpen
+// is on. Off (the default) keeps logs out of the registry and the tree
+// entirely — no secondary tab riding the terminal strip, no preset or
+// adoption path that resurrects it. Session-only on purpose (not persisted):
+// a fresh boot never re-opens logs automatically. The palette toggle is the
+// single door in; tab ✕ / ⌘W / the toggle itself remove it again.
+const $logsOpen = atom(false)
 
-bindPaneCollapse(
-  'logs',
-  $logsOpen,
-  () => $logsOpen.set(false),
-  () => $logsOpen.set(true)
-)
-registry.register({
-  id: 'logs.toggle',
-  area: PALETTE_AREA,
-  data: {
+let unregisterLogsPane: (() => void) | null = null
+
+const syncLogsPane = (open: boolean) => {
+  if (open) {
+    unregisterLogsPane ??= registry.register({
+      id: 'logs',
+      area: 'panes',
+      title: 'logs',
+      // Same tool-panel sizing rule as the terminal above — no minHeight, so
+      // the sash floors it at COLLAPSED_ZONE_PX and folds the zone to its rail
+      // rather than leaving a sliver. dock: its OWN zone beside the terminal —
+      // never a tab in the terminal's strip.
+      data: {
+        placement: 'bottom',
+        dock: { pane: 'terminal', pos: 'right' },
+        height: '20vh',
+        maxHeight: '80vh'
+      },
+      render: () => idle(<LogsPane />)
+    })
+    // Summoning logs is explicit intent — front it (un-dismisses if a ✕ close
+    // left a dismissal record behind).
+    revealTreePane('logs')
+  } else {
+    unregisterLogsPane?.()
+    unregisterLogsPane = null
+
+    // No dismissal record — the next toggle-on must re-adopt cleanly. Also
+    // sweeps 'logs' out of persisted trees from before it was summon-only.
+    // Guarded: removePane rebuilds the tree even for an absent pane, and a
+    // no-op boot sweep would commit (and persist) a fresh identical tree.
+    const tree = $layoutTree.get()
+
+    if (tree && allPaneIds(tree).includes('logs')) {
+      removeTreePane('logs')
+    }
+  }
+}
+
+// Tool-panel tab semantics (✕ / ⌘W route through the store) so the palette
+// toggle stays truthful either way.
+markCollapsePane('logs')
+registerPaneCloser('logs', () => $logsOpen.set(false))
+registerPaneOpener('logs', () => $logsOpen.set(true))
+syncLogsPane($logsOpen.get())
+$logsOpen.listen(syncLogsPane)
+
+registry.register(
+  paletteToggle({
     id: 'logs.toggle',
     label: 'Toggle logs',
+    icon: FileText,
     keywords: ['logs', 'agent log', 'tail', 'debug'],
-    run: () => $logsOpen.set(!$logsOpen.get())
-  } satisfies PaletteContribution
-})
+    // On-screen, not the store's boolean. Summon-only keeps the two in step
+    // while logs sits in its own zone, but the user can still drag it into the
+    // terminal's strip or minimize its zone — and then `$logsOpen` reads true
+    // with nothing visible, so the row would show "on" and its press would
+    // spend itself re-asserting a value it already held.
+    get: () => isPaneVisible('logs'),
+    set: () => togglePaneVisible('logs')
+  })
+)
+
+// YOLO (dangerous-command approval bypass) is a status-bar zap and a /yolo
+// command; ⌘K is the third door onto the SAME store function, so a user who
+// lives in the palette never has to hunt for the pill.
+registry.register(
+  paletteToggle({
+    id: 'session.yolo',
+    label: 'Toggle yolo',
+    icon: Zap,
+    keywords: ['yolo', 'approvals', 'auto-approve', 'bypass', 'dangerous', 'commands'],
+    get: () => $yoloActive.get(),
+    set: enabled => void setYoloEnabled(enabled).catch(() => undefined)
+  })
+)
 
 // Sessions/files Close = collapse their SIDE (⌘B/⌘J truthful, titlebar button
 // flips back) — but only while the pane actually lives in that root side
@@ -586,13 +680,36 @@ const revealPreview = () => {
   revealTreePane('preview')
 }
 
-$previewTarget.listen(target => target && revealPreview())
-$filePreviewTarget.listen(target => target && revealPreview())
+// Keyed on open REQUESTS, not on the tab list: re-opening a tab that already
+// exists must still un-hide and front the pane, and closing one of two tabs
+// must not.
+$previewOpenRequest.listen(() => revealPreview())
 
 // ---------------------------------------------------------------------------
 
+interface TitlebarSlotProps {
+  area: 'titleBar.center' | 'titleBar.left' | 'titleBar.right'
+  className: string
+  style?: CSSProperties
+}
+
+function TitlebarSlot({ area, className, style }: TitlebarSlotProps) {
+  const items = useContributions(area)
+
+  if (items.length === 0) {
+    return null
+  }
+
+  return (
+    <div className={className} style={style}>
+      <Slot area={area} />
+    </div>
+  )
+}
+
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
+  const statusbarVisible = useStore($statusbarVisible)
 
   return (
     <SidebarProvider
@@ -617,7 +734,7 @@ export function ContribController() {
                   tree-published --workspace-left/right vars (pure CSS, no rect
                   threading), clamped to clear the REAL TitlebarControls
                   clusters (fixed, z-70); center is truly window-centered. */}
-          <div className="relative flex h-[34px] shrink-0 items-center border-b border-(--ui-stroke-tertiary) text-xs">
+          <div className="relative flex h-[34px] shrink-0 items-center bg-(--ui-sidebar-surface-background) text-xs">
             {/* Drag strips, AppShell-style: cut to AVOID the fixed control
                 clusters instead of overlapping them — Electron's no-drag
                 carve-out of fixed/transformed elements is unreliable, so a
@@ -632,26 +749,25 @@ export function ContribController() {
               aria-hidden="true"
               className="pointer-events-none absolute inset-y-0 left-[calc(var(--titlebar-controls-left,14px)+(var(--titlebar-control-size,1.25rem)*2)+0.75rem)] right-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,5.5rem)+0.75rem)] [-webkit-app-region:drag]"
             />
-            <div
+            <TitlebarSlot
+              area="titleBar.left"
               className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
               style={{
                 left: 'max(calc(var(--workspace-left, 0px) + 0.5rem), calc(var(--titlebar-controls-left, 14px) + 2 * var(--titlebar-control-size, 1.25rem) + 1rem))'
               }}
-            >
-              <Slot area="titleBar.left" />
-            </div>
-            <div className="pointer-events-auto absolute left-1/2 top-1/2 z-10 flex w-max -translate-x-1/2 -translate-y-1/2 items-center gap-2 [-webkit-app-region:no-drag]">
-              <Slot area="titleBar.center" />
-            </div>
-            <div
+            />
+            <TitlebarSlot
+              area="titleBar.center"
+              className="pointer-events-auto absolute left-1/2 top-1/2 z-10 flex w-max -translate-x-1/2 -translate-y-1/2 items-center gap-2 [-webkit-app-region:no-drag]"
+            />
+            <TitlebarSlot
+              area="titleBar.right"
               className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
               style={{
                 right:
                   'max(calc(var(--workspace-right, 0px) + 0.5rem), calc(var(--titlebar-tools-right, 0.75rem) + 4 * (var(--titlebar-control-size, 1.25rem) + 0.25rem) + 0.5rem))'
               }}
-            >
-              <Slot area="titleBar.right" />
-            </div>
+            />
           </div>
 
           <LayoutTreeRoot />
@@ -660,8 +776,10 @@ export function ContribController() {
           <SessionTileCloseConfirm />
 
           {/* The REAL statusbar (model pill, command center, agents, …) with
-              statusBar.left/right contributions merged in. */}
-          <WiredPane part="statusbar" />
+              statusBar.left/right contributions merged in. Unmounted — not
+              just hidden — while toggled off, so its 15s status poll and the
+              per-turn readouts stop with it. */}
+          {statusbarVisible && <WiredPane part="statusbar" />}
         </div>
       </ContribWiring>
     </SidebarProvider>

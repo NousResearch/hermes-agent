@@ -524,7 +524,9 @@ def test_experimental_preserves_legacy_container_guard_behavior(
 
     result = check_dangerous_command("rm -rf /", backend_name, has_host_access=True)
 
-    assert result["approved"] is (backend_name in {"modal", "singularity", "daytona"})
+    assert result["approved"] is (
+        backend_name in {"modal", "singularity", "daytona", "vercel_sandbox"}
+    )
 
 
 @pytest.mark.parametrize(

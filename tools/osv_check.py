@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 import urllib.request
 from typing import Optional, Tuple
 
@@ -21,6 +23,44 @@ logger = logging.getLogger(__name__)
 
 _OSV_ENDPOINT = os.getenv("OSV_ENDPOINT", "https://api.osv.dev/v1/query")
 _TIMEOUT = 10  # seconds
+
+# Result cache: (ecosystem, package, version) -> (expiry_monotonic, result).
+# MCP reconnect ladders, stdio recycles, and parked-server self-probes re-run
+# the preflight for the SAME package on every spawn attempt. Without a cache,
+# a flapping server turns into a sustained OSV query/DNS stream — the #75485
+# incident logged 779K api.osv.dev DNS queries in 16h from revival loops.
+# Malware advisories don't appear or vanish on second-to-second timescales,
+# so a successful verdict (clean OR blocked) is reusable. Network failures
+# are NOT cached: fail-open already covers them, and caching a failure could
+# mask a real advisory once connectivity returns.
+_CACHE_TTL_S = float(os.getenv("OSV_CHECK_CACHE_TTL", "3600"))
+_CACHE_MAX_ENTRIES = 256
+_cache: dict = {}
+_cache_lock = threading.Lock()
+
+
+def _cache_get(key) -> Tuple[bool, Optional[str]]:
+    """Return (hit, result) for a fresh cache entry."""
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry is None:
+            return False, None
+        expiry, result = entry
+        if time.monotonic() >= expiry:
+            del _cache[key]
+            return False, None
+        return True, result
+
+
+def _cache_put(key, result: Optional[str]) -> None:
+    with _cache_lock:
+        if len(_cache) >= _CACHE_MAX_ENTRIES:
+            now = time.monotonic()
+            for k in [k for k, (exp, _) in _cache.items() if exp <= now]:
+                del _cache[k]
+            if len(_cache) >= _CACHE_MAX_ENTRIES:
+                _cache.clear()  # tiny working set in practice; safe reset
+        _cache[key] = (time.monotonic() + _CACHE_TTL_S, result)
 
 
 def check_package_for_malware(
@@ -43,10 +83,16 @@ def check_package_for_malware(
     if not package:
         return None
 
+    cache_key = (ecosystem, package, version)
+    hit, cached = _cache_get(cache_key)
+    if hit:
+        return cached
+
     try:
         malware = _query_osv(package, ecosystem, version)
     except Exception as exc:
-        # Fail-open: network errors, timeouts, parse failures → allow
+        # Fail-open: network errors, timeouts, parse failures → allow.
+        # Deliberately NOT cached — see _CACHE_TTL_S comment.
         logger.debug("OSV check failed for %s/%s (allowing): %s", ecosystem, package, exc)
         return None
 
@@ -55,11 +101,14 @@ def check_package_for_malware(
         summaries = "; ".join(
             m.get("summary", m["id"])[:100] for m in malware[:3]
         )
-        return (
+        result = (
             f"BLOCKED: Package '{package}' ({ecosystem}) has known malware "
             f"advisories: {ids}. Details: {summaries}"
         )
-    return None
+    else:
+        result = None
+    _cache_put(cache_key, result)
+    return result
 
 
 def _infer_ecosystem(command: str) -> Optional[str]:

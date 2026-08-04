@@ -1,14 +1,14 @@
 ---
-title: "Gitnexus Explorer"
+title: "Gitnexus Explorer — Serve an interactive codebase knowledge graph web UI"
 sidebar_label: "Gitnexus Explorer"
-description: "Index a codebase with GitNexus and serve an interactive knowledge graph via web UI + Cloudflare tunnel"
+description: "Serve an interactive codebase knowledge graph web UI"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Gitnexus Explorer
 
-Index a codebase with GitNexus and serve an interactive knowledge graph via web UI + Cloudflare tunnel.
+Serve an interactive codebase knowledge graph web UI.
 
 ## Skill metadata
 
@@ -21,7 +21,7 @@ Index a codebase with GitNexus and serve an interactive knowledge graph via web 
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `gitnexus`, `code-intelligence`, `knowledge-graph`, `visualization` |
-| Related skills | `native-mcp`, [`codebase-inspection`](/docs/user-guide/skills/bundled/github/github-codebase-inspection) |
+| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`codebase-inspection`](/docs/user-guide/skills/bundled/github/github-codebase-inspection) |
 
 ## Reference: full SKILL.md
 

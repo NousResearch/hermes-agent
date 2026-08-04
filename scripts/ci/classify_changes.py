@@ -9,6 +9,10 @@ booleans (one per lane) to ``$GITHUB_OUTPUT`` and stdout. The
 Lanes:
 
 * ``python``      — pytest / ruff / ty / footguns.
+* ``python_prod`` — Python changes OUTSIDE tests/ — gates jobs that ship or
+  run the product (Desktop E2E backend, Docker image) but never import the
+  test suite. A tests-only PR keeps ``python`` (pytest must run) while
+  skipping those product jobs.
 * ``docker_meta`` — Dockerfiles etc.
 * ``frontend``    — TS typecheck matrix + desktop build.
 * ``site``        — Docusaurus + generated skill docs.
@@ -32,6 +36,7 @@ must never skip one a change could break:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -73,6 +78,18 @@ def _py_irrelevant(p: str) -> bool:
     return _is_docs(p) or p in _ROOT_NPM or p.startswith(_PY_SKIP) or p.startswith(_DOCKER_META)
 
 
+def _py_test_only(p: str) -> bool:
+    """Is ``p`` inside the test suite (never shipped / imported by the product)?
+
+    Product jobs (Desktop E2E's ``hermes serve`` backend, the Docker image)
+    run installed code — nothing under ``tests/`` is packaged or importable
+    there. scripts/run_tests.sh and run_tests_parallel.py are deliberately
+    NOT test-only: they are runner infrastructure, and a bad edit there can
+    mask real failures, so they stay conservative (python_prod=true).
+    """
+    return p.startswith("tests/")
+
+
 def _is_scan(p: str) -> bool:
     return p.endswith(_SCAN_EXTS) or p in _SCAN_FILES
 
@@ -89,11 +106,17 @@ def _is_ci_review(p: str) -> bool:
     return os.path.basename(p).startswith("eslint.config.")
 
 
+def ci_review_files(files: list[str]) -> list[str]:
+    """Return the CI-sensitive paths that need maintainer review."""
+    return sorted({f.strip() for f in files if f.strip() and _is_ci_review(f.strip())})
+
+
 def classify(files: list[str]) -> dict[str, bool]:
     """Map changed paths to ``{lane: should_run}``."""
     files = [f.strip() for f in files if f.strip()]
     ret = {
         "python": any(not _py_irrelevant(f) for f in files),
+        "python_prod": any(not _py_irrelevant(f) and not _py_test_only(f) for f in files),
         "docker_meta":  any(f.startswith(_DOCKER_META) for f in files),
         "frontend": any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files),
         "site": any(f.startswith(_SITE) for f in files),
@@ -105,6 +128,7 @@ def classify(files: list[str]) -> dict[str, bool]:
     }
     if not files or any(f.startswith(".github/") for f in files):
         ret["python"] = True
+        ret["python_prod"] = True
         ret["docker_meta"] = True
         ret["frontend"] = True
         ret["site"] = True
@@ -119,8 +143,12 @@ def classify(files: list[str]) -> dict[str, bool]:
 
 
 def main() -> int:
-    lanes = classify(sys.stdin.read().splitlines())
-    out = "\n".join(f"{k}={str(v).lower()}" for k, v in lanes.items())
+    files = sys.stdin.read().splitlines()
+    lanes = classify(files)
+    out = "\n".join([
+        *(f"{key}={str(value).lower()}" for key, value in lanes.items()),
+        f"ci_review_files={json.dumps(ci_review_files(files))}",
+    ])
     if dest := os.environ.get("GITHUB_OUTPUT"):
         with open(dest, "a", encoding="utf-8") as fh:
             fh.write(out + "\n")

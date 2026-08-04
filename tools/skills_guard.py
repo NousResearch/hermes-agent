@@ -697,14 +697,27 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
 
 
 def _content_digest(skill_path: Path) -> str:
-    """Canonical SHA-256 over relative paths and exact file bytes."""
+    """Canonical SHA-256 over relative paths and exact file bytes.
+
+    Files are ordered by their relative POSIX path *string*. Sorting the
+    ``Path`` objects instead would not be canonical: ``WindowsPath``
+    compares case-insensitively, so a skill containing ``SKILL.md`` and
+    ``references/checklist.md`` hashes the files in one order on Windows
+    ("references" before "SKILL.md") and the opposite order on POSIX.
+    That also broke symmetry with ``tools.skills_hub.bundle_content_hash``,
+    which sorts its relative path strings -- so on Windows an installed
+    skill never matched its own bundle.
+    """
     h = hashlib.sha256()
     if skill_path.is_dir():
-        for file_path in sorted(skill_path.rglob("*")):
-            if file_path.is_file():
-                rel = file_path.relative_to(skill_path).as_posix()
-                h.update(rel.encode("utf-8") + b"\x00")
-                h.update(file_path.read_bytes())
+        entries = [
+            (file_path.relative_to(skill_path).as_posix(), file_path)
+            for file_path in skill_path.rglob("*")
+            if file_path.is_file()
+        ]
+        for rel, file_path in sorted(entries, key=lambda item: item[0]):
+            h.update(rel.encode("utf-8") + b"\x00")
+            h.update(file_path.read_bytes())
     else:
         h.update(skill_path.read_bytes())
     return h.hexdigest()

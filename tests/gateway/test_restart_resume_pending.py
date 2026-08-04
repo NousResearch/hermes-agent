@@ -45,6 +45,7 @@ from gateway.run import (
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
+    attach_real_stop,
     make_restart_runner,
     make_restart_source,
 )
@@ -542,6 +543,7 @@ async def test_drain_timeout_marks_resume_pending():
     active session as resume_pending BEFORE the interrupt fires, so the
     next startup's suspend_recently_active() does not destroy them."""
     runner, adapter = make_restart_runner()
+    attach_real_stop(runner)
     adapter.disconnect = AsyncMock()
     runner._restart_drain_timeout = 0.05
 

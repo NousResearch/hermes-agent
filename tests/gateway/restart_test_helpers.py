@@ -214,3 +214,19 @@ def attach_real_launcher_under_mocked_popen(runner: GatewayRunner) -> None:
     runner._launch_detached_restart_command = (
         GatewayRunner._launch_detached_restart_command.__get__(runner, GatewayRunner)
     )
+
+
+def attach_real_stop(runner: GatewayRunner) -> None:
+    """Re-bind ``runner.stop`` to the real production stop() method.
+
+    ``make_restart_runner()`` installs ``runner.stop`` as an AsyncMock by
+    default (fail-closed: restart tests must not accidentally invoke the real
+    shutdown path). Tests that assert the real shutdown behavior — e.g.
+    ``test_gateway_shutdown.py``, ``test_cron_active_work_drain.py`` and
+    ``test_restart_resume_pending.py`` — must explicitly opt in by calling
+    this helper after ``make_restart_runner()``.
+
+    This mirrors ``attach_real_launcher_under_mocked_popen``: the mock is the
+    safe default, real behavior is an explicit per-test choice.
+    """
+    runner.stop = GatewayRunner.stop.__get__(runner, GatewayRunner)  # type: ignore[method-assign]

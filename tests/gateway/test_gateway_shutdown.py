@@ -8,7 +8,11 @@ from gateway.config import HomeChannel, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
-from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+from tests.gateway.restart_test_helpers import (
+    attach_real_stop,
+    make_restart_runner,
+    make_restart_source,
+)
 
 
 @pytest.mark.asyncio
@@ -62,6 +66,7 @@ def test_cron_provider_stop_cannot_override_gateway_exit_code(caplog):
 @pytest.mark.asyncio
 async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks():
     runner, adapter = make_restart_runner()
+    attach_real_stop(runner)
     runner._pending_messages = {"session": "pending text"}
     runner._pending_approvals = {"session": {"command": "rm -rf /tmp/x"}}
     runner._restart_drain_timeout = 0.0
@@ -136,6 +141,7 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
     disconnect so systemd's TimeoutStopSec doesn't SIGKILL the cgroup with
     bash/sleep children still attached (#8202)."""
     runner, adapter = make_restart_runner()
+    attach_real_stop(runner)
     runner._restart_drain_timeout = 0.01  # force timeout path
 
     call_order: list[str] = []
@@ -221,6 +227,7 @@ async def test_signal_initiated_shutdown_persists_running_not_stopped(tmp_path, 
     'draining' marker — so container_boot auto-starts on next boot (#42675)."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()
+    attach_real_stop(runner)
     adapter.disconnect = AsyncMock()
     runner._signal_initiated_shutdown = True  # set by handler on unmarked signal
 

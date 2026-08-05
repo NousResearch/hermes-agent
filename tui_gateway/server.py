@@ -5937,6 +5937,42 @@ def _load_fallback_model():
     return get_fallback_chain(_load_cfg())
 
 
+def _load_checkpoints_enabled(cfg: dict | None = None) -> bool:
+    """Whether filesystem checkpoints are enabled for TUI-created agents.
+
+    Mirrors the messaging gateway's ``_checkpoint_agent_kwargs``
+    (gateway/run.py): read the ``checkpoints`` config section, keeping the
+    legacy ``checkpoints: true`` bool form working, and fall back to the
+    DEFAULT_CONFIG default when the section is absent. The CLI/TUI explicit
+    ``--checkpoints`` flag still wins via ``HERMES_TUI_CHECKPOINTS`` (set by
+    ``hermes --tui --checkpoints`` in main.py) — that env var takes
+    precedence here.
+    """
+    cp_cfg = (cfg or {}).get("checkpoints", {})
+    if isinstance(cp_cfg, bool):
+        cp_cfg = {"enabled": cp_cfg}
+    elif not isinstance(cp_cfg, dict):
+        cp_cfg = {}
+
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    return bool(cp_cfg.get("enabled", DEFAULT_CONFIG["checkpoints"]["enabled"]))
+
+
+def _resolve_checkpoints_enabled(cfg: dict | None = None) -> bool:
+    """Resolve checkpoint enablement with the env-var override first.
+
+    ``HERMES_TUI_CHECKPOINTS`` (set by ``hermes --tui --checkpoints``) is the
+    explicit opt-in and wins when present; otherwise fall back to the
+    ``checkpoints`` config section (issue #79625 — the desktop backend never
+    sets the env var, so config was being silently ignored).
+    """
+    env_val = os.environ.get("HERMES_TUI_CHECKPOINTS")
+    if env_val is not None:
+        return is_truthy_value(env_val)
+    return _load_checkpoints_enabled(cfg)
+
+
 def _agent_fallback_model(agent):
     """Return an agent's fallback chain without rehydrating deliberately empty chains."""
     if hasattr(agent, "_fallback_chain"):
@@ -6468,7 +6504,7 @@ def _make_agent(
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),

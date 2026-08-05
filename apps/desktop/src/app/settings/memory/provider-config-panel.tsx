@@ -56,6 +56,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
     }
   }, [profile, provider])
 
+  // eslint-disable-next-line no-restricted-syntax -- request generation cleanup, not an atom mirror
   useEffect(() => {
     setConfig(null)
     void refresh()

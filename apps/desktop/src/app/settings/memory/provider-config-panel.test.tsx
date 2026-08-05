@@ -241,9 +241,11 @@ describe('ProviderConfigPanel', () => {
 
   it('ignores a stale response after the selected provider changes', async () => {
     let resolveHoncho: ((value: MemoryProviderConfig) => void) | undefined
+
     const delayedHoncho = new Promise<MemoryProviderConfig>(resolve => {
       resolveHoncho = resolve
     })
+
     const example = managedSchema()
 
     getMemoryProviderConfig.mockImplementation((provider: string) =>

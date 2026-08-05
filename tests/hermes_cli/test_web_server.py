@@ -1880,6 +1880,61 @@ class TestNewEndpoints:
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
+    def test_get_logs_default(self):
+        resp = self.client.get("/api/logs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "file" in data
+        assert "lines" in data
+        assert isinstance(data["lines"], list)
+
+    def test_get_logs_invalid_file(self):
+        resp = self.client.get("/api/logs?file=nonexistent")
+        assert resp.status_code == 400
+
+    def test_get_logs_session_filter(self):
+        """GET /api/logs?session=<id> narrows to lines tagged with that
+        session (#70828). Log lines get " [session_id]" stamped by
+        hermes_logging's record factory via set_session_context(); the
+        endpoint's session_filter is a plain substring match against the
+        formatted line, mirroring `hermes logs --session` (_matches_filters
+        in hermes_cli/logs.py)."""
+        from hermes_constants import get_hermes_home
+
+        log_path = get_hermes_home() / "logs" / "agent.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "2026-07-24 12:00:00 INFO [session-alpha] agent: alpha line one\n"
+            "2026-07-24 12:00:01 INFO [session-beta] agent: beta line one\n"
+            "2026-07-24 12:00:02 INFO [session-alpha] agent: alpha line two\n"
+        )
+
+        resp = self.client.get("/api/logs?file=agent&session=session-alpha")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["lines"]) == 2
+        assert all("session-alpha" in line for line in data["lines"])
+        assert not any("session-beta" in line for line in data["lines"])
+
+    def test_get_logs_session_filter_no_match(self):
+        from hermes_constants import get_hermes_home
+
+        log_path = get_hermes_home() / "logs" / "agent.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("2026-07-24 12:00:00 INFO [session-alpha] agent: alpha line one\n")
+
+        resp = self.client.get("/api/logs?file=agent&session=session-nonexistent")
+        assert resp.status_code == 200
+        assert resp.json()["lines"] == []
+
+    def test_cron_list(self):
+        resp = self.client.get("/api/cron/jobs")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    def test_cron_job_not_found(self):
+        resp = self.client.get("/api/cron/jobs/nonexistent-id")
+        assert resp.status_code == 404
 
     # --- Automation Blueprints ---
 

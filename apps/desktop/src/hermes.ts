@@ -684,6 +684,7 @@ export function getLogs(params: {
   level?: string
   lines?: number
   search?: string
+  session?: string
 }): Promise<LogsResponse> {
   const query = new URLSearchParams()
 
@@ -705,6 +706,10 @@ export function getLogs(params: {
 
   if (params.search) {
     query.set('search', params.search)
+  }
+
+  if (params.session) {
+    query.set('session', params.session)
   }
 
   const suffix = query.toString()

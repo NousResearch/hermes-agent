@@ -1029,6 +1029,8 @@ def test_stream_managed_traps_direct_completed_response(relay_turn):
         finalizer=lambda: {},
         completed_response_predicate=_choices_predicate,
     )
+    stream._prime_completed_response()
+    assert stream._closed
     assert list(stream) == []
     assert stream.final_response is not None
     assert stream.final_response.choices[0].message.content == "done"

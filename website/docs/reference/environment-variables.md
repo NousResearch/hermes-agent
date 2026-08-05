@@ -196,7 +196,10 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `RETAINDB_API_KEY` | RetainDB API key for persistent memory ([retaindb.com](https://retaindb.com)) |
 | `RETAINDB_BASE_URL` | Base URL for self-hosted RetainDB instances (default: `https://api.retaindb.com`) |
 | `OPENVIKING_API_KEY` | OpenViking API key (leave blank for local dev mode) |
-| `OPENVIKING_ENDPOINT` | OpenViking server URL (default: `http://127.0.0.1:1933`) |
+| `OPENVIKING_URL` | OpenViking server URL (default: `http://127.0.0.1:1933`) |
+| `OPENVIKING_ACCOUNT` | Tenant account for local/trusted mode (default: `default`) |
+| `OPENVIKING_USER` | Tenant user for local/trusted mode (default: `default`) |
+| `OPENVIKING_ACTOR_PEER_ID` | Hermes agent ID used for peer-scoped memories (default: `hermes`) |
 | `BRV_API_KEY` | ByteRover API key (optional, for cloud sync — local-first by default) ([app.byterover.dev](https://app.byterover.dev)) |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |

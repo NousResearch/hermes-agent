@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearClarifyRequest } from '@/store/clarify'
+import { onScrollToBottomRequest } from '@/store/thread-scroll'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
@@ -19,6 +20,9 @@ const SID = 'session-1'
 
 let handleEvent: ((event: RpcEvent) => void) | null = null
 let stateRef: MutableRefObject<Map<string, ClientSessionState>> | null = null
+let stopScrollListener: (() => void) | null = null
+
+const scrollToBottom = vi.fn()
 
 function Harness() {
   const activeSessionIdRef = useRef<string | null>(SID)
@@ -71,11 +75,15 @@ describe('clarify.request stream hydration', () => {
     handleEvent = null
     stateRef = null
     clearClarifyRequest()
+    scrollToBottom.mockClear()
+    stopScrollListener = onScrollToBottomRequest(scrollToBottom)
   })
 
   afterEach(() => {
     cleanup()
     clearClarifyRequest()
+    stopScrollListener?.()
+    stopScrollListener = null
     vi.restoreAllMocks()
   })
 
@@ -91,6 +99,28 @@ describe('clarify.request stream hydration', () => {
       choices: ['yes', 'no'],
       question: 'Ship it?'
     })
+  })
+
+  it('reveals a clarify prompt raised by the active session', async () => {
+    await mountStream()
+
+    clarifyRequest({ choices: ['yes', 'no'], question: 'Ship it?', request_id: 'req-reveal' })
+
+    expect(scrollToBottom).toHaveBeenCalledOnce()
+  })
+
+  it('does not move the active thread for a background session clarify', async () => {
+    await mountStream()
+
+    act(() =>
+      handleEvent!({
+        payload: { choices: ['yes', 'no'], question: 'Ship it?', request_id: 'req-background' },
+        session_id: 'session-background',
+        type: 'clarify.request'
+      })
+    )
+
+    expect(scrollToBottom).not.toHaveBeenCalled()
   })
 
   it('merges with the real tool.start row even though its id differs from the request id', async () => {

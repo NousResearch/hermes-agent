@@ -33,7 +33,7 @@ def test_chaining():
     assert "{{tool_result:call_1.ok}}" in hint
     # MCP-style wrapper {"result": {...}} reveals the nested path.
     hint = tool_result_reference_hint("call_1", '{"result": {"data": "x"}}')
-    assert "{{tool_result:call_1.result.field}}" in hint
+    assert "{{tool_result:call_1.result.data}}" in hint
     # Non-structured results get no hint.
     assert tool_result_reference_hint("call_1", "plain text") == ""
     # Unknown call id leaves the reference untouched (no crash).
@@ -41,6 +41,49 @@ def test_chaining():
     # Plain strings pass through.
     assert resolve_tool_result_refs(agent, {"x": "hello"}) == {"x": "hello"}
     print("test_chaining passed")
+
+
+def test_mcp_double_encoded_result_resolves():
+    """MCP tool results arrive double-encoded: the wrapper stores
+    {"result": "<json-string>", "structuredContent": {"result": "<json-string>"}}
+    (tools/mcp_tool.py). The walk must re-parse string leaves so chained
+    paths like .result.data resolve against the real payload.
+    """
+    agent = SimpleNamespace()
+    # Real MCP shape from tools/mcp_tool.py: text blocks joined into a str,
+    # then json.dumps'ed; structuredContent may wrap the same string.
+    remember_tool_result(agent, "call_mcp", json.dumps({
+        "result": '{"folders": ["a", "b"], "count": 2}',
+        "structuredContent": {"result": '{"folders": ["a", "b"], "count": 2}'},
+    }))
+
+    # .result.folders walks into the string leaf, re-parses, and resolves.
+    assert resolve_tool_result_refs(
+        agent, {"image_url": "{{tool_result:call_mcp.result.folders}}"}
+    ) == {"image_url": '["a", "b"]'}
+    assert resolve_tool_result_refs(
+        agent, {"image_url": "{{tool_result:call_mcp.result.count}}"}
+    ) == {"image_url": "2"}
+    # structuredContent branch resolves the same way.
+    assert resolve_tool_result_refs(
+        agent, {"image_url": "{{tool_result:call_mcp.structuredContent.result.folders}}"}
+    ) == {"image_url": '["a", "b"]'}
+    # Unresolvable refs pass through untouched (contract preserved).
+    assert resolve_tool_result_refs(
+        agent, {"x": "{{tool_result:call_mcp.result.missing}}"}
+    ) == {"x": "{{tool_result:call_mcp.result.missing}}"}
+    # Non-JSON string leaf: pass through untouched, no crash.
+    remember_tool_result(agent, "call_plain", json.dumps({"result": "not json"}))
+    assert resolve_tool_result_refs(
+        agent, {"x": "{{tool_result:call_plain.result.nope}}"}
+    ) == {"x": "{{tool_result:call_plain.result.nope}}"}
+    # The hint prefers structuredContent (the machine-oriented branch) and
+    # reveals a working path for the double-encoded shape.
+    hint = tool_result_reference_hint("call_mcp", json.dumps({
+        "result": '{"folders": ["a", "b"], "count": 2}',
+        "structuredContent": {"result": '{"folders": ["a", "b"], "count": 2}'},
+    }))
+    assert "{{tool_result:call_mcp.structuredContent.result.field}}" in hint
 
 
 def _tc(name="echo_tool", arguments="{}", call_id=None):

@@ -76,14 +76,43 @@ def tool_result_reference_hint(tool_call_id: str, result: Any) -> str:
         return ""
     if not isinstance(payload, (dict, list)):
         return ""
-    # Reveal a real path so the model can form a working reference. For a
-    # dict whose first value is itself a container (e.g. MCP's {"result":
-    # {...}} wrapper), show the two-level path; otherwise the literal key.
+    # Reveal a real path so the model can form a working reference. For an
+    # MCP wrapper {"result": ..., "structuredContent": ...} both values may
+    # be JSON strings (double-encoded) — prefer structuredContent, which is
+    # the machine-oriented branch and the only one that can hold a real
+    # container; fall back to result otherwise. Show a path that reaches a
+    # real container: dive through string leaves (double-encoding) so the
+    # advertised path is usable, not one that lands on a JSON blob string.
     if isinstance(payload, dict) and payload:
-        top_key = next(iter(payload))
-        ref = (f"{{{{tool_result:{tool_call_id}.{top_key}.field}}}}"
-               if isinstance(payload[top_key], (dict, list))
-               else f"{{{{tool_result:{tool_call_id}.{top_key}}}}}")
+        top_key = ("structuredContent" if "structuredContent" in payload
+                   else next(iter(payload)))
+        top_value = payload[top_key]
+        if isinstance(top_value, str):
+            try:
+                top_value = json.loads(top_value)
+            except (TypeError, ValueError):
+                pass
+        # Dive one more level through a double-encoded container so the hint
+        # lands on a real structure, e.g. structuredContent.result.folders.
+        if isinstance(top_value, (dict, list)) and top_value:
+            if isinstance(top_value, dict):
+                inner_key = next(iter(top_value))
+                inner_value = top_value[inner_key]
+            else:
+                inner_key = 0
+                inner_value = top_value[0]
+            if isinstance(inner_value, str):
+                try:
+                    inner_value = json.loads(inner_value)
+                except (TypeError, ValueError):
+                    pass
+            ref = (f"{{{{tool_result:{tool_call_id}.{top_key}.{inner_key}.field}}}}"
+                   if isinstance(inner_value, (dict, list))
+                   else f"{{{{tool_result:{tool_call_id}.{top_key}.{inner_key}}}}}")
+        elif isinstance(top_value, (dict, list)):
+            ref = f"{{{{tool_result:{tool_call_id}.{top_key}.field}}}}"
+        else:
+            ref = f"{{{{tool_result:{tool_call_id}.{top_key}}}}}"
     else:
         ref = f"{{{{tool_result:{tool_call_id}.field}}}}"
     return f"\n\n[Reusable tool result: {ref}]"
@@ -100,6 +129,17 @@ def _resolve_tool_result_ref(agent, value: Any) -> Any:
             return match.group(0)
         current = refs[call_id]
         for part in path.split(".") if path else []:
+            # MCP tool results are double-encoded: the wrapper stores
+            # {"result": "<json-string>", "structuredContent": ...}, so a
+            # walk may land on a string containing JSON. Re-parse it once
+            # so chained paths like .result.data resolve against the real
+            # payload; unresolvable refs pass through untouched (same
+            # contract as the walk below).
+            if isinstance(current, str):
+                try:
+                    current = json.loads(current)
+                except ValueError:
+                    return match.group(0)
             try:
                 current = current[int(part)] if isinstance(current, list) else current[part]
             except (KeyError, IndexError, TypeError, ValueError):

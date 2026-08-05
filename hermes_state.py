@@ -868,8 +868,19 @@ def _wal_reset_repair_hint() -> str:
     """Return a context-appropriate hint for repairing the SQLite runtime.
 
     Uses the codebase's install-type detection so the hint matches what
-    ``hermes update`` can actually do for this install (#75153).
+    ``hermes update`` can actually do for this install (#75153). For git,
+    pip, system-Python, and unknown installs the interpreter is NOT
+    Hermes-managed — ``hermes update`` only replaces Hermes code, not the
+    SQLite library linked into the running interpreter, so the hint must
+    point at the environment owner instead of promising a managed repair
+    (#79179).
     """
+    # Shared wording for non-managed installs: the interpreter (and the
+    # SQLite library linked into it) must be upgraded by its owner.
+    environment_upgrade = (
+        "install a Python build bundled with SQLite 3.51.3+ "
+        "(or backports 3.50.7 / 3.44.6) and restart Hermes"
+    )
     try:
         from hermes_cli.config import (
             detect_install_method,
@@ -879,17 +890,17 @@ def _wal_reset_repair_hint() -> str:
         method = detect_install_method(get_project_root())
         cmd = recommended_update_command_for_method(method)
         if method in {"git", "unknown"}:
-            return f"Hermes-managed installs can repair the embedded runtime with `{cmd}`"
+            # A plain git checkout or system Python is not Hermes-managed:
+            # the running interpreter's linked SQLite must be upgraded by
+            # whoever owns the environment — ``hermes update`` cannot.
+            return environment_upgrade
         if method == "docker":
             return f"update the container image with `{cmd}`"
         # nix/nixos
         return cmd
     except Exception:
         pass
-    return (
-        "install a Python build bundled with SQLite 3.51.3+ "
-        "(or backports 3.50.7 / 3.44.6) and restart Hermes"
-    )
+    return environment_upgrade
 
 
 def _log_wal_reset_bug_once(

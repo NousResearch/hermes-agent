@@ -145,3 +145,41 @@ def test_doctor_warns_without_adding_issues(monkeypatch, tmp_path, capsys):
     assert "hermes update" in out
     # No longer appended to the blocking issues summary.
     assert "Linked SQLite is vulnerable" not in out
+
+
+class TestWalResetRepairHint:
+    """The WAL-reset repair hint must never promise that ``hermes update``
+    rebuilds the embedded SQLite runtime for installs whose interpreter is
+    not Hermes-managed (git checkout, pip, system Python, unknown) (#79179)."""
+
+    def _call_hint(self, method, cmd, monkeypatch):
+        import hermes_cli.config as config
+
+        monkeypatch.setattr(config, "detect_install_method", lambda _root=None: method)
+        monkeypatch.setattr(
+            config, "recommended_update_command_for_method", lambda m: cmd
+        )
+        monkeypatch.setattr(config, "get_project_root", lambda: __import__("pathlib").Path("."))
+        return hermes_state._wal_reset_repair_hint()
+
+    def test_git_checkout_never_promises_managed_update(self, monkeypatch):
+        hint = self._call_hint("git", "hermes update", monkeypatch)
+        assert "Hermes-managed" not in hint
+        assert "hermes update" not in hint
+        assert "SQLite" in hint
+
+    def test_unknown_install_never_promises_managed_update(self, monkeypatch):
+        hint = self._call_hint("unknown", "hermes update", monkeypatch)
+        assert "Hermes-managed" not in hint
+        assert "hermes update" not in hint
+        assert "SQLite" in hint
+
+    def test_docker_still_recommends_image_update(self, monkeypatch):
+        hint = self._call_hint("docker", "docker pull nousresearch/hermes-agent:latest", monkeypatch)
+        assert "container image" in hint
+        assert "docker pull" in hint
+
+    def test_managed_nix_still_returns_update_guidance(self, monkeypatch):
+        hint = self._call_hint("nix", "nix run nousresearch/hermes-agent -- update", monkeypatch)
+        assert "nix run" in hint
+        assert "Hermes-managed" not in hint

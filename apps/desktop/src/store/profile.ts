@@ -150,6 +150,14 @@ export async function switchProfile(name: string): Promise<void> {
 // to the primary (window) backend's profile on boot.
 export const $activeGatewayProfile = atom<string>('default')
 
+// Set to true after the primary profile has been resolved from the Electron
+// backend (adoptPrimaryProfile / adoptBoot). Cold-start restore effects that
+// read $activeGatewayProfile MUST wait for this flag — the initial 'default'
+// value is a placeholder, and restoring before the real profile is known reads
+// the wrong scoped localStorage key (hermes.desktop.lastRoute instead of
+// hermes.desktop.lastRoute.<profile>).
+export const $profileInitialized = atom<boolean>(false)
+
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)

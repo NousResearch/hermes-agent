@@ -1,10 +1,11 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { openSession } from '@/app/open-session'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $profileInitialized } from '@/store/profile'
 import { openFolderAsProject } from '@/store/projects'
 import {
   $sessions,
@@ -87,14 +88,21 @@ export function useDesktopIntegrations({
   }, [locationPathname, routedSessionId])
 
   const restoredRef = useRef(false)
+  const profileInitialized = useStore($profileInitialized)
 
   // Restore once on cold start — only when the renderer booted at the default
   // route (a hidden-then-shown window keeps its own route). Prefer the full
   // remembered route (covers pages); fall back to the last session id.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE) {
-      restoredRef.current = true
+    // Don't restore until the gateway profile has been resolved from the
+    // backend. $activeGatewayProfile starts as 'default' but the real profile
+    // is set asynchronously by adoptPrimaryProfile(). Restoring before the
+    // real profile is known reads from the wrong scoped localStorage key.
+    if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE || !profileInitialized) {
+      if (locationPathname !== NEW_CHAT_ROUTE) {
+        restoredRef.current = true
+      }
 
       return
     }
@@ -114,7 +122,7 @@ export function useDesktopIntegrations({
     if (last) {
       navigate(sessionRoute(last), { replace: true })
     }
-  }, [locationPathname, navigate])
+  }, [locationPathname, navigate, profileInitialized])
 
   useEffect(() => {
     if (!resumeExhaustedSessionId) {

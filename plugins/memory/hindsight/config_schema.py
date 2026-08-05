@@ -30,6 +30,11 @@ CONFIG_SCHEMA = ProviderConfigSchema(
                     "Local External",
                     "Connect to an existing Hindsight instance",
                 ),
+                ProviderFieldOption(
+                    "local_embedded",
+                    "Local Embedded",
+                    "Run Hindsight locally and optionally inherit Hermes' active LLM",
+                ),
             ),
             inline=True,
         ),
@@ -49,6 +54,36 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             default="https://api.hindsight.vectorize.io",
             aliases=("apiUrl",),
             env_fallbacks=("HINDSIGHT_API_URL",),
+            inline=True,
+        ),
+        ProviderField(
+            key="llm_provider",
+            label="Embedded LLM provider",
+            kind=KIND_SELECT,
+            default="openai",
+            description="Use hermes to route Hindsight extraction through the host-owned ctx.llm facade.",
+            options=(
+                ProviderFieldOption(
+                    "openai",
+                    "OpenAI-compatible",
+                    "Use Hindsight's configured embedded provider.",
+                ),
+                ProviderFieldOption(
+                    "hermes",
+                    "Hermes active model",
+                    "Inherit Hermes model/provider/auth through a loopback bridge; no provider credential is copied.",
+                ),
+            ),
+            group="Embedded mode",
+            inline=True,
+        ),
+        ProviderField(
+            key="llm_model",
+            label="Embedded LLM model",
+            kind=KIND_TEXT,
+            default="gpt-4o-mini",
+            description="Ignored when the embedded LLM provider is hermes; Hermes resolves its active model.",
+            group="Embedded mode",
             inline=True,
         ),
         ProviderField(

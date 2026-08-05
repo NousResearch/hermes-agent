@@ -51,6 +51,8 @@ from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
 
+from .hermes_llm_bridge import HermesLlmBridge
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
@@ -76,6 +78,9 @@ _PROVIDER_DEFAULT_MODELS = {
     "ollama": "gemma3:12b",
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
+    # Descriptive only: inherit mode resolves the active model through the
+    # host-owned ctx.llm facade rather than this placeholder.
+    "hermes": "hermes-active-model",
 }
 
 
@@ -518,7 +523,14 @@ def _load_simple_env(path) -> dict[str, str]:
     return values
 
 
-def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
+def _build_embedded_profile_env(
+    config: dict[str, Any],
+    *,
+    llm_api_key: str | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    llm_base_url: str | None = None,
+) -> dict[str, str]:
     """Build the profile-scoped env file that standalone hindsight-embed consumes."""
     current_key = llm_api_key
     if current_key is None:
@@ -528,9 +540,13 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
             or get_secret("HINDSIGHT_LLM_API_KEY", "")
         )
 
-    current_provider = config.get("llm_provider", "")
-    current_model = config.get("llm_model", "")
-    current_base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+    current_provider = config.get("llm_provider", "") if llm_provider is None else llm_provider
+    current_model = config.get("llm_model", "") if llm_model is None else llm_model
+    current_base_url = (
+        config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+        if llm_base_url is None
+        else llm_base_url
+    )
 
     # The embedded daemon expects OpenAI wire format for these providers.
     daemon_provider = "openai" if current_provider in {"openai_compatible", "openrouter"} else current_provider
@@ -600,11 +616,24 @@ def _validate_profile_env_permissions(profile_env) -> None:
             )
 
 
-def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
+def _materialize_embedded_profile_env(
+    config: dict[str, Any],
+    *,
+    llm_api_key: str | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    llm_base_url: str | None = None,
+):
     """Write the profile-scoped env file that standalone hindsight-embed uses."""
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
-    env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    env_values = _build_embedded_profile_env(
+        config,
+        llm_api_key=llm_api_key,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_base_url=llm_base_url,
+    )
     content = "".join(f"{key}={value}\n" for key, value in env_values.items())
     try:
         _secure_write_profile_env(profile_env, content)
@@ -691,7 +720,11 @@ class HindsightMemoryProvider(MemoryProvider):
         except Exception:
             return []
 
-    def __init__(self):
+    def __init__(self, host_context=None):
+        # Duck-typed to avoid importing the plugin loader during discovery.
+        # Used only when the explicit `llm_provider: hermes` mode is selected.
+        self._host_context = host_context
+        self._llm_bridge: HermesLlmBridge | None = None
         self._config = None
         self._api_key = None
         self._api_url = _DEFAULT_API_URL
@@ -808,6 +841,9 @@ class HindsightMemoryProvider(MemoryProvider):
             cfg = _load_config()
             mode = cfg.get("mode", "cloud")
             if mode in {"local", "local_embedded"}:
+                if str(cfg.get("llm_provider", "")).strip().lower() == "hermes":
+                    if self._host_context is None or getattr(self._host_context, "llm", None) is None:
+                        return False
                 available, _ = _check_local_runtime()
                 return available
             if mode == "local_external":
@@ -861,7 +897,7 @@ class HindsightMemoryProvider(MemoryProvider):
         mode_values = ["cloud", "local_embedded", "local_external"]
         mode_items = [
             ("Cloud", "Hindsight Cloud API (lightweight, just needs an API key)"),
-            ("Local Embedded", "Run Hindsight locally (downloads ~200MB, needs LLM key)"),
+            ("Local Embedded", "Run Hindsight locally (downloads ~200MB, needs an LLM key or Hermes facade)"),
             ("Local External", "Connect to an existing Hindsight instance"),
         ]
         existing_mode = existing_config.get("mode")
@@ -964,26 +1000,32 @@ class HindsightMemoryProvider(MemoryProvider):
             elif llm_provider == "openrouter":
                 provider_config["llm_base_url"] = "https://openrouter.ai/api/v1"
 
-            provider_default_model = _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
-            current_model = provider_config.get("llm_model") or provider_default_model
-            val = input(f"  LLM model [{current_model}]: ").strip()
-            provider_config["llm_model"] = val or current_model
-
-            sys.stdout.write("  LLM API key: ")
-            sys.stdout.flush()
-            llm_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
-            if llm_key:
-                env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
+            if llm_provider == "hermes":
+                provider_config["llm_model"] = "hermes-inherited"
             else:
-                env_path = Path(hermes_home) / ".env"
-                existing_llm_key = ""
-                if env_path.exists():
-                    # utf-8-sig: a Notepad BOM must not hide the first key.
-                    for line in env_path.read_text(encoding="utf-8-sig").splitlines():
-                        if line.startswith("HINDSIGHT_LLM_API_KEY="):
-                            existing_llm_key = line.split("=", 1)[1]
-                            break
-                env_writes["HINDSIGHT_LLM_API_KEY"] = existing_llm_key
+                provider_default_model = _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
+                current_model = provider_config.get("llm_model") or provider_default_model
+                val = input(f"  LLM model [{current_model}]: ").strip()
+                provider_config["llm_model"] = val or current_model
+
+            if llm_provider == "hermes":
+                print("  Using the active Hermes LLM facade; no Hindsight LLM API key is required.")
+            else:
+                sys.stdout.write("  LLM API key: ")
+                sys.stdout.flush()
+                llm_key = masked_secret_prompt("") if sys.stdin.isatty() else sys.stdin.readline().strip()
+                if llm_key:
+                    env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
+                else:
+                    env_path = Path(hermes_home) / ".env"
+                    existing_llm_key = ""
+                    if env_path.exists():
+                        # utf-8-sig: a Notepad BOM must not hide the first key.
+                        for line in env_path.read_text(encoding="utf-8-sig").splitlines():
+                            if line.startswith("HINDSIGHT_LLM_API_KEY="):
+                                existing_llm_key = line.split("=", 1)[1]
+                                break
+                    env_writes["HINDSIGHT_LLM_API_KEY"] = existing_llm_key
 
         # Step 4: Save everything
         provider_config.setdefault("bank_id", "hermes")
@@ -1035,19 +1077,20 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception:
                 pass
 
-            llm_api_key = env_writes.get("HINDSIGHT_LLM_API_KEY", "")
-            if not llm_api_key:
-                llm_api_key = _load_simple_env(Path(hermes_home) / ".env").get("HINDSIGHT_LLM_API_KEY", "")
-            if not llm_api_key:
-                llm_api_key = _load_simple_env(_embedded_profile_env_path(materialized_config)).get(
-                    "HINDSIGHT_API_LLM_API_KEY",
-                    "",
-                )
+            if llm_provider != "hermes":
+                llm_api_key = env_writes.get("HINDSIGHT_LLM_API_KEY", "")
+                if not llm_api_key:
+                    llm_api_key = _load_simple_env(Path(hermes_home) / ".env").get("HINDSIGHT_LLM_API_KEY", "")
+                if not llm_api_key:
+                    llm_api_key = _load_simple_env(_embedded_profile_env_path(materialized_config)).get(
+                        "HINDSIGHT_API_LLM_API_KEY",
+                        "",
+                    )
 
-            _materialize_embedded_profile_env(
-                materialized_config,
-                llm_api_key=llm_api_key or None,
-            )
+                _materialize_embedded_profile_env(
+                    materialized_config,
+                    llm_api_key=llm_api_key or None,
+                )
 
         print(f"\n  ✓ Hindsight memory configured ({mode} mode)")
         if env_writes:
@@ -1064,7 +1107,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "api_url", "description": "Hindsight API URL", "default": _DEFAULT_LOCAL_URL, "when": {"mode": "local_external"}},
             {"key": "api_key", "description": "API key (optional)", "secret": True, "env_var": "HINDSIGHT_API_KEY", "when": {"mode": "local_external"}},
             # Local embedded mode
-            {"key": "llm_provider", "description": "LLM provider", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "openrouter", "minimax", "ollama", "lmstudio", "openai_compatible"], "when": {"mode": "local_embedded"}},
+            {"key": "llm_provider", "description": "LLM provider (hermes inherits the active Hermes ctx.llm facade)", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "openrouter", "minimax", "ollama", "lmstudio", "openai_compatible", "hermes"], "when": {"mode": "local_embedded"}},
             {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
@@ -1101,6 +1144,7 @@ class HindsightMemoryProvider(MemoryProvider):
     def _get_client(self):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
+            config = self._config or {}
             if self._mode == "local_embedded":
                 available, reason = _check_local_runtime()
                 if not available:
@@ -1118,17 +1162,46 @@ class HindsightMemoryProvider(MemoryProvider):
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
+                inherit_hermes_llm = str(llm_provider).strip().lower() == "hermes"
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
+                if inherit_hermes_llm:
+                    if self._host_context is None:
+                        raise RuntimeError(
+                            "Hindsight llm_provider=hermes requires the Hermes PluginContext"
+                        )
+                    host_llm = getattr(self._host_context, "llm", None)
+                    if host_llm is None:
+                        raise RuntimeError(
+                            "Hindsight llm_provider=hermes requires ctx.llm"
+                        )
+                    if self._llm_bridge is None:
+                        self._llm_bridge = HermesLlmBridge(host_llm)
+                        self._llm_bridge.start()
+                    llm_provider = "openai"
+                configured_llm_api_key = ""
+                if not inherit_hermes_llm:
+                    configured_llm_api_key = (
+                        config.get("llmApiKey")
+                        or config.get("llm_api_key")
+                        or get_secret("HINDSIGHT_LLM_API_KEY", "")
+                    )
                 logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
                              self._config.get("profile", "hermes"), llm_provider)
                 kwargs = dict(
                     profile=self._config.get("profile", "hermes"),
                     llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or get_secret("HINDSIGHT_LLM_API_KEY", ""),
+                    llm_api_key=configured_llm_api_key,
                     llm_model=self._config.get("llm_model", ""),
                 )
-                if self._llm_base_url:
+                if inherit_hermes_llm:
+                    bridge = self._llm_bridge
+                    if bridge is None:  # pragma: no cover - defensive narrowing
+                        raise RuntimeError("Failed to initialize the Hermes LLM bridge")
+                    kwargs["llm_api_key"] = bridge.api_key
+                    kwargs["llm_base_url"] = bridge.base_url
+                    kwargs["llm_model"] = "hermes-inherited"
+                elif self._llm_base_url:
                     kwargs["llm_base_url"] = self._llm_base_url
                 idle_timeout = _parse_int_setting(
                     self._config.get("idle_timeout")
@@ -1150,6 +1223,20 @@ class HindsightMemoryProvider(MemoryProvider):
                              self._api_url, bool(self._api_key), kwargs["timeout"])
                 self._client = Hindsight(**kwargs)
         return self._client
+
+    def _embedded_llm_env_overrides(self) -> dict[str, str]:
+        """Return daemon env overrides for the host-owned Hermes bridge."""
+        if str((self._config or {}).get("llm_provider", "")).strip().lower() != "hermes":
+            return {}
+        bridge = self._llm_bridge
+        if bridge is None:
+            raise RuntimeError("Hermes LLM bridge must start before the embedded daemon")
+        return {
+            "llm_provider": "openai",
+            "llm_api_key": bridge.api_key,
+            "llm_model": "hermes-inherited",
+            "llm_base_url": bridge.base_url,
+        }
 
     def _run_sync(self, coro):
         """Schedule *coro* on the shared loop using the configured timeout."""
@@ -1663,18 +1750,26 @@ class HindsightMemoryProvider(MemoryProvider):
                     dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
 
                     client = self._get_client()
-                    profile = self._config.get("profile", "hermes")
+                    config = self._config or {}
+                    profile = config.get("profile", "hermes")
+                    llm_env_overrides = self._embedded_llm_env_overrides()
 
                     # Update the profile .env to match our current config so
                     # the daemon always starts with the right settings.
                     # If the config changed and the daemon is running, stop it.
-                    profile_env = _embedded_profile_env_path(self._config)
-                    expected_env = _build_embedded_profile_env(self._config)
+                    profile_env = _embedded_profile_env_path(config)
+                    expected_env = _build_embedded_profile_env(
+                        config,
+                        **llm_env_overrides,
+                    )
                     saved = _load_simple_env(profile_env)
                     config_changed = saved != expected_env
 
                     if config_changed:
-                        profile_env = _materialize_embedded_profile_env(self._config)
+                        profile_env = _materialize_embedded_profile_env(
+                            config,
+                            **llm_env_overrides,
+                        )
                         if client._manager.is_running(profile):
                             with open(log_path, "a", encoding="utf-8") as f:
                                 f.write("\n=== Config changed, restarting daemon ===\n")
@@ -2214,6 +2309,9 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception:
                 pass
             self._client = None
+        if self._llm_bridge is not None:
+            self._llm_bridge.close()
+            self._llm_bridge = None
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin
@@ -2229,4 +2327,4 @@ class HindsightMemoryProvider(MemoryProvider):
 
 def register(ctx) -> None:
     """Register Hindsight as a memory provider plugin."""
-    ctx.register_memory_provider(HindsightMemoryProvider())
+    ctx.register_memory_provider(HindsightMemoryProvider(ctx))

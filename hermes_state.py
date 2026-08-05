@@ -56,6 +56,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _shape_preview,
     _sql_session_last_active,
     _sql_session_last_active_by_id,
+    escape_like as _escape_like,
     DEFERRED_INDEX_SQL,
     FTS_CJK_STALE_KEY,
     FTS_SQL,
@@ -174,17 +175,6 @@ def _delegate_from_json(col: str = "model_config") -> str:
 # doesn't exist and on_missing="skip" — distinguishes "no row" from the legal
 # None result ("merged config is empty → store NULL").
 _MODEL_CONFIG_ROW_MISSING = object()
-
-
-def _escape_like(text: str) -> str:
-    """Escape SQL LIKE wildcards so an operator-supplied filter matches
-    literally.  Pair with ``ESCAPE '\\'`` in the clause.
-
-    ``%`` and ``_`` are wildcards to LIKE, and ``_`` in particular is common
-    in the values these filters run against (branch names, session titles).
-    A filter documented as a substring match must not silently widen.
-    """
-    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
@@ -5286,12 +5276,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if exact:
             return exact["id"]
 
-        escaped = (
-            session_id_or_prefix
-            .replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
-        )
+        escaped = _escape_like(session_id_or_prefix)
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
@@ -5680,7 +5665,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         # Also search for numbered variants: "title #2", "title #3", etc.
         # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
-        escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped = _escape_like(title)
         with self._read_ctx() as conn:
             cursor = conn.execute(
                 "SELECT id, title, started_at FROM sessions "
@@ -5711,7 +5696,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         # Find all existing numbered variants
         # Escape SQL LIKE wildcards (%, _) in the base to prevent false matches
-        escaped = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped = _escape_like(base)
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
@@ -5964,10 +5949,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             filter_clauses: List[str] = []
 
             def _like_pattern(needle: str) -> str:
-                escaped = (
-                    needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                )
-                return f"%{escaped}%"
+                return f"%{_escape_like(needle)}%"
 
             if id_needle:
                 # Admit a surfaced row if its own id or any id in its forward
@@ -8856,7 +8838,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cursor = conn.execute(
                 "UPDATE sessions SET source = 'kanban' "
                 "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')",
-                (prefix, prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"),
+                (prefix, _escape_like(prefix) + "/%"),
             )
             # Read rowcount before set_meta reuses this cursor for its INSERT,
             # which would otherwise overwrite it with the meta write's count.

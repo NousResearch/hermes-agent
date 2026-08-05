@@ -8,6 +8,7 @@ Provides options for:
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -87,7 +88,26 @@ def remove_path_from_shell_configs():
                 new_content = new_content.replace('\n\n\n', '\n\n')
             
             if new_content != original_content:
-                config_path.write_text(new_content, encoding="utf-8")
+                from utils import atomic_write_text
+
+                # This is the user's own shell rc, not a Hermes-owned file, and
+                # nothing in this function backs it up. A bare write_text()
+                # truncates it before the new content lands, so a crash or
+                # SIGINT mid-write leaves the user with an empty or truncated
+                # ~/.zshrc -- and the enclosing `except Exception` downgrades
+                # that to a warning, so the next login just starts a bare
+                # shell. atomic_replace also resolves a symlinked rc file, so a
+                # dotfiles-repo setup keeps the symlink instead of having it
+                # replaced by a regular file.
+                prior_mode = stat.S_IMODE(config_path.stat().st_mode)
+                atomic_write_text(config_path, new_content)
+                # atomic_write_text swaps in a fresh 0600 temp file; shell rc
+                # files are normally 0644 and removing Hermes' PATH block must
+                # not quietly change their permissions.
+                try:
+                    os.chmod(config_path, prior_mode)
+                except OSError:
+                    pass
                 removed_from.append(config_path)
                 
         except Exception as e:

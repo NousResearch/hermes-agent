@@ -14,6 +14,8 @@ late-binding seam in :mod:`hermes_cli.web_deps` so tests that
 
 import asyncio  # noqa: F401 — used by handlers
 import logging
+import os
+import stat
 import subprocess  # noqa: F401
 import sys  # noqa: F401
 import time  # noqa: F401
@@ -613,7 +615,28 @@ async def get_profile_soul(name: str):
 async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
     try:
-        soul_path.write_text(body.content, encoding="utf-8")
+        from utils import atomic_write_text
+
+        # PUT replaces the whole persona document from the dashboard editor.
+        # A bare write_text() truncates SOUL.md before the new body lands, and
+        # the paired GET above reports an unreadable file as
+        # ``{"content": "", "exists": False}`` -- so an interrupted save shows
+        # up as "your persona was never set" and the editor's next Save
+        # persists that empty document over it.
+        try:
+            prior_mode = stat.S_IMODE(soul_path.stat().st_mode)
+        except OSError:
+            # First save for this profile -- there is no prior file to match.
+            prior_mode = None
+
+        atomic_write_text(soul_path, body.content)
+        # atomic_write_text swaps in a fresh 0600 temp file; profile SOUL.md is
+        # created 0644 and is not run through _secure_file, so re-apply.
+        if prior_mode is not None:
+            try:
+                os.chmod(soul_path, prior_mode)
+            except OSError:
+                pass
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/soul failed", name)
         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")

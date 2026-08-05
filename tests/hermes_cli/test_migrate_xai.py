@@ -206,3 +206,89 @@ class TestUnreadableExistingConfig:
             os.chmod(trap_config, 0o644)
 
         assert trap_config.read_bytes() == original
+
+
+# ---------------------------------------------------------------------------
+# Crash durability — the rewrite must be atomic
+# ---------------------------------------------------------------------------
+
+class TestCrashDurability:
+    """apply_migration() rewrites the whole config.yaml in place.
+
+    A bare ``open(path, "w")`` truncates the file *before* the dump runs, so an
+    interruption (crash, SIGINT, ENOSPC) leaves config.yaml empty or
+    half-written.  Routing through ``utils.atomic_write_text`` means the target
+    is only ever swapped in via an atomic rename after the temp file is fully
+    written and fsynced.
+    """
+
+    def test_config_survives_an_interrupted_write(self, trap_config: Path):
+        """A failure mid-write must leave the original config.yaml untouched.
+
+        ``--no-backup`` is a documented flag, so on that path the file being
+        rewritten is the only copy in existence.
+        """
+        import os
+
+        issues = find_retired_xai_refs(_parse(trap_config))
+        assert issues  # sanity: trap_config has retired refs
+        original = trap_config.read_bytes()
+
+        def boom(fd):
+            raise OSError("simulated crash mid-write")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(os, "fsync", boom)
+            with pytest.raises(OSError):
+                apply_migration(trap_config, issues, backup=False)
+
+        # The original bytes must survive verbatim...
+        assert trap_config.read_bytes() == original
+        # ...and the aborted write must not leave a temp file behind.
+        assert list(trap_config.parent.glob("*.tmp")) == []
+
+    def test_symlinked_config_is_replaced_in_place(self, tmp_path: Path):
+        """A config.yaml symlinked into a dotfiles repo must stay a symlink."""
+        real_dir = tmp_path / "dotfiles"
+        real_dir.mkdir()
+        real = real_dir / "hermes-config.yaml"
+        real.write_text(
+            "principal:\n"
+            "  provider: xai\n"
+            "  model: grok-3\n",
+            encoding="utf-8",
+        )
+        link = tmp_path / "config.yaml"
+        link.symlink_to(real)
+
+        issues = find_retired_xai_refs(_parse(link))
+        assert issues
+        apply_migration(link, issues, backup=False)
+
+        assert link.is_symlink(), "atomic replace detached the symlink"
+        assert real.read_text(encoding="utf-8") == link.read_text(encoding="utf-8")
+        assert "grok-4.3" in real.read_text(encoding="utf-8")
+
+    def test_existing_file_mode_is_preserved(self, trap_config: Path):
+        """Managed (NixOS 0640) and container installs widen config.yaml
+        deliberately; the migration must not silently tighten it to 0600."""
+        import os
+        import stat
+
+        os.chmod(trap_config, 0o640)
+        issues = find_retired_xai_refs(_parse(trap_config))
+        apply_migration(trap_config, issues, backup=False)
+
+        mode = stat.S_IMODE(trap_config.stat().st_mode)
+        assert mode == 0o640, f"mode changed to {oct(mode)}"
+
+    def test_comments_survive_the_atomic_write(self, trap_config: Path):
+        """The ruamel round-trip must still run — serializing via a string
+        buffer instead of the file handle must not drop comments."""
+        issues = find_retired_xai_refs(_parse(trap_config))
+        apply_migration(trap_config, issues, backup=False)
+
+        text = trap_config.read_text(encoding="utf-8")
+        assert "# Hermes config (sample)" in text
+        assert "# the main model" in text
+        assert "# not affected" in text

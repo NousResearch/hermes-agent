@@ -148,6 +148,14 @@ class ProviderInfo:
 # Provider ID mapping: Hermes ↔ models.dev
 # ---------------------------------------------------------------------------
 
+# Hermes custom providers are addressed as "custom:<name>"; models.dev
+# catalogs them under the bare name when it mirrors a public provider
+# (e.g. custom:hyper → hyper). Strip the prefix before lookup.
+def _mdev_provider_id(provider_id: str) -> str:
+    if provider_id.startswith("custom:"):
+        provider_id = provider_id[len("custom:"):]
+    return PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+
 # Hermes provider names → models.dev provider IDs
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter",
@@ -493,7 +501,7 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
     """
-    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
+    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(_mdev_provider_id(provider))
     if not mdev_provider_id:
         return None
 
@@ -584,7 +592,7 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
 
     Returns the models dict or None if the provider is unknown or has no data.
     """
-    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
+    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(_mdev_provider_id(provider))
     if not mdev_provider_id:
         return None
 
@@ -849,7 +857,7 @@ def get_provider_info(
     ID (e.g. "kilo").  Returns None if the provider is not in the catalog.
     """
     # Resolve Hermes ID → models.dev ID
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    mdev_id = _mdev_provider_id(provider_id)
 
     # NOTE: keep the zero-argument call on the default path. Dozens of test
     # sites monkeypatch fetch_models_dev with zero-arg lambdas; passing the
@@ -878,7 +886,7 @@ def get_model_info(
     Accepts Hermes or models.dev provider ID.  Tries exact match then
     case-insensitive fallback.  Returns None if not found.
     """
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    mdev_id = _mdev_provider_id(provider_id)
 
     data = fetch_models_dev()
     pdata = data.get(mdev_id)

@@ -185,6 +185,7 @@ def apply_transition(
     origin_kind: str | None = None,
     retry_budget_remaining: int | None = None,
     native_parent_done: bool | None = None,
+    children_all_done: bool | None = None,
 ) -> Request:
     """Apply one revision-CAS transition and return a new request snapshot.
 
@@ -193,7 +194,8 @@ def apply_transition(
     - result_accepted: has_result is True
     - delivery_satisfied: delivery_satisfied is True
     - explicit_board_only: origin_kind == 'board_only'
-    - board_only_parent_done: origin_kind == 'board_only' and native_parent_done is True
+    - board_only_parent_done: origin_kind == 'board_only' and
+      (native_parent_done is True OR children_all_done is True)
     - retriable_lane_failure: retry_budget_remaining > 0
     - required_exhausted / unrecoverable_or_exhausted: retry_budget_remaining <= 0
     """
@@ -214,7 +216,9 @@ def apply_transition(
             if origin_kind != "board_only":
                 raise LifecycleError("board_only_origin_required")
         elif event == "board_only_parent_done":
-            if origin_kind != "board_only" or native_parent_done is not True:
+            if origin_kind != "board_only":
+                raise LifecycleError("board_only_origin_required")
+            if native_parent_done is not True and children_all_done is not True:
                 raise LifecycleError("board_only_parent_not_done")
         elif event == "retriable_lane_failure":
             if retry_budget_remaining is None or retry_budget_remaining <= 0:

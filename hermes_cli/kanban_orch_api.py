@@ -246,6 +246,7 @@ def apply_lifecycle_transition_db(
     origin_kind: str | None = None,
     retry_budget_remaining: int | None = None,
     native_parent_done: bool | None = None,
+    children_all_done: bool | None = None,
 ) -> dict[str, Any]:
     """DB-backed lifecycle CAS using pure transition table + SQL revision fence."""
     tenant = "" if tenant_scope is None else str(tenant_scope)
@@ -279,6 +280,7 @@ def apply_lifecycle_transition_db(
             origin_kind=origin_kind,
             retry_budget_remaining=retry_budget_remaining,
             native_parent_done=native_parent_done,
+            children_all_done=children_all_done,
         )
         grant(
             conn,

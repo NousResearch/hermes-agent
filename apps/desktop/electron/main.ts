@@ -5326,6 +5326,26 @@ function sendOpenUpdatesRequested() {
   mainWindow.focus()
 }
 
+function sendOpenSettingsRequested() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  const { webContents } = mainWindow
+
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send('hermes:open-settings')
+
+  if (!mainWindow.isVisible()) {
+    mainWindow.show()
+  }
+
+  mainWindow.focus()
+}
+
 // Push titlebar/fullscreen chrome state to a window's renderer. Defaults to the
 // primary, but any full chat window (primary or a secondary "instance" peer)
 // passes itself so its own fullscreen toggle drives its own traffic-light inset.
@@ -5362,6 +5382,7 @@ function buildApplicationMenu() {
       label: APP_NAME,
       submenu: [
         { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
+        { label: 'Settings…', accelerator: 'CommandOrControl+,', click: () => sendOpenSettingsRequested() },
         checkForUpdatesItem,
         { type: 'separator' },
         { role: 'services' },

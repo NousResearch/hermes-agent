@@ -19,7 +19,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/
 import { isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
-import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
+import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, SETTINGS_ROUTE, sessionRoute } from '../../routes'
 
 interface DesktopIntegrationsParams {
   chatOpen: boolean
@@ -53,12 +53,14 @@ export function useDesktopIntegrations({
   useEffect(() => {
     startUpdatePoller()
     const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow())
+    const unsubscribeSettings = window.hermesDesktop?.onOpenSettingsRequested?.(() => navigate(SETTINGS_ROUTE))
 
     return () => {
       unsubscribe?.()
+      unsubscribeSettings?.()
       stopUpdatePoller()
     }
-  }, [])
+  }, [navigate])
 
   // The renderer OWNS ⌘W: on macOS the native menu accelerator would else
   // close the window, so claim it unconditionally — the menu then routes ⌘W

@@ -396,16 +396,38 @@ def test_every_dispatcher_kanban_var_is_identity_gated():
 
     injected = set()
     for node in ast.walk(spawn):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if not isinstance(target, ast.Subscript):
+        # env["HERMES_KANBAN_X"] = ...  and the annotated form
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if not isinstance(target, ast.Subscript):
+                    continue
+                if ast.unparse(target.value) != "env":
+                    continue
+                key = ast.unparse(target.slice).strip("\"'")
+                if key.startswith("HERMES_KANBAN_"):
+                    injected.add(key)
+        # env.update({"HERMES_KANBAN_X": ...}) / env.setdefault("HERMES_KANBAN_X", ...)
+        elif isinstance(node, ast.Call):
+            func = ast.unparse(node.func)
+            if func not in ("env.update", "env.setdefault"):
                 continue
-            if ast.unparse(target.value) != "env":
-                continue
-            key = ast.unparse(target.slice).strip("\"'")
-            if key.startswith("HERMES_KANBAN_"):
-                injected.add(key)
+            literals = []
+            for arg in node.args:
+                if isinstance(arg, ast.Dict):
+                    literals.extend(
+                        k for k in arg.keys if isinstance(k, ast.Constant)
+                    )
+                elif isinstance(arg, ast.Constant):
+                    literals.append(arg)
+            for kw in node.keywords:
+                if kw.arg and kw.arg.startswith("HERMES_KANBAN_"):
+                    injected.add(kw.arg)
+            for lit in literals:
+                if isinstance(lit.value, str) and lit.value.startswith(
+                    "HERMES_KANBAN_"
+                ):
+                    injected.add(lit.value)
 
     assert injected, "failed to parse dispatcher kanban env injection"
 

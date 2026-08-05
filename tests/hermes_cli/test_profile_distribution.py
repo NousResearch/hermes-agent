@@ -10,6 +10,7 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -720,6 +721,9 @@ class TestManifestCrashDurability:
         # No temp file left behind next to the manifest.
         assert list(tmp_path.glob("*.tmp")) == []
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX permission bits"
+    )
     def test_existing_file_mode_is_preserved(self, tmp_path):
         import os
         import stat

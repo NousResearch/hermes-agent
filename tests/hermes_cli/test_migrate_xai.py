@@ -1,6 +1,7 @@
 """Tests for ``hermes migrate xai`` — apply path with ruamel round-trip."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -269,6 +270,7 @@ class TestCrashDurability:
         assert real.read_text(encoding="utf-8") == link.read_text(encoding="utf-8")
         assert "grok-4.3" in real.read_text(encoding="utf-8")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
     def test_existing_file_mode_is_preserved(self, trap_config: Path):
         """Managed (NixOS 0640) and container installs widen config.yaml
         deliberately; the migration must not silently tighten it to 0600."""

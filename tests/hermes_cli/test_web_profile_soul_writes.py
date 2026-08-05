@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -96,6 +97,7 @@ class TestSoulWriteDurability:
         # No temp file left behind in the profile directory.
         assert list(profile_dir.glob("*.tmp")) == []
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
     def test_existing_file_mode_is_preserved(self, client, profile_dir: Path):
         """Profile SOUL.md is created 0644 and never run through
         ``_secure_file``; saving from the dashboard must not change that."""

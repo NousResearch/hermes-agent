@@ -313,6 +313,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("topup", "Show your Nous balance and manage billing on the portal", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
+    CommandDef("behavior", "Show behavioral analysis and insight cards", "Info",
+               args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",)),
     CommandDef("platform", "Pause, resume, or list a failing gateway platform", "Info",
@@ -1261,7 +1263,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     /hermes update on Slack. Demoted to free the native slot /approvals now
 #     claims — without this entry /approvals tips the registry past the 50-cap
 #     and silently clamps /update off, breaking Telegram parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update"})
+#   - behavior: the behavioral-analysis report; reached via /hermes behavior
+#     on Slack to avoid displacing existing native slashes at the 50-command cap.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "behavior"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

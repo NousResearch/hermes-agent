@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 import pytest
 
 import agent.secret_scope as secret_scope
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.base import (
     MessageEvent,
@@ -3650,15 +3650,11 @@ class TestProgressMessageThread:
         )
 
 
-class TestSlackReplyToText:
-    """Ensure MessageEvent.reply_to_text is populated on thread replies so
-    gateway.run can inject a ``[Replying to: "..."]`` prefix (parity with
-    Telegram/Discord/Feishu/WeCom)."""
+class TestSlackThreadParentContext:
+    """Ensure Slack thread roots are hydrated once, not injected every turn."""
 
     @pytest.mark.asyncio
-    async def test_slack_reply_to_text_set_on_thread_reply(self, adapter):
-        """When a thread reply arrives and the parent was posted by a bot
-        (e.g. cron summary), reply_to_text must carry the parent's text."""
+    async def test_thread_root_uses_channel_context_not_reply_to_text(self, adapter):
         adapter._channel_team = {}  # primary workspace only
         adapter._team_bot_user_ids = {}
 
@@ -3696,10 +3692,49 @@ class TestSlackReplyToText:
         ), "handle_message must be invoked for thread-reply DM"
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.reply_to_message_id == "1000.0"
-        # The critical assertion: parent text is exposed as reply_to_text so the
-        # gateway can inject it when not already in the session history.
-        assert msg_event.reply_to_text is not None
-        assert "メール要約" in msg_event.reply_to_text
+        assert "メール要約" in msg_event.channel_context
+        assert msg_event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_active_thread_does_not_refetch_root_as_reply_text(self, adapter):
+        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="original task")
+
+        event = {
+            "text": "one more detail",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1001.0",
+            "thread_ts": "1000.0",
+        }
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")
+        ):
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.channel_context is None
+        assert msg_event.reply_to_message_id == "1000.0"
+        assert msg_event.reply_to_text is None
+        adapter._fetch_thread_parent_text.assert_not_awaited()
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake")
+            }
+        )
+        runner.adapters = {}
+        prepared = await runner._prepare_inbound_message_text(
+            event=msg_event,
+            source=msg_event.source,
+            history=[{"role": "user", "content": "original task"}],
+        )
+
+        assert prepared == "one more detail"
+        assert "[Replying to:" not in prepared
 
 
 # ---------------------------------------------------------------------------

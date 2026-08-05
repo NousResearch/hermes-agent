@@ -286,7 +286,8 @@ class _ThreadContextCache:
     content: str
     fetched_at: float = field(default_factory=time.monotonic)
     message_count: int = 0
-    parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
+    # Cached root text used by mention wake checks.
+    parent_text: str = ""
     # The Slack user_id of the thread parent message author. Used by
     # _bot_authored_thread_root (#63530) to detect threads whose root was
     # posted by the bot via direct chat.postMessage (outside the gateway's
@@ -5436,10 +5437,8 @@ class SlackAdapter(BasePlatformAdapter):
         used by the Feishu and Photon adapters — ``reaction:added:<emoji>`` /
         ``reaction:removed:<emoji>`` — with common Slack reaction names
         translated to unicode emoji (👍, 👎, ✅, …) so agents and skills see
-        the same shape on every platform. Because the synthesized event is
-        threaded under the reacted-to message, the existing reply-context
-        plumbing injects the target message's text as ``reply_to_text`` and
-        the agent sees WHAT was reacted to.
+        the same shape on every platform. The event is routed to the
+        reacted-to message's thread, whose history supplies the context.
 
         Message-pipeline routing is OPT-IN via ``slack.reaction_triggers``
         (default off) so busy channels don't wake the agent on every emoji.
@@ -6906,29 +6905,6 @@ class SlackAdapter(BasePlatformAdapter):
             None,
         )
 
-        # Extract reply context if this message is a thread reply.
-        # Mirrors the Telegram/Discord implementations so that gateway.run
-        # can inject a `[Replying to: "..."]` prefix when the parent is not
-        # already in the session history. Uses the thread-context cache when
-        # available to avoid redundant conversations.replies calls.
-        reply_to_text = None
-        if thread_ts and thread_ts != ts:
-            try:
-                reply_to_text = (
-                    await self._fetch_thread_parent_text(
-                        channel_id=channel_id,
-                        thread_ts=thread_ts,
-                        team_id=team_id,
-                    )
-                    or None
-                )
-                if reply_to_text:
-                    reply_to_text = await self._humanize_user_mentions(
-                        reply_to_text, chat_id=channel_id, team_id=team_id
-                    )
-            except Exception:  # pragma: no cover - defensive
-                reply_to_text = None
-
         # Humanize remaining user mentions: the bot's own mention was already
         # stripped above, so any ``<@UID>`` left in the trigger text refers to
         # OTHER participants. Render them as ``@DisplayName`` so the agent can
@@ -6951,7 +6927,9 @@ class SlackAdapter(BasePlatformAdapter):
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=_channel_prompt,
             channel_context=channel_context,
-            reply_to_text=reply_to_text,
+            # thread_ts identifies the thread root, not an explicit reply;
+            # channel_context hydrates the root separately.
+            reply_to_text=None,
             auto_skill=_auto_skill,
             metadata={
                 "slack_team_id": team_id,
@@ -8012,8 +7990,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         When ``after_ts`` is set, only messages with ts strictly greater than
         the watermark are included (delta refresh, #23918); the thread parent
-        text is still captured regardless so reply_to_text callers keep
-        working from the shared cache.
+        text is still captured in the shared cache.
 
         Returns ``(content, parent_text)``.
         """
@@ -8162,16 +8139,15 @@ class SlackAdapter(BasePlatformAdapter):
     ) -> str:
         """Return the text of the thread parent message.
 
-        Used for reply_to_text injection (mention stripped) and for the
-        parent-mentioned-bot wake check (#24848 — pass
-        ``strip_bot_mention=False`` so the ``<@bot>`` token is preserved).
+        Used to check whether the root mentions the bot (#24848). Set
+        ``strip_bot_mention=False`` to preserve the mention.
 
         Uses the same per-thread cache as :meth:`_fetch_thread_context` to avoid
         hitting ``conversations.replies`` twice. Falls back to a cheap single-
         message fetch (``limit=1, inclusive=True``) when the cache is cold.
 
         Returns empty string on any failure — callers should treat an empty
-        return as "no parent context to inject".
+        return as an unavailable parent message.
         """
         cache_key = f"{channel_id}:{thread_ts}:{team_id}"
         now = time.monotonic()

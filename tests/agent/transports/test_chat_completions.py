@@ -725,9 +725,28 @@ class TestPromptCacheKeyCapability:
                 supports_prompt_cache_key=True,
             )["prompt_cache_key"]
 
-        first = key("cron_job_2026-07-15T10:00:00Z")
-        second = key("cron_job_2026-07-15T10:05:00Z")
+        first = key("cron_job_20260715_100000")
+        second = key("cron_job_20260715_100500")
 
         assert first == second
-        assert first != key("cron_job_2026-07-15T10:05:00Z", instructions="You are different.")
-        assert first != key("cron_job_2026-07-15T10:05:00Z", tool_name="search")
+        assert first != key("cron_job_20260715_100500", instructions="You are different.")
+        assert first != key("cron_job_20260715_100500", tool_name="search")
+
+    def test_unrelated_sessions_get_distinct_keys(self, transport):
+        """#78941: identical static prefix across unrelated (non-cron) sessions
+        must not collapse onto one shared prompt_cache_key."""
+        kw1 = transport.build_kwargs(
+            model="cache-model",
+            messages=self._messages("You are stable."),
+            tools=self._tools("lookup"),
+            session_id="session_alice_1",
+            supports_prompt_cache_key=True,
+        )
+        kw2 = transport.build_kwargs(
+            model="cache-model",
+            messages=self._messages("You are stable."),
+            tools=self._tools("lookup"),
+            session_id="session_bob_1",
+            supports_prompt_cache_key=True,
+        )
+        assert kw1["prompt_cache_key"] != kw2["prompt_cache_key"]

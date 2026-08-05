@@ -3187,6 +3187,69 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert time.monotonic() - started < 0.14
 
 
+class TestCodexAuxiliaryAdapterCacheScope:
+    """Regression for issue #78941: auxiliary Codex calls (compression,
+    flush_memories, MoA, session_search) must not bucket-share a prompt
+    cache slot across unrelated sessions just because their instructions
+    and tools happen to match.
+    """
+
+    def _create_and_capture(self, *, session_id):
+        import agent.auxiliary_client as aux
+
+        class _FakeCreateStream:
+            def __iter__(self):
+                return iter([
+                    SimpleNamespace(
+                        type="response.output_item.done",
+                        item=SimpleNamespace(
+                            type="message",
+                            content=[SimpleNamespace(type="output_text", text="ok")],
+                        ),
+                    ),
+                    SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                        status="completed", id="r1", usage=None,
+                    )),
+                ])
+
+            def close(self):
+                pass
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return _FakeCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses(), base_url="")
+        adapter = aux._CodexCompletionsAdapter(fake_client, "gpt-5.5")
+        token = aux.set_runtime_main("openai", "gpt-5.5", session_id=session_id)
+        try:
+            adapter.create(
+                messages=[
+                    {"role": "system", "content": "You are a memory summarizer."},
+                    {"role": "user", "content": "Summarize the last turn."},
+                ],
+            )
+        finally:
+            aux.reset_runtime_main(token)
+        return fake_client.responses.kwargs["prompt_cache_key"]
+
+    def test_different_sessions_get_different_cache_keys(self):
+        key_a = self._create_and_capture(session_id="session-A")
+        key_b = self._create_and_capture(session_id="session-B")
+        assert key_a != key_b
+
+    def test_cron_refires_of_the_same_job_share_a_cache_key(self):
+        first = self._create_and_capture(session_id="cron_job42_20260801_090000")
+        second = self._create_and_capture(session_id="cron_job42_20260802_090000")
+        other_job = self._create_and_capture(session_id="cron_job99_20260801_090000")
+        assert first == second
+        assert first != other_job
+
+
 class TestCodexAuxiliaryToolMessageConversion:
     """Regression for issue #5709.
 

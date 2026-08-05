@@ -3,8 +3,7 @@
 These tests exercise the REAL `_pipe_stdin` writer thread against a real
 subprocess — no mocks. They pin the round-trip byte contract (utf-8 +
 surrogateescape is the inverse of the decode that produced the content) and
-the always-close / error-capture guarantees of the writer thread. Later
-tasks in this plan append propagation and write_file tests to this file.
+the always-close / error-capture guarantees of the writer thread.
 """
 import shlex
 import subprocess
@@ -89,6 +88,65 @@ def env(tmp_path):
     return LocalEnvironment(cwd=str(tmp_path), timeout=15)
 
 
+@pytest.fixture
+def ops(env, tmp_path):
+    """ShellFileOperations wired to the real local environment."""
+    return ShellFileOperations(env, cwd=str(tmp_path))
+
+
+class TestWriteFileSurrogates:
+    def test_roundtrip_preserves_bytes_count_and_hash(self, ops, tmp_path):
+        p = tmp_path / "surrogate.bin"
+        res = ops.write_file(str(p), b"\xff\x00\xfe".decode("utf-8", "surrogateescape"))
+        assert res.error is None
+        assert res.bytes_written == 3
+        assert res.verified is True
+        assert p.read_bytes() == b"\xff\x00\xfe"
+        assert not list(tmp_path.glob(".hermes-tmp*"))
+
+    def test_roundtrip_mixed_normal_and_surrogate(self, ops, tmp_path):
+        content = "head\n" + b"\xff".decode("utf-8", "surrogateescape") + "\ntail\n"
+        p = tmp_path / "mixed.bin"
+        res = ops.write_file(str(p), content)
+        assert res.error is None
+        assert res.verified is True
+        assert p.read_bytes() == b"head\n\xff\ntail\n"
+
+    @pytest.mark.parametrize("bad", ["\ud800", "\udc7f", "\udd00"])
+    def test_unencodable_surrogate_rejected_before_write(self, ops, tmp_path, bad):
+        p = tmp_path / "reject.bin"
+        res = ops.write_file(str(p), bad)
+        assert res.error and "surrogate" in res.error
+        assert "NOT created or modified" in res.error
+        assert "timed out" not in res.error
+        assert not p.exists()
+
+    def test_rejected_write_leaves_existing_target_unchanged(self, ops, tmp_path):
+        p = tmp_path / "keep.bin"
+        p.write_bytes(b"precious original bytes")
+        res = ops.write_file(str(p), "\ud800")
+        assert res.error and "NOT created or modified" in res.error
+        assert p.read_bytes() == b"precious original bytes"
+
+    def test_patch_replace_funnel_rejects_surrogate_new_string(self, ops, tmp_path):
+        p = tmp_path / "patchme.txt"
+        p.write_text("old\n")
+        # \udc7f is OUTSIDE the surrogateescape round-trip range (U+DC80–U+DCFF)
+        # — unencodable even with surrogateescape — so write_file's early
+        # rejection must catch it through the patch funnel. (An in-range
+        # surrogate like \udcff legitimately round-trips, per the spec.)
+        res = ops.patch_replace(str(p), "old", "new" + "\udc7f")
+        assert res.error and "surrogate" in res.error
+        assert p.read_text() == "old\n"
+
+    def test_normal_content_verified(self, ops, tmp_path):
+        p = tmp_path / "normal.txt"
+        res = ops.write_file(str(p), "hello\nworld\n")
+        assert res.error is None
+        assert res.verified is True
+        assert p.read_bytes() == b"hello\nworld\n"
+
+
 class TestStdinErrorPropagation:
     def test_execute_surfaces_stdin_error_without_hanging(self, env):
         t0 = time.monotonic()
@@ -99,6 +157,12 @@ class TestStdinErrorPropagation:
         assert result.get("stdin_error")  # the write failure was surfaced
         assert "stdin write failed" in result["output"]
         assert elapsed < 5.0, f"stdin failure path hung for {elapsed:.1f}s"
+
+    def test_normal_path_result_has_no_stdin_error_key(self, env):
+        result = env.execute("echo hi")
+        assert "stdin_error" not in result
+        assert result["returncode"] == 0
+        assert "hi" in result["output"]
 
 
 class TestExecStdinErrorMapping:

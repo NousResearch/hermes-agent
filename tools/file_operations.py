@@ -1502,6 +1502,22 @@ class ShellFileOperations(FileOperations):
         if denied:
             return WriteResult(error=denied)
 
+        # Reject lone surrogates up front with a regex scan (no encode, no
+        # subprocess). surrogateescape-decoded content (U+DC80–U+DCFF)
+        # round-trips through the pipe fine, but surrogates outside that
+        # range cannot be encoded at all — and letting them reach the pipe
+        # would spawn a child that then hangs, or truncates the target via
+        # empty-stdin `cat`. Refuse synchronously before any subprocess.
+        m = re.search(r"[\ud800-\udc7f\udd00-\udfff]", content)
+        if m:
+            return WriteResult(
+                error=(
+                    f"Refusing to write '{path}': content contains a lone "
+                    f"surrogate character ({m.group(0)!r}) that cannot be "
+                    "encoded as UTF-8. The file was NOT created or modified."
+                )
+            )
+
         # ── Fail-closed pre-write syntax gate ───────────────────────────
         # Validate the CANDIDATE content BEFORE any bytes touch disk —
         # previously this only ran as a post-write lint *report* that the
@@ -1626,20 +1642,32 @@ class ShellFileOperations(FileOperations):
         # the atomic swap doesn't silently widen or narrow permissions, and
         # clean the temp up on any failure so we never leak a ``.hermes-tmp``
         # turd next to the user's file.
+        # Encode once for byte count + sha256. surrogateescape is the exact
+        # inverse of the decode that may have produced this content, so these
+        # are the bytes the pipe transmits and the bytes on disk. The early
+        # rejection above guarantees this cannot raise; the try/except is
+        # defense for future callers that bypass it.
+        try:
+            content_bytes = content.encode("utf-8", "surrogateescape")
+        except UnicodeEncodeError as exc:
+            return WriteResult(
+                error=(
+                    f"Refusing to write '{path}': content contains a lone "
+                    f"surrogate character ({exc}) that cannot be encoded as "
+                    "UTF-8. The file was NOT created or modified."
+                )
+            )
         write_result = self._atomic_write(path, content)
 
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
-        # Get bytes written — compute from the content we just wrote
-        # (len of the UTF-8 encoding matches wc -c) instead of spawning a
-        # ``wc -c`` subprocess. ``surrogatepass`` matches the sha256
-        # verification below: content that flowed through a surrogateescape
-        # decode (backend output via patch_replace) may carry lone
-        # surrogates a strict encode would reject.  Encode ONCE and share
-        # the bytes with the sha256 block — a second full encode of a
-        # multi-MB file is measurable.
-        content_bytes = content.encode('utf-8', 'surrogatepass')
+        # Bytes written — computed from the exact bytes we just wrote (len
+        # matches wc -c) instead of spawning a ``wc -c`` subprocess. The
+        # encode happened up front with surrogateescape — the inverse of the
+        # decode that produces surrogate content — so content_bytes == what
+        # rode stdin == what is on disk, and the sha256 below compares like
+        # with like.
         bytes_written = len(content_bytes)
 
         # Post-write content verification (cheap, one shell call): compare

@@ -428,14 +428,27 @@ class _TopicDriftTracker:
 
     Requires ``threshold`` consecutive signals for the same new topic before
     confirming a genuine shift.  A single stray TOPIC doesn't switch.
+
+    The threshold can be dynamically lowered when topic_detection independently
+    confirms a shift — this bridges the gap between the pre-LLM detection
+    (user-message level) and the post-LLM signal (assistant TOPIC line).
     """
 
-    __slots__ = ("_pending_name", "_pending_count", "_threshold")
+    __slots__ = ("_pending_name", "_pending_count", "_threshold", "_base_threshold")
 
     def __init__(self, threshold: int = 2):
         self._pending_name: Optional[str] = None
         self._pending_count: int = 0
         self._threshold: int = threshold
+        self._base_threshold: int = threshold
+
+    def set_threshold(self, threshold: int) -> None:
+        """Temporarily adjust the confirmation threshold."""
+        self._threshold = max(1, threshold)
+
+    def reset_threshold(self) -> None:
+        """Restore the base threshold after a turn."""
+        self._threshold = self._base_threshold
 
     def feed(self, name: str) -> Optional[str]:
         """Return the topic name to switch to, or ``None`` to stay."""
@@ -1757,9 +1770,18 @@ class AIAgent:
         Uses hysteresis: a new topic name must appear in two consecutive
         responses before switching.  Matches name against existing topics
         (fuzzy): switch if match, create if new.  Returns cleaned content.
+
+        When topic_detection independently confirms a shift (pre-LLM), the
+        hysteresis threshold is lowered to 1 for this turn — a single TOPIC
+        signal is enough to switch when both the embedding/LLM signal and
+        the model's own TOPIC line agree.
         """
         cleaned, name = _parse_topic(content)
         if not name:
+            # Even without a TOPIC line, reset threshold for next turn
+            drift = getattr(self, "_topic_drift", None)
+            if drift is not None:
+                drift.reset_threshold()
             return cleaned
 
         db = getattr(self, "_session_db", None)
@@ -1767,8 +1789,21 @@ class AIAgent:
         if not db or not sid:
             return cleaned
 
-        # Feed the drift tracker — only act when hysteresis confirms the shift
+        # ── Pre-LLM topic detection hint ──
+        # Check the last two user messages via topic_detection. If it
+        # independently confirms a shift, lower the hysteresis threshold
+        # so the model's TOPIC line doesn't need a second confirmation.
         drift = getattr(self, "_topic_drift", None)
+        if drift is not None and hasattr(drift, "set_threshold"):
+            try:
+                topic_hint = self._check_topic_shift_from_history()
+                if topic_hint and not topic_hint.get("topic_continuation", True):
+                    drift.set_threshold(1)
+                else:
+                    drift.reset_threshold()
+            except Exception:
+                drift.reset_threshold()
+
         confirmed = name  # no tracker? fall back to immediate switch
         if drift is not None and hasattr(drift, "feed"):
             confirmed = drift.feed(name)
@@ -1791,6 +1826,34 @@ class AIAgent:
             pass
 
         return cleaned
+
+    def _check_topic_shift_from_history(self) -> dict | None:
+        """Check last two user messages for topic shift via topic_detection.
+
+        Extracts the last two user messages from conversation_history, runs
+        the shared AND-gate detection (S6 cosine only — no LLM call here to
+        avoid adding latency to the response path), and returns the result.
+
+        Returns None if detection is unavailable or history is too short.
+        """
+        try:
+            history = self.conversation_history or []
+            user_msgs = [
+                m.get("content", "") for m in history
+                if isinstance(m, dict) and m.get("role") == "user"
+                and isinstance(m.get("content"), str)
+            ]
+            if len(user_msgs) < 2:
+                return None
+            current = user_msgs[-1]
+            prev = user_msgs[-2]
+            if not current or not prev:
+                return None
+
+            from agent.topic_detection import detect_topic_shift
+            return detect_topic_shift(current, prev_msg=prev)
+        except Exception:
+            return None
 
     def _create_topic_from_shift(self, name: str) -> None:
         """Create a new topic from TOPIC: <name> signal."""

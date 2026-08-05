@@ -857,3 +857,122 @@ class TestCronCreateLifecycleBlockExtra:
         assert rc == 1
         out = capsys.readouterr().out
         assert "Blocked" in out
+
+
+class TestLifecycleGuardTokenizerAndBinaryHandling:
+    """Regression tests for the guard's command-tokenization and
+    referenced-script classification:
+
+    - B2: multi-line payloads (python -c / heredocs) must not promote
+      parenthesized path arguments to "referenced scripts" and scan the
+      files they name — an innocent command touching a text file that
+      merely mentions a lifecycle command was blocked.
+    - B1: NUL-bearing paths (from a direct payload or from a remote
+      backend returning a binary decoded as text) must never crash the
+      guard with ValueError: embedded null byte.
+    - B4: directory candidates are "nothing to scan", not unsafe.
+    - B3: killall/pkill variants targeting hermes-gateway are detected.
+    """
+
+    def test_multiline_python_payload_path_not_scanned_as_script(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        datafile = tmp_path / "session.json"
+        datafile.write_text("note: hermes gateway restart was blocked here\n")
+        cmd = (
+            "python3 -c \"\n"
+            f"import json\nwith open('{datafile}') as f:\n    d = json.load(f)\n"
+            "\""
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            cmd, cwd=str(tmp_path)
+        ) is False
+
+    def test_heredoc_payload_with_paths_not_scanned_as_scripts(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("model: hermes gateway restart\n")
+        cmd = (
+            "/usr/bin/python3 - <<'EOF'\n"
+            f"p = '{cfg}'\n"
+            "with open(p) as f:\n"
+            "    data = f.read()\n"
+            "EOF\n"
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            cmd, cwd=str(tmp_path)
+        ) is False
+
+    def test_nul_path_in_payload_does_not_crash(self):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        cmd = "bash -c '/tmp/a\x00b/script.sh x'"
+        assert contains_gateway_lifecycle_command_or_referenced_script(cmd) is False
+
+    def test_remote_read_returning_binary_text_does_not_crash(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        # A remote backend returning a binary decoded as text: NUL bytes
+        # survive as valid UTF-8, so the recursion must skip the text
+        # rather than tokenize NUL-bearing paths into os.open.
+        binary_text = b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 64 + b"/tmp/x\x00y.sh\n"
+
+        def read_remote(script_path):
+            return binary_text.decode("utf-8", errors="replace")
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            "/nonexistent/runner --version",
+            cwd=str(tmp_path),
+            read_remote_script=read_remote,
+        ) is False
+
+    def test_directory_candidate_not_blocked(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            f"/bin/bash {tmp_path}", cwd=str(tmp_path)
+        ) is False
+
+    def test_killall_and_pkill_gateway_detected(self):
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+        for text in [
+            "killall hermes-gateway",
+            "killall -9 hermes-gateway",
+            "pkill -f hermes-gateway",
+            "pkill hermes gateway",
+        ]:
+            assert contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    def test_killall_without_gateway_not_blocked(self):
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+        assert contains_gateway_lifecycle_command("killall chrome") is False
+
+    def test_lifecycle_commands_still_detected_after_tokenizer_change(self):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        for cmd in [
+            "hermes gateway restart",
+            "systemctl restart hermes-gateway",
+            "launchctl kickstart gui/501/ai.hermes.gateway",
+            "bash -c 'hermes gateway restart'",
+        ]:
+            assert contains_gateway_lifecycle_command_or_referenced_script(cmd), cmd
+
+    def test_shell_c_payload_with_paths_still_scanned(self, tmp_path):
+        """The single-pass tokenizer must keep the -c payload walk intact."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        evil = tmp_path / "evil.sh"
+        evil.write_text("#!/bin/bash\nhermes gateway stop\n")
+        cmd = f"/bin/bash -c '/bin/bash {evil}'"
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            cmd, cwd=str(tmp_path)
+        ) is True

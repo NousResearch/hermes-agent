@@ -74,8 +74,8 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both
     # token orders because real reproductions show both.
-    r"|(?:p?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:p?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    r"|(?:p?kill[a-z]*\b[^\n]*\bhermes\b[^\n]*\bgateway)"
+    r"|(?:p?kill[a-z]*\b[^\n]*\bgateway\b[^\n]*\bhermes)"
 )
 
 
@@ -105,6 +105,23 @@ _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
+# Header bytes inspected to tell a script from a binary.
+_SCRIPT_HEADER_BYTES = 4096
+
+
+def _looks_like_script(path: Path) -> bool:
+    """Return True when *path* is a local file plausibly holding a shell
+    script: its header contains no NUL bytes (real scripts are NUL-free
+    text; shebang or not). Binaries — ELF/Mach-O/PE, UTF-16, compressed
+    data — have NUL bytes and are not shell scripts, so the reference walk
+    skips them instead of decoding machine code as text (#76762, #77173).
+    """
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(_SCRIPT_HEADER_BYTES)
+    except (OSError, ValueError):
+        return False
+    return bool(head) and b"\x00" not in head
 
 
 
@@ -112,10 +129,68 @@ _CONTROL_CHARS = frozenset(";&|()")
 _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 
+def _split_logical_lines(text: str) -> Iterator[str]:
+    """Split *text* into logical lines at newlines that are OUTSIDE quotes.
+
+    Plain ``splitlines()`` destroys quote context: a multi-line payload (a
+    ``python -c "...`` string spanning newlines, a heredoc body,
+    ``$'...'``) has its quotes terminated at each physical newline, so
+    unquoted fragments of the payload — notably parenthesized paths like
+    ``open('/x/y.json')`` — were promoted to segment executables and
+    treated as referenced shell scripts. The referenced file was then read
+    and scanned: an innocent command touching any text file that merely
+    *mentions* a lifecycle command got blocked, and a binary decoded as
+    text crashed the scan (#76762 sibling). Splitting only at *unquoted*
+    newlines keeps quoted strings intact across physical lines, which is
+    what the shell does, while still giving every real command line its
+    own segment (so a line-starting ``./script.sh`` stays an executable).
+    """
+    out: list[str] = []
+    quote: Optional[str] = None
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if quote == "'":
+            out.append(ch)
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(ch)
+            out.append(text[i + 1])
+            i += 2
+            continue
+        if ch == "\n":
+            yield "".join(out)
+            out = []
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    if out or not text:
+        yield "".join(out)
+
+
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
     """Yield shell-tokenized command segments, honoring quotes and comments."""
     normalized = command.replace("\\\n", "")
-    for line in normalized.splitlines() or [normalized]:
+    for line in _split_logical_lines(normalized):
         try:
             lexer = shlex.shlex(
                 line,
@@ -226,7 +301,19 @@ def _iter_referenced_shell_scripts(
         # (#77131). Skip pure-separator tokens.
         if executable.strip("/"):
             if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
-                yield _resolve_terminal_script_path(executable, cwd)
+                candidate = _resolve_terminal_script_path(executable, cwd)
+                # Only follow candidates that are plausibly scripts. Local
+                # binaries (anything with NUL bytes in its header) are not
+                # shell scripts: skipping them avoids the wasted 1MB read
+                # AND the decoded-binary recursion that crashed the guard
+                # (#76762, #77173). Paths that don't exist locally are
+                # still yielded so a remote backend can fetch them via
+                # read_remote_script.
+                try:
+                    if not candidate.exists() or _looks_like_script(candidate):
+                        yield candidate
+                except (OSError, ValueError):
+                    continue
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
@@ -258,17 +345,28 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
-    except OSError:
+    except (OSError, ValueError):
+        # OSError: unreadable/long paths. ValueError: embedded NUL byte —
+        # a guarded path must never crash the guard (#76762).
         return None, False
     try:
         metadata = os.fstat(descriptor)
+        if stat.S_ISDIR(metadata.st_mode):
+            # A directory can never be a shell script (the shell rejects
+            # executing it), and bare "/" separators / pathlib division
+            # operators resolve here. "Nothing to scan", not unsafe —
+            # otherwise innocent commands touching directories get blocked
+            # (#77173).
+            return None, False
         if not stat.S_ISREG(metadata.st_mode):
+            # FIFOs/devices/sockets can stream script content we cannot
+            # inspect — fail closed.
             return None, True
         # Read a bounded chunk first — even for oversized files, the first
         # chunk tells us if this is a binary (NUL bytes) that should be
         # skipped as "nothing to scan" rather than failing closed (#76762).
         data = os.read(descriptor, _MAX_REFERENCED_SCRIPT_BYTES + 1)
-    except OSError:
+    except (OSError, ValueError):
         return None, False
     finally:
         os.close(descriptor)
@@ -332,6 +430,12 @@ def _contains_unsafe_gateway_action(
         # Relative references inside a script resolve against that script's
         # directory, not the original command's cwd.
         script_dir = _resolve_script_directory(str(resolved)) or cwd
+        if script_text and "\x00" in script_text:
+            # A remote backend may have returned a binary's bytes decoded
+            # as text (NUL is valid UTF-8). Tokenizing that would feed
+            # NUL-bearing paths into os.open and crash the guard (#76762
+            # sibling); there is nothing meaningful to scan.
+            continue
         if script_text and _contains_unsafe_gateway_action(
             script_text,
             cwd=script_dir,
@@ -383,9 +487,10 @@ def _resolve_script_path(script_path: str) -> Path:
 def _read_script_for_scanning(script_path: str) -> str:
     """Read a cron script with the bounded terminal-script scanner.
 
-    Non-regular or oversized inputs fail closed by returning a lifecycle-shaped
-    sentinel, while missing/unreadable paths remain empty so ordinary scheduler
-    path validation can report them.
+    Non-regular (FIFO/device/socket) or oversized inputs fail closed by
+    returning a lifecycle-shaped sentinel; directories are "nothing to scan"
+    (a directory can never be a script) and missing/unreadable paths remain
+    empty so ordinary scheduler path validation can report them.
     """
     script_text, unsafe = _read_referenced_script(_resolve_script_path(script_path))
     if unsafe:

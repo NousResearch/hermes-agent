@@ -2545,6 +2545,12 @@ def terminal_tool(
                         if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= 1024 * 1024:
                             data = local_path.read_bytes()
                             if len(data) <= 1024 * 1024:
+                                # Binaries decode to NUL-laden text and the
+                                # recursive scan would crash on NUL-bearing
+                                # paths — mirror _read_referenced_script's
+                                # "nothing to scan" semantics (#76762).
+                                if b"\x00" in data[:4096]:
+                                    return None
                                 return data.decode("utf-8", errors="replace")
                 except Exception:
                     pass

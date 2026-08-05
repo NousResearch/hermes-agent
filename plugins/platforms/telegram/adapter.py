@@ -9162,7 +9162,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 _observe_type = self._media_message_type(_m)
                 _event = self._build_message_event(_m, _observe_type, update_id=update.update_id)
                 if _m.caption:
-                    _event.text = self._clean_bot_trigger_text(_m.caption)
+                    _event.text = self._clean_bot_trigger_text(
+                        self._expand_link_entities(_m)
+                    )
                 await self._cache_observed_media(_m, _event)
                 self._observe_unmentioned_group_message(
                     _m, _event.message_type, update_id=update.update_id, event=_event
@@ -9177,7 +9179,7 @@ class TelegramAdapter(BasePlatformAdapter):
         
         # Add caption as text
         if msg.caption:
-            event.text = self._clean_bot_trigger_text(msg.caption)
+            event.text = self._clean_bot_trigger_text(self._expand_link_entities(msg))
         
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
@@ -9723,6 +9725,60 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             return None
 
+    def _expand_link_entities(self, message: Message) -> str:
+        """Inline Telegram ``text_link`` URLs into visible message text.
+
+        Telegram stores hidden-link offsets as UTF-16 code units, while Python
+        indexes Unicode code points.  Convert the boundaries before inserting
+        the URL so anchors after emoji and other non-BMP characters stay valid.
+        """
+        text = getattr(message, "text", None)
+        if text:
+            entities = getattr(message, "entities", None) or []
+        else:
+            text = getattr(message, "caption", None) or ""
+            entities = getattr(message, "caption_entities", None) or []
+        if not text or not entities:
+            return text
+
+        def utf16_index(offset: int) -> Optional[int]:
+            units = 0
+            for index, char in enumerate(text):
+                if units == offset:
+                    return index
+                units += 2 if ord(char) > 0xFFFF else 1
+                if units > offset:
+                    return None
+            return len(text) if units == offset else None
+
+        utf16_length = sum(2 if ord(char) > 0xFFFF else 1 for char in text)
+        links: List[Tuple[int, int, str]] = []
+        for entity in entities:
+            entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+            raw_url = getattr(entity, "url", None)
+            url = raw_url.strip() if isinstance(raw_url, str) else ""
+            if entity_type != "text_link" or not url:
+                continue
+            try:
+                offset = int(getattr(entity, "offset", -1))
+                length = int(getattr(entity, "length", 0))
+            except (TypeError, ValueError):
+                continue
+            if offset < 0 or length <= 0 or offset + length > utf16_length:
+                continue
+            start, end = utf16_index(offset), utf16_index(offset + length)
+            if start is None or end is None or end <= start:
+                continue
+            links.append((start, end, url))
+
+        expanded = text
+        for _start, end, url in sorted(links, reverse=True):
+            inline = f" ({url})"
+            if expanded[end:].startswith(inline):
+                continue
+            expanded = f"{expanded[:end]}{inline}{expanded[end:]}"
+        return expanded
+
     def _build_message_event(
         self,
         message: Message,
@@ -9849,11 +9905,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if quote_text:
                 reply_to_text = quote_text
             else:
-                reply_to_text = (
-                    message.reply_to_message.text
-                    or message.reply_to_message.caption
-                    or None
-                )
+                reply_message = message.reply_to_message
+                if reply_message.text or reply_message.caption:
+                    reply_to_text = self._expand_link_entities(reply_message)
                 if not reply_to_text:
                     # Prefer Telegram's native rich-message echo when present;
                     # keep the local send-time index only as a fallback for
@@ -9878,7 +9932,7 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
         return MessageEvent(
-            text=message.text or "",
+            text=self._expand_link_entities(message),
             message_type=msg_type,
             source=source,
             raw_message=message,

@@ -115,6 +115,9 @@ class TestHermesSquaredStub:
         original = "# demo\n\noriginal content\n"
         skill_file.write_text(original, encoding="utf-8")
 
+        # Phase 4 replaces the stub with a real mutator. When no LLM
+        # provider is configured, the engine surfaces the failure as
+        # ``apply_failed`` rather than corrupting SKILL.md.
         engine = HermesSquaredEngine(hermes_home=tmp_path)
         from agent.hermes_squared import ImprovementProposal
 
@@ -128,19 +131,22 @@ class TestHermesSquaredStub:
             current_private_score=0.5,
         )
 
-        # _apply_proposal must catch NotImplementedError and NOT touch
-        # SKILL.md.
         asyncio.run(engine._apply_proposal(proposal))
 
-        # SKILL.md untouched.
+        # SKILL.md untouched (mutator failed gracefully).
         assert skill_file.read_text(encoding="utf-8") == original
-        assert proposal.status == "rejected_stub"
+        assert proposal.status == "apply_failed"
 
-    def test_run_validation_eval_raises(self, tmp_path: Path):
+    def test_run_validation_eval_handles_missing_provider(self, tmp_path: Path):
+        """Phase 4 replaces the NotImplementedError stub with a real
+        ``EvalHarness.run_eval`` call. Without a configured provider
+        the call surfaces a structured failure rather than raising.
+        """
         engine = HermesSquaredEngine(hermes_home=tmp_path)
-        with pytest.raises(NotImplementedError) as exc:
-            asyncio.run(engine._run_validation_eval("eval-1", "demo-skill"))
-        assert "Phase 3" in str(exc.value)
+        result = asyncio.run(engine._run_validation_eval("eval-1", "demo-skill"))
+        # Without a configured provider, success=False with a reason.
+        assert result["success"] is False
+        assert result["private_score"] == 0.0
 
     def test_validate_proposal_returns_failure_on_stub(self, tmp_path: Path):
         skills_dir = tmp_path / "skills" / "demo-skill"

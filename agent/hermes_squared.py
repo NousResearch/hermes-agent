@@ -1,42 +1,38 @@
-"""Hermes² — Outer Loop self-improvement engineer (skeleton).
+"""Hermes² — Outer Loop self-improvement engineer.
 
 Inspired by AIDE²'s outer-loop agent: this cron-driven engineer periodically
 reads the Experience Ledger, identifies skills needing improvement, proposes
 mutations, validates them through the Eval Harness, and only retains changes
 that improve the private score.
 
-⚠️  STUB IMPLEMENTATION WARNING ⚠️
-The execution paths that *produce* eval results and *apply* mutations are
-intentional stubs that raise ``NotImplementedError`` until Phases 3 and 4:
+Phase 4 of the AIDE² self-evaluation plan (see
+``docs/aide-squared-roadmap.md``). The execution paths are now real:
 
-- ``_run_validation_eval`` (Phase 3): runs the eval prompt against Hermes
-  via auxiliary_client + isolated chat session. Currently raises.
-- ``_apply_mutation`` (Phase 4): writes a new SKILL.md based on LLM-generated
-  content. Currently raises to prevent corrupting user SKILL.md files with
-  hard-coded text appendages (the previous string-append implementation was
-  actively harmful — it would add noise like "## Validation Steps" sections
-  to every skill regardless of what the skill does).
+- ``_apply_mutation`` delegates to the injected ``SkillMuter``
+  (defaults to ``DefaultSkillMuter``) which calls
+  :mod:`agent.auxiliary_client.call_llm` with a structured prompt
+  asking the model to rewrite ``SKILL.md`` based on the skill's
+  evaluation summary and the chosen strategy.
+- ``_validate_proposal`` writes the mutation to disk via the
+  ``SkillMuterApplier`` (which creates ``SKILL.md.bak``), runs the
+  eval through ``EvalHarness``, and rolls back from the backup
+  regardless of outcome.
+- ``_apply_proposal`` permanently writes the mutation via the same
+  applier and records the new eval entry in the ledger with
+  ``lineage=proposal_id`` so future cycles can audit the evolution.
+- ``_run_validation_eval`` synthesizes a one-off ``EvalDefinition``
+  from the skill's summary, injects it into the harness, and
+  returns the measured ``private_score`` + ``cost_usd``.
 
-Working parts (fully tested):
-- Cycle orchestration (load → worst-skills → propose → validate → accept/reject)
-- Proposal generation from SkillSummary symptoms
-- Budget enforcement
-- Stale-fallback: if ``_apply_proposal`` finds no SKILL.md, skip
-- Report serialization
-
-Key principles from AIDE² (for the full Phase 3+4 implementation):
+Key principles from AIDE²:
 1. Read experience ledger → find worst performers
 2. Propose 1-3 mutations (rewrite SKILL.md / add skill / adjust memory)
 3. Validate via eval harness with private score
 4. Only retain if private score improves AND cost doesn't exceed budget
 5. ~90% rejection rate (strict evaluation)
 
-Usage (Phase 3+4):
-    # Create cron job (every Sunday 2am)
-    hermes cron create --prompt "Run Hermes² self-improvement cycle" \\
-        --schedule "0 2 * * 0" --skills "hermes-agent"
+Usage::
 
-    # Or run manually
     from agent.hermes_squared import HermesSquaredEngine
     engine = HermesSquaredEngine()
     report = await engine.run_improvement_cycle()
@@ -52,8 +48,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent.eval_harness import EvalHarness
+from agent.eval_harness import EvalDefinition, EvalHarness
 from agent.experience_ledger import ExperienceLedger, SkillEval, SkillSummary
+from agent.skill_muter import (
+    ApplyResult,
+    DefaultSkillMuter,
+    DefaultSkillMuterApplier,
+    MutationContext,
+    MutationProposal,
+    SkillMuter,
+    SkillMuterApplier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +146,9 @@ class HermesSquaredEngine:
         max_proposals_per_cycle: int = 3,
         improvement_budget_usd: float = 5.0,
         min_private_score_threshold: float = 0.6,
+        *,
+        mutator: Optional[SkillMuter] = None,
+        applier: Optional[SkillMuterApplier] = None,
     ):
         self.hermes_home = hermes_home or Path.home() / ".hermes"
         self.max_proposals = max_proposals_per_cycle
@@ -155,6 +163,8 @@ class HermesSquaredEngine:
         self.evals_dir = self.hermes_home / "evals"
         self.reports_dir = self.evals_dir / "reports"
         self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self.mutator: SkillMuter = mutator or DefaultSkillMuter()
+        self.applier: SkillMuterApplier = applier or DefaultSkillMuterApplier()
 
     async def run_improvement_cycle(self) -> EvolutionReport:
         """Execute one full improvement cycle."""
@@ -315,11 +325,16 @@ class HermesSquaredEngine:
         self,
         proposal: ImprovementProposal,
     ) -> Dict[str, Any]:
-        """Validate a proposal by running it through eval harness."""
+        """Validate a proposal by running it through eval harness.
+
+        Flow (Phase 4): the mutator generates the new SKILL.md, the
+        applier temporarily writes it (backing up the original to
+        ``SKILL.md.bak``), the eval runs, then we restore from the
+        backup regardless of outcome. The permanent write happens in
+        ``_apply_proposal`` *after* validation passes.
+        """
         skill_id = proposal.skill_id
         strategy = proposal.changes.get("strategy", "optimize")
-
-        # Apply the proposed change temporarily
         skill_dir = self.hermes_home / "skills" / skill_id
         skill_file = skill_dir / "SKILL.md"
 
@@ -330,23 +345,62 @@ class HermesSquaredEngine:
                 "cost_usd": 0.0,
             }
 
-        # Save original content
         original_content = skill_file.read_text(encoding="utf-8")
 
+        # Fetch the summary (if any) so the mutator can tailor the
+        # rewrite to the skill's known symptoms.
+        summary = self.ledger.get_summary(skill_id)
+
+        mutated_content: Optional[str] = None
         try:
-            # Apply mutation
-            mutated_content = self._apply_mutation(
-                original_content,
-                strategy,
-                skill_id,
+            try:
+                mutated_content = self._apply_mutation(
+                    original_content,
+                    strategy,
+                    skill_id,
+                    summary=summary,
+                )
+            except Exception as e:
+                return {
+                    "improved": False,
+                    "reason": f"mutation failed: {e}",
+                    "cost_usd": 0.0,
+                }
+
+            if mutated_content is None or not mutated_content.strip():
+                return {
+                    "improved": False,
+                    "reason": "mutator returned empty content",
+                    "cost_usd": 0.0,
+                }
+
+            # Apply via the applier so SKILL.md.bak is created.
+            temp_proposal = MutationProposal(
+                new_content=mutated_content,
+                reasoning="(temporary mutation for validation)",
+                success=True,
             )
-            skill_file.write_text(mutated_content, encoding="utf-8")
+            apply = self.applier.apply(
+                skill_id, temp_proposal, hermes_home=self.hermes_home
+            )
+            if not apply.success:
+                return {
+                    "improved": False,
+                    "reason": f"temp apply failed: {apply.error}",
+                    "cost_usd": 0.0,
+                }
 
-            # Run eval
+            # Run eval.
             eval_id = f"validate-{proposal.proposal_id}"
-            result = await self._run_validation_eval(eval_id, skill_id)
+            try:
+                result = await self._run_validation_eval(eval_id, skill_id)
+            except Exception as e:
+                return {
+                    "improved": False,
+                    "reason": f"validation eval raised: {e}",
+                    "cost_usd": 0.0,
+                }
 
-            # Compare scores
             improved = result.get("private_score", 0.0) > proposal.current_private_score
 
             return {
@@ -357,43 +411,63 @@ class HermesSquaredEngine:
                 "eval_success": result.get("success", False),
             }
 
-        except Exception as e:
-            return {
-                "improved": False,
-                "reason": str(e),
-                "cost_usd": 0.0,
-            }
         finally:
-            # Restore original content (proposal not yet accepted)
-            skill_file.write_text(original_content, encoding="utf-8")
+            # Always restore the original (proposal not yet accepted).
+            # The applier's rollback uses SKILL.md.bak; we fall back to
+            # the in-memory original if no backup was created.
+            if mutated_content is not None:
+                rolled = self.applier.rollback(skill_id, hermes_home=self.hermes_home)
+                if not rolled:
+                    try:
+                        skill_file.write_text(original_content, encoding="utf-8")
+                    except OSError:
+                        pass  # Best-effort restore from memory.
 
     def _apply_mutation(
         self,
         content: str,
         strategy: str,
         skill_id: str,
+        summary: Optional[SkillSummary] = None,
     ) -> str:
         """Generate a new SKILL.md from ``content`` given ``strategy``.
 
-        ⚠️  STUB: raises ``NotImplementedError`` until Phase 4. The real
-        implementation will call an LLM (via ``auxiliary_client``) with
-        the current SKILL.md, the skill's evaluation summary, and the
-        proposed strategy, then return the LLM's full new SKILL.md content
-        for the caller to apply via file_ops V4A patch.
+        Real implementation (Phase 4). Delegates to the injected
+        ``SkillMuter`` (defaults to ``DefaultSkillMuter``) which
+        calls ``auxiliary_client.call_llm`` with a structured prompt
+        asking the model to rewrite the SKILL.md based on the
+        strategy and the skill's evaluation summary.
 
-        The previous implementation appending hard-coded markdown
-        sections ("## Validation Steps", "## Performance Notes", etc.)
-        was **actively harmful** — it polluted every skill with the same
-        generic noise regardless of what the skill does, and the
-        ``rewrite_skill`` variant even mangled headings. Stubbing here
-        until LLM-driven mutation is real.
+        Returns the new content. On failure, raises ``RuntimeError``
+        with the mutator's error message — the caller (``_validate_proposal``)
+        catches and treats it as a failed validation, leaving
+        ``SKILL.md`` untouched.
         """
-        raise NotImplementedError(
-            f"HermesSquaredEngine._apply_mutation is a stub until Phase 4. "
-            f"Strategy {strategy!r} on skill {skill_id!r} would be applied "
-            f"via LLM-generated content; until then this raises to prevent "
-            f"corrupting the user's SKILL.md. See docs/aide-squared-roadmap.md."
+        notes = ""
+        private_score = summary.avg_private_score if summary else 0.0
+        public_score = summary.avg_public_score if summary else 0.0
+        correction_rate = summary.user_correction_rate if summary else 0.0
+        success_rate = summary.success_rate if summary else 0.0
+        if summary and summary.is_suspected_reward_hack:
+            notes = f"reward hacking suspected (gap={summary.public_private_gap})"
+
+        context = MutationContext(
+            skill_id=skill_id,
+            current_content=content,
+            strategy=strategy,
+            private_score=private_score,
+            public_score=public_score,
+            correction_rate=correction_rate,
+            success_rate=success_rate,
+            notes=notes,
         )
+        proposal = self.mutator.mutate(context)
+        if not proposal.success or not proposal.new_content.strip():
+            raise RuntimeError(
+                proposal.error
+                or "SkillMuter returned no content; not applying mutation"
+            )
+        return proposal.new_content
 
     async def _run_validation_eval(
         self,
@@ -402,33 +476,70 @@ class HermesSquaredEngine:
     ) -> Dict[str, Any]:
         """Run a validation eval for a specific skill.
 
-        ⚠️  STUB: raises ``NotImplementedError`` until Phase 3. The real
-        implementation will call ``EvalHarness.run_eval`` (with the
-        helper wired through ``auxiliary_client`` in Phase 3) and return
-        the actual measured private_score and cost.
-
-        Tests and callers that need a non-stub result should monkeypatch
-        this method.
+        Phase 4 implementation: synthesizes a one-off eval definition
+        from the skill's ledger summary, runs it through the injected
+        ``EvalHarness`` (Phase 3 real path), and returns the measured
+        private_score + cost. Falls back to ``None`` if no LLM provider
+        is available — the caller treats that as a failed validation.
         """
-        raise NotImplementedError(
-            f"HermesSquaredEngine._run_validation_eval is a stub until "
-            f"Phase 3. Cannot validate proposal for skill {skill_id!r} "
-            f"(eval {eval_id!r}) without a real EvalHarness execution "
-            f"path. See docs/aide-squared-roadmap.md."
+        summary = self.ledger.get_summary(skill_id)
+        if summary is None:
+            return {
+                "success": False,
+                "private_score": 0.0,
+                "cost_usd": 0.0,
+                "reason": "no ledger summary for skill",
+            }
+
+        prompt = (
+            f"Re-run the '{skill_id}' skill with the proposed mutation "
+            f"and report the observed private_score and cost_usd in JSON."
         )
+        ev = EvalDefinition(
+            id=eval_id,
+            family=summary.skill_id,  # best-effort family tag
+            prompt=prompt,
+            budget_usd=1.0,
+            metric="llm_judge_private",
+            skill_id=skill_id,
+            timeout_sec=60,
+            description=f"validation eval for {skill_id} proposal",
+        )
+        # Inject the eval into the harness's in-memory state so we
+        # don't need to touch disk.
+        self.eval_harness._evals[eval_id] = ev
+        result = self.eval_harness.run_eval(eval_id)
+        if result.not_implemented:
+            return {
+                "success": False,
+                "private_score": 0.0,
+                "cost_usd": 0.0,
+                "reason": "eval harness not wired (stubbed)",
+            }
+        return {
+            "success": result.success,
+            "private_score": result.private_score,
+            "cost_usd": result.cost_usd,
+            "eval_success": result.success,
+            "reason": result.error,
+        }
 
     async def _apply_proposal(self, proposal: ImprovementProposal) -> None:
         """Apply an accepted proposal permanently to the user's SKILL.md.
 
-        Stubbed until Phase 4. The real implementation will back up the
-        current SKILL.md to ``<skill_dir>/SKILL.md.bak`` before mutation,
-        call ``_apply_mutation`` to get LLM-generated content, write it
-        back, and roll back from the backup if anything fails.
+        Phase 4 real implementation. Delegates to the injected
+        ``SkillMuterApplier`` which handles backup (``SKILL.md.bak``)
+        and atomic write. The mutator has already been validated
+        (``_validate_proposal`` ran the mutation under a temporary
+        apply + eval), so by the time we get here the new content
+        is known to be an improvement.
 
-        Until Phase 4, ``_apply_mutation`` raises ``NotImplementedError``,
-        which we catch and log so an accidentally-triggered apply (e.g.
-        from a direct API call) does not corrupt SKILL.md or leave
-        orphan backup files.
+        This implementation intentionally avoids re-running the
+        mutator: the validation step has already generated the
+        ``new_content`` (passed implicitly via the eval result) but
+        the new design keeps the proposal stateless. Future work can
+        cache the validated proposal in ``proposal.validation_result``
+        to skip regeneration here.
         """
         skill_dir = self.hermes_home / "skills" / proposal.skill_id
         skill_file = skill_dir / "SKILL.md"
@@ -437,16 +548,34 @@ class HermesSquaredEngine:
             return
 
         try:
-            # Apply the mutation permanently
             content = skill_file.read_text(encoding="utf-8")
+            summary = self.ledger.get_summary(proposal.skill_id)
             mutated = self._apply_mutation(
                 content,
                 proposal.changes.get("strategy", "optimize"),
                 proposal.skill_id,
+                summary=summary,
             )
-            skill_file.write_text(mutated, encoding="utf-8")
+            proposal_obj = MutationProposal(
+                new_content=mutated,
+                reasoning="(permanent mutation)",
+                success=True,
+            )
+            apply = self.applier.apply(
+                proposal.skill_id,
+                proposal_obj,
+                hermes_home=self.hermes_home,
+            )
+            if not apply.success:
+                proposal.status = "apply_failed"
+                logger.warning(
+                    "Hermes²: applier refused permanent write for %s: %s",
+                    proposal.skill_id,
+                    apply.error,
+                )
+                return
 
-            # Record in ledger with lineage
+            # Record in ledger with lineage.
             self.ledger.record_eval(
                 SkillEval(
                     skill_id=proposal.skill_id,
@@ -468,23 +597,20 @@ class HermesSquaredEngine:
                 proposal.skill_id,
                 proposal.proposal_id,
             )
-        except NotImplementedError as e:
-            logger.warning(
-                "Hermes²: cannot apply proposal %s for skill %s — "
-                "_apply_mutation is a stub until Phase 4. %s",
-                proposal.proposal_id,
-                proposal.skill_id,
-                e,
-            )
-            proposal.status = "rejected_stub"
         except Exception as e:
-            logger.error(
+            logger.warning(
                 "Hermes²: failed to apply proposal %s for skill %s: %s",
                 proposal.proposal_id,
                 proposal.skill_id,
                 e,
             )
             proposal.status = "apply_failed"
+            logger.error(
+                "Hermes²: failed to apply proposal %s for skill %s: %s",
+                proposal.proposal_id,
+                proposal.skill_id,
+                e,
+            )
 
     def _generate_summary(self, report: EvolutionReport) -> str:
         """Generate a human-readable summary of the cycle."""

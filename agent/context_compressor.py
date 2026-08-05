@@ -4687,8 +4687,34 @@ This compaction should PRIORITISE preserving all information related to the focu
         #    when call_id != id (Codex Responses API format), re-exposing orphans.
         missing_results = surviving_call_ids - result_call_ids
         if missing_results:
+            # --- In-flight tool chain protection (issue #79278) -------------
+            # A strip here must distinguish a *pending* tool_call (the model's
+            # live request whose result the executor has not yet appended) from
+            # an *orphaned* call (one whose result was summarized/truncated away
+            # and can never come back).  Compression can fire mid-chain: the
+            # model emits `assistant(tool_calls)`, and tool_executor.py only
+            # appends the matching `role="tool"` result AFTER it runs the call.
+            # In that window `messages[-1]` is an assistant tool_call whose id
+            # is (not yet) in result_call_ids.  Any tool result would be
+            # appended *after* this message (tool_executor.py), so if it is the
+            # final message its calls are, by construction, all still pending.
+            # Stripping it as an orphan would delete the live request; when the
+            # executor later appends the real result, repair_message_sequence
+            # would drop it as an unmatched orphan and the completed side
+            # effect — and the model's final synthesis built on it — would be
+            # lost.  We therefore preserve the trailing in-flight call verbatim;
+            # only genuinely orphaned calls in the *discarded* region are
+            # stripped.
+            trailing_inflight: Optional[Dict[str, Any]] = None
+            if messages and messages[-1].get("role") == "assistant":
+                trailing_inflight = messages[-1]
+            # -----------------------------------------------------------------
             for msg in messages:
                 if msg.get("role") != "assistant":
+                    continue
+                if msg is trailing_inflight:
+                    # Live request, not an orphan — the executor appends its
+                    # result(s) after compress() returns.
                     continue
                 tcs = msg.get("tool_calls")
                 if not tcs:

@@ -2223,6 +2223,180 @@ class TestSanitizerStripsOrphanedToolCalls:
         # No stub tool messages (which would have call_id != id mismatch)
 
 
+class TestSanitizerPreservesInFlightToolChain:
+    """Issue #79278: an in-flight tool call chain must survive compression.
+
+    When compression fires mid-chain — after the model emitted
+    ``assistant(tool_calls)`` but before tool_executor.py appended the matching
+    ``role="tool"`` result — the final message is a *pending* tool call, not an
+    orphan.  Stripping it (or replacing content with ``(tool call removed)``)
+    destroys the chain: when the executor later appends the real result,
+    repair_message_sequence drops it as an unmatched orphan and the completed
+    side effect and final synthesis are lost.  _sanitize_tool_pairs must exempt
+    the trailing in-flight call.
+    """
+
+    def test_trailing_inflight_tool_call_preserved(self, compressor):
+        """A trailing assistant tool_call with no result yet is pending, not
+        orphaned — preserve it verbatim.  #79278"""
+        msgs = [
+            {"role": "user", "content": "summarize"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "summarize", "arguments": "{}"}},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_2", "function": {"name": "finalize", "arguments": "{}"}},
+                ],
+            },
+            # in-flight: call_2 has been emitted but its tool result is not
+            # yet appended by tool_executor.py
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        # The trailing in-flight call must survive intact.
+        assert sanitized[-1]["role"] == "assistant"
+        assert len(sanitized[-1]["tool_calls"]) == 1
+        assert sanitized[-1]["tool_calls"][0]["id"] == "call_2"
+        assert sanitized[-1]["content"] != "(tool call removed)"
+
+    def test_inflight_result_arrives_after_compress(self, compressor):
+        """After compress() preserves the pending call, appending its tool
+        result leaves a well-formed chain — the side effect's result reaches
+        the model.  #79278"""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_2", "function": {"name": "finalize", "arguments": "{}"}},
+                ],
+            },
+        ]
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+        assert sanitized[-1]["tool_calls"][0]["id"] == "call_2"
+
+        # The executor appends the result after compress() returns.
+        sanitized.append(
+            {"role": "tool", "tool_call_id": "call_2", "content": "side effect done"}
+        )
+
+        # Chain now settled: the assistant call is matched, result survives.
+        surviving = {tc["id"] for m in sanitized if m["role"] == "assistant"
+                     for tc in (m.get("tool_calls") or [])}
+        assert "call_2" in surviving
+        results = [m for m in sanitized if m["role"] == "tool"]
+        assert len(results) == 1 and results[0]["tool_call_id"] == "call_2"
+
+    def test_inflight_preserved_while_true_orphan_still_stripped(self, compressor):
+        """Preserving the trailing in-flight call must not weaken the existing
+        orphan-stripping behavior for genuinely orphaned calls in the discarded
+        region.  #79278"""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_orphan", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "user", "content": "interim"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_pending", "function": {"name": "write", "arguments": "{}"}},
+                ],
+            },
+            # trailing in-flight call_pending
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        middle = [m for m in sanitized if m["role"] == "assistant" and m.get("tool_calls")]
+        # Only the trailing in-flight call survives.
+        assert len(middle) == 1
+        assert middle[0]["tool_calls"][0]["id"] == "call_pending"
+        # The genuine orphan at the head was still stripped.
+        assert not any(m.get("tool_calls") and m["tool_calls"][0]["id"] == "call_orphan"
+                       for m in sanitized)
+
+    def test_side_effect_final_result_returned_end_to_end(self, compressor):
+        """Issue #79278 end-to-end: an in-flight tool chain that triggers
+        compression must still deliver the completed side effect's result.
+
+        Reproduces the full executor flow:
+          1. the model emits ``assistant(tool_calls=call_2)`` while call_2 is
+             still IN-FLIGHT — tool_executor.py has not yet appended its
+             ``role="tool"`` result;
+          2. context compression fires and ``_sanitize_tool_pairs()`` runs on
+             a history whose tail is that pending call;
+          3. the side effect completes and the executor appends the ``tool``
+             result for call_2;
+          4. the next pre-call pass, ``repair_message_sequence()``, runs and
+             must NOT drop the completed result as an unmatched orphan.
+
+        On the old code, compression stripped the pending call_2 as an
+        "orphan"; when the result then arrived, repair_message_sequence
+        dropped it as unmatched — so the completed side effect's result and
+        the final synthesis built on it were both lost.  The fix preserves the
+        trailing in-flight call, so the chain closes and the result survives.
+        """
+        from agent.agent_runtime_helpers import repair_message_sequence
+
+        history = [
+            {"role": "user", "content": "Do the work and use the tools."},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "run_side_effect", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1",
+             "content": "side effect completed"},
+            # in-flight: call_2 emitted, its result not yet appended
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_2", "type": "function",
+                 "function": {"name": "gather_final_result", "arguments": "{}"}}]},
+        ]
+
+        # Step 1: compression fires mid-chain.
+        compressed = compressor._sanitize_tool_pairs([dict(m) for m in history])
+
+        # The in-flight call must survive the compression pass (fix), not be
+        # stripped as an orphan (bug) — otherwise the chain is already broken.
+        assert compressed[-1]["role"] == "assistant"
+        assert [tc["id"] for tc in compressed[-1].get("tool_calls", [])] == ["call_2"]
+        assert compressed[-1].get("content") != "(tool call removed)"
+
+        # Step 2: the side effect completes; the executor appends its result.
+        messages = [dict(m) for m in compressed] + [
+            {"role": "tool", "tool_call_id": "call_2",
+             "content": "final computed result: 42"}
+        ]
+
+        # Step 3: the next pre-call sanitizer runs on the settled chain.
+        repair_message_sequence(None, messages)
+
+        # Step 4: the final result must still be returned — the assistant call
+        # and its completed tool result both survive, still paired.
+        assistant_ids = {
+            tc["id"]
+            for m in messages if m["role"] == "assistant"
+            for tc in (m.get("tool_calls") or [])
+        }
+        assert "call_2" in assistant_ids
+
+        results = [m for m in messages
+                   if m["role"] == "tool" and m.get("tool_call_id") == "call_2"]
+        assert len(results) == 1
+        assert "42" in results[0]["content"]
+
+
 class TestCooldownReentryAbort:
     """Regression: a second compress() call during the failure cooldown must
     still abort when the original failure was a network/auth error.

@@ -222,14 +222,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     rows = _approved_rows()
     if not rows:
-        print("no-work: publisher ready; no eligible approved drafts")
+        # Silent when nothing to publish. This is a no-agent watchdog cron:
+        # empty stdout = silent = no Discord message. Do not announce idleness.
         return 0
     if args.dry_run:
         print(f"dry-run: {len(rows)} eligible draft(s); no claims or publications performed")
         return 0
     count = publish_approved_drafts()
     if count:
-        print(f"Published {count} draft(s) to Postiz.")
+        # Single compact summary line for the cron delivery.
+        print(f"published {count} draft(s) to Postiz.")
     return 0
 
 
